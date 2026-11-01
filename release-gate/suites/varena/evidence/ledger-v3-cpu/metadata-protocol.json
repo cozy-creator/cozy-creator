@@ -1,0 +1,1182 @@
+{
+  "gpu_execution": false,
+  "cases": {
+    "live_stopped_and_new_old_open": {
+      "live_refusal": {
+        "error": "incompatible ledger: older ledger participant is still active"
+      },
+      "stopped_refusal": {
+        "error": "incompatible ledger: older ledger participant is still active"
+      },
+      "migrated": {
+        "path": "/dev/shm/xs138-ledger-v3-mf0uxngb/live/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+        "pid": 2708916,
+        "ready": true,
+        "table": {
+          "capacity_epoch": 2,
+          "generation": 2,
+          "inode": 2385397,
+          "round": null,
+          "rows": [
+            {
+              "activity": "Unknown",
+              "incarnation": 1,
+              "pid": 2708916,
+              "priority": 0,
+              "reclaimable": 0,
+              "requestable": false,
+              "slot": 0,
+              "want": 0
+            }
+          ],
+          "sample": null
+        }
+      },
+      "old_mapped_refusal": {
+        "error": "incompatible ledger: backing inode changed"
+      },
+      "old_new_open_refusal": {
+        "error": "incompatible ledger: layout length"
+      },
+      "known_v3_sample": {
+        "capacity_epoch": 2,
+        "generation": 3,
+        "inode": 2385397,
+        "round": null,
+        "rows": [
+          {
+            "activity": "Unknown",
+            "incarnation": 1,
+            "pid": 2708916,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 0,
+            "want": 0
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 64,
+          "used": 512
+        }
+      }
+    },
+    "old_transaction_already_waiting": {
+      "wait": {
+        "pid": 2708918,
+        "syscall": "72 0x3 0x26 0x7ffd195fd230 0xfff 0x0 0x101010101010100 0x7ffd195fd130 0x7faab3d17310",
+        "old_inode": 2385399,
+        "passed_old_check_and_waiting_on_publication": true
+      },
+      "refused": {
+        "error": "incompatible ledger: uncommitted table"
+      },
+      "new": {
+        "path": "/dev/shm/xs138-ledger-v3-mf0uxngb/race/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+        "pid": 2708920,
+        "ready": true,
+        "table": {
+          "capacity_epoch": 1,
+          "generation": 1,
+          "inode": 2385400,
+          "round": null,
+          "rows": [],
+          "sample": null
+        }
+      }
+    },
+    "old_register_already_waiting": {
+      "wait": {
+        "pid": 2708921,
+        "syscall": "72 0x3 0x26 0x7ffdab9e4c80 0xfff 0x0 0x101010101010100 0x7ffdab9e4b80 0x7f3d68517310",
+        "old_inode": 2385402,
+        "passed_old_check_and_waiting_on_publication": true
+      },
+      "refused": {
+        "error": "incompatible ledger: uncommitted table"
+      },
+      "new": {
+        "path": "/dev/shm/xs138-ledger-v3-mf0uxngb/registration/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+        "pid": 2708923,
+        "ready": true,
+        "table": {
+          "capacity_epoch": 2,
+          "generation": 2,
+          "inode": 2385403,
+          "round": null,
+          "rows": [
+            {
+              "activity": "Unknown",
+              "incarnation": 1,
+              "pid": 2708923,
+              "priority": 0,
+              "reclaimable": 0,
+              "requestable": false,
+              "slot": 0,
+              "want": 0
+            }
+          ],
+          "sample": null
+        }
+      }
+    },
+    "old_open_already_waiting": {
+      "wait": {
+        "pid": 2708926,
+        "syscall": "72 0x3 0x26 0x7ffe1bb04840 0x180 0x8080808080808080 0x101010101010100 0x7ffe1bb04740 0x73b54e917310",
+        "old_inode": 2385405,
+        "passed_old_check_and_waiting_on_publication": true
+      },
+      "refused": {
+        "error": "incompatible ledger: device, boot, UID, namespace or layout identity"
+      }
+    },
+    "rename_only_negative_control": {
+      "wait": {
+        "pid": 2708928,
+        "syscall": "72 0x3 0x26 0x7fffeda4d940 0xfff 0x0 0x101010101010100 0x7fffeda4d840 0x73c93c117310",
+        "old_inode": 2385408,
+        "passed_old_check_and_waiting_on_publication": true
+      },
+      "wrongly_admitted": {
+        "registered": true
+      },
+      "ghost_lock_forced_slot1": {
+        "path": "/dev/shm/xs138-ledger-v3-mf0uxngb/rename-only-control/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+        "pid": 2708930,
+        "ready": true,
+        "table": {
+          "capacity_epoch": 2,
+          "generation": 2,
+          "inode": 2385409,
+          "round": null,
+          "rows": [
+            {
+              "activity": "Unknown",
+              "incarnation": 1,
+              "pid": 2708930,
+              "priority": 0,
+              "reclaimable": 0,
+              "requestable": false,
+              "slot": 1,
+              "want": 0
+            }
+          ],
+          "sample": null
+        }
+      },
+      "slot0_available_after_old_handle_close": {
+        "path": "/dev/shm/xs138-ledger-v3-mf0uxngb/rename-only-control/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+        "pid": 2708931,
+        "ready": true,
+        "table": {
+          "capacity_epoch": 3,
+          "generation": 3,
+          "inode": 2385409,
+          "round": null,
+          "rows": [
+            {
+              "activity": "Unknown",
+              "incarnation": 2,
+              "pid": 2708931,
+              "priority": 0,
+              "reclaimable": 0,
+              "requestable": false,
+              "slot": 0,
+              "want": 0
+            },
+            {
+              "activity": "Unknown",
+              "incarnation": 1,
+              "pid": 2708930,
+              "priority": 0,
+              "reclaimable": 0,
+              "requestable": false,
+              "slot": 1,
+              "want": 0
+            }
+          ],
+          "sample": null
+        }
+      },
+      "expected_control_failure": true,
+      "product_uses_tombstone": true
+    },
+    "crash_after_tombstone": {
+      "old_refused": {
+        "error": "incompatible ledger: device, boot, UID, namespace or layout identity"
+      },
+      "recovered": {
+        "path": "/dev/shm/xs138-ledger-v3-mf0uxngb/crash/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+        "pid": 2708935,
+        "ready": true,
+        "table": {
+          "capacity_epoch": 1,
+          "generation": 1,
+          "inode": 2385413,
+          "round": null,
+          "rows": [],
+          "sample": null
+        }
+      }
+    },
+    "rename_failure_restores_old_table": {
+      "wait": {
+        "pid": 2708936,
+        "syscall": "72 0x3 0x26 0x7ffca095c310 0xfff 0x0 0x101010101010100 0x7ffca095c210 0x7a491b517310",
+        "old_inode": 2385415,
+        "passed_old_check_and_waiting_on_publication": true
+      },
+      "failed": {
+        "error": "ledger I/O: No such file or directory (os error 2)"
+      },
+      "restored": {
+        "capacity_epoch": 1,
+        "generation": 1,
+        "inode": 2385415,
+        "round": null,
+        "rows": [],
+        "sample": null
+      }
+    },
+    "activity_and_noncrediting_requestability": {
+      "capacity_epoch": 6,
+      "generation": 8,
+      "inode": 2385418,
+      "round": {
+        "assignments": [
+          {
+            "action": false,
+            "answer": "Waiting",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": true,
+            "requested": 32,
+            "slot": 1
+          },
+          {
+            "action": false,
+            "answer": "Unasked",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": false,
+            "requested": 0,
+            "slot": 0
+          }
+        ],
+        "completed": 0,
+        "donors": [
+          1,
+          0
+        ],
+        "finished": false,
+        "generation": 8,
+        "kind": "Allocation",
+        "requested": 32
+      },
+      "rows": [
+        {
+          "activity": "Active",
+          "incarnation": 1,
+          "pid": 2708938,
+          "priority": 0,
+          "reclaimable": 64,
+          "requestable": false,
+          "slot": 0,
+          "want": 0
+        },
+        {
+          "activity": "Idle",
+          "incarnation": 2,
+          "pid": 2708939,
+          "priority": 0,
+          "reclaimable": 64,
+          "requestable": true,
+          "slot": 1,
+          "want": 0
+        },
+        {
+          "activity": "Unknown",
+          "incarnation": 3,
+          "pid": 2708940,
+          "priority": 10,
+          "reclaimable": 0,
+          "requestable": false,
+          "slot": 2,
+          "want": 32
+        }
+      ],
+      "sample": {
+        "attributable": true,
+        "reserve": 96,
+        "used": 512
+      }
+    },
+    "explicit_priority_preserved": {
+      "capacity_epoch": 8,
+      "generation": 14,
+      "inode": 2385418,
+      "round": {
+        "assignments": [
+          {
+            "action": false,
+            "answer": "Waiting",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": false,
+            "requested": 32,
+            "slot": 3
+          },
+          {
+            "action": false,
+            "answer": "Unasked",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": true,
+            "requested": 0,
+            "slot": 1
+          },
+          {
+            "action": false,
+            "answer": "Unasked",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": false,
+            "requested": 0,
+            "slot": 0
+          }
+        ],
+        "completed": 0,
+        "donors": [
+          3,
+          1,
+          0
+        ],
+        "finished": false,
+        "generation": 14,
+        "kind": "Allocation",
+        "requested": 32
+      },
+      "rows": [
+        {
+          "activity": "Active",
+          "incarnation": 1,
+          "pid": 2708938,
+          "priority": 0,
+          "reclaimable": 64,
+          "requestable": false,
+          "slot": 0,
+          "want": 0
+        },
+        {
+          "activity": "Idle",
+          "incarnation": 2,
+          "pid": 2708939,
+          "priority": 0,
+          "reclaimable": 64,
+          "requestable": true,
+          "slot": 1,
+          "want": 0
+        },
+        {
+          "activity": "Unknown",
+          "incarnation": 3,
+          "pid": 2708940,
+          "priority": 10,
+          "reclaimable": 0,
+          "requestable": false,
+          "slot": 2,
+          "want": 32
+        },
+        {
+          "activity": "Active",
+          "incarnation": 4,
+          "pid": 2708941,
+          "priority": -10,
+          "reclaimable": 64,
+          "requestable": false,
+          "slot": 3,
+          "want": 0
+        }
+      ],
+      "sample": {
+        "attributable": true,
+        "reserve": 96,
+        "used": 512
+      }
+    },
+    "requestable_is_not_capacity": {
+      "capacity_epoch": 9,
+      "generation": 15,
+      "inode": 2385418,
+      "round": {
+        "assignments": [
+          {
+            "action": false,
+            "answer": "Waiting",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": false,
+            "requested": 32,
+            "slot": 3
+          },
+          {
+            "action": false,
+            "answer": "Unasked",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": true,
+            "requested": 0,
+            "slot": 1
+          },
+          {
+            "action": false,
+            "answer": "Unasked",
+            "completed": 0,
+            "held": 64,
+            "offered": 64,
+            "pending": 0,
+            "requestable": false,
+            "requested": 0,
+            "slot": 0
+          }
+        ],
+        "completed": 0,
+        "donors": [
+          3,
+          1,
+          0
+        ],
+        "finished": false,
+        "generation": 14,
+        "kind": "Allocation",
+        "requested": 32
+      },
+      "rows": [
+        {
+          "activity": "Active",
+          "incarnation": 1,
+          "pid": 2708938,
+          "priority": 0,
+          "reclaimable": 64,
+          "requestable": false,
+          "slot": 0,
+          "want": 0
+        },
+        {
+          "activity": "Idle",
+          "incarnation": 2,
+          "pid": 2708939,
+          "priority": 0,
+          "reclaimable": 64,
+          "requestable": true,
+          "slot": 1,
+          "want": 0
+        },
+        {
+          "activity": "Unknown",
+          "incarnation": 3,
+          "pid": 2708940,
+          "priority": 10,
+          "reclaimable": 0,
+          "requestable": false,
+          "slot": 2,
+          "want": 32
+        },
+        {
+          "activity": "Idle",
+          "incarnation": 4,
+          "pid": 2708941,
+          "priority": -10,
+          "reclaimable": 0,
+          "requestable": true,
+          "slot": 3,
+          "want": 0
+        }
+      ],
+      "sample": {
+        "attributable": true,
+        "reserve": 96,
+        "used": 512
+      }
+    },
+    "sequential_owner_actions_no_promised_credit": {
+      "start": {
+        "capacity_epoch": 6,
+        "generation": 8,
+        "inode": 2385420,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Waiting",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 0
+            },
+            {
+              "action": false,
+              "answer": "Unasked",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 0,
+              "slot": 1
+            }
+          ],
+          "completed": 0,
+          "donors": [
+            0,
+            1
+          ],
+          "finished": false,
+          "generation": 8,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708943,
+            "priority": -10,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Idle",
+            "incarnation": 2,
+            "pid": 2708944,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 1,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 3,
+            "pid": 2708945,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 2,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      },
+      "pending": {
+        "capacity_epoch": 6,
+        "generation": 9,
+        "inode": 2385420,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Pending",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 0
+            },
+            {
+              "action": false,
+              "answer": "Unasked",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 0,
+              "slot": 1
+            }
+          ],
+          "completed": 0,
+          "donors": [
+            0,
+            1
+          ],
+          "finished": false,
+          "generation": 8,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708943,
+            "priority": -10,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Idle",
+            "incarnation": 2,
+            "pid": 2708944,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 1,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 3,
+            "pid": 2708945,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 2,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      },
+      "declined": {
+        "capacity_epoch": 6,
+        "generation": 10,
+        "inode": 2385420,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Refused",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 0
+            },
+            {
+              "action": true,
+              "answer": "Waiting",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 1
+            }
+          ],
+          "completed": 0,
+          "donors": [
+            0,
+            1
+          ],
+          "finished": false,
+          "generation": 8,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708943,
+            "priority": -10,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Idle",
+            "incarnation": 2,
+            "pid": 2708944,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 1,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 3,
+            "pid": 2708945,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 2,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      },
+      "done": {
+        "capacity_epoch": 8,
+        "generation": 12,
+        "inode": 2385420,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Refused",
+              "completed": 0,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 0
+            },
+            {
+              "action": true,
+              "answer": "Complete",
+              "completed": 32,
+              "held": 64,
+              "offered": 0,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 1
+            }
+          ],
+          "completed": 32,
+          "donors": [
+            0,
+            1
+          ],
+          "finished": true,
+          "generation": 8,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708943,
+            "priority": -10,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Idle",
+            "incarnation": 2,
+            "pid": 2708944,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 1,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 3,
+            "pid": 2708945,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 2,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      }
+    },
+    "ready_stage_then_same_owner_action": {
+      "start": {
+        "capacity_epoch": 4,
+        "generation": 6,
+        "inode": 2385422,
+        "round": {
+          "assignments": [
+            {
+              "action": false,
+              "answer": "Waiting",
+              "completed": 0,
+              "held": 64,
+              "offered": 16,
+              "pending": 0,
+              "requestable": true,
+              "requested": 16,
+              "slot": 0
+            }
+          ],
+          "completed": 0,
+          "donors": [
+            0
+          ],
+          "finished": false,
+          "generation": 6,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708946,
+            "priority": 0,
+            "reclaimable": 16,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 2,
+            "pid": 2708947,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 1,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      },
+      "action": {
+        "capacity_epoch": 6,
+        "generation": 8,
+        "inode": 2385422,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Waiting",
+              "completed": 16,
+              "held": 64,
+              "offered": 16,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 0
+            }
+          ],
+          "completed": 16,
+          "donors": [
+            0
+          ],
+          "finished": false,
+          "generation": 6,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708946,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 2,
+            "pid": 2708947,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 1,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      },
+      "old_stage_refused": {
+        "error": "stale ledger row or round incarnation"
+      },
+      "done": {
+        "capacity_epoch": 8,
+        "generation": 10,
+        "inode": 2385422,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Complete",
+              "completed": 32,
+              "held": 64,
+              "offered": 16,
+              "pending": 0,
+              "requestable": true,
+              "requested": 32,
+              "slot": 0
+            }
+          ],
+          "completed": 32,
+          "donors": [
+            0
+          ],
+          "finished": true,
+          "generation": 6,
+          "kind": "Allocation",
+          "requested": 32
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708946,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 2,
+            "pid": 2708947,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 1,
+            "want": 32
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      }
+    },
+    "all_idle_actual_device_bound_and_donor_cap": {
+      "start": {
+        "capacity_epoch": 4,
+        "generation": 6,
+        "inode": 2385424,
+        "round": {
+          "assignments": [
+            {
+              "action": false,
+              "answer": "Waiting",
+              "completed": 0,
+              "held": 64,
+              "offered": 16,
+              "pending": 0,
+              "requestable": true,
+              "requested": 16,
+              "slot": 0
+            }
+          ],
+          "completed": 0,
+          "donors": [
+            0
+          ],
+          "finished": false,
+          "generation": 6,
+          "kind": "AllIdle",
+          "requested": 1024
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708948,
+            "priority": 0,
+            "reclaimable": 16,
+            "requestable": true,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 2,
+            "pid": 2708949,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 1,
+            "want": 1024
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      },
+      "over_cap_refused": {
+        "error": "invalid ledger operation: acknowledgement is inconsistent with its owner snapshot"
+      },
+      "done": {
+        "capacity_epoch": 8,
+        "generation": 10,
+        "inode": 2385424,
+        "round": {
+          "assignments": [
+            {
+              "action": true,
+              "answer": "Refused",
+              "completed": 64,
+              "held": 64,
+              "offered": 16,
+              "pending": 0,
+              "requestable": true,
+              "requested": 1024,
+              "slot": 0
+            }
+          ],
+          "completed": 64,
+          "donors": [
+            0
+          ],
+          "finished": true,
+          "generation": 6,
+          "kind": "AllIdle",
+          "requested": 1024
+        },
+        "rows": [
+          {
+            "activity": "Idle",
+            "incarnation": 1,
+            "pid": 2708948,
+            "priority": 0,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 0,
+            "want": 0
+          },
+          {
+            "activity": "Unknown",
+            "incarnation": 2,
+            "pid": 2708949,
+            "priority": 10,
+            "reclaimable": 0,
+            "requestable": false,
+            "slot": 1,
+            "want": 1024
+          }
+        ],
+        "sample": {
+          "attributable": true,
+          "reserve": 96,
+          "used": 512
+        }
+      }
+    },
+    "owner_exit_advances_without_credit": {
+      "capacity_epoch": 7,
+      "generation": 9,
+      "inode": 2385426,
+      "round": {
+        "assignments": [
+          {
+            "action": true,
+            "answer": "OwnerGone",
+            "completed": 0,
+            "held": 64,
+            "offered": 0,
+            "pending": 0,
+            "requestable": true,
+            "requested": 32,
+            "slot": 0
+          },
+          {
+            "action": true,
+            "answer": "Waiting",
+            "completed": 0,
+            "held": 64,
+            "offered": 0,
+            "pending": 0,
+            "requestable": true,
+            "requested": 32,
+            "slot": 1
+          }
+        ],
+        "completed": 0,
+        "donors": [
+          0,
+          1
+        ],
+        "finished": false,
+        "generation": 8,
+        "kind": "Allocation",
+        "requested": 32
+      },
+      "rows": [
+        {
+          "activity": "Idle",
+          "incarnation": 2,
+          "pid": 2708952,
+          "priority": 0,
+          "reclaimable": 0,
+          "requestable": true,
+          "slot": 1,
+          "want": 0
+        },
+        {
+          "activity": "Unknown",
+          "incarnation": 3,
+          "pid": 2708953,
+          "priority": 10,
+          "reclaimable": 0,
+          "requestable": false,
+          "slot": 2,
+          "want": 32
+        }
+      ],
+      "sample": {
+        "attributable": true,
+        "reserve": 96,
+        "used": 512
+      }
+    }
+  },
+  "passed": true
+}

@@ -1,9 +1,10 @@
 # Versioned activity and cache-owner coordination
 
-Work in progress, not a portable/GPU candidate. This branch composes integrated
+Source checkpoint, not GPU-qualified. This branch composes integrated
 7e/a96, sampler27e, the9b98 ready-only collector and modef57 on fresh87b. The source
-and GPU-qualified predecessors remain unchanged. Runtime/cache bridge composition,
-the latest replay-collector correction and fresh GPU proof are still required.
+and GPU-qualified predecessors remain unchanged. The dfb replay/collector correction
+and weak cache bridge are composed. Native065 and Runtime6c812 are frozen for root's
+artifact build; fixture6e is a source-only addition, requiring fresh GPU proof.
 
 The scoped filename stays the same, while the header version and layout advance to3.
 Rows retain numeric consumer priority and add explicit Unknown/Idle/Active execution
@@ -57,5 +58,15 @@ The old/new metadata gate covers stopped owners, waiting old transactions/regist
 opens, the rename-only ghost-lock negative control, crash recovery and rename rollback.
 Its declared byte facts are not GPU release. Host callback tests cover cancellation
 and dispatcher self-wait refusal without loading CUDA/NVML. Scoped-progress epoch
-tests and latest replay integration are being completed. No new GPU claim follows
-from these CPU receipts.
+tests pass, including a callback finishing after the pass's observed epoch and the
+final callback's required post-action pass. Runtime source checks retain baseline
+mypy11→11 and Ruff12→12. Receipts are committed under
+`release-gate/suites/varena/evidence/ledger-v3-cpu`.
+
+The prepared ordinary `owner-runtime/owner_actions` GPU cell asks the actual Runtime
+owner with zero ready bytes and64MiB of live Cache. It holds publication only around
+an unrelated actual working release, ensuring that release is not performed by the
+donor pass. A declining callback must not finish the request from that global epoch;
+the next callback still receives32MiB. Only subsequent capped native service may
+credit32MiB. The other32MiB Cache and8MiB working data are read back intact, and all
+fixture-owned resources return to baseline. This cell is still unexecuted here.

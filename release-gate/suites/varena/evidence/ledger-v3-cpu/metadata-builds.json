@@ -1,0 +1,55 @@
+{
+  "old_commit": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+  "gpu_execution": false,
+  "builds": {
+    "v2": {
+      "sources": {
+        "crates/varena/src/ledger.rs": "247b15006f1e54a9d3ac5ec6adeced60599a29aec9c10ae94677973b24ec79b6",
+        "crates/varena/src/ledger/os.rs": "115f7f3566f0148ee1681d1f5a2322eab78466e83e2a5b4b49caaaf814678430"
+      },
+      "gate_sha256": "98da419df4798b2834ac6e528de433a3c1181078ecd7fe3bf9c1b10245b5a040",
+      "rename_only_control_sha256": "3f9c87b36ffa3f0613738f13c92df8f116a163771c115aec61c393029f233dda",
+      "binary": "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/cpu-build-004/v2/ledger-gate-v2",
+      "binary_sha256": "8a3ed16ea48d9d26972b803ae32276140d86cd57fcdb2f74294c9fa2461f8f3b",
+      "command": [
+        "nice",
+        "-n",
+        "19",
+        "cargo",
+        "build",
+        "--offline",
+        "--manifest-path",
+        "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/cpu-build-004/v2/Cargo.toml",
+        "--target-dir",
+        "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+        "-j",
+        "1"
+      ]
+    },
+    "v3": {
+      "sources": {
+        "crates/varena/src/ledger.rs": "ba0842330b872cab63a18a16e24686ab7d8542082e9203dd674dd7fb7cae95dd",
+        "crates/varena/src/ledger/os.rs": "3f3a613a25902988ed84af32c922de9afacf9bde65f5a92b0a84401f9bed0daf",
+        "crates/varena/src/ledger/upgrade.rs": "051e57e4e7e7e5a0f12ec3bc38ffbe8658f6a50a63e3fe1cec3a21e7025953c6"
+      },
+      "gate_sha256": "98da419df4798b2834ac6e528de433a3c1181078ecd7fe3bf9c1b10245b5a040",
+      "rename_only_control_sha256": "3f9c87b36ffa3f0613738f13c92df8f116a163771c115aec61c393029f233dda",
+      "binary": "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/cpu-build-004/v3/ledger-gate-v3",
+      "binary_sha256": "d35015a25d56e231ffbe816b5e707f612f32d06ca1d5698fee6fceb6226fd52f",
+      "command": [
+        "nice",
+        "-n",
+        "19",
+        "cargo",
+        "build",
+        "--offline",
+        "--manifest-path",
+        "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/cpu-build-004/v3/Cargo.toml",
+        "--target-dir",
+        "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+        "-j",
+        "1"
+      ]
+    }
+  }
+}
