@@ -78,6 +78,7 @@ pub struct FillFacts {
     pub submission_closed: bool,
     pub published: bool,
     pub completed: bool,
+    pub retirement_finished: bool, // native ownership retired; never capacity credit
     pub producer_count: usize,
     pub recorded_count: usize,
     pub completed_count: usize,
@@ -158,7 +159,11 @@ Every potentially final Region/Arena/resource owner leaves those guards before d
 final ownership release uses retirement exclusion, or stays queued for a later legal attempt.
 Metadata observations cannot accidentally become the final GPU-owning Arc under a mutex.
 A separate per-device retirement queue performs potentially blocking final owner destruction;
-final Arena context joins cannot stop unrelated fill-event polling or another GPU's queue.
+final resource destruction is not performed on the producer-event polling thread.
+The existing Arena destructor's global capture-mutex coupling is an integration gate
+(recorded in the fixture README), so cross-device progress is not yet qualified.
+`retirement_finished` is set after native owners and exclusion tokens are released; it is
+not a statement that an escaped alias or frontend finalizer released physical memory.
 Both workers start before destination exposure. These are genuine owner leases, not the
 Peer/CacheOwner observer Arena references covered by the separate native detach seam.
 The worker must progress without a Python callback or GIL; it only queries owned CUDA events

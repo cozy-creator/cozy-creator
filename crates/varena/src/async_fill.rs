@@ -44,6 +44,8 @@ pub struct FillFacts {
     pub submission_closed: bool,
     pub published: bool,
     pub completed: bool,
+    /// Native payload retirement finished; not a physical-release/capacity certificate.
+    pub retirement_finished: bool,
     pub producer_count: usize,
     pub recorded_count: usize,
     pub completed_count: usize,
@@ -120,6 +122,7 @@ impl Fill {
                     submission_closed: false,
                     published: false,
                     completed: false,
+                    retirement_finished: false,
                     producer_count: owners.streams.len(),
                     recorded_count: 0,
                     completed_count: 0,
@@ -473,6 +476,15 @@ impl Payload {
         drop(_context);
         drop(self.region.take());
         drop(region); // must precede retirement exclusion's release, even for the last Arena
+        drop(_retirement);
+        // There are no GPU owners left to quarantine if metadata was poisoned. Preserve
+        // that poison for observers, but never send this empty payload through failure cleanup.
+        self.control
+            .observed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .facts
+            .retirement_finished = true;
         Ok(true)
     }
 }

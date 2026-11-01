@@ -187,7 +187,7 @@ impl Drop for Resources {
 }
 fn facts(f: FillFacts) -> Value {
     json!({"state":format!("{:?}",f.state),"submission_closed":f.submission_closed,
-    "published":f.published,"completed":f.completed,"producers":f.producer_count,
+    "published":f.published,"completed":f.completed,"retirement_finished":f.retirement_finished,"producers":f.producer_count,
     "recorded":f.recorded_count,"completed_producers":f.completed_count,"failure":f.failure.map(|e|e.to_string())})
 }
 fn stats(arena: &Arena) -> Result<Value> {
@@ -347,7 +347,7 @@ fn ordering(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     cuda.sync(b)?;
     cuda.verify(out_a)?;
     cuda.verify(out_b)?;
-    until(|| Ok(ticket.facts()?.completed && dropped.load(Ordering::SeqCst) == 1))?;
+    until(|| Ok(ticket.facts()?.retirement_finished && dropped.load(Ordering::SeqCst) == 1))?;
     require(
         errors.load(Ordering::SeqCst) == 0,
         "native resource destructor failed",
@@ -405,7 +405,7 @@ fn abort_fill(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
         "pending abort reclaimed backing",
     )?;
     release_gate(&cuda, gate, control)?;
-    until(|| Ok(ticket.facts()?.completed && dropped.load(Ordering::SeqCst) == 1))?;
+    until(|| Ok(ticket.facts()?.retirement_finished && dropped.load(Ordering::SeqCst) == 1))?;
     require(
         errors.load(Ordering::SeqCst) == 0,
         "aborted native resource retirement failed",
@@ -499,7 +499,7 @@ fn capture_refusal(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let ticket = unsafe { session.abort(varena::Error::Invalid("no copy requested after begin"))? };
     drop(session);
     drop(resources);
-    until(|| Ok(ticket.facts()?.completed && dropped.load(Ordering::SeqCst) == 1))?;
+    until(|| Ok(ticket.facts()?.retirement_finished && dropped.load(Ordering::SeqCst) == 1))?;
     require(
         errors.load(Ordering::SeqCst) == 0,
         "capture retry retirement failed",
