@@ -51,6 +51,13 @@ withdraw/clear_want/ask/service command. GPU qualification is still pending. Nat
 product code is imported unchanged from that checkpoint; this fixture introduces no
 allocator, daemon or published tool behavior. Source/build success is not GPU proof.
 
+The Python controller declares Torch because it reads the assigned GPU identity and
+driver headroom through Runtime. This dependency applies only to the parent controller;
+the separately executed Rust consumers still link and load neither Python nor Torch.
+The first GPU attempt (25306) failed before fixture entry: the original controller
+omitted Torch, which Runtime Start requires for device initialization. The worker
+reported no acknowledgement of its negotiated memory policy. Preserve that startup failure separately from native proof.
+
 `native_lifetime` is a separate optional entrypoint, independent of the three pressure
 and progress cells. After real CUDA initialization and full canary readback it forks
 the native process. The child requires exact `Inherited` refusals from Owner facts
