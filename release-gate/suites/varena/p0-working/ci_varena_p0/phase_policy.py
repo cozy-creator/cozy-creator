@@ -101,7 +101,8 @@ def decline(region, checkpoint, parts):
 def samples_and_invalidation():
     name = key("last-success")
     rounding = observe(key("alignment"), [513])
-    assert rounding["peak_bytes"] == 768 and rounding["backing_peak_bytes"] == 2 * MIB, rounding
+    # 513 requested bytes round to a 1024-byte class; every class is 512-byte aligned.
+    assert rounding["peak_bytes"] == 1024 and rounding["backing_peak_bytes"] == 2 * MIB, rounding
     first = observe(name, [8 * MIB])
     second = observe(name, [4 * MIB])
     assert first["published"] and second["published"]
