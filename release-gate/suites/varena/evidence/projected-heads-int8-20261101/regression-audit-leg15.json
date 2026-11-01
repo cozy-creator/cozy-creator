@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "runtime": "0.36.22+dev.g3daaaeda",
+  "tensorfs": "0.17.16+dev.g4dcf2618",
+  "gpu_uuid": "18d960a8-2283-19c9-c060-ef8a22fabe35",
+  "regressions": {
+    "linear": {
+      "passed": true,
+      "run": 25317,
+      "cleanup": 25318,
+      "cases": 6,
+      "pid": 1219,
+      "numeric_cases": 5,
+      "max_relative_l2": 0.0,
+      "actual_query_checks": 3,
+      "query_max_relative_l2": 0.0,
+      "baseline_allocated_bytes": 17039360,
+      "final_allocated_bytes": 17039360,
+      "baseline_mapped_bytes": 20971520,
+      "final_mapped_bytes": 20971520,
+      "request_keys_retired": [
+        "runtime.split.int8_linear/1:8e0be67562db172785f2e0412a7784b27ad497f48c802ad8fa3ba612a2cc54b4",
+        "runtime.split.int8_linear/1:d86aad6bdfc817a45639f37134cec058d76e4854bbf2097d24587ec1c596dc28"
+      ],
+      "files": {
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-linear-regression-25317.json": "d61764fe6e662a5f0e48dfa783a7416deba1914ae219b6eb580207bf1797f68d",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-linear-regression-result.json": "f66a8bcc3abd68de1d66701e69e16f703bc12b1c0ceb5ce3e7b5588c4a2b8d57",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-linear-cleanup-25318.json": "b581ab232c820058a45d81e85620b19ffd668692e3cb97aaf59f65ce8cb4d63d",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-linear-cleanup-result.json": "8a5aea7722b3227021ec1f5f4db7336958dc73a0eac642f708a20e932a3a76d2"
+      }
+    },
+    "tail": {
+      "passed": true,
+      "run": 25320,
+      "cleanup": 25321,
+      "cases": 5,
+      "pid": 1354,
+      "numeric_cases": 4,
+      "max_relative_l2": 0.0,
+      "actual_query_checks": 14,
+      "query_max_relative_l2": 0.0,
+      "baseline_allocated_bytes": 17039360,
+      "final_allocated_bytes": 17039360,
+      "baseline_mapped_bytes": 20971520,
+      "final_mapped_bytes": 20971520,
+      "request_keys_retired": [
+        "runtime.split.residual_ffn/1:5ddffeef90e891f29f7b65eadda31836b4829353442fd898a28847ebd8f57f5e",
+        "runtime.split.residual_ffn/1:8e71b48c884675788e8c3420ec01b6df1b75a487c9af6efa1d80103b55690604"
+      ],
+      "files": {
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-tail-regression-25320.json": "ba22c79a72a537957ce45a8be3a6b82224048e8e4f88897eeae716a22e9a10a8",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-tail-regression-result.json": "e168cb415b0a49cfdbf48a5ee26e7eadf5b52b3ab6bd94a861ba85c442cad8c0",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-tail-cleanup-25321.json": "049959068e23cb021177a7d05f8132157a8cee097d10cba0467a3488491720db",
+        "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-tail-cleanup-result.json": "d34b066f7bbec9f833d62641a2a43bde2756f9f2aac0e3de03da26affc0a4bcf"
+      }
+    }
+  },
+  "scope": "standalone/Tail helpers with qualified phase-generation forwarding; fixture-owned allocations return to nonzero initial baseline, native leaf observations publish, and same-process request keys retire; not a Heads or full-model performance verdict"
+}

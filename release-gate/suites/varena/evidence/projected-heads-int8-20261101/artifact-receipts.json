@@ -1,0 +1,66 @@
+{
+  "control-run.json": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-int8-full-audit/control-run.json",
+    "sha256": "553ca6828ecbaca0ddb198f9a1478370d588b6bd200a6e9de00caf9b03933ad2",
+    "bytes": 2797973,
+    "compressed_file": "control-run.json.gz"
+  },
+  "candidate-run.json": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-int8-full-audit/candidate-run.json",
+    "sha256": "b4d947a94ab4f37da1a9a7a14269c869ae88deafdcf3ff42ce7890ba02808f55",
+    "bytes": 2781185,
+    "compressed_file": "candidate-run.json.gz"
+  },
+  "paired-early.png": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-int8-full-audit/frames/paired-early.png",
+    "sha256": "4c3cf6e580927b267dc541620268739a2b9bb363596162cb3758f3ad9fbb78c8",
+    "bytes": 1511169
+  },
+  "paired-late.png": {
+    "source": "/home/fidika/cozy_v2/outputs/xs138-int8-full-audit/frames/paired-late.png",
+    "sha256": "c6a03ad1a65c23a385eeadcc640fb9e048b5069c1aa55f7d73782d8c6a37bf9a",
+    "bytes": 1641467
+  },
+  "int8-gpu-25314.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-gpu-25314.json",
+    "sha256": "816ef0265cef7cab450f2af828f5001a45bbbd0c3143c4499d8a348419f38b0c",
+    "bytes": 466421,
+    "compressed_file": "int8-gpu-25314.json.gz"
+  },
+  "int8-cleanup-25315.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-cleanup-25315.json",
+    "sha256": "b8a9b07a8de505c95edac38377f587dd9bc8727b09712f58a06ed8cd7f666806",
+    "bytes": 11411,
+    "compressed_file": "int8-cleanup-25315.json.gz"
+  },
+  "int8-input.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-input.json",
+    "sha256": "97898d529dbb13661c8b67a4c406e8a4850de7673e3916340d0847406f76bc3e",
+    "bytes": 2659,
+    "compressed_file": "int8-input.json.gz"
+  },
+  "int8-linear-regression-25317.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-linear-regression-25317.json",
+    "sha256": "d61764fe6e662a5f0e48dfa783a7416deba1914ae219b6eb580207bf1797f68d",
+    "bytes": 36253,
+    "compressed_file": "int8-linear-regression-25317.json.gz"
+  },
+  "int8-linear-cleanup-25318.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-linear-cleanup-25318.json",
+    "sha256": "b581ab232c820058a45d81e85620b19ffd668692e3cb97aaf59f65ce8cb4d63d",
+    "bytes": 8937,
+    "compressed_file": "int8-linear-cleanup-25318.json.gz"
+  },
+  "int8-tail-regression-25320.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-tail-regression-25320.json",
+    "sha256": "ba22c79a72a537957ce45a8be3a6b82224048e8e4f88897eeae716a22e9a10a8",
+    "bytes": 40798,
+    "compressed_file": "int8-tail-regression-25320.json.gz"
+  },
+  "int8-tail-cleanup-25321.json": {
+    "source": "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/int8-tail-cleanup-25321.json",
+    "sha256": "049959068e23cb021177a7d05f8132157a8cee097d10cba0467a3488491720db",
+    "bytes": 9755,
+    "compressed_file": "int8-tail-cleanup-25321.json.gz"
+  }
+}

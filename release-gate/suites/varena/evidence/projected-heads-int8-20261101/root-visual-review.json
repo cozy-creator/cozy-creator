@@ -1,0 +1,32 @@
+{
+  "reviewer": "root",
+  "runs": [
+    25324,
+    25347
+  ],
+  "viewed": [
+    "frames/paired-early.png",
+    "frames/paired-late.png"
+  ],
+  "sample_times_s": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14
+  ],
+  "verdict": "sampled visual quality comparable",
+  "observations": [
+    "Both show a detailed, coherent workbench in golden-hour window light with natural depth of field.",
+    "Candidate changes objects and composition, including the lamp and tool shapes; images are not identical.",
+    "Sampled camera progression and object layout stay coherent across the clip, with comparable detail and no visible image corruption or collapsed texture."
+  ],
+  "limits": [
+    "Eight sampled frames do not prove every intermediate frame or continuous motion.",
+    "No audio listening performed.",
+    "One request and seed, not a general quality distribution."
+  ]
+}
