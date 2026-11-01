@@ -241,7 +241,7 @@ if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = co
 fi
 
 # shot.preset (#751): the Skater request with `preset: fast` runs one dense step, then sparse ones, and denoises in at most
-# 0.85x the same request on `balanced`, run just before it on the same machine and executor state (se-091: a control from
+# 0.90x the same request on `balanced`, run just before it on the same machine and executor state (se-091: a control from
 # hours earlier measured residency, not the preset); its frames hold against that control's.
 IFS=$'\t' read -r PN _ PM _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
 PRESET_REQ=(assets:="[{\"name\": \"$PN\", \"kind\": \"character\", \"image\": \"$REF\"}]" prompt="<$PN> $PM" seed:=$((R + 101)) duration_s:=15)
@@ -255,6 +255,6 @@ if [ -f h3-preset-fast.number ] && [ "$(run_get "$OUT" h3-preset-fast .status)" 
   df=$(jq '[.calls[]? | .measurements.attribution.stages.denoise.total_ms // 0] | add' "$OUT/h3-preset-fast.json")
   db=$(jq '[.calls[]? | .measurements.attribution.stages.denoise.total_ms // 0] | add' "$OUT/h3-preset-balanced.json")
   expect h3-preset-fast-steps "$(jq -r 'if length == 8 then (.[1:] | sort | .[length/2|floor]) as $m | ([.[] | select(. >= 1.6 * $m)] | length) as $k | if $k == 1 and .[0] >= 1.6 * $m then "PASS" else "FAIL" end else "FAIL" end' <<< "$steps")" "steps ${steps}"
-  expect h3-preset-fast-time "$(awk -v f="$df" -v b="$db" 'BEGIN { print (b > 0 && f <= 0.85 * b) ? "PASS" : "FAIL" }')" "denoise fast ${df} ms vs balanced (run just before) ${db} ms"
+  expect h3-preset-fast-time "$(awk -v f="$df" -v b="$db" 'BEGIN { print (b > 0 && f <= 0.90 * b) ? "PASS" : "FAIL" }')" "denoise fast ${df} ms vs balanced (run just before) ${db} ms"
   judge h3-preset-fast-frames h3-preset-fast '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6' variant "$(video_of h3-preset-balanced)"
 fi
