@@ -1,7 +1,8 @@
 //! Owned producer submission, event ordering and deferred native fill completion.
+use platform::memory::{Signal, wait_any};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Duration;
 
 use crate::{
@@ -72,6 +73,19 @@ pub struct FillFacts {
 struct Observed {
     facts: FillFacts,
     events: Vec<usize>, // identities only; Payload is the sole CUDA owner
+    readiness: Vec<Weak<Signal>>,
+}
+impl Observed {
+    fn wake_readiness(&mut self) {
+        self.readiness.retain(|waiter| {
+            if let Some(signal) = waiter.upgrade() {
+                signal.set();
+                true
+            } else {
+                false
+            }
+        });
+    }
 }
 pub(crate) struct Control {
     pid: u32,
@@ -96,6 +110,123 @@ impl Control {
     }
     fn facts(&self) -> Result<FillFacts> {
         Ok(self.lock()?.facts.clone())
+    }
+
+    fn capture_ready(&self) -> Result<bool> {
+        let observed = self.lock()?;
+        if let Some(error) = observed
+            .facts
+            .retirement_failure
+            .as_ref()
+            .or(observed.facts.failure.as_ref())
+        {
+            return Err(error.clone());
+        }
+        if observed.facts.state == FillState::Quarantined {
+            return Err(Error::Poisoned(
+                "fill capture readiness is quarantined".into(),
+            ));
+        }
+        Ok(observed.facts.completed && observed.facts.retirement_finished)
+    }
+
+    fn watch_readiness(&self, signal: &Arc<Signal>) -> Result<()> {
+        let mut observed = self.lock()?;
+        observed
+            .readiness
+            .retain(|waiter| waiter.strong_count() != 0);
+        observed.readiness.push(Arc::downgrade(signal));
+        Ok(())
+    }
+}
+
+// The caller retains the public Use's pins mutex and its retirement exclusion.
+// No registry/capture/arena/submission/observed mutex crosses the platform wait.
+pub(crate) fn wait_use_ready(pins: &[Pin]) -> Result<()> {
+    fn submission(pin: &Pin) -> Result<(u64, Option<Arc<Control>>)> {
+        crate::check_process()?;
+        let region = pin.region();
+        if region.arena.pid != std::process::id() {
+            return Err(Error::Invalid("capture readiness inherited after fork"));
+        }
+        let generation = region.uses.generation.load(Ordering::Acquire);
+        let control = region
+            .uses
+            .submission
+            .lock()
+            .map_err(|_| Error::Poisoned("fill submission mutex".into()))?
+            .clone();
+        if generation != region.uses.generation.load(Ordering::Acquire)
+            || control
+                .as_ref()
+                .is_some_and(|control| control.generation != generation)
+            || pin.submission.as_ref().is_some_and(|ordered| {
+                ordered.generation != generation
+                    || !control
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(ordered, current))
+            })
+        {
+            return Err(Error::Invalid("capture readiness fill generation changed"));
+        }
+        Ok((generation, control))
+    }
+    let snapshots = pins.iter().map(submission).collect::<Result<Vec<_>>>()?;
+    let mut controls = Vec::new();
+    for (_, control) in &snapshots {
+        if let Some(control) = control
+            && !controls.iter().any(|known| Arc::ptr_eq(known, control))
+        {
+            controls.push(control.clone());
+        }
+    }
+    let ready = || -> Result<bool> {
+        let mut complete = true;
+        for control in &controls {
+            complete &= control.capture_ready()?;
+        }
+        if !complete {
+            return Ok(false);
+        }
+        for (pin, (generation, original)) in pins.iter().zip(&snapshots) {
+            let _state = pin.region().arena.lock()?;
+            let (current_generation, current) = submission(pin)?;
+            let same = match (original, current.as_ref()) {
+                (Some(original), Some(current)) => Arc::ptr_eq(original, current),
+                (None, None) => true,
+                _ => false,
+            };
+            if generation != &current_generation
+                || !same
+                || pin.region().uses.state() != Contents::Ready
+            {
+                return Err(Error::Invalid("capture readiness contents changed"));
+            }
+        }
+        Ok(true)
+    };
+    if ready()? {
+        return Ok(());
+    }
+    let signal = Arc::new(
+        Signal::new()
+            .map_err(|error| Error::Unsupported(format!("capture readiness wake: {error}")))?,
+    );
+    for control in &controls {
+        control.watch_readiness(&signal)?;
+    }
+    loop {
+        // Clear before reading facts: a transition is either visible in those
+        // facts or leaves this invocation's own signal set for wait_any.
+        signal.clear();
+        if ready()? {
+            return Ok(());
+        }
+        let events = wait_any(&[signal.waitable()])
+            .map_err(|error| Error::Unsupported(format!("capture readiness wait: {error}")))?;
+        if events.iter().any(|event| event.broken) {
+            return Err(Error::Unsupported("capture readiness wake closed".into()));
+        }
     }
 }
 
@@ -149,6 +280,7 @@ impl Fill {
                     resources_remaining: owners.resources.len(),
                 },
                 events: Vec::new(),
+                readiness: Vec::new(),
             }),
         });
         let region = Arc::clone(self.pin.as_ref().expect("fill pin").region());
@@ -177,7 +309,9 @@ impl FillSession {
     // ABI observers need failure visibility even when a Prepared/Writing owner cannot
     // return a submitted ticket. This clone contains no GPU ownership or cancellation.
     pub(crate) fn observer(&self) -> FillTicket {
-        FillTicket { control: self.control.clone() }
+        FillTicket {
+            control: self.control.clone(),
+        }
     }
 
     pub fn facts(&self) -> Result<FillFacts> {
@@ -433,13 +567,22 @@ impl Payload {
         };
         self.region()
             .poison(format!("asynchronous fill {phase}: {error}"));
-        if let Ok(mut observed) = self.control.lock() {
+        if self.control.check().is_ok() {
+            // A worker panic may poison the observer while a waiter is asleep.
+            // Publish/wake under the recovered guard, leaving poison intact so
+            // readers still return an error rather than hanging or claiming ready.
+            let mut observed = self
+                .control
+                .observed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             observed.facts.state = FillState::Quarantined;
             if retirement {
                 observed.facts.retirement_failure = Some(error);
             } else {
                 observed.facts.failure = Some(error);
             }
+            observed.wake_readiness();
         }
     }
     fn tick(&mut self) -> Result<bool> {
@@ -538,12 +681,13 @@ impl Payload {
         drop(_retirement);
         // There are no GPU owners left to quarantine if metadata was poisoned. Preserve
         // that poison for observers, but never send this empty payload through failure cleanup.
-        self.control
+        let mut observed = self
+            .control
             .observed
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .facts
-            .retirement_finished = true;
+            .unwrap_or_else(|error| error.into_inner());
+        observed.facts.retirement_finished = true;
+        observed.wake_readiness();
         Ok(true)
     }
 }
