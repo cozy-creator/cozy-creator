@@ -152,3 +152,87 @@ impl Local {
 fn served_at(ready: &Path) -> Option<SystemTime> {
     std::fs::metadata(ready).and_then(|m| m.modified()).ok()
 }
+
+impl Local {
+    /// The file of the controllers' keys this machine admits (`cozy machine authorize`).
+    pub(crate) fn keys_file(&self) -> PathBuf {
+        self.home.keys().join("authorized")
+    }
+
+    /// The keys `keys_file` holds, without comments.
+    pub(crate) fn keys(&self) -> Result<Vec<String>, Error> {
+        let file = self.keys_file();
+        let text = match std::fs::read_to_string(&file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(keys_error(&file, e)),
+        };
+        Ok(text.lines().map(uncommented).filter(|key| !key.is_empty()).map(str::to_owned).collect())
+    }
+
+    /// Adds (`add`) or takes back `key` in `keys_file`: true when the file changed. TensorD reads
+    /// the file again at its next call.
+    pub(crate) fn authorize(&self, key: &str, add: bool) -> Result<bool, Error> {
+        valid_key(key)?;
+        let file = self.keys_file();
+        let text = match std::fs::read_to_string(&file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(keys_error(&file, e)),
+        };
+        let held = text.lines().any(|line| uncommented(line) == key);
+        let text = match (add, held) {
+            (true, false) => {
+                let mut text = text;
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text + key + "\n"
+            }
+            (false, true) => {
+                let kept: Vec<&str> = text.lines().filter(|line| uncommented(line) != key).collect();
+                let mut left = kept.join("\n");
+                if !left.is_empty() {
+                    left.push('\n');
+                }
+                left
+            }
+            _ => return Ok(false),
+        };
+        let dir = file.parent().expect("a keys file has a directory");
+        platform::durable::private_dir(dir).map_err(|e| keys_error(&file, std::io::Error::other(e)))?;
+        platform::durable::replace(&file, text.as_bytes(), 0o600).map_err(|e| keys_error(&file, std::io::Error::other(e)))?;
+        Ok(true)
+    }
+
+    /// It runs as a worker image's machine (its root is `/`), which its renter names the address of.
+    pub(crate) fn image(&self) -> bool {
+        self.root == Path::new("/")
+    }
+}
+
+/// A keys file's line without its comment.
+fn uncommented(line: &str) -> &str {
+    line.split('#').next().unwrap_or_default().trim()
+}
+
+fn keys_error(file: &Path, e: std::io::Error) -> Error {
+    Error::new(Kind::Internal, "keys_unwritable", format!("{}: {e}", file.display()))
+}
+
+/// Refuses anything but a controller's public key: 32 bytes of unpadded base64url Ed25519.
+fn valid_key(key: &str) -> Result<(), Error> {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let valid = (URL_SAFE_NO_PAD.decode(key).ok())
+        .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+        .is_some_and(|raw| ed25519_dalek::VerifyingKey::from_bytes(&raw).is_ok());
+    match valid {
+        true => Ok(()),
+        false => Err(Error::new(
+            Kind::Validation,
+            "public_key_invalid",
+            format!("{key:?} is not a controller's public key (32 bytes of unpadded base64url)"),
+        )
+        .next("on that computer: cozy machine show local (its `controller key`)")),
+    }
+}

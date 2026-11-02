@@ -147,9 +147,9 @@ fn since(text: &str) -> Result<SignedDuration, String> {
         .map_err(|_| format!("{text:?} is not a duration such as 90s, 30m or 2h"))
 }
 
-/// A machine's log through Calcifer: its newest lines, then, with `--follow`, each line as the
-/// machine writes it. A machine keeps its logs, so reading never needs it to have run anything
-/// here.
+/// A machine's log through Calcifer: its newest lines from the last `--since`, then, with
+/// `--follow`, each line as the machine writes it (`GET /v1/machines/{name}/logs/{log}`). A machine
+/// keeps its logs, so reading never needs it to have run anything here.
 pub(crate) async fn machine_log(
     ctx: &Context,
     name: &str,
@@ -167,18 +167,19 @@ pub(crate) async fn machine_log(
         return calcifer_log(ctx, q).await;
     }
     protocol::calcifer::local_usable(name)?;
-    let path = format!("{}/logs/{}", crate::machine::route(name)?, q.log.as_str());
+    let mut path = format!("{}/logs/{}", crate::machine::route(name)?, q.log.as_str());
+    if let Some(window) = q.since {
+        let at = Timestamp::now().saturating_sub(window).unwrap_or_default();
+        path += &format!("?since_ms={}", at.as_millisecond());
+    }
     let calcifer = ctx.calcifer().await?;
-    let mut shown = Shown {
-        since: q
-            .since
-            .map(|window| Timestamp::now().saturating_sub(window).unwrap_or_default()),
-        any: false,
-    };
     if !q.follow {
-        let text = calcifer.text(&format!("{path}?lines={}", q.lines)).await?;
-        shown.print(ctx, name, q.log, &text);
-        if !shown.any {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let text = calcifer.text(&format!("{path}{sep}lines={}", q.lines)).await?;
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            print_log_line(ctx, name, q.log, line);
+        }
+        if !text.lines().any(|l| !l.is_empty()) {
             output::say(
                 ctx,
                 &format!("{name} has logged nothing in its {} log", q.log.as_str()),
@@ -190,30 +191,11 @@ pub(crate) async fn machine_log(
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(ExitCode::SUCCESS),
-            batch = lines.next() => shown.print(ctx, name, q.log, &batch?.text),
-        }
-    }
-}
-
-/// Lines printed so far, and the cutoff the first one shown must be stamped at or after. A
-/// line's stamp is its first word: an RFC 3339 instant (TensorD's own log) or Unix seconds (the
-/// TensorFS and memory logs). A line without one goes with the line before it.
-struct Shown {
-    since: Option<Timestamp>,
-    any: bool,
-}
-
-impl Shown {
-    fn print(&mut self, ctx: &Context, machine: &str, log: LogName, text: &str) {
-        for line in text.lines().filter(|l| !l.is_empty()) {
-            if let Some(cutoff) = self.since {
-                if stamp(line).is_none_or(|at| at < cutoff) {
-                    continue;
+            batch = lines.next() => {
+                for line in batch?.text.lines().filter(|l| !l.is_empty()) {
+                    print_log_line(ctx, name, q.log, line);
                 }
-                self.since = None;
             }
-            self.any = true;
-            print_log_line(ctx, machine, log, line);
         }
     }
 }

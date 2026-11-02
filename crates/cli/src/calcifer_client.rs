@@ -20,7 +20,7 @@ use platform::{
     tools,
 };
 use protocol::{
-    calcifer::{Down, Event, Holder, MachineList, REFUSED, Run, RunList, SubmitRun, Submitted},
+    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, SubmitRun, Submitted},
     error::{Envelope, Error, Kind},
     machine::LogLines,
 };
@@ -165,6 +165,15 @@ impl Client {
             }
         })
         .await
+    }
+
+    /// A PUT: idempotent by its path.
+    pub async fn put<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
+    where
+        B: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        self.exchange(|c, base| c.put(format!("{base}{path}")).json(body)).await
     }
 
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
@@ -837,10 +846,10 @@ impl LogFollow {
     pub async fn next(&mut self) -> Result<LogLines, Error> {
         loop {
             if let Some(data) = self.sse.next() {
-                if let Ok(lines) = serde_json::from_str::<LogLines>(&data) {
-                    self.after = Some(lines.after.clone());
+                if let Ok(LogEvent::Lines { after, text }) = serde_json::from_str(&data) {
+                    self.after = Some(after.clone());
                     (self.received, self.empty) = (true, 0);
-                    return Ok(lines);
+                    return Ok(LogLines { after, text });
                 }
                 continue;
             }
