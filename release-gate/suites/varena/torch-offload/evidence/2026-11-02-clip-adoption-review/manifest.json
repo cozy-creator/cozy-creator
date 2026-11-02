@@ -1,0 +1,32 @@
+{
+  "upstream_fix": "25cec3cb7179026e8bdc0c4b726aab9073c38915",
+  "adopted_as": "52efb89cbad7da8a752355b5cb27c0f4019a020c",
+  "review": "One-line concrete set acceptance; string-member validation retained. Boundary ordering remains module traversal; component scope/MRO/ownership guards unchanged. No additional product edits.",
+  "torch": "2.14.1+cpu",
+  "transformers": "5.22.1",
+  "diffusers": "0.41.0",
+  "matches_stock_transformers_version": true,
+  "models": "Random tiny CLIPTextModel and CLIPTextModelWithProjection; no downloaded weights",
+  "gpu_executed": false,
+  "boundary": "real public-package CPU adoption; no full SDXL/GPU/native residency qualification",
+  "commands": [
+    "uv pip install --python .task/torch-cpu/bin/python --constraint .task/cpu-constraints.txt transformers==5.22.1",
+    "PYTHONPATH=.task/review-host-package CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 .task/torch-cpu/bin/python release-gate/suites/varena/torch-offload/clip_inventory_cpu.py",
+    "same environment: python evidence/2026-11-02-clip-adoption-review/clip_adoption_cpu.py",
+    "same environment: inventory_cpu.py, diffusers_inventory_cpu.py, adapter_cpu.py, review_cpu.py, intent.py"
+  ],
+  "checks": [
+    "Real matching-version CLIP class declarations are lists but initialized instances are sets; original inventory rejects both.",
+    "Both variants pass inventory after adoption, preserving exact CPU output, Parameter/storage identities and flags.",
+    "Both variants pass actual vt.offload CPU forward including hidden states with exact stock outputs, intent cleanup, Parameter identity and escaped old versions across half/float.",
+    "All five maintained CPU clients pass.",
+    "Ruff lint passes for imported code/tests and the review client; inventory module/existing inventory client and added review artifact format pass. Imported clip_inventory_cpu.py has only an assertion-wrapping formatter difference; preserved as supplied, no source rewrite.",
+    "No native rebuild or GPU check: adopted change is one Python inventory line plus proof clients/receipts."
+  ],
+  "source_sha256": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_inventory.py": "973aca63ca767d0754bbbf70ada84a89808618c552d5db7cf45e180e4e4ad011",
+    "release-gate/suites/varena/torch-offload/clip_inventory_cpu.py": "32d35f07b201d9659f5034fac34f81d3c7fff8d20e16f26b8654f5351aed2687",
+    "release-gate/suites/varena/torch-offload/inventory_cpu.py": "bc2d0b02f3e5962e600d45713fe75739034cfc95f3463e3168359cf530f68a37",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload.py": "b3d0d8ad449a402486f134ba5b34fe2028e4a0da3e555a9c26b1e3156feb53bc"
+  }
+}
