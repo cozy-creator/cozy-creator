@@ -2673,6 +2673,7 @@ dependencies = [
  "sha2",
  "sigstore-verify",
  "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "windows-sys 0.61.2",
@@ -4123,6 +4124,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+ "varena",
  "webpki-roots",
 ]
 
@@ -4578,8 +4580,23 @@ dependencies = [
 name = "varena"
 version = "0.17.16"
 dependencies = [
+ "libc",
  "libloading 0.9.0",
+ "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "varena-client"
+version = "0.1.0"
+
+[[package]]
+name = "varena-mixed-client"
+version = "0.0.0"
+dependencies = [
+ "platform",
+ "varena",
+ "varena-client",
 ]
 
 [[package]]

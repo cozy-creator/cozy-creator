@@ -10,6 +10,10 @@ Arrays cross to NumPy, PyTorch, JAX or CuPy through DLPack. TensorFS never impor
 
 from collections.abc import Mapping
 
+from . import _native
+
+_native.load()
+
 from ._ext import (
     Array,
     Ceiling,
