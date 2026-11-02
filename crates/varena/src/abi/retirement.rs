@@ -8,12 +8,16 @@ enum Job {
     Handle(u64),
     Arena(Arc<Arena>),
     ArenaTicket(crate::ArenaRetirement),
+    Source(super::source::Ticket),
+    Fill(crate::FillTicket),
 }
 #[derive(Default)]
 struct State {
     jobs: VecDeque<Job>,
     processing: u64,
     arena_tickets: Vec<crate::ArenaRetirement>,
+    source_tickets: Vec<super::source::Ticket>,
+    fill_tickets: Vec<crate::FillTicket>,
     refused_arenas: Vec<Arc<Arena>>,
     retired: u64,
     quarantined: u64,
@@ -62,6 +66,14 @@ pub(super) fn arena(arena: Arc<Arena>) {
         .push_back(Job::Arena(arena));
     queue.changed.notify_one();
 }
+
+fn observe(job: Job) {
+    let queue = QUEUE.get().and_then(|queue| queue.as_ref().ok()).expect("public retirement queue");
+    queue.state.lock().unwrap_or_else(|error| error.into_inner()).jobs.push_back(job);
+    queue.changed.notify_one();
+}
+pub(super) fn source(ticket: super::source::Ticket) { observe(Job::Source(ticket)); }
+pub(super) fn fill(ticket: crate::FillTicket) { observe(Job::Fill(ticket)); }
 
 pub(super) fn defer(id: u64) -> Result<()> {
     crate::check_process()?; // reject fork before inherited queue/registry locks
@@ -189,6 +201,34 @@ fn observe_arena(ticket: crate::ArenaRetirement, queue: &Queue) -> Outcome {
     }
 }
 
+fn observe_source(ticket: super::source::Ticket, queue: &Queue) -> Outcome {
+    match ticket.try_complete() {
+        Ok(true) => Outcome::Done,
+        Ok(false) => Outcome::Retry(Job::Source(ticket)),
+        Err(error) => {
+            if Failure::from(error).0 == FAULT { ABI_FAULT.store(true, Ordering::Release); }
+            queue.state.lock().unwrap_or_else(|e| e.into_inner()).source_tickets.push(ticket);
+            Outcome::Quarantined
+        }
+    }
+}
+fn observe_fill(ticket: crate::FillTicket, queue: &Queue) -> Outcome {
+    match ticket.facts() {
+        Ok(facts) if facts.state == crate::FillState::Quarantined => {
+            ABI_FAULT.store(true, Ordering::Release);
+            queue.state.lock().unwrap_or_else(|e| e.into_inner()).fill_tickets.push(ticket);
+            Outcome::Quarantined
+        }
+        Ok(facts) if facts.retirement_finished => Outcome::Done,
+        Ok(_) => Outcome::Retry(Job::Fill(ticket)),
+        Err(_) => {
+            ABI_FAULT.store(true, Ordering::Release);
+            queue.state.lock().unwrap_or_else(|e| e.into_inner()).fill_tickets.push(ticket);
+            Outcome::Quarantined
+        }
+    }
+}
+
 fn run(queue: Arc<Queue>) {
     loop {
         let jobs = {
@@ -206,6 +246,8 @@ fn run(queue: Arc<Queue>) {
                 Job::Handle(id) => handle(id, &queue),
                 Job::Arena(arena) => retire_arena(arena, &queue),
                 Job::ArenaTicket(ticket) => observe_arena(ticket, &queue),
+                Job::Source(ticket) => observe_source(ticket, &queue),
+                Job::Fill(ticket) => observe_fill(ticket, &queue),
             };
             match outcome {
                 Outcome::Done => retired += 1,

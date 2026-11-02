@@ -2,8 +2,10 @@
 #![allow(unsafe_code)]
 
 mod retirement;
+pub(crate) mod source;
+pub use source::{Job as SourceJob, Provider as SourceProvider};
 
-use crate::{Arena, Error, Pin, Preparation, Region, cache_owner, working};
+use crate::{Arena, Error, Pin, Region, cache_owner, working};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -386,42 +388,15 @@ pub extern "C" fn vr_v1_gpu_close(id: u64) -> i32 {
     })
 }
 
-pub type FillFn = unsafe extern "C" fn(*mut c_void, u64, u64, u64, u64) -> i32;
 pub type DropFn = unsafe extern "C" fn(*mut c_void);
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Source {
-    pub fill: Option<FillFn>,
-    pub drop: Option<DropFn>,
-    pub context: *mut c_void,
-}
-// C callers guarantee thread-safe callbacks/context. No foreign reference is dereferenced in Rust.
-unsafe impl Send for Source {}
-unsafe impl Sync for Source {}
-struct ForeignSource {
-    source: Source,
-    owned: AtomicBool,
-}
-impl Drop for ForeignSource {
-    fn drop(&mut self) {
-        if self.owned.load(Ordering::Acquire)
-            && let Some(drop) = self.source.drop
-        {
-            unsafe {
-                drop(self.source.context);
-            }
-        }
-    }
-}
 enum Bytes {
     Host(Vec<u8>),
-    Foreign(Arc<ForeignSource>),
+    Foreign(Arc<source::Owner>),
 }
 struct Weight {
     gpu: Arc<Gpu>,
     region: Arc<Region>,
     bytes: Bytes,
-    fill: Mutex<()>,
 }
 struct Use {
     _weights: Vec<Arc<Weight>>,
@@ -461,37 +436,29 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
                 gpu: gpu.clone(),
                 region,
                 bytes: Bytes::Host(bytes),
-                fill: Mutex::new(()),
             })))?);
         }
         Ok(())
     })
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vr_v1_region_new(g: u64, len: u64, source: Source, out: *mut u64) -> i32 {
+pub unsafe extern "C" fn vr_v1_region_from_source(g: u64, len: u64,
+    provider: *const SourceProvider, provider_size: usize, out: *mut u64) -> i32 {
     boundary(|| {
-        unsafe {
-            output(out)?;
+        unsafe { output(out)?; }
+        if provider.is_null() || provider_size != std::mem::size_of::<SourceProvider>() {
+            return Err(invalid("Source provider size/pointer mismatch"));
         }
-        if source.fill.is_none() {
-            return Err(invalid("source.fill is required"));
-        }
+        let provider = unsafe { provider.read() };
+        source::validate(&provider)?;
         let gpu = gpu(g)?;
         let region = gpu.arena.reserve(size(len)?)?;
-        let source = Arc::new(ForeignSource {
-            source,
-            owned: AtomicBool::new(false),
-        });
+        let source = source::Owner::new(gpu.clone(), provider);
         let id = insert(Handle::Region(Arc::new(Weight {
-            gpu: gpu.clone(),
-            region,
-            bytes: Bytes::Foreign(source.clone()),
-            fill: Mutex::new(()),
+            gpu: gpu.clone(), region, bytes: Bytes::Foreign(source.clone()),
         })))?;
         source.owned.store(true, Ordering::Release);
-        unsafe {
-            out.write(id);
-        }
+        unsafe { out.write(id); }
         Ok(())
     })
 }
@@ -538,53 +505,31 @@ pub unsafe extern "C" fn vr_v1_use(
             return Err(invalid("use requires regions from this GPU"));
         }
         let mut pins = Vec::with_capacity(n);
-        for w in &weights {
-            let _fill = lock(&w.fill)?;
-            let pin = match w.region.prepare()? {
-                Preparation::Resident(pin) => pin,
-                Preparation::Fill(mut fill) => match &w.bytes {
-                    Bytes::Host(bytes) => {
-                        fill.copy_from_host(bytes)?;
-                        fill.commit()?
-                    }
-                    Bytes::Foreign(source) => {
-                        // The current core publishes only completed fills. The adapter conservatively
-                        // joins the primary context; asynchronous source publication is not claimed.
-                        let _context = w.gpu.arena.driver.enter()?;
-                        let status = unsafe {
-                            source.source.fill.unwrap()(
-                                source.source.context,
-                                0,
-                                fill.len() as u64,
-                                fill.ptr(),
-                                stream,
-                            )
-                        };
-                        if status != OK {
-                            drop(fill); // Cold pages retain the core's conservative completion fence.
-                            let code = if (EXHAUSTED..=BUSY).contains(&status) {
-                                status
-                            } else {
-                                SOURCE_ERROR
-                            };
-                            if code == FAULT {
-                                w.region.poison("foreign source reported a device fault");
-                            }
-                            return Err(Failure(
-                                code,
-                                format!("source fill returned status {status}"),
-                                if code == EXHAUSTED {
-                                    w.region.len() as u64
-                                } else {
-                                    0
-                                },
-                            ));
+        let acquired = (|| -> Result<()> {
+            for w in &weights {
+                let pin = match unsafe { w.region.prepare_on(stream)? } {
+                    crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
+                    crate::StreamPreparation::Fill(mut fill) => match &w.bytes {
+                        Bytes::Host(bytes) => {
+                            // Separate known-completed provider. Pageable H2D return alone
+                            // is not completion; retain its existing checked commit join.
+                            fill.copy_from_host(bytes)?;
+                            fill.commit()?
                         }
-                        unsafe { fill.commit_external()? }
-                    }
-                },
-            };
-            pins.push(pin);
+                        Bytes::Foreign(provider) => source::acquire(w, provider, fill, stream)?,
+                    },
+                };
+                pins.push(pin);
+            }
+            Ok(())
+        })();
+        if let Err(error) = acquired {
+            for pin in pins {
+                // No consumer pointer/Use was exposed. Producer work retains its own Pin;
+                // these unpublished consumer Pins issued only ordering, never reads.
+                unsafe { drop(pin.into_completed_region()); }
+            }
+            return Err(error);
         }
         unsafe {
             out.write(insert(Handle::Use(Arc::new(Use {

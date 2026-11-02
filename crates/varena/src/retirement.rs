@@ -8,6 +8,7 @@ use std::time::Duration;
 pub(crate) enum Job {
     Arena(crate::arena_retirement::Payload),
     FillResources(crate::async_fill::Payload),
+    Source(crate::abi::source::Retirement),
 }
 
 impl Job {
@@ -15,12 +16,14 @@ impl Job {
         match self {
             Self::Arena(job) => job.poll(),
             Self::FillResources(job) => job.retire(),
+            Self::Source(job) => job.poll(),
         }
     }
     fn failed(&mut self, error: &Error) {
         match self {
             Self::Arena(job) => job.failed(error),
             Self::FillResources(job) => job.retirement_failed(error),
+            Self::Source(job) => job.failed(error),
         }
     }
 }

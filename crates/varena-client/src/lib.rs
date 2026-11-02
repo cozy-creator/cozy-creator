@@ -7,6 +7,9 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Arc;
 
+mod source;
+pub use source::{Source, SourceJob, SourceRetirement};
+
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -491,6 +494,23 @@ mod ffi {
     use super::*;
     #[repr(C)]
     #[derive(Default)]
+    pub struct SourceJob {
+        pub streams: *const u64,
+        pub stream_count: usize,
+        pub submit: Option<unsafe extern "C" fn(*mut c_void, u64, u64) -> i32>,
+        pub retire: Option<unsafe extern "C" fn(*mut c_void) -> i32>,
+        pub drop: Option<unsafe extern "C" fn(*mut c_void)>,
+        pub context: *mut c_void,
+    }
+    #[repr(C)]
+    pub struct SourceProvider {
+        pub prepare: Option<unsafe extern "C" fn(*mut c_void, i32, u64, u64, *mut SourceJob) -> i32>,
+        pub retire: Option<unsafe extern "C" fn(*mut c_void) -> i32>,
+        pub drop: Option<unsafe extern "C" fn(*mut c_void)>,
+        pub context: *mut c_void,
+    }
+    #[repr(C)]
+    #[derive(Default)]
     pub struct Shrinker {
         pub shrink: Option<unsafe extern "C" fn(*mut c_void, u64, u64) -> i32>,
         pub drop: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -511,6 +531,8 @@ mod ffi {
         pub fn vr_v1_last_error() -> *const c_char;
         pub fn vr_v1_error_requested_bytes() -> u64;
         pub fn vr_v1_gpu_open(device: i32, out: *mut u64) -> i32;
+        pub fn vr_v1_region_from_source(gpu: u64, bytes: u64, provider: *const SourceProvider,
+            provider_size: usize, out: *mut u64) -> i32;
         pub fn vr_v1_region_from_host(gpu: u64, bytes: *const u8, n: usize, out: *mut u64) -> i32;
         pub fn vr_v1_use_ptr(used: u64, index: usize, out: *mut u64) -> i32;
         pub fn vr_v1_use(
