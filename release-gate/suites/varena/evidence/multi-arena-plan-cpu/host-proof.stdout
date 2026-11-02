@@ -1,0 +1,1 @@
+{"passed":true,"concurrent_identities":8192,"identity_exhaustion_refused_without_wrap":true,"inactive_inventory_invalidated":true,"device_epochs_isolated":true,"concurrent_inventory_transitions":512,"ignored_retirement_overflow_latched":true,"intent_overflow_latched":true,"inherited_registry_rejected":true,"cuda_loaded":false,"nvml_loaded":false,"gpu_qualified":false}
