@@ -1,0 +1,13 @@
+{
+  "owner": "/root/current_cohort_restart",
+  "target": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-multi-gpu-start/.task/target",
+  "authorization": "/root approved exclusive use after empty process audit",
+  "audit_matching_processes": [],
+  "nice": 19,
+  "cargo_jobs": 1,
+  "forbidden_target": "xs138-p0-torch/.task/target-manylinux",
+  "scope": "scoped host readiness checks only",
+  "released_at": "2026-11-02T07:15:30.202231+00:00",
+  "release_process_matches": [],
+  "released_to": "/root; next borrower /root/offload_clip_fix"
+}

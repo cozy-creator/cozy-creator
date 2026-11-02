@@ -1,0 +1,19 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "check",
+    "--offline",
+    "--locked",
+    "-j",
+    "1",
+    "-p",
+    "cozy",
+    "--all-targets"
+  ],
+  "head": "118d668f0d7ec05348ff011bb8502488f210f27e",
+  "exit": 0,
+  "seconds": 15.533
+}

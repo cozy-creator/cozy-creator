@@ -1,0 +1,2 @@
+130797536683496
+{'queued': 0, 'retired': 0, 'quarantined': 0, 'abandoned_cache_bytes': 0}

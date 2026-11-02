@@ -1,0 +1,1 @@
+{"torch":"2.14.1+cpu","device":"cpu","operation":"torch.from_dlpack(real CPU DLPack capsule with byte_offset=4)","observed_error":"ValueError: Expected zero byte_offset","resolution":"Native typed export checks the Region span, advances the exported data pointer and emits DLPack byte_offset zero; storage retains the full Region Pin.","gpu_execution":false}
