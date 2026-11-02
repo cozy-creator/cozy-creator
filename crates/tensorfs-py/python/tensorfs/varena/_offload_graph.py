@@ -280,9 +280,6 @@ class _Epoch:
         self.used = definition.owner._owner.gpu.use(
             definition.regions, self.stream.cuda_stream
         )
-        # Initial implementation surfaces scoped Source/retirement failure before
-        # either capture or launch. It makes no fill/compute-overlap claim.
-        self.used.wait_ready()
         if capture:
             index = {region: i for i, region in enumerate(definition.regions)}
             for version in definition.versions:
@@ -308,6 +305,9 @@ class _Epoch:
                         dtype=getattr(torch, version.source.dtype),
                         device=definition.owner._owner.device,
                     )
+            # Published ordering alone is not capture admission: retain all
+            # ordinary typed bindings while scoped producer retirement settles.
+            self.used.wait_ready()
         else:
             # One valid storage export pins the entire Region and supplies its
             # checked consumer family; it need not duplicate every typed view.
