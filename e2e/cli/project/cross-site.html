@@ -1,0 +1,22 @@
+<!doctype html>
+<html><body>
+<iframe name="sink"></iframe>
+<form id="f" method="POST" target="sink" enctype="text/plain"><input name='{"names":["nothing"],"on":["local"],"hub":"x","pad":"' value='"}'></form>
+<script>
+// Another site's page, opened in the browser that holds Calcifer's session cookie: every way it can reach Calcifer.
+const q = new URLSearchParams(location.search), target = q.get('target'), id = q.get('id');
+window.results = {};
+(async () => {
+  try { const r = await fetch(`${target}/v1/projects`, {credentials: 'include'}); window.results.fetch_get = 'read ' + r.status; }
+  catch (e) { window.results.fetch_get = 'not readable: ' + e.message; }
+  try { const r = await fetch(`${target}/v1/projects/${id}/runs`, {method: 'POST', mode: 'no-cors', credentials: 'include', body: '{"names":["nothing"],"on":["local"],"hub":"x"}'}); window.results.fetch_post = 'opaque ' + r.type; }
+  catch (e) { window.results.fetch_post = 'failed: ' + e.message; }
+  const img = new Image(); await new Promise(ok => { img.onload = img.onerror = ok; img.src = `${target}/v1/projects/${id}/cuts/edit.mp4`; });
+  window.results.img_get = 'done';
+  const f = document.getElementById('f'); f.action = `${target}/v1/projects/${id}/runs`;
+  await new Promise(ok => { document.querySelector('iframe').onload = ok; f.submit(); });
+  window.results.form_post = 'submitted';
+  window.done = true;
+})();
+</script>
+</body></html>

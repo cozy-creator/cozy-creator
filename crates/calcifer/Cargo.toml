@@ -10,7 +10,7 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 base64.workspace = true
-platform.workspace = true
+platform = { workspace = true, features = ["fetch"] }
 protocol.workspace = true
 ed25519-dalek = { workspace = true, features = ["pem", "pkcs8"] }
 futures-util = { workspace = true, features = ["alloc"] }
@@ -31,6 +31,8 @@ tokio = { workspace = true, features = ["signal"] }
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tensorfs = { workspace = true, features = ["store"] }
+toml.workspace = true
 
 [lints]
 workspace = true

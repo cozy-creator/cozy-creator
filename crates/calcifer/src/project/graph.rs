@@ -36,6 +36,8 @@ pub struct Node {
     /// Unique by `name_key`.
     pub id: String,
     pub kind: &'static str,
+    /// What its alternatives are called: `take` (a shot's) or `version`.
+    pub noun: &'static str,
     /// Whether `<id>` in a text names it.
     pub mentionable: bool,
     /// A state: its own version is revision 0; each ordered node that writes it makes the next.
@@ -51,14 +53,15 @@ pub struct Node {
     /// Files it reads that are no node's (a shot's references, a character's voice), by a key and
     /// their digest: a version made from another file is out of date.
     pub inputs: Vec<(String, String)>,
-    /// The file it reads as now (relative to the project) and its digest: the approved version, else
-    /// the file attached in project.yaml (or that file's clean); None before the first version.
+    /// The file it reads as now (relative to the project) and its digest: the approved version's
+    /// primary asset, else the file attached in project.yaml (or that file's clean); None before the
+    /// first version.
     pub file: Option<(String, String)>,
-    /// Its versions' files, in the order they were made.
+    /// Its versions' primary assets, in the order they were made.
     pub versions: Vec<String>,
 }
 
-/// What a node reads from another: its current file, or a file one of its versions wrote for a state.
+/// What a node reads from another: its current file, or the frame one of its versions wrote for a state.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Edge {
     pub node: usize,
@@ -142,12 +145,15 @@ impl Graph {
         self.nodes.iter().position(|node| name_key(&node.id) == key)
     }
 
-    /// The digest of what `edge` reads now, if it has been made.
-    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<String> {
-        let (_, digest) = self.nodes[edge.node].file.as_ref()?;
+    /// What `edge` reads now, its path and sha256, if it has been made.
+    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<(String, String)> {
+        let (path, digest) = self.nodes[edge.node].file.as_ref()?;
         match &edge.state {
-            None => Some(digest.clone()),
-            Some(state) => lock.made(&self.nodes[edge.node].id, digest)?.outputs.get(state).cloned(),
+            None => Some((path.clone(), digest.clone())),
+            Some(state) => {
+                let frame = lock.made(&self.nodes[edge.node].id, path)?.writes.get(state)?;
+                Some((frame.path.clone(), frame.sha256.clone()))
+            }
         }
     }
 
@@ -158,31 +164,31 @@ impl Graph {
         let mut status = vec![Status::Empty; self.nodes.len()];
         for &i in &self.order {
             let node = &self.nodes[i];
-            let Some((_, digest)) = &node.file else {
+            let Some((path, _)) = &node.file else {
                 continue;
             };
-            let Some(upstream) = lock.made(&node.id, digest).and_then(|made| made.upstream.as_ref()) else {
+            let Some(upstream) = lock.made(&node.id, path).and_then(|made| made.upstream.as_ref()) else {
                 status[i] = Status::Current;
                 continue;
             };
             let mut cause = None;
             for edge in &self.upstream[i] {
-                let up = &self.nodes[edge.node].id;
+                let (up, noun) = (&self.nodes[edge.node].id, self.nodes[edge.node].noun);
                 let read = self.read(lock, edge);
                 cause = cause.or(match &status[edge.node] {
-                    Status::Empty => Some(format!("{up} has no version")),
+                    Status::Empty => Some(format!("{up} has no {noun}")),
                     Status::Stale(_) => Some(format!("{up} is out of date")),
                     Status::Current if read.is_none() => {
                         Some(format!("{up} wrote no {}", edge.state.as_deref().unwrap_or("file")))
                     }
                     Status::Current => (!upstream.iter().any(|u| {
-                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.file) == read.as_ref()
+                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.asset) == read.as_ref().map(|(_, sha)| sha)
                     }))
                     .then(|| format!("{up} changed")),
                 });
             }
             for (key, digest) in &node.inputs {
-                let read = upstream.iter().any(|u| u.state.is_none() && &u.node == key && &u.file == digest);
+                let read = upstream.iter().any(|u| u.state.is_none() && &u.node == key && &u.asset == digest);
                 cause = cause.or_else(|| (!read).then(|| format!("{key} changed")));
             }
             status[i] = cause.map_or(Status::Current, Status::Stale);
