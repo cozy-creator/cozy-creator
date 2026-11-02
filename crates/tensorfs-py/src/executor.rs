@@ -4,7 +4,7 @@
 //! ignored, a missing one takes its default, a needed one fails by its path.
 use protocol::executor::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork, Room,
+    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Cooperation, Fork, Room,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PreparedUse, PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
@@ -64,6 +64,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<HelloCommand>()?;
     m.add_class::<ShutdownCommand>()?;
     m.add_class::<Start>()?;
+    m.add_class::<Cooperation>()?;
     m.add_class::<Load>()?;
     m.add_class::<Activate>()?;
     m.add_class::<PrepareRequest>()?;

@@ -1,0 +1,11 @@
+{
+  "arm": "red-e545",
+  "source_receipt_sha256": "246461ed443e2a15944541ffd34eaf02bf3084ca985f035633f6545bba284fae",
+  "binary_sha256": "a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf",
+  "build_log_sha256": "af089a26187f1346e2bf01b9765e7155f154c6883fc3f242ab27c36c9f7451f2",
+  "build_script_sha256": "b506a2bc42e8a9b13d943957c51b88b65b6f08a5b3546e2f0cd676a4a10ec667",
+  "source_receipt": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/choice-pair/red-e545/source.json",
+  "prepared_receipt": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/choice-pair/red-e545/controller-hitoshiki/ready.json",
+  "gpu_executed": false,
+  "build": "one CPU/job nice19 offline manylinux2_28 Rust1.99.1; existing target reused; binary copied before next build"
+}

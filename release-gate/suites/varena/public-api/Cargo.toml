@@ -1,0 +1,17 @@
+[package]
+name = "varena-mixed-client"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+varena = { path = "../../../../crates/varena" }
+varena-client = { path = "../../../../crates/varena-client" }
+platform = { path = "../../../../crates/platform", features = ["fetch"] }
+
+[[bin]]
+name = "varena-native-install-proof"
+path = "src/install.rs"

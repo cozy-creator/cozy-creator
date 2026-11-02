@@ -190,7 +190,7 @@ pub(crate) fn coalesce(copies: Vec<Copy<'_>>) -> (Vec<Copy<'_>>, Vec<usize>) {
     (out, firsts)
 }
 
-/// Device regions' alignment in [`pack`]: DLPack's data alignment and `cuMemAlloc`'s, enough
+/// Device regions' alignment in [`pack`]: DLPack's data alignment and Varena's working-block alignment, enough
 /// for every dtype and vector load.
 pub const DEVICE_ALIGN: usize = 256;
 

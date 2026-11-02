@@ -1,0 +1,511 @@
+{
+  "child_exited": true,
+  "command": [
+    "/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-fe52a3346ed9d903a0f6c2e00ec34105bf350ea7e6d3646227f6b978a0942082/tree/ci_varena_cache_pages/bin/varena-cache-pages",
+    "pages",
+    "/dev/shm/varena-cache-pages-lboxj233",
+    "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+    "0"
+  ],
+  "driver_after_child": {
+    "free": 24115544064,
+    "total": 25252724736
+  },
+  "mode": "pages",
+  "passed": true,
+  "pid": 155465,
+  "pidfd_exit_observed": true,
+  "provenance": {
+    "controller_pid": 155449,
+    "driver_before": {
+      "free": 24180621312,
+      "total": 25252724736
+    },
+    "input": {
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "helper_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "native_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+      "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "timeout_s": 60.0
+    },
+    "manifest": {
+      "archive_sha256": "884efbe133b5645681bf34bc12b9c180df8d80dc9ecbab2054b875965972ed91",
+      "binary_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "elf": {
+        "class": "ELF64",
+        "glibc_max": [
+          2,
+          28
+        ],
+        "glibc_versions": [
+          [
+            2,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            2,
+            10
+          ],
+          [
+            2,
+            14
+          ],
+          [
+            2,
+            16
+          ],
+          [
+            2,
+            17
+          ],
+          [
+            2,
+            18
+          ],
+          [
+            2,
+            28
+          ]
+        ],
+        "machine": "x86_64",
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+      "native_tree": "293b1e2dece4709171dc9b7f3d8c49649311ea08",
+      "scope": "native paged Cache primitive and thin bindings; asynchronous owner callbacks not implemented; GPU pending",
+      "source_receipt_sha256": "d733cd8054870eb9ea42a6d1011de7e7fb524cb48b820fd96da6e999f91a4a7c",
+      "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4"
+    },
+    "native_extension": "/var/lib/cozy/tensord/generations/fa477ec4be93295ccfbf9cada3e8b60f/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so",
+    "parent_cache_binding_available": false,
+    "request_id": "37",
+    "versions": {
+      "cozy-runtime": "0.36.22+dev.g3daaaeda",
+      "tensorfs": "0.17.16+dev.g4dcf2618",
+      "torch": "2.14.0"
+    }
+  },
+  "report": {
+    "baseline": {
+      "cache_live": 0,
+      "cache_mapped": 0,
+      "cache_pending": 0,
+      "cache_ready": 0,
+      "cache_reserved": 0,
+      "caches": 0,
+      "capacity": 0,
+      "events": 0,
+      "live": 0,
+      "mapped": 0,
+      "memory_calls": 1,
+      "pending": 0,
+      "physical_ooms": 0,
+      "pools": 0
+    },
+    "detail": {
+      "base": 12918456320,
+      "capture": {
+        "actual_cuda_capture": true,
+        "cache": {
+          "live": 6291456,
+          "mapped": 6291456,
+          "pending": 0,
+          "ready": 0,
+          "reserved": 10485760
+        },
+        "commit_release_poll_close_new_refused": true,
+        "native_working_driver_after": 124,
+        "native_working_driver_before": 124
+      },
+      "initial": {
+        "cache_idle": 0,
+        "cache_live": 6291456,
+        "cache_pending": 0,
+        "pending_release": 0,
+        "physical": 6291456,
+        "reclaimable": 0,
+        "refreshed": true
+      },
+      "interior_recommit": {
+        "cache": {
+          "live": 6291456,
+          "mapped": 6291456,
+          "pending": 0,
+          "ready": 0,
+          "reserved": 10485760
+        },
+        "neighbors_full_readback": true,
+        "new_middle_value": 73,
+        "same_base": true
+      },
+      "local_cap": {
+        "after": {
+          "cache_live": 6291456,
+          "cache_mapped": 6291456,
+          "cache_pending": 0,
+          "cache_ready": 0,
+          "cache_reserved": 10485760,
+          "caches": 1,
+          "capacity": 0,
+          "events": 0,
+          "live": 0,
+          "mapped": 0,
+          "memory_calls": 35,
+          "pending": 0,
+          "physical_ooms": 0,
+          "pools": 0
+        },
+        "before": {
+          "cache_live": 6291456,
+          "cache_mapped": 6291456,
+          "cache_pending": 0,
+          "cache_ready": 0,
+          "cache_reserved": 10485760,
+          "caches": 1,
+          "capacity": 0,
+          "events": 0,
+          "live": 0,
+          "mapped": 0,
+          "memory_calls": 35,
+          "pending": 0,
+          "physical_ooms": 0,
+          "pools": 0
+        }
+      },
+      "page": 2097152,
+      "pending": {
+        "accounting": {
+          "cache_idle": 0,
+          "cache_live": 4194304,
+          "cache_pending": 6291456,
+          "pending_release": 6291456,
+          "physical": 10485760,
+          "reclaimable": 0,
+          "refreshed": true
+        },
+        "actual_host_gate_entered": true,
+        "after_trim": {
+          "cache_live": 4194304,
+          "cache_mapped": 10485760,
+          "cache_pending": 6291456,
+          "cache_ready": 0,
+          "cache_reserved": 14680064,
+          "caches": 3,
+          "capacity": 0,
+          "events": 3,
+          "live": 0,
+          "mapped": 0,
+          "memory_calls": 26,
+          "pending": 0,
+          "physical_ooms": 0,
+          "pools": 0
+        },
+        "before_trim": {
+          "cache_live": 4194304,
+          "cache_mapped": 10485760,
+          "cache_pending": 6291456,
+          "cache_ready": 0,
+          "cache_reserved": 14680064,
+          "caches": 3,
+          "capacity": 0,
+          "events": 3,
+          "live": 0,
+          "mapped": 0,
+          "memory_calls": 26,
+          "pending": 0,
+          "physical_ooms": 0,
+          "pools": 0
+        },
+        "close_refused": true,
+        "dropped_pending_retired": true
+      },
+      "phase": {
+        "backing_peak": 2097152,
+        "cache_during_phase": {
+          "live": 8388608,
+          "mapped": 8388608,
+          "pending": 0,
+          "ready": 0,
+          "reserved": 10485760
+        },
+        "peak": 2097152,
+        "published": true,
+        "total_peak": 2097152
+      }
+    },
+    "driver": {
+      "free": 23734583296,
+      "total": 25252724736
+    },
+    "event": "result",
+    "final": {
+      "cache_live": 0,
+      "cache_mapped": 0,
+      "cache_pending": 0,
+      "cache_ready": 0,
+      "cache_reserved": 0,
+      "caches": 0,
+      "capacity": 0,
+      "events": 0,
+      "live": 0,
+      "mapped": 0,
+      "memory_calls": 41,
+      "pending": 0,
+      "physical_ooms": 0,
+      "pools": 0
+    },
+    "final_accounting": {
+      "cache_idle": 0,
+      "cache_live": 0,
+      "cache_pending": 0,
+      "pending_release": 0,
+      "physical": 0,
+      "reclaimable": 0,
+      "refreshed": true
+    },
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+    "libraries": {
+      "cuda_loaded": true,
+      "python_loaded": false,
+      "torch_loaded": false
+    },
+    "mode": "pages",
+    "passed": true,
+    "pid": 155465
+  },
+  "returncode": 0,
+  "start_ticks": 80404480,
+  "stderr": "",
+  "stdout": [
+    {
+      "baseline": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "driver": {
+        "free": 23734583296,
+        "total": 25252724736
+      },
+      "event": "ready",
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "pages",
+      "pid": 155465,
+      "start_ticks": 80404480
+    },
+    {
+      "baseline": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "detail": {
+        "base": 12918456320,
+        "capture": {
+          "actual_cuda_capture": true,
+          "cache": {
+            "live": 6291456,
+            "mapped": 6291456,
+            "pending": 0,
+            "ready": 0,
+            "reserved": 10485760
+          },
+          "commit_release_poll_close_new_refused": true,
+          "native_working_driver_after": 124,
+          "native_working_driver_before": 124
+        },
+        "initial": {
+          "cache_idle": 0,
+          "cache_live": 6291456,
+          "cache_pending": 0,
+          "pending_release": 0,
+          "physical": 6291456,
+          "reclaimable": 0,
+          "refreshed": true
+        },
+        "interior_recommit": {
+          "cache": {
+            "live": 6291456,
+            "mapped": 6291456,
+            "pending": 0,
+            "ready": 0,
+            "reserved": 10485760
+          },
+          "neighbors_full_readback": true,
+          "new_middle_value": 73,
+          "same_base": true
+        },
+        "local_cap": {
+          "after": {
+            "cache_live": 6291456,
+            "cache_mapped": 6291456,
+            "cache_pending": 0,
+            "cache_ready": 0,
+            "cache_reserved": 10485760,
+            "caches": 1,
+            "capacity": 0,
+            "events": 0,
+            "live": 0,
+            "mapped": 0,
+            "memory_calls": 35,
+            "pending": 0,
+            "physical_ooms": 0,
+            "pools": 0
+          },
+          "before": {
+            "cache_live": 6291456,
+            "cache_mapped": 6291456,
+            "cache_pending": 0,
+            "cache_ready": 0,
+            "cache_reserved": 10485760,
+            "caches": 1,
+            "capacity": 0,
+            "events": 0,
+            "live": 0,
+            "mapped": 0,
+            "memory_calls": 35,
+            "pending": 0,
+            "physical_ooms": 0,
+            "pools": 0
+          }
+        },
+        "page": 2097152,
+        "pending": {
+          "accounting": {
+            "cache_idle": 0,
+            "cache_live": 4194304,
+            "cache_pending": 6291456,
+            "pending_release": 6291456,
+            "physical": 10485760,
+            "reclaimable": 0,
+            "refreshed": true
+          },
+          "actual_host_gate_entered": true,
+          "after_trim": {
+            "cache_live": 4194304,
+            "cache_mapped": 10485760,
+            "cache_pending": 6291456,
+            "cache_ready": 0,
+            "cache_reserved": 14680064,
+            "caches": 3,
+            "capacity": 0,
+            "events": 3,
+            "live": 0,
+            "mapped": 0,
+            "memory_calls": 26,
+            "pending": 0,
+            "physical_ooms": 0,
+            "pools": 0
+          },
+          "before_trim": {
+            "cache_live": 4194304,
+            "cache_mapped": 10485760,
+            "cache_pending": 6291456,
+            "cache_ready": 0,
+            "cache_reserved": 14680064,
+            "caches": 3,
+            "capacity": 0,
+            "events": 3,
+            "live": 0,
+            "mapped": 0,
+            "memory_calls": 26,
+            "pending": 0,
+            "physical_ooms": 0,
+            "pools": 0
+          },
+          "close_refused": true,
+          "dropped_pending_retired": true
+        },
+        "phase": {
+          "backing_peak": 2097152,
+          "cache_during_phase": {
+            "live": 8388608,
+            "mapped": 8388608,
+            "pending": 0,
+            "ready": 0,
+            "reserved": 10485760
+          },
+          "peak": 2097152,
+          "published": true,
+          "total_peak": 2097152
+        }
+      },
+      "driver": {
+        "free": 23734583296,
+        "total": 25252724736
+      },
+      "event": "result",
+      "final": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 41,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "final_accounting": {
+        "cache_idle": 0,
+        "cache_live": 0,
+        "cache_pending": 0,
+        "pending_release": 0,
+        "physical": 0,
+        "reclaimable": 0,
+        "refreshed": true
+      },
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "pages",
+      "passed": true,
+      "pid": 155465
+    }
+  ]
+}

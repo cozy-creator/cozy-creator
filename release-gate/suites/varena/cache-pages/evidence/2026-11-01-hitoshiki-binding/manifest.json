@@ -1,0 +1,10 @@
+{
+  "files": {
+    "README.md": "e49a72bc074c657e033e30d7c580064e2946c553142a49be119cd1e28c82b8f8",
+    "cache-binding-25373.json": "790ec9bc2168f5a4c308ca0459ab84306bc4d658e0e7554a3475845ed8a2680c",
+    "cache-binding-invocation.json": "92e972677de3600250b32b3d8ed37b4df082c4bc4a893807f8eaf950a9a891cf",
+    "cache-binding-result.json": "4268a6b51d06fc541d481d3037935baeda6e7b95820c8a013ecdf8e3f0d21365",
+    "independent-review.json": "4e6caf7a8cb8292a2922fe783b2d9d511dae980839a8d88f576e0206f7028b9f"
+  },
+  "scope": "2026-11-01-hitoshiki-binding"
+}
