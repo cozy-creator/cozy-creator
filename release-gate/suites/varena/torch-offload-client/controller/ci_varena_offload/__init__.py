@@ -33,7 +33,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     runtime_files: dict[str, str]
     scripts: dict[str, str]
     package_versions: dict[str, str]
-    model_path: str = "/var/lib/cozy/qualification/xs138-stock-sdxl-462165984"
+    model_path: str = ""
     variant: str = "fp16"
     steps: int = 2
     prompt: str = "a red ceramic teapot on a wooden table"
