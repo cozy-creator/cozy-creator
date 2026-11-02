@@ -76,22 +76,27 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A video project is a folder: `project.yaml` (yours to edit), `files/` (every version, by content) and
-`edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a commented
-`project.yaml`; fill it in:
+A video project is a folder: `project.yaml` (yours; cozy never writes it after `new`), `project.lock`
+(cozy's: each node's versions, what made each, and which is approved), `files/` (every version, by
+content) and `edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a
+commented `project.yaml`; fill it in:
 
 ```yaml
 type: video
 style: soft watercolor
-assets:
+resolution: 1440p
+soundscape: gulls, surf, wind
+defaults: {shot: {with: minimax-h3/generate, options: {turbo: true}}}
+entities:
   - {name: theo, kind: character, description: "A tall man in a green raincoat."}
-  - {name: juno, kind: character, description: "<theo>'s sister, in a red coat."}
+  - {name: juno, kind: character, description: "<theo>'s sister, in a red coat.", render: {with: flux-2/generate}}
   - {name: dock, kind: environment, description: "a foggy harbour at dawn",
      setups: [{name: a, camera: "wide: the red hut near on the left, the crates far on the right"}]}
 world_states:
   - {name: stage, init: "<juno> and <theo> face off on <dock>.", blocking: "juno by the crates."}
 shots:
-  - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [stage],
+  - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [{state: stage, at: 12}],
+     references: [{name: kata, kind: video, video: refs/kata.mp4}],
      beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
   - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
 edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
@@ -100,7 +105,7 @@ edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
 ```sh
 cozy render all --project garden --on <machine>   # everything missing or out of date, then the edit
 cozy render theo --project garden --on <machine>  # another take of theo
-cozy project approve theo 2 --project garden      # choose it: what is made from theo goes out of date
+cozy project approve theo 2 --project garden      # approve it: what is made from theo goes out of date
 cozy project status --project garden              # what is missing, out of date and why, and the edit
 ```
 
@@ -108,15 +113,29 @@ Each version is sent as soon as what it reads is made, so independent ones rende
 machine's scheduler places them; `--on a,b` spreads them over machines (the least busy, one that holds
 the models first), and a `cozy render` asked while another goes joins it.
 
-`<name>` in a text names another entity, which it is then made from; a setup's camera is written in
+`<name>` in a text names another node, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
-names and changes the ones it `writes`. Character and prop pictures are cleaned on this computer before
-use. Only a changed upstream file puts something out of date, never a text edit: `cozy render <name>`
-when you want a new take. Each kind's package is in `renderers:` (`cozy project --help`); a shot's
-`settings:` are its package's own fields, plus `lora: [{ref: org/lora, strength: 0.8}]` and
-`models: {base_model: {ref: org/checkpoint}}` as `cozy run --input` takes them. `cozy render fight.upscale` makes a shot's upscale, with its own
-`upscale: {settings: {resolution: 1080p, upscale: {model: regenerate-2k}}}`; `edit_uses: upscaled` cuts
-the edit from the upscales, and `render all` then makes them.
+names and changes the ones it `writes` (`{state, at}`, at its end by default); a beat that mentions a state
+reads it as it stands then, so a shot that writes one and reads it later renders as consecutive calls
+(`continue_from`). A shot's `references:` (`{name, kind: character|prop|environment|video|audio, …}`),
+`plate:` (the video it edits), `first_frame:` and `last_frame:` go to its function after the references the
+project compiles from what it reads; what that function does not take is left out and said. Character and prop pictures are cleaned on this computer before
+use. Only a changed upstream file puts something out of date, never a text edit or a render block:
+`cozy render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
+options}`: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
+project's folder, which `cozy render` makes ready on each `--on` machine), `models: {base_model: {ref:
+org/checkpoint}}` and `lora: [{ref: org/lora, strength: 0.8}]` as `cozy run --input` takes them, and
+`options`, the function's own fields. A block that
+names no function adjusts its kind's `defaults:` (entity, setup, world_state, shot, upscale, clean).
+`cozy project status` shows what made each approved version. A file you attach (`image:`, or a shot's
+`video:`) is used until you approve one cozy made.
+
+`resolution: 1440p` and `aspect_ratio: 16:9` (the default; `9:16` and `2.39:1` work alike) fix the
+project's canvas: pictures of places are made at its aspect, and every shot fills it, center-cropped,
+never letterboxed or stretched. A shot whose approved version is below the resolution is upscaled
+(`defaults: {upscale: …}`, or a shot's own `upscale: {render: …}`, which can change the function, models,
+LoRAs and options but never the canvas). `render all` makes the upscales and cuts `edit.mp4` at the
+canvas; `preview.mp4`, the native cut, is redone as shots land, and `render all --preview` stops there.
 
 ## Remove cozy
 

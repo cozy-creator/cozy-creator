@@ -10,7 +10,7 @@ import sys
 import threading
 
 import torch
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 from tensorfs.varena import torch as vt
 
 

@@ -1,4 +1,4 @@
-# Suite `h3`: minimax-h3's shot and upscale at their edges, from the package users get (or its --pins release).
+# Suite `h3`: minimax-h3's generate and upscale at their edges, from the package users get (or its --pins release).
 # - Regenerate-2K (`upscale.model: regenerate-2k`) at 1080p, 1440p and 2160p, each against the 768p shot it starts from: its
 #   layout at 112x64 (frames.py), since regenerated texture rightly differs, and that it moves as the original does (no
 #   flicker: a refine window off the latent chunk grid flickers at every chunk, run 22567).
@@ -7,6 +7,7 @@
 #   output must follow it frame by frame.
 # - First and last keyframes: the shot opens and ends on them without a cut.
 # - A plate and reference footage past one piece (se-086): `guide-30s` and `footage-30s`.
+# - A video continued from its latents (`continue_from`, xs-139), and the full model at 30 steps.
 # `regen-2160p-15s` (about an hour on 24 GB, in three windows), `guide-30s` and `footage-30s` run only when --only names
 # them. A run that breaches its memory envelope fails (analyze.py: not completed), so every cell below also asserts that.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
@@ -27,7 +28,7 @@ judge() {
 ABS='if . < 0 then -. else . end'
 
 # Regenerate-2K and SeedVR2: one 5 s shot, upscaled whole at each size.
-SHOT=$(pkg minimax-h3 shot) UP=$(pkg minimax-h3 upscale)
+SHOT=$(pkg minimax-h3 generate) UP=$(pkg minimax-h3 upscale)
 P="$SCENE, a painted shop sign reads OPEN, slow push-in, street sounds"
 SAVED=$ONLY; [[ $ONLY == *",regen-"* || $ONLY == *",seedvr2-2160p,"* ]] && ONLY="$ONLY,regen-768p,"
 cell regen-768p "$SHOT" prompt="$P" seed:=$((R + 70)) duration_s:=5
@@ -70,7 +71,7 @@ for f in guide-5s guide-9x16; do nice -n 19 ffmpeg -v error -y -i "$f.mp4" -fram
 GUIDE_PROMPT=$'video_editing:\n\nsubject_definitions:\n<Pattern> is the background in <Picture 1>.\n<Video 1> is the source video for the target video edit.\n\nsummary:\n[video editing]\nThe target video is <Video 1>, unchanged.\n\nretention_analysis:\n<Video 1> (entire target timeline): fully_preserved - its motion, framing, timing and composition are kept.\n\ndetailed_description:\nA synthetic broadcast test pattern fills the frame: colour bars, a moving gradient sweep, a turning marker and a running timecode on a dark field. The camera is static and no person appears.\n'
 guide_cell() {  # guide_cell <cell> <clip> <picture> <seed>
   cell "$1" "$SHOT" prompt="$GUIDE_PROMPT" duration_s:=5 seed:=$4 \
-    assets:="[{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/$3\"}]" plate:="{\"video\": \"$OUT/$2\"}"
+    references:="[{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/$3\"}]" plate:="{\"video\": \"$OUT/$2\"}"
 }
 guide_cell guide-equal guide-5s.mp4 guide-5s.png $((R + 73))
 judge guide-equal guide-equal '.within_1 >= 0.8' guide "$OUT/guide-5s.mp4"
@@ -99,23 +100,33 @@ span_seams() {
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of "$2")" --at "$b" 2>&1 | tail -1)
   expect "$1" "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 }
+# Continued-piece text (se-089, #787): generate must write 0.2.8's piece prompts byte for byte, compared by the sha256
+# each piece's `h3 piece prompt` line logs against 0.2.8's gate runs (seed-independent). The digests were computed offline
+# by each tree's own function up to its piece calls: 0.2.8's reproduces the three runs, and 0.3.0's (xs-139) matches them.
+same_text() {  # same_text <check> <cell> <run it must equal> <its piece digests>
+  [ -f "$2.number" ] || return 0
+  local got
+  got=$("$CLI" run show "$(cat "$2.number")" --once 2>/dev/null | grep -oE 'h3 piece prompt chars=[0-9]+ digest=[0-9a-f]+' \
+    | sed 's/.*digest=//' | paste -sd' ')
+  expect "$1" "$([ "$got" = "$4" ] && echo PASS || echo FAIL)" "pieces ${got:-none}; run $3: $4"
+}
 # Past one piece (se-086): 30 s in three pieces (15/9/6 s), each reading its own window of the clip, 1:1 with the shot,
 # its carried head included. A plate as long as the shot is followed frame by frame across both edges (a piece reading
 # the clip from its start again scores about 0.5); reference footage's windows are the ones its pieces' spans give.
 B30='[{"at": 0, "prompt": "The pattern runs."}, {"at": 8, "prompt": "The sweep keeps turning."}, {"at": 19, "prompt": "The timecode keeps counting."}]'
-PATTERN_ASSET="[{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/guide-5s.png\"}]"
+PATTERN_REF="{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/guide-5s.png\"}"
 if [[ $ONLY == *",guide-30s,"* ]]; then
   pattern guide-30s.mp4 1344x768 24 30
-  cell guide-30s "$SHOT" prompt="$GUIDE_PROMPT" duration_s:=30 beats:="$B30" seed:=$((R + 96)) assets:="$PATTERN_ASSET" \
+  cell guide-30s "$SHOT" prompt="$GUIDE_PROMPT" duration_s:=30 beats:="$B30" seed:=$((R + 96)) references:="[$PATTERN_REF]" \
     plate:="{\"video\": \"$OUT/guide-30s.mp4\"}"
   judge guide-30s guide-30s '.within_1 >= 0.8' guide "$OUT/guide-30s.mp4"
   span_seams guide-30s-seams guide-30s
 fi
 if [[ $ONLY == *",footage-30s,"* ]]; then
   pattern footage-30s.mp4 1280x720 30 30
-  cell footage-30s "$SHOT" duration_s:=30 beats:="$B30" seed:=$((R + 97)) assets:="$PATTERN_ASSET" \
+  cell footage-30s "$SHOT" duration_s:=30 beats:="$B30" seed:=$((R + 97)) \
     prompt="<Sweep> gives the motion and timing: a synthetic broadcast test pattern, colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears." \
-    reference_footage:="[{\"name\": \"Sweep\", \"video\": \"$OUT/footage-30s.mp4\"}]"
+    references:="[$PATTERN_REF, {\"name\": \"Sweep\", \"kind\": \"video\", \"video\": \"$OUT/footage-30s.mp4\"}]"
   if [ -f footage-30s.number ]; then
     s=$("$CLI" run show "$(cat footage-30s.number)" --once 2>/dev/null)
     b=$(grep -o 'boundaries_s=[0-9.,]*' <<< "$s" | head -1 | cut -d= -f2)
@@ -124,15 +135,17 @@ if [[ $ONLY == *",footage-30s,"* ]]; then
     expect footage-30s-windows "$([ -n "$b" ] && [ "$w" = "$want" ] && echo PASS || echo FAIL)" "clip_windows ${w:-unread}, want $want"
   fi
   span_seams footage-30s-seams footage-30s
+  same_text footage-30s-text footage-30s 25471 \
+    "294da20429a29e84d7faf17e18aeb58d30fbcab632cc37756e4040c3ec3cce9f bf6fec18e39d992c497ac953c82732f580b0020a88a9d33e2b24bb76e1261d0a 7e8123fae5b3de6743b439a89ef02d766777d97190fdb61ee916547973088cc2"
 fi
 # Keyframes: a shot from the pattern's first frame to its last (FL2VA), each end on its keyframe, with no cut onto it.
 nice -n 19 ffmpeg -v error -y -sseof -0.1 -i guide-5s.mp4 -frames:v 1 guide-5s-last.png
 cell keyframes "$SHOT" prompt="A synthetic broadcast test pattern: colour bars, a moving gradient sweep and a running timecode." \
-  duration_s:=5 seed:=$((R + 78)) keyframes:="{\"first\": \"$OUT/guide-5s.png\", \"last\": \"$OUT/guide-5s-last.png\"}"
+  duration_s:=5 seed:=$((R + 78)) --file first_frame="$OUT/guide-5s.png" --file last_frame="$OUT/guide-5s-last.png"
 judge keyframes-first keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/guide-5s.png" first
 judge keyframes-last keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/guide-5s-last.png" last
 
-# A fine-tune and a LoRA that acts on text-only shots, through shot (0.2.x: `model.base_model` and `--lora` serve every piece), each against a same-seed
+# A fine-tune and a LoRA that acts on text-only shots, through generate (`model.base_model` and `--lora` serve every piece), each against a same-seed
 # control on the official base: coherent (not grey: the old converter bug; not falling apart) and visibly different.
 # The 20 s pair is two pieces (past 15 s a shot needs beats): the LoRA must reach both halves, its record must name it on every piece, and no seam.
 VP="$CHAR $MOTION at golden hour, a slow orbit, ambient sound" LORA=jojocodex/minimax-h3-spatial-physics
@@ -157,7 +170,7 @@ if [ -f h3-lora-20s.number ] && [ "$(run_get "$OUT" h3-lora-20s .status)" = comp
   expect h3-lora-20s-seams "$(jq -r 'if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 fi
 # named <check> <cell> <min calls>: the run record names the LoRA (a model adapter) in at least that many of its
-# generate or piece calls (0.2.x's shot runs one call per piece).
+# generate or piece calls (generate runs one call per piece).
 named() {
   [ -f "$2.number" ] || return 0
   local k; k=$(jq --arg l "$LORA" '[.calls[]? | select(.function | test("^generate|_piece$")) | select(tostring | contains($l))] | length' "$OUT/$2.json" 2>/dev/null)
@@ -173,16 +186,31 @@ named h3-lora-20s-named h3-lora-20s 2
 # render a different take on another machine (se-089: 25229 and 25344 differ from piece 1), so a failure holds the
 # release for a look at more seeds rather than convicting a change on its own.
 BMOVE='[{"at": 0, "prompt": "<Rider> flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "<Rider> hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "<Rider> reaches the end of the pier and looks out at the boats."}]'
-cell h3-shot-moves-on "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+cell h3-shot-moves-on "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt="<Rider> cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" duration_s:=30 beats:="$BMOVE" seed:=$((R + 96))
 span_seams h3-shot-moves-on-seams h3-shot-moves-on
+# The same shot with the cook in prose only and no picture: #787 gives it #781's neutral continuation (0.2.8 gate 2).
+BTEXT='[{"at": 0, "prompt": "The cook flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "The cook hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "The cook reaches the end of the pier and looks out at the boats."}]'
+cell h3-moves-on-text "$SHOT" prompt="A young cook in a red jacket cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" \
+  duration_s:=30 beats:="$BTEXT" seed:=$((R + 130))
+span_seams h3-moves-on-text-seams h3-moves-on-text
+# Both are also judged by eye for a cut: one frame a second, 10 to a row.
+for c in h3-shot-moves-on h3-moves-on-text; do
+  [ -f "$c.number" ] && v=$(video_of "$c") && [ -n "$v" ] || continue
+  nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=1,scale=224:-2,tile=10x3" -frames:v 1 "$c-sheet.png" && log "$c: judge by eye for a cut: $PWD/$c-sheet.png"
+done
+
+same_text h3-shot-moves-on-text h3-shot-moves-on 25472 \
+  "f36788038ca0754f381b93faf2f69366832820109acb68e8e425a7d83ee0739f 53870fb783957f792da3bf1d4270bc450b8df157f33b9178dc0123c8cbd4e3b6 5115e226a1e731785094cca8e54961bca33cec81d879cbaaad19b86b5f15ab5e"
+same_text h3-moves-on-text-text h3-moves-on-text 25500 \
+  "329dba4600de1b74dbb4d63eb683dfab21ff02b9f48e3c9b1b0f81c12d70fa78 2b8e25fbb70f3e23c47671a12d75abebc5c98651b444678cc4e7d015c79ea2f5 35918e8dd2207b0aaed8ca1f27b0579e3714c9bcf041fd3a271658530fd6d383"
 
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
-# first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316). On
-# 0.1.x's functions, pinned, as production served them before 0.2.x.
-cell h3-lease-ref minimax-h3/ref2va_turbo@0.1.19 references:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
-  seed:=$((R + 90)) duration_s:=15 resolution=768p prompt="<Skater> carves a long turn across an empty plaza at dusk, wheels on concrete"
-cell h3-lease-next minimax-h3/fl2va_turbo@0.1.19 prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 91)) duration_s:=5 resolution=1080p
+# first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316): a
+# reference video (Ref2VA) then a text-only one (FL2VA) through generate.
+cell h3-lease-ref "$SHOT" references:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  seed:=$((R + 90)) duration_s:=15 prompt="<Skater> carves a long turn across an empty plaza at dusk, wheels on concrete"
+cell h3-lease-next "$SHOT" prompt="$SCENE, slow push-in, ambient sound" seed:=$((R + 91)) duration_s:=5 resolution=1080p
 if [ -f h3-lease-next.number ]; then
   w=$(grep -c 'held by another run' "$OUT/h3-lease-next.ndjson" 2>/dev/null); s=$(run_get "$OUT" h3-lease-next .status)
   expect h3-lease "$([ "$s" = completed ] && [ "${w:-0}" = 0 ] && echo PASS || echo FAIL)" "next call $s, ${w:-0} waits behind another run"
@@ -197,7 +225,7 @@ fi
 SWITCH=("carves a long turn across an empty plaza at dusk, wheels on concrete" "rolls down a ramp into a sunlit car park"
   "glides past shuttered shops under a light rain")
 for i in 1 2 3; do
-  cell "h3-switch-ref-$i" "$SHOT" assets:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  cell "h3-switch-ref-$i" "$SHOT" references:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
     prompt="<Skater> ${SWITCH[$((i - 1))]}" seed:=$((R + 100 + i)) duration_s:=5
   cell "h3-switch-text-$i" "$SHOT" prompt="$SCENE, take $i, slow push-in, ambient sound" seed:=$((R + 110 + i)) duration_s:=5
 done
@@ -218,7 +246,7 @@ fi
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
 # Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Its seams are judged by span_seams.
 B40='[{"at": 0, "prompt": "<Rider> rolls out of a garage onto a wet street at dawn."}, {"at": 13, "prompt": "<Rider> weaves through a quiet market as stalls open."}, {"at": 27, "prompt": "<Rider> stops on a bridge and looks out over the river."}]'
-cell h3-shot-40s "$SHOT" assets:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+cell h3-shot-40s "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt="<Rider> rides a bicycle through an old town, one continuous tracking shot, ambient sound" duration_s:=40 beats:="$B40" seed:=$((R + 95))
 if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then
   av h3-shot-40s 768
@@ -233,6 +261,7 @@ fi
 
 # Regenerate from a shot's latents (#762): a shot delivers its latents beside its video, and an upscale given both, with
 # no prompt, reads the shot's own text back at strength 0.7 and never encodes the video (no encode_video stage).
+SAVED=$ONLY; [[ $ONLY == *",h3-continue,"* ]] && ONLY="$ONLY,latents-shot,"
 cell latents-shot "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand." \
   style="soft watercolor, muted greens" beats:='[{"at": 2, "prompt": "He reaches the lamp room and opens the shutters to the sea."}]' \
   duration_s:=5 resolution=768p seed:=$((R + 98))
@@ -250,12 +279,46 @@ if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = co
     fi
   fi
 fi
+ONLY=$SAVED
 
-# shot.preset (#751): the Skater request with `preset: fast` runs one dense step, then sparse ones, and denoises in at most
+# continue_from (xs-139): latents-shot's video goes on to 10 s on its own timeline, from its latents. The whole 10 s comes
+# back, its head as latents-shot made it (the C2 proof's head SSIM was 0.989 at its lowest, runs 25270/25271), and the
+# join holds as a piece boundary does (span_seams' bar). A continuation renders in Ref2VA, which needs a picture
+# (0.3.0 refuses one without, run 25881): the lamp room as latents-shot's last frame shows it, as the place.
+if [ -n "${lt:-}" ] && [ -e "$lt" ]; then
+  nice -n 19 ffmpeg -v error -y -sseof -0.1 -i "$lv" -frames:v 1 "$OUT/latents-shot-last.png"
+  cell h3-continue "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of <Lighthouse>, lantern in hand." \
+    style="soft watercolor, muted greens" beats:='[{"at": 5, "prompt": "He lights the great lamp; its beam sweeps out over the dark sea."}]' \
+    references:="[{\"name\": \"Lighthouse\", \"kind\": \"environment\", \"image\": \"$OUT/latents-shot-last.png\"}]" \
+    duration_s:=10 seed:=$((R + 94)) continue_from:="{\"video\": \"$lv\", \"latents\": \"$lt\"}"
+  if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
+    # The head is latents-shot's frames, counted (its container duration runs a little past its last frame, and a
+    # trim to it took the first continued frame too: 25905's 0.899 was frame 124, the head's own lowest 0.980).
+    cv=$(video_of h3-continue)
+    N=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$lv")
+    L=$(awk -v n="$N" 'BEGIN { printf "%.6f", n / 24 }')
+    n=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$cv")
+    head=$(nice -n 19 ffmpeg -v error -i "$cv" -i "$lv" -filter_complex \
+      "[0:v]trim=end_frame=$N,setpts=PTS-STARTPTS[a];[1:v]trim=end_frame=$N,setpts=PTS-STARTPTS[b];[a][b]ssim=stats_file=-" -f null - 2>/dev/null \
+      | grep -o 'All:[0-9.]*' | cut -d: -f2 | sort -n | head -1)
+    expect h3-continue-whole "$(awk -v n="$n" -v h="$head" 'BEGIN { print (n >= 9.5 && n <= 11.5 && h >= 0.95) ? "PASS" : "FAIL" }')" \
+      "${n:-?} s back for 10 s asked; head SSIM against latents-shot at its lowest ${head:-unread}"
+    r=$("${FR[@]}" seams "$cv" --at "$L" 2>&1 | tail -1)
+    expect h3-continue-seam "$(jq -r 'if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "join at ${L:-?} s: $r"
+  fi
+fi
+
+# The full model (turbo: false) at 30 steps, the quality tier (0.2.7, #765): 5 s with a character picture, 768p with sound.
+cell h3-full-30 "$SHOT" references:="[{\"name\": \"Skater\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
+  prompt="<Skater> waves to a friend across a sunny skate park, a painted wall behind reads SKATE OR DIE" seed:=$((R + 93)) \
+  duration_s:=5 turbo:=false steps:=30
+av h3-full-30 768
+
+# generate's preset (#751): the Skater request with `preset: fast` runs one dense step, then sparse ones, and denoises in at most
 # 0.90x the same request on `balanced`, run just before it on the same machine and executor state (se-091: a control from
 # hours earlier measured residency, not the preset); its frames hold against that control's.
 IFS=$'\t' read -r PN _ PM _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
-PRESET_REQ=(assets:="[{\"name\": \"$PN\", \"kind\": \"character\", \"image\": \"$REF\"}]" prompt="<$PN> $PM" seed:=$((R + 101)) duration_s:=15)
+PRESET_REQ=(references:="[{\"name\": \"$PN\", \"kind\": \"character\", \"image\": \"$REF\"}]" prompt="<$PN> $PM" seed:=$((R + 101)) duration_s:=15)
 SAVED=$ONLY; [[ $ONLY == *",h3-preset-fast,"* ]] && ONLY="$ONLY,h3-preset-balanced,"
 cell h3-preset-balanced "$SHOT" "${PRESET_REQ[@]}" preset=balanced
 ONLY=$SAVED

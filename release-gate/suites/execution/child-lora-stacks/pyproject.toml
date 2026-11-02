@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "A child call's own LoRA stack per slot, over the request's --lora (cl-687)"
 requires-python = ">=3.12"
 dependencies = [
-    "cozy-runtime[adapters,media]>=0.36.16", "msgspec>=0.19", "sdxl==0.1.7",
-    # sdxl 0.1.7 imports as its own lock has it: hidiffusion needs this Diffusers.
+    "cozy-runtime[adapters,media]>=0.37.0", "msgspec>=0.19", "sdxl==0.2.0",
+    # sdxl 0.2.0 imports as its own lock has it: hidiffusion needs this Diffusers.
     "diffusers==0.40.0", "transformers==5.16.1", "huggingface-hub==1.29.0", "torch==2.14.0",
 ]
 

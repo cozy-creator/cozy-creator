@@ -37,10 +37,10 @@ canceled idle-cancel klein idle-cancel "$KA" "$SCENE at dusk, wide shot" 407
 klein idle-after-cancel "$KB" "$OBJECT in $SCENE, macro photo" 408
 # One character picture, as a project sends it: no model but H3's runs.
 ln -sfn "$REF" "idle-ref.${REF##*.}"
-lead="assets: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]"
+lead="references: [{name: Lead, kind: character, image: ./idle-ref.${REF##*.}}]"
 # The pair's shots are 5 s: what is measured is the executor the second runs on, not the clip (the standard
 # construction's fewest steps, 30, cost a 15 s clip about an hour on a 4090).
-H3=$(pkg minimax-h3 shot)
+H3=$(pkg minimax-h3 generate)
 h3_shot() {  # h3_shot <file> <prompt> <seed> [yaml lines]
   printf '%s\nprompt: "<Lead> %s %s"\nduration_s: 5\nseed: %d\n%s' "$lead" "$MOTION" "$2" "$3" "${4:-}" > "$1"
 }

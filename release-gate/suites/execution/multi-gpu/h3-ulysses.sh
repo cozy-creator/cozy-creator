@@ -2,8 +2,8 @@
 # each with one character picture, as a project sends it. Sourced by gate.sh --cells;
 # `only` names h3-u2-turbo, h3-u2-std. Each is held to two ranks on two GPUs and a 768p, 300+ frame video with audio.
 H3REF="[{\"name\": \"$NAME\", \"kind\": \"character\", \"image\": \"$REF\"}]"
-cell h3-u2-turbo "$(pkg minimax-h3 shot)" assets:="$H3REF" prompt="<$NAME> $MOTION" seed:=$((R + 351)) duration_s:=15 --gpus=2
-cell h3-u2-std "$(pkg minimax-h3 shot)" assets:="$H3REF" prompt="<$NAME> $MOTION The camera slowly pushes in." \
+cell h3-u2-turbo "$(pkg minimax-h3 generate)" references:="$H3REF" prompt="<$NAME> $MOTION" seed:=$((R + 351)) duration_s:=15 --gpus=2
+cell h3-u2-std "$(pkg minimax-h3 generate)" references:="$H3REF" prompt="<$NAME> $MOTION The camera slowly pushes in." \
   seed:=$((R + 352)) duration_s:=15 turbo:=false steps:=30 --gpus=2
 for n in h3-u2-turbo h3-u2-std; do
   [ -f "$n.json" ] || continue

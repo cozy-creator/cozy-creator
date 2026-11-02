@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 from cozy_runtime.author import Context
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 
 from . import Probe, Report, actual, app, report, settle
 

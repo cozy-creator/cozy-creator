@@ -1,6 +1,6 @@
 //! A run's model choices as people write them, bound to a function's slots: `model.<slot>=` and
 //! `--lora [slot=]ref[,strength]`, and the `models:` and `lora:` beside the request's fields in
-//! `cozy run --input` and in a project's `settings:`. The one binder for `cozy run` and Calcifer.
+//! `cozy run --input` and in a project's render blocks. The one binder for `cozy run` and Calcifer.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};

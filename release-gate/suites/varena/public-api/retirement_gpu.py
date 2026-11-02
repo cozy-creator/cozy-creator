@@ -11,7 +11,8 @@ import time
 from contextlib import contextmanager
 
 import torch
-from tensorfs import varena
+from streams import owned_stream
+from tensorfs.varena import _runtime as varena
 from tensorfs.varena import api
 from tensorfs.varena import torch as vt
 
@@ -96,22 +97,27 @@ def main():
     rust = C.CDLL(args.rust)
     vt.install(0)
     torch.empty(1, device="cuda").sum().item()
-    torch.cuda.synchronize()
+    torch.cuda.current_stream().synchronize()
     other = varena.Arena(0)
-    stream = torch.cuda.Stream()
+    rust.mixed_rust_retry_prepare.argtypes = [C.c_uint64]
+    with owned_stream(torch, vt) as stream:
+        run_retirement(rust, other, stream)
+
+
+def run_retirement(rust, other, stream):
     graph = Graph(stream)
     receipts = []
     for replay in (False, True):
         drain()
         gpu = api.open()
         baseline = gpu.stats()
-        torch.cuda.synchronize()
+        stream.synchronize()
         driver_before = torch.cuda.mem_get_info()
         region = gpu.region(bytes(1 << 20))
-        used = gpu.use([region])
-        scratch = gpu.alloc(2 << 20)
+        used = gpu.use([region], stream.cuda_stream)
+        scratch = gpu.alloc(2 << 20, stream.cuda_stream)
         original = (gpu._handle, region._handle, used._handle, scratch._handle)
-        assert rust.mixed_rust_retry_prepare() == 1
+        assert rust.mixed_rust_retry_prepare(stream.cuda_stream) == 1
         with blocked(other, graph, stream, replay):
             assert rust.mixed_rust_retry_refused() == 1
             for owner in (scratch, used, region, gpu):
@@ -132,14 +138,14 @@ def main():
 
         gpu = api.open()
         region = gpu.region(bytes(1 << 20))
-        used = gpu.use([region])
-        scratch = gpu.alloc(2 << 20)
+        used = gpu.use([region], stream.cuda_stream)
+        scratch = gpu.alloc(2 << 20, stream.cuda_stream)
         before = api.retirement_stats()
         with blocked(other, graph, stream, replay):
             del scratch, used, region, gpu
             gc.collect()
             assert api.retirement_stats()["queued"] > before["queued"]
-        torch.cuda.synchronize()
+        stream.synchronize()
         retired = drain()
         assert retired["quarantined"] == before["quarantined"]
         with api.open() as inspect:
@@ -148,7 +154,7 @@ def main():
             assert final["weights_resident"] == baseline["weights_resident"]
             assert final["working_live"] == baseline["working_live"]
         drain()
-        torch.cuda.synchronize()
+        stream.synchronize()
         driver_after = torch.cuda.mem_get_info()
         receipts.append({"replay": replay, "checked_retry_same_handles": True, "retired": retired, "final": final,
                          "driver_free_total_before": driver_before, "driver_free_total_after": driver_after})
@@ -187,7 +193,7 @@ def main():
                 pass
             else:
                 raise AssertionError("queued callback was allowed to commit new pages")
-            view.release(0, page)
+            view.release(0, page, stream.cuda_stream)
             finished.set()
             return True
         except BaseException as error:
@@ -211,7 +217,7 @@ def main():
         raise AssertionError("ordinary caller borrowed a transferred Cache")
     resume.set()
     assert finished.wait(30) and not callback_errors, callback_errors
-    torch.cuda.synchronize()
+    stream.synchronize()
     assert drain()["quarantined"] == before["quarantined"]
     assert cache._owner.facts()["retired"]
     assert gpu.stats()["caches"] == 0
@@ -228,6 +234,7 @@ def main():
     assert after["quarantined"] == before["quarantined"] + 1
     assert after["abandoned_cache_bytes"] == before["abandoned_cache_bytes"] + page
     gpu.close()
+    drain()
     print(json.dumps({"gpu": True, "lifetimes": receipts, "callback_release_during_retirement": True,
                       "live_cache_quarantine": after, "driver_baseline_qualified": False,
                       "driver_baseline_gate": "raw driver samples are retained; exact physical baseline still requires a controlled warmed coordinator cell"}))

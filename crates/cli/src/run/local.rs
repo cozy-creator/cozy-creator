@@ -13,9 +13,10 @@ use std::{
 use platform::{durable, paths::Home};
 
 use protocol::{
-    calcifer::{Kind as RunKind, On, Run, Status, SubmitRun},
+    calcifer::{Kind as RunKind, On, Run, StagedInput, Status, SubmitRun},
     error::{Error, Kind},
     machine as v1,
+    project::LocalCode,
 };
 
 use super::{
@@ -29,6 +30,8 @@ use crate::{Context, package::local::Local};
 /// What the machine installed: the package's interface and where the call must go.
 struct Installed {
     interface: Interface,
+    /// As the machine answered it.
+    document: serde_json::Value,
     /// The machine's name for the installation; none for a kept interface.
     installation: Option<String>,
     /// Where it was installed; none for a kept interface.
@@ -58,6 +61,22 @@ impl Prepared {
         &self.local.source.manifest
     }
 
+    /// This code as a project's render block names it (`with`), calling `function`.
+    pub(crate) fn code(&self, with: &str, function: &str) -> Result<LocalCode, Error> {
+        let function = super::callable(self.package(), self.interface(), function)?.name.clone();
+        let manifest = |input: &&StagedInput| input.digest.to_string() == self.local.source.manifest;
+        Ok(LocalCode {
+            with: with.into(),
+            on: self.on.clone(),
+            function,
+            package: self.local.package.clone(),
+            source: self.local.source.clone(),
+            manifest: self.local.manifest.clone(),
+            files: self.local.inputs.iter().filter(|input| !manifest(input)).cloned().collect(),
+            interface: self.installed.document.clone(),
+        })
+    }
+
     /// Calls `function`. The call goes where the code was installed, with its files once more:
     /// a machine that dropped them meanwhile is sent only what it lacks, and installs them in
     /// the call.
@@ -85,11 +104,7 @@ pub(crate) async fn prepare(ctx: &Context, path: &Path, on: On, warm: bool) -> R
     let runtime = runtime(ctx, &on).await;
     let kept = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&ctx.home, &local, runtime));
     let installed = match kept {
-        Some(interface) => Installed {
-            interface,
-            installation: None,
-            machine: None,
-        },
+        Some(installed) => installed,
         None => install(ctx, hub, on.clone(), &local, runtime.as_deref()).await?,
     };
     Ok(Prepared { local, installed, on })
@@ -218,10 +233,15 @@ fn hex(digest: &protocol::ids::Digest) -> String {
 }
 
 /// The interface kept for this exact source, as `runtime` described it.
-fn kept(home: &Home, local: &Local, runtime: &str) -> Option<Interface> {
+fn kept(home: &Home, local: &Local, runtime: &str) -> Option<Installed> {
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(file(home, local, runtime)).ok()?).ok()?;
-    Interface::parse(&document).ok()
+    Some(Installed {
+        interface: Interface::parse(&document).ok()?,
+        document,
+        installation: None,
+        machine: None,
+    })
 }
 
 /// Whether some kept source of this package has the same environment inputs.
@@ -274,7 +294,7 @@ fn installed(run: Run) -> Result<Installed, Error> {
         .cause(code)
         .next(format!("cozy run show {}", run.number)));
     }
-    let result = run.result.unwrap_or_default();
+    let mut result = run.result.unwrap_or_default();
     let interface = Interface::parse(&result["interface"]).map_err(|why| {
         Error::new(
             Kind::Unavailable,
@@ -292,6 +312,7 @@ fn installed(run: Run) -> Result<Installed, Error> {
     })?;
     Ok(Installed {
         interface,
+        document: result["interface"].take(),
         installation,
         machine: Some(machine),
     })

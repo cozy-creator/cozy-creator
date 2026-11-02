@@ -11,7 +11,7 @@ from pathlib import Path
 
 import tensorfs
 import torch
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 from tensorfs.varena import torch as vt
 
 MIB = 1 << 20

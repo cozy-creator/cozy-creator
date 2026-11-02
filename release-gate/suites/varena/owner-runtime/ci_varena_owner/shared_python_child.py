@@ -22,7 +22,8 @@ def emit(value):
 def main():
     import tensorfs
     from cozy_runtime.internal import cooperation
-    from tensorfs import _ext, varena
+    from tensorfs import _ext
+    from tensorfs.varena import _runtime as varena
 
     config = json.loads(sys.argv[1])
     actual = {

@@ -6,7 +6,7 @@ import time
 
 
 def mode_switch(payload, ctx):
-    from tensorfs import varena
+    from tensorfs.varena import _runtime as varena
     from . import MIB, Report, Requester, current, eventually
 
     torch, vt, _memory, owner, provenance = current(payload, ctx)

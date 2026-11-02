@@ -9,7 +9,7 @@ import sys
 import time
 
 import torch
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 import tensorfs.varena.torch as vt
 
 spec = importlib.util.spec_from_file_location("varena_reclaim_helpers", Path(__file__).with_name("probe.py"))

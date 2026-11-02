@@ -1,11 +1,15 @@
-//! Calcifer's project API (xs-136): a project folder opened by its path, its entities as they stand,
+//! Calcifer's project API (xs-136, xs-139): a project folder opened by its path, its nodes as they stand,
 //! the runs that make their versions, and what happens as they go. The CLI's `cozy project` verbs
 //! and the web UI are its clients.
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{calcifer::On, error::Error};
+use crate::{
+    calcifer::{On, StagedInput},
+    error::Error,
+    machine::LocalSource,
+};
 
 /// `POST /v1/projects`: the project in `path`, made first when `create`. The same path is always
 /// the same project.
@@ -22,12 +26,12 @@ pub struct Opened {
     pub path: PathBuf,
 }
 
-/// `GET /v1/projects/{id}`: its entities in order, and what reading the project said.
+/// `GET /v1/projects/{id}`: its nodes in order, and what reading the project said.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
     pub path: PathBuf,
-    pub entities: Vec<Entity>,
+    pub nodes: Vec<Node>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
     pub edit: Edit,
@@ -46,23 +50,28 @@ pub struct Edit {
     pub skips: Vec<String>,
 }
 
+/// A node: an entity (character, prop, environment), a setup, a world state, a shot or a shot's
+/// upscale.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Entity {
+pub struct Node {
     pub name: String,
     pub kind: String,
     pub versions: u32,
-    /// Its chosen file, relative to the project.
+    /// The file it reads as now, relative to the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// Which version is chosen, 1 first; None for a file attached by hand, or none yet.
+    /// Which version is approved, 1 first; None for a file attached by hand, or none yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen: Option<u32>,
+    /// The function that made that version, `org/package/function@release`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
     /// For people: current, no version yet, out of date and why, making (run N), …
     pub status: String,
 }
 
-/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every entity
-/// brought up to date, each new version chosen, then the edit cut. It joins the project's walk,
+/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every node
+/// brought up to date, each new version approved, then the edit cut. It joins the project's walk,
 /// which sends each version once what it reads is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
@@ -73,13 +82,42 @@ pub struct Runs {
     pub on: Vec<On>,
     /// The Hub its renderers are read from and its runs belong to.
     pub hub: String,
+    /// With `all`: no upscales, and only the native cut (`preview.mp4`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preview: bool,
+    /// The local code its render blocks name, installed by the client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local: Vec<LocalCode>,
+}
+
+/// Local code a render block names (`with: ./dir/fn`, relative to the project), installed on the
+/// walk's machines by the client as `cozy run` installs it: what Calcifer calls it with, by its
+/// `with:` text. Each call carries the code's files again, so a machine that dropped them, or
+/// never had them, installs them in the call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LocalCode {
+    /// The render block's `with:`, as written.
+    pub with: String,
+    /// The machine it was made ready for (this computer's reads it in place).
+    pub on: On,
+    pub function: String,
+    /// `local/<name>`.
+    pub package: String,
+    pub source: LocalSource,
+    /// The source's manifest document, whose digest is `source.manifest`.
+    pub manifest: String,
+    /// The code's files here (its source's, sent to another machine; a carried wheel).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<StagedInput>,
+    /// Its package interface, as its install answered.
+    pub interface: serde_json::Value,
 }
 
 fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/approve`: version `version` (1 first) chosen for `name`.
+/// `POST /v1/projects/{id}/approve`: version `version` (1 first) approved for `name`, in project.lock.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approve {
     pub name: String,
@@ -105,7 +143,7 @@ pub enum Event {
         run: String,
         number: u64,
     },
-    /// `file` became one of `name`'s versions, or its chosen picture.
+    /// `file` became one of `name`'s versions.
     Landed {
         name: String,
         file: String,

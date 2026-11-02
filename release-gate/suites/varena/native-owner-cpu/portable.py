@@ -8,7 +8,8 @@ import signal
 import sys
 
 sys.path.insert(0, sys.argv[1])
-from tensorfs import _ext, varena  # noqa: E402
+from tensorfs import _ext
+from tensorfs.varena import _runtime as varena
 
 assert varena.CooperationOwner.capability() == 1
 methods = ('wake', 'facts', 'configure', 'snapshot', 'cuda_calls', 'close')

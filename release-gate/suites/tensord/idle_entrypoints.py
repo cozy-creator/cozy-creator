@@ -18,7 +18,7 @@ def gpu_calls(rec):
 
 
 def piece_calls(rec):
-    """minimax-h3 shot's piece calls' measurements, in order (not its one-latent decode)."""
+    """minimax-h3 generate's piece calls' measurements, in order (not its one-latent decode)."""
     return [c['measurements'] for c in rec.get('calls') or []
             if str(c.get('function', '')).endswith('_piece') and ((c.get('measurements') or {}).get('execution') or {}).get('gpus')]
 
