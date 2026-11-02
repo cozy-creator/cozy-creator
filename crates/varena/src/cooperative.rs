@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
 
 mod owner;
 mod pressure;
+mod domain;
+pub use domain::{default_directory, device_descriptor};
 pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
 pub use pressure::{Boundary, Facts as PressureFacts, initial_pid_namespace};
 pub(crate) use owner::{Participation, recover};

@@ -596,21 +596,51 @@ pub(crate) fn recover(
 }
 
 // Reserve only host state. Opening waits/driver work are outside this registry lock.
-fn reserve(device: i32, identity: &Identity, reuse: bool) -> Result<(Arc<Control>, u64, Option<ledger::RowId>)> {
+fn reserve(
+    device: i32,
+    identity: &Identity,
+    reuse: bool,
+) -> Result<(Arc<Control>, u64, Option<ledger::RowId>)> {
+    reserve_mode(device, identity, reuse, false)
+}
+
+fn reserve_mode(
+    device: i32,
+    identity: &Identity,
+    reuse: bool,
+    default_race: bool,
+) -> Result<(Arc<Control>, u64, Option<ledger::RowId>)> {
     let mut owners = registry()?;
-    if let Some(control) = owners.get(&device).map(Registered::get).transpose()?.flatten() {
+    if let Some(control) = owners
+        .get(&device)
+        .map(Registered::get)
+        .transpose()?
+        .flatten()
+    {
         let mut state = control.lock()?;
-        if state.identity.as_ref() != Some(identity) {
-            return Err(crate::Error::Invalid("cooperation service device or ledger domain differs").into());
-        }
         if let Some(reason) = &state.facts.failed {
-            return Err(crate::Error::Poisoned(format!("native cooperation failed: {reason}")).into());
+            return Err(
+                crate::Error::Poisoned(format!("native cooperation failed: {reason}")).into(),
+            );
         }
         if !state.retired {
+            if state.identity.as_ref() != Some(identity) {
+                if default_race {
+                    // A custom-domain service appeared during default discovery. A later
+                    // ordinary open can inherit it; this attempt must not replace it.
+                    return Err(crate::Error::Busy.into());
+                }
+                return Err(crate::Error::Invalid(
+                    "cooperation service device or ledger domain differs",
+                )
+                .into());
+            }
             if !reuse || state.stopping || !state.facts.active {
                 return Err(crate::Error::Busy.into());
             }
-            let row = state.row.ok_or(crate::Error::Invalid("ready cooperation service has no row"))?;
+            let row = state.row.ok_or(crate::Error::Invalid(
+                "ready cooperation service has no row",
+            ))?;
             let client = state.add_client()?;
             drop(state);
             control.changed.notify_all();
@@ -640,6 +670,110 @@ pub struct Owner {
 }
 
 impl Owner {
+    /// Inherit a ready service's exact domain and current configuration without CUDA/NVML.
+    /// None means only absent or successfully retired; faults/opening/stopping refuse.
+    pub fn join_existing(device: i32) -> Result<Option<Self>> {
+        if device < 0 {
+            return Err(crate::Error::Invalid("device must be nonnegative").into());
+        }
+        let (control, identity) = {
+            let owners = registry()?;
+            let Some(control) = owners
+                .get(&device)
+                .map(Registered::get)
+                .transpose()?
+                .flatten()
+            else {
+                return Ok(None);
+            };
+            let state = control.lock()?;
+            if let Some(reason) = &state.facts.failed {
+                return Err(
+                    crate::Error::Poisoned(format!("native cooperation failed: {reason}")).into(),
+                );
+            }
+            if state.retired {
+                return Ok(None);
+            }
+            if state.stopping || !state.facts.active {
+                return Err(crate::Error::Busy.into());
+            }
+            let identity = state.identity.clone().ok_or(crate::Error::Invalid(
+                "ready cooperation service has no domain",
+            ))?;
+            drop(state);
+            (control, identity)
+        };
+        Self::join_checked(device, control, identity)
+    }
+
+    fn join_checked(
+        device: i32,
+        control: Arc<Control>,
+        identity: Identity,
+    ) -> Result<Option<Self>> {
+        // Filesystem and namespace checks are outside registry/Control locks. Do not
+        // reinterpret replacement, missing path or scope errors as permission to open.
+        if Identity::read(identity.descriptor, &identity.directory)? != identity {
+            return Err(crate::Error::Invalid("cooperation service ledger domain changed").into());
+        }
+        let owners = registry()?;
+        let current = owners
+            .get(&device)
+            .map(Registered::get)
+            .transpose()?
+            .flatten()
+            .ok_or(crate::Error::Busy)?;
+        if !Arc::ptr_eq(&current, &control) {
+            return Err(crate::Error::Busy.into());
+        }
+        let mut state = control.lock()?;
+        if let Some(reason) = &state.facts.failed {
+            return Err(
+                crate::Error::Poisoned(format!("native cooperation failed: {reason}")).into(),
+            );
+        }
+        if state.retired || state.stopping || !state.facts.active {
+            return Err(crate::Error::Busy.into());
+        }
+        if state.identity.as_ref() != Some(&identity) {
+            return Err(crate::Error::Invalid("cooperation service ledger domain changed").into());
+        }
+        let row = state.row.ok_or(crate::Error::Invalid(
+            "ready cooperation service has no row",
+        ))?;
+        let client = state.add_client()?;
+        drop(state);
+        drop(owners);
+        control.changed.notify_all();
+        Ok(Some(Self {
+            device,
+            id: row,
+            client,
+            control,
+        }))
+    }
+
+    /// Ordinary standalone acquisition. Ready settings/domain win; defaults are used
+    /// only by the first creator. No hidden environment configuration or retry loop.
+    pub fn get_or_open_default(device: i32) -> Result<Self> {
+        if let Some(owner) = Self::join_existing(device)? {
+            return Ok(owner);
+        }
+        ledger::initialize()?; // Install descriptor/fork custody before first GPU work.
+        let directory = super::default_directory().map_err(ledger::Error::Io)?;
+        let descriptor = super::device_descriptor(device)?;
+        Self::acquire_mode(
+            device,
+            descriptor,
+            &directory,
+            ledger::Sharing::Shared,
+            0,
+            true,
+            true,
+        )
+    }
+
     /// Exclusive creation: refuse an existing live, opening or retiring service.
     pub fn open(
         device: i32,
@@ -672,8 +806,24 @@ impl Owner {
         priority: i32,
         reuse: bool,
     ) -> Result<Self> {
+        Self::acquire_mode(device, descriptor, directory, sharing, priority, reuse, false)
+    }
+
+    fn acquire_mode(
+        device: i32,
+        descriptor: ledger::Device,
+        directory: &Path,
+        sharing: ledger::Sharing,
+        priority: i32,
+        reuse: bool,
+        default_race: bool,
+    ) -> Result<Self> {
         let identity = Identity::read(descriptor, directory)?;
-        let (control, client, row) = reserve(device, &identity, reuse)?;
+        let (control, client, row) = if default_race {
+            reserve_mode(device, &identity, reuse, true)?
+        } else {
+            reserve(device, &identity, reuse)?
+        };
         // This provisional host lease also releases on spawn/startup failure or unwind.
         let mut owner = Self {
             device,

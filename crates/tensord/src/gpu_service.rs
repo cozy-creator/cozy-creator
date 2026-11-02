@@ -3759,14 +3759,11 @@ impl Pool {
         if !gpu.device_uuid.starts_with("GPU-") && !gpu.device_uuid.starts_with("MIG-") {
             return Err(io::Error::new(io::ErrorKind::Unsupported, "cooperation requires the actual GPU/MIG UUID"));
         }
-        let directory = PathBuf::from(format!("/dev/shm/cozy-varena-{}", crate::launch_identity::euid()));
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)] {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&directory)?;
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        let directory = varena::cooperative::default_directory()?;
+        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+        let directory: PathBuf = return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "native cooperation requires Linux with 64-bit atomics"));
         Ok(Some(Cooperation { uuid: gpu.device_uuid.clone(), directory,
             shared: self.config.host.mode == HostMode::Shared, priority: 0 }))
     }

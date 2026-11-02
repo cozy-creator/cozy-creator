@@ -29,3 +29,23 @@ through actual native Arena-ticket completion. Generic clients remain Unknown
 until real request boundaries; defaults do not fabricate idle/H measurements.
 Native/host checks and GPU validation are distinct gates. No GPU action or release
 is performed in this lane.
+
+## Checks
+
+Native and TensorD checked offline with Rust1.99.1, one Cargo job/nice19:
+32.79 seconds initially, 5.21 seconds for the final formatted product source.
+The actual host registry/directory/thread/fork proof passed in 12.19 seconds,
+including16 concurrent ready-client joins, replaced-directory refusal, a held
+registry inherited through real fork, a successfully retired old Control with
+reachable closed handles admitting a new domain, and the original permanent
+fault tombstone surviving all handles. No CUDA/NVML library was loaded.
+
+Receipts: `outputs/xs138-p4-default-service/host-003/report.json` and
+`identity-availability/report.json`. The initial host pass is retained; host-002
+is a preserved harness-only compile refusal (the isolated fork function needed
+its unsafe-code allowance). Native product never received that allowance.
+
+The fresh base carries workspace0.16.2; Varena/TensorFS remain0.17.16. These are
+source versions, not a release/SDK installation. Root must package the coherent
+core/worker cohort and perform actual default GPU/MIG discovery and both client
+load orders before qualification.
