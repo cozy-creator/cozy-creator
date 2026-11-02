@@ -545,27 +545,40 @@ ls -1 "$CACHE" | sort > "$OUT/frames-cache-3.txt"
 
 # Range, HEAD, ETag and 416 on a cut and an asset; Calcifer's Host, Origin and bearer rules.
 # cl-728: takes of a model's rounded size (H3's 1344x768, 1.6% from 16:9) with no `resolution:`: the edit is their size,
-# their frames unchanged by any encode, the same file cut twice; a plate of another size still fills it.
+# their frames unencoded (no edge piece, each frame its take's) and the same file cut twice; a plate of another size still
+# fills it.
 take_size() {
 step "a project: no resolution, takes at 1344x768 join unencoded"
-local P=$OUT/rounded
+local P=$OUT/rounded CACHE=$HOME/.cache/cozy/cuts first
 cozy project new "$P" > /dev/null 2>&1 || check "rounded: project new failed"
 mkdir -p "$P/plates"
-wide() { ffmpeg -v error -y -f lavfi -i "$2=size=$3:rate=24:duration=2" -c:v libx264 -preset veryfast -g 24 -keyint_min 24 -sc_threshold 0 -pix_fmt yuv420p "$1"; }
+wide() { ffmpeg -v error -y -f lavfi -i "$2=size=$3:rate=24:duration=3" -c:v libx264 -preset veryfast -g 24 -keyint_min 24 -sc_threshold 0 -pix_fmt yuv420p "$1"; }
 wide "$P/plates/a.mp4" testsrc2 1344x768; wide "$P/plates/b.mp4" testsrc 1344x768; wide "$P/plates/c.mp4" rgbtestsrc 854x480
 cat > "$P/project.yaml" <<'YAML'
 aspect_ratio: "16:9"
 fps: 24
 shots:
-  - {name: a, description: "test pattern a", duration_s: 2, video: plates/a.mp4}
-  - {name: b, description: "test pattern b", duration_s: 2, video: plates/b.mp4}
+  - name: a
+    description: |
+      Test pattern a.
+    duration_s: 3
+    video: plates/a.mp4
+  - name: b
+    description: |
+      Test pattern b.
+    duration_s: 3
+    video: plates/b.mp4
+edit:
+  - {shot: a, start: 0, end: 48}
+  - {shot: b, start: 24, end: 48}
 YAML
 cozy project -p "$P" render all --on local > "$OUT/rounded-1.txt" 2>&1 || check "rounded: render all failed: $(tail -c 300 "$OUT/rounded-1.txt")"
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1"; }
 [ "$(size "$P/edit.mp4")" = 1344,768 ] || check "rounded: edit.mp4 is $(size "$P/edit.mp4"), not its takes' 1344,768"
-md5s() { for f in "$@"; do ffmpeg -v error -i "$f" -map 0:v -c copy -f framemd5 - | grep -v '^#' | awk '{print $NF}'; done; }
-[ "$(md5s "$P/plates/a.mp4" "$P/plates/b.mp4" | md5sum)" = "$(md5s "$P/edit.mp4" | md5sum)" ] || check "rounded: edit.mp4's coded frames are not its takes'"
-local first; first=$(sha "$P/edit.mp4")
+md5s() { ffmpeg -v error -i "$1" -map 0:v -f framemd5 - | grep -v '^#' | awk '{print $NF}'; }
+[ "$( (md5s "$P/plates/a.mp4" | sed -n 1,48p; md5s "$P/plates/b.mp4" | sed -n 25,48p) | md5sum)" = "$(md5s "$P/edit.mp4" | md5sum)" ] || check "rounded: edit.mp4's frames are not its takes'"
+! ls -1 "$CACHE" | grep -q "^$(sha "$P/plates/a.mp4" | cut -c1-16)-" || check "rounded: an edge of a was encoded"
+first=$(sha "$P/edit.mp4")
 cozy project -p "$P" render all --on local > "$OUT/rounded-2.txt" 2>&1 || check "rounded: render all again failed"
 [ "$(sha "$P/edit.mp4")" = "$first" ] || check "rounded: cut again, edit.mp4 is another file"
 sed -i 's#video: plates/b.mp4#video: plates/c.mp4#' "$P/project.yaml"
