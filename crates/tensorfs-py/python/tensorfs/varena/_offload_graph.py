@@ -749,10 +749,7 @@ class GraphSegment:
                     ):
                         if isinstance(source, torch.Tensor):
                             target.copy_(source)
-                    # Reuse the existing guard; do not add a public/native replay API.
-                    from ._runtime import replay as replay_scope
-
-                    with replay_scope(definition.owner._owner.device.index):
+                    with vt.replay_scope(definition.owner._owner.device.index):
                         vt.replay(self._graph, stream=stream)
                     result = tree_map(lambda tensor: tensor.clone(), definition.outputs)
                     epoch.outputs = result

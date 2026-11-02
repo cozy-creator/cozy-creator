@@ -10,12 +10,15 @@ Host frontend client, using a matching built SDK plus the exact Python feature o
 ```sh
 CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
   python graph_bindings_cpu.py
+CUDA_VISIBLE_DEVICES='' python replay_scope_host.py
 ```
 
 This runs actual tied/strided Torch and tiny Diffusers VAE computation through the
 capture binding table. It checks exact eager values, zero new residency materializations,
 read-only weight/buffer/input behavior, signatures, old aliases and empty interior views.
 It uses no graph/native allocator substitute and makes no CUDA claim.
+The replay-scope host client exercises actual native metadata guards, including nesting,
+exception cleanup and opposite-guard refusal, without constructing a CUDA graph or Pin.
 
 The coordinator must bind the exact native SDK, Python files, helper/Runtime hashes,
 GPU UUID and ordinary-Cozy caller before running isolated GPU children. No script
