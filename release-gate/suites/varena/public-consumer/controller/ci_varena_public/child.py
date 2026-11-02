@@ -32,6 +32,9 @@ def main():
     from tensorfs import _ext, varena
 
     try:
+        assert payload["gpu_uuid"] != "UNBOUND", (
+            "bind the observed rental GPU before execution"
+        )
         assert "torch" not in sys.modules
         assert digest(_ext.__file__) == payload["extension_sha256"]
         binaries = Path(__file__).parent / "bin"
@@ -47,6 +50,12 @@ def main():
             for line in Path("/proc/self/maps").read_text().splitlines()
             if len(line.split(maxsplit=5)) == 6
         }
+        rust_std = {
+            Path(path).name
+            for path in mapped
+            if Path(path).name.startswith("libstd-") and path.endswith(".so")
+        }
+        assert rust_std == {payload["std_name"]}, rust_std
         for name, wanted in (
             ("libvarena.so", payload["core_sha256"]),
             (payload["std_name"], payload["std_sha256"]),
@@ -68,13 +77,10 @@ def main():
         work, control = Stream(driver, helper), Stream(driver, helper)
         first, second = varena.open(0), varena.open(0)
         public.extend((first, second))
-        # This is the native default domain, not a guessed environment override.
-        directory = f"/dev/shm/cozy-varena-{os.geteuid()}"
+        # The fixture helper calls the one native default_directory implementation.
         until(
             lambda: (
-                helper.call(
-                    "observer", 0, payload["gpu_uuid"].encode(), directory.encode()
-                ),
+                helper.call("observer", 0, payload["gpu_uuid"].encode()),
                 True,
             )[1],
             label="closed metadata observer admission",
@@ -82,6 +88,7 @@ def main():
         observed = until(helper.facts, label="initial observer metadata")
         assert observed["closed"] and not observed["active"]
         assert observed["clients"] == 2 and observed["passive_holds"] == 1
+        assert observed["measured_requests"] == 0
         assert observed["row"] is not None and observed["row"]["pid"] == os.getpid()
         row_id = observed["owner"]
         result["observer_after_closed_lease"] = observed
@@ -114,6 +121,7 @@ def main():
                 facts["failed"] is None
                 and not facts["stopping"]
                 and not facts["retired"]
+                and facts["measured_requests"] == 0
             ), facts
             assert (
                 facts["closed"] and not facts["active"] and facts["passive_holds"] == 1
@@ -271,6 +279,7 @@ def main():
                     and facts["clients"] == 0
                     and facts["passive_holds"] == 1
                     and not facts["retired"]
+                    and facts["measured_requests"] == 0
                 )
             if driver is not None:
                 driver.close()

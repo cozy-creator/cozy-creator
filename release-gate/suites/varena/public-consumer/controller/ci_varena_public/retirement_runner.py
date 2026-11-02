@@ -7,7 +7,7 @@ from pathlib import Path
 binaries = Path(__file__).resolve().parent / "bin"
 sys.path.insert(0, str(binaries))
 sys.argv = [
-    str(binaries / "retirement_gpu.py"),
+    str(Path(__file__).with_name("retirement_fixture.py")),
     "--rust",
     str(binaries / "mixed-rust.so"),
 ]

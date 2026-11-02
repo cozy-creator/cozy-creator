@@ -128,6 +128,14 @@ def setup(payload, ctx):
         "libvarena.so": payload.core_sha256,
         payload.std_name: payload.std_sha256,
     }
+    rust_std = {
+        Path(value).name
+        for value in mapped
+        if Path(value).name.startswith("libstd-") and value.endswith(".so")
+    }
+    assert rust_std == {payload.std_name}, rust_std
+    for name, expected in manifest["python_helpers"].items():
+        assert digest(binaries / name) == expected, name
     for name, expected in libraries.items():
         paths = {value for value in mapped if Path(value).name == name}
         assert len(paths) == 1 and digest(next(iter(paths))) == expected, (name, paths)

@@ -1,10 +1,10 @@
 //! Qualification-only access to existing native metadata and fixture-owned Working.
 //! Build in the exact TensorFS/private-Rust/std cohort; never embed another allocator.
 #![allow(unsafe_code)]
+#![cfg(all(target_os = "linux", target_has_atomic = "64"))]
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use varena::{cooperative::Owner, ledger};
 
@@ -92,15 +92,11 @@ struct Observer {
 }
 static OBSERVER: OnceLock<Mutex<Option<Observer>>> = OnceLock::new();
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn probe_observer(
-    device: i32,
-    uuid: *const c_char,
-    directory: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn probe_observer(device: i32, uuid: *const c_char) -> i32 {
     let mut deferred = false;
     let status = boundary(|| {
         let uuid = unsafe { string(uuid)? };
-        let directory = unsafe { string(directory)? };
+        let directory = varena::cooperative::default_directory().map_err(error)?;
         let mut observer = OBSERVER.get_or_init(Mutex::default).lock().map_err(error)?;
         if observer.is_some() {
             return Err("observer already installed".into());
@@ -109,7 +105,7 @@ pub unsafe extern "C" fn probe_observer(
         // client is closed before any custody assertions; the retained Control is host-only.
         let owner = Owner::get_or_open_default(device).map_err(error)?;
         let table = match ledger::Ledger::open_nonblocking(
-            Path::new(&directory),
+            &directory,
             ledger::Device::parse(&uuid).map_err(error)?,
         ) {
             Ok(table) => table,
@@ -157,7 +153,8 @@ pub extern "C" fn probe_observer_facts() -> *const c_char {
             "clients": facts.clients, "passive_holds": facts.passive_holds,
             "closed": facts.closed, "active": facts.active, "stopping": facts.stopping,
             "retired": facts.retired, "activity": format!("{:?}", facts.activity),
-            "published": facts.published, "failed": facts.failed, "row": row,
+            "published": facts.published, "measured_requests": facts.pressure.measured_requests,
+            "failed": facts.failed, "row": row,
             "table_generation": table.generation}),
         )
     })();

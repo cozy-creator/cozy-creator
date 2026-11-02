@@ -182,7 +182,7 @@ def main():
         payload[key] = hashes[name]
     original_fixture = args.source_root / "release-gate/suites/varena/public-api"
     python_helpers = {}
-    for name in ("retirement_gpu.py", "streams.py"):
+    for name in ("streams.py",):
         shutil.copy2(original_fixture / name, binaries / name)
         python_helpers[name] = sha(binaries / name)
     source_helper_path = "release-gate/suites/varena/public-source/source.c"
@@ -197,6 +197,7 @@ def main():
         "binaries": hashes,
         "elf": elf_facts,
         "python_helpers": python_helpers,
+        "retirement_successor": json.loads((fixture / "retirement-origin.json").read_text()),
         "public_source_helper_source_sha256": data_sha(source_helper),
         "wheels": {
             "runtime": {

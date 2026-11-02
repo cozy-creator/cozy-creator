@@ -1,0 +1,8 @@
+{
+  "original_path": "release-gate/suites/varena/public-api/retirement_gpu.py",
+  "original_commit": "08a0d955e899e781e50842214fa97e99e3c72b31",
+  "original_sha256": "0f7a3b6fda85d1a507111223cf0227b14b058f714c4f55f2b736ca186875860d",
+  "successor_path": "controller/ci_varena_public/retirement_fixture.py",
+  "change": "After the actual consuming stream completes, drain submitted Source/Fill retirement before capture; preserve live Use/Region and every original assertion.",
+  "all_original_assertions_preserved": true
+}

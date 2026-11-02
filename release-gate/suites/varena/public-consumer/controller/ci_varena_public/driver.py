@@ -38,7 +38,7 @@ class Probe:
             "probe_free": [C.c_int, C.c_uint64, C.c_uint64],
             "probe_retire_stream": [C.c_int, C.c_uint64],
             "probe_trim": [C.c_int],
-            "probe_observer": [C.c_int, C.c_char_p, C.c_char_p],
+            "probe_observer": [C.c_int, C.c_char_p],
         }.items():
             f = getattr(self.lib, name)
             f.argtypes, f.restype = args, C.c_int

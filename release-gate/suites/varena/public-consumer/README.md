@@ -1,9 +1,9 @@
 # Actual public Varena consumer qualification
 
 Owner `/root/core_restart`; ordinary Cozy controller, exact same-core C/Rust/Python
-clients, no mocks or application allocation policy. Parent source is native731bb954a
-plus fresh master. The process-lifetime keeper and public Source source successors
-will be composed before native build/qualification. No GPU execution has occurred.
+clients, no mocks or application allocation policy. Parent source is the combined native08a0d955e product on fresh master. The
+process-lifetime keeper and public Source changes are included unchanged. The native
+fixture helper passes cargo check in1.86s; no portable helper or GPU execution has occurred.
 
 ## Cases
 
@@ -40,3 +40,37 @@ The native observation helper uses existing public Rust functions; no product-on
 test observation API is introduced. Native private Rust/std and shared core hashes
 must match the installed TensorFS extension's exact cohort. Source/CPU checks,
 artifact build, GPU execution and release remain distinct gates.
+
+## Executable preparation
+
+Nine entrypoints: `public_basic`, `passive_custody`, `mixed_retirement`,
+`source_ordering`, `source_partial`, `source_prepare_error`, `source_pending`,
+`source_retained`, `host_bytes`. The last six invoke the Source owner's exact
+frozen C provider helper; they do not duplicate its implementation.
+
+Build `varena-public-probe` in the exact TensorFS dependency cohort. It uses only
+`varena` and `serde_json`, with no CLI/platform/fetch dependencies. The actual
+parent process must map exactly one core and one matching Rust standard library.
+The helper's native private Rust calls require that exact artifact pairing.
+
+`prepare.py --source-root ROOT --source-sha FIXTURE_SHA --runtime-wheel RUNTIME_WHEEL
+--tensorfs-wheel TENSORFS_WHEEL --native-build-receipt RECEIPT.json
+--probe-lib PUBLIC_PROBE_SO --mixed-c MIXED_C_SO --mixed-rust MIXED_RUST_SO
+--source-helper SOURCE_C --gpu-uuid UNBOUND --output NEW_OUTPUT` freezes the ordinary
+Cozy project and one strict flat input payload. Root binds the observed rental UUID
+before execution. The native build receipt records actual `source_sha`,
+`core_sha256`, `std_name`, `std_sha256`, and `binaries` hashes keyed by
+`public-probe.so`, `mixed-c.so`, `mixed-rust.so`, `source-c`.
+
+The prepared artifacts include the source owner's C helper and the existing mixed
+retirement test's recorded successor. The successor completes its actual consuming
+stream and drains submitted Source/Fill retirement before CUDA capture; live
+Use/Region handles stay retained. `retirement-origin.json` records the original
+hash, and the AST proof preserves every original assertion and other executable
+node. Its intentional final live-Cache quarantine is separate from earlier failures.
+
+P3 independently reviewed passive custody and found no concrete blocker. Source
+parsing, Ruff, offline Cargo resolution and the native helper type check pass.
+`evidence/source-checks.json` records exact scope. Portable artifact loading, actual
+GPU execution and installed software qualification remain pending. The fixture
+does not claim a donation-to-another-process proof or a full-model performance pass.
