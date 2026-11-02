@@ -1,0 +1,25 @@
+{
+  "source": "6c4f0e53a2a6324cff002d9ce558d8313c2f2904",
+  "passed": true,
+  "gpu_executed": false,
+  "scope": "Linux x86_64 mixed C/Rust/internal-Rust/Python host proof in both load orders; source includes ledger065, committedb6 and P4bf/5472",
+  "files": {
+    "core-dependencies.txt": "7b03fd946bb6514a49dbe83db6707a9e3464013b5bd3b62181c10c31059474b0",
+    "artifacts.sha256": "d15a5924e675730d29e8a8b1761295f838e423df72dfc2751a60405ec17524c2",
+    "prove-host-one-job.sh": "230aaf639e2d885de0045f27f8b631c1466edc3fbdbb35d15a442dca6824486d",
+    "rust-engine-host.json": "c309e76ccd32c7f0fea95edf31afde88628b5eba73ef073f058548e6880ce0c3",
+    "extension-dependencies.txt": "3bf149a92e6f0cfd74de5c71777d7cdd1c53fc4c48a223b1b2a2ab8d49b7a532",
+    "bundle.json": "3b1926ce5e6a2fe28044c9fa8737e7de78e7e6b7ebc53dac1d0ee8dc6cca0afe",
+    "driver.json": "a8bef74e131d48691ad9a34f72b1accacd8f3b80155f5644e80cacfbef1d2bf0",
+    "build.log.gz": "2db8fd77ba6d4e6edb6a839904faf9cbb15254692856b33550c34199c7067b57",
+    "c-engine-host.json": "1d9abe0f196c08a84abc9a5ff6cd6a3d6f85c5273942b4afa7968552b23f9c2e",
+    "python-first.json": "85479e0784be5305034d4b1cf671d4ddceebc0b32af473f5e36658bcfd0e4d58",
+    "tfs-version.txt": "19a64545f490096801d5ea36790affd5d6de6490f3f24d86903f9cb06603e12e",
+    "native-first.json": "391c2561447ce39ed137c02a72f518bfed4bfe8854c645f6af626bb13dce9dad"
+  },
+  "limitations": [
+    "Public close/retry and private Rust compatibility fixes remain external work.",
+    "Shared peer-service client lifetime is a separate unadopted source freeze.",
+    "Portable wheel, native/Torch GPU behavior, multi-GPU and release integration remain unqualified."
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "paths": [
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.net.0.proj",
+    "ff.net.2"
+  ],
+  "shapes": [
+    [
+      2048,
+      2048
+    ],
+    [
+      2048,
+      2048
+    ],
+    [
+      2048,
+      2048
+    ],
+    [
+      2048,
+      2048
+    ],
+    [
+      16384,
+      2048
+    ],
+    [
+      2048,
+      8192
+    ]
+  ],
+  "runtime_modules": [
+    "_kernels/_dense.abi3.so",
+    "_kernels/__init__.py",
+    "internal/dense_linear.py",
+    "internal/execution/phase.py",
+    "internal/residency.py",
+    "fusion/__init__.py",
+    "fusion/_kernels.py",
+    "graphs/domain.py",
+    "internal/accel.py"
+  ],
+  "scope": "actual fixture module construction and source import only; no native module loaded or CUDA call"
+}
