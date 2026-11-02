@@ -37,11 +37,10 @@ fn useful_work(cuda: &Cuda, region: &Arc<varena::Region>, stream: u64, output: u
 pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let live = Arena::new(device)?;
     let live_region = live.reserve(BYTES)?;
-    let mut bytes = vec![41u8; BYTES];
-    bytes[BYTES / 2..].fill(73);
-    let mut ready = fill(&live_region)?;
-    ready.copy_from_host(&bytes)?;
-    // SAFETY: copy_from_host synchronously completed the only producer of all logical bytes.
+    let independent = cuda.stream()?;
+    let ready = fill(&live_region)?;
+    cuda.initialize_pattern(ready.ptr(), independent)?;
+    // SAFETY: the owned independent stream completed both whole-region writes.
     unsafe {
         drop(ready.commit_completed()?.into_completed_region());
     }
@@ -55,15 +54,12 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let errors = Arc::clone(&resources.errors);
     let control = cuda.stream()?;
     let consumer = cuda.stream()?;
-    let independent = cuda.stream()?;
     let producer_gate = working::alloc(device, 4, control, None)?;
     let consumer_gate = working::alloc(device, 4, control, None)?;
     let output = working::alloc(device, BYTES, consumer, None)?;
     let independent_output = working::alloc(device, BYTES, independent, None)?;
-    unsafe {
-        check("clear producer gate", (cuda.set)(producer_gate, 0, 4))?;
-        check("clear consumer gate", (cuda.set)(consumer_gate, 0, 4))?;
-    }
+    cuda.initialize_gate(producer_gate, control)?;
+    cuda.initialize_gate(consumer_gate, control)?;
     let released_before = varena::released_bytes(device)?;
     let mut session = owned(fill(&region)?, &resources);
     let destination = session.begin()?;
