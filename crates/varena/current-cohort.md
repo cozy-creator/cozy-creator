@@ -1,31 +1,33 @@
 # Current-source Varena composition
 
-Owner: `/root/current_cohort_restart`, assigned by `/root`, branch
-`codex/xs138-v2-current-core`. Fresh Creator base
-`04c1a1021743540d4f09b3a6ceba450e333d30d8`. One writer; all PRs remain draft.
+Owner `/root/current_cohort_restart`, assigned by `/root`; branch
+`codex/xs138-v2-current-core`, original current Creator base
+`04c1a1021743540d4f09b3a6ceba450e333d30d8`. One writer; draft only.
 
-This composes native `ebe91ad3447c668a93776cf4628b8f585e5aedd6` with current Calcifer-routed CLI source,
-updater custody/mode `dfccac271` + `37a4b7fcc`, and per-rank Start descriptors
-`630f138f1` + `6ca492122`. Varena/TensorFS/binding/client implementation and
-crate manifests equal ebe91 exactly. The twelve commits after 6e22 add export
-fixtures, managed Torch offload and review fixes, Region intent wrappers,
-post-capture accounting observations, and initialized CLIP set declarations.
-Current dependency inputs and the private protocol need a new coherent artifact
-and GPU qualification. Prior paid receipts used static worker f57 and controlled
-Runtime 40fde; native successors and CLIP overlays do not qualify this worker.
+Current product source 0a37d56a8 matches native d3e8b3651 across Varena/TensorFS/
+Python bindings/external Rust client implementation and manifests. It composes
+reviewed offload/export/CLIP fixes, scalar residency census, and retired-backing
+reclaim/error latching with current Calcifer-routed CLI, updater custody/mode 37a
+and per-rank Start protocol 6ca. Updater/rank source hashes remain unchanged.
+Explicit event-trim 2e6704f7 remains excluded.
 
-Runtime companion is the same branch name, based on current0.37.2/f01fe1d0b,
-including per-rank startup22c2d3d15 and immutable VAE descriptor944246f6.
-New Start descriptors require the paired worker/Runtime. No deployment or release.
+The current Runtime companion 88b7f7619 adds the complete native refiner FFN path
+and semantic/actual-dispatch fixture to per-rank startup and immutable VAE fixes.
+Its distinct source-stamped 0.37.2+dev.g88b7f761 wheel is built and CPU-qualified;
+SHA256 c35299925087fac0c300b768802761bd1f503b9897f3f6a67d47af1795a78e5a.
+All 581 existing native members are preserved after source/key/hash verification.
+Actual GPU refiner dispatch and current-cohort inference remain unqualified.
 
-Not included: explicit event-trim 2e6704f7 (awaiting GPU proof).
-Independent 2-GPU jobs and H3 Ulysses2/4
-remain required. No private-library rollout, live updater or platform proof is
-inferred from source composition and inherited receipts.
+`evidence/current-cohort-0a37/` records exact current/native input differences and
+the companion wheel summary. Prior all-target/core/binding/protocol host results
+remain in `evidence/current-cohort-118d/` with their checked heads. The new wheel's
+full evidence is in Runtime `docs/evidence/current-wheel-88b7/`.
 
-Current-source checks and exact dependency-input differences are recorded in
-`evidence/current-cohort-118d/`; proposed artifact commands are in
-`current-cohort-build-plan.md`. No GPU, rental, install, merge or release was
-performed here. The paid lane's strict numerical failure and 4.73-4.98x warm
-offload slowdown remain separate blockers. This composition does not fix or
-attribute the slowdown to padding.
+No current worker or TensorFS build was performed here. The 18 Cargo/platform/
+protocol input differences require an appropriately built private dependency
+cohort; the planned cached build is in `current-cohort-build-plan.md`. Existing
+worker f57/controlled-Runtime 40fde diagnostic receipts and later native fixes do
+not qualify this current worker. Independent two-GPU/per-rank startup, H3
+Ulysses 2/4, private-library rollout and live updater propagation remain separate.
+Earlier numerical/performance failure receipts are preserved; no GPU, rental,
+live install, merge or release occurred in this local artifact lane.

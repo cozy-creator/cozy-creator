@@ -1,16 +1,17 @@
 # Current cohort artifact and device plan
 
-Checked product source: Creator `118d668f0d7ec05348ff011bb8502488f210f27e`,
-Runtime `78e58f7e51bade1bea92c75f238ba058d59421a2`. Evidence-only successors
-retain these product trees. Native source equals `ebe91ad3447c668a93776cf4628b8f585e5aedd6`.
-These commands are proposed only: no artifact build, repack, dispatch or install
-was run by this owner. Coordinate cache custody before any compilation.
+Current product source: Creator `0a37d56a8ab4758e063f7470e6312922c177c730`,
+Runtime `88b7f7619a8d1669bd8ae89e9e285a302ac3c061`. Evidence-only successors
+retain these product trees. Native source equals `d3e8b36512a8456efb13b9efcbaa8d4f65de30a1`.
+The Runtime wheel below is built and host-checked. Creator worker/TensorFS
+commands remain proposed; coordinate matching-cache custody before compilation.
+No current worker/TensorFS build, GPU, rental or live install ran in this lane.
 
 ## Reuse the matching Creator build cache
 
-`evidence/current-cohort-118d/source-equivalence-002.json` records the 18 different
+`evidence/current-cohort-0a37/source-inputs.json` records the same 18 different
 Cargo/platform/protocol inputs by Git blob. Varena/TensorFS/binding/client code
-and manifests equal ebe91. Existing compiler cache reuse is preferred: preserve
+and manifests equal d3e8. Existing compiler cache reuse is preferred: preserve
 unchanged source mtimes, use the verified toolchain and feature graph, and copy
 immutable outputs before another build changes the cache. A fresh target is
 necessary only for an evidenced incompatibility that cannot safely reuse the
@@ -21,7 +22,7 @@ borrowed it. Its next owner must secure exclusive custody and audit processes.
 The known cached driver is
 `outputs/xs138-native-api-integrated/build-native-successor-final-001.py` and its
 qualified helpers-first/final-Maturin-last recipe is
-`outputs/xs138-native-api-integrated/linux-a247d24a3-final-001/build-wheel.sh`.
+`outputs/xs138-native-api-integrated/linux-d3e8b3651-final-001/build-wheel.sh`.
 The driver's ancestry check assumes native 6e22 is an ancestor; this composed
 branch imports that tree instead. A task-local adaptation must use the recorded
 composition/source-equivalence proof, not run the unmodified ancestry check.
@@ -77,9 +78,10 @@ same-process private binary compatibility; separate worker/Python processes
 require paired wire compatibility, not exact source or library SHA lockstep.
 Do not relabel a host-built wheel as manylinux.
 
-## Repack current Runtime with verified native bytes
+## Completed current Runtime artifact
 
-`runtime-native-reuse-002.json` in the paired Runtime evidence directory proves:
+`docs/evidence/current-wheel-88b7/runtime-native-reuse-003.json` in the paired
+Runtime repository repeats the native reuse proof after the refiner addition:
 65 actual native/build input files match both a09 and frozen 2f7 source; all
 external uv.lock dependencies/resolution match (only Runtime version changes);
 real current/frozen Triton imports produce identical 49 set/architecture specs
@@ -88,9 +90,9 @@ all shipped launchers. CUDA remained uninitialized. All 581 native member hashes
 were independently rechecked in both original and controlled 40fde wheels and in
 the preserved a09 native prefix. No native rebuild is indicated.
 
-The faster path is the existing source-stamped repack driver after committing the
-source/evidence tree. It creates new output, preserves the previous artifacts,
-and verifies all current Python sources and every native member:
+The existing source-stamped repack driver completed offline in 16.789s from clean
+88b7 source. It created new output and preserved all previous artifacts. The
+recorded invocation was (do not rerun merely for the later evidence commit):
 
 ```sh
 nice -n 19 python3 \
@@ -99,7 +101,16 @@ nice -n 19 python3 \
   /home/fidika/cozy_v2/outputs/xs138-p2-vae-block/native-a09e68dba/native-build-receipt.json
 ```
 
-Then verify the new wheel's complete RECORD, not just native member count:
+The completed wheel is
+`outputs/varena-v2-p0-20261031/runtime-build-88b7f7619/dist/cozy_runtime-0.37.2+dev.g88b7f761-cp312-abi3-manylinux_2_28_x86_64.whl`,
+SHA256 `c35299925087fac0c300b768802761bd1f503b9897f3f6a67d47af1795a78e5a`.
+All 832 RECORD rows, 225 Python/type-stub members, 581 native members and source
+provenance verified. Packaged CPU import/CLI, refiner contracts/semantic keys,
+strict startup 9 cases/7 ranks and fixture import passed. This used existing
+d3e8 TensorFS wheel eadf3465 read-only, not a new current Creator build.
+
+The complete RECORD verification used this algorithm, with the durable checker
+and receipt in Runtime `docs/evidence/current-wheel-88b7/`:
 
 ```sh
 nice -n 19 python3 - "$RUNTIME_WHEEL" <<'RECORD'
@@ -156,6 +167,6 @@ bash release-gate/gate.sh "$GPU_SKU" --on "$AUTHORIZED_MACHINE" \
 It requires a named existing machine, baseline and pinned package set; it grants
 no rental authority. The Qwen concurrency proof alone does not cover asymmetric
 pressure/owner isolation. Four-GPU H3 and pressure proofs need additional operator
-cells. Preserve the strict numerical failure and 4.73-4.98x warm offload slowdown
-reported by the paid lane. No padding-only explanation or P0-P4 completion is
+cells. Preserve earlier strict numerical failure and warm slowdown receipts with their
+original cohorts; later native diagnostic fixes do not qualify this current pair. No padding-only explanation or P0-P4 completion is
 inferred from this composition.
