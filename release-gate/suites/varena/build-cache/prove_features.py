@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import hashlib
 import json
 import subprocess
 import sys
@@ -61,10 +62,25 @@ def run() -> dict:
         staged = tree(manifest, ["tensorfs", "tensorfs-py"], staged_features, ["--no-default-features"])
         extension = tree(manifest, ["tensorfs-py"], base + user_features, cargo_flags)
         assert staged == extension, {"case": name, "stage": staged, "extension": extension}
+        helpers = tree(manifest, ["tensorfs", "tensorfs-py", "varena-mixed-client", "varena-native-gpu-proof"],
+                       staged_features, ["--no-default-features"])
+        extra = set(helpers) - set(staged)
+        expected_roots = {"varena-client", "varena-mixed-client", "varena-native-gpu-proof"}
+        assert {key.split(" ", 1)[0] for key in extra} == expected_roots, extra
+        assert {key: value for key, value in helpers.items() if key not in extra} == staged, {
+            "case": name, "changed_shared_features": {
+                key: {"stage": staged[key], "helper": helpers.get(key)}
+                for key in staged if staged[key] != helpers.get(key)
+            },
+        }
+        normalized = {key.replace(str(repo), "<repo>"): value for key, value in staged.items()}
+        graph_hash = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
         native = {key: value for key, value in staged.items() if key.startswith("tensorfs v")}
         assert native and all(value == ["store"] for value in native.values()), native
         cases.append({"name": name, "package_nodes": len(staged), "features": staged_features,
-                      "native_tensorfs": native, "graphs_equal": True,
+                      "native_tensorfs": native, "graphs_equal": True, "helpers_common_graph_equal": True,
+                      "helper_only_nodes": sorted(key.replace(str(repo), "<repo>") for key in extra),
+                      "common_feature_graph_sha256": graph_hash,
                       "interpreter": environment["PYO3_PYTHON"]})
     old = tree(manifest, ["tensorfs", "tensorfs-py"], base, [])
     old_native = {key: value for key, value in old.items() if key.startswith("tensorfs v")}

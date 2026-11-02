@@ -21,3 +21,15 @@ Record the exact SDK/wheel/native hashes, driver, Torch/CUDA shim, device UUID a
 both receipts. Follow with the native engine, Rust, Python and cache examples.
 Retain failed receipts. Host linking or a shared identity alone is not shared GPU
 allocation/reclamation proof; no GPU result has been recorded by the P4 owner.
+
+The archive activation/rollback proof is a separate Cargo example:
+
+```sh
+cargo build --locked -p varena-mixed-client --example varena-native-install-proof \
+  --target-dir <separate-installer-target>
+```
+
+Its platform/fetch dependency is development-only. Do not select this installer example
+while building the mixed library, extension and native GPU fixture cohort: that would
+reintroduce unrelated fetch/archive dependency features and overwrite shared artifacts.
+The example keeps the original src/install.rs and its actual staging/rollback checks.

@@ -26,3 +26,11 @@ Root owns the still-busy portable target. The actual cached no-recompile check m
 recorded helper commit/tool hashes as a packaging-driver overlay against frozen08a Rust,
 with pinned maturin1.16, after that target is released. Preserve the earlier build/log and
 report native product, packaging driver and tool identities separately.
+
+A second observed mismatch came from the mixed-client library's unused normal dependency
+on platform/fetch, needed only by its installer proof. That proof is now an example with
+a dev dependency. Actual whole Cargo graphs show all234 extension/CLI dependency nodes
+match the mixed/native-GPU helper cohort; only the three helper/client package roots are
+additional. Before the change, six shared feature sets changed and forty extra dependency
+nodes appeared. The installer example must be built in its own target, outside the frozen
+wheel/SDK cohort. All helper builds still need the canonical namespaced feature selection.
