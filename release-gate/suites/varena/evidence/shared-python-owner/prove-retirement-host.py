@@ -40,7 +40,7 @@ for key, value in package['features'].items():
     lines.append(f'{key} = {toml(value)}')
 (crate / 'Cargo.toml').write_text('\n'.join(lines) + '\n')
 (crate / 'Cargo.lock').write_bytes(subprocess.check_output(['git', 'show', f'{commit}:Cargo.lock'], cwd=root))
-harness = Path(__file__).with_name('host-queue.rs')
+harness = Path(__file__).with_name('retirement-host-harness.rs')
 with (crate / 'src/retirement.rs').open('a') as output:
     output.write('\n' + harness.read_text())
 with (crate / 'src/lib.rs').open('a') as output:
