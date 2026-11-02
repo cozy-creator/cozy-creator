@@ -29,8 +29,8 @@ const RENDERERS: [(&str, &str); 6] = [
     ("world_state", "qwen-image-2/generate"),
     ("shot", "minimax-h3/generate"),
     ("upscale", "minimax-h3/upscale"),
-    // Characters' and props' pictures before any use: the subject on white, so a shot renderer
-    // never paints their backgrounds into the set.
+    // Characters' and props' pictures its renderer can't draw transparent, before any use: the subject
+    // on white, so a shot renderer never paints their backgrounds into the set.
     ("clean", "birefnet/remove_background"),
 ];
 
@@ -72,6 +72,10 @@ shots:
       summary:
       The target video shows <kyogre> bursting out of the stormy sea of <coast>.
 
+      retention_analysis:
+      <coast>: keep the look shown in the reference.
+      <kyogre>: keep the look shown in the reference.
+
       detailed_description:
       [Shot 1] A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
 
@@ -88,6 +92,10 @@ shots:
       summary:
       The target video shows <groudon> clawing its way out of the lava cliffs of <coast> and roaring.
 
+      retention_analysis:
+      <coast>: keep the look shown in the reference.
+      <groudon>: keep the look shown in the reference.
+
       detailed_description:
       [Shot 1] A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
@@ -103,6 +111,11 @@ shots:
     description: |
       summary:
       The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
+
+      retention_analysis:
+      <coast>: keep the look shown in the reference.
+      <kyogre>: keep the look shown in the reference.
+      <groudon>: keep the look shown in the reference.
 
       detailed_description:
       [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
@@ -985,7 +998,7 @@ impl Video {
         let made = Made { node: node.id.clone(), upstream: Some(upstream), ..Default::default() };
         let styled = |text: String| match self.project.style.trim() {
             "" => text,
-            style => format!("{text}\n\nStyle: {style}."),
+            style => format!("Style: {}.\n\n{text}", style.trim_end_matches('.')),
         };
         let mut files = vec![];
         let pictures = |files: &mut Vec<Input>| -> Vec<Value> {
@@ -1001,20 +1014,24 @@ impl Video {
         let (mut payload, call) = match self.items[i] {
             Item::Entity(a) => {
                 let entity = &self.project.entities[a];
-                // Only the entity itself, once: a picture it mentions is for likeness, never drawn beside it.
-                let name = &entity.name;
+                let (name, description) = (&entity.name, entity.description.trim());
+                let transparent = renderer.draws_transparent();
+                let ground = if transparent { "" } else { " on a plain white background" };
                 let (shown, ratio) = match entity.kind {
                     EntityKind::Character => (
-                        format!("Character reference of {name} alone: a single front view of one whole figure, on a plain white background. Any other picture is for likeness only; draw no one else."),
-                        "3:4",
+                        format!("The image is a wide character sheet of {name}{ground}, in five separate views with no text.\n\n{description}\n\nOn the left, the whole body is seen from the front and turned slightly, with nothing added to the body described and no ground under it. Beside it, the whole body is seen from behind and turned slightly, at the same size. On the right, three close-ups of the head are stacked one above the other: neutral with the mouth closed, joyful with the mouth wide open, and angry with the brow lowered and teeth bared."),
+                        "16:9",
                     ),
                     EntityKind::Prop => (
-                        format!("Prop reference of {name} alone: one view of the object, on a plain white background. Any other picture is for likeness only; draw nothing else."),
-                        "1:1",
+                        format!("The image is a wide prop sheet of {name}{ground}, in three separate views with no text.\n\n{description}\n\nOn the left, the whole object is seen from the front and turned slightly. In the center, the whole object is seen from behind and turned slightly. On the right, a close-up fills the view with one small part of it."),
+                        "16:9",
                     ),
-                    EntityKind::Environment => ("An establishing view of the empty set, no people.".to_owned(), self.canvas.aspect.as_str()),
+                    EntityKind::Environment => (format!("{description}\n\nAn establishing view of the empty set, no people."), self.canvas.aspect.as_str()),
                 };
-                let prompt = styled(format!("{}\n\n{shown}", entity.description.trim()));
+                let prompt = match transparent && entity.kind != EntityKind::Environment {
+                    true => format!("This is an RGBA image with transparency. {}\n\nThe image has alpha channel and the background is transparent.", styled(shown)),
+                    false => styled(shown),
+                };
                 (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": ratio}), None)
             }
             Item::Reference(_) => return Err(reference_made(&node.id)),

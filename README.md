@@ -214,8 +214,9 @@ true`, goes to its function, and editing the file puts only those shots out of d
 in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
 shot. What a function does not take is left out and said.
 
-Character and prop pictures are cleaned on this computer before
-use. Only a changed upstream file puts something out of date, never a text edit or a render block:
+A character's picture is a 16:9 sheet (front, back, three close-ups) and a prop's a 16:9 sheet (front, back, a close-up),
+transparent on `qwen-image-2`. On any other renderer they're on white and, like a picture you attach, cleaned on this
+computer before use. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy project render <name>` when you want a new take. A node renders by its `render:` block: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
 project's folder, which Calcifer makes ready on each `--on` machine), `models` and `lora` as `cozy run --input` takes them, and
 `options`, the function's own fields. A block that
