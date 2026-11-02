@@ -1,0 +1,43 @@
+{
+  "passed": true,
+  "tests": {
+    "canceled_caller_keeps_bundle_through_actual_journal_custody": "pass",
+    "mode_payload_and_wanted_readback_are_typed": "pass",
+    "real_binary_measurement_keeps_version_and_complete_bundle": "pass",
+    "same_key_generated_bundles_keep_content_identity_through_journal_race": "pass"
+  },
+  "test_execution_seconds": 313.9,
+  "test_compile_seconds": 406,
+  "raw_log_sha256": "25db6dee4051c14507429e29ee62ac8ed6c99bcae62fb83011f1b51df22006b9",
+  "input": {
+    "source": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/cozy-6ab",
+    "prepared": "/home/fidika/cozy_v2/outputs/xs138-p4-calcifer-update/real-input-stripped",
+    "version_before": "cozy 0.15.7",
+    "version_after": "cozy 0.15.7",
+    "original_bytes": 806603289,
+    "prepared_bytes": 179496728,
+    "prepared_sha256": "11a6e092f4e6a36aa76d68926e48ce1013a83bf70fb67249471a18c707f1aa5a",
+    "native_libraries_unchanged": true,
+    "scope": "real previously built cozy binary; only debug sections stripped on owned copy; no installed binary/machine changed"
+  },
+  "source_files": {
+    "crates/calcifer/src/update.rs": "6f7f61680ad7a27dff8bef9b41aed659c2a940a1c85f406c3b026345d2e1f0b0",
+    "crates/calcifer/src/update/proof.rs": "eb43428571a3d5aa00223cfc56ecbb061253ab696ee22eaafe1333b90e1ef397",
+    "crates/calcifer/src/lib.rs": "6afc2d2c515bd2dc0c6dd798b87871732d128a9483e60793cf2918831e7b14ab",
+    "crates/protocol/src/calcifer.rs": "9c7d80be3263ce1010d0eb41159357ac675f362e76e03fee3296e675cb636bb0",
+    "crates/cli/src/machine/end.rs": "83e7b5161e9e5c16f74fdd057780e0d7410e73db127a0ad126e716b6a0496929",
+    "crates/cli/src/machine/mod.rs": "6c4d0186fb52914bc1de040fbbc8413910d38365118ca1dfb1e1a295f55e4b25"
+  },
+  "native_activation_rollback_unchanged_from": "0fbbc114f7e251db5f2161c601058d7bc9401e34",
+  "unchanged_native_files": [
+    "crates/platform/src/native_bundle.rs",
+    "crates/tensord/src/machine/update.rs",
+    "crates/tensord/src/machine/release.rs"
+  ],
+  "prior_rollback_evidence": "release-gate/suites/varena/public-api/evidence/2026-11-01-review/native-update-rollback.json",
+  "rollback_rerun": false,
+  "live_machine_update": false,
+  "release": false,
+  "gpu_executed": false,
+  "scope": "real isolated Calcifer CAS/SQLite submission and actual private binary/archive/version; no network endpoint or live restart"
+}
