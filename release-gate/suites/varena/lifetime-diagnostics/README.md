@@ -91,3 +91,49 @@ pool-tag, graph-count and engine-owner facts. Every original assert AST is equal
 including strict event_handles equality; it does not close the intentionally
 live domain to manufacture a baseline. Apply that one file to a NEW23db project
 copy, not to a product/Runtime tree. GPU diagnostics remain unrun.
+
+## Confirmed pinned-host result and modern API probe
+
+Leg17 runs26082/26083/26084 identify cuMemFreeHost as the blocked call:
+free returns only after the CPU-only gate opens, and both original async resource
+callbacks stop at before_host_free after destroying their producer streams.
+Run26085 reaches public host_bytes.before_done; it does not implicate allocation.
+Run26087 qualifies the registration-free owner_try_close fixture correction.
+
+`modern_host.c` includes the official pinned CUDA13 header; no hand-written pool
+or VMM property layout. Build with C11, -Wall -Wextra -Werror, official include
+path, -ldl -pthread. It also includes pinned_host.c for the exact prior gate and
+bounded observation helpers. No Varena code or installed artifact changes.
+
+The `modern_host_pool` and `modern_host_vmm` entrypoints run separate children:
+
+```text
+varena-modern-host pool GPU-actual-UUID 0
+varena-modern-host vmm GPU-actual-UUID 0
+```
+
+Both report HOST/HOST_NUMA pool attributes. An unsupported capability is an
+explicit diagnostic result (`supported=false`, `qualified=false`), never a
+successful modern-staging claim. HOST pool has maxSize8MiB for one4MiB allocation.
+VMM uses HOST, handleTypes0, actual granularity, and both CPU/GPU access grants.
+The full CPU write -> H2D -> D2H readback completes before the unrelated gate.
+The allocation's only actual transfers have completed before release starts.
+
+A separate owned thread releases via freeAsync + an actual completion event +
+poolDestroy, or VMM unmap + release + addressFree. Individual stage markers and
+completion/return timestamps distinguish queue admission, real stream completion,
+and final destruction. The100ms closed-gate window is an observation, never a
+failure inference; the CPU alone opens the gate, preserving the same10s/60s
+protocol limits. No context/device synchronization is inserted. One successful
+sample cannot prove all hardware support or a universal nonblocking guarantee.
+
+Primary references: [current stream-ordered allocator](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__MALLOC__ASYNC.html)
+and [CUDA13.0 VMM](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-driver-api/group__CUDA__VA.html).
+The actual pinned official header is source evidence for HOST attributes144/142,
+HOST pool maxSize and HOST VMM properties; the actual driver decides support.
+
+The product choice remains pending these probes. Existing TensorFS device I/O
+already returns completed pinned slots to its process-owned bounded32MiB reader
+engine. Direct Varena reuse would create a dependency cycle. Factoring a bounded
+lease primitive down is possible but must preserve the measured reader-local
+rings and avoid unbounded pinned retention or freeing on the retirement worker.

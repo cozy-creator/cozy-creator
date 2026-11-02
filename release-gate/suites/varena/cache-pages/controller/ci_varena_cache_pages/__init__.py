@@ -511,3 +511,15 @@ def pinned_host_free(payload: Probe, ctx: Context) -> Report:
 def event_history(payload: Probe, ctx: Context) -> Report:
     """Real completed-event reuse on mixed-live backing, with no pool/cache attribution."""
     return native(payload, ctx, 'event_history')
+
+
+@app.entrypoint(accelerator=True)
+def modern_host_pool(payload: Probe, ctx: Context) -> Report:
+    """Actual HOST-pool capability, byte-copy and closed-gate retirement diagnostic."""
+    return native(payload, ctx, 'pool', helper='varena-modern-host')
+
+
+@app.entrypoint(accelerator=True)
+def modern_host_vmm(payload: Probe, ctx: Context) -> Report:
+    """Actual HOST VMM capability, byte-copy and closed-gate retirement diagnostic."""
+    return native(payload, ctx, 'vmm', helper='varena-modern-host')
