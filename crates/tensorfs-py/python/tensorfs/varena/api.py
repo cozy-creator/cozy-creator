@@ -12,8 +12,13 @@ import ctypes as C
 import operator
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
+from typing import TYPE_CHECKING
 
 from .. import _ext
+from .sources import Source, dtype_descriptor
+
+if TYPE_CHECKING:
+    import torch
 
 
 class Error(RuntimeError):
@@ -257,8 +262,8 @@ class Gpu(_Owned):
         super().__init__(_new("gpu_open", device))
         self.device = device
 
-    def region(self, data: bytes | bytearray | memoryview) -> Region:
-        data = bytes(data)
+    def region(self, data: Source | bytes | bytearray | memoryview) -> Region:
+        data = data.data if isinstance(data, Source) else bytes(data)
         return Region(_new("region_from_host", self._handle, data, len(data)), self)
 
     def use(self, regions: Sequence[Region], stream: int) -> Use:
@@ -330,6 +335,30 @@ class Region(_Owned):
         super().__init__(handle)
         self.gpu = gpu
 
+    def tensor(
+        self,
+        *,
+        dtype: str | torch.dtype,
+        shape: Sequence[int],
+        strides: Sequence[int] | None = None,
+        byte_offset: int = 0,
+        stream: int,
+    ) -> torch.Tensor:
+        """Export typed storage, ordered on an actual explicit CUDA stream.
+
+        Install tensorfs.varena.torch first. The tensor storage owns its native
+        Pin independently of this Region and the temporary Use. Additional
+        consumer streams need dependencies and Tensor.record_stream as usual.
+        """
+        with self.gpu.use([self], stream) as used:
+            return used.tensor(
+                dtype=dtype,
+                shape=shape,
+                strides=strides,
+                byte_offset=byte_offset,
+                stream=stream,
+            )
+
 
 class Use(_Owned):
     """Retain weights and order their producers on the supplied consumer stream.
@@ -350,6 +379,40 @@ class Use(_Owned):
         if not self._handle:
             raise Invalid("Use has ended")
         return _new("use_ptr", self._handle, _uint(index))
+
+    def tensor(
+        self,
+        index: int = 0,
+        *,
+        dtype: str | torch.dtype,
+        shape: Sequence[int],
+        strides: Sequence[int] | None = None,
+        byte_offset: int = 0,
+        stream: int | None = None,
+    ) -> torch.Tensor:
+        """Export an independently pinned typed Torch tensor on this Use's stream.
+
+        An explicit stream override orders the same Source producer there before
+        export. Record other streams on the tensor before final alias release,
+        after establishing CUDA dependencies before their reads. Strides count
+        elements and byte_offset addresses the Region's logical bytes.
+        """
+        import torch
+
+        if not self._handle:
+            raise Invalid("Use has ended")
+        code, bits, _ = dtype_descriptor(dtype)
+        capsule = _ext._varena_public_use_dlpack(
+            self._handle,
+            _uint(index),
+            code,
+            bits,
+            [operator.index(value) for value in shape],
+            None if strides is None else [operator.index(value) for value in strides],
+            _uint(byte_offset),
+            _uint(self.stream if stream is None else stream),
+        )
+        return torch.utils.dlpack.from_dlpack(capsule)
 
 
 class Allocation(_Owned):
