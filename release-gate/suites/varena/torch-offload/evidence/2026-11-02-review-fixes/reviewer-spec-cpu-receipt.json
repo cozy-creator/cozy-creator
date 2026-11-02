@@ -1,0 +1,29 @@
+{
+  "reviewed_commit": "f574e526a7dfb528881e02315dc99bdc194b8479",
+  "torch": "2.14.1+cpu",
+  "adapter_sha256": "6658b844dc957e97fb729340e6beea22c5a68097e79b323b864213c69088f57c",
+  "loaded_adapter": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task/host-package/tensorfs/varena/_offload.py",
+  "loaded_matches_frozen_source": true,
+  "out_independent_tensor": {
+    "status": "reproduced",
+    "error": "Attempting to copy from device meta to device cpu, but cross-device copies are not allowed!"
+  },
+  "complex_float": {
+    "status": "reproduced",
+    "stock": {
+      "dtype": "torch.complex64",
+      "parameter": "[(1+2j)]",
+      "buffer": "[(3+4j)]"
+    },
+    "offloaded": {
+      "dtype": "torch.float32",
+      "parameter": [
+        1.0
+      ],
+      "buffer": [
+        3.0
+      ]
+    }
+  },
+  "cuda_initialized": false
+}
