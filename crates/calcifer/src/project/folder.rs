@@ -305,7 +305,9 @@ impl Lock {
         if approve {
             node.approved = made.primary().map(|asset| asset.path.clone());
         }
-        let same = node.versions.iter().find(|version| version.number != made.number && version.primary() == made.primary());
+        // The same content (its path is its sha256), whatever has been probed of it yet.
+        let path = |made: &Made| made.primary().map(|asset| asset.path.clone());
+        let same = node.versions.iter().find(|version| version.number != made.number && path(version) == path(&made));
         if let Some(same) = same {
             return same.number;
         }
