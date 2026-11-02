@@ -319,6 +319,19 @@ def failure(gpu, fixture, streams, baseline, deadline, quarantine, mode):
     before = counts(fixture, submits=submits)
     assert fixture.stream_pending(unrelated.cuda_stream)
     busy(fixture)
+    if mode == "partial":
+        # A second read is a negative admission check, not an application retry.
+        # The closed failed producer is still gated: contents remain Loading,
+        # and the core must refuse without invoking the Source a second time.
+        try:
+            forbidden = gpu.use([fixture.region], first.cuda_stream)
+        except api.Busy:
+            pass
+        else:
+            forbidden.close()
+            raise AssertionError("partial failed Source exposed pending contents")
+        counts(fixture, submits=1)
+        assert fixture.source_pending()
     fixture.region.close()
     if mode == "partial":
         assert fixture.source_pending()
