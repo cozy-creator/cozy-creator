@@ -275,7 +275,7 @@ impl PyOwner {
             ledger::Device::parse(uuid).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let owner = py
             .detach(|| {
-                cooperative::Owner::open(
+                cooperative::Owner::get_or_open(
                     device,
                     descriptor,
                     &directory,
@@ -312,6 +312,8 @@ impl PyOwner {
         let pressure = &facts.pressure;
         Ok(
             json!({"active":facts.active,"stopping":facts.stopping,"retired":facts.retired,
+                "clients":facts.clients,"closed":facts.closed,
+                "owner":{"slot":self.row.slot,"incarnation":self.row.incarnation},
                 "activity":format!("{:?}",facts.activity),
                 "pressure":{"samples":pressure.samples,"observed_at":pressure.observed_at,
                     "free":pressure.free,"total":pressure.total,"own_opaque":pressure.own_opaque,
