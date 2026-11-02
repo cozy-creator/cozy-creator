@@ -310,6 +310,10 @@ impl Control {
     fn release_client(&self, id: u64) -> bool {
         if self.pid != std::process::id() { return false; }
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        self.release_client_locked(&mut state, id)
+    }
+
+    fn release_client_locked(&self, state: &mut State, id: u64) -> bool {
         let Some(client) = state.clients.get_mut(&id) else { return false; };
         if client.released { return client.final_client; }
         client.released = true;
@@ -923,6 +927,35 @@ impl Owner {
 
     pub fn cuda_calls(&self) -> Result<u64> {
         self.control.call(self.client, Command::CudaCalls)
+    }
+
+    /// Release this client and observe only its own final-retirement ticket. Never
+    /// wait, call CUDA, or consult capture/dispatcher/a replacement service. Busy
+    /// means a host metadata lock is held; this handle remains reachable for retry.
+    pub fn try_close(&self) -> Result<bool> {
+        if self.control.pid != std::process::id() {
+            return Err(ledger::Error::Inherited.into());
+        }
+        let mut state = match self.control.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return Err(crate::Error::Busy.into()),
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                let state = error.into_inner();
+                return Err(crate::Error::Poisoned(
+                    state
+                        .facts
+                        .failed
+                        .clone()
+                        .unwrap_or_else(|| "native owner control mutex".into()),
+                )
+                .into());
+            }
+        };
+        let final_client = self.control.release_client_locked(&mut state, self.client);
+        if let Some(reason) = &state.facts.failed {
+            return Err(crate::Error::Poisoned(reason.clone()).into());
+        }
+        Ok(!final_client || state.retired)
     }
 
     pub fn close(&self) -> Result<()> {

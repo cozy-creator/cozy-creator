@@ -130,6 +130,7 @@ pub fn default_service_proof() {
     assert!(is_busy(reserve_mode(device, &identity, true, true)));
     assert_eq!(next_owner.facts().unwrap().clients, 1);
     let next_capture = crate::enter_capture(device).unwrap();
+    assert!(original.try_close().unwrap());
     original.close().unwrap();
     drop(original);
     drop(next_capture);

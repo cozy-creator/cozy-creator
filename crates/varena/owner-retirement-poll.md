@@ -19,3 +19,24 @@ Arena ticket alone does not prove the final participant is gone.
 
 Real host lifetime/fork/concurrency and pending real-service fixture checks are
 staged separately. Source compilation is not GPU qualification.
+
+Native plus the existing shared-cohort Cache GPU helper compiled offline with
+Rust1.99.1, nice19 and one job in2.73 seconds. The exact-source host proof passed,
+including held-Control Busy without releasing the client, nonfinal idempotence,
+final pending while the global capture mutex is held, inherited locked Control,
+completed old tickets across a new service/domain, and original poisoned failure.
+Receipts: `outputs/xs138-p4-owner-try-close/host-001/report.json`.
+
+The ordinary Cache-controller `/owner_try_close` entrypoint is staged but unrun.
+Its native child opens a real service, proves nonfinal close, then observes final
+pending twice under actual CUDA stream capture, zero native driver calls, and a
+live participant row. After capture ends it polls real retirement/row removal,
+opens another service generation, and polls the old completed ticket during a
+second actual capture. The manual Peer serves only as instrumentation. It makes
+no default-discovery, physical donation or broader GPU-memory qualification claim.
+
+Open custody boundary: global Working backing and the installed Torch allocator
+can outlive individual public Gpu/Allocation handles. This per-client poller does
+not add a process-lifetime keepalive or claim that all such backing was released.
+The parent owns the separate keepalive contract review before full lifecycle
+qualification; no new policy or premature default-service creation is included.

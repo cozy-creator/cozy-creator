@@ -10,6 +10,7 @@ use varena::{Cache, cooperative, ledger, working};
 mod probes;
 mod multi_plan;
 mod arena_retirement;
+mod owner_retirement;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Ctx = *mut c_void;
 type Retain = unsafe extern "C" fn(*mut Ctx, i32) -> i32;
@@ -224,6 +225,7 @@ fn run() -> Result<Value> {
         "arena_retirement" => arena_retirement::observers(&cuda,&peer,device,&args[2],&args[3])?,
         "arena_retirement_cross_device" => arena_retirement::cross_device(&cuda,&peer,device,&args[2],&args[5])?,
         "arena_retirement_unproven" => arena_retirement::unproven(&cuda,&peer,device)?,
+        "owner_try_close" => owner_retirement::poll(&cuda, &peer, device, &args[2], &args[3])?,
         "multi_plan" => multi_plan::same_device(&cuda, &peer, device)?,
         "multi_plan_cross_device" => multi_plan::mismatched_device(device)?,
         "owners" => probes::owners(&cuda, &peer, device)?,

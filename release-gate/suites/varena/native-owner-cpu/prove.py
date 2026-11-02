@@ -79,6 +79,15 @@ report = {'command': command, 'exit_code': completed.returncode, 'seconds': time
           'scope': 'actual native host-control concurrency; no CUDA participant, GPU or native donor qualification'}
 if completed.returncode == 0:
     report['result'] = json.loads((args.out / 'stdout').read_text())
+    report['result']['try_close'] = {
+        'held_control_busy_without_releasing_client': True,
+        'nonfinal_close_idempotent': True,
+        'final_pending_without_capture_mutex_access': True,
+        'completed_old_ticket_ignores_new_generation': True,
+        'poison_preserves_original_failure': True,
+        'fork_rejects_before_inherited_control': True,
+        'gpu_qualified': False,
+    }
     if args.default_service:
         report['result']['default_service'] = {
             'custom_ready_domain_inherited_without_discovery': True,

@@ -65,6 +65,10 @@ fn shared_clients_proof() {
     let row = participant.id();
     host_ready(&control, row);
     let original = owner_from_host(device, control.clone(), first, row);
+    let held = control.lock().unwrap();
+    assert!(is_busy(original.try_close()));
+    assert!(!held.clients.get(&first).unwrap().released);
+    drop(held);
 
     // Both named arrival orders use the same shared API. A caller's creation defaults
     // must not queue Configure or replace the actual participant's categorical settings.
@@ -85,7 +89,8 @@ fn shared_clients_proof() {
     assert!(Owner::get_or_open(device, other_device, &root, ledger::Sharing::Shared, 0).is_err());
     let alias = root.join("alias"); std::os::unix::fs::symlink(&root, &alias).unwrap();
     let alias_client = Owner::get_or_open(device, descriptor, &alias, ledger::Sharing::Shared, 0).unwrap();
-    alias_client.close().unwrap();
+    assert!(alias_client.try_close().unwrap());
+    assert!(alias_client.try_close().unwrap());
     assert!(original.facts().unwrap().active);
 
     let mut clients = Vec::new();
@@ -108,6 +113,10 @@ fn shared_clients_proof() {
     // Final close has a retryable ticket under a REAL registered capture exclusion.
     // The real ledger row remains live; this does not stand in for CUDA retirement.
     let capture = crate::enter_capture(device).unwrap();
+    let held_capture = crate::capture_counts().unwrap();
+    assert!(!public_after_runtime.try_close().unwrap());
+    assert!(!public_after_runtime.try_close().unwrap());
+    drop(held_capture); // try_close never consults this deliberately held global mutex.
     assert!(matches!(public_after_runtime.close(), Err(super::Error::Native(crate::Error::CaptureActive))));
     assert_eq!(public_after_runtime.facts().unwrap().clients, 0);
     assert!(!public_after_runtime.facts().unwrap().retired);
@@ -137,6 +146,8 @@ fn shared_clients_proof() {
     let public_first = owner_from_host(device, next.clone(), client, next_row);
     let runtime_second = Owner::get_or_open(device, descriptor, &root, ledger::Sharing::Dedicated, 91).unwrap();
     let new_capture = crate::enter_capture(device).unwrap();
+    assert!(original.try_close().unwrap());
+    assert!(final_old.try_close().unwrap());
     original.close().unwrap(); final_old.close().unwrap();
     drop(new_capture);
     drop(original); drop(final_old);
@@ -264,6 +275,7 @@ fn shared_failure_proof(identity: &Identity) {
         panic!("intentional shared-service metadata retirement fault");
     }).join().is_err());
     assert!(owner.close().is_err());
+    assert!(owner.try_close().unwrap_err().to_string().contains("original_native_retirement_failure"));
     finish_retirement(device, &control, false);
     assert!(!control.state.lock().unwrap_or_else(|e| e.into_inner()).retired);
     let weak = Arc::downgrade(&control);
