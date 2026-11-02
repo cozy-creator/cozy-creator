@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "upstream": "a247d24a3bb172df790445cc0ad6a06c557d709a",
+  "intent_adapter_byte_identical": true,
+  "stock_assertions_exact_ast": true,
+  "stock_run_exact_ast": true,
+  "stock_allclose_exact_ast": true,
+  "dtype": "unchanged torch.float16",
+  "steps_default": 2,
+  "seed": 1701,
+  "variant": "explicit fp16 argument; use_safetensors=True",
+  "gpu_executed": false
+}
