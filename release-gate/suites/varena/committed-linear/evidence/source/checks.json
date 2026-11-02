@@ -1,0 +1,25 @@
+{
+  "runtime_head": "fcdebb8b4ece25d51041d1f40c0a0920431492f6",
+  "native_product_head": "aa2e0931a90c53535f9236a20015f8c4f56106c1",
+  "native_check": {
+    "command": "CARGO_TARGET_DIR=xs138-p3-ledger/target nice -n 19 cargo check -p tensorfs-py --offline -j1",
+    "passed": true,
+    "elapsed_seconds": 3.05
+  },
+  "runtime_checks": {
+    "ruff": true,
+    "mypy_targeted": true,
+    "python_syntax": true
+  },
+  "fixture_checks": {
+    "ruff": true,
+    "python_syntax": true,
+    "offline_uv_lock": true
+  },
+  "gpu_execution": false,
+  "cpu_source_scope": "actual file-backed raw INT8 leaf with both Runtime source hooks; no CUDA initialization",
+  "runtime_sources": {
+    "src/cozy_runtime/internal/residency.py": "f18374f4896cf2a7c830224073e89c7bf7d76b0b37c88b315ce58d1f580945e2",
+    "src/cozy_runtime/internal/execution/committed_linear.py": "1d89163688c33a9efdc05eb645fa9fa629f1eec3b89db7d6dc4629228bce402e"
+  }
+}

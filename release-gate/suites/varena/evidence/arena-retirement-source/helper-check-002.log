@@ -1,0 +1,15 @@
+    Checking varena v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-arena-retirement/crates/varena)
+    Checking varena-cache-pages v0.1.0 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-arena-retirement/release-gate/suites/varena/cache-pages)
+error[E0624]: method `finish` is private
+   --> src/arena_retirement.rs:223:14
+    |
+223 |     consumer.finish()?;
+    |              ^^^^^^ private method
+    |
+   ::: src/probes.rs:72:5
+    |
+ 72 |     fn finish(&self) -> Result<()> {
+    |     ------------------------------ private method defined here
+
+For more information about this error, try `rustc --explain E0624`.
+error: could not compile `varena-cache-pages` (bin "varena-cache-pages") due to 1 previous error

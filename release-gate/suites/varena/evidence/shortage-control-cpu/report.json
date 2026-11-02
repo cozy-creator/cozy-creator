@@ -1,0 +1,49 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "run",
+    "--offline",
+    "--manifest-path",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-shortage/control-002/native/Cargo.toml",
+    "--target-dir",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+    "--example",
+    "lifecycle",
+    "-j",
+    "1"
+  ],
+  "exit_code": 0,
+  "seconds": 6.780570209026337,
+  "sources": {
+    "crates/varena/src/lib.rs": "f964b7039efee89ef38c95484d059744af37e3ebd6b7a2684ec576fa8cef3116",
+    "crates/varena/src/ledger.rs": "b47699fe977d937abdc24e9dd9cb138550d044c7c67cfd2e2c0f517c72ed65a0",
+    "crates/varena/src/working.rs": "e1bcb0f23c6bcb9a8e24337584415a3c0d119d4cdac398d2cadc1afa8864c054",
+    "crates/varena/src/cuda.rs": "1aa955d05d94d1dc61c1d845e00a8bbb7139984e9a3c7592f2ded4276dc61b6c",
+    "crates/varena/src/cooperative.rs": "852e4060e71800795be16dc7b493cb80d183c9a400b8662c798ea305c09fcf4e",
+    "crates/varena/src/ledger/os.rs": "115f7f3566f0148ee1681d1f5a2322eab78466e83e2a5b4b49caaaf814678430",
+    "crates/varena/src/cooperative/owner.rs": "1703a8d71d164c767477ef0ec9bc3ef6b464392b87f7e3c2af56934f64ba071b",
+    "crates/varena/src/working/peer.rs": "d5c75257d8eecde0b79ee641d80d4a569dba088ef80989d8f692b810e7471242",
+    "crates/varena/src/working/split.rs": "07611093d21db699d5e57a5260b7f2aeee4598e40e7896e676c307f303f26eb2"
+  },
+  "harness_sha256": "f888b25f3d6882f44e79eff1f8a5185276703c193be191a602afa2b0e63331c3",
+  "scope": "actual native host-control concurrency; no CUDA participant, GPU or native donor qualification",
+  "result": {
+    "passed": true,
+    "native_thread_cancellations": 512,
+    "admitted_vs_queued": true,
+    "drop_did_not_join": true,
+    "poison_cancellation": true,
+    "permanent_fault_close_returned": true,
+    "fault_not_marked_retired": true,
+    "fork_rejected_before_inherited_mutex": true,
+    "coordination_budget_ms": 2000,
+    "final_retry_instruction": true,
+    "deadline_not_reset": true,
+    "control_remained_active_after_budget": true,
+    "capture_mutex_free_while_waiting": true,
+    "gpu_qualified": false
+  }
+}

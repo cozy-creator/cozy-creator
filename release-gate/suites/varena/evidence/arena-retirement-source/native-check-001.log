@@ -1,0 +1,36 @@
+    Checking varena v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-arena-retirement/crates/varena)
+error[E0308]: mismatched types
+   --> crates/varena/src/cooperative.rs:469:24
+    |
+469 |             return Err(crate::Error::Busy);
+    |                    --- ^^^^^^^^^^^^^^^^^^ expected `cooperative::Error`, found `Error`
+    |                    |
+    |                    arguments to this enum variant are incorrect
+    |
+    = note: `Error` and `cooperative::Error` have similar names, but are actually distinct types
+note: `Error` is defined in module `crate` of the current crate
+   --> crates/varena/src/lib.rs:38:1
+    |
+ 38 | pub enum Error {
+    | ^^^^^^^^^^^^^^
+note: `cooperative::Error` is defined in module `crate::cooperative` of the current crate
+   --> crates/varena/src/cooperative.rs:21:1
+    |
+ 21 | pub enum Error {
+    | ^^^^^^^^^^^^^^
+help: the type constructed contains `Error` due to the type of the argument passed
+   --> crates/varena/src/cooperative.rs:469:20
+    |
+469 |             return Err(crate::Error::Busy);
+    |                    ^^^^------------------^
+    |                        |
+    |                        this argument influences the type of `Err`
+note: tuple variant defined here
+   --> /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/result.rs:567:4
+help: try wrapping the expression in `cooperative::Error::Native`
+    |
+469 |             return Err(cooperative::Error::Native(crate::Error::Busy));
+    |                        +++++++++++++++++++++++++++                  +
+
+For more information about this error, try `rustc --explain E0308`.
+error: could not compile `varena` (lib) due to 1 previous error

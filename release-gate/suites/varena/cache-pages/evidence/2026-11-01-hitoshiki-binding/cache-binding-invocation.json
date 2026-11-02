@@ -1,0 +1,25 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-coherent-gpu/a96-7ad/projects/cache/python_binding",
+    "--on",
+    "hitoshiki",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/xs138-coherent-gpu/a96-7ad/inputs/cache.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/coherent-a96-7ad/cache-binding-artifacts"
+  ],
+  "input_sha256": "75c138077d34221f476f4b1e54610992b0c20b42dac35e93ca269c6e3c698885",
+  "input": {
+    "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+    "helper_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+    "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+  },
+  "started_at": "2026-11-01T15:00:33.679344+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T15:00:40.472161+00:00"
+}
