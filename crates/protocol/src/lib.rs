@@ -9,7 +9,6 @@ pub mod contract;
 pub mod digests;
 pub mod error;
 pub mod interface;
-pub mod executor;
 pub mod hub;
 pub mod ids;
 pub mod machine;

@@ -282,7 +282,7 @@ impl Calls {
     }
 
     /// `child_call`: the call's run, accepted once per index (its intent must not change).
-    fn child_call(&self, parent: &Parent, seq: u64, call: &protocol::executor::ChildCall) -> Result<Answer, (&'static str, String)> {
+    fn child_call(&self, parent: &Parent, seq: u64, call: &executor_protocol::ChildCall) -> Result<Answer, (&'static str, String)> {
         let service = self
             .service
             .upgrade()
@@ -371,7 +371,7 @@ impl Calls {
                 fields.insert("call_request".into(), call.request.clone().into());
                 fields.insert("call_attempt".into(), record.attempt.into());
             }
-            answer.progress = Some(CallProgress { sequence: call.progress.0, payload: protocol::executor::Json(payload) });
+            answer.progress = Some(CallProgress { sequence: call.progress.0, payload: executor_protocol::Json(payload) });
         }
         match record.state {
             State::Completed => {
@@ -647,7 +647,7 @@ fn invocables(
                 self_call: own,
                 // The Runtime binds its own operations from its own code, not a document.
                 interface_document: (!own && !builtin && documented.insert(module.to_string()))
-                    .then(|| protocol::executor::Json(module_interface(interface, module))),
+                    .then(|| executor_protocol::Json(module_interface(interface, module))),
                 builtin: (builtin && !own).then(|| "operations".into()),
             });
         }

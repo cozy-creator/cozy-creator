@@ -1165,6 +1165,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "executor-protocol"
+version = "0.16.4"
+dependencies = [
+ "base64 0.23.1",
+ "pyo3",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+]
+
+[[package]]
 name = "faer"
 version = "0.24.4"
 dependencies = [
@@ -2633,11 +2644,11 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "eventsource-stream",
+ "executor-protocol",
  "futures-util",
  "hex",
  "idna_adapter",
  "platform",
- "pyo3",
  "reqwest",
  "rustls",
  "saphyr",
@@ -3920,6 +3931,7 @@ dependencies = [
  "bytes",
  "clap",
  "ed25519-dalek",
+ "executor-protocol",
  "getrandom 0.3.4",
  "hmac",
  "http-body-util",
@@ -3998,8 +4010,8 @@ name = "tensorfs-py"
 version = "0.17.16"
 dependencies = [
  "async-trait",
+ "executor-protocol",
  "libc",
- "protocol",
  "pyo3",
  "serde",
  "serde_json",

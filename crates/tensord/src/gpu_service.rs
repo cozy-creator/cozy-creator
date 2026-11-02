@@ -36,10 +36,10 @@ use crate::storage::Store;
 
 /// The snapshots of `binding` that are views this process keeps (`storage::view`), as the
 /// executor opens them: their bytes, which no store holds.
-fn views(binding: &Binding) -> BTreeMap<String, protocol::executor::View> {
+fn views(binding: &Binding) -> BTreeMap<String, executor_protocol::View> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     (binding.snapshots.values().chain(std::iter::once(&binding.snapshot)))
-        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), protocol::executor::View {
+        .filter_map(|id| crate::storage::view(id).map(|view| (id.clone(), executor_protocol::View {
             header: STANDARD.encode(&view.header),
             own: view.own.iter().map(|o| STANDARD.encode(o)).collect(),
         })))
@@ -82,7 +82,7 @@ pub(crate) fn prepared_uses(
     installed: &crate::journal::Installation,
     entrypoint: &str,
     payload: Option<&serde_json::Value>,
-) -> io::Result<BTreeMap<String, protocol::executor::PreparedUse>> {
+) -> io::Result<BTreeMap<String, executor_protocol::PreparedUse>> {
     let invalid = |detail: &str| io::Error::new(io::ErrorKind::InvalidInput, detail.to_string());
     let mut uses = BTreeMap::new();
     let Some(payload) = payload else { return Ok(uses) };
@@ -99,7 +99,7 @@ pub(crate) fn prepared_uses(
         let path = model.get("path").and_then(serde_json::Value::as_str)
             .ok_or_else(|| invalid("prepared-use model path is absent"))?;
         let value = payload.get(field).ok_or_else(|| invalid("prepared-use field is absent"))?;
-        let mut use_: protocol::executor::PreparedUse = serde_json::from_value(value.clone())
+        let mut use_: executor_protocol::PreparedUse = serde_json::from_value(value.clone())
             .map_err(io::Error::other)?;
         use_.validate().map_err(invalid)?;
         uses.insert(path.to_string(), use_);
@@ -750,7 +750,7 @@ fn prepare_request(record: &Execution, plan: &Plan) -> PrepareRequest {
         request_id: record.id.clone(),
         construction: plan.construction.clone(),
         entrypoint: plan.entrypoint.clone(),
-        payload: protocol::executor::Json(record.invocation.input.clone()),
+        payload: executor_protocol::Json(record.invocation.input.clone()),
         attention_kernel: record.invocation.attention_kernel.clone(),
         bits: plan.bits(),
         input_metadata: record.invocation.inputs.iter().map(|i| (i.input_id.clone(), InputMetadata {
@@ -1188,7 +1188,7 @@ impl Pool {
         let mut why = String::new();
         for (construction, level) in session.loaded.iter_mut().filter(|(_, level)| **level == Level::Gpu) {
             let reply = session.executor.command(&Command::Map(Map {
-                construction: construction.clone(), level: protocol::executor::Level::Ram,
+                construction: construction.clone(), level: executor_protocol::Level::Ram,
                 ..Default::default()
             }), &mut device_executor::Baseline);
             match &reply {
@@ -1975,10 +1975,10 @@ impl Pool {
         let reply = session.executor.command(
             &Command::Map(Map {
                 construction: plan.construction.clone(),
-                level: if level == Level::Gpu { protocol::executor::Level::Gpu } else { protocol::executor::Level::Ram },
+                level: if level == Level::Gpu { executor_protocol::Level::Gpu } else { executor_protocol::Level::Ram },
                 request_id: if member.payload.is_some() { request_id } else { String::new() },
                 entrypoint: plan.entrypoint.clone(),
-                payload: member.payload.as_ref().map(|payload| protocol::executor::Json(
+                payload: member.payload.as_ref().map(|payload| executor_protocol::Json(
                     serde_json::from_str(payload.get()).expect("validated warm payload"))),
             }),
             &mut callbacks,
@@ -1994,7 +1994,7 @@ impl Pool {
             // is valid only after the existing RAM Map retires graphs and discards weights.
             let offloaded = session.executor.command(&Command::Map(Map {
                 construction: plan.construction.clone(),
-                level: protocol::executor::Level::Ram,
+                level: executor_protocol::Level::Ram,
                 ..Default::default()
             }), &mut callbacks);
             usable = offloaded.as_ref().is_ok_and(|reply| reply.ok && reply.poisoned.is_empty());
