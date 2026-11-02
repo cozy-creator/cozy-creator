@@ -45,8 +45,9 @@ way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    The candidate's cozy puts it on; its `machine update` fails unless the machine then runs it.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds. A run whose record and events stop changing for
-   15 minutes is canceled; one whose cancel does not take stops the gate (e2e/run.sh).
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. Nothing here ends a slow or hung run (e2e/run.sh):
+   it bills until the workflow's 300-minute timeout or a cancel, so whoever dispatches watches it. A cancelled run still
+   ends its rental.
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
@@ -67,6 +68,11 @@ A SKU and suites with no baseline need `--establish` once.
 - **From Actions:** `gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f suites=runtime,packages -f pins=…`.
   The suites' `skus` pick the rentals; `skus` overrides them, `only` narrows the cells.
   Testing is manual (Paul 10-24): only the release agent dispatches it, with the suites it chose; no workflow calls it.
+  Dispatch from `master`, `rc/*` or `release/*`: the `release-gate` environment refuses any other branch before a runner
+  starts, so the run has no log (`gh run view --log-failed` prints nothing) and the reason is the job's annotation
+  (`gh api repos/cozy-creator/cozy-creator/check-runs/<job id>/annotations`). A SKU `cozy machine rent` does not list fails
+  at once with nothing rented. A SKU with no baseline for those suites needs `establish=true`; `publish=false` keeps that
+  run from becoming its baseline.
   `cells` forwards the existing `--cells` hook from a `.sh` or `.tsv` file under this checkout's
   `release-gate/`; it is checked before a rental starts. The hook shares the same candidate, rental,
   `only` filter, cleanup and verdict as the selected suites. Optional `gpus` sets an exact positive
