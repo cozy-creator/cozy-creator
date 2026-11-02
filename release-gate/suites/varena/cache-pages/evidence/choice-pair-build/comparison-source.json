@@ -1,0 +1,10 @@
+{
+  "fixture_source": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+  "before_native": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+  "after_native": "d3a91fe8a160edb47e7fca9d766d4d0b7bb4e3fc",
+  "changed_files": [
+    "crates/varena/src/working/cache.rs",
+    "crates/varena/src/working/split.rs"
+  ],
+  "fixture_files_equal": true
+}

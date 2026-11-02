@@ -1,0 +1,1 @@
+{"native_bridge": "pass", "same_core": true, "invalid_layouts_refused": 10, "valid_layouts_require_torch_install": 6, "cuda_execution": false}
