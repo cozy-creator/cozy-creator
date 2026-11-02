@@ -50,8 +50,7 @@ pub struct Accepts {
     pub fields: BTreeSet<String>,
     /// `references`' kinds (its union's tags), each with its fields.
     pub kinds: BTreeMap<String, BTreeSet<String>>,
-    /// A shot renderer's longest and shortest piece (its `duration_s` schema extras).
-    pub max_piece_s: Option<f64>,
+    /// A shot renderer's shortest piece (its `duration_s` schema extra).
     pub min_piece_s: Option<f64>,
 }
 
@@ -68,7 +67,6 @@ impl Accepts {
         Self {
             fields: named(request),
             kinds,
-            max_piece_s: extra("max_piece_s"),
             min_piece_s: extra("min_piece_s"),
         }
     }
@@ -116,15 +114,6 @@ pub struct Host {
     walk: String,
 }
 
-/// How a renderer that is local code is read when no interface is kept for it here.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Install {
-    /// Installed on the first machine it may go to, and waited for: a walk's.
-    Wait,
-    /// Not installed: a read (status, a check before a walk) says it is not described yet.
-    Never,
-}
-
 impl Host {
     pub fn new(api: &Arc<Api>) -> Self {
         let mut walk = [0u8; 8];
@@ -152,7 +141,6 @@ impl Host {
         target: &str,
         folder: &Path,
         on: &[On],
-        install: Install,
     ) -> Result<Renderer, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(target, folder, &home) {
@@ -162,10 +150,7 @@ impl Host {
                     .remedy(format!("{target}/<function>"))
             })?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
-            let prepared = match install {
-                Install::Wait => local_code::ready(&self.api, &path, &on, hub, &self.key(&path, &on)).await?,
-                Install::Never => local_code::described(&self.api, &path, &on, hub).await?,
-            };
+            let prepared = local_code::ready(&self.api, &path, &on, hub, &self.key(&path, &on)).await?;
             let Some(interface) = prepared.interface else {
                 let said = format!("{target} is not described on {on:?} yet: its first render installs it");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));

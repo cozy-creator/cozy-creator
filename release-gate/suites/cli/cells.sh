@@ -56,8 +56,8 @@ fi
 # cli-project (xs-136, cl-716): a project through every verb (`cozy project new|ls|render|approve|status|rename`), its
 # renders on $M and its pictures' cleans and the edit on this computer. The project is found from a folder inside it
 # and named with -p from elsewhere, and `ls` lists it; a node renamed in project.yaml keeps its versions through
-# `rename`, which status suggests. A cycle is refused
-# before anything runs, and so is `--approve` with -n 2; a re-rolled character, once approved, puts what reads it out of
+# `rename`, which status suggests. Two entities that mention each other warn and both render.
+# `--approve` with -n 2 is refused before anything runs; a re-rolled character, once approved, puts what reads it out of
 # date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
 # only project.lock); the re-cut is timed; the edit cuts by frame and writes edit.otio beside edit.mp4.
 project_cell() {
@@ -77,17 +77,32 @@ entities:
 world_states:
   - {name: start, init: "<lead> stands in <place>.", blocking: "lead in the middle, facing the camera."}
 shots:
-  - {name: one, setup: place.a, prompt: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
-  - {name: two, prompt: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
+  - {name: one, setup: place.a, description: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
+  - {name: two, description: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
 edit: [{shot: one, end: 96}, {shot: two, start: 24}]
 YAML
-  cp "$P/project.yaml" project-ok.yaml
-  # lead's description naming <start>, whose init names <lead>, is a cycle.
-  sed -i "0,/description: \"/s//description: \"After <start>, /" "$P/project.yaml"
-  if "$CLI" project -p "$P" status > project-cycle.log 2>&1 || ! grep -q "a cycle: " project-cycle.log; then
-    cli_fail "project status did not refuse a cycle: $(tail -c 300 project-cycle.log)"
-  fi
-  cp project-ok.yaml "$P/project.yaml"
+  # Two entities that mention each other: the mention that closes the cycle stays plain text, said, and both render.
+  local C=$PWD/project-cycle
+  rm -rf "$C"; "$CLI" project new "$C" > project-cycle-new.log 2>&1 || cli_fail "project new for the cycle: $(tail -c 300 project-cycle-new.log)"
+  cat > "$C/project.yaml" <<YAML
+defaults:
+  entity:
+    with: $(pkg qwen-image-2 generate)
+entities:
+  - name: hut
+    kind: environment
+    description: A red hut at the end of a wooden pier, as in <pier>.
+  - name: pier
+    kind: environment
+    description: A wooden pier with a red hut at its end, as in <hut>.
+YAML
+  "$CLI" project -p "$C" status > project-cycle.log 2>&1 || cli_fail "project status refused a cycle of mentions: $(tail -c 300 project-cycle.log)"
+  grep -q "pier mentions hut, which is made from it: that mention stays plain text" project-cycle.log \
+    || cli_fail "project status did not warn of the cycle: $(tail -c 300 project-cycle.log)"
+  "$CLI" project -p "$C" render all --on "$M" > project-cycle-render.log 2>&1 || cli_fail "render all with a cycle of mentions: $(tail -c 400 project-cycle-render.log)"
+  "$CLI" --json project -p "$C" status 2> /dev/null > project-cycle.json
+  jq -e '[.nodes[] | select(.status != "current")] | length == 0' project-cycle.json > /dev/null \
+    || cli_fail "after render all, a cycle's nodes are not current: $(tail -c 400 project-cycle.json)"
   if "$CLI" project -p "$P" render lead -n 2 --approve --on "$M" > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
     cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
   fi

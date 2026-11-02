@@ -48,6 +48,8 @@ pub struct Node {
     pub texts: Vec<String>,
     /// Edges the type declares, by id.
     pub needs: Vec<String>,
+    /// Edges a mention implies, by id: like a mention's, one that closes a cycle is left out.
+    pub implied: Vec<String>,
     /// States it writes, by name.
     pub writes: Vec<String>,
     /// Files it reads that are no node's (a shot's plate, a character's voice), by a key and
@@ -76,6 +78,8 @@ pub struct Graph {
     pub order: Vec<usize>,
     /// Mentions of no node: the node, and the mention as written.
     pub unknown: Vec<(usize, String)>,
+    /// Mentions that would close a cycle, left out: the node, and the node it mentions.
+    pub closing: Vec<(usize, usize)>,
 }
 
 /// Whether a node's current file still follows from what it reads.
@@ -89,8 +93,9 @@ pub enum Status {
 }
 
 impl Graph {
-    /// Resolves the nodes' edges and orders them; a duplicate name, an unknown need or a cycle is
-    /// refused, naming it.
+    /// Resolves the nodes' edges and orders them; a duplicate name, an unknown need or a cycle of
+    /// what the type declares is refused, naming it. A mention that closes a cycle is left out, the
+    /// text staying as written (`closing`).
     pub fn new(nodes: Vec<Node>) -> Result<Self, Error> {
         let mut index = HashMap::new();
         for (i, node) in nodes.iter().enumerate() {
@@ -100,11 +105,18 @@ impl Graph {
             }
         }
         let find = |name: &str| index.get(&name_key(name)).copied();
-        let mut upstream = vec![];
+        let (mut upstream, mut declared) = (vec![], vec![]);
         let mut unknown = vec![];
         for (i, node) in nodes.iter().enumerate() {
             let mut edges: Vec<Edge> = vec![];
             for need in &node.needs {
+                let j = find(need).ok_or_else(|| {
+                    invalid("node_unknown", format!("{} names {need}, which is no node", node.id))
+                })?;
+                edges.push(Edge { node: j, state: None });
+            }
+            declared.push(edges.clone());
+            for need in &node.implied {
                 let j = find(need).ok_or_else(|| {
                     invalid("node_unknown", format!("{} names {need}, which is no node", node.id))
                 })?;
@@ -136,8 +148,28 @@ impl Graph {
             });
             upstream.push(edges);
         }
-        let order = topological(&nodes, &upstream)?;
-        Ok(Self { nodes, upstream, order, unknown })
+        let mut closing = vec![];
+        let order = loop {
+            let cycle = match topological(&nodes, &upstream) {
+                Ok(order) => break order,
+                Err(cycle) => cycle,
+            };
+            // The step that closes it first, among those made only of mentions.
+            let steps = (0..cycle.len()).rev().map(|n| (cycle[n], cycle[(n + 1) % cycle.len()]));
+            let mentioned = |&(reader, read): &(usize, usize)| {
+                upstream[reader].iter().all(|edge: &Edge| edge.node != read || !declared[reader].contains(edge))
+            };
+            let Some((reader, read)) = steps.into_iter().find(mentioned) else {
+                // Each reads the next, so reversed it runs the way the files flow.
+                let mut names: Vec<&str> = cycle.iter().rev().map(|&i| nodes[i].id.as_str()).collect();
+                names.push(&nodes[*cycle.last().expect("a cycle")].id);
+                return Err(invalid("cycle", format!("a cycle: {} (each is made from the one before it)", names.join(" → ")))
+                    .remedy("remove the `setup:` or `frame:` that closes it"));
+            };
+            upstream[reader].retain(|edge| edge.node != read);
+            closing.push((reader, read));
+        };
+        Ok(Self { nodes, upstream, order, unknown, closing })
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {
@@ -219,8 +251,8 @@ fn revision(nodes: &[Node], find: &impl Fn(&str) -> Option<usize>, reader: &Node
 }
 
 /// Each node after what it reads, else in the order the type listed it; what is left over holds a
-/// cycle, which is refused naming it.
-fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Error> {
+/// cycle, returned as its nodes, each reading the next and the last the first.
+fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Vec<usize>> {
     let mut placed = vec![false; nodes.len()];
     let mut order = vec![];
     while let Some(i) = (0..nodes.len()).find(|&i| !placed[i] && upstream[i].iter().all(|edge| placed[edge.node]))
@@ -237,14 +269,7 @@ fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Err
         let up =
             upstream[at].iter().map(|edge| edge.node).find(|&j| !placed[j]).expect("a node left over reads one");
         if let Some(from) = path.iter().position(|&i| i == up) {
-            // Each step of `path` reads the next, so reversed it runs the way the files flow.
-            let mut cycle: Vec<&str> = path[from..].iter().rev().map(|&i| nodes[i].id.as_str()).collect();
-            cycle.push(&nodes[at].id);
-            return Err(invalid(
-                "cycle",
-                format!("a cycle: {} (each is made from the one before it)", cycle.join(" → ")),
-            )
-            .remedy("remove one <mention>, `setup:` or `frame:` that closes it"));
+            return Err(path[from..].to_vec());
         }
         path.push(up);
     }
