@@ -1,17 +1,8 @@
 #![allow(unsafe_code)]
 use super::Peer;
-use crate::{
-    Result,
-    process::{Birth, Exact},
-};
-#[cfg(target_os = "macos")]
-use rustix::net::{RecvFlags, recv};
-use rustix::{
-    event::{PollFd, PollFlags, Timespec},
-    net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg},
-};
+use crate::Result;
+use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 use std::{
-    fs::File,
     io::{self, IoSlice},
     mem::MaybeUninit,
     os::{
@@ -19,26 +10,6 @@ use std::{
         unix::net::UnixStream,
     },
 };
-
-/// The peer, always this user (another is refused).
-pub fn peer_credentials(stream: &UnixStream) -> Result<Peer> {
-    let peer = peer(stream)?;
-    if peer.uid != rustix::process::geteuid().as_raw() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "peer UID differs").into());
-    }
-    Ok(peer)
-}
-
-/// Whether [`send_fd`] can reach the peer: any connected peer can receive descriptors.
-pub fn accepts_handles(_: &UnixStream) -> io::Result<()> {
-    Ok(())
-}
-
-/// The peer's birth, its pid's read now (the caller holds the stream, so the peer is alive or
-/// its pid is not yet reused before the caller opens it).
-pub fn peer_birth(stream: &UnixStream) -> Result<crate::process::Birth> {
-    crate::process::Birth::of(peer(stream)?.pid)
-}
 
 /// The peer as the kernel names it, whoever it runs as.
 #[cfg(target_os = "linux")]
@@ -94,76 +65,6 @@ pub fn peer(stream: &UnixStream) -> io::Result<Peer> {
         uid,
         gid,
     })
-}
-
-/// Whether the connecting process descends from this machine (an executor or anything
-/// package code started). Same-UID package code is not a sandbox, but it cannot
-/// administer the machine through its own process tree.
-pub fn peer_descends_from_machine(stream: &UnixStream) -> Result<bool> {
-    let mut pid = peer_credentials(stream)?.pid;
-    let machine = std::process::id();
-    while pid > 1 {
-        if pid == machine {
-            return Ok(true);
-        }
-        pid = crate::process::parent_of(pid)?;
-    }
-    Ok(false)
-}
-
-/// The peer pinned as a process handle (a pidfd on Linux, a kqueue on its exit on macOS).
-pub fn peer_pidfd(stream: &UnixStream) -> Result<File> {
-    let cred = peer_credentials(stream)?;
-    #[cfg(target_os = "linux")]
-    if let Some(file) = peer_pidfd_atomic(stream)? {
-        return Ok(file);
-    }
-    Ok(pidfd_of_live(cred.pid as i32)?)
-}
-
-/// Linux SO_PEERPIDFD (UAPI value 77, kernel 6.5) pins the connecting process atomically;
-/// `None` on an older kernel.
-#[cfg(target_os = "linux")]
-fn peer_pidfd_atomic(stream: &UnixStream) -> io::Result<Option<File>> {
-    let mut fd: i32 = -1;
-    let mut fd_size = std::mem::size_of::<i32>() as libc::socklen_t;
-    // SAFETY: correctly sized scalar output and size pointer.
-    if unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            77,
-            &mut fd as *mut _ as *mut libc::c_void,
-            &mut fd_size,
-        )
-    } < 0
-    {
-        let error = io::Error::last_os_error();
-        return match error.raw_os_error() {
-            Some(libc::ENOPROTOOPT | libc::EINVAL) => Ok(None),
-            _ => Err(error),
-        };
-    }
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: getsockopt handed us a new descriptor that is now ours.
-    let file = unsafe { File::from_raw_fd(fd) };
-    // SAFETY: valid descriptor; scalar close-on-exec flag.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(Some(file))
-}
-
-/// Older kernels and macOS: pin the credential's PID by its birth, accepted only when the same
-/// birth is read on both sides of the open. A peer that exited and whose PID was reused in
-/// that instant is the remaining (negligible) window.
-fn pidfd_of_live(pid: i32) -> io::Result<File> {
-    let birth = Birth::of(u32::try_from(pid).map_err(io::Error::other)?)?;
-    Exact::open(&birth)?
-        .map(Exact::into_file)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "peer exited before it was pinned"))
 }
 
 /// One descriptor and a one-byte marker; the receiver refuses anything else.
@@ -259,27 +160,4 @@ pub fn recv_fd(stream: &UnixStream) -> Result<OwnedFd> {
         .into());
     }
     Ok(received.pop().unwrap())
-}
-
-/// The peer end of a lease is closed: the reader released, or its process is gone.
-#[cfg(target_os = "linux")]
-pub fn hung_up(lease: &UnixStream) -> bool {
-    let mut poll = [PollFd::new(lease, PollFlags::IN | PollFlags::RDHUP)];
-    let ready = rustix::event::poll(&mut poll, Some(&Timespec { tv_sec: 0, tv_nsec: 0 })).is_ok_and(|ready| ready > 0);
-    ready && poll[0].revents().intersects(PollFlags::HUP | PollFlags::RDHUP | PollFlags::ERR)
-}
-
-/// The peer end of a lease is closed: the reader released, or its process is gone. macOS has no
-/// POLLRDHUP: a readable lease whose peek reads nothing is at its end.
-#[cfg(target_os = "macos")]
-pub fn hung_up(lease: &UnixStream) -> bool {
-    let mut poll = [PollFd::new(lease, PollFlags::IN)];
-    if !rustix::event::poll(&mut poll, Some(&Timespec { tv_sec: 0, tv_nsec: 0 })).is_ok_and(|ready| ready > 0) {
-        return false;
-    }
-    if poll[0].revents().intersects(PollFlags::HUP | PollFlags::ERR) {
-        return true;
-    }
-    let mut byte = [0u8];
-    recv(lease, &mut byte, RecvFlags::PEEK | RecvFlags::DONTWAIT).is_ok_and(|(read, _)| read == 0)
 }

@@ -1,5 +1,4 @@
 //! Unix: Unix sockets.
-#![allow(unsafe_code)]
 use crate::{Error, Result, process::Exact};
 use rustix::{
     event::{PollFd, PollFlags},
@@ -7,7 +6,7 @@ use rustix::{
 };
 use std::{
     os::{
-        fd::{AsFd, FromRawFd},
+        fd::AsFd,
         unix::net::{UnixListener, UnixStream},
     },
     path::Path,
@@ -65,13 +64,4 @@ impl AsFd for LocalListener {
 /// Two connected ends.
 pub fn pair() -> Result<(LocalStream, LocalStream)> {
     Ok(LocalStream::pair()?)
-}
-
-/// The stream whose descriptor the caller hands over.
-///
-/// # Safety
-/// `raw` must be an open, connected stream the caller owns and gives up.
-pub unsafe fn adopt(raw: i64) -> LocalStream {
-    // SAFETY: the caller's promise above.
-    unsafe { LocalStream::from_raw_fd(raw as i32) }
 }

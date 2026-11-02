@@ -158,8 +158,9 @@ pub(super) fn boot_id() -> io::Result<String> {
 
 /// `ru_maxrss`, in bytes on macOS.
 pub(super) fn peak_resident() -> io::Result<u64> {
-    // SAFETY: plain-old-data the call fills.
+    // SAFETY: plain-old-data; all-zero is a valid value.
     let mut usage: libc::rusage = unsafe { mem::zeroed() };
+    // SAFETY: a valid `who` and a writable rusage.
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
         return Err(io::Error::last_os_error());
     }
