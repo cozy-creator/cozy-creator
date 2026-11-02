@@ -1,0 +1,15 @@
+{
+  "source_commit": "6ab1dabac1121072127d6c71e868f777a72c740e",
+  "host_gate_log": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab.log",
+  "artifacts": {
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/_native.py": "2f466a59bd812009ea8c40771d8a38fdc51f173937cd6ad8153b17e9c0f96e23",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/_native_identity.py": "fada839f6730078280c141f8ff7c90a3b015bcb2bea1eaa3bfde7db4048e48fb",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so": "43de33f395143eaecdb8474f2d67f7e3577da27ce93060b50ccb2ea3f3b29eaa",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/_ext.so": "f82c95cd4ccc5a9666d6260ff46c0e19bdfdbbf151d002a591d86da6059ec380",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py": "0b2db7210fbc0a1acff3dccbd7bcbc80e5e654c502665813475d41517c703c55",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/private_dependency.py": "4bd0a58ca511a02ea42a22da4739d0d8523bb084227395a809a6f2282c4435b6",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/mixed-c.so": "6765d71758f286d8c5d323df0df9e37172a8aecb7e6cd48cc80e4e8638d42b77",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs/.native/libvarena.so": "0ed3fec32f37cdad4fc5822a1d6e076efe7835edc32b7957913694ff2c09a465"
+  },
+  "gpu": false
+}

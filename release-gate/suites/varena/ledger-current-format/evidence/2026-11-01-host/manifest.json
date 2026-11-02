@@ -1,0 +1,16 @@
+{
+  "product_commit": "ce2260e25",
+  "source_hashes": {
+    "crates/varena/src/ledger.rs": "20a034de83c9f8d40f1fb9d01b44d45a2734c200961eb6f74316a2cad60fdcf7",
+    "crates/varena/src/ledger/os.rs": "115f7f3566f0148ee1681d1f5a2322eab78466e83e2a5b4b49caaaf814678430",
+    "crates/varena/examples/ledger_peer.rs": "3b29e89c614dfe214f17caf80659ca5aae3837b70eea605ee7882240cb409927",
+    "release-gate/suites/varena/ledger-current-format/prove.py": "a2e02479f6ab905640d8ffcab66061948d026565fde742215ae434e64f42c5b2",
+    "release-gate/suites/varena/ledger-cpu/prove.py": "0d9963eaa12dd835bd0946e91d39ec05b90f3425e655d9d04a3e448b66db5e92"
+  },
+  "core_sha256": "512e59e8b9083c580bbcb10e73eb279e9dc18ed6d582e5882c410bd26f26bdba",
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "build": "RUSTFLAGS=\"-C prefer-dynamic\" cargo build --offline --locked -j1 -p varena --example ledger_peer",
+  "scope": "native host processes and actual OFD/shared-file operations; no CUDA/NVML or GPU release proof",
+  "first_failure": "ledger-cpu-001 still read v2 metadata offset; fixture now asserts header3 and uses18word metadata /22word rows; identical product binary passed rerun",
+  "namespace": "unshare denied uid_map; unrun"
+}

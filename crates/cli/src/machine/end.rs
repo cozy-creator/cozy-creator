@@ -213,10 +213,13 @@ pub async fn update(
     tensorfs: Option<String>,
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
+    mode: Option<protocol::config::MachineMode>,
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
     let mut payload = serde_json::Map::new();
     let (mut staged, mut inputs, mut named, mut want) = (vec![], vec![], vec![], vec![]);
+    // Keep automatically packed local native dependencies alive through input upload.
+    let mut native_bundles = Vec::new();
     let mut asked = vec![];
     for (member, distribution, value) in [
         ("runtime", "cozy_runtime", runtime),
@@ -232,7 +235,7 @@ pub async fn update(
         "" => ctx.hub().clone(),
         origin => Origin::parse(origin)?,
     };
-    let flagless = asked.is_empty() && gpu_memory_limit.is_none();
+    let flagless = asked.is_empty() && gpu_memory_limit.is_none() && mode.is_none();
     // The cozy `cozy update` installed here and `local` has not moved to yet: the update activates
     // it, unless `--tensord` names another binary.
     let mut placed = placed(ctx, &m);
@@ -295,10 +298,20 @@ pub async fn update(
             }
             Component::Build(path) => path,
         };
+        let expected_binary_version = (member == "tensord").then(|| built_version(&path)).flatten();
+        let path = if member == "tensord" {
+            let temporary = tempfile::Builder::new().prefix("cozy-native-").tempdir()
+                .map_err(|e| Error::new(Kind::Validation, "native_bundle_failed", e.to_string()))?;
+            match platform::native_bundle::pack_binary(&path, &temporary.path().join("cozy-native.tar.gz"))
+                .map_err(|e| Error::new(Kind::Validation, "native_bundle_failed", e.to_string()))? {
+                Some(packed) => { native_bundles.push(temporary); packed },
+                None => path,
+            }
+        } else { path };
         let (file, input) = wheel(&path, distribution)?;
         dev |= member == "tensord";
         want.push(match member {
-            "tensord" => built_version(&path).map_or(("dev", true.into()), |v| ("version", v.into())),
+            "tensord" => expected_binary_version.map_or(("dev", true.into()), |v| ("version", v.into())),
             _ => reports(member, &file),
         });
         named.push(match reports(member, &file) {
@@ -333,8 +346,13 @@ pub async fn update(
         });
         payload.insert("gpu_memory_limit".into(), limit.into());
     }
-    // A new binary or a limit restarts the machine: either way its warm models reload.
-    if (restarts || gpu_memory_limit.is_some())
+    if let Some(mode) = mode {
+        named.push(format!("{} mode", mode.name()));
+        payload.insert("mode".into(), mode.name().into());
+        want.push(("mode", mode.name().into()));
+    }
+    // A new binary or machine setting restarts the machine; its warm models reload.
+    if (restarts || gpu_memory_limit.is_some() || mode.is_some())
         && m.status
             .as_ref()
             .is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()))
@@ -478,6 +496,18 @@ async fn prerelease(
 
 /// The release a `cozy` binary built here says it is, when it runs here.
 fn built_version(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut magic = [0u8; 2];
+    std::fs::File::open(path).ok()?.read_exact(&mut magic).ok()?;
+    let temporary;
+    let staged;
+    let path = if magic == *b"PK" || magic == [0x1f, 0x8b] {
+        temporary = tempfile::Builder::new().prefix("cozy-version-").tempdir().ok()?;
+        let archive = temporary.path().join("bundle");
+        std::fs::copy(path, &archive).ok()?;
+        staged = platform::native_bundle::staged(&archive).ok()?;
+        staged.as_path()
+    } else { path };
     let out = std::process::Command::new(path).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().strip_prefix("cozy ").map(str::to_owned).filter(|_| out.status.success())
 }
@@ -528,7 +558,20 @@ fn build(dir: &Path, distribution: &str) -> Result<PathBuf, Error> {
         Err(e) => return Err(failed(e.to_string())),
     }
     if distribution.is_empty() {
-        return Ok(dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" }));
+        let binary = dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" });
+        let archive = out.join("cozy-native.tar.gz");
+        std::fs::create_dir_all(&out).map_err(|e| failed(e.to_string()))?;
+        let mut command = std::process::Command::new("uv");
+        command.args(["run", "--no-project"]);
+        if cfg!(target_os = "linux") { command.args(["--with", "patchelf"]); }
+        if cfg!(windows) { command.args(["--with", "lief"]); }
+        let status = command.arg("python")
+            .arg(dir.join("scripts/bundle-native.py"))
+            .arg("--binary").arg(binary).arg("--target").arg(dir.join("target/release"))
+            .arg("--out").arg(out.join("native")).arg("--archive").arg(&archive)
+            .status().map_err(|e| failed(e.to_string()))?;
+        if !status.success() { return Err(failed("native dependency bundling failed".into())); }
+        return Ok(archive);
     }
     let newest = std::fs::read_dir(&out)
         .map_err(|e| failed(e.to_string()))?
@@ -635,10 +678,11 @@ fn stamp(wheel: &Path, local: &str) -> std::io::Result<PathBuf> {
 /// The machine's three components after an update.
 fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
     if ctx.json {
-        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
+        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode":s.mode}));
     } else {
         let build = if s.dev { " (dev build)" } else { "" };
-        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}", s.version, s.runtime, s.tensorfs));
+        let sharing = if s.mode.is_empty() { String::new() } else { format!(", {} mode", s.mode) };
+        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}{sharing}", s.version, s.runtime, s.tensorfs));
     }
 }
 
@@ -669,7 +713,10 @@ async fn verify(ctx: &Context, name: &str, run: &calcifer::Run, want: &[(&str, s
         ..status.clone()
     });
     let named: Vec<_> = want.iter().filter(|(field, _)| *field != "dev").cloned().collect();
-    if let Some(left) = left.filter(|left| m.unreachable.is_some() && runs(left, &named)) {
+    // `to` names software only. A mode request requires a live post-restart report;
+    // cloning an older status's mode into the software result cannot establish that.
+    if let Some(left) = left.filter(|left| m.unreachable.is_some()
+        && !want.iter().any(|(field, _)| *field == "mode") && runs(left, &named)) {
         return Ok(left);
     }
     let run = run.id.as_str();

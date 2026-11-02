@@ -1,0 +1,16 @@
+{
+  "native_base": "106581cb66f161a218672032ebcbc0b59b89dd01",
+  "scope": "source/binding/helper compile and host metadata proof only; no GPU or shared-core bundle qualification",
+  "compute_key_body_sha256": "48e90783980d08c9f3dd3a496707f276eb7ffdcbaa201172b0d52265c1cf3f1a",
+  "compute_key_body_unchanged": true,
+  "host_proof": "/home/fidika/cozy_v2/outputs/xs138-p3-multi-arena-plan/host-001/report.json",
+  "native_check_seconds": 65,
+  "helper_check_seconds": 0.36,
+  "helper_lock_delta": "15 cached NVML-related packages required by coordinator baseline; product/workspace dependencies unchanged",
+  "gpu_cases_unrun": [
+    "multi_arena_plan",
+    "multi_arena_plan_cross_device"
+  ],
+  "gpu_payload_portable_ready": false,
+  "cpu_target_released": true
+}
