@@ -146,7 +146,8 @@ fn handle(id: u64, queue: &Queue) -> Outcome {
 fn retire_arena(arena: Arc<Arena>, queue: &Queue) -> Outcome {
     // The native job detaches persistent observer roots and preserves genuine owners.
     // The ABI worker never polls Arc counts, waits for GPU work or owns final GPU State.
-    match arena.request_retirement() {
+    // Current-process handoff failure is retained in the native quarantine, not dropped.
+    match arena.defer_retirement() {
         Ok(ticket) => observe_arena(ticket, queue),
         Err((arena, error)) => {
             let error = Failure::from(error);
