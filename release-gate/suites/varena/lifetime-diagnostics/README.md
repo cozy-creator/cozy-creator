@@ -137,3 +137,8 @@ already returns completed pinned slots to its process-owned bounded32MiB reader
 engine. Direct Varena reuse would create a dependency cycle. Factoring a bounded
 lease primitive down is possible but must preserve the measured reader-local
 rings and avoid unbounded pinned retention or freeing on the retirement worker.
+
+The successor additionally measures target event/stream destruction before the
+unrelated gate opens. Only the unrelated gate's event/stream/pinned word are
+cleaned afterward. HOST VMM granularity status/value are always reported; that
+value is not silently assumed to be the stream-ordered pool's granularity.

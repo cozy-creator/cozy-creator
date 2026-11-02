@@ -43,6 +43,8 @@ static void *modern_trial(void *raw) {
         stage("before_address_free");OK("cuMemAddressFree",modern.cuMemAddressFree(t->pointer,t->size));stage("after_address_free");
         t->completed_ns=now_ns();atomic_store_explicit(&t->release_completed,1,memory_order_release);
     }
+    stage("before_target_event_destroy");OK("target event destroy",api.event_destroy(t->event));stage("after_target_event_destroy");
+    stage("before_target_stream_destroy");OK("target stream destroy",api.stream_destroy(t->stream));stage("after_target_stream_destroy");
     t->returned_ns=now_ns();Obj old=NULL;OK("worker pop",api.pop(&old));
     atomic_store_explicit(&t->returned,1,memory_order_release);return NULL;
 }
@@ -76,9 +78,10 @@ int main(int argc,char **argv) {
     if(pooled&&(host_rc||!host_pool))return unsupported(argv[1],"HOST_MEMORY_POOLS_SUPPORTED",host_rc,host_pool,numa_pool,device);
     CUmemAllocationProp prop={0};prop.type=CU_MEM_ALLOCATION_TYPE_PINNED;prop.location.type=CU_MEM_LOCATION_TYPE_HOST;
     size_t bytes=4u<<20,granularity=0;
+    int granularity_status=modern.cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM);
+    fprintf(stderr,"{\"host_vmm_granularity_status\":%d,\"host_vmm_granularity\":%zu}\n",granularity_status,granularity);fflush(stderr);
     if(!pooled) {
-        int rc=modern.cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM);
-        if(rc)return unsupported(argv[1],"HOST granularity",rc,host_pool,numa_pool,device);
+        if(granularity_status)return unsupported(argv[1],"HOST granularity",granularity_status,host_pool,numa_pool,device);
         REQUIRE(granularity&&granularity<=64u<<20,"bounded granularity");
         bytes=((bytes+granularity-1)/granularity)*granularity;
     }
@@ -121,8 +124,8 @@ int main(int argc,char **argv) {
     uint64_t release_ns=now_ns();atomic_store_explicit(gate,1,memory_order_release);stage("CPU_gate_released");
     deadline=now_ns()+10000000000ull;while(!atomic_load_explicit(&t.returned,memory_order_acquire)){if(now_ns()>=deadline)failed("release return after CPU signal",-1);pause_cpu();}
     REQUIRE(!pthread_join(thread,NULL),"join");completed(gate_event,"gate complete");
-    OK("destroy event",api.event_destroy(event));OK("destroy gate event",api.event_destroy(gate_event));OK("destroy stream",api.stream_destroy(stream));OK("destroy blocked",api.stream_destroy(blocked));OK("free gate",api.host_free(gate_raw));
+    OK("destroy gate event",api.event_destroy(gate_event));OK("destroy blocked",api.stream_destroy(blocked));OK("free gate",api.host_free(gate_raw));
     Obj old=NULL;OK("pop",api.pop(&old));OK("release context",api.release(device));
-    printf("{\"passed\":true,\"supported\":true,\"qualified\":%s,\"mode\":\"%s\",\"gpu_uuid\":\"%s\",\"bytes\":%zu,\"host_pool_support\":%d,\"host_numa_pool_support\":%d,\"full_byte_readback\":true,\"returned_while_gate_closed\":%s,\"release_completed_while_gate_closed\":%s,\"entered_ns\":%llu,\"completed_ns\":%llu,\"returned_ns\":%llu,\"CPU_gate_released_ns\":%llu,\"gate_release_used_cuda\":false,\"scope\":\"one direct API capability/progress sample; not a product or all-platform guarantee\"}\n",returned_closed&&completed_closed?"true":"false",argv[1],argv[2],bytes,host_pool,numa_pool,returned_closed?"true":"false",completed_closed?"true":"false",(unsigned long long)t.entered_ns,(unsigned long long)t.completed_ns,(unsigned long long)t.returned_ns,(unsigned long long)release_ns);
+    printf("{\"passed\":true,\"supported\":true,\"qualified\":%s,\"mode\":\"%s\",\"gpu_uuid\":\"%s\",\"bytes\":%zu,\"host_pool_support\":%d,\"host_numa_pool_support\":%d,\"full_byte_readback\":true,\"entire_target_retirement_measured\":true,\"returned_while_gate_closed\":%s,\"release_completed_while_gate_closed\":%s,\"entered_ns\":%llu,\"completed_ns\":%llu,\"returned_ns\":%llu,\"CPU_gate_released_ns\":%llu,\"gate_release_used_cuda\":false,\"scope\":\"one direct API capability/progress sample; not a product or all-platform guarantee\"}\n",returned_closed&&completed_closed?"true":"false",argv[1],argv[2],bytes,host_pool,numa_pool,returned_closed?"true":"false",completed_closed?"true":"false",(unsigned long long)t.entered_ns,(unsigned long long)t.completed_ns,(unsigned long long)t.returned_ns,(unsigned long long)release_ns);
     return 0;
 }
