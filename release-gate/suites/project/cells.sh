@@ -64,6 +64,10 @@ YAML
     # The first call delivers 124 frames (H3's 17n+5 grid), so the join is at 5.17 s; a window at 5 s misses it.
     r=$("${FR[@]}" seams "$P/$f" --at 5.17 2>&1 | tail -1)
     expect project-split-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at 5.17 s: $r"
+    # The first call leaves the text at 6 s to the second, and says nothing of it (se-100), with a function that takes shot_duration_s.
+    if "$CLI" run "$H3GEN" --describe 2>/dev/null | grep -q shot_duration_s; then
+      expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
+    fi
   fi
   if want project-upscale && [ -n "$f" ]; then
     render project-upscale "$P" mural.upscale || expect project-upscale FAIL "render mural.upscale: $(tail -c 300 project-upscale.log)"

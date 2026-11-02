@@ -1174,7 +1174,8 @@ impl Video {
 
     /// Shot `k`'s call `call` as its function takes it (`accepts`), on the shot's one timeline:
     /// - its whole text, each call: `description` as `prompt` (times before the call's start are its
-    ///   function's history, on the shot's one timeline), the project's style,
+    ///   function's history, on the shot's one timeline, and those past its end a later call's: a call
+    ///   that ends before the shot gives the shot's length, `shot_duration_s`), the project's style,
     ///   soundscape and aspect ratio;
     /// - `references`: each entity it reads (its description, a character's voice), its setup's
     ///   picture as its environment's, each world state as a loose environment picture with its
@@ -1299,6 +1300,9 @@ impl Video {
         }
         payload.insert("prompt".into(), json!(text));
         payload.insert("duration_s".into(), json!(end));
+        if takes("shot_duration_s") && !last {
+            payload.insert("shot_duration_s".into(), json!(shot.duration_s));
+        }
         if takes("aspect_ratio") {
             payload.insert("aspect_ratio".into(), json!(self.canvas.aspect));
         }
