@@ -382,7 +382,7 @@ pub(super) fn cross_device(
     let (resume, released) = mpsc::sync_channel(1);
     let other = std::thread::spawn(move || -> std::result::Result<Value, String> {
         (|| -> Result<Value> {
-            let cuda = Cuda::open(1)?;
+            let mut cuda = Cuda::open(1)?;
             let peer = cooperative::Peer::open(
                 1,
                 ledger::Device::parse(&uuid)?,
@@ -410,6 +410,7 @@ pub(super) fn cross_device(
                 std::mem::forget(peer);
                 return Err(error.into());
             }
+            cuda.close()?;
             Ok(report)
         })()
         .map_err(|error| error.to_string())

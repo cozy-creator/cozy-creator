@@ -767,7 +767,7 @@ pub(super) fn arena_concurrency(peer: &cooperative::Peer, device: i32) -> Result
             let _creating = Creating(create_active); // errors also end the observation window
             let cuda = Cuda::open(device).map_err(|error| error.to_string());
             create_start.wait();
-            let cuda = cuda?;
+            let mut cuda = cuda?;
             for _ in 0..128 {
                 let arena = varena::Arena::new(device).map_err(|error| error.to_string())?;
                 let (region, pin) = filled(&cuda, &arena, 2 << 20, 173).map_err(|error| error.to_string())?;
@@ -776,6 +776,7 @@ pub(super) fn arena_concurrency(peer: &cooperative::Peer, device: i32) -> Result
                 let done = unsafe { pin.into_completed_region() };
                 drop((done, region, arena));
             }
+            cuda.close().map_err(|error| error.to_string())?;
             Ok(128)
         });
         let reclaim_start = Arc::clone(&start);
