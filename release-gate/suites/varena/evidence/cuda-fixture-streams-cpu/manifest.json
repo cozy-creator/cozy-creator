@@ -1,0 +1,39 @@
+{
+  "recorded_at": "2026-11-02T02:19:07.957448+00:00",
+  "head": "2eef873804c1e940aecf13c790161b7fdd671e65",
+  "changes": [
+    "8f04f7db483b60f22c5a1b9764c12a02db8cd89e",
+    "2eef873804c1e940aecf13c790161b7fdd671e65"
+  ],
+  "owner": "/root/async_integration_review",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-cuda-fixture-streams",
+  "branch": "codex/xs138-cuda-fixture-streams",
+  "pr": 2437,
+  "base": "0888d10261d0b05be41355675f80e70efd67e0ac",
+  "frozen_input": "186ead3b796e97640a1224a0ee40ba219217b18d",
+  "files": {
+    "crates/tensorfs/examples/raw_source/extra.rs": "04fc135d879d57cefbbb1c7126c19238707b3697a5b9738d5adc752927732a81",
+    "crates/tensorfs/examples/raw_source/gpu.rs": "bbc428de95ef362458e9d12df0784c3d098ff318ead85af3d4ab257b5643c836",
+    "crates/varena/examples/async_fill.rs": "b0c4746b61452369fc025e047a8aa7ba452f0ec909a3ddf1feeca4206ebfed12",
+    "crates/varena/examples/async_fill/retirement.rs": "3b4779e31faf4b947d55837dec4e6d685d20489d38b83bf4b966b10891d36098",
+    "release-gate/suites/varena/cache-pages/src/arena_retirement.rs": "758a353a35078cd881a8be9c3faa5aed9fa631914393e405bc0574153b3cb06c",
+    "release-gate/suites/varena/cache-pages/src/main.rs": "ec3c9d7a106895d5e16df0478337e01ea90623252fcfc395511183718bbebab8",
+    "release-gate/suites/varena/cache-pages/src/multi_plan.rs": "5b61bda89193f15cb155e980c7bf8591d31bc0eeac1881677d1877712f1bd9e0",
+    "release-gate/suites/varena/cache-pages/src/probes.rs": "0a3d8d0ff9241817dfff956b757956b2e6ace1d3967e732ff8ea2cabbbbff35c",
+    "release-gate/suites/varena/cuda-fixture-streams.md": "ffc6510482f2d674ca06ed37c1e54f8fd8ac7e9e98dae36cf99c264e77d57386"
+  },
+  "checks": {
+    "async_and_raw_examples": "PASS21.86s",
+    "cache_pages": "PASS0.17s final",
+    "diff_check": "pass",
+    "production_changes": "none",
+    "public_c_rust_examples": "untouched",
+    "gpu": "unrun; no local CUDA/rental"
+  },
+  "logs": {
+    "examples-check-001.log": "cdfb8d7352e464245ebd3d52b64ea16b3a6f6007944d9dd8c6d4608ab136d95d",
+    "cache-pages-check-001.log": "a1ed0033abe7a2349418236a427e4801db5135072e892e515777779f493922a9",
+    "cache-pages-check-002.log": "bef0552e901b7b9bcf03012295b5361e0a6c720a187d40b6275c543f24b262cf"
+  },
+  "scope": "same cases, byte patterns and assertions; stream-local setup, gate init and matching release/close proof; original safe copy+commit was replaced but was not unsafe"
+}
