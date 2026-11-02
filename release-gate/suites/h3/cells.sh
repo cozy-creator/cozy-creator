@@ -223,6 +223,29 @@ if [ -f h3-times.number ] && [ "$(run_get "$OUT" h3-times .status)" = completed 
   nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=4,scale=136:-2,tile=14x4" -frames:v 1 h3-times-sheet.png && log "h3-times: judge by eye: $PWD/h3-times-sheet.png"
 fi
 
+# Timing that doesn't fit is never refused (se-096): each renders, warns, and is judged by eye. warned <check> <cell> <frames> <what its warning says>.
+warned() {
+  [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || { [ -f "$2.number" ] && expect "$1" FAIL "$2 did not complete"; return 0; }
+  local w f v; v=$(video_of "$2")
+  w=$("$CLI" --json run show "$(cat "$2.number")" --once 2>/dev/null | jq -r '.result.warnings[]?' | grep -E "$4")
+  f=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$v" 2>/dev/null)
+  expect "$1" "$([ -n "$w" ] && [ "$f" = "$3" ] && echo PASS || echo FAIL)" "$f frames (want $3); warned: ${w:-nothing}"
+  nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=2,scale=200:-2,tile=10x6" -frames:v 1 "$2-sheet.png" && log "$2: judge by eye: $PWD/$2-sheet.png"
+}
+# A block too long: 5/20/5 s blocks render 5, 14 and 5 s, so 25 s of the 30 asked, what follows it straight after.
+cell h3-block-too-long "$SHOT" duration_s:=30 seed:=$((R + 143)) \
+  prompt=$'[Shot 1] A baker in a white apron kneads dough at a wooden table in a sunlit kitchen, filmed by a static camera.\nAt 00:05.000, she shapes the dough into a long loaf and scores it with a knife.\nAt 00:25.000, she slides the loaf into a brick oven and closes its door.'
+warned h3-block-too-long h3-block-too-long 600 'at 00:05\.000 runs 20 s and renders 14\.2 s'
+# Times out of order and past the end stay plain text: one segment, 12 s.
+cell h3-bad-times "$SHOT" duration_s:=12 seed:=$((R + 144)) \
+  prompt=$'[Shot 1] A gardener in a straw hat waters a row of sunflowers in a walled garden, filmed by a static camera.\nAt 00:05.000, she sets down the watering can.\nAt 00:03.000, she wipes her brow.\nAt 00:50.000, she walks away.\nAt 00:08.000, she picks one sunflower.'
+warned h3-bad-times-order h3-bad-times 294 '00:03\.000 is out of order'
+warned h3-bad-times-end h3-bad-times 294 '00:50\.000 is past the end'
+# No timestamps past 15 s: 15 s and a warning (0.3.2 refused it).
+cell h3-no-times-long "$SHOT" duration_s:=20 seed:=$((R + 145)) \
+  prompt='[Shot 1] A potter in a grey smock throws a tall vase on a spinning wheel in a quiet workshop, filmed by a static camera.'
+warned h3-no-times-long h3-no-times-long 362 'has no timestamps, so it renders 15\.1 s'
+
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
 # first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316): a
 # reference video (Ref2VA) then a text-only one (FL2VA) through generate.
