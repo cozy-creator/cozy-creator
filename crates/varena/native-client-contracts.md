@@ -103,6 +103,35 @@ and Arena retirement remain distinct lifetimes.
 
 ## Evidence boundary
 
+### Typed Torch export integration requirements (2026-11-02)
+
+Draft #2450 owns typed storage exports and immutable host/dtype-derived Sources;
+draft #2449 owns the offload adapter. Their input is coordinator `2ba51b29e5`.
+The proposed `Source.from_buffer`, `Source.from_tensor`, `Source.derive`,
+`Use.tensor` and `Region.tensor` signatures fit this ownership boundary. An omitted
+`Use.tensor` stream inherits the explicit stream of that Use; it never selects a
+CUDA default stream. Initial Region exports require an explicit consumer stream.
+Native storage retains its own Pin and canonical Source/service custody after
+the Python Use and Region close. Interior aliases must reach the same native
+consumer family, with producer ordering on every admitted consumer stream.
+
+One correction is required to the proposal at `69f87ef30`: failed consumer-tail
+recording must retain the actual Pin, consumer and service owners as unproven
+custody. It must not introduce a context/device synchronization fallback. The
+new retirement contract above applies to typed exports too; their bytes remain
+accounted and unavailable for reclaim until completion is proved. The initial
+export must fail before publishing storage if producer ordering fails. Capture
+must neither create event/driver-memory resources nor start Source fills; any
+required preflight resources and ordering must already be prepared.
+
+Public exports remain an immutable-inference adapter building block, not a claim
+that ordinary Torch storage is read-only. The adapter must enforce its mutation,
+alias and dtype-version contract. No implementation or GPU qualification is
+implied by accepting these signatures. Integration requires the actual commit
+and producer-failure, capture, escaped-view, later-stream and final-alias checks.
+
+### Historical host checkpoint
+
 Exact569 passes the integrated C/Rust/Python host proof in both load orders: five
 identities agree and only one core mapping is loaded. C11/C++17 and standalone host
 clients pass. Native/example and full TensorFS binding checks pass. GPU cases for
