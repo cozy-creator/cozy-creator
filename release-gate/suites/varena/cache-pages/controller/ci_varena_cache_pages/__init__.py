@@ -505,3 +505,9 @@ def pinned_host_alloc(payload: Probe, ctx: Context) -> Report:
 def pinned_host_free(payload: Probe, ctx: Context) -> Report:
     """Bounded Driver API diagnostic with CPU-mapped gate release; no policy verdict."""
     return native(payload, ctx, 'free', helper='varena-pinned-host')
+
+
+@app.entrypoint(accelerator=True)
+def event_history(payload: Probe, ctx: Context) -> Report:
+    """Real completed-event reuse on mixed-live backing, with no pool/cache attribution."""
+    return native(payload, ctx, 'event_history')

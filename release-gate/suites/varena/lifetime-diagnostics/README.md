@@ -67,3 +67,27 @@ require equality. Never replace the installed core or wheel to make helper parit
 pass. Copy resulting helpers to a new artifact directory, record their hashes,
 and regenerate manifests/inputs. Operator owns compilation scheduling and GPU
 execution. A source/check pass is not a diagnostic result or product fix.
+
+## LM26079 event-count diagnostic
+
+The original result has6 live allocations on both sides, identical live/capacity/
+mapped/free bytes, pending0 and reclaimable0, but events36→54. Native take keeps
+block.events; completed poll changes reuse state without removing that map. A
+live allocation can keep its eager segment resident through trim. This mechanism
+is ranked first; the one deliberately live pool may also retain its own event
+map. The aggregate public counter cannot attribute the exact18 by itself.
+
+`event_history` is a separate real native memory probe: one live512-byte anchor
+keeps eager backing resident while the same temporary block is allocated/freed
+on18 distinct, still-owned streams. Each stream completes before polling/trim.
+There are no graph pools or caches, so retained events there belong to blocks.
+It records the complete byte/event baseline, then retires only those completed
+fixture-owned streams and checks event cleanup while the live anchor remains.
+No freed pointer is read; the still-owned anchor is checked before final cleanup.
+This is mechanism evidence, not automatic attribution of the LM's18 handles.
+
+The staged LM overlay is based on23dbb8db8 and adds only read-only domain stream,
+pool-tag, graph-count and engine-owner facts. Every original assert AST is equal,
+including strict event_handles equality; it does not close the intentionally
+live domain to manufacture a baseline. Apply that one file to a NEW23db project
+copy, not to a product/Runtime tree. GPU diagnostics remain unrun.
