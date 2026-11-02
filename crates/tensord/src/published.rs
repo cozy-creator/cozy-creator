@@ -337,12 +337,7 @@ impl Publisher {
                 },
                 (None, layer::Torch::Image(_)) => return Ok(None),
             };
-            *held = layer::Layer::read(&base).map_err(io_failure)?.map(Arc::new);
-            if let Some(layer) = held.as_ref() {
-                tracing::info!("this machine's PyTorch layer: {}", layer.pins().join(" "));
-                // Compiled once here, so an environment's imports write nothing into the base.
-                environment::compile_bytecode(&platform::paths::venv_python(&base));
-            }
+            *held = read_layer(&base).map_err(io_failure)?;
         }
         Ok(held.clone())
     }
@@ -394,7 +389,7 @@ impl Publisher {
     /// version the Hub names that no base holds yet names an environment none holds either.
     pub(crate) fn torch_pins(&self, hub: Option<&hub::Source>) -> Vec<String> {
         self.follow(hub);
-        let read = || layer::Layer::read(&self.sdk.torch.base()?).ok().flatten().map(Arc::new);
+        let read = || read_layer(&self.sdk.torch.base()?).ok().flatten();
         let mut held = self.layer.lock().unwrap();
         if held.is_none() {
             *held = read();
@@ -1839,6 +1834,17 @@ fn declares_models(installation: &Installation, entrypoint: &str) -> bool {
         .ok()
         .and_then(|i: Value| model_slots(&i, entrypoint))
         .is_some_and(|m| !m.is_empty())
+}
+
+/// The PyTorch layer the base at `base` holds, read once per start by whichever path needs it
+/// first: logged, and its bytecode compiled so an environment's imports write nothing into it.
+fn read_layer(base: &Path) -> io::Result<Option<Arc<layer::Layer>>> {
+    let layer = layer::Layer::read(base)?.map(Arc::new);
+    if let Some(layer) = &layer {
+        tracing::info!("this machine's PyTorch layer: {}", layer.pins().join(" "));
+        environment::compile_bytecode(&platform::paths::venv_python(base));
+    }
+    Ok(layer)
 }
 
 /// What a uv.lock leaves to this machine: its git-sourced packages (a release's are installed from
