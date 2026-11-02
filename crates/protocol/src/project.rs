@@ -54,6 +54,8 @@ pub struct Known {
 pub struct State {
     pub id: String,
     pub path: PathBuf,
+    /// The edit's frame rate (project.yaml's `fps:`), which its positions count in.
+    pub fps: f64,
     pub nodes: Vec<Node>,
     /// Nodes with nothing made yet that the project needs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -101,14 +103,20 @@ pub struct Asset {
     pub original: Option<String>,
 }
 
-/// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`), its file, when it was last cut
-/// (None: not yet), and the shots it cuts that have nothing made yet, which it skips.
+/// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`; its timeline beside it,
+/// `<name>.otio`), its file, when it was last cut and how many frames long (None: not yet), the
+/// takes it retimed to the project's rate (`<node> (<fps> fps)`), and the shots it cuts that have
+/// nothing made yet, which it skips.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cut {
     pub cut: String,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retimed: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skips: Vec<String>,
 }
@@ -248,10 +256,15 @@ pub enum Event {
     Warning {
         message: String,
     },
-    /// A cut (`edit.mp4`, `preview.mp4`) was made again here.
+    /// A cut (`edit.mp4`, `preview.mp4`, and its `.otio`) was made again here, in `took_s`: `frames`
+    /// long at `fps`, the takes in `retimed` retimed to it.
     Cut {
         cut: String,
-        seconds: f64,
+        frames: u64,
+        fps: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        retimed: Vec<String>,
+        took_s: f64,
     },
     /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
     /// that failed.

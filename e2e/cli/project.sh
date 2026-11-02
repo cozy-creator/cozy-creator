@@ -54,7 +54,7 @@ entities:
 shots:
   - {name: a, prompt: "test pattern a", duration_s: 6, video: plates/a.mp4, references: [{name: look, kind: video, video: $E/look.mp4}]}
   - {name: b, prompt: "test pattern b", duration_s: 6, video: plates/b.mp4}
-edit: [{shot: a, start: 0.5, end: 5.5}, {shot: b, start: 0.5, end: 5.5}]
+edit: [{shot: a, start: 12, end: 132}, {shot: b, start: 12, end: 132}]
 YAML
 local A B C
 A=$(sha "$P/plates/a.mp4") B=$(sha "$P/plates/b.mp4") C=$(sha "$P/plates/c.mp4")
@@ -139,6 +139,7 @@ cozy --json project -p "$P" status > "$OUT/project-renamed.json" 2>/dev/null || 
   || check "after the rename yard is not place's 3 versions with 2 approved: $(jq -c '{orphans, yard: (.nodes[]? | select(.name == "yard"))}' "$OUT/project-renamed.json")"
 
 reflinked
+frames_otio
 http_surface "$P" "$ID"
 browser_session "$P" "$ID"
 
@@ -188,6 +189,76 @@ cozy project -p "$P" status > "$OUT/xfs-edited.txt" 2>&1 || true
   || check "XFS: an edited original is not taken in again with stage.a out of date: $(tail -c 300 "$OUT/xfs-edited.txt")"
 }
 
+# cl-716 A2: an edit in frames, cut frame-exact. Odd cuts (a 7-151, b 13-140, a 48-96, b 150-161 at 24 fps): ffprobe's
+# exact count, every frame its intended source frame (copied ones md5-equal), edge pieces named by frames and none for
+# the keyframe-aligned a 48-96, edit.otio read by OpenTimelineIO with its clips and frames, the lock's probed shapes,
+# status's frames. Then b's take at 25 fps: the full path, retimed and said so; then b back: the first edit again, its
+# edges from the cache.
+frames_otio() {
+step "a project: an edit in frames, frame-exact, and its edit.otio"
+local P=$OUT/frames CACHE=$HOME/.cache/cozy/cuts SA SB SR n miss=0 w
+local FR=(uv run -q --no-project --with numpy python -I "$here/project/frames.py" "$(command -v ffmpeg)")
+local OT=(uv run -q --no-project --with opentimelineio==0.17.0 python -I "$here/project/otio_check.py")
+cozy project new "$P" > /dev/null 2>&1 || check "frames: project new failed"
+mkdir -p "$P/plates"
+gop() { ffmpeg -v error -y -f lavfi -i "$2=size=854x480:rate=$3:duration=8" -f lavfi -i "sine=frequency=$4:sample_rate=48000:duration=8" \
+  -c:v libx264 -preset veryfast -g "$3" -keyint_min "$3" -sc_threshold 0 -pix_fmt yuv420p -c:a aac -b:a 160k -ac 2 -shortest "$1"; }
+gop "$P/plates/a.mp4" testsrc2 24 440; gop "$P/plates/b.mp4" testsrc 24 550; gop "$P/plates/r.mp4" testsrc 25 550
+SA=$(sha "$P/plates/a.mp4") SB=$(sha "$P/plates/b.mp4") SR=$(sha "$P/plates/r.mp4")
+cat > "$P/project.yaml" <<'YAML'
+type: video
+fps: 24
+shots:
+  - {name: a, prompt: "test pattern a", duration_s: 8, video: plates/a.mp4}
+  - {name: b, prompt: "test pattern b", duration_s: 8, video: plates/b.mp4}
+edit: [{shot: a, start: 7, end: 151}, {shot: b, start: 13, end: 140}, {shot: a, start: 48, end: 96}, {shot: b, start: 150, end: 161}]
+YAML
+ls -1 "$CACHE" 2>/dev/null | sort > "$OUT/frames-cache-0.txt" || true
+cozy project -p "$P" render all --on local > "$OUT/frames-render-1.txt" 2>&1 || check "frames: render all failed: $(tail -c 300 "$OUT/frames-render-1.txt")"
+n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 "$P/edit.mp4" 2>/dev/null) || n=
+[ "$n" = "24/1,330" ] || check "frames: edit.mp4 is $n, not 330 frames at 24/1 ((151-7)+(140-13)+(96-48)+(161-150))"
+grep -q "edit.mp4.*: 330 frames (" "$OUT/frames-render-1.txt" || check "frames: the cut event does not say 330 frames: $(grep -i 'edit.mp4' "$OUT/frames-render-1.txt" | tail -1)"
+ls -1 "$CACHE" | sort > "$OUT/frames-cache-1.txt"
+for w in "${SA:0:16}-f7-f24-" "${SA:0:16}-f144-f151-" "${SB:0:16}-f13-f24-" "${SB:0:16}-f120-f140-" "${SB:0:16}-f150-f161-"; do
+  grep -q "^$w[0-9a-f]\{8\}\.ts$" "$OUT/frames-cache-1.txt" || { check "frames: no edge piece $w*"; miss=1; }
+done
+[ "$(grep -c "^\(${SA:0:16}\|${SB:0:16}\)-f" "$OUT/frames-cache-1.txt")" = 5 ] || check "frames: not exactly the 5 edge pieces (none for the keyframe-aligned a 48-96): $(grep "^\(${SA:0:16}\|${SB:0:16}\)-f" "$OUT/frames-cache-1.txt" | paste -sd' ')"
+"${FR[@]}" "$P/edit.mp4" 24 "$P/plates/a.mp4:7:151" "$P/plates/b.mp4:13:140" "$P/plates/a.mp4:48:96" "$P/plates/b.mp4:150:161" > "$OUT/frames-1.txt" 2>&1 || true
+{ tail -1 "$OUT/frames-1.txt" | grep -q 'frames PASS' && grep -q '264 of 330 md5-equal' "$OUT/frames-1.txt"; } \
+  || check "frames: not every frame its source frame, or the copied 264 not bit-exact: $(grep -E 'FAIL|md5-equal' "$OUT/frames-1.txt" | head -3 | paste -sd' ')"
+"${OT[@]}" "$P/edit.otio" 24 "a:7:151:assets/$SA.mp4" "b:13:140:assets/$SB.mp4" "a:48:96:assets/$SA.mp4" "b:150:161:assets/$SB.mp4" > "$OUT/otio-1.txt" 2>&1 || true
+tail -1 "$OUT/otio-1.txt" | grep -q 'otio PASS' || check "frames: edit.otio is not the edit: $(grep FAIL "$OUT/otio-1.txt" | head -3 | paste -sd' ')"
+J '(.inputs["plates/a.mp4"].video | .width == 854 and .height == 480 and .fps == 24 and .frames == 192) and (.inputs["plates/b.mp4"].video | .fps == 24 and .frames == 192)' "$P/project.lock" \
+  || check "frames: project.lock does not hold the plates' probed shapes: $(jq -c '.inputs | map_values(.video)' "$P/project.lock")"
+cozy --json project -p "$P" status > "$OUT/frames-status-1.json" 2>/dev/null || true
+J '.fps == 24 and .cuts[0].frames == 330 and (.cuts[0].retimed // []) == []' "$OUT/frames-status-1.json" \
+  || check "frames: status is not 330 frames at 24 fps, nothing retimed: $(jq -c '{fps, cuts}' "$OUT/frames-status-1.json")"
+
+step "a project: a take at 25 fps, retimed on the full path"
+sed -i 's#video: plates/b.mp4#video: plates/r.mp4#' "$P/project.yaml"
+cozy project -p "$P" render all --on local > "$OUT/frames-render-2.txt" 2>&1 || check "frames: render all with r failed: $(tail -c 300 "$OUT/frames-render-2.txt")"
+n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 "$P/edit.mp4" 2>/dev/null) || n=
+[ "$n" = "24/1,330" ] || check "frames: the retimed edit.mp4 is $n, not 330 frames at 24/1"
+grep -q "330 frames (13.8 s at 24 fps); it retimes b (25 fps) to 24 fps" "$OUT/frames-render-2.txt" || check "frames: the cut does not say it retimes b: $(grep -i 'edit.mp4' "$OUT/frames-render-2.txt" | tail -1)"
+"${FR[@]}" "$P/edit.mp4" 24 "$P/plates/a.mp4:7:151" "$P/plates/r.mp4:13:140" "$P/plates/a.mp4:48:96" "$P/plates/r.mp4:150:161" > "$OUT/frames-2.txt" 2>&1 || true
+tail -1 "$OUT/frames-2.txt" | grep -q 'frames PASS' || check "frames: the retimed cut's frames are not their sources': $(grep FAIL "$OUT/frames-2.txt" | head -3 | paste -sd' ')"
+"${OT[@]}" "$P/edit.otio" 24 "a:7:151:assets/$SA.mp4" "b:13:140:assets/$SR.mp4:25.0" "a:48:96:assets/$SA.mp4" "b:150:161:assets/$SR.mp4:25.0" > "$OUT/otio-2.txt" 2>&1 || true
+tail -1 "$OUT/otio-2.txt" | grep -q 'otio PASS' || check "frames: the retimed edit.otio is not the edit: $(grep FAIL "$OUT/otio-2.txt" | head -3 | paste -sd' ')"
+cozy --json project -p "$P" status > "$OUT/frames-status-2.json" 2>/dev/null || true
+cozy project -p "$P" status > "$OUT/frames-status-2.txt" 2>&1 || true
+{ J '.cuts[0].frames == 330 and .cuts[0].retimed == ["b (25 fps)"]' "$OUT/frames-status-2.json" && grep -q "retimes b (25 fps) to 24 fps" "$OUT/frames-status-2.txt"; } \
+  || check "frames: status does not name b as retimed: $(jq -c .cuts "$OUT/frames-status-2.json")"
+J '.inputs["plates/r.mp4"].video | .fps == 25 and .frames == 200' "$P/project.lock" || check "frames: project.lock does not hold r's 25 fps and 200 frames"
+
+step "a project: the first edit again, its edges from the cache"
+sed -i 's#video: plates/r.mp4#video: plates/b.mp4#' "$P/project.yaml"
+cozy project -p "$P" render all --on local > "$OUT/frames-render-3.txt" 2>&1 || check "frames: render all with b back failed"
+ls -1 "$CACHE" | sort > "$OUT/frames-cache-3.txt"
+[ -z "$(comm -13 "$OUT/frames-cache-1.txt" "$OUT/frames-cache-3.txt")" ] || check "frames: the first edit again made edge pieces anew: $(comm -13 "$OUT/frames-cache-1.txt" "$OUT/frames-cache-3.txt" | head -3 | paste -sd' ')"
+"${FR[@]}" "$P/edit.mp4" 24 "$P/plates/a.mp4:7:151" "$P/plates/b.mp4:13:140" "$P/plates/a.mp4:48:96" "$P/plates/b.mp4:150:161" > "$OUT/frames-3.txt" 2>&1 || true
+{ tail -1 "$OUT/frames-3.txt" | grep -q 'frames PASS' && grep -q '264 of 330 md5-equal' "$OUT/frames-3.txt"; } || check "frames: the re-cut from the cache is not the first edit"
+}
+
 # Range, HEAD, ETag and 416 on a cut and an asset; Calcifer's Host, Origin and bearer rules.
 http_surface() {
 step "a project: Calcifer's HTTP surface"
@@ -225,7 +296,7 @@ port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0));
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$OUT/cross-site.log" 2>&1 & server=$!
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit's last entry a second shorter.
-sed 's/{shot: b, start: 0.5, end: 5.5}/{shot: b, start: 0.5, end: 4.5}/' "$P/project.yaml" > "$OUT/recut.yaml"
+sed 's/{shot: b, start: 12, end: 132}/{shot: b, start: 12, end: 108}/' "$P/project.yaml" > "$OUT/recut.yaml"
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/browser.js" "$ADDR" "$TOKEN" "$ID" "$port" \

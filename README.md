@@ -84,7 +84,8 @@ A video project is a folder:
   there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is taken in
   on first use: a copy-on-write clone where the filesystem has them (no space used), else a link to where you
   keep it.
-- `edit.mp4`: the film, cut on this computer as shots land.
+- `edit.mp4`: the film, cut on this computer as shots land, and beside it `edit.otio`, the same edit as an
+  OpenTimelineIO timeline for an editing app, each clip referencing its take in `assets/`.
 
 Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
 file you named and what reads it goes out of date; move a linked one and `status` says to relink it (fix its
@@ -100,6 +101,7 @@ makes the folder with a commented `project.yaml`; fill it in:
 type: video
 style: soft watercolor
 resolution: 1440p
+fps: 24
 soundscape: gulls, surf, wind
 defaults: {shot: {with: minimax-h3/generate, options: {turbo: true}}}
 entities:
@@ -114,7 +116,7 @@ shots:
      references: [{name: kata, kind: video, video: ~/footage/kata.mp4}],
      beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
   - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
-edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
+edit: [{shot: fight, end: 192}, {shot: reaction}, {shot: fight, start: 240}]
 ```
 
 ```sh
@@ -157,6 +159,13 @@ never letterboxed or stretched. A shot whose approved version is below the resol
 (`defaults: {upscale: …}`, or a shot's own `upscale: {render: …}`, which can change the function, models,
 LoRAs and options but never the canvas). `render all` makes the upscales and cuts `edit.mp4` at the
 canvas; `preview.mp4`, the native cut, is redone as shots land, and `render all --preview` stops there.
+
+`fps:` (24 by default) is the edit's frame rate, fixed per project. `edit:` lists `{shot, start?, end?}` in
+frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`), so every cut lands on an
+exact frame; a shot's `duration_s`, beats and other inputs stay in seconds. A take at another rate is retimed to
+the project's (each frame its nearest in time), and `status` names it. Each cut writes `edit.otio` (and
+`preview.otio`) with it: the project's rate, a video and an audio track, one clip per `edit:` entry with its
+frames, referencing that take's asset.
 
 ## Remove cozy
 
