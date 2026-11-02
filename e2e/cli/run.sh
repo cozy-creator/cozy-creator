@@ -120,7 +120,10 @@ cozy --json run "$(birefnet)" --describe > "$OUT/describe.json" 2> "$OUT/describ
 grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe.json" || check "the description of $(birefnet) names no image input"
 }
 
+# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model); run_flags' --warm
+# levels resolve, download, import and hold BiRefNet on every run.
 first_run() {
+[ -n "$MODEL" ] || { echo "BiRefNet's forward pass: not selected (ci/affected's model)"; return 0; }
 step "BiRefNet on the CPU, from a YAML request"
 dog=$(picture dog1.jpg)
 # The request file names its image relative to itself, as a person writes one beside their files.
@@ -135,13 +138,13 @@ if [ "$first" != none ]; then
 fi
 }
 
-# After describe, which installs BiRefNet's environment: the restarted machine runs it in a new executor.
+# The restarted machine runs a request with a file input in a new executor (weightless: the first run loads weights).
 second_executor() {
 step "a second executor"
 machine_stop || check "the local machine did not stop"
 machine_ready
-dog=$(picture dog2.jpg)
-if cell second "$(birefnet)" --file "image=$dog"; then white_background "$(output second webp)" "$dog" || check "second: not a background removal"; fi
+note=$OUT/second-note.txt; echo "second $RANDOM" > "$note"
+(cd "$here" && cell second ./weightless/fidelities --file "notes=$note") || true
 
 step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
@@ -202,7 +205,7 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 case $SHARD in
   '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
-  executors) parts="describe second_executor lifetime update remove" ;;
+  executors) parts="second_executor lifetime update remove" ;;
   commands) parts="catalog basics yaml_requests run_filters projects bound_runs logs" ;;
   follow) parts="script_package image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;

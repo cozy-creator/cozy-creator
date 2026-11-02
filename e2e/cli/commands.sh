@@ -290,19 +290,19 @@ cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
-# After the first BiRefNet run (run.sh's first_run).
 run_play() {
 step "run play"
 # The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
-# token's expiry is --expires from now.
-first=$(cat "$OUT/first.number")
-name=$(jq -r '.output[0].name // empty' "$OUT/first.json") || true
+# token's expiry is --expires from now. The output: a weightless still (the project cell's renderer).
+(cd "$here" && cell play-still ./project/draw.py/draw "prompt=play $RANDOM") || true
+first=$(cat "$OUT/play-still.number")
+name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
 expiry() {  # the token's expiry (unix s), from the link's fragment (unpadded base64url JSON before its `.`)
   local t; t=$(sed -n 's/.*[#&]c=\([^.&]*\).*/\1/p' <<< "$1" | tr '_-' '/+')
   while (( ${#t} % 4 )); do t+==; done
   base64 -d <<< "$t" 2> /dev/null | jq -r '.e // empty' 2> /dev/null || true
 }
-if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no BiRefNet output to play"; else
+if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no still to play"; else
   for expires in 30s 2h; do
     url=$(cozy --json run play "$first" --output "$name" --expires "$expires" | tee "$OUT/play-$expires.json" | jq -r '.link // empty') || true
     curl -fsS -o /dev/null "${url%%#*}" || check "run play: its player page ${url%%#*} does not answer"

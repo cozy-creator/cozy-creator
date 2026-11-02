@@ -7,6 +7,10 @@ records the coordinated Creator/Runtime/packages checks and their explicit impor
 records the frozen Creator/Runtime/packages CLI, CPU and import checks. Its CPU candidate
 artifacts and explicit package skip are separate from GPU and portable release qualification.
 
+A PR's own proof is not here: what a CPU runner can show (projects, Calcifer's HTTP surface, version skew, restarts,
+local code) is a cell of the e2e cli suite, which the merge queue runs on every PR it selects (`e2e/README.md`, "A PR's
+proof is a cell"). Cells that need a GPU or a signed-in account are this gate's.
+
 Release testing is manual: the release agent picks the suites a release needs (`--suite`, no default), runs them, and
 the promotion names the passing run (`verify.sh`). Every cell is a real run held against the last passed gate on the
 same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v2.md` §3.
