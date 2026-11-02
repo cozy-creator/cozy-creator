@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 static FAMILIES: OnceLock<Mutex<BTreeMap<u64, Vec<Weak<Family>>>>> = OnceLock::new();
 // A poisoned index cannot prove which family missed a stream. Existing storage
-// then keeps the native context-join fallback, even if its own list is intact.
+// then retains its physical Pin as unproven, even if its own list is intact.
 static TRACKING_FAULT: AtomicBool = AtomicBool::new(false);
 
 struct Family {
@@ -104,15 +104,16 @@ impl Consumers {
     /// after this call. Call exactly once for this family's one foreign storage,
     /// after its final shared-storage alias is gone. Independent exported storage
     /// retains its own Pin and family. The Pin must belong to this family's
-    /// Region. On uncertainty, release keeps the native context-joined fallback.
+    /// Region. Failure returns the exact Pin for explicit unproven custody; the
+    /// caller must not drop that Pin or substitute a context synchronization.
     #[allow(unsafe_code)]
-    pub unsafe fn release(&self, pin: Pin) -> Arc<Region> {
+    pub unsafe fn release(&self, pin: Pin) -> std::result::Result<Arc<Region>, (Pin, Error)> {
         // Close lookup admission BEFORE releasing physical ownership or allowing
         // canonical Weight retirement to free/reuse the reservation. A transient
         // record_pointer Arc alone must never keep a dead address route active.
         let active = self.0.active.swap(false, Ordering::AcqRel);
         if self.0.pid != std::process::id() {
-            return pin.into_unpinned_region();
+            return Err((pin, Error::Invalid("tensor consumer inherited after fork")));
         }
         self.0.unregister();
         if !active
@@ -120,15 +121,15 @@ impl Consumers {
             || TRACKING_FAULT.load(Ordering::Acquire)
             || self.0.uncertain.load(Ordering::Acquire)
         {
-            return pin.into_unpinned_region();
+            return Err((pin, Error::Invalid("tensor consumer completion is unproven")));
         }
         let streams = match self.0.streams.lock() {
             Ok(streams) => streams.clone(),
-            Err(_) => return pin.into_unpinned_region(),
+            Err(_) => return Err((pin, Error::Poisoned("tensor consumer streams".into()))),
         };
         // No pointer-index or family mutex crosses native event operations.
         // SAFETY: the caller supplies the final-submission guarantee above.
-        unsafe { pin.into_fenced_region(&streams) }
+        unsafe { pin.try_into_fenced_region(&streams) }
     }
 }
 
@@ -174,7 +175,7 @@ pub(crate) fn record_pointer(ptr: u64, stream: u64) -> Result<bool> {
     }
     if let Some(error) = error {
         // A partial update cannot prove all last-consumer events. Every matched
-        // family must retain the conservative native join, including earlier ones.
+        // family must retain its physical Pin, including earlier ones.
         for family in &families {
             if ptr < family.reserved_end {
                 family.uncertain.store(true, Ordering::Release);

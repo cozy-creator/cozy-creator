@@ -48,8 +48,20 @@ impl Drop for TensorExport {
         if let Some(pin) = self.pin.take() {
             // SAFETY: this value is owned by the foreign storage deleter; its final
             // alias is gone. Every other exported storage owns an independent Pin.
-            // Consumers records final tails or keeps the native conservative join.
-            let region = unsafe { self.consumers.release(pin) };
+            // Refusal retains the exact Pin and canonical owners. Never turn an
+            // unknown tail into a context-wide join or an apparently free region.
+            let region = match unsafe { self.consumers.release(pin) } {
+                Ok(region) => region,
+                Err((pin, error)) => {
+                    retirement::tensor_quarantine(
+                        pin,
+                        self.consumers.clone(),
+                        self.weight.take().expect("tensor Source/service custody"),
+                        error,
+                    );
+                    return;
+                }
+            };
             // Weight still owns this Region and GPU here; this cannot drop the final
             // arena or reservation on the foreign storage deleter's stack.
             drop(region);

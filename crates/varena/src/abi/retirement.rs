@@ -16,6 +16,12 @@ struct RetiringArena {
     ticket: crate::ArenaRetirement,
     service: ServiceLease,
 }
+struct UnprovenTensor {
+    _pin: Pin,
+    _consumers: crate::tensor_consumers::Consumers,
+    _weight: Arc<Weight>,
+    _failure: Error,
+}
 #[derive(Default)]
 struct State {
     jobs: VecDeque<Job>,
@@ -27,6 +33,7 @@ struct State {
     retired: u64,
     quarantined: u64,
     abandoned_bytes: u64,
+    unproven_tensors: Vec<UnprovenTensor>,
 }
 pub(super) struct Queue {
     state: Mutex<State>,
@@ -82,6 +89,25 @@ pub(super) fn fill(ticket: crate::FillTicket) { observe(Job::Fill(ticket)); }
 // Storage deleters publish exact ownership; they never run final Region/Source/Gpu
 // teardown inline. The existing worker performs the ordinary native finalizers.
 pub(super) fn tensor_weight(weight: Arc<Weight>) { observe(Job::TensorWeight(weight)); }
+
+/// The last alias is gone, but its consumer tail was not proved. The live Pin
+/// keeps native physical accounting and exclusion intact; this metadata-only
+/// handoff never waits, retries a foreign stream, or runs a Source destructor.
+pub(super) fn tensor_quarantine(
+    pin: Pin,
+    consumers: crate::tensor_consumers::Consumers,
+    weight: Arc<Weight>,
+    failure: Error,
+) {
+    let queue = QUEUE.get().and_then(|q| q.as_ref().ok()).expect("public retirement queue");
+    let mut state = queue.state.lock().unwrap_or_else(|error| error.into_inner());
+    state.unproven_tensors.push(UnprovenTensor {
+        _pin: pin, _consumers: consumers, _weight: weight, _failure: failure,
+    });
+    state.quarantined += 1;
+    // These are weights, not abandoned Cache bytes. Actual physical bytes stay
+    // counted by the pinned Region, including several exports of the same Region.
+}
 
 pub(super) fn defer(id: u64) -> Result<()> {
     crate::check_process()?; // reject fork before inherited queue/registry locks
