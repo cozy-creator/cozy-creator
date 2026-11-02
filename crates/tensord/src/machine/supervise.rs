@@ -16,7 +16,7 @@ use platform::process::{SupervisorSignals, Woken};
 #[cfg(unix)]
 use rustix::{
     io::Errno,
-    process::{getpid, kill_process, waitpid, Pid, WaitOptions, WaitStatus},
+    process::{getpid, kill_process, wait, Pid, WaitOptions, WaitStatus},
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
@@ -191,7 +191,8 @@ fn wait_service(child: Pid, signals: &SupervisorSignals) -> io::Result<(WaitStat
                 let _ = kill_process(child, signal);
             }
             Woken::Child => loop {
-                match waitpid(None, WaitOptions::NOHANG) {
+                // Any child: `waitpid(None, ..)` would take only this process's group.
+                match wait(WaitOptions::NOHANG) {
                     Ok(None) | Err(Errno::CHILD) => break,
                     Ok(Some((pid, status))) if pid == child => return Ok((status, stopping)),
                     Ok(Some(_)) | Err(Errno::INTR) => continue,
