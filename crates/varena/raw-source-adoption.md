@@ -41,7 +41,7 @@ impl RawRead {
 }
 ```
 
-Exact names may be narrowed during implementation; no public compatibility alias is needed.
+These native signatures are implemented; no public compatibility alias is added.
 The unsafe preparation contract forbids earlier unaccounted writers through the supplied
 Fills and requires every escaped view to own its own Pin. Ordered consumers use the existing
 Region::prepare_on / Pin::order_on contract after native publication.
@@ -77,3 +77,28 @@ covering file/inline bytes and padding, two independently ordered consumers, dro
 handles, cancel/partial I/O failure, escaped aliases, another Arena's useful progress and
 exact final physical accounting. Native source/binding checks are source evidence only;
 root owns GPU installation, execution and rentals. Keep the PR draft.
+
+## Implemented boundary
+
+The engine transfers its real RunHold after scoped readers join. It records end events
+without joining them and retains exact recording failures. Even early ordinary errors close
+the fixed stream set; recorded start/end timing remains measured where work was issued.
+ReaderRing preserves actual staging owners during unwinding. The new path refuses prior
+unproven engine work instead of invoking the joined engine recovery path.
+
+RawReadFacts includes the fixed producer stream identities as borrowed native diagnostics,
+valid only while native resources remain retained. These are not exposed as a default Python
+API, a mutable producer list or a gate method. Each read tracks its own successful enqueues;
+a shared cancellation counter cannot misattribute another operation's bytes.
+
+Current PreparedRead success waits actual submitted Fill retirement tickets before reporting
+done, so its caller can immediately capture after producer exclusion ends. Native RawRead
+completion and ordered consumers remain separately asynchronous. Error cleanup does not
+credit a partial logical read, and untouched Fills returned by preparation refusal take the
+existing checked abort/immediate-release path. Per-Region publication is valid and whole,
+but multi-Region publication is not an atomic transaction.
+
+The real Writer/Checkpoint host fixture passes full byte and validation checks without
+loading CUDA. Seven GPU modes are authored in examples/raw_source and documented in
+release-gate/suites/varena/raw-source/README.md; all remain unrun. Source compilation and
+CPU bytes do not qualify GPU lifetime, GIL progress, performance or public P4 adoption.
