@@ -29,7 +29,8 @@ fn proof_inherited_control() {
     assert!(child >= 0);
     if child == 0 {
         let inherited = |result: Result<()>| matches!(result, Err(super::Error::Ledger(ledger::Error::Inherited)));
-        let passed = inherited(owner.facts().map(|_| ())) && inherited(owner.wake(0)) && inherited(owner.close());
+        let passed = inherited(owner.facts().map(|_| ())) && inherited(owner.wake(0))
+            && inherited(owner.try_close().map(|_| ())) && inherited(owner.close());
         unsafe { libc::_exit(if passed { 0 } else { 1 }); }
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(2);

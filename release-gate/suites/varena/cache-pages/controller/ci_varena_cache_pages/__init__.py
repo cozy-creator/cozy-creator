@@ -393,3 +393,9 @@ def async_retirement_pending(payload: Probe, ctx: Context) -> Report:
 def async_arena_retirement(payload: Probe, ctx: Context) -> Report:
     assert payload.expected_devices == 1
     return native(payload, ctx, 'arena_retirement', helper="varena-async-fill")
+
+
+@app.entrypoint(accelerator=True)
+def owner_try_close(payload: Probe, ctx: Context) -> Report:
+    """Real service final-close pending during capture, then exact completion/new generation."""
+    return native(payload, ctx, 'owner_try_close')

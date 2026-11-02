@@ -19,6 +19,7 @@ thiserror.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 nvml-wrapper.workspace = true
+nvml-wrapper-sys.workspace = true
 
 [features]
 # one_process/1: ordinary same-process TLS threads; shared-VM child allocator use is unsupported.
