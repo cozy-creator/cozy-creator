@@ -44,11 +44,19 @@ rules = [
   { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
 ]
 
-# TEMPORARY (lead, 11-02, until cozy-creator #2444 lands the macOS/Windows build reuse and restores the rule below):
-# no merge-queue entry selects the macOS and Windows cli legs; cl-716's entries take them in one run on the 0.16.3
-# release candidate. A release (`--tokens release`) and a dispatch naming os:macos/os:windows still run them.
-#   [[cozy-creator.also]] paths = [the platform crate, installers, update and binary replacement, Calcifer's start and
-#   restart, completions, the suite itself, files named for an OS] select = ["os:macos", "os:windows"]
+# The macOS and Windows cli legs (a cold cozy build there is 6 and 13 min) run for what is OS-specific: the
+# platform crate, installers, updating and replacing the binary, starting and restarting Calcifer, completions,
+# the suite itself, and files named for an OS. A release runs them always.
+[[cozy-creator.also]]
+paths = [
+  "crates/platform/**", "crates/cli/src/update.rs", "crates/cli/src/daemon.rs", "crates/cli/src/doctor.rs",
+  "crates/cli/src/calcifer_client.rs", "crates/cli/src/completion.rs", "crates/calcifer/src/serve.rs",
+  "crates/tensord/src/machine/binary.rs", "crates/tensord/src/machine/update.rs",
+  "dist-workspace.toml", "scripts/patch-installers.sh", ".github/workflows/cozy-*.yaml",
+  "e2e/lib.sh", "e2e/cli/**", "e2e/candidates/**",
+  "**/*windows*", "**/*macos*", "**/*darwin*",
+]
+select = ["os:macos", "os:windows"]
 
 # Whether every published package still installs and imports, and a real model's forward pass, are the Runtime's and
 # the packages' questions, and of the crates that install, load and run them; a crate TensorD only depends on
@@ -65,7 +73,7 @@ cli = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 calcifer = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 hub-client = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 protocol = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
-platform = ["cli", "build:cozy"]
+platform = ["cli", "os:macos", "os:windows", "build:cozy"]
 executor-protocol = ["cli", "build:cozy"]
 tensord = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 tensorfs = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
