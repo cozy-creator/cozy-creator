@@ -340,7 +340,25 @@ def fixed_lm_warmup(loaded, request, ctx, ids, expected, domain):
     snapshots = []
     body = loaded.model.pipeline.body
     for index in range(3):
-        output = loaded.model.decode(ids)
+        active = {}
+
+        def progress(tokens):
+            if active:
+                return
+            try:
+                live = lm._ENGINES[body]
+                live_owner = live.region._cache_owner.native
+                before_live = live_owner.facts()
+                assert live.driver is not None and live._occupied() > 0 and live.region.pins > 0
+                shrink = ask(request.memory)
+                until(ctx, lambda: live_owner.facts()['declined'] > before_live['declined'],
+                      'warm active LM owner did not decline shrink')
+                active.update(passed=True, tokens=tokens, owner=live_owner.facts(), request=shrink.facts())
+            except Exception as error:
+                active.update(passed=False, error=f'{type(error).__name__}: {error}')
+
+        output = loaded.model.decode(ids, progress=progress)
+        assert active.get('passed'), active
         assert torch.equal(output.cpu(), expected)
         engine = lm._ENGINES[body]
         loaded.placement.release()
@@ -384,7 +402,7 @@ def fixed_lm_warmup(loaded, request, ctx, ids, expected, domain):
         for field in ('resident_bytes', 'pinned_bytes', 'ready_bytes', 'reclaimable_bytes'):
             assert weights[field] == 0, ('warm weight cleanup', index, field, weights)
         assert not weights['poisoned']
-        snapshots.append({'cycle': index, 'working': working, 'weights': weights,
+        snapshots.append({'cycle': index, 'active': active, 'working': working, 'weights': weights,
                           'owner': owner.facts(), 'fresh_owner': fresh_owner.facts(),
                           'context': event_context(domain, engine), 'request': queued.facts()})
     assert snapshots[-1]['working']['event_handles'] == snapshots[-2]['working']['event_handles'], (
