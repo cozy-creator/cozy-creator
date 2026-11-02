@@ -359,10 +359,10 @@ unsafe extern "C" fn wait(context: *mut c_void, output: *mut Progress) -> Status
 #[pymethods]
 impl PhaseController {
     #[new]
-    fn new(arena: PyRef<'_, PyArena>) -> Self {
-        Self {
+    fn new(arena: PyRef<'_, PyArena>) -> PyResult<Self> {
+        Ok(Self {
             policy: Deferred::new(Arc::new(Policy {
-                arena: arena.arena.clone(),
+                arena: arena.owner()?,
                 active: Mutex::new(None),
                 transitions: AtomicU64::new(0),
                 definitions: Mutex::new(BTreeMap::new()),
@@ -371,7 +371,7 @@ impl PhaseController {
                 observations: Mutex::new(BTreeMap::new()),
             })),
             pid: std::process::id(),
-        }
+        })
     }
     #[pyo3(signature = (capsule, key, regions, *, footprints = None, execution_key = None))]
     fn wrap(

@@ -79,27 +79,31 @@ pub(crate) fn enqueue(device: i32, job: Job) -> std::result::Result<(), (Error, 
 /// Destructor handoff. The queue was prepared before GPU creation; every error retains
 /// its exact job, reports failure, and never recursively drops GPU owners under a lock.
 pub(crate) fn defer(device: i32, job: Job) {
-    if let Err((error, mut job)) = enqueue(device, job) {
-        job.failed(&error);
-        // Poison recovery is only for preserving owned jobs, never admitting GPU work.
-        let queues = QUEUES
+    if let Err((error, job)) = enqueue(device, job) {
+        quarantine(device, job, &error);
+    }
+}
+
+/// Custody-only failure path, shared by queue failures and destructor adapters.
+/// Caller has checked process identity; this never admits GPU work or starts a worker.
+pub(crate) fn quarantine(device: i32, mut job: Job, error: &Error) {
+    job.failed(error);
+    let queues = QUEUES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(queue) = queues.get(&device) {
+        queue
+            .quarantine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(job);
+    } else {
+        ORPHANS
             .get_or_init(Mutex::default)
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(queue) = queues.get(&device) {
-            queue
-                .quarantine
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(job);
-        } else {
-            // Even a violated construction contract retains reachable native ownership.
-            ORPHANS
-                .get_or_init(Mutex::default)
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(job);
-        }
+            .unwrap_or_else(|e| e.into_inner())
+            .push(job);
     }
 }
 
