@@ -46,7 +46,7 @@ def run(device: int) -> dict:
         during = api.retirement_stats()
         assert during["quarantined"] == before["quarantined"] + 1
         assert during["abandoned_cache_bytes"] == before["abandoned_cache_bytes"]
-        assert gpu.stats()["weights_resident"] == resident
+    assert gpu.stats()["weights_resident"] == resident
     stream.synchronize()
     graph.reset()
     del graph, scratch
