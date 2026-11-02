@@ -552,3 +552,43 @@ def mixed_retirement(payload: Probe, ctx: Context) -> Report:
     except BaseException as error:  # noqa: BLE001 - preserve the complete failed probe receipt
         result["error"], result["traceback"] = repr(error), traceback.format_exc()
     return Report(result["passed"], json.dumps(result, sort_keys=True))
+
+
+def mixed_order(payload, ctx, order):
+    result = {"passed": False, "case": "mixed_load_order", "order": order}
+    try:
+        *_, result["provenance"] = setup(payload, ctx)
+        with tempfile.TemporaryDirectory(prefix="public-mixed-order-") as folder:
+            source = Path(folder) / "input.json"
+            source.write_text(json.dumps(msgspec.to_builtins(payload)))
+            child_command(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(Path(__file__).with_name("mixed_runner.py")),
+                    str(source),
+                    order,
+                ],
+                payload,
+                ctx,
+                result,
+            )
+        assert result["native_result"]["order"] == order
+        assert uuid_key(result["native_result"]["gpu_uuid"]) == uuid_key(
+            payload.gpu_uuid
+        )
+        result["passed"] = True
+    except BaseException as error:  # noqa: BLE001 - preserve the complete failed probe receipt
+        result["error"], result["traceback"] = repr(error), traceback.format_exc()
+    return Report(result["passed"], json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def mixed_native_first(payload: Probe, ctx: Context) -> Report:
+    return mixed_order(payload, ctx, "native-first")
+
+
+@app.entrypoint(accelerator=True)
+def mixed_python_first(payload: Probe, ctx: Context) -> Report:
+    return mixed_order(payload, ctx, "python-first")

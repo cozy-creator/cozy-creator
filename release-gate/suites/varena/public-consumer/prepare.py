@@ -223,7 +223,7 @@ def main():
         payload[key] = hashes[name]
     original_fixture = args.source_root / "release-gate/suites/varena/public-api"
     python_helpers = {}
-    for name in ("streams.py",):
+    for name in ("streams.py", "mixed.py"):
         shutil.copy2(original_fixture / name, binaries / name)
         python_helpers[name] = sha(binaries / name)
     source_helper_path = "release-gate/suites/varena/public-source/source.c"
@@ -274,6 +274,8 @@ def main():
             "public_basic",
             "passive_custody",
             "mixed_retirement",
+            "mixed_native_first",
+            "mixed_python_first",
             "source_ordering",
             "source_partial",
             "source_prepare_error",
