@@ -124,7 +124,7 @@ refused run-warm run birefnet/remove_background --warm installed
 # Describing local code reads its source here and uses no machine: it works where none runs.
 (cd "$here" && cozy --json run ./weightless/reverse --describe > "$OUT/describe-code.json" 2> "$OUT/describe-code.err") \
   && J '.fields | any(.name == "text")' "$OUT/describe-code.json" \
-  || check "cozy run ./weightless/reverse --describe: $(head -c 300 "$OUT/describe-code.json") $(head -c 200 "$OUT/describe-code.err")"
+  || check "cozy run ./weightless/reverse --describe: $(tail -c 300 "$OUT/describe-code.json") $(tail -c 200 "$OUT/describe-code.err")"
 refused install package install birefnet
 refused install-code package install "$here/weightless"
 refused remove package remove birefnet

@@ -66,13 +66,14 @@ parse() {
 step() { echo "::endgroup::"; echo "::group::$*"; }
 # fail: the suite cannot go on. check: a failure the suite records and goes past, so one run reports
 # every broken step; `finish` exits non-zero when any was recorded.
-fail() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; exit 1; }
-check() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; }
+fail() { check "$@"; exit 1; }
+# A failure can span lines, and a check can run in a subshell: failures.count has one line per check.
+check() { echo "::error::$*"; echo "$*" >> "$OUT/failures.txt"; echo >> "$OUT/failures.count"; }
 finish() {
   hub_checked
   echo "::endgroup::"
   [ -s "$OUT/failures.txt" ] || { echo "$1: passed"; return 0; }
-  echo "$1: $(wc -l < "$OUT/failures.txt") failure(s):"; cat "$OUT/failures.txt"; exit 1
+  echo "$1: $(wc -l < "$OUT/failures.count") failure(s):"; cat "$OUT/failures.txt"; exit 1
 }
 # Every call is logged for e2e/coverage.py: its words \x1f-separated, each call ended by \x1e.
 cozy() { printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"; "$COZY" "$@"; }
