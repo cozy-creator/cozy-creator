@@ -1557,14 +1557,24 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
 }
 
 pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
-    let result = free_inner(device, ptr, stream);
+    free_mode(device, ptr, stream, true)
+}
+
+/// The public ABI permits destroying borrowed streams after checked free/retirement.
+/// Keep its eager fence before returning; it exposes no working::retire_stream seam.
+pub(crate) fn free_borrowed(device: i32, ptr: u64, stream: u64) -> Result<()> {
+    free_mode(device, ptr, stream, false)
+}
+
+fn free_mode(device: i32, ptr: u64, stream: u64, defer_explicit: bool) -> Result<()> {
+    let result = free_inner(device, ptr, stream, defer_explicit);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "free_error");
     }
     result
 }
 
-fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
+fn free_inner(device: i32, ptr: u64, stream: u64, defer_explicit: bool) -> Result<()> {
     if ptr == 0 {
         crate::check_process()?;
         return Ok(());
@@ -1615,7 +1625,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         } else if capturing {
             block.life = Life::Deferred;
             block.reusable_on = None;
-        } else if pool.is_none()
+        } else if defer_explicit && pool.is_none()
             && block.streams.len() == 1
             && block.streams.first().is_some_and(|stream| *stream > 2)
         {

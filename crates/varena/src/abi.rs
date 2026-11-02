@@ -647,7 +647,7 @@ impl Drop for Allocation {
         if let Ok(live) = self.live.get_mut()
             && *live
         {
-            let _ = working::free(self.gpu.device(), self.pointer, self.stream);
+            let _ = working::free_borrowed(self.gpu.device(), self.pointer, self.stream);
         }
     }
 }
@@ -1119,7 +1119,7 @@ fn close_handle(id: u64, deferred: bool) -> Result<()> {
             let mut live = lock(&a.live)?;
             if *live {
                 a.gpu.eager(a.stream)?;
-                working::free(a.gpu.device(), a.pointer, a.stream)?;
+                working::free_borrowed(a.gpu.device(), a.pointer, a.stream)?;
                 *live = false;
             }
         }
