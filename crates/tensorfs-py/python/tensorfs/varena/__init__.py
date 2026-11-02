@@ -26,5 +26,6 @@ from .api import (
     open,
     retirement_stats,
 )
+from .sources import Source
 
-__all__ = ['Allocation', 'Busy', 'Cache', 'CacheView', 'Capturing', 'Error', 'Exhausted', 'Fault', 'Gpu', 'Invalid', 'Plan', 'Region', 'SourceError', 'Unsupported', 'Use', 'core_identity', 'open', 'retirement_stats']
+__all__ = ['Allocation', 'Busy', 'Cache', 'CacheView', 'Capturing', 'Error', 'Exhausted', 'Fault', 'Gpu', 'Invalid', 'Plan', 'Region', 'Source', 'SourceError', 'Unsupported', 'Use', 'core_identity', 'open', 'retirement_stats']

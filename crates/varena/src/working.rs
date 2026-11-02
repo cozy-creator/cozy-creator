@@ -1776,6 +1776,9 @@ fn record_stream_any_inner(ptr: u64, stream: u64) -> Result<()> {
         crate::check_process()?;
         return Ok(());
     }
+    if crate::tensor_consumers::record_pointer(ptr, stream)? {
+        return Ok(());
+    }
     valid_stream(stream)?;
     let candidates: Vec<_> = devices()?.values().cloned().collect();
     for owner in candidates {
@@ -1807,8 +1810,7 @@ fn record_stream_any_inner(ptr: u64, stream: u64) -> Result<()> {
             ));
         }
     }
-    // Native Torch ignores foreign DataPtr deleters. Their storage owner (for example a
-    // TensorFS Region Pin) retains its own consumer/lifetime contract.
+    // Unregistered foreign DataPtrs retain their own consumer/lifetime contract.
     Ok(())
 }
 

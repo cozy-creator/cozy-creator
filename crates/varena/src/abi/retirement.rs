@@ -5,6 +5,7 @@ use std::sync::Condvar;
 use std::time::Duration;
 
 enum Job {
+    TensorWeight(Arc<Weight>),
     Handle(u64),
     Arena(Arc<Arena>, ServiceLease),
     ArenaTicket(RetiringArena),
@@ -78,6 +79,9 @@ fn observe(job: Job) {
 }
 pub(super) fn source(ticket: super::source::Ticket) { observe(Job::Source(ticket)); }
 pub(super) fn fill(ticket: crate::FillTicket) { observe(Job::Fill(ticket)); }
+// Storage deleters publish exact ownership; they never run final Region/Source/Gpu
+// teardown inline. The existing worker performs the ordinary native finalizers.
+pub(super) fn tensor_weight(weight: Arc<Weight>) { observe(Job::TensorWeight(weight)); }
 
 pub(super) fn defer(id: u64) -> Result<()> {
     crate::check_process()?; // reject fork before inherited queue/registry locks
@@ -262,6 +266,7 @@ fn run(queue: Arc<Queue>) {
         let (mut retired, mut quarantined) = (0, 0);
         for job in jobs {
             let outcome = match job {
+                Job::TensorWeight(weight) => { drop(weight); Outcome::Done }
                 Job::Handle(id) => handle(id, &queue),
                 Job::Arena(arena, service) => retire_arena(arena, service, &queue),
                 Job::ArenaTicket(ticket) => observe_arena(ticket, &queue),
