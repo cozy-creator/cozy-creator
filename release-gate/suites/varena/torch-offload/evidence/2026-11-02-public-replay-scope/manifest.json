@@ -1,0 +1,15 @@
+{
+  "feature_commit": "98f0b5e8a",
+  "contract": "exact _VarenaAllocatorCapture(device,replay=True), yield, finallyguard.close; no other calls",
+  "unchanged": "vt.replay and vt.graph function source byte-identical to previous head; capture synchronization amendment unapplied",
+  "native_build": "verified Agent2 readiness build186165/1761, copied read-only into owned package",
+  "scope": "actual native host metadata guards and actual graph binding CPU body; no CUDA graph/weight Pins/GPU completion",
+  "results": "nested guard preservation, exception finally cleanup, opposite native guard refusal and real CPU bindings pass; no libcuda or CUDA initialization",
+  "checks": "Ruff/format for new client/adapter; AST wrapper calls onlyconstructor/close; graph+replay unchanged; protected current-base safety/workflow bytes unchanged; diff check",
+  "gpu_executed": false,
+  "source_sha256": {
+    "crates/tensorfs-py/python/tensorfs/varena/torch.py": "e30bab8158b257f41b0d0677f7e84241f2b3490838e950a1185229a3d7706e7b",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py": "1207f320ff10796433d9010107432bf97776d20a073c3e14559ae6f08da2b083",
+    "release-gate/suites/varena/torch-offload/replay_scope_host.py": "b3aee21a8e3de28f2e894659fa7d4872f530463362b077ec375012b00185754d"
+  }
+}
