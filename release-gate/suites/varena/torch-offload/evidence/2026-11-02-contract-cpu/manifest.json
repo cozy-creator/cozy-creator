@@ -1,0 +1,16 @@
+{
+  "source_commit": "3dbe4281105a390acce8e4493cdcc3b754f7cc8f",
+  "inventory_sha256": "ef343a7f45421e1faf0999e09aafc5a64287c5000c9c10dff424be6e7d9c6648",
+  "native_checkpoint": "2ba51b29e5c84927c4a7d45337374d0ea8ff27b3",
+  "torch": "2.14.1+cpu",
+  "diffusers": "0.41.0",
+  "gpu": false,
+  "offload_implemented": false,
+  "scope": "real CPU frontend metadata/identity/dtype experiments only; no native allocator or Source simulation",
+  "commands": [
+    "CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .task/torch-cpu/bin/python release-gate/suites/varena/torch-offload/inventory_cpu.py",
+    "CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 .task/torch-cpu/bin/python release-gate/suites/varena/torch-offload/diffusers_inventory_cpu.py"
+  ],
+  "pending": "API/Source owner agreement and actual typed storage-owning export/Source signatures",
+  "original_artifacts": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task"
+}

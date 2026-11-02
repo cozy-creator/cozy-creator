@@ -1,0 +1,27 @@
+{
+  "label": "feature-off",
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "-p",
+    "varena",
+    "--example",
+    "fork_guard_cpu",
+    "-j",
+    "1",
+    "--no-default-features"
+  ],
+  "build_seconds": 6.475986792996991,
+  "run_seconds": 0.02463018096750602,
+  "returncode": 0,
+  "binary_sha256": "a8f0b07a1d829037ca7a8f240ece13c5f3d1522efb71beeff9feebc6e29dcc6f",
+  "source": "2f3f0e7b9c82103c97cb8b0116247624c28a7f4c",
+  "kernel_guard_enabled": false,
+  "contract": "one_process/1",
+  "gpu_qualified": false
+}
