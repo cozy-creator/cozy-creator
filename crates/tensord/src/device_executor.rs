@@ -6,7 +6,7 @@ use crate::{
     process::{reap_group, tail},
     seam,
 };
-pub use protocol::executor::{
+pub use executor_protocol::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,

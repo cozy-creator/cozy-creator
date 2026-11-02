@@ -1,14 +1,14 @@
-//! `tensorfs.executor`: the TensorD ↔ executor seam's types (`protocol::executor`) as Python
+//! `tensorfs.executor`: the TensorD ↔ executor seam's types (`executor_protocol`) as Python
 //! classes: TensorD's commands and answers, decoded by serde here, and the executor's requests,
 //! built and written by serde here. The Runtime keeps no copy of them: an unknown field is
 //! ignored, a missing one takes its default, a needed one fails by its path.
-use protocol::executor::{
+use executor_protocol::{
+    TensorFSOptions,
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork, Room,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PreparedUse, PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
-use protocol::machine::TensorFSOptions;
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
 
 create_exception!(

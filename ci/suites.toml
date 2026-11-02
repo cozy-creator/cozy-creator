@@ -49,7 +49,7 @@ rules = [
 # Whether every published package still installs and imports is the Runtime's and the packages' question, and of the
 # crates that install and load them; a crate TensorD only depends on (protocol, platform) is not.
 [[cozy-creator.also]]
-paths = ["crates/tensord/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**"]
+paths = ["crates/tensord/**", "crates/executor-protocol/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**"]
 select = ["imports"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
@@ -61,6 +61,7 @@ calcifer = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 hub-client = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 protocol = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 platform = ["cli", "build:cozy"]
+executor-protocol = ["cli", "build:cozy"]
 tensord = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 tensorfs = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 varena = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]

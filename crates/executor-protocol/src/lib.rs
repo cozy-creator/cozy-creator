@@ -4,12 +4,13 @@
 //! Each side may be another release than the other (the cozy binary and the tensorfs wheel ship
 //! separately), so every reader is tolerant: an unknown field is ignored, a missing one takes its
 //! default, and only a needed field (one without a default here) fails, by its name.
+//!
+//! The tensorfs wheel takes this crate, not `protocol`, whose machine client is reqwest and everything under it.
+#![forbid(unsafe_code)]
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use crate::machine::TensorFSOptions;
 
 /// The result document's spool name.
 pub const RESULT_DOCUMENT: &str = "result.canonical";
@@ -1330,4 +1331,46 @@ mod python {
         Capability => Command::Capability,
         Room => Command::Room
     );
+}
+
+/// Public TensorFS transport options. TensorD forwards a supplied token without acquiring one: at
+/// the run's Hub, the run capability its computer minted, never an account's sign-in.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+#[serde(default)]
+pub struct TensorFSOptions {
+    pub endpoint: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub token: String,
+    /// When `token` expires; 0: unknown.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub expires_unix_ms: i64,
+    /// An endpoint's private CA, base64 DER on the wire.
+    #[serde(with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
+    pub ca_der: Vec<u8>,
+}
+
+impl std::fmt::Debug for TensorFSOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TensorFSOptions")
+            .field("endpoint", &self.endpoint)
+            .field("token", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Bytes as base64 text.
+pub mod base64_bytes {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        STANDARD
+            .decode(String::deserialize(deserializer)?)
+            .map_err(D::Error::custom)
+    }
 }

@@ -8,6 +8,7 @@ members = [
     "crates/calcifer",
     "crates/cli",
     "crates/cozy",
+    "crates/executor-protocol",
     "crates/hub-client",
     "crates/platform",
     "crates/protocol",
@@ -29,6 +30,7 @@ publish = false
 [workspace.dependencies]
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
+executor-protocol = { path = "crates/executor-protocol" }
 hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
 protocol = { path = "crates/protocol" }

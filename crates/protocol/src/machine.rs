@@ -2,6 +2,8 @@
 //! every request carrying `authorization: Cozy-Cap <token>`. Live state and run events are SSE;
 //! files move by ranged `PUT`/`HEAD`/`GET`. Refusals are [`crate::error::Envelope`]. Unknown fields
 //! are ignored, and clients skip SSE events they do not know.
+pub use executor_protocol::TensorFSOptions;
+use executor_protocol::base64_bytes;
 use serde::{Deserialize, Serialize};
 
 pub mod client;
@@ -307,36 +309,6 @@ pub struct RunSpec {
 pub struct ProviderAccess {
     pub huggingface: String,
     pub civitai: String,
-}
-
-/// Public TensorFS transport options. TensorD forwards a supplied token without acquiring one: at
-/// the run's Hub, the run capability its computer minted, never an account's sign-in.
-#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-#[serde(default)]
-pub struct TensorFSOptions {
-    pub endpoint: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub token: String,
-    /// When `token` expires; 0: unknown.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub expires_unix_ms: i64,
-    /// An endpoint's private CA, base64 DER on the wire.
-    #[serde(with = "base64_bytes", skip_serializing_if = "Vec::is_empty")]
-    pub ca_der: Vec<u8>,
-}
-
-fn is_zero(value: &i64) -> bool {
-    *value == 0
-}
-
-impl std::fmt::Debug for TensorFSOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TensorFSOptions")
-            .field("endpoint", &self.endpoint)
-            .field("token", &"<redacted>")
-            .finish_non_exhaustive()
-    }
 }
 
 /// A published release by name (th-245): a machine that holds no installation of it reads its
@@ -954,20 +926,4 @@ pub struct Disk {
     pub models_bytes: u64,
     pub environments_bytes: u64,
     pub runtime_bytes: u64,
-}
-
-/// Bytes as base64 text.
-pub(crate) mod base64_bytes {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        STANDARD
-            .decode(String::deserialize(deserializer)?)
-            .map_err(D::Error::custom)
-    }
 }
