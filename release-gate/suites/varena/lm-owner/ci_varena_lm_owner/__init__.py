@@ -228,6 +228,10 @@ def lm_owner(payload: Probe, ctx: Context) -> Report:
                     field, baseline, result['final'])
             result['passed'] = True
             loaded = None
+    except AssertionError as error:
+        # Preserve every original assertion condition and attach its already-read facts
+        # to the structured request failure; executor stderr may not be relayed.
+        raise AssertionError(f'{error}; event_diagnostic={json.dumps(result, sort_keys=True)}') from error
     finally:
         print(json.dumps(result, sort_keys=True), file=sys.stderr)
         if loaded is not None:
