@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from torch.cuda import Stream
 
 DeviceLike: TypeAlias = "int | str | TorchDevice | None"
+_ExplicitDevice: TypeAlias = "int | str | TorchDevice"
 PoolId: TypeAlias = tuple[int, int]
 
 _lock = threading.Lock()
@@ -52,12 +53,37 @@ def _device(device: DeviceLike = None) -> int:
     return cast(int, torch.cuda.current_device() if parsed.index is None else parsed.index)
 
 
-def install(device: DeviceLike = None) -> None:
-    """Select Varena once per process. An explicit device is initialized outside capture.
+def install(device: _ExplicitDevice = 0) -> None:
+    """Select Varena and activate a device, defaulting to device0, outside capture.
 
     The wheel must list this Torch patch cohort and match its CUDA/C++ ABI and platform.
     This never compiles at runtime and uses no cudaMalloc import hook.
     """
+    index = _activation_device(device)
+    _bind_allocator()
+    initialize(index)
+
+
+def _activation_device(device: DeviceLike) -> int:
+    """Resolve a requested ordinal without Torch's lazy current-device initialization."""
+    if device is None:
+        raise TypeError("activation requires an explicit device; None is not a CPU-only mode")
+    if isinstance(device, int):
+        index = device
+    else:
+        import torch
+
+        parsed = torch.device(device)
+        if parsed.type != "cuda":
+            raise ValueError("Varena requires a CUDA device")
+        index = 0 if parsed.index is None else parsed.index
+    if index < 0:
+        raise ValueError("device must be nonnegative")
+    return index
+
+
+def _bind_allocator() -> None:
+    """Private Runtime CPU-only selection; device activation requires its explicit Start."""
     global _owner, _library, _allocator
     import torch
 
@@ -112,14 +138,13 @@ def install(device: DeviceLike = None) -> None:
             torch.cuda.memory.change_current_allocator(allocator)
             _library, _allocator, _owner = native, allocator, os.getpid()
             _bind_stats(torch)
-    if device is not None:
-        initialize(device)
 
 
-def initialize(device: DeviceLike = 0) -> None:
-    """Prepare a device outside capture, including an allocation-free first graph."""
+def initialize(device: _ExplicitDevice = 0) -> None:
+    """Activate the verified native service and Working custody outside capture."""
+    index = _activation_device(device)
     _installed()
-    _ext._varena_working_initialize(_device(device))
+    _ext._varena_working_initialize(index)
 
 
 def stats(device: DeviceLike = 0) -> dict[str, int]:

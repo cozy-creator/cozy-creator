@@ -21,7 +21,7 @@ fn transient(py: Python<'_>, reason: &str, error: PyErr) -> PyErr {
     }
 }
 
-fn raise(py: Python<'_>, error: cooperative::Error) -> PyErr {
+pub(super) fn raise(py: Python<'_>, error: cooperative::Error) -> PyErr {
     match error {
         cooperative::Error::Native(error @ varena::Error::CaptureActive) => transient(
             py,
@@ -262,6 +262,9 @@ impl PyOwner {
     #[classattr]
     const PRESSURE_PROTOCOL: u32 = 1;
 
+    #[classattr]
+    const CUSTODY_PROTOCOL: u32 = 1;
+
     #[new]
     fn new(
         py: Python<'_>,
@@ -297,6 +300,11 @@ impl PyOwner {
             .map_err(|e| raise(py, e))
     }
 
+    fn retain_working_lifetime(&self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| self.owner.retain_working_lifetime())
+            .map_err(|e| raise(py, e))
+    }
+
     fn request_boundary(&self, py: Python<'_>, begin: bool) -> PyResult<()> {
         let boundary = if begin {
             cooperative::Boundary::RequestBegin
@@ -312,7 +320,7 @@ impl PyOwner {
         let pressure = &facts.pressure;
         Ok(
             json!({"active":facts.active,"stopping":facts.stopping,"retired":facts.retired,
-                "clients":facts.clients,"closed":facts.closed,
+                "clients":facts.clients,"closed":facts.closed,"passive_holds":facts.passive_holds,
                 "owner":{"slot":self.row.slot,"incarnation":self.row.incarnation},
                 "activity":format!("{:?}",facts.activity),
                 "pressure":{"samples":pressure.samples,"observed_at":pressure.observed_at,

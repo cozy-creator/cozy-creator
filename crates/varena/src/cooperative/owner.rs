@@ -103,6 +103,8 @@ fn report(
 pub struct Facts {
     /// Live application clients; worker/recovery references are not client leases.
     pub clients: usize,
+    /// Passive process/device custody, never an execution client or activity vote.
+    pub passive_holds: usize,
     /// This handle released its lease; other clients may keep the service active.
     pub closed: bool,
     pub active: bool,
@@ -171,6 +173,7 @@ struct State {
     row: Option<ledger::RowId>,
     next_client: u64,
     clients: BTreeMap<u64, Client>,
+    passive_holds: usize,
     interrupted_window: bool,
     stopping: bool,
     retired: bool,
@@ -206,6 +209,8 @@ impl State {
             ledger::Activity::Active
         } else if self.clients.values().any(|client| !client.released && !client.reported) {
             ledger::Activity::Unknown
+        } else if self.passive_holds != 0 && !self.clients.values().any(|client| !client.released) {
+            ledger::Activity::Unknown // No execution reporter; custody is not an Idle declaration.
         } else {
             ledger::Activity::Idle
         }
@@ -317,7 +322,7 @@ impl Control {
         let Some(client) = state.clients.get_mut(&id) else { return false; };
         if client.released { return client.final_client; }
         client.released = true;
-        let final_client = !state.clients.values().any(|client| !client.released);
+        let final_client = state.passive_holds == 0 && !state.clients.values().any(|client| !client.released);
         state.clients.get_mut(&id).expect("released client").final_client = final_client;
         state.facts.activity = state.activity();
         if final_client {
@@ -673,7 +678,62 @@ pub struct Owner {
     control: Arc<Control>,
 }
 
+/// Host-only custody of a ready service, held by the actual Working lifetime.
+/// It never appears in clients/request windows and owns no Peer or GPU destructor.
+pub(crate) struct ProcessKeepalive {
+    control: Arc<Control>,
+}
+
+impl ProcessKeepalive {
+    pub(crate) fn same_service(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.control, &other.control)
+    }
+}
+
+impl Drop for ProcessKeepalive {
+    fn drop(&mut self) {
+        if self.control.pid != std::process::id() {
+            return;
+        }
+        let mut state = self
+            .control
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.passive_holds = state
+            .passive_holds
+            .checked_sub(1)
+            .expect("passive service custody underflow");
+        state.facts.activity = state.activity();
+        if state.passive_holds == 0 && !state.clients.values().any(|client| !client.released) {
+            state.stop();
+        }
+        self.control.changed.notify_all();
+    }
+}
+
 impl Owner {
+    fn working_hold(&self) -> Result<ProcessKeepalive> {
+        let mut state = self.control.lock()?;
+        check(&state)?;
+        state.client(self.client)?;
+        state.passive_holds = state
+            .passive_holds
+            .checked_add(1)
+            .ok_or(ledger::Error::Overflow)?;
+        Ok(ProcessKeepalive {
+            control: Arc::clone(&self.control),
+        })
+    }
+
+    /// Bind this already-ready service to initialized Working storage. No service/device
+    /// creation or activity report occurs. Redundant candidates drop outside Working locks.
+    pub fn retain_working_lifetime(&self) -> Result<()> {
+        let keepalive = self.working_hold()?;
+        crate::working::retain_cooperation(self.device, keepalive)?;
+        Ok(())
+    }
+
     /// Inherit a ready service's exact domain and current configuration without CUDA/NVML.
     /// None means only absent or successfully retired; faults/opening/stopping refuse.
     pub fn join_existing(device: i32) -> Result<Option<Self>> {
@@ -891,6 +951,7 @@ impl Owner {
         let state = self.control.lock()?;
         let mut facts = state.facts.clone();
         facts.clients = state.clients.values().filter(|client| !client.released).count();
+        facts.passive_holds = state.passive_holds;
         facts.closed = state.client(self.client).is_err();
         facts.active &= !facts.closed;
         facts.stopping = state.stopping;

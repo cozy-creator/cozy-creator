@@ -20,6 +20,7 @@ parser.add_argument('--source', type=Path, required=True)
 parser.add_argument('--target', type=Path, required=True)
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--default-service', action='store_true')
+parser.add_argument('--process-custody', action='store_true')
 args = parser.parse_args()
 args.out.mkdir(parents=True, exist_ok=False)
 fixture = args.out / 'native'
@@ -50,18 +51,23 @@ with (fixture / 'src/cooperative/owner.rs').open('a') as output:
     output.write('\n' + harness.with_name('shared.rs').read_text())
     if args.default_service:
         output.write('\n' + harness.with_name('default_service.rs').read_text())
+    if args.process_custody:
+        output.write('\n' + harness.with_name('process_custody.rs').read_text())
 with (fixture / 'src/cooperative/pressure.rs').open('a') as output:
     output.write('\n' + harness.with_name('pressure_host.rs').read_text())
 with (fixture / 'src/cooperative.rs').open('a') as output:
     output.write('\npub use owner::lifecycle_proof;\n')
     if args.default_service:
         output.write('\npub use owner::default_service_proof;\n')
+    if args.process_custody:
+        output.write('\npub use owner::process_custody_proof;\n')
 if args.default_service:
     with (fixture / 'src/cooperative/domain.rs').open('a') as output:
         output.write('\n' + harness.with_name('default_domain.rs').read_text())
 (fixture / 'examples').mkdir()
 (fixture / 'examples/lifecycle.rs').write_text(
     'fn main() { ' + ('varena::cooperative::default_service_proof(); ' if args.default_service else '')
+    + ('varena::cooperative::process_custody_proof(); ' if args.process_custody else '')
     + 'println!("{}", varena::cooperative::lifecycle_proof()); }\n')
 command = ['nice', '-n', '19', 'cargo', 'run', '--offline', '--manifest-path',
            str(fixture / 'Cargo.toml'), '--target-dir', str(args.target), '--example', 'lifecycle', '-j', '1']
@@ -76,6 +82,7 @@ report = {'command': command, 'exit_code': completed.returncode, 'seconds': time
           'pressure_harness_sha256': hashlib.sha256(harness.with_name('pressure_host.rs').read_bytes()).hexdigest(),
           'ledger_directory': str(ledger_directory),
           'default_service': args.default_service,
+          'process_custody': args.process_custody,
           'scope': 'actual native host-control concurrency; no CUDA participant, GPU or native donor qualification'}
 if completed.returncode == 0:
     report['result'] = json.loads((args.out / 'stdout').read_text())
@@ -88,6 +95,19 @@ if completed.returncode == 0:
         'fork_rejects_before_inherited_control': True,
         'gpu_qualified': False,
     }
+    if args.process_custody:
+        report['result']['process_custody'] = {
+            'passive_only_unknown': True,
+            'no_extra_execution_client': True,
+            'actual_client_window_not_invalidated_by_passive_hold': True,
+            'missing_working_attach_rolls_back_without_initializing': True,
+            'unbound_allocations_refused_without_cuda': True,
+            'last_execution_close_nonfinal_while_passive_hold_survives': True,
+            'new_execution_client_joins_same_row': True,
+            'gpu_working_attachment_qualified': False,
+            'positive_H_measurement_qualified': False,
+        }
+        report['process_custody_harness_sha256'] = hashlib.sha256(harness.with_name('process_custody.rs').read_bytes()).hexdigest()
     if args.default_service:
         report['result']['default_service'] = {
             'custom_ready_domain_inherited_without_discovery': True,
