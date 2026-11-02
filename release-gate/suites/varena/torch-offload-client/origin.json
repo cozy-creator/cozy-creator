@@ -1,0 +1,9 @@
+{
+  "source_sha": "a247d24a3bb172df790445cc0ad6a06c557d709a",
+  "scripts": {
+    "intent.py": "18cc88001599fb2cec5566e4c99d2c34263d9ec9b529ee6028bcd3803588ebac",
+    "adapter_gpu.py": "7709f250f941ba23fae9ac0e1ff0232c4819eb0e95c30900764a2e2b0c388f4f",
+    "sdxl_gpu.py": "db7b0412c1477d29683b5f2020aaf6cc18295878fb150566c6412c0caf1ec7ce"
+  },
+  "stock_successor": "variant/safetensors and preserved per-pass evidence only; numeric assertions unchanged"
+}
