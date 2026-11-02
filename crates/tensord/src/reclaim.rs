@@ -401,21 +401,23 @@ fn kernel_entries(caches: &KernelCaches) -> Vec<(PathBuf, PathBuf)> {
 /// environment under `environments` symlinks stays. uv takes the cache's `.lock` shared for
 /// each command and the publisher for a whole environment build; the pass holds it exclusively
 /// throughout, and is skipped while either holds it. An entry removed with its pointers is a
-/// cache miss to uv, which unpacks the wheel again.
+/// cache miss to uv, which unpacks the wheel again. Nothing is removed unless every environment
+/// could be read (`sites`): an entry a scan missed would be deleted from under its environment.
 fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result<Disk>, swept: &mut Swept) -> io::Result<()> {
     let lock = File::options().write(true).open(cache.join(".lock"));
     let Some(_held) = lock.ok().filter(|lock| lock.try_lock().is_ok()) else {
         return Ok(());
     };
+    let archives = cache.join("archive-v0");
+    let mut linked = HashSet::new();
+    if let Err(error) = environments.iter().try_for_each(|root| symlinked(root, &archives, &mut linked)) {
+        tracing::warn!("reclaim keeps the whole uv cache: its environments could not all be read: {error}");
+        return Ok(());
+    }
     // ctime is the kernel's coarse clock: a second's margin.
     static PASSED: Mutex<Option<SystemTime>> = Mutex::new(None);
     let since = PASSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(SystemTime::now());
     let since = since.map(|at| at - Duration::from_secs(1));
-    let archives = cache.join("archive-v0");
-    let mut linked = HashSet::new();
-    for root in environments {
-        symlinked(root, &archives, 3, &mut linked);
-    }
     let mut pointers = HashMap::new();
     for bucket in fs::read_dir(cache).into_iter().flatten().flatten() {
         if bucket.file_name() != "archive-v0" {
@@ -445,36 +447,69 @@ fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result
     Ok(())
 }
 
-/// The uv archives (`archive-v0/<id>` under `archives`) the environments under `dir` link by
-/// symlink: a venv's (`pyvenv.cfg`) or an install target's (the toolchain's) installed
-/// distributions, each by its `METADATA`. Looks `depth` directories down, never through a link.
-fn symlinked(dir: &Path, archives: &Path, depth: usize, found: &mut HashSet<OsString>) {
-    let venv = dir.join("pyvenv.cfg").is_file();
-    let site = match venv {
-        true => platform::paths::venv_site_packages(dir),
-        false => Some(dir.to_path_buf()),
+/// The site directories of every environment under `dir`, however deep and never through a link: a
+/// venv's (`pyvenv.cfg`), not looked into further, or an install target's (the toolchain's), any
+/// directory holding a `.dist-info`. A directory already gone has none. Anything else unreadable is an
+/// error, since a caller can then not say that nothing links a thing, and keeps it.
+fn sites(dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+    if dir.join("pyvenv.cfg").is_file() {
+        let site = platform::paths::venv_site_packages(dir);
+        found.push(site.ok_or_else(|| io::Error::other(format!("{} has no site-packages", dir.display())))?);
+        return Ok(());
+    }
+    let entries = match fs::read_dir(dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
     };
-    for entry in site.into_iter().flat_map(|site| fs::read_dir(site).into_iter().flatten().flatten()) {
+    let mut target = false;
+    for entry in entries {
+        let entry = entry?;
         if entry.file_name().to_string_lossy().ends_with(".dist-info") {
-            let target = fs::read_link(entry.path().join("METADATA")).ok();
-            if let Some(id) = target.as_deref().and_then(|t| t.strip_prefix(archives).ok()).and_then(|r| r.iter().next()) {
-                found.insert(id.to_owned());
-            }
-        } else if !venv && depth > 0 && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            symlinked(&entry.path(), archives, depth - 1, found);
+            target = true;
+        } else if entry.file_type()?.is_dir() {
+            sites(&entry.path(), found)?;
         }
     }
+    if target {
+        found.push(dir.to_path_buf());
+    }
+    Ok(())
 }
 
-/// Whether an environment under `dir`, `depth` directories down at most and never through a
-/// link, links into `base`: a venv's site-packages entry pointing there.
-fn links_into(dir: &Path, base: &Path, depth: usize) -> bool {
-    if dir.join("pyvenv.cfg").is_file() {
-        let entries = platform::paths::venv_site_packages(dir).into_iter().flat_map(|site| fs::read_dir(site).into_iter().flatten().flatten());
-        return entries.into_iter().any(|e| fs::read_link(e.path()).is_ok_and(|target| target.starts_with(base)));
+/// The uv archives (`archive-v0/<id>` under `archives`) the environments under `dir` link by
+/// symlink, each installed distribution by its `METADATA`.
+fn symlinked(dir: &Path, archives: &Path, found: &mut HashSet<OsString>) -> io::Result<()> {
+    let mut all = vec![];
+    sites(dir, &mut all)?;
+    for site in all {
+        for entry in fs::read_dir(site)? {
+            let entry = entry?;
+            if !entry.file_name().to_string_lossy().ends_with(".dist-info") {
+                continue;
+            }
+            match fs::read_link(entry.path().join("METADATA")) {
+                Ok(target) => found.extend(target.strip_prefix(archives).ok().and_then(|rest| rest.iter().next()).map(OsString::from)),
+                // None, or a copied or hard-linked one: it links nothing here.
+                Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
-    let children = || fs::read_dir(dir).into_iter().flatten().flatten();
-    depth > 0 && children().any(|e| e.file_type().is_ok_and(|kind| kind.is_dir()) && links_into(&e.path(), base, depth - 1))
+    Ok(())
+}
+
+/// Whether an environment under `dir` links into `base`: a site's entry pointing there.
+fn links_into(dir: &Path, base: &Path) -> io::Result<bool> {
+    let mut all = vec![];
+    sites(dir, &mut all)?;
+    for site in all {
+        for entry in fs::read_dir(site)? {
+            if fs::read_link(entry?.path()).is_ok_and(|target| target.starts_with(base)) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// uv's pointers under `dir` to an unpacked wheel in `archive-v0`, by the archive's name: a
@@ -630,7 +665,8 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         {
             if entry.path().join("generation.json").is_file() {
                 let used = modified(&entry.path().join(".hold"));
-                let on_inactive = inactive.iter().any(|(base, _)| links_into(&entry.path().join("env"), base, 0));
+                // Not known to be on one, it is not stale.
+                let on_inactive = inactive.iter().any(|(base, _)| links_into(&entry.path().join("env"), base).unwrap_or(false));
                 match on_inactive && unused_for(used, IDLE) {
                     true => stale.push(Entry { kind: Kind::Generation, path: entry.path(), used, hold: None, guard: None }),
                     false => add(Kind::Generation, entry.path(), used, None),
@@ -688,8 +724,13 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
         discard(&mut entry, &mut swept)?;
     }
     for (base, version) in inactive {
-        if caches.environments.iter().any(|root| links_into(root, &base, 3)) {
-            continue;
+        match caches.environments.iter().try_fold(false, |used, root| Ok::<_, io::Error>(used || links_into(root, &base)?)) {
+            Ok(false) => {}
+            Ok(true) => continue,
+            Err(error) => {
+                tracing::warn!("reclaim keeps PyTorch {version}: its environments could not all be read: {error}");
+                continue;
+            }
         }
         let bytes = releasable(&base, filesystem, &open).unwrap_or(0);
         if remove(&base) {
