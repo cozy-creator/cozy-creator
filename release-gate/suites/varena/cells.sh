@@ -23,13 +23,16 @@ sys.exit(0 if any(sys.argv[3] in k.get("cells", []) and k["sku"] in (sys.argv[2]
 vcell() { if parked "$1"; then log "$1 parked (known-failing.json)"; else cell "$@"; fi; }
 cap() {
   "$CLI" machine update "$M" --gpu-memory-limit "$1" -y >"cap-$1.log" 2>&1
-  local i
-  for i in $(seq 12); do  # the restarted machine writes its ledger line once it is up
-    "$CLI" machine logs "$M" memory -n 50 >"cap-$1.memory.log" 2>&1
-    [ "$1" = off ] || [ "$(grep -o '"capacity":[0-9]*[^}]*"event":"ledger"' "cap-$1.memory.log" | tail -1 | grep -o '[0-9]*' | head -1)" -le $(( ${1%GiB} << 30 )) ] 2>/dev/null && break
+  local i said want=0
+  [ "$1" = off ] || want=$(( ${1%GiB} << 30 ))
+  for i in $(seq 12); do  # the restarted machine reports its limit once it is up
+    "$CLI" --json machine show "$M" >"cap-$1.show.json" 2>/dev/null
+    said=$(jq -r '[.status.gpus[]? | .memory_limit_bytes // 0 | tostring] | unique | join(",")' "cap-$1.show.json" 2>/dev/null)
+    [ "$said" = "$want" ] && break
     sleep 5
   done
-  log "cap $1 on $M: $(grep -E '^status' "cap-$1.log")"
+  log "cap $1 on $M: machine show says ${said:-nothing} bytes; $(grep -E '^status' "cap-$1.log")"
+  [ "$said" = "$want" ] || expect "cap-$1" FAIL "machine show says ${said:-nothing} bytes, not $want"
 }
 SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 generate)
 # One character picture, as a project sends it: no model but H3's.

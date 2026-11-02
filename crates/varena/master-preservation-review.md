@@ -1,17 +1,19 @@
 # XS-138 #2452: current-master boundary review
 
-Base `a0338b898060fcd16f8bb169a638afc89f08f080`; frozen feature input `6ca4921221319a67cbedf073acf42685e4eb928f`.
+Base `7a4a0407a095ff79c5344c8bffa3357a1355934f` (includes platform audit #2480); frozen feature input `6ca4921221319a67cbedf073acf42685e4eb928f`.
 
-The repair preserves current master safety/dependency guards, executor-protocol extraction, rustix platform code, and current Calcifer ownership. Platform memory implementation stays unchanged; consumers use only Signal, wait_any and Waitable. Its separate API audit is outside this repair.
+The repair preserves current master safety/dependency guards, executor-protocol extraction, rustix platform code, and current Calcifer ownership. Platform audit #2480 is retained exactly: dead memory and shm APIs stay deleted; consumers use only Signal, wait_any and Waitable.
 
 The per-rank feature remains the frozen 6ca492 scope. The current Calcifer updater bridge dfccac271/37a4b7fcc is an explicit integration addition: native bundles survive through actual staging, and mode updates require live readback.
 
-The exact inventory has 89 files: master58 + 34 reviewed additions - three retired allocator/ELF/IAT files. The unchanged memory-safety guard passes, including advisory checking. Root deny(unsafe_code) now scopes the C client and mixed-client fixture; explicit local allowances mark ABI operations. This is source-boundary review, not a memory-safety certificate or GPU qualification.
+The exact inventory has 83 files: current master52 + 34 reviewed additions - three retired allocator/ELF/IAT files. The unchanged memory-safety guard passes, including advisory checking. Root deny(unsafe_code) now scopes the C client and mixed-client fixture; explicit local allowances mark ABI operations. This is source-boundary review, not a memory-safety certificate or GPU qualification.
 
 New inline unit-test modules for memory mode and updater proof are omitted.
 Original commits and historical evidence remain preserved, as do real release-gate clients. Omitted behavioral cases require actual client coverage before qualification; no removed test is reported as passed.
 
 ## Validation boundary
+
+The source/build results below first qualified the a0338b898-based candidate. Integration of platform audit7a4a0407 preserves its removed APIs and six retired unsafe entries; the unchanged guard passes with advisories ok and the final seven-package production cargo check passes in 2m08 s, offline/locked with one nice19 job. No further source change followed that check.
 
 Cargo metadata, product whitespace and conflict-marker checks pass. The unchanged safety guard reports advisories ok. Full diff whitespace warnings belong to preserved historical raw receipts. Production cargo check passed for varena, varena-client, tensorfs-py, tensord, cli, calcifer and varena-mixed-client (32.84 s); the migrated protocol rank example check passed (43.85 s), both offline/locked with one nice19 Cargo job. An initial shared-target check reused an older executor-protocol descriptor and failed; its log is preserved. Refreshing this worktree's source timestamps rebuilt the correct dependency without a source change. No GPU, rental, live update, merge, release or new unit test was run.
 

@@ -9,7 +9,7 @@ use std::{
 };
 
 /// The peer as the pipe names it (`GetNamedPipe{Client,Server}ProcessId`), checked by its
-/// process token: it runs as this user (uid 0, which is [`crate::memory::euid`] here), or it
+/// process token: it runs as this user (uid 0 here), or it
 /// is refused. The pipes' access list admits only this user; the token check also refuses a
 /// squatter's pipe to a dialer, and holds once a pipe admits more.
 pub fn peer(stream: &LocalStream) -> io::Result<Peer> {
@@ -34,11 +34,6 @@ pub fn peer_birth(stream: &LocalStream) -> Result<crate::process::Birth> {
 /// integrity level), before anything is written to the stream.
 pub fn accepts_handles(stream: &LocalStream) -> io::Result<()> {
     stream.peer_accepts_handles()
-}
-
-/// The peer, always this user (see [`peer`]).
-pub fn peer_credentials(stream: &LocalStream) -> Result<Peer> {
-    Ok(peer(stream)?)
 }
 
 /// Whether the connecting process descends from this machine.

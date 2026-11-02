@@ -2,7 +2,7 @@
 kernels, time and VRAM against the last pass.
   - bandwidth: each copy kind of 1 GiB or more (0.32's store and derived fills, 0.30's load and refill: record.py), as
     a share of the `ceiling` cell's measured ceiling, may not fall under 80% of its last passes' lowest share;
-  - caps (`s<N>-<model>[-<i>]`, N GiB): the ledger took the cap (where the memory log names it); the driver's bytes in
+  - caps (`s<N>-<model>[-<i>]`, N GiB): `machine show` reports the cap on every GPU; the driver's bytes in
     use (Run.vram) never passed it; the kernels match `cold-<model>` (another kernel under pressure is a slow fallback);
     no bytes left behind; the third alternation costs at most CHURN more than the second;
   - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
@@ -102,12 +102,14 @@ def caps(out, recs):
     fails, notes = [], []
     capped = [(n, int(m.group(1)), m.group(2), m.group(3)) for n in recs for m in [CELL.fullmatch(n)] if m]
     for gib in sorted({c[1] for c in capped}, reverse=True):
-        log = os.path.join(out, f'cap-{gib}GiB.memory.log')
-        ledger = [int(x) for x in re.findall(r'"capacity":(\d+)[^\n]*"event":"ledger"', open(log).read())] if os.path.exists(log) else []
-        if not ledger:  # TensorD 0.11.17's memory log names no ledger capacity; what each run held is the check
-            notes.append(f'cap {gib} GiB: the memory log names no ledger capacity')
-        elif ledger[-1] > gib * GIB:
-            fails.append(f'cap {gib} GiB: the ledger took {ledger[-1] / GIB:.2f} GiB')
+        show = os.path.join(out, f'cap-{gib}GiB.show.json')
+        try:
+            limits = [gpu.get('memory_limit_bytes', 0) for gpu in json.load(open(show))['status']['gpus']]
+        except (OSError, ValueError, KeyError) as error:
+            fails.append(f'cap {gib} GiB: no machine show to read ({error})')
+            continue
+        if not limits or any(limit != gib * GIB for limit in limits):
+            fails.append(f'cap {gib} GiB: machine show reports {limits}')
     execs = {}
     for name, gib, model, i in capped:
         run, mems = recs[name], memories(recs[name])
