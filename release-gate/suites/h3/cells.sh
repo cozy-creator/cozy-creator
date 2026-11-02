@@ -331,13 +331,11 @@ ONLY=$SAVED
 
 # continue_from (xs-139): latents-shot's video goes on to 10 s on its own timeline, from its latents. The whole 10 s comes
 # back, its head as latents-shot made it (the C2 proof's head SSIM was 0.989 at its lowest, runs 25270/25271), and the
-# join holds as a piece boundary does (span_seams' bar). A continuation renders in Ref2VA, which needs a picture
-# (0.3.0 refuses one without, run 25881): the lamp room as latents-shot's last frame shows it, as the place.
+# join holds as a piece boundary does (span_seams' bar). It names no picture: the package starts it from the video's
+# last frame (h3a-098; 0.3.0 refused this request, run 25881).
 if [ -n "${lt:-}" ] && [ -e "$lt" ]; then
-  nice -n 19 ffmpeg -v error -y -sseof -0.1 -i "$lv" -frames:v 1 "$OUT/latents-shot-last.png"
-  cell h3-continue "$SHOT" prompt=$'[Shot 1] In the lamp room of <Lighthouse>, a lighthouse keeper in a yellow oilskin sets down his lantern.\nAt 00:07.000, he lights the great lamp; its beam sweeps out over the dark sea.' \
+  cell h3-continue "$SHOT" prompt=$'[Shot 1] In the lamp room of a stone lighthouse, a lighthouse keeper in a yellow oilskin sets down his lantern.\nAt 00:07.000, he lights the great lamp; its beam sweeps out over the dark sea.' \
     style="soft watercolor, muted greens" \
-    references:="[{\"name\": \"Lighthouse\", \"kind\": \"environment\", \"image\": \"$OUT/latents-shot-last.png\"}]" \
     duration_s:=10 seed:=$((R + 94)) continue_from:="{\"video\": \"$lv\", \"latents\": \"$lt\"}"
   if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
     # The head is latents-shot's frames, counted (its container duration runs a little past its last frame, and a

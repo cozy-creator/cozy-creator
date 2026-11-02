@@ -60,8 +60,9 @@ YAML
     calls=$(jq -r '.runs // [] | map(tostring) | join(" ")' <<< "$v")
     expect project-split "$(jq -r 'if (.runs | length) >= 2 and .assets.latents != null and .writes.wall != null then "PASS" else "FAIL" end' <<< "$v")" \
       "runs $calls, latents $(jq -r '.assets.latents.path // "none"' <<< "$v"), wall $(jq -r '.writes.wall.path // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
-    r=$("${FR[@]}" seams "$P/$f" --at 5 2>&1 | tail -1)
-    expect project-split-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at 5 s: $r"
+    # The first call delivers 124 frames (H3's 17n+5 grid), so the join is at 5.17 s; a window at 5 s misses it.
+    r=$("${FR[@]}" seams "$P/$f" --at 5.17 2>&1 | tail -1)
+    expect project-split-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at 5.17 s: $r"
   fi
   if want project-upscale && [ -n "$f" ]; then
     render project-upscale "$P" mural.upscale || expect project-upscale FAIL "render mural.upscale: $(tail -c 300 project-upscale.log)"
