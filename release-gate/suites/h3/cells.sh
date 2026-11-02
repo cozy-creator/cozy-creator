@@ -283,10 +283,13 @@ ONLY=$SAVED
 
 # continue_from (xs-139): latents-shot's video goes on to 10 s on its own timeline, from its latents. The whole 10 s comes
 # back, its head as latents-shot made it (the C2 proof's head SSIM was 0.989 at its lowest, runs 25270/25271), and the
-# join holds as a piece boundary does (span_seams' bar).
+# join holds as a piece boundary does (span_seams' bar). A continuation renders in Ref2VA, which needs a picture
+# (0.3.0 refuses one without, run 25881): the lamp room as latents-shot's last frame shows it, as the place.
 if [ -n "${lt:-}" ] && [ -e "$lt" ]; then
-  cell h3-continue "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand." \
+  nice -n 19 ffmpeg -v error -y -sseof -0.1 -i "$lv" -frames:v 1 "$OUT/latents-shot-last.png"
+  cell h3-continue "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of <Lighthouse>, lantern in hand." \
     style="soft watercolor, muted greens" beats:='[{"at": 5, "prompt": "He lights the great lamp; its beam sweeps out over the dark sea."}]' \
+    references:="[{\"name\": \"Lighthouse\", \"kind\": \"environment\", \"image\": \"$OUT/latents-shot-last.png\"}]" \
     duration_s:=10 seed:=$((R + 94)) continue_from:="{\"video\": \"$lv\", \"latents\": \"$lt\"}"
   if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
     cv=$(video_of h3-continue); L=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$lv")
