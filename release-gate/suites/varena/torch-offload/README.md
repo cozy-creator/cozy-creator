@@ -13,12 +13,21 @@ No client downloads weights. GPU execution belongs to the coordinator.
   exception cleanup and dtype refresh. `--device 0` additionally observes the actual
   native phase view on the coordinator GPU; that mode remains unrun in this lane.
 - `packing.py`: real CPU ties, cross-group physical aliases, storage-local bounds,
-  partial casts and rollback, plus explicitly metadata-only reservation doubles.
+  partial casts, public conversion refusals and successful immutable-version refresh.
   `--device 0` uses the real `Gpu.region_parts` factory to check shared Regions,
-  direct-read singleton stability, failed-constructor cleanup and trim/refill.
+  direct-read singleton stability, grouped version refresh and trim/refill.
   It requires the matching native factory and is not qualified by CPU results.
-- `packing_metadata_cpu.py`: inert handles check all-group/Plan failure rollback,
-  preservation of published reservations and deduplication of Plan Regions.
+- `../native-tensor-export/parts_contract.c`: actual public C ABI host refusals;
+  its GPU mode checks malformed/overflowing descriptors and a valid constructor
+  after refusal. `parts_gpu.py` additionally checks real native bounds, output
+  preservation, typed aliases, capture, refill and final-alias retirement.
+- The original metadata-only mock checks were removed from maintained clients.
+  Their historical receipts remain unchanged in `evidence/2026-11-02-packing-cpu`.
+  Mid-publication rebinding and Plan-retirement rollback are not inferred from
+  public conversion refusals. Agent1 owns the real Plan-retirement clients
+  (`plan_retirement_cpu.py` / `plan_retirement_gpu.py`, draft #2482 commit
+  `3b7f30affda313560a2be01045988be431421410`); compose that separate change
+  before running those clients. This cleanup does not edit or duplicate them.
 - `adapter_gpu.py --device 0`: prepared actual CUDA client for native typed reads,
   default and explicit streams, later consumers, ties, old aliases and tiny VAE.
 - `sdxl_gpu.py /existing/local/model --device 0`: prepared stock SDXL baseline/adopted

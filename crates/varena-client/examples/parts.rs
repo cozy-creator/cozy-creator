@@ -2,13 +2,22 @@
 #![allow(unsafe_code)]
 #[path = "support/cuda.rs"]
 mod cuda;
-use varena_client::Gpu;
+use varena_client::{Gpu, Status};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let owned_stream = cuda::Stream::new()?;
     {
         let gpu = Gpu::open(0)?;
         let stream = unsafe { gpu.borrow_stream(owned_stream.raw()) };
+        // Real safe-client refusals, followed by construction/readback/refill on
+        // the same live GPU. No impossible slices or fabricated native payloads.
+        let empty_inputs: [&[&[u8]]; 3] = [&[], &[&[]], &[&[], &[]]];
+        for parts in empty_inputs {
+            match gpu.region_parts(parts) {
+                Err(error) => assert_eq!(error.status, Status::Invalid),
+                Ok(_) => return Err("empty host-parts aggregate was accepted".into()),
+            }
+        }
         let mut first = vec![0x17; (2 << 20) + 17];
         let second = [0x39; 257];
         let (region, offsets) = gpu.region_parts(&[&first, &second, &[], &[0x5b]])?;
@@ -36,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(gpu.stats()?.weights_resident, 0);
         }
         println!(
-            "{{\"packed_host_refill\":true,\"stable_address\":true,\"bytes\":{}}}",
+            "{{\"packed_host_refill\":true,\"stable_address\":true,\"empty_aggregate_refusals\":3,\"valid_after_refusals\":true,\"bytes\":{}}}",
             expected.len()
         );
     }

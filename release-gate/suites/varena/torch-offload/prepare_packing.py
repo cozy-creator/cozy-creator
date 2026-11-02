@@ -79,13 +79,13 @@ for name, expected in payload["runtime_files"].items():
     runner = replace_once(
         runner, 'if case == "intent":\n    assert value["gpu_executed"]',
         '''if case == "parts":
-    assert len(value["checks"]) == 3 and value["device"] == 0
+    assert len(value["checks"]) == 5 and value["device"] == 0
     assert value["native_stats"]["weights_resident"] == 0
     scope = "packed immutable Sources, typed Pins, fixed-address refill and warm graph replay"
 elif case == "packing":
     assert value["native_executed"] is True and value["metadata_doubles"] is False
     assert value["device"] == "cuda:0" and len(value["checks"]) == 7
-    scope = "common offload packing, direct reads, aliases, partial casts, rollback and trim/refill"
+    scope = "common offload packing, direct reads, aliases, real conversion refusals and trim/refill"
 elif case == "intent":
     assert value["gpu_executed"]''',
     )

@@ -1,7 +1,7 @@
-"""Real CPU semantics; --device 0 prepares actual CUDA packing/refill checks.
+"""Real Torch semantics; --device 0 exercises native CUDA packing/refill.
 
-CPU reservation doubles test only metadata transactions, never native behavior.
-No model downloads. CUDA mode requires the matching region_parts native build.
+No simulated native resources or injected SDK behavior. CPU mode qualifies only
+actual host Tensor/Source behavior; native packing and retirement require CUDA.
 """
 
 from __future__ import annotations
@@ -9,12 +9,10 @@ from __future__ import annotations
 import argparse
 import gc
 import json
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import torch
-from tensorfs.varena import torch as vt
 from tensorfs.varena import _offload as adapter
+from tensorfs.varena import torch as vt
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", default="cpu")
@@ -57,9 +55,7 @@ class Model(torch.nn.Module):
 def definitions(owner):
     return {
         name: list(
-            dict.fromkeys(
-                p._version_owner for p in module.parameters() if p.numel()
-            )
+            dict.fromkeys(p._version_owner for p in module.parameters() if p.numel())
         )
         for name, module in owner._boundary_modules.items()
     }
@@ -139,90 +135,59 @@ with torch.no_grad():
     torch.testing.assert_close(model(inputs.to(device)).cpu(), expected)
 checks.append("partial half/float keeps tied identity and escaped old versions")
 
-# Real CPU/Torch rebinding rollback: fail once after one identity was rebound.
-before = [(p, p._version_owner, p.clone()) for p in model.parameters()]
-rebind = adapter._rebind
-calls = 0
-
-
-def fail_second(parameter, candidate):
-    global calls
-    calls += 1
-    if calls == 2:
-        raise RuntimeError("injected conversion publication failure")
-    rebind(parameter, candidate)
-
-
-with patch.object(adapter, "_rebind", fail_second):
+# Real public validation failures must preserve the adopted model and existing
+# escaped versions. These do not claim an injected mid-publication failure.
+before = [
+    (
+        p,
+        p._version_owner,
+        p._version_owner.region,
+        p._version_owner.member_offset,
+        p.clone(),
+    )
+    for p in model.parameters()
+]
+for conversion in (
+    lambda: model.to(dtype=torch.int64),
+    lambda: model.to(dtype=torch.float8_e4m3fn),
+    lambda: model.to(
+        device="cuda:0" if device.type == "cpu" else f"cuda:{(device.index or 0) + 1}"
+    ),
+):
     try:
-        model.double()
-    except RuntimeError as error:
-        assert str(error) == "injected conversion publication failure"
+        conversion()
+    except (adapter.OffloadError, TypeError, ValueError):
+        pass
     else:
-        raise AssertionError("conversion failure was swallowed")
-for parameter, version, value in before:
-    assert parameter._version_owner is version and torch.equal(parameter.clone(), value)
-checks.append("failed conversion restores real Parameter versions and values")
+        raise AssertionError("unsupported model conversion was accepted")
+    for parameter, version, region, offset, value in before:
+        assert parameter._version_owner is version
+        assert version.region is region and version.member_offset == offset
+        assert torch.equal(parameter.clone(), value)
+    assert [id(p) for p in model.parameters()] == identities
+    assert torch.equal(old.clone(), old_values)
+checks.append(
+    "real conversion refusals preserve identities, reservations and escaped values"
+)
 
-# Check reservation transaction failure after an earlier group was staged. CPU
-# uses inert handles solely to inspect publication; CUDA wraps the real factory.
+# A successful refresh exercises the actual native factory on CUDA. Group only
+# the declared memberships and retain the existing old alias version independently.
 model.double()
 pending = [p._version_owner for p in model.parameters()]
 assert all(v.region is None for v in pending)
-created = []
-real_gpu = owner._owner.gpu
-
-
-class MetadataRegion:
-    closed = False
-
-    def defer_close(self):
-        self.closed = True
-
-
-def fail_group(parts):
-    if created:
-        raise RuntimeError("injected grouped-source construction failure")
-    if real_gpu is None:
-        region = MetadataRegion()
-        offsets = (0,) * len(parts)  # Never exported or used as layout evidence.
-    else:
-        region, offsets = factory(parts)
-    created.append(region)
-    return region, offsets
-
-
-factory = None if real_gpu is None else real_gpu.region_parts
-fake = SimpleNamespace(region_parts=fail_group)
-try:
-    if real_gpu is None:
-        owner._owner.gpu = fake
-        with owner._owner.lock:
-            try:
-                owner._refresh_intent()
-            except RuntimeError as error:
-                assert str(error) == "injected grouped-source construction failure"
-            else:
-                raise AssertionError("group failure was swallowed")
-    else:
-        with patch.object(real_gpu, "region_parts", fail_group), owner._owner.lock:
-            try:
-                owner._refresh_intent()
-            except RuntimeError as error:
-                assert str(error) == "injected grouped-source construction failure"
-            else:
-                raise AssertionError("group failure was swallowed")
-finally:
-    owner._owner.gpu = real_gpu
-assert created and all(v.region is None and v.member_offset == 0 for v in pending)
-assert created[0].closed if real_gpu is None else created[0]._handle == 0
-assert torch.equal(old.clone(), old_values)
+expected_groups = adapter._unreserved_groups(definitions(owner))
 with torch.no_grad():
     torch.testing.assert_close(
         model(inputs.to(device, dtype=torch.float64)).cpu(), expected.double()
     )
+if device.type == "cuda":
+    for group in expected_groups:
+        assert len({id(version.region) for version in group}) == 1
+        assert all(version.member_offset % 256 == 0 for version in group)
+        assert len({version.member_offset for version in group}) == len(group)
+assert torch.equal(old.clone(), old_values)
 checks.append(
-    "group construction failure publishes no partial layout; old versions remain readable"
+    "successful version refresh packs declared groups and preserves old aliases"
 )
 
 if device.type == "cuda":
@@ -252,7 +217,7 @@ print(
             "device": str(device),
             "checks": checks,
             "native_executed": device.type == "cuda",
-            "metadata_doubles": device.type == "cpu",
+            "metadata_doubles": False,
             "pressure_qualification": "separate coordinator native pressure fixture required",
         }
     )
