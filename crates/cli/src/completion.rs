@@ -87,7 +87,7 @@ fn path(current: &OsStr, kind: &str) -> Vec<CompletionCandidate> {
     let prefix = match current.split_once('=') {
         _ if current.starts_with('-') => return vec![],
         Some((key, _)) if key.ends_with(':') => return vec![],
-        Some((key, _)) if !crate::run::target::written_as_path(key) => &current[..=key.len()],
+        Some((key, _)) if !protocol::target::written_as_path(key) => &current[..=key.len()],
         _ => "",
     };
     vec![CompletionCandidate::new(format!("{prefix}{PATH}{kind}"))]
@@ -95,7 +95,7 @@ fn path(current: &OsStr, kind: &str) -> Vec<CompletionCandidate> {
 
 /// A reference or local code: a path only when written as one (`./`, `/`, `~`).
 pub fn local(current: &OsStr) -> Vec<CompletionCandidate> {
-    match crate::run::target::written_as_path(&current.to_string_lossy()) {
+    match protocol::target::written_as_path(&current.to_string_lossy()) {
         true => path(current, "files"),
         false => vec![],
     }

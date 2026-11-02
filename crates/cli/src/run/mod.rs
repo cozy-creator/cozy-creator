@@ -1,36 +1,30 @@
-//! `cozy run`: run a function on a machine, and the verbs over runs.
-use std::{path::PathBuf, process::ExitCode};
+//! `cozy run`: run a function on a machine, and the verbs over runs. Calcifer resolves, binds and
+//! submits a run (`POST /v1/runs`); this module turns arguments into its request and prints.
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use clap::ValueHint;
 use clap_complete::ArgValueCompleter;
 use protocol::{
-    calcifer::{On, Run, StagedInput, SubmitRun},
+    calcifer::{FileTerm, On, ReleaseFrom, Run, RunRequest, Target},
     config::Origin,
     error::{Error, Kind},
+    interface::Interface,
+    machine::WarmLevel,
 };
 
 use crate::{Context, output};
-use bind::Terms;
-pub(crate) use catalog::{Card, card, fresh};
 pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settled, submit};
-use interface::{Callable, Interface};
-use target::Target;
+pub(crate) use hub_client::cards::Card;
 
-mod bind;
-mod catalog;
-mod clip;
-mod describe;
-mod digests;
 mod follow;
-pub(crate) mod interface;
 pub(crate) mod list;
 pub(crate) mod live;
 pub(crate) mod local;
 mod play;
 mod show;
-mod spec;
-pub(crate) mod target;
-pub(crate) mod tree;
 
 /// `cozy run --help`'s examples: a YAML request file first, inline inputs as overrides.
 const EXAMPLES: &str = "Examples:
@@ -70,14 +64,14 @@ struct RunArgs {
     #[command(flatten)]
     placement: Placement,
     /// Use at most N GPUs for the run and its calls.
-    #[arg(long, value_name = "N", value_parser = gpu_count)]
+    #[arg(long, value_name = "N", value_parser = protocol::calcifer::gpu_count)]
     gpus: Option<u32>,
     /// The lane of the function's main model (a label: bf16, fp8, int8, …); its LoRAs and other
     /// models take their own. Absent, the Hub picks what this machine's hardware runs best.
     #[arg(long, value_parser = protocol::model_ref::lane)]
     lane: Option<String>,
     /// Pin an attention kernel for this run: everywhere, or at one `[slot/]component`.
-    #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = attention_pin, conflicts_with = "warm")]
+    #[arg(long, value_name = "[[SLOT/]COMPONENT=]KERNEL", value_parser = protocol::calcifer::attention_pin, conflicts_with = "warm")]
     attention_kernel: Option<String>,
     /// The whole payload from a JSON or YAML file; inline inputs override it.
     #[arg(long = "input", value_name = "FILE")]
@@ -86,7 +80,7 @@ struct RunArgs {
     #[arg(long = "file", value_name = "[NAME=]FILE", value_hint = ValueHint::FilePath)]
     assets: Vec<String>,
     /// A hint for one attached file: `label-or-index=auto|low|medium|high`.
-    #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = fidelity)]
+    #[arg(long = "file-fidelity", value_name = "FILE=FIDELITY", value_parser = protocol::calcifer::fidelity)]
     fidelities: Vec<String>,
     /// Apply a LoRA, in order: `org/lora[,strength]` adapts the function's model; `slot=org/lora`
     /// names one of several (strength 1 by default).
@@ -210,449 +204,123 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     }
 }
 
+
 async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let raw = args.target.as_deref().unwrap_or_default();
-    let (package, function, release, owned) = match Target::parse(raw, &cwd, &ctx.user_home)? {
-        Target::Published {
-            package,
-            function,
-            release,
-            owned,
-        } => (package, function, release, owned),
-        Target::Local { path, function } => {
-            return local::run(ctx, &cwd.join(path), function, args).await;
-        }
-    };
-    let hub = ctx.hub();
-    let (package, function, resolved) =
-        target::resolve(ctx, &hub, package, function, release.as_deref(), owned).await?;
-    let Some(function) = function else {
-        unnamed(
-            &package,
-            release.as_deref(),
-            &resolved.card.interface,
-            &args,
-        )?;
-        functions(ctx, &package, &resolved);
-        return Ok(ExitCode::SUCCESS);
-    };
-    let asked = callable(&package, &resolved.card.interface, &function)?;
-    if resolved.card.interface.runs_recipes(asked) {
-        return Err(recipes(&package, &resolved.card.interface));
+    let target = args.target.clone().unwrap_or_default();
+    let inputs = !args.inputs.is_empty() || args.input_file.is_some();
+    if args.describe && !inputs {
+        return describe(ctx, &target, &cwd).await;
     }
-    if args.describe {
-        let card = &resolved.card;
-        let callable = callable(&package, &card.interface, &function)?;
-        if ctx.json {
-            let mut request = card.request(&callable.name);
-            request["release"] = card.release.clone().into();
-            request["release_from"] = resolved.from.to_string().into();
-            output::json(&request);
-        } else {
-            let target = format!("{package}/{}", callable.name);
-            let text = describe::contract(&target, &card.interface, callable);
-            let release = format!("\n  release: {} ({})\n", card.release, resolved.from);
-            anstream::print!("{}", protocol::names::shown(&text.replacen('\n', &release, 1)));
-        }
-        return Ok(ExitCode::SUCCESS);
-    }
-    let run = invoke(ctx, &package, &function, &resolved.card, args).await?;
-    Ok(exit_code(&run))
-}
-
-/// Which release a run binds against and runs, and why that one.
-pub(crate) struct Resolved {
-    pub card: Card,
-    pub from: From,
-}
-
-pub(crate) enum From {
-    /// The run named it.
-    Asked,
-    /// The Hub's newest published release.
-    Latest,
-}
-
-impl std::fmt::Display for From {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            From::Asked => f.write_str("asked"),
-            From::Latest => f.write_str("the Hub's latest"),
-        }
+    let ask = request(ctx, &args, target.clone(), &cwd)?;
+    match send(ctx, ask).await {
+        // A package's functions, when the run names none and gives it nothing.
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, &cwd).await,
+        Err(e) => Err(e),
+        Ok(run) => Ok(exit_code(&run)),
     }
 }
 
-/// Resolves a run's release once, before binding: the one asked, else the newest release this
-/// computer keeps of the package (`catalog::latest`, refreshed in the background), wherever the
-/// run goes (a machine holding an older one installs it first). The run is pinned to it, so the
-/// machine runs exactly the release its inputs were bound against.
-pub(crate) async fn resolve(
-    ctx: &Context,
-    hub: &Origin,
-    package: &str,
-    release: Option<&str>,
-) -> Result<Resolved, Error> {
-    let (release, from) = match release {
-        Some(release) => (release.to_owned(), From::Asked),
-        None => (catalog::latest(ctx, hub, package).await?, From::Latest),
-    };
-    let card = catalog::card(ctx, hub, package, &release).await?;
-    Ok(Resolved { card, from })
-}
-
-/// What another verb's call runs: a package's release, or local code its machine installed.
-pub(crate) enum Callee<'a> {
-    Release { package: &'a str, card: &'a Card },
-    Local(&'a local::Prepared),
-}
-
-impl Callee<'_> {
-    /// The package as its runs name it: `org/name`, or `local/<name>`.
-    pub(crate) fn package(&self) -> &str {
-        match self {
-            Callee::Release { package, .. } => package,
-            Callee::Local(prepared) => prepared.package(),
-        }
-    }
-
-    pub(crate) fn interface(&self) -> &Interface {
-        match self {
-            Callee::Release { card, .. } => &card.interface,
-            Callee::Local(prepared) => prepared.interface(),
-        }
-    }
-
-    /// The code exactly: its release, or a local source's manifest digest.
-    pub(crate) fn release(&self) -> &str {
-        match self {
-            Callee::Release { card, .. } => &card.release,
-            Callee::Local(prepared) => prepared.source(),
-        }
-    }
-}
-
-impl std::fmt::Display for Callee<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Callee::Release { package, card } => write!(f, "{package}@{}", card.release),
-            Callee::Local(prepared) => f.write_str(prepared.package()),
-        }
-    }
-}
-
-/// `cozy run <package>/<function> <inputs…> --on …` for another verb: `model quantize`
-/// runs a package's recipes this way. The run as it settled, or as it was when Ctrl-C stopped
-/// following it; its record is printed either way.
-pub(crate) async fn call(
-    ctx: &Context,
-    callee: &Callee<'_>,
-    function: &str,
-    inputs: Vec<String>,
-    placement: &Placement,
-) -> Result<Run, Error> {
-    let args = RunArgs {
-        target: None,
-        inputs,
-        placement: placement.clone(),
-        gpus: None,
-        lane: None,
-        attention_kernel: None,
-        input_file: None,
-        assets: vec![],
-        fidelities: vec![],
-        loras: vec![],
-        out: None,
-        warm: None,
-        describe: false,
-    };
-    match callee {
-        Callee::Release { package, card } => invoke(ctx, package, function, card, args).await,
-        Callee::Local(prepared) => prepared.call(ctx, function, args).await,
-    }
-}
-
-/// Binds the run's inputs to `function` of `card`, submits it pinned to `card`'s release, and
-/// follows it.
-async fn invoke(
-    ctx: &Context,
-    package: &str,
-    function: &str,
-    card: &Card,
-    args: RunArgs,
-) -> Result<Run, Error> {
-    let on = args.placement.on()?;
-    let source = spec::Source::Release(Some(&card.release));
-    let release = Some(card.release.as_str());
-    let code = Code {
-        package,
-        interface: &card.interface,
-        release,
-        source,
-        files: &[],
-    };
-    call_code(ctx, code, function, on, args).await
-}
-
-/// What a run calls: a published release, or local code its machine installed.
-struct Code<'a> {
-    package: &'a str,
-    interface: &'a Interface,
-    /// The release its inputs bind against; none for local code.
-    release: Option<&'a str>,
-    source: spec::Source<'a>,
-    /// Files sent with the call (local code's).
-    files: &'a [StagedInput],
-}
-
-/// Binds the run's inputs to `function` of `code` (a warm run, its model choices only), submits
-/// it `on` its machine, and follows it.
-async fn call_code(
-    ctx: &Context,
-    code: Code<'_>,
-    function: &str,
-    on: On,
-    args: RunArgs,
-) -> Result<Run, Error> {
-    let hub = ctx.hub();
-    let terms = terms(ctx, &args)?;
-    let callable = callable(code.package, code.interface, function)?;
-    let call = spec::Call {
-        package: code.package,
-        source: code.source,
-        callable,
-        gpus: args.gpus.unwrap_or(0),
-        lane: args.lane.clone().unwrap_or_default(),
-        attention_kernel: args.attention_kernel.as_deref().unwrap_or_default(),
-    };
-    let (spec, bound, out) = match args.warm {
-        Some(_) if args.gpus.is_some() => {
-            let why = "--gpus applies to a run, not to --warm";
-            return Err(Error::new(Kind::Usage, "warm_gpus", why));
-        }
-        Some(level) => {
-            let target = format!("{}/{}", code.package, callable.name);
-            let (models, payload) = bind::warm_choices(
-                &target, code.release, code.interface, callable, &terms, level == Warm::Gpu,
-            )
-            .await?;
-            (call.warm(level, &models, payload)?, None, None)
-        }
-        None => {
-            let target = format!("{}/{}", code.package, callable.name);
-            let bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
-            if let Some(warning) = bound.warning(&target) {
-                output::warn(&warning);
-            }
-            gpuless(ctx, &on, code.interface, callable, &target).await;
-            let out = args.out.as_ref().map(|dir| terms.cwd.join(dir));
-            (call.spec(&bound)?, Some(bound), out)
-        }
-    };
-    let mut submission = call.submission(on, hub, &spec, bound.as_ref(), out);
-    submission.inputs.extend(code.files.iter().cloned());
-    send(ctx, submission, &terms.key).await
-}
-
-/// The terms a run was given, under a key minted for this request (its seed derives from it).
-fn terms<'a>(ctx: &'a Context, args: &RunArgs) -> Result<Terms<'a>, Error> {
-    let cwd = std::env::current_dir()
-        .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    Ok(Terms {
-        inputs: args.inputs.clone(),
+/// The request `args` make of `target`.
+fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path) -> Result<RunRequest, Error> {
+    Ok(RunRequest {
+        target,
+        on: Some(args.placement.on()?),
+        hub: ctx.hub().to_string(),
+        input: None,
         input_file: args.input_file.clone(),
-        assets: args.assets.clone(),
+        terms: args.inputs.clone(),
+        files: args.assets.iter().map(|raw| FileTerm::parse(raw)).collect(),
         fidelities: args.fidelities.clone(),
         loras: args.loras.clone(),
-        key: follow::mint_key(),
-        cwd,
-        user_home: ctx.user_home.clone(),
-        digests: Some(ctx.home.root().join("cache").join("digests")),
-        manifests: Some(ctx.home.root().join("cache").join("trees")),
-        clips: clip::Clips {
-            ctx,
-            dir: ctx.home.root().join("cache").join("clips"),
-        },
+        cwd: Some(cwd.to_owned()),
+        gpus: args.gpus,
+        lane: args.lane.clone(),
+        attention_kernel: args.attention_kernel.clone(),
+        warm: args.warm.map(Warm::level),
+        out: args.out.clone(),
+        recipes: false,
+        agreed: None,
     })
 }
 
-/// `--gpus`: 1 or more. Where a run uses the CPU is its function's and its machine's to say.
-fn gpu_count(text: &str) -> Result<u32, String> {
-    match text.parse::<u32>() {
-        Ok(0) => Err(
-            "a function that needs no GPU runs on the CPU by itself, as does every run on a \
-             machine without one: `--on new:cpu` rents a machine with none"
-                .into(),
-        ),
-        Ok(n) => Ok(n),
-        Err(_) => Err(format!("{text:?} is not a number of GPUs")),
-    }
-}
-
-/// `--attention-kernel`, in the grammar the Runtime reads (`KERNEL` or `[SLOT/]COMPONENT=KERNEL`,
-/// no whitespace); the Runtime judges the names.
-fn attention_pin(pin: &str) -> Result<String, String> {
-    let formed = match pin.split_once('=') {
-        None => !pin.is_empty(),
-        Some((scope, kernel)) => !scope.is_empty() && !kernel.is_empty() && !kernel.contains('='),
-    };
-    match formed && !pin.contains(char::is_whitespace) {
-        true => Ok(pin.to_owned()),
-        false => Err("use KERNEL or [SLOT/]COMPONENT=KERNEL, with no whitespace".into()),
-    }
-}
-
-/// `--file-fidelity`'s form; which file it names is checked as the run binds.
-fn fidelity(term: &str) -> Result<String, String> {
-    match term.rsplit_once('=') {
-        Some((asset, "auto" | "low" | "medium" | "high")) if !asset.is_empty() => Ok(term.into()),
-        _ => Err("use LABEL-OR-INDEX=auto|low|medium|high".into()),
-    }
-}
-
-/// Submits, then follows the run.
-async fn send(ctx: &Context, submission: SubmitRun, key: &str) -> Result<Run, Error> {
-    let submitted = submit(ctx, submission, Some(key)).await?;
-    follow(ctx, submitted.run).await
-}
-
-/// Warns that a GPU function sent to a ready machine with no supported GPU (an NVIDIA GPU, or an
-/// Apple Silicon Mac's own) runs on its CPU, slowly, or is refused there, and how to rent one.
-pub(crate) async fn gpuless(ctx: &Context, on: &On, interface: &Interface, callable: &Callable, target: &str) {
-    let On::Machine(name) = on else { return };
-    if !interface.gpu(callable) {
-        return;
-    }
-    let Ok(machine) = crate::machine::machine(ctx, name).await else {
-        return;
-    };
-    if (machine.status.as_ref()).is_some_and(|s| s.phase == "ready" && s.gpus.is_empty()) {
-        output::warn(&format!(
-            "{name} has no supported GPU, so {target} runs on its CPU, slowly, or not at all if it loads a model; `--on new` rents one: cozy run {target} … --on new"
-        ));
-    }
-}
-
-/// The function `asked` names: exact, else the one name equal with `-` as `_`.
-fn callable<'a>(
-    package: &str,
-    interface: &'a Interface,
-    asked: &str,
-) -> Result<&'a Callable, Error> {
-    let fold = |name: &str| name.replace('-', "_");
-    let found = interface
-        .callables
-        .iter()
-        .find(|c| c.name == asked)
-        .or_else(|| {
-            let mut matches = interface
-                .callables
-                .iter()
-                .filter(|c| fold(&c.name) == fold(asked));
-            matches.next().filter(|_| matches.next().is_none())
-        });
-    match found {
-        Some(callable) if callable.internal => Err(Error::new(
-            Kind::NotFound,
-            "callable_internal",
-            format!("{package}/{} is an internal function", callable.name),
-        )
-        .remedy("call a public function of the package")),
-        Some(callable) => Ok(callable),
-        None => {
-            if let Some((name, why)) = interface
-                .unavailable
-                .iter()
-                .find(|(name, _)| fold(name) == fold(asked))
-            {
-                return Err(Error::new(
-                    Kind::Unavailable,
-                    "callable_unreadable",
-                    format!("{package}/{name} is not readable by this cozy: {why}"),
-                )
-                .remedy("update cozy, or call another function of the package"));
-            }
-            let public = interface.public();
-            let mut error = Error::new(
-                Kind::NotFound,
-                "callable_unknown",
-                format!("{package} has no function {asked:?}"),
-            )
-            .remedy(format!("its functions: {}", public.join(", ")));
-            for name in public.iter().take(2) {
-                error = error.next(format!("cozy run {package}/{name}"));
-            }
-            Err(error)
+/// Submits `ask` under a key minted for it (its seed derives from it) and follows the run. Local
+/// code not yet ready on its machine is installed first: that run is followed, then the same
+/// request goes again under the same key.
+async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
+    let key = follow::mint_key();
+    loop {
+        let submitted = follow::submit_request(ctx, &ask, &key).await?;
+        if !submitted.preparing {
+            return follow(ctx, submitted.run).await;
+        }
+        let install = follow::settle(ctx, submitted.run).await?;
+        if !settled(&install) {
+            // Following stopped: the install goes on, and nothing is called.
+            return Ok(install);
         }
     }
 }
 
-/// A package's recipes are data, not functions: `cozy model quantize` runs them.
-fn recipes(package: &str, interface: &Interface) -> Error {
-    let flags: Vec<String> = (interface.recipes.iter().map(|r| r.flag()))
-        .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    let mut error = Error::new(Kind::Usage, "callable_recipe", format!("{package}/{} runs its recipes", interface::RECIPES))
-        .remedy(format!("its recipes: {}", flags.join(", ")));
-    for flag in flags.iter().take(2) {
-        error = error.next(format!("cozy model quantize <model> {flag} --package {package}"));
-    }
-    error
-}
-
-/// Refuses inputs given to a package instead of one of its functions, naming the command that
-/// runs each of its first two functions with them.
-fn unnamed(
-    package: &str,
-    release: Option<&str>,
-    interface: &Interface,
-    args: &RunArgs,
-) -> Result<(), Error> {
-    if args.inputs.is_empty() && args.input_file.is_none() {
-        return Ok(());
-    }
-    let inputs: String = args
-        .inputs
-        .iter()
-        .map(|i| format!(" {}", quoted(i)))
-        .collect();
-    let release = release.map(|r| format!("@{r}")).unwrap_or_default();
-    let public = interface.public();
-    let mut error = Error::new(
-        Kind::Usage,
-        "function_unnamed",
-        format!("name the function of {package} to run"),
-    )
-    .remedy(format!("its functions: {}", public.join(", ")));
-    for name in public.iter().take(2) {
-        error = error.next(format!("cozy run {package}/{name}{release}{inputs}"));
-    }
-    Err(error)
-}
-
-/// `input` as a shell word: a value with spaces or quotes is single-quoted after its `key=`.
-fn quoted(input: &str) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "_-./:=@,+%".contains(c);
-    if input.chars().all(plain) {
-        return input.to_owned();
-    }
-    let (key, value) = match input.split_once('=') {
-        Some((key, value)) if key.chars().all(plain) => (format!("{key}="), value),
-        _ => (String::new(), input),
+/// `GET /v1/targets`: the target's function's contract, or its package's functions.
+async fn describe(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, cwd).await?;
+    let interface = parsed(&target)?;
+    let Some(function) = &target.function else {
+        print_functions(ctx, &target, &interface);
+        return Ok(ExitCode::SUCCESS);
     };
-    format!("{key}'{}'", value.replace('\'', r"'\''"))
+    let Some(callable) = interface.callables.iter().find(|c| &c.name == function) else {
+        let said = format!("{} has no function {function:?} this cozy reads", target.package);
+        return Err(Error::new(Kind::Unavailable, "callable_unreadable", said).remedy("update cozy"));
+    };
+    if ctx.json {
+        let mut request = hub_client::cards::request(&target.interface, function);
+        if target.release_from != ReleaseFrom::Local {
+            request["release"] = target.release.clone().into();
+            request["release_from"] = target.release_from.to_string().into();
+        }
+        output::json(&request);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let named = format!("{}/{function}", target.package);
+    let text = protocol::contract::contract(&named, &interface, callable);
+    let text = match target.release_from {
+        ReleaseFrom::Local => text,
+        from => text.replacen('\n', &format!("\n  release: {} ({from})\n", target.release), 1),
+    };
+    anstream::print!("{}", protocol::names::shown(&text));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-fn functions(ctx: &Context, package: &str, resolved: &Resolved) {
-    let from = resolved.from.to_string();
-    let card = &resolved.card;
-    functions_of(ctx, package, (&card.release, card.summary()), Some(&from), &card.interface);
+async fn functions(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, cwd).await?;
+    print_functions(ctx, &target, &parsed(&target)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn target(ctx: &Context, raw: &str, cwd: &Path) -> Result<Target, Error> {
+    let cwd = cwd.to_string_lossy();
+    let query = [("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
+    ctx.calcifer().await?.get_query("/v1/targets", &query).await
+}
+
+fn parsed(target: &Target) -> Result<Interface, Error> {
+    Interface::parse(&target.interface).map_err(|why| {
+        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}"))
+    })
+}
+
+fn print_functions(ctx: &Context, target: &Target, interface: &Interface) {
+    let from = (target.release_from != ReleaseFrom::Local).then(|| target.release_from.to_string());
+    functions_of(ctx, &target.package, (&target.release, &target.summary), from.as_deref(), interface);
 }
 
 /// A package's functions, and what each does. Its recipes are not functions: `cozy model
 /// quantize` runs them.
-fn functions_of(
+pub(crate) fn functions_of(
     ctx: &Context,
     package: &str,
     (release, summary): (&str, &str),
@@ -692,4 +360,109 @@ fn functions_of(
         .map(|name| format!("cozy run {package}/{name} --describe"))
         .collect();
     output::next(ctx, &next.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+impl Warm {
+    fn level(self) -> WarmLevel {
+        match self {
+            Warm::Installed => WarmLevel::Installed,
+            Warm::Downloaded => WarmLevel::Downloaded,
+            Warm::Imported => WarmLevel::Imported,
+            Warm::Host => WarmLevel::Host,
+            Warm::Gpu => WarmLevel::Gpu,
+            Warm::Off => WarmLevel::Off,
+        }
+    }
+}
+
+/// What another verb's call runs: a package's release, or local code.
+pub(crate) enum Callee<'a> {
+    Release { package: &'a str, card: &'a Card },
+    Local(&'a local::Prepared),
+}
+
+impl Callee<'_> {
+    /// The package as its runs name it: `org/name`, or `local/<name>`.
+    pub(crate) fn package(&self) -> &str {
+        match self {
+            Callee::Release { package, .. } => package,
+            Callee::Local(prepared) => prepared.package(),
+        }
+    }
+
+    pub(crate) fn interface(&self) -> &Interface {
+        match self {
+            Callee::Release { card, .. } => &card.interface,
+            Callee::Local(prepared) => prepared.interface(),
+        }
+    }
+
+    /// The code exactly: its release, or a local source's manifest digest.
+    pub(crate) fn release(&self) -> &str {
+        match self {
+            Callee::Release { card, .. } => &card.release,
+            Callee::Local(prepared) => prepared.source(),
+        }
+    }
+
+    /// `function` of it as a run's target.
+    fn target(&self, function: &str) -> String {
+        match self {
+            Callee::Release { package, card } => format!("{package}/{function}@{}", card.release),
+            Callee::Local(prepared) => format!("{}/{function}", prepared.path().display()),
+        }
+    }
+}
+
+impl std::fmt::Display for Callee<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Callee::Release { package, card } => write!(f, "{package}@{}", card.release),
+            Callee::Local(prepared) => f.write_str(prepared.package()),
+        }
+    }
+}
+
+/// `cozy run <package>/<function> <inputs…> --on …` for another verb: `model quantize` runs a
+/// package's recipes this way. The run as it settled, or as it was when Ctrl-C stopped following
+/// it; its record is printed either way.
+pub(crate) async fn call(
+    ctx: &Context,
+    callee: &Callee<'_>,
+    function: &str,
+    inputs: Vec<String>,
+    placement: &Placement,
+) -> Result<Run, Error> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    send(ctx, RunRequest {
+        target: callee.target(function),
+        on: Some(placement.on()?),
+        hub: ctx.hub().to_string(),
+        terms: inputs,
+        cwd: Some(cwd),
+        recipes: true,
+        ..Default::default()
+    })
+    .await
+}
+
+/// A release's card, kept on this computer (the Hub's read once).
+pub(crate) async fn card(ctx: &Context, hub: &Origin, package: &str, release: &str) -> Result<Card, Error> {
+    hub_client::cards::card(|| ctx.hub_client(hub), ctx.home.root(), hub, package, release).await
+}
+
+/// The Hub's newest release of `package` now, and kept.
+pub(crate) async fn fresh(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
+    hub_client::cards::fresh(&ctx.hub_client(hub)?, ctx.home.root(), hub, package).await
+}
+
+/// `release` of `package`'s card, else its newest this computer keeps.
+pub(crate) async fn resolve(ctx: &Context, hub: &Origin, package: &str, release: Option<&str>) -> Result<Card, Error> {
+    let root = ctx.home.root();
+    let release = match release {
+        Some(release) => release.to_owned(),
+        None => hub_client::cards::latest(|| ctx.hub_client(hub), root, hub, package).await?,
+    };
+    card(ctx, hub, package, &release).await
 }

@@ -20,7 +20,7 @@ use platform::{
     tools,
 };
 use protocol::{
-    calcifer::{Down, Event, Holder, MachineList, REFUSED, Run, RunList, SubmitRun, Submitted},
+    calcifer::{Down, Event, Holder, MachineList, REFUSED, Run, RunList},
     error::{Envelope, Error, Kind},
     machine::LogLines,
 };
@@ -286,10 +286,6 @@ impl Client {
         .remedy("update the installed cozy to this one (`cozy update`), or run the installed one")
     }
 
-    pub async fn submit(&self, key: &str, run: &SubmitRun) -> Result<Submitted, Error> {
-        self.post("/v1/runs", run, Some(key)).await
-    }
-
     /// A run by its id or number.
     pub async fn run(&self, id: &str) -> Result<Run, Error> {
         self.get(&path(&["v1", "runs", id])).await
@@ -335,6 +331,8 @@ impl Client {
             sse: Sse::default(),
             received: false,
             empty: 0,
+            opened_on: None,
+            restarted: false,
             landing: false,
             ended: false,
             done: false,
@@ -673,8 +671,12 @@ pub struct Events {
     sse: Sse,
     /// Whether this connection has carried an event.
     received: bool,
-    /// Connections in a row that closed carrying none.
+    /// Connections in a row to one Calcifer that closed carrying none.
     empty: u32,
+    /// The Calcifer (its pid) the last connection was opened on.
+    opened_on: Option<u32>,
+    /// A reconnect found another Calcifer: the one followed restarted.
+    restarted: bool,
     /// Reads past the terminal event until Calcifer ends the stream.
     landing: bool,
     /// The terminal event was read.
@@ -687,6 +689,12 @@ impl Events {
     /// output (its Calcifer stopped) waits again.
     pub fn again(&mut self) {
         self.done = false;
+    }
+
+    /// Whether the stream was resumed on a Calcifer that restarted since it was last read; asked
+    /// once.
+    pub fn restarted(&mut self) -> bool {
+        std::mem::take(&mut self.restarted)
     }
 
     /// The next event; `None` after the terminal one, or for a landing stream once Calcifer ends
@@ -706,7 +714,15 @@ impl Events {
             }
             let Some(stream) = self.stream.as_mut() else {
                 match self.open().await {
-                    Ok(stream) => self.stream = Some(stream),
+                    Ok(stream) => {
+                        // A restart closed the last connection, not a stream with nothing to say.
+                        let on = self.client.pid();
+                        if self.opened_on.is_some_and(|before| before != on) {
+                            (self.restarted, self.empty) = (true, 0);
+                        }
+                        self.opened_on = Some(on);
+                        self.stream = Some(stream);
+                    }
                     Err(error) => {
                         self.done = true;
                         return Some(Err(error));

@@ -60,6 +60,8 @@ use crate::{
 pub struct Machines {
     pub(crate) calcifer: Arc<Calcifer>,
     pub(crate) home: Home,
+    /// This user's home: what `~` in a request's path means.
+    pub(crate) user_home: PathBuf,
     pub(crate) hubs: Hubs,
     /// Model-source tokens every run carries (`ProviderAccess`), from the config.
     pub(crate) providers: Option<v1::ProviderAccess>,
@@ -116,6 +118,7 @@ impl Machines {
             hubs: Hubs::new(&home, config.hub_url.clone()),
             providers: (providers != v1::ProviderAccess::default()).then_some(providers),
             home,
+            user_home: user_home.to_owned(),
             seen: Mutex::default(),
             watching: Mutex::default(),
             booting: Mutex::default(),
@@ -1263,17 +1266,6 @@ pub(crate) async fn quote(
         ..Shape::default()
     };
     Ok(Json(api.machines.quote(&hub, &sku, shape).await.map_err(Refusal)?))
-}
-
-/// `POST /v1/run-quotes`: what a `new` run (a `SubmitRun`) would rent and its price, from the same
-/// placement its rental asks. Nothing is rented or recorded.
-pub(crate) async fn run_quote(
-    State(api): State<Arc<Api>>,
-    body: Bytes,
-) -> Result<Json<wire::RunQuote>, Refusal> {
-    let submit = parse::<SubmitRun>(&body)?;
-    api.machines.hubs.client(&submit.hub).map_err(Refusal)?;
-    Ok(Json(api.machines.run_quote(&submit).await.map_err(Refusal)?))
 }
 
 /// Rents one under the request's `Idempotency-Key` (202, or 200 when the key had), or adds

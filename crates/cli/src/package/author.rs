@@ -19,13 +19,13 @@ use protocol::{
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use hub_client::types::{PackageDeclaredFile, PackageFileGrant, PresignedUpload};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{PackageRef, carried};
 use calcifer::local_code::{self, INDEX, Project, account, index_url, python, refuse, run, source_files, uv};
 
-use crate::{Context, context::hub_error, output, run::interface::Interface};
+use crate::{Context, context::hub_error, output};
+use protocol::interface::Interface;
 
 /// The tools locking and publishing `project` need: git when it depends on a git source (refused
 /// with its install named, before uv runs and fails on it), and uv (fetched, pinned).
@@ -38,14 +38,6 @@ async fn tools(project: &Project, ctx: &Context) -> Result<PathBuf, Error> {
         }
         crate::tools::uv(ctx).await
     }
-
-/// `project`'s interface, read where it is as a publish reads it, with the Runtime release its lock
-/// holds (else the newest). Nothing installs, and none of it runs.
-pub(super) async fn described(project: &Project, ctx: &Context) -> Result<Described, Error> {
-    let uv = crate::tools::uv(ctx).await?;
-    let python = python(project, &uv)?;
-    describe(&uv, &project.root, &python.request, local_code::locked_runtime(&project.root).as_deref())
-}
 
 /// A private copy of the project to lock and build in.
 pub(super) struct Stage {
@@ -528,11 +520,10 @@ fn unmet(error: Error, pins: &BTreeMap<String, String>, account: &str, hub: &Ori
     }
 }
 
-/// What Runtime's static describer reads from a package's source: its exact words, the document
-/// they are, and the interface this cozy reads in it.
+/// What Runtime's static describer reads from a package's source: its exact words and the
+/// interface this cozy reads in it.
 pub(crate) struct Described {
     pub said: String,
-    pub document: Value,
     pub interface: Interface,
 }
 
@@ -550,7 +541,6 @@ fn describe(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>) -> Resul
     })?;
     Ok(Described {
         said: said.trim_end().to_owned(),
-        document,
         interface,
     })
 }

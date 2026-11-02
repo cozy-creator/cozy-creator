@@ -134,22 +134,22 @@ fn clip_target(target: String) -> String {
 /// running work is ahead of it). PROGRESS is the stage while it runs, and a failed or canceled
 /// run's reason in one line; `cozy run show` has it whole. TIME is its own, never its queue's.
 pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
-    runs.iter().map(|run| row(run, runs)).collect()
+    runs.iter().map(row).collect()
 }
 
-fn row(run: &Run, runs: &[Run]) -> Vec<String> {
+fn row(run: &Run) -> Vec<String> {
     let mut target = run.target.strip_prefix("_/").unwrap_or(&run.target).to_owned();
     if run.kind != RunKind::Call {
         target = format!("{} {target}", run.kind.as_str());
     }
-    let status = match place(run, runs) {
+    let status = match run.queue_position {
         Some(n) => format!("queue: {n}"),
         None => follow::status(run),
     };
     let progress = match (run.status, &run.progress) {
-        _ if queued(run) => String::new(),
+        _ if run.queue_position.is_some() => String::new(),
         (Status::InProgress, Some(p)) => {
-            let shown = match follow::fraction(p) {
+            let shown = match p.done_fraction {
                 Some(f) => format!("{} {:.0}%", p.stage, f * 100.0),
                 None => p.stage.clone(),
             };
@@ -183,24 +183,6 @@ fn row(run: &Run, runs: &[Run]) -> Vec<String> {
         clip(progress),
         time,
     ]
-}
-
-/// Waiting for its turn: here, or in its machine's line.
-fn queued(run: &Run) -> bool {
-    run.status == Status::Queued || (run.status == Status::InProgress && run.machine_state.as_deref() == Some("queued"))
-}
-
-/// A queued run's place in its machine's line: the machine's count (`position N in the queue`),
-/// else the runs queued ahead of it for that machine, plus one.
-fn place(run: &Run, runs: &[Run]) -> Option<usize> {
-    if !queued(run) {
-        return None;
-    }
-    let told = run.waiting.as_deref().and_then(|w| w.split("position ").nth(1)?.split(' ').next()?.parse().ok());
-    told.or_else(|| {
-        let ahead = runs.iter().filter(|r| queued(r) && r.machine == run.machine && r.number < run.number).count();
-        Some(ahead + 1)
-    })
 }
 
 fn seconds(ms: u64) -> String {
