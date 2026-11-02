@@ -10,5 +10,8 @@ description = "Safe Rust ownership over the Varena v1 C ABI; no embedded allocat
 [lib]
 name = "varena_client"
 
+[dev-dependencies]
+libloading.workspace = true
+
 [lints]
 workspace = true

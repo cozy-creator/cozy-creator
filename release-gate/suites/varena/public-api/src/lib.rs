@@ -20,10 +20,11 @@ pub extern "C" fn mixed_internal_sequence() -> u64 {
     varena::cache_owner::next_generation().expect("normal-process native request sequence")
 }
 #[unsafe(no_mangle)]
-pub extern "C" fn mixed_rust_gpu() -> i32 {
+pub extern "C" fn mixed_rust_gpu(stream: u64) -> i32 {
     let result = (|| -> varena_client::Result<()> {
         let gpu = varena_client::Gpu::open(0)?;
-        let stream = gpu.default_stream();
+        // SAFETY: the fixture retains this actual stream through explicit done/free.
+        let stream = unsafe { gpu.borrow_stream(stream) };
         let mut allocated = gpu.alloc(4096, &stream)?;
         if gpu.stats()?.working_live < 4096 {
             return Err(varena_client::Error {
@@ -48,10 +49,11 @@ struct RetryOwners {
 static RETRY: std::sync::Mutex<Option<RetryOwners>> = std::sync::Mutex::new(None);
 
 #[unsafe(no_mangle)]
-pub extern "C" fn mixed_rust_retry_prepare() -> i32 {
+pub extern "C" fn mixed_rust_retry_prepare(stream: u64) -> i32 {
     let result = (|| -> varena_client::Result<()> {
         let gpu = varena_client::Gpu::open(0)?;
-        let stream = gpu.default_stream();
+        // SAFETY: the fixture retains this actual stream through explicit done/free.
+        let stream = unsafe { gpu.borrow_stream(stream) };
         let region = gpu.region(&[1, 2, 3, 4])?;
         let used = gpu.use_regions(&[&region], &stream)?;
         let allocation = gpu.alloc(4096, &stream)?;

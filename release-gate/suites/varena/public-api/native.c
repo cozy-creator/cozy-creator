@@ -10,8 +10,8 @@ int mixed_c_error(void) {
     int status = vr_v1_gpu_open(-1, &handle);
     return status == VR_INVALID && handle == 0;
 }
-int mixed_c_alloc(vr_handle gpu, uint64_t bytes, vr_handle *out) {
-    return vr_v1_alloc(gpu, bytes, 0, out);
+int mixed_c_alloc(vr_handle gpu, uint64_t bytes, uint64_t stream, vr_handle *out) {
+    return vr_v1_alloc(gpu, bytes, stream, out);
 }
 int mixed_c_free(vr_handle allocation) { return vr_v1_free(allocation); }
 

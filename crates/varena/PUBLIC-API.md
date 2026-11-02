@@ -1,9 +1,10 @@
 # Varena external API, ABI 1 development checkpoint
 
-This is the **unreleased P4 interface**, built on Creator
-`dfb912042f60fd99a0bbe404b9927665e9b39715` (#2405). Runtime inspection baseline:
-`2626e3f48bc147f1f3d46b19bd385356e628680c` (#2014). Neither checkpoint is a universally
-GPU-qualified release. [P4 tracker](https://github.com/cozy-creator/tracker/blob/master/tracker/cross-cutting/xs-138-p4-public-api.md).
+This is the **unreleased P4 interface**, composed onto the coordinator's native
+retirement/async-fill/shared-service cohort. See
+[native-client-contracts.md](native-client-contracts.md) for the implemented native
+seams and the [P4 tracker](https://github.com/cozy-creator/tracker/blob/master/tracker/cross-cutting/xs-138-p4-public-api.md)
+for exact source, host and GPU boundaries. No merge or release is authorized.
 
 The exported contract is [include/varena.h](include/varena.h): `vr_v1_*` symbols,
 fixed-width status codes, non-reused integer handles and fixed v1 layouts with checked
@@ -27,22 +28,34 @@ unsafe because its context and lifetime cannot be verified by Rust's type system
 Calling foreign kernels on integer device addresses also remains the caller's unsafe
 integration boundary. Ordinary host-region and ownership operations are safe Rust.
 
-Python's versioned surface is `tensorfs.varena.api`; `tensorfs.varena.open` and `Gpu`
-are convenient re-exports. Existing `Arena`, `Region`, `Cache`, `Plan` and Torch/Runtime
-adapters at the old module root retain their current signatures. Public `Gpu` methods
-return the ABI classes. Both surfaces reach the **same core**.
+Public Python callers use `tensorfs.varena`. Runtime-only integration interfaces
+are being moved to a private module; they are not a second supported public API.
+Low-level use/allocation/cache release requires the actual consumer stream. There
+is no Rust `default_stream` convenience; unsafe `borrow_stream` retains the caller's
+explicit stream identity and requires its owner to survive deferred uses.
 
 ```python
-from tensorfs.varena import api
+import torch
+import tensorfs.varena as va
+import tensorfs.varena.torch as vt
 
-with api.open(0) as gpu, gpu.region(b"immutable bytes") as weight:
-    with gpu.plan({"decode": [weight]}) as plan:
-        with plan.phase("decode", "u8/15/my-kernel/eager"):
-            with gpu.use([weight], stream=0) as used, gpu.alloc(4096, stream=0) as scratch:
-                # Submit your checked CUDA kernel using used.ptr() and scratch.ptr.
-                # Join side streams into stream 0 before the Use ends.
-                pass
+vt.install(0)  # before Torch initializes its CUDA allocator
+work = torch.cuda.Stream(device=0)
+with torch.cuda.stream(work):
+    with va.open(0) as gpu, gpu.region(b"immutable bytes") as weight:
+        with gpu.plan({"decode": [weight]}) as plan:
+            with plan.phase("decode", "u8/15/my-kernel/eager"):
+                with gpu.use([weight], stream=work.cuda_stream) as used:
+                    with gpu.alloc(4096, stream=work.cuda_stream) as scratch:
+                        # Submit your checked CUDA kernel on this same stream,
+                        # using used.ptr() and scratch.ptr.
+                        pass
 ```
+
+Additional consumers must declare their actual streams or be joined into the
+recorded consumer stream before releasing a Use or allocation. Stream completion
+is distinct from Python scope exit. The standalone C/Rust examples create owned
+nonblocking streams and prove their own completion with events.
 
 ## Ownership, streams and errors
 
@@ -52,8 +65,10 @@ Region first does not invalidate the Use. Plans retain Sources as well as reserv
 Sources may be called again after eviction. C callbacks must initialize every logical
 byte, retain staging through completion even on failure, and never unwind or recursively
 use their own Region. The ABI takes Source ownership only after construction succeeds.
-Final Region retirement uses the existing core's completion rules and can wait; fully
-asynchronous Source publication is not claimed. Checked closes retain the same handle
+Final Arena resources are handed to the native per-device retirement queue; the ABI
+worker polls a host ticket and never synchronizes the CUDA context. Genuine owners
+stay retained; unknown completion is quarantined. Public asynchronous Source
+adoption remains separate from the implemented native fill/Source mechanisms. Checked closes retain the same handle
 on refusal. Rust `Use::done`, `Allocation::free` and `Pass::complete` borrow `&mut self`
 so errors remain retryable. Rust/Python finalizers transfer handles to the native
 retirement worker; they do not repeat a refused close and forget its owner.

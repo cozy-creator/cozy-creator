@@ -115,12 +115,6 @@ impl Gpu {
     pub fn device(&self) -> i32 {
         self.0.device
     }
-    pub fn default_stream(&self) -> Stream {
-        Stream {
-            gpu: self.clone(),
-            raw: 0,
-        }
-    }
     /// # Safety
     /// Stream must belong to this GPU's primary context and remain live until all
     /// clones and resources retaining it are dropped. It must not be capturing.

@@ -38,13 +38,20 @@ int main(int argc, char **argv) {
     LOAD(cuModuleGetFunction, (void **, void *, const char *));
     LOAD(cuLaunchKernel, (void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, void *, void **, void **));
     LOAD(cuMemcpyDtoH_v2, (void *, uint64_t, size_t));
-    LOAD(cuCtxSynchronize, (void));
+    LOAD(cuStreamCreate, (void **, unsigned));
+    LOAD(cuStreamDestroy_v2, (void *));
+    LOAD(cuEventCreate, (void **, unsigned));
+    LOAD(cuEventRecord, (void *, void *));
+    LOAD(cuEventSynchronize, (void *));
+    LOAD(cuEventDestroy_v2, (void *));
     LOAD(cuModuleUnload, (void *));
     LOAD(cuDevicePrimaryCtxRelease_v2, (int));
     CU(cuInit(0));
-    void *context, *module, *kernel;
+    void *context, *module, *kernel, *stream, *done;
     CU(cuDevicePrimaryCtxRetain(&context, 0));
     CU(cuCtxPushCurrent_v2(context));
+    CU(cuStreamCreate(&stream, 1)); /* CU_STREAM_NON_BLOCKING */
+    CU(cuEventCreate(&done, 2)); /* CU_EVENT_DISABLE_TIMING */
     CU(cuModuleLoadData(&module, ptx));
     CU(cuModuleGetFunction(&kernel, module, "twice"));
     float weights[] = {1, 2, 3, 4}, output[4] = {0};
@@ -55,14 +62,15 @@ int main(int argc, char **argv) {
     VR(vr_v1_plan_new(gpu, &phase, 1, &plan));
     for (int pass = 0; pass < 2; ++pass) {
         VR(vr_v1_phase_enter(plan, "decode", "f32/4/twice/eager"));
-        VR(vr_v1_use(gpu, &region, 1, 0, &used));
-        VR(vr_v1_alloc(gpu, sizeof(output), 0, &scratch));
+        VR(vr_v1_use(gpu, &region, 1, (uint64_t)(uintptr_t)stream, &used));
+        VR(vr_v1_alloc(gpu, sizeof(output), (uint64_t)(uintptr_t)stream, &scratch));
         uint64_t src, dst;
         VR(vr_v1_use_ptr(used, 0, &src));
         VR(vr_v1_allocation_ptr(scratch, &dst));
         void *args[] = {&src, &dst};
-        CU(cuLaunchKernel(kernel, 1, 1, 1, 4, 1, 1, 0, NULL, args, NULL));
-        CU(cuCtxSynchronize());
+        CU(cuLaunchKernel(kernel, 1, 1, 1, 4, 1, 1, 0, stream, args, NULL));
+        CU(cuEventRecord(done, stream));
+        CU(cuEventSynchronize(done));
         CU(cuMemcpyDtoH_v2(output, dst, sizeof(output)));
         for (int i = 0; i < 4; ++i) if (output[i] != weights[i] * 2) return 2;
         VR(vr_v1_free(scratch));
@@ -74,6 +82,10 @@ int main(int argc, char **argv) {
     VR(vr_v1_plan_close(plan));
     VR(vr_v1_region_close(region));
     VR(vr_v1_gpu_close(gpu));
+    CU(cuEventRecord(done, stream));
+    CU(cuEventSynchronize(done));
+    CU(cuEventDestroy_v2(done));
+    CU(cuStreamDestroy_v2(stream));
     CU(cuModuleUnload(module));
     CU(cuCtxPopCurrent_v2(&context));
     CU(cuDevicePrimaryCtxRelease_v2(0));
