@@ -10,7 +10,7 @@ the release gate the last release tag and the candidate. Rules: ci/suites.toml, 
 
 Prints one token per line: suites (cli, imports, mps, gpu, gpu-datacenter, varena), os:<name>, build:<artifact>,
 pkg:<name> (pkg:* = every package). Nothing printed = nothing to run. --json prints
-{"suites", "os", "build", "cells", "why"}; "os" always holds linux; "why" names a path behind each token.
+{"suites", "os", "build", "packages", "why"}; "os" always holds linux; "why" names a path behind each token.
 --tokens takes a selection already made (the release gate's, a dispatch's) and prints it the same way.
 """
 
@@ -89,6 +89,7 @@ def dependents(name: str, deps: dict[str, set[str]]) -> set[str]:
 def select(repo: str, base: str, head: str) -> dict[str, list[str]]:
     conf = RULES[repo]
     rules = [([glob(p) for p in r["paths"]], r["select"]) for r in conf.get("rules", [])]
+    also = [([glob(p) for p in r["paths"]], r["select"]) for r in conf.get("also", [])]
     paths = [p for p in git("diff", "--name-only", "--no-renames", f"{base}...{head}").splitlines() if p]
     dirs, deps = crates([head, base]) if "crates" in conf else ({}, {})
     package = conf.get("package")
@@ -101,6 +102,10 @@ def select(repo: str, base: str, head: str) -> dict[str, list[str]]:
 
     for path in paths:
         hit = next((tokens for patterns, tokens in rules if any(p.match(path) for p in patterns)), None)
+        if hit != []:
+            for patterns, tokens in also:
+                if any(p.match(path) for p in patterns):
+                    take(tokens, path)
         if hit is not None:
             take(hit, path)
             continue
@@ -127,7 +132,7 @@ def grouped(why: dict[str, str]) -> dict[str, list[str]]:
         "suites": [t for t in tokens if ":" not in t],
         "os": ["linux", *group("os:")],
         "build": group("build:"),
-        "cells": group("pkg:"),
+        "packages": group("pkg:"),
         "why": {t: why[t] for t in tokens},
     }
 

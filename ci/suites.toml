@@ -1,14 +1,15 @@
 # What a change must run (CI v2: tracker/design/ci-v2.md). `ci/affected` reads this.
 #
 # Each changed path takes the first rule it matches; a path no rule matches takes its repo's
-# `unmapped` (everything). Globs: `*` stays inside one directory, `**` spans directories.
+# `unmapped` (everything). `also` rules add their tokens to whatever else a path takes. Globs: `*` stays
+# inside one directory, `**` spans directories.
 # Tokens:
 #   cli, imports, mps, gpu, gpu-datacenter   suites
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
 #   varena                                  the memory manager's own suite (release-gate/suites/varena)
 #   pkg:<name>                              a package's cells; pkg:* every package
-#   os:macos, os:windows                    the cli suite on that OS too (Linux always). A PR takes them from what those
-#                                           OSes run (the CLI, Calcifer, platform, installers); a release takes all
+#   os:macos, os:windows                    the cli suite on that OS too (Linux always). A PR takes them only from its
+#                                           OS-specific paths (`also` below); a release takes all
 #   build:<artifact>                        the change is in cozy, tensorfs, runtime or package: the candidate set
 #                                           (TensorD, TensorFS, Runtime) is built, the change at its commit and the rest at master
 #   everything                              every suite and package, on Linux
@@ -35,12 +36,26 @@ rules = [
   { paths = [".github/**"], select = [] },
 ]
 
+# The macOS and Windows cli legs (a cold cozy build there is 6 and 13 min) run for what is OS-specific: the
+# platform crate, installers, updating and replacing the binary, starting and restarting Calcifer, completions,
+# the suite itself, and files named for an OS. A release runs them always.
+[[cozy-creator.also]]
+paths = [
+  "crates/platform/**", "crates/cli/src/update.rs", "crates/cli/src/daemon.rs", "crates/cli/src/doctor.rs",
+  "crates/cli/src/calcifer_client.rs", "crates/cli/src/completion.rs", "crates/calcifer/src/serve.rs",
+  "crates/tensord/src/machine/binary.rs", "crates/tensord/src/machine/update.rs",
+  "dist-workspace.toml", "scripts/patch-installers.sh", ".github/workflows/cozy-*.yaml",
+  "e2e/lib.sh", "e2e/cli/**", "e2e/candidates/**",
+  "**/*windows*", "**/*macos*", "**/*darwin*",
+]
+select = ["os:macos", "os:windows"]
+
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
 # it (Cargo.toml dependency tables, transitively): changing `platform` selects what `tensord` does.
 [cozy-creator.crates]
 cozy = ["cli", "build:cozy"]
-cli = ["cli", "os:macos", "os:windows", "gpu", "pkg:sdxl", "build:cozy"]
-calcifer = ["cli", "os:macos", "os:windows", "gpu", "pkg:sdxl", "build:cozy"]
+cli = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
+calcifer = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 hub-client = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 protocol = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 platform = ["cli", "os:macos", "os:windows", "build:cozy"]

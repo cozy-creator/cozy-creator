@@ -18,7 +18,8 @@ name: e2e
 # (stack_ref, runtime_ref) and goes on through `cozy machine update local`; the rest is the release a person
 # would get from https://tensorhub.com/install.sh. On Linux each candidate is its own job, once, and the suites
 # run in shards that share it: TensorD and TensorFS come from an earlier cozy-creator e2e run that built the same
-# sources when one did (master's, for cozy-runtime and packages), so only a change to them builds them.
+# build inputs when one did (master's, for cozy-runtime and packages; a PR's own dispatch for its queue entry), so
+# only a change to them builds them.
 on:
   pull_request:
   merge_group:
@@ -259,9 +260,9 @@ jobs:
           { echo "### e2e selection: $REPO ${REF:0:12}"; echo '```'; echo "$s" | jq .; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "$s" | jq .
 
-  # One candidate a job (e2e/candidates/build.sh), each this run's candidate-<what>-<commit> artifact for every Linux
-  # suite: TensorD and TensorFS reused from an earlier run when one built the same sources, else built. A taken one
-  # (its version) builds nothing.
+  # One candidate a job (e2e/candidates/build.sh), each this run's candidate-<what>-<inputs> artifact for every Linux
+  # suite: TensorD and TensorFS reused from an earlier merge-group or dispatched run that built the same build inputs
+  # (a PR's own dispatch, when the PR is up to date), else built. A taken one (its version) builds nothing.
   candidate:
     name: candidate ${{ matrix.what }}
     needs: affected
@@ -291,8 +292,6 @@ jobs:
           repository: cozy-creator/${{ matrix.repo }}
           ref: ${{ needs.affected.outputs.repo == matrix.repo && needs.affected.outputs.ref || matrix.repo == 'cozy-runtime' && needs.affected.outputs.runtime || needs.affected.outputs.stack }}
           path: .build
-          # The first-parent line build.sh walks back for a run that built the same sources.
-          fetch-depth: ${{ matrix.what == 'runtime' && 1 || 30 }}
       - uses: astral-sh/setup-uv@v7
       # A dispatch on cozy-creator's master always builds: its Rust caches are the ones merge groups restore.
       - id: reuse
@@ -474,7 +473,8 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-  # In shards of every Nth package (e2e/imports/run.sh --shard K/N), on the candidate jobs' set.
+  # In shards of every Nth package (e2e/imports/run.sh --shard K/N), on the candidate jobs' set: two keep them off the
+  # critical path (cli runs).
   imports:
     name: imports ${{ matrix.shard }}/${{ strategy.job-total }}
     needs: [affected, candidate]
@@ -482,7 +482,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.
