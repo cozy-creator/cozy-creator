@@ -119,8 +119,9 @@ For each call, under the segment's submission lock:
    deduplicated Regions and fresh ordinary checked exports (one valid uint8 span per
    Region is enough). Existing TensorExport owns Pin/family/Weight and preserves exact
    final-fence quarantine. Bare Use close is not the checked replay safety contract.
-   Initial replay also calls scoped wait_ready before launch to surface Source/resource
-   failure; it does not claim fill/compute overlap or latency qualification.
+   Replay relies on native producer-event ordering rather than inserting an unnecessary
+   host readiness/retirement wait. Capture alone uses wait_ready after its typed bindings
+   exist. No overlap or latency improvement is qualified by the host checks.
 3. Copy inputs, enter the existing `_runtime.replay` host guard, and call
    `vt.replay(graph, stream=stream)`. Reuse native pool retain/record/release ownership.
    Exit replay exclusion before output-copy allocation and before Use close/fencing;
@@ -205,4 +206,8 @@ This lane owns new `_offload_graph.py`, graph docs and frontend clients in its d
 worktree. Planned shared `_offload.py` edits are the narrow capture-binding context,
 dispatch/intent delegation and lazy owner capture method; `torch.py` graph helpers are
 reused. Agree shared-file ownership with the coordinator/packing owner before edits.
-Agent 2 owns any required native seam and signatures. Frozen #2449 is preserved.
+Agent 2 delivered the agreed readiness feature in draft #2486:
+`186165d9fa07af7c27583d179ce2e24fe8b92c98` plus
+`1761c0612f6aa2f69f6841a62806ff8dce3c3f4e`; context `4463a4fd9` is excluded.
+Host/native checks do not qualify valid-Use GPU waiting or graph behavior. No further
+native ownership class or unchecked tensor export is required. Frozen #2449 is preserved.
