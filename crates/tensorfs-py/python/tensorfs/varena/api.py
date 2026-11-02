@@ -127,6 +127,10 @@ class _Phase(C.Structure):
     _fields_ = [("name", C.c_char_p), ("regions", _h), ("count", C.c_size_t)]
 
 
+class _HostPart(C.Structure):
+    _fields_ = [("data", C.c_void_p), ("bytes", C.c_size_t)]
+
+
 # Symbol lookup traverses _ext's DT_NEEDED dependencies. Never dlopen a second
 # allocator by an unrelated absolute path, or statically embed a core in this module.
 _lib = C.CDLL(_ext.__file__)
@@ -149,6 +153,7 @@ for _name, _args in {
     "gpu_open": [C.c_int32, _h],
     "gpu_close": [_u],
     "region_from_host": [_u, C.c_void_p, C.c_size_t, _h],
+    "region_from_host_parts": [_u, C.POINTER(_HostPart), C.c_size_t, _h, _h],
     "region_ptr": [_u, _h],
     "region_close": [_u],
     "use": [_u, _h, C.c_size_t, _u, _h],
@@ -267,6 +272,24 @@ class Gpu(_Owned):
     def region(self, data: Source | bytes | bytearray | memoryview) -> Region:
         data = data.data if isinstance(data, Source) else bytes(data)
         return Region(_new("region_from_host", self._handle, data, len(data)), self)
+
+    def region_parts(self, sources: Sequence[Source]) -> tuple[Region, tuple[int, ...]]:
+        """Snapshot Sources into one Region with 256-byte-aligned member offsets.
+
+        Empty members are allowed, but the aggregate must contain bytes. Capture
+        refuses before copying. No caller storage is retained after this returns.
+        Typed exports add the returned member offset to their Source byte offset.
+        """
+        sources = tuple(sources)
+        if any(not isinstance(source, Source) for source in sources):
+            raise TypeError("region_parts requires immutable Sources")
+        parts = (_HostPart * len(sources))(
+            *(_HostPart(C.cast(C.c_char_p(source.data), C.c_void_p), source.nbytes)
+              for source in sources)
+        )
+        offsets = (_u * len(sources))()
+        handle = _new("region_from_host_parts", self._handle, parts, len(parts), offsets)
+        return Region(handle, self), tuple(offsets)
 
     def use(self, regions: Sequence[Region], stream: int) -> Use:
         """Name the actual consumer stream; every other consumer must join it before close."""
