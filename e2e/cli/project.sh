@@ -7,16 +7,16 @@
 # against the release's running Calcifer.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# The candidate CLI from its own path against an older Calcifer that lacks the route: a typed calcifer_outdated with
-# its remedy, never a bare 404.
+# The candidate CLI from its own path against the release's Calcifer: it works where that Calcifer serves the route (every
+# release since 0.16.3 does `project ls`), and otherwise a typed calcifer_outdated with its remedy, never a bare 404.
 version_skew() {
   [ -f "$CAND_COZY" ] || return 0
   step "version skew: the candidate CLI against the release's Calcifer"
   local code=0
   "$CAND_COZY" project ls > "$OUT/skew.txt" 2>&1 || code=$?
   cat "$OUT/skew.txt"
-  { [ "$code" != 0 ] && grep -q calcifer_outdated "$OUT/skew.txt" && ! grep -qiE 'untyped_answer|answered 404' "$OUT/skew.txt"; } \
-    || check "skew: the candidate CLI against $(cozy --version)'s Calcifer did not say calcifer_outdated (exit $code)"
+  { { [ "$code" = 0 ] || grep -q calcifer_outdated "$OUT/skew.txt"; } && ! grep -qiE 'untyped_answer|answered 404' "$OUT/skew.txt"; } \
+    || check "skew: the candidate CLI against $(cozy --version)'s Calcifer neither worked nor said calcifer_outdated (exit $code)"
 }
 
 # plate <file> <lavfi source> <tone Hz> <video kb/s>: 6 s at 854x480, 24 fps, a keyframe a second, constant bitrate;

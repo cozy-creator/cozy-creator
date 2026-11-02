@@ -161,7 +161,11 @@ enum Prepared {
 /// Resolves and binds `ask` into the submission Calcifer records.
 async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared, Error> {
     let on = ask.on.clone().unwrap_or_else(|| On::Machine("local".into()));
-    protocol::calcifer::local_usable(&on.to_string())?;
+    // Local code installs as it resolves. A package answers for itself first: one named without a
+    // function lists its functions on an OS that runs no models here.
+    if local(api, ask).is_some() {
+        protocol::calcifer::local_usable(&on.to_string())?;
+    }
     let hub = hub(api, &ask.hub);
     let cwd = ask.cwd.as_deref();
     let agreed = ask.agreed.clone();
@@ -205,6 +209,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     if !ask.recipes && code.interface.runs_recipes(callable) {
         return Err(recipes(package, code.interface));
     }
+    protocol::calcifer::local_usable(&on.to_string())?;
     let (submit, notes) = call(api, code, callable, ask, key, &hub).await?;
     Ok(Prepared::Run { submit, notes })
 }

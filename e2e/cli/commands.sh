@@ -198,10 +198,18 @@ before=$(cozy --json run ls --limit 0 | jq '.runs | length')
   || check "a digest Calcifer does not hold was not refused file_not_held before any run"
 
 step "the release's CLI against this Calcifer"
-code=0; (cd "$here" && "$HOME/.cozy/bin/.cozy-previous" run ./weightless/reverse text=old --on local) > "$OUT/old-cli.txt" 2>&1 || code=$?
-cat "$OUT/old-cli.txt"
-{ [ "$code" != 0 ] && grep -q client_outdated "$OUT/old-cli.txt" && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
-  || check "the release's CLI ($("$HOME/.cozy/bin/.cozy-previous" --version 2>&1)) was not refused client_outdated, or its run was recorded (exit $code)"
+# Only a cozy before 0.16.3 builds its run itself. A release dispatch installs the candidate straight away and keeps no
+# previous cozy, and from 0.16.3 on the previous one asks as this one does: then there is nothing to refuse.
+local previous=$HOME/.cozy/bin/.cozy-previous old=''
+[ -x "$previous" ] && old=$("$previous" --version 2>/dev/null | cut -d' ' -f2) || true
+if [ -z "$old" ] || [ "$(printf '%s\n0.16.3\n' "${old%%+*}" | sort -V | head -1)" = 0.16.3 ]; then
+  echo "skipped: no cozy here that builds its own run (previous: ${old:-none})"
+else
+  code=0; (cd "$here" && "$previous" run ./weightless/reverse text=old --on local) > "$OUT/old-cli.txt" 2>&1 || code=$?
+  cat "$OUT/old-cli.txt"
+  { [ "$code" != 0 ] && grep -q client_outdated "$OUT/old-cli.txt" && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
+    || check "the release's CLI ($old) was not refused client_outdated, or its run was recorded (exit $code)"
+fi
 }
 
 yaml_requests() {

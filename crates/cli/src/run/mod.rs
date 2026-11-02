@@ -223,7 +223,8 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
 fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path) -> Result<RunRequest, Error> {
     Ok(RunRequest {
         target,
-        on: Some(args.placement.on()?),
+        // Calcifer refuses `local` where this OS runs no models, once the target names a function.
+        on: Some(On::from(args.placement.on.clone())),
         hub: ctx.hub().to_string(),
         input: None,
         input_file: args.input_file.clone(),
