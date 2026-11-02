@@ -5,6 +5,9 @@ mod retirement;
 pub(crate) mod source;
 mod host_source;
 mod tensor_export;
+mod census;
+#[doc(hidden)]
+pub use census::residency_snapshot;
 pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
 pub use source::{Job as SourceJob, Provider as SourceProvider};
 

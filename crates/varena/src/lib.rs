@@ -18,6 +18,8 @@ pub mod abi;
 pub mod plan;
 pub mod arena_retirement;
 mod retirement;
+#[doc(hidden)]
+pub mod census;
 pub use arena_retirement::{ArenaRetirement, ArenaRetirementFacts, ArenaRetirementState};
 pub mod working;
 pub(crate) mod tensor_consumers;
@@ -310,6 +312,8 @@ fn decrement(counter: &AtomicUsize) {
 
 struct Entry {
     ptr: u64,
+    // Logical size survives the final Region owner for read-only residency diagnostics.
+    requested_bytes: usize,
     bytes: usize,
     handle: Option<u64>,
     uses: Arc<Uses>,
@@ -868,6 +872,7 @@ impl Arena {
             id,
             Entry {
                 ptr,
+                requested_bytes: bytes,
                 bytes: rounded,
                 handle: None,
                 uses: Arc::clone(&uses),

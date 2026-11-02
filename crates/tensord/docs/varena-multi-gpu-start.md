@@ -6,7 +6,7 @@ preserving the current Calcifer-routed CLI machine files. Snapshot code is not
 additional multi-GPU work. The old CLI updater bridge and machine-mode option
 need integration into the current caller separately.
 
-`protocol::executor::Start.cooperation` is now `Vec<Cooperation>`, in the same
+`executor_protocol::Start.cooperation` is now `Vec<Cooperation>`, in the same
 order as the session's sealed devices. CPU/import-only starts carry no entries.
 TensorD resolves every actual GPU/MIG UUID before Start, rejects duplicate
 identities, and supplies one descriptor per rank. A cooperative executor can

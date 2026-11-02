@@ -13,7 +13,7 @@ Original commits and historical evidence remain preserved, as do real release-ga
 
 ## Validation boundary
 
-Cargo metadata, product whitespace and conflict-marker checks pass. The unchanged safety guard reports advisories ok. Full diff whitespace warnings belong to preserved historical raw receipts. Product compilation is pending at this checkpoint. No GPU, rental, live update, merge, release or new unit test was run.
+Cargo metadata, product whitespace and conflict-marker checks pass. The unchanged safety guard reports advisories ok. Full diff whitespace warnings belong to preserved historical raw receipts. Production cargo check passed for varena, varena-client, tensorfs-py, tensord, cli, calcifer and varena-mixed-client (1m27 s); the migrated protocol rank example check passed (17.50 s), both offline/locked with one nice19 Cargo job. Shared-target worktree changes refresh source timestamps before compiling to prevent reuse of earlier descriptor metadata. No GPU, rental, live update, merge, release or new unit test was run.
 
 ## Reviewed additions
 
