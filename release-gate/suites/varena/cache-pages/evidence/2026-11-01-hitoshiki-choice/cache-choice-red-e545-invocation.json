@@ -1,0 +1,25 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache/choice-pair/red-e545/controller-hitoshiki/project/split_choice",
+    "--on",
+    "hitoshiki",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/cache-choice-red-e545-input.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-shortage-int8-leg15-plan/attempt-001/cache-choice-red-e545-artifacts"
+  ],
+  "input_sha256": "18f47b27c44b132d2579d01504b59bda8bd307e49516f9f4f1b6b53298e87f1a",
+  "input": {
+    "source_sha": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+    "helper_sha256": "a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf",
+    "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+  },
+  "started_at": "2026-11-01T15:02:34.326544+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T15:02:44.494487+00:00"
+}

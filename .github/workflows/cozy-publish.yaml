@@ -173,11 +173,17 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      - uses: astral-sh/setup-uv@v6
       - name: Build artifacts
+        shell: bash
         run: |
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+          # Bundle before checksums/attestations. Private names preserve old running/rollback owners.
+          native_tools=()
+          case "$RUNNER_OS" in Linux) native_tools=(--with patchelf) ;; Windows) native_tools=(--with lief) ;; esac
+          uv run --no-project "${native_tools[@]}" python scripts/bundle-native.py --dist-manifest dist-manifest.json --target-root target --targets-json '${{ toJson(matrix.targets) }}' --max-glibc 2.28
       - name: Attest
         uses: actions/attest@v4
         with:

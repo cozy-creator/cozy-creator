@@ -1,0 +1,41 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "run",
+    "--offline",
+    "--manifest-path",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-shared-service/host-001/native/Cargo.toml",
+    "--target-dir",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+    "--example",
+    "lifecycle",
+    "-j",
+    "1"
+  ],
+  "exit_code": 101,
+  "seconds": 11.592864797974471,
+  "sources": {
+    "crates/varena/src/plan.rs": "4c0169f4f8d4ceb81ad61c70a2770bfb039b53c16d1a5a544cafeb81771d0d5e",
+    "crates/varena/src/fork_guard.rs": "afe1de00865b3162e02e0fcce77af165b0c009dfd0652722ff2e03ebb3e9a6bb",
+    "crates/varena/src/lib.rs": "31b0f7aca5aa7a3b58c6233ec7da0b86be78df3c03408214831578fb809a6503",
+    "crates/varena/src/ledger.rs": "ba0842330b872cab63a18a16e24686ab7d8542082e9203dd674dd7fb7cae95dd",
+    "crates/varena/src/cache_owner.rs": "930f9f6aff80d12c45b4ad0ad30d1c43685243e9d5a68a8bc1e12fef0d4dcc1f",
+    "crates/varena/src/working.rs": "129699f69b26417dd4f45edb2b95f2d8f9e9544d79ae1b41cc4da89701ea77f3",
+    "crates/varena/src/cuda.rs": "1aa955d05d94d1dc61c1d845e00a8bbb7139984e9a3c7592f2ded4276dc61b6c",
+    "crates/varena/src/cooperative.rs": "044bae113277798ec293f5b977da02a42233101c3c9cc9fbe8fdb9fee098a9f6",
+    "crates/varena/src/ledger/upgrade.rs": "051e57e4e7e7e5a0f12ec3bc38ffbe8658f6a50a63e3fe1cec3a21e7025953c6",
+    "crates/varena/src/ledger/os.rs": "3f3a613a25902988ed84af32c922de9afacf9bde65f5a92b0a84401f9bed0daf",
+    "crates/varena/src/cooperative/owner.rs": "3d29c0cdde3c25482685c1c4f399d978a7c8ae3f0f2f9360db161fe360f6153c",
+    "crates/varena/src/cooperative/pressure.rs": "bb3c41f61e244db6067b6adeb1f9b70f2135bef17355e4aeecd82e133490ea38",
+    "crates/varena/src/working/cache.rs": "8571d1b4d22669fd2d2eb19875e5d3b0b18c3191de1b9306ecfe2a0f11188b7e",
+    "crates/varena/src/working/peer.rs": "d26fc04c7b42b9e115efbf35d78bad830d43340d262de0f80706a621070e123a",
+    "crates/varena/src/working/split.rs": "8939ce8cf6a47d036db2f6adcec46d717c9255605550790dcb86902ab4d9d8ac"
+  },
+  "harness_sha256": "c6429a1cade695c95bc454559240c10e6dfc56af96808430d94df6e07af78d7c",
+  "shared_harness_sha256": "2935028428a069409ec836a0bae1fc7fc1ac9d133f40b0a041448e37d2117d8c",
+  "pressure_harness_sha256": "4b45947766e83ee0b0c2a20305271f26a4b00c53e2d80c4f4b7f4d4b0206693f",
+  "scope": "actual native host-control concurrency; no CUDA participant, GPU or native donor qualification"
+}

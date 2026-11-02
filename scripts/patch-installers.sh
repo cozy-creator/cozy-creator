@@ -19,3 +19,4 @@ test "$(grep -c -e 'cozy works in this PowerShell now' -e '^        $env:Path = 
 aside='    Remove-Item "$dest_dir\\.cozy-replaced-*" -Force -ErrorAction SilentlyContinue\n    $old = Join-Path "$dest_dir" (Split-Path -Path "$bin_path" -Leaf)\n    if (Test-Path $old) { Move-Item -Force $old (Join-Path "$dest_dir" ".cozy-replaced-$(Get-Random).exe") }'
 sed -i "s|^    Copy-Item \"\$bin_path\" -Destination \"\$dest_dir\" -ErrorAction Stop\$|$aside\n&|" "$ps"
 test "$(grep -c -F '    if (Test-Path $old) { Move-Item' "$ps")" = 1
+python3 "$(dirname "$0")/patch-native-installers.py" "$1"

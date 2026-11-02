@@ -162,6 +162,9 @@ pub struct Request {
     /// the drain and read at the restart the update ends with.
     #[serde(default)]
     pub gpu_memory_limit: Option<u64>,
+    /// Categorical sharing policy, persisted after drain and read only at restart.
+    #[serde(default)]
+    pub mode: Option<protocol::config::MachineMode>,
     /// The `cozy` binary to run (`cozy machine update --tensord`): a release it fetches, or a
     /// staged dev build, like a wheel.
     #[serde(default)]
@@ -504,6 +507,7 @@ impl Updates {
                 tensorfs: None,
                 cozy: None,
                 gpu_memory_limit: None,
+                mode: None,
                 binary: None,
                 toolchain: true,
             };
@@ -682,10 +686,10 @@ impl Updates {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
             && (request.runtime.is_some() || request.tensorfs.is_some() || request.cozy.is_some() || request.binary.is_some()
-                || request.gpu_memory_limit.is_some())
+                || request.gpu_memory_limit.is_some() || request.mode.is_some())
                 != request.toolchain;
         if !valid {
-            return Err((400, "an update requires operation and a Runtime, TensorFS or cozy binary, or the toolchain alone".into()));
+            return Err((400, "an update requires operation and software or machine settings, or the toolchain alone".into()));
         }
         let mut current = self.status.lock().unwrap();
         if let Some(status) = current.as_ref().filter(|s| s.operation == request.operation) {
@@ -854,7 +858,7 @@ impl Updates {
         let binary = self.binary(request)?;
         let pair = !(running(&request.runtime, &from.runtime, &from.runtime_sha256)
             && running(&request.tensorfs, &from.tensorfs, &from.tensorfs_sha256));
-        if !pair && binary.is_none() && request.gpu_memory_limit.is_none() {
+        if !pair && binary.is_none() && request.gpu_memory_limit.is_none() && request.mode.is_none() {
             // Nothing to install: the machine already runs this pair and binary.
             return self.set(|s| {
                 s.to = from.clone();
@@ -885,8 +889,8 @@ impl Updates {
             self.set(|s| s.to = to.clone())?;
             let activation = self.drain()?;
             self.set(|s| s.enter("installing"))?;
-            if let Some(limit) = request.gpu_memory_limit {
-                write_limit(&self.paths.config, limit)?;
+            if request.gpu_memory_limit.is_some() || request.mode.is_some() {
+                write_machine_settings(&self.paths.config, request.gpu_memory_limit, request.mode)?;
             }
             Ok((to, activation))
         })();
@@ -912,6 +916,11 @@ impl Updates {
         let publication = (|| {
             write_json(&self.paths.update("pending.json"), &pending)?;
             if let Some(staged) = staged {
+                let launch = &binary.as_ref().expect("staged binary").launch;
+                platform::native_bundle::copy_libraries(
+                    staged.parent().unwrap_or(Path::new(".")),
+                    launch.parent().unwrap_or(Path::new(".")),
+                )?;
                 super::binary::swap(staged)?;
             }
             if let Some(candidate) = &candidate {
@@ -1002,7 +1011,7 @@ impl Updates {
             }
         }
         self.set(|s| s.enter("preparing"))?;
-        let staged = self.resolve("cozy", choice)?;
+        let staged = platform::native_bundle::staged(&self.resolve("cozy", choice)?)?;
         #[cfg(unix)]
         fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
         let version = super::binary::check(&staged).map_err(|why| coded("binary_incompatible", why))?;
@@ -1391,9 +1400,9 @@ fn unlink(link: &Path) -> io::Result<()> {
     fs::remove_file(link)
 }
 
-/// Sets `machine.gpu_memory_limit` in the machine's config (0 removes it), keeping the rest as
-/// written; a file the load would refuse is never written.
-fn write_limit(path: &Path, limit: u64) -> io::Result<()> {
+/// Commit requested machine settings together, preserving other fields/comments. A config
+/// that the ordinary loader would refuse is never written. Zero removes the development cap.
+fn write_machine_settings(path: &Path, limit: Option<u64>, mode: Option<protocol::config::MachineMode>) -> io::Result<()> {
     let text = match fs::read_to_string(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         read => read?,
@@ -1403,9 +1412,14 @@ fn write_limit(path: &Path, limit: u64) -> io::Result<()> {
     if !doc.get("machine").is_some_and(toml_edit::Item::is_table) {
         doc["machine"] = toml_edit::table();
     }
-    match limit {
-        0 => drop(doc["machine"].as_table_mut().and_then(|t| t.remove("gpu_memory_limit"))),
-        bytes => doc["machine"]["gpu_memory_limit"] = toml_edit::value(bytes as i64),
+    if let Some(limit) = limit {
+        match limit {
+            0 => drop(doc["machine"].as_table_mut().and_then(|t| t.remove("gpu_memory_limit"))),
+            bytes => doc["machine"]["gpu_memory_limit"] = toml_edit::value(bytes as i64),
+        }
+    }
+    if let Some(mode) = mode {
+        doc["machine"]["mode"] = toml_edit::value(mode.name());
     }
     let text = doc.to_string();
     protocol::config::Config::parse(&text, &shown).map_err(|e| invalid(&e.message))?;
