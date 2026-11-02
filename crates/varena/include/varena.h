@@ -95,6 +95,16 @@ typedef struct {
 VR_API vr_status vr_v1_region_from_source(vr_handle gpu, uint64_t bytes,
     const vr_source_provider_v1 *, size_t source_size, vr_handle *out);
 VR_API vr_status vr_v1_region_from_host(vr_handle, const uint8_t *, size_t, vr_handle *out);
+typedef struct { const uint8_t *data; size_t bytes; } vr_host_part_v1;
+/* One immutable Region, in input order with 256-byte-aligned member offsets and
+ * zero-filled gaps. Copies directly into the final native snapshot before returning;
+ * caller inputs need only remain readable and unchanged during this call.
+ * Zero-length parts allow NULL data and receive aligned offsets; the aggregate must
+ * contain payload bytes. Capture refuses before payload copying. Both outputs remain
+ * unchanged on failure (unlike the scalar constructors above). offsets has count
+ * writable uint64_t entries and must not overlap out. No partial Region is published. */
+VR_API vr_status vr_v1_region_from_host_parts(vr_handle gpu,
+    const vr_host_part_v1 *parts, size_t count, uint64_t *offsets, vr_handle *out);
 VR_API vr_status vr_v1_region_ptr(vr_handle, uint64_t *out); /* VA only, never a pin */
 VR_API vr_status vr_v1_region_close(vr_handle);
 /* Success orders consumer stream work after Published producers. It is not host GPU

@@ -4,6 +4,7 @@
 mod retirement;
 pub(crate) mod source;
 mod host_source;
+mod host_parts;
 mod tensor_export;
 mod census;
 #[doc(hidden)]
@@ -473,6 +474,39 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
                 region,
                 bytes: Bytes::Host(bytes),
             })))?);
+        }
+        Ok(())
+    })
+}
+/// Snapshot ordered host parts into one immutable Region. Outputs change only on success.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vr_v1_region_from_host_parts(
+    g: u64,
+    parts: *const host_parts::HostPart,
+    count: usize,
+    offsets: *mut u64,
+    out: *mut u64,
+) -> i32 {
+    boundary(|| {
+        if out.is_null() || offsets.is_null() {
+            return Err(invalid("null host parts output"));
+        }
+        let parts = unsafe { slice(parts, count)? };
+        // The handle lease refuses active capture and excludes new capture through
+        // snapshot/reservation, before reading any caller payload bytes.
+        let gpu = gpu(g)?;
+        let (bytes, layout) = unsafe { host_parts::snapshot(parts)? };
+        let region = gpu.arena.reserve(bytes.len())?;
+        let handle = insert(Handle::Region(Arc::new(Weight {
+            gpu: gpu.clone(),
+            region,
+            bytes: Bytes::Host(bytes),
+        })))?;
+        // SAFETY: caller provides disjoint writable outputs; every fallible step is
+        // complete. The snapshots no longer depend on any caller input allocation.
+        unsafe {
+            std::ptr::copy_nonoverlapping(layout.as_ptr(), offsets, count);
+            out.write(handle);
         }
         Ok(())
     })

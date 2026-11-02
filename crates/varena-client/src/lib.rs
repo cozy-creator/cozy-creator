@@ -146,6 +146,21 @@ impl Gpu {
             handle,
         })))
     }
+    /// Snapshot parts into one Region with zero-filled gaps and 256-byte-aligned offsets.
+    /// Empty members are allowed, but the aggregate must contain bytes. Capture refuses
+    /// before copying; inputs are no longer borrowed after this returns.
+    pub fn region_parts(&self, parts: &[&[u8]]) -> Result<(Region, Vec<u64>)> {
+        let parts = parts.iter().map(|part| ffi::HostPart {
+            data: part.as_ptr(), bytes: part.len(),
+        }).collect::<Vec<_>>();
+        let mut offsets = vec![0; parts.len()];
+        let mut handle = 0;
+        check(unsafe {
+            ffi::vr_v1_region_from_host_parts(self.0.handle, parts.as_ptr(), parts.len(),
+                offsets.as_mut_ptr(), &mut handle)
+        })?;
+        Ok((Region(Arc::new(RegionInner { gpu: self.clone(), handle })), offsets))
+    }
     /// Orders source production on this stream only. Another reader stream needs its
     /// own Use or a dependency behind this stream before reading; join side work before done.
     pub fn use_regions(&self, regions: &[&Region], stream: &Stream) -> Result<Use> {
@@ -505,6 +520,11 @@ pub struct Stats {
 mod ffi {
     use super::*;
     #[repr(C)]
+    pub struct HostPart {
+        pub data: *const u8,
+        pub bytes: usize,
+    }
+    #[repr(C)]
     #[derive(Default)]
     pub struct SourceJob {
         pub streams: *const u64,
@@ -546,6 +566,8 @@ mod ffi {
         pub fn vr_v1_region_from_source(gpu: u64, bytes: u64, provider: *const SourceProvider,
             provider_size: usize, out: *mut u64) -> i32;
         pub fn vr_v1_region_from_host(gpu: u64, bytes: *const u8, n: usize, out: *mut u64) -> i32;
+        pub fn vr_v1_region_from_host_parts(gpu: u64, parts: *const HostPart, count: usize,
+            offsets: *mut u64, out: *mut u64) -> i32;
         pub fn vr_v1_use_ptr(used: u64, index: usize, out: *mut u64) -> i32;
         pub fn vr_v1_use(
             gpu: u64,
