@@ -439,7 +439,7 @@ pub struct PackageFileGrant {
     pub upload: Option<PresignedUpload>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PresignedUpload {
     pub url: String,

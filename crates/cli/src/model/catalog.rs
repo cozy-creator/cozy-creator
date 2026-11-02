@@ -1,30 +1,17 @@
-//! `cozy model ls|info|family`: the Hub's model catalog. Signed in, `ls` also lists the user's own
-//! unreleased (private) models and `info` lists the commits of a model of the user's org.
-use std::collections::BTreeMap;
+//! `cozy model ls|info|family`: the Hub's model catalog, through Calcifer (CALCIFER-API.md
+//! "Models"). Signed in, `ls` also lists the user's own unreleased (private) models and `info` lists
+//! the commits of a model of the user's org.
 use std::process::ExitCode;
 
 use protocol::error::{Error, Kind};
-use hub_client::types::{ModelAuthor, ModelCard, ModelLaneProvenance};
+use protocol::hub::{ModelAuthor, ModelDetail, ModelEdit, ModelFamily, ModelSearch};
 use serde::Serialize;
 
 use protocol::model_ref::{ModelRef, Repo};
 use super::{Family, Info, Ls};
 use crate::Context;
-use crate::context::hub_answer;
+use crate::calcifer_client::path;
 use crate::output::{self, Record, Table};
-
-/// One search row: the model's newest release, and its lanes; for a private model (no release,
-/// its owner's), its commits' lanes.
-#[derive(Serialize)]
-struct Found {
-    model: String,
-    family: Option<String>,
-    release: Option<String>,
-    lanes: Vec<String>,
-    private: bool,
-    /// Who made it: the org it credits, or the parked org it mirrors into.
-    author: Option<ModelAuthor>,
-}
 
 /// An author as a person reads it: its name, and while its org is parked, that it is reserved.
 fn by(author: &ModelAuthor) -> String {
@@ -35,62 +22,20 @@ fn by(author: &ModelAuthor) -> String {
 }
 
 #[derive(Serialize)]
-struct Searched {
-    models: Vec<Found>,
-    /// How many models matched, shown or not.
-    total: i64,
-}
-
-fn found(card: &ModelCard) -> Found {
-    // The Hub lists releases newest first.
-    let release = card.releases.first();
-    let private = release.is_none();
-    let lanes = match release {
-        Some(r) => r.lanes.keys().cloned().collect(),
-        None => card.commits.iter().map(|c| c.lane.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
-    };
-    Found {
-        model: protocol::names::shown(&format!("{}/{}", card.model.org, card.model.name)),
-        family: card.model.family.clone().filter(|f| !f.is_empty()),
-        release: release.map(|r| r.version.clone()),
-        lanes,
-        private,
-        author: card.model.author.clone(),
-    }
+struct Searching<'a> {
+    hub: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    q: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family: Option<&'a str>,
+    limit: u32,
 }
 
 pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
-    // Signed in, the Hub adds the user's own private models.
-    let client = ctx.hub_client(ctx.hub())?;
-    let exact = match (&args.family, args.query.as_slice()) {
-        // A single word is search text (a root name among its matches, first); org/name is one model.
-        (None, [one]) if one.contains('/') => Repo::parse(one).ok(),
-        _ => None,
-    };
-    let (cards, total) = match exact {
-        Some(repo) => (vec![hub_answer(client.get_model(&repo.org, &repo.name).await)?], 1),
-        None => {
-            let query = args.query.join(" ");
-            let q = Some(query.as_str()).filter(|q| !q.is_empty());
-            let answer = hub_answer(client.search_models(q, args.family.as_deref(), args.limit).await)?;
-            // One card read per model, all at once.
-            let mut reads = tokio::task::JoinSet::new();
-            for (i, model) in answer.models.into_iter().take(args.limit as usize).enumerate() {
-                let client = client.clone();
-                reads.spawn(async move { (i, client.get_model(&model.org, &model.name).await) });
-            }
-            let mut cards = BTreeMap::new();
-            while let Some(read) = reads.join_next().await {
-                let (i, card) = read.map_err(|e| Error::new(Kind::Internal, "card_read", e.to_string()))?;
-                cards.insert(i, hub_answer(card)?);
-            }
-            (cards.into_values().collect(), answer.search.total)
-        }
-    };
-    let view = Searched {
-        models: cards.iter().map(found).collect(),
-        total,
-    };
+    let query = args.query.join(" ");
+    let ask = Searching { hub: ctx.hub(), q: &query, family: args.family.as_deref(), limit: args.limit };
+    let view: ModelSearch = ctx.calcifer().await?.get_query("/v1/models", &ask).await?;
+    let total = view.total;
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
@@ -118,55 +63,6 @@ pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-#[derive(Serialize)]
-struct Lane {
-    lane: String,
-    /// The commit, `sha256:…`.
-    commit: String,
-    bytes: i64,
-    /// Its header's schemes and dtypes.
-    kinds: Vec<String>,
-    /// The recipe that wrote it, as its header records.
-    provenance: Option<ModelLaneProvenance>,
-}
-
-#[derive(Serialize)]
-struct Release {
-    version: String,
-    created_at: String,
-    /// Published while its org was parked: not its author's.
-    mirror: bool,
-    /// Published by a platform admin where it is no member.
-    by_admin: bool,
-    lanes: Vec<Lane>,
-}
-
-#[derive(Serialize)]
-struct Commit {
-    commit: String,
-    lane: String,
-    bytes: i64,
-    /// The releases naming it; none while private.
-    releases: Vec<String>,
-    created_at: String,
-}
-
-#[derive(Serialize)]
-struct Detail {
-    model: String,
-    family: Option<String>,
-    created_at: String,
-    /// The pinned upstream source, and who made it.
-    source: Option<String>,
-    author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
-    trigger: Option<String>,
-    strength: Option<f64>,
-    releases: Vec<Release>,
-    /// Every commit, newest first, to the model's members.
-    commits: Vec<Commit>,
-}
-
 pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     let (repo, selected) = match ModelRef::parse(&args.model)? {
         ModelRef::Hub { repo, release } => (repo, release),
@@ -174,37 +70,10 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
             return Err(Error::new(Kind::Usage, "model_ref_invalid", format!("{:?}: info reads org/name[@release]", args.model)));
         }
     };
-    let card = hub_answer(ctx.hub_client(ctx.hub())?.get_model(&repo.org, &repo.name).await)?;
-    let releases: Vec<Release> = card
-        .releases
-        .into_iter()
-        .filter(|r| selected.as_ref().is_none_or(|s| *s == r.version))
-        .map(|r| Release {
-            version: r.version,
-            created_at: r.created_at,
-            mirror: r.mirror,
-            by_admin: r.by_admin,
-            lanes: r.lanes.into_iter().map(|(lane, l)| Lane { lane, commit: l.commit, bytes: l.bytes, kinds: l.kinds, provenance: l.provenance }).collect(),
-        })
-        .collect();
-    if let Some(release) = selected.filter(|_| releases.is_empty()) {
-        return Err(Error::new(Kind::NotFound, "model_release_not_found", format!("{repo} has no release {release:?}"))
-            .next(format!("cozy model info {repo}")));
-    }
-    let commits = card.commits.into_iter()
-        .map(|c| Commit { commit: c.id, lane: c.lane, bytes: c.bytes, releases: c.releases, created_at: c.created_at })
-        .collect();
-    let view = Detail {
-        model: repo.to_string(),
-        family: card.model.family.filter(|f| !f.is_empty()),
-        created_at: card.model.created_at,
-        source: card.model.source.filter(|s| !s.is_empty()),
-        author: card.model.author,
-        trigger: card.model.trigger.filter(|t| !t.is_empty()),
-        strength: card.model.strength,
-        releases,
-        commits,
-    };
+    let mut query = vec![("hub", ctx.hub().to_string())];
+    query.extend(selected.map(|release| ("release", release)));
+    let at = path(&["v1", "models", &repo.org, &repo.name]);
+    let view: ModelDetail = ctx.calcifer().await?.get_query(&at, &query).await?;
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);
@@ -264,21 +133,11 @@ pub(crate) async fn info(ctx: &Context, args: Info) -> Result<ExitCode, Error> {
     Ok(ExitCode::SUCCESS)
 }
 
-#[derive(Serialize)]
-struct FamilySet {
-    model: String,
-    family: Option<String>,
-}
-
 pub(crate) async fn family(ctx: &Context, args: Family) -> Result<ExitCode, Error> {
     let repo = Repo::hub(&args.model)?;
     let family = if args.clear { String::new() } else { args.family.unwrap_or_default() };
-    let client = ctx.hub_signed_in(ctx.hub())?;
-    let answer = hub_answer(client.set_model_family(&repo.org, &repo.name, &family).await)?;
-    let view = FamilySet {
-        model: repo.to_string(),
-        family: answer.model.family.filter(|f| !f.is_empty()),
-    };
+    let ask = ModelEdit { hub: Some(ctx.hub().to_string()), family: Some(family) };
+    let view: ModelFamily = ctx.calcifer().await?.patch(&path(&["v1", "models", &repo.org, &repo.name]), &ask).await?;
     if ctx.json {
         output::json(&view);
     } else {

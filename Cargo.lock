@@ -370,6 +370,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
 ]
@@ -509,7 +510,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "hex",
- "hub-client",
  "indicatif",
  "infer",
  "jiff",

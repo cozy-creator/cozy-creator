@@ -7,7 +7,6 @@ use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc
 
 use axum::{
     Json, Router,
-    body::Bytes,
     extract::{
         ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
@@ -21,7 +20,7 @@ use axum::{
     routing::{get, post, put},
 };
 use protocol::{
-    calcifer::{Down, Event, Run, RunList, RunsEvent, Status, SubmitRun, Submitted},
+    calcifer::{Down, Event, Run, RunList, RunsEvent, Status},
     error::{Envelope, Error, Kind},
     ids::RunId,
 };
@@ -54,6 +53,10 @@ pub struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
     pub projects: crate::project::Projects,
+    /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
+    pub(crate) codes: crate::hub::Codes,
+    /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
+    pub(crate) works: crate::hub::Works,
     /// The three spellings of this server's own `host:port`.
     hosts: [String; 3],
     bearer: [u8; 32],
@@ -74,6 +77,8 @@ impl Api {
             calcifer,
             machines,
             projects: Default::default(),
+            codes: Default::default(),
+            works: Default::default(),
             hosts: [
                 format!("127.0.0.1:{port}"),
                 format!("localhost:{port}"),
@@ -128,7 +133,6 @@ impl Api {
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/v1/runs", post(crate::runs::submit).get(list))
-        .route("/v1/runs/prepared", post(prepared))
         .route("/v1/runs/events", get(runs_events))
         .route("/v1/runs/{id}", get(show))
         .route("/v1/runs/{id}/cancel", post(cancel))
@@ -154,7 +158,6 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/rentals", get(machines::rentals))
         .route("/v1/rental-quotes", post(machines::quote))
         .route("/v1/run-quotes", post(crate::runs::quote))
-        .route("/v1/run-quotes/prepared", post(prepared_quote))
         .route("/v1/targets", get(crate::runs::describe))
         .route(
             "/v1/files/{name}",
@@ -164,6 +167,7 @@ pub fn router(api: Arc<Api>) -> Router {
         )
         .route("/v1/session", post(session).delete(end_session))
         .merge(crate::project::routes())
+        .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .fallback(unknown_route)
@@ -444,34 +448,6 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
                 .next("cozy run ls"),
         )
     })
-}
-
-/// `POST /v1/run-quotes/prepared`: what a `new` prepared run would rent, and its price. Leaves with
-/// `POST /v1/runs/prepared`.
-async fn prepared_quote(
-    State(api): State<Arc<Api>>,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<Json<protocol::calcifer::RunQuote>, Refusal> {
-    let submit = parse::<SubmitRun>(&body?)?;
-    api.machines.hubs.client(&submit.hub).map_err(Refusal)?;
-    Ok(Json(api.machines.run_quote(&submit).await.map_err(Refusal)?))
-}
-
-/// `POST /v1/runs/prepared`: a run whose machine spec its client built, for the verbs that still
-/// build one (package install and removal, model upload and download). Leaves with them (cl-716 D).
-async fn prepared(
-    State(api): State<Arc<Api>>,
-    IdempotencyKey(key): IdempotencyKey,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<Submitted>), Refusal> {
-    let submit: SubmitRun = parse(&body?)?;
-    let submitted = api.calcifer.submit(&key, submit).await?;
-    let status = if submitted.replay {
-        StatusCode::OK
-    } else {
-        StatusCode::ACCEPTED
-    };
-    Ok((status, Json(submitted)))
 }
 
 #[derive(Deserialize)]

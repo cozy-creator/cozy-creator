@@ -9,6 +9,7 @@ use protocol::{
 };
 
 mod account;
+mod ask;
 pub mod calcifer_client;
 mod completion;
 pub mod context;

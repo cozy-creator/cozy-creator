@@ -180,6 +180,23 @@ impl Client {
         self.exchange(|c, base| c.delete(format!("{base}{path}"))).await
     }
 
+    pub async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
+    where
+        Q: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        self.exchange(|c, base| c.delete(format!("{base}{path}")).query(query)).await
+    }
+
+    /// A PATCH: the fields `body` names, changed.
+    pub async fn patch<B, T>(&self, path: &str, body: &B) -> Result<T, Error>
+    where
+        B: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        self.exchange(|c, base| c.patch(format!("{base}{path}")).json(body)).await
+    }
+
     /// A plain-text answer, such as a log.
     pub async fn text(&self, path: &str) -> Result<String, Error> {
         let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;
