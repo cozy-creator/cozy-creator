@@ -32,6 +32,13 @@ parser.add_argument(
 )
 parser.add_argument("--timeout-s", type=float, default=60)
 args = parser.parse_args()
+if args.mode == "capture_refusal":
+    # Isolate only the convenience-sync regression: exact pool/work is prepared
+    # before the gate. Fresh high-level preparation is allowed to wait/recover.
+    from graph_capture_sync_gpu import run
+
+    run(args.device, args.provider, args.provider_python, args.timeout_s)
+    raise SystemExit(0)
 if (
     not hasattr(api.Use, "wait_ready")
     or "synchronize" not in inspect.signature(vt.graph).parameters
@@ -110,29 +117,6 @@ with torch.inference_mode(), torch.cuda.stream(stream):
         model.weight._version_owner.region = None
         finish_fixture(fixture)
         report["actual_source_failure_before_capture"] = True
-    elif args.mode == "capture_refusal":
-        pending = gpu.use([fixture.region], side.cuda_stream)
-        assert fixture.source_pending()
-        try:
-            try:
-                owner.capture(model, (example,), stream=stream, reserve_bytes=2 << 20)
-            except (api.Capturing, RuntimeError) as error:
-                assert "native producers must finish before CUDA graph capture" in str(
-                    error
-                ), str(error)
-                report["actual_capture_refusal"] = str(error)
-            else:
-                raise AssertionError("capture admitted an unrelated live producer")
-            assert fixture.source_pending() and fixture.stream_pending(side.cuda_stream)
-            assert api.retirement_stats()["quarantined"] == quarantine
-            assert not _UNPROVEN
-        finally:
-            fixture.gate_set(1)
-        pending.wait_ready()
-        pending.close()
-        owner.close()
-        finish_fixture(fixture)
-        report["unrelated_producer_not_globally_drained"] = True
     else:
         segment = owner.capture(model, (example,), stream=stream, reserve_bytes=2 << 20)
         assert all(e["pins"] == 0 for e in segment._weight_entries())

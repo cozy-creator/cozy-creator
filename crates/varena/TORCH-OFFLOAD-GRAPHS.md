@@ -112,7 +112,19 @@ The existing `vt.graph` currently context-synchronizes during preparation. The a
 requires an agreed `synchronize=False` opt-out after scoped readiness and capture-stream
 warmup completion; the default helper behavior remains unchanged. This helper amendment
 has been requested but is not silently implemented in the adapter. Missing native/helper
-capabilities refuse explicitly. `torch.py` is untouched pending agreement.
+capabilities refuse explicitly. The capture-helper amendment remains unapplied pending
+root's one-writer assignment; the separately agreed replay_scope wrapper is present.
+
+False skips only that Python convenience synchronization. Existing prepare_pool can
+still allocate/recover, trim or wait on reclaimable backing under pressure; preparation
+is not globally nonblocking. Caller readiness must cover static input/buffer contents,
+prebound weights, RNG/library/workspace initialization and all capture-stream dependencies
+before completion is established. Use.wait_ready covers only the selected native Sources.
+The unrelated-producer regression prepares/warms the graph, exact explicit pool/reserve,
+buffers and kernels before arming the gate, then passes the same pool/reserve so the
+second preparation exercises the existing have>=wanted metadata path. It tests atomic
+admission refusal plus default compatibility/failure cleanup, not arbitrary-pressure
+preparation latency.
 
 ## Replay ownership
 

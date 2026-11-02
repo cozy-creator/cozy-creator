@@ -52,8 +52,18 @@ and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assert
   propagate before capture, with one attempt and no unproven ownership. This does not
   implement general public Source-map adoption.
 - Capture refusal: keep an unrelated actual producer pending. Scoped readiness must
-  settle only this segment; capture must refuse atomically without globally draining
-  or waiting for the unrelated gated work.
+  settle only the selected Sources. `graph_epochs_gpu.py --mode capture_refusal`
+  delegates to `graph_capture_sync_gpu.py`; ship both files. The helper cell creates
+  and warms graphs, buffers/copy kernels and the exact explicit pool/reserve BEFORE
+  arming the unrelated producer gate, then passes that same pool/reserve to the helper.
+  It requires native admission refusal while the producer stays pending, default-path
+  compatibility and live-pool preservation after failed admission. This is a helper
+  regression, not a claim that fresh high-level capture preparation cannot wait.
+
+The flag skips only the Python context-sync convenience. Native pool preparation can
+still allocate/recover/trim/wait. False callers must prepare/order Working inputs,
+buffers, RNG/library/workspace and dependencies, in addition to selected Source
+retirement readiness. No globally nonblocking or zero-cost preparation is claimed.
 
 Private Working pools remain resident while definitions/static owners live. Shared
 pools and automatic eligible-boundary/version-cache selection are unfinished. Close
