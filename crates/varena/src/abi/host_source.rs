@@ -1,11 +1,11 @@
-//! Immutable host bytes with one bounded pinned stage and one owned producer stream.
+//! Immutable host bytes with one bounded HOST VMM stage and one owned producer stream.
 use super::*;
 
 const STAGING: usize = 2 << 20;
 struct State {
     bytes: Arc<[u8]>,
     stream: usize,
-    host: usize,
+    host: crate::cuda::HostAllocation,
     capacity: usize,
     reuse: usize,
 }
@@ -46,7 +46,7 @@ impl Host {
         let driver = &self.weight.gpu.arena.driver;
         let _context = driver.enter()?;
         state.stream = driver.create_stream()?;
-        state.host = driver.allocate_host(state.capacity)?;
+        driver.prepare_host(&mut state.host, state.capacity)?;
         state.reuse = driver.create_event()?;
         Ok(state.stream)
     }
@@ -60,9 +60,9 @@ impl Host {
             if recorded {
                 driver.wait_event(state.reuse)?;
             } // Only this stage's prior DMA.
-            // SAFETY: the previous DMA completed, and the one pinned stage owns capacity.
+            // SAFETY: the previous DMA completed, and the one HOST VMM stage owns capacity.
             unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), state.host as *mut u8, bytes.len());
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), state.host.pointer() as *mut u8, bytes.len());
             }
             let offset = index
                 .checked_mul(state.capacity)
@@ -71,10 +71,10 @@ impl Host {
                 .ptr
                 .checked_add(offset as u64)
                 .ok_or(Error::Invalid("host Source address overflow"))?;
-            // SAFETY: Source retains the immutable host bytes, pinned stage and exclusive
+            // SAFETY: Source retains the immutable host bytes, HOST VMM stage and exclusive
             // Fill. Its native session retains the fixed stream through actual completion.
             unsafe {
-                driver.copy_pinned_async(pointer, state.host, bytes.len(), state.stream)?;
+                driver.copy_pinned_async(pointer, state.host.pointer(), bytes.len(), state.stream)?;
             }
             driver.record(state.reuse, state.stream)?;
             recorded = true;
@@ -90,6 +90,7 @@ impl Host {
         let state = held.state.as_mut().expect("exclusive host retirement");
         let driver = &self.weight.gpu.arena.driver;
         let _context = driver.enter()?;
+        driver.release_host(&mut state.host)?;
         if state.reuse != 0 {
             driver.destroy_event(state.reuse)?;
             state.reuse = 0;
@@ -97,10 +98,6 @@ impl Host {
         if state.stream != 0 {
             driver.destroy_stream(state.stream)?;
             state.stream = 0;
-        }
-        if state.host != 0 {
-            driver.free_host(state.host)?;
-            state.host = 0;
         }
         drop(held.state.take()); // Host-only immutable bytes; no mutex is held here.
         Ok(true)
@@ -134,7 +131,7 @@ pub(super) fn acquire(
             capacity: bytes.len().min(STAGING),
             bytes,
             stream: 0,
-            host: 0,
+            host: crate::cuda::HostAllocation::default(),
             reuse: 0,
         })),
     });

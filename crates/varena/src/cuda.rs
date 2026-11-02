@@ -57,7 +57,6 @@ type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
 type Release = unsafe extern "system" fn(Handle) -> Status;
 type CopyHost = unsafe extern "system" fn(Pointer, *const c_void, usize) -> Status;
 type CopyHostAsync = unsafe extern "system" fn(Pointer, *const c_void, usize, Object) -> Status;
-type HostAllocate = unsafe extern "system" fn(*mut Object, usize, c_uint) -> Status;
 type StreamCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
@@ -75,6 +74,19 @@ pub(crate) struct Counters {
     pub(crate) event_queries: AtomicU64,
     pub(crate) event_records: AtomicU64,
     pub(crate) event_waits: AtomicU64,
+}
+
+/// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
+/// Fill resource retains this state through checked retirement or native quarantine.
+#[derive(Default)]
+pub(crate) struct HostAllocation {
+    pointer: u64,
+    handle: u64,
+    bytes: usize,
+    mapped: bool,
+}
+impl HostAllocation {
+    pub(crate) fn pointer(&self) -> usize { self.pointer as usize }
 }
 
 pub(crate) struct Driver {
@@ -95,8 +107,7 @@ pub(crate) struct Driver {
     release: Release,
     copy_host: CopyHost,
     copy_host_async: CopyHostAsync,
-    host_allocate: HostAllocate,
-    host_free: EventOp,
+    host_granularity: Granularity,
     stream_create: StreamCreate,
     stream_destroy: EventOp,
     event_create: EventCreate,
@@ -152,8 +163,7 @@ impl Driver {
             release: symbol!("cuMemRelease", Release),
             copy_host: symbol!("cuMemcpyHtoD_v2", CopyHost),
             copy_host_async: symbol!("cuMemcpyHtoDAsync_v2", CopyHostAsync),
-            host_allocate: symbol!("cuMemHostAlloc", HostAllocate),
-            host_free: symbol!("cuMemFreeHost", EventOp),
+            host_granularity: granularity,
             stream_create: symbol!("cuStreamCreate", StreamCreate),
             stream_destroy: symbol!("cuStreamDestroy_v2", EventOp),
             event_create: symbol!("cuEventCreate", EventCreate),
@@ -399,17 +409,78 @@ impl Driver {
         // SAFETY: caller retains this exact stream and checked every producer complete.
         status("cuStreamDestroy_v2", unsafe { (self.stream_destroy)(stream as Object) })
     }
-    pub(crate) fn allocate_host(&self, bytes: usize) -> Result<usize> {
+    pub(crate) fn prepare_host(&self, allocation: &mut HostAllocation, requested: usize) -> Result<()> {
+        const MAXIMUM: usize = 2 << 20;
+        if requested == 0 || requested > MAXIMUM || allocation.pointer != 0 || allocation.handle != 0 {
+            return Err(Error::Invalid("host stage must be empty and between one byte and two MiB"));
+        }
+        let properties = AllocationProperties {
+            kind: 1, // CU_MEM_ALLOCATION_TYPE_PINNED
+            handles: 0,
+            location: Location { kind: 2, id: 0 }, // CU_MEM_LOCATION_TYPE_HOST
+            windows_metadata: std::ptr::null_mut(),
+            flags: [0; 8],
+        };
+        let mut granularity = 0;
         self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
-        let mut host = std::ptr::null_mut();
-        // SAFETY: writable output, exact bounded length, current primary context.
-        status("cuMemHostAlloc", unsafe { (self.host_allocate)(&mut host, bytes, 1) })?;
-        Ok(host as usize)
+        // SAFETY: official HOST properties and writable output; no NUMA identity is guessed.
+        status("cuMemGetAllocationGranularity(HOST)", unsafe {
+            (self.host_granularity)(&mut granularity, &properties, 0)
+        })?;
+        if granularity == 0 || granularity > MAXIMUM {
+            return Err(Error::Unsupported("HOST VMM granularity exceeds the two MiB staging bound".into()));
+        }
+        let bytes = requested.checked_add(granularity - 1)
+            .and_then(|value| value.checked_div(granularity))
+            .and_then(|value| value.checked_mul(granularity))
+            .filter(|value| *value <= MAXIMUM)
+            .ok_or_else(|| Error::Unsupported("HOST VMM rounding exceeds the two MiB staging bound".into()))?;
+        let mut handle = 0;
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: writable handle output; actual HOST granularity determines the backing.
+        // Host failure is not a GPU physical shortage and must never ask GPU peers.
+        status("cuMemCreate(HOST)", unsafe { (self.create)(&mut handle, bytes, &properties, 0) })?;
+        allocation.handle = handle;
+        allocation.bytes = bytes;
+        allocation.pointer = self.reserve(bytes)?;
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: both reservation and physical handle are owned in allocation.
+        status("cuMemMap(HOST)", unsafe {
+            (self.map)(allocation.pointer, bytes, 0, handle, 0)
+        })?;
+        // Record mapping before granting access: access refusal must still unmap it.
+        allocation.mapped = true;
+        let access = [
+            Access { location: Location { kind: 2, id: 0 }, flags: 3 },
+            Access { location: Location { kind: 1, id: self.device }, flags: 3 },
+        ];
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the whole mapping is owned; grant CPU and this GPU read/write access.
+        status("cuMemSetAccess(HOST+device)", unsafe {
+            (self.set_access)(allocation.pointer, bytes, access.as_ptr(), access.len())
+        })
     }
-    pub(crate) fn free_host(&self, host: usize) -> Result<()> {
-        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: caller owns the pinned allocation and proved all DMA readers complete.
-        status("cuMemFreeHost", unsafe { (self.host_free)(host as Object) })
+
+    /// Called only after native producer completion (or a proved no-write prepare failure).
+    /// Successful stages clear their ownership; any refusal preserves every remaining field.
+    pub(crate) fn release_host(&self, allocation: &mut HostAllocation) -> Result<()> {
+        if allocation.mapped {
+            self.unmap(allocation.pointer, allocation.bytes)?;
+            allocation.mapped = false;
+        }
+        if allocation.handle != 0 {
+            self.release(allocation.handle)?;
+            allocation.handle = 0;
+        }
+        if allocation.pointer != 0 {
+            self.free_address(allocation.pointer, allocation.bytes)?;
+            allocation.pointer = 0;
+        }
+        allocation.bytes = 0;
+        Ok(())
     }
     pub(crate) unsafe fn copy_pinned_async(&self, dst: u64, host: usize, bytes: usize, stream: usize) -> Result<()> {
         self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
