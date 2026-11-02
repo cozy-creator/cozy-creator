@@ -1,0 +1,1 @@
+{"census_snapshots_outside_timers": 5, "extra_synchronization": false, "fixed_adopted_calls": 2, "fixed_baseline_calls": 2, "gpu_executed": false, "offline_scalar_partition": "pass synthetic metadata only", "source_assertions_preserved": true, "strict_stock_script_unchanged": true, "torch_or_model_imported": false}

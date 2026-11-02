@@ -57,6 +57,8 @@ def execute(payload, ctx, case, out):
         import torch
 
         assert 0 < payload.timeout_s <= 1800 and payload.steps in (2, 20)
+        if case == "stock_sdxl_census":
+            assert payload.steps == 20, "the fixed-pair census uses 20 steps"
         assert ctx.device.type == "cuda" and (ctx.device.index or 0) == 0
 
         def uuid_key(value):
@@ -176,3 +178,9 @@ def adapter(payload: Probe, ctx: Context, out: Outputs) -> Report:
 @app.entrypoint(accelerator=True)
 def stock_sdxl(payload: Probe, ctx: Context, out: Outputs) -> Report:
     return execute(payload, ctx, "stock_sdxl", out)
+
+
+@app.entrypoint(accelerator=True)
+def stock_sdxl_census(payload: Probe, ctx: Context, out: Outputs) -> Report:
+    """Fixed two-pair residency diagnostic; preserves strict numerical verdicts."""
+    return execute(payload, ctx, "stock_sdxl_census", out)

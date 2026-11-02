@@ -24,7 +24,10 @@ def uuid_key(value):
 
 payload = json.loads(Path(sys.argv[1]).read_text())
 case = sys.argv[2]
-assert case in ("intent", "adapter", "stock_sdxl")
+assert case in ("intent", "adapter", "stock_sdxl", "stock_sdxl_census")
+stock = case in ("stock_sdxl", "stock_sdxl_census")
+if case == "stock_sdxl_census":
+    assert payload["steps"] == 20
 artifact_dir = Path(sys.argv[3])
 assert payload["gpu_uuid"] != "UNBOUND"
 assert "torch" not in sys.modules and "tensorfs" not in sys.modules
@@ -59,7 +62,7 @@ for name, expected in payload["package_versions"].items():
         ).hexdigest(),
     }
 model_files = []
-if case == "stock_sdxl":
+if stock:
     layout = json.loads((binaries / "model-layout.json").read_text())
     assert layout["revision"] == "462165984030d82259a11f4367a4eed129e94a7b"
     assert payload["variant"] == layout["variant"] == "fp16"
@@ -96,9 +99,10 @@ script = {
     "intent": "intent.py",
     "adapter": "adapter_gpu.py",
     "stock_sdxl": "sdxl_gpu.py",
+    "stock_sdxl_census": "sdxl_census.py",
 }[case]
 sys.argv = [str(binaries / script), "--device", "0"]
-if case == "stock_sdxl":
+if stock:
     sys.argv += [
         payload["model_path"],
         "--variant",
@@ -266,6 +270,10 @@ else:
         if payload["steps"] == 2
         else "single matched20-step stock baseline/offload comparison; no performance qualification"
     )
+    if case == "stock_sdxl_census":
+        assert value["diagnostic"] == "fixed-two-pair-residency-census"
+        assert value["census_snapshots"] == 5
+        scope = "fixed two baseline/two adopted20-step residency diagnostic; no performance qualification"
 print(
     json.dumps(
         {

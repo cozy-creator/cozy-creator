@@ -1,4 +1,4 @@
-"""Stage unchanged GPU clients and strict installed-wheel provenance; no GPU work."""
+"""Stage strict GPU clients and the separate census diagnostic; no GPU work."""
 
 from __future__ import annotations
 
@@ -160,7 +160,10 @@ def main():
     binaries = project / "ci_varena_offload/bin"
     payload["scripts"] = {
         name: sha(binaries / name)
-        for name in ("intent.py", "adapter_gpu.py", "sdxl_gpu.py", "model-layout.json")
+        for name in (
+            "intent.py", "adapter_gpu.py", "sdxl_gpu.py", "model-layout.json",
+            "sdxl_census.py", "residency_census.py", "partition_census.py",
+        )
     }
     payload["package_versions"] = json.loads(args.package_versions.read_text())
     expected = {
@@ -202,6 +205,9 @@ def main():
     (args.output / "stock-20-input.json").write_text(
         json.dumps({**payload, "steps": 20}, indent=2) + "\n"
     )
+    (args.output / "stock-census-20-input.json").write_text(
+        json.dumps({**payload, "steps": 20}, indent=2) + "\n"
+    )
     (args.output / "input.json").write_text(json.dumps(payload, indent=2) + "\n")
     ready = {
         "project": str(project),
@@ -212,7 +218,10 @@ def main():
             for p in sorted(project.rglob("*"))
             if p.is_file()
         },
-        "entrypoints": ["intent", "adapter", "stock_sdxl"],
+        "entrypoints": ["intent", "adapter", "stock_sdxl", "stock_sdxl_census"],
+        "diagnostic_inputs": {
+            "stock_sdxl_census": str(args.output / "stock-census-20-input.json")
+        },
         "gpu_executed": False,
         "gpu_uuid_bound": args.gpu_uuid != "UNBOUND",
     }

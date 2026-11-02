@@ -1,10 +1,11 @@
-"""Actual stock SDXL comparison using an existing local model on the coordinator GPU."""
+"""Fixed two-pair stock SDXL residency diagnostic using only existing local weights."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import runpy
 import time
 from pathlib import Path
 
@@ -25,11 +26,21 @@ parser.add_argument(
     required=True,
     help="new output directory for full arrays, previews and timings",
 )
-parser.add_argument("--steps", type=int, default=2, help="2 is correctness smoke only")
+parser.add_argument("--steps", type=int, default=20, help="fixed diagnostic uses 20 steps")
 parser.add_argument("--prompt", default="a red ceramic teapot on a wooden table")
 args = parser.parse_args()
+assert args.steps == 20, "the separate residency diagnostic uses 20 steps"
 args.output.mkdir(parents=True, exist_ok=False)
 timings = {}
+census_capture = runpy.run_path(str(Path(__file__).with_name("residency_census.py")))["snapshot"]
+census_partition = runpy.run_path(str(Path(__file__).with_name("partition_census.py")))["partition"]
+census_labels = []
+
+
+def capture_census(label, owner):
+    value = census_capture(owner)
+    (args.output / f"census-{label}.json").write_text(json.dumps(value, indent=2) + "\n")
+    census_labels.append(label)
 
 
 def checkpoint():
@@ -126,14 +137,17 @@ ids = {
 started = time.perf_counter()
 owner = vt.offload(pipe, device=args.device)
 timings["offload_setup_call_s"] = time.perf_counter() - started
+capture_census("after-adoption", owner)
 checkpoint()
 adopted = []
 for index in range(2):
     label = f"adopted-{index + 1}"
     snapshot(label + "-before")
+    capture_census(label + "-before", owner)
     started = time.perf_counter()
     images = run()
     timings[label + "_generation_to_numpy_s"] = time.perf_counter() - started
+    capture_census(label + "-after", owner)
     snapshot(label + "-after", owner)
     torch.cuda.synchronize(device)
     preserve(label, images)
@@ -170,8 +184,14 @@ for label in ("baseline-1", "baseline-2", "adopted-1", "adopted-2"):
     after = flatten_numbers(observations[label + "-after"]["stats"])
     deltas[label] = {key: after[key] - before[key] for key in before.keys() & after.keys()}
 (args.output / "stats-deltas.json").write_text(json.dumps(deltas, indent=2) + "\n")
+partitions = {
+    label: census_partition(json.loads((args.output / f"census-{label}.json").read_text()))
+    for label in census_labels
+}
+(args.output / "census-partitions.json").write_text(json.dumps(partitions, indent=2) + "\n")
 comparison = {
-    "diagnostic": "fixed-two-baseline-then-two-adopted",
+    "diagnostic": "fixed-two-pair-residency-census",
+    "census_snapshots": len(census_labels),
     "steps": args.steps,
     "variant": args.variant,
     "seed": 1701,
@@ -180,7 +200,7 @@ comparison = {
     "original_numerical_assertions_passed": all(v["passed"] for v in comparisons),
     "stock_sdxl_vae_cycle": "pass",
     "performance_qualification": False,
-    "scope": "Two sequential baseline calls then one adoption and two adopted calls; same generation-to-NumPy timing boundary; read-only stats outside timing; no performance qualification.",
+    "scope": "Two sequential baseline calls then one adoption and two adopted calls; five scalar census snapshots outside timers; same generation-to-NumPy boundary; no performance qualification.",
     "output_files": {
         p.name: hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(args.output.iterdir()) if p.is_file()
