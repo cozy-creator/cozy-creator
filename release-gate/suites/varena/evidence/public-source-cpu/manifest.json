@@ -1,0 +1,63 @@
+{
+  "recorded_at": "2026-11-02T03:15:36.145030+00:00",
+  "source": "e714f9f49d3d0624be737189b9a504c0d71c95d5",
+  "foreign_checkpoint": "d52dc19b50eb82d44056c15fd3aa10456943941c",
+  "host_successor": "424448f1c",
+  "paired_lifetime_input": "731bb954a",
+  "owner": "/root/async_integration_review",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-source",
+  "branch": "codex/xs138-p4-public-source",
+  "draft_pr": 2440,
+  "files": {
+    "crates/varena/src/abi.rs": "a9a29167c7604a71a732df02ebb89260a5cb4df7ddfcc9b85fbd650897ec1888",
+    "crates/varena/src/abi/source.rs": "72bffbd8a2ae8428c8a91635e6856887541ff33689809023da591079cfb502bc",
+    "crates/varena/src/abi/host_source.rs": "4435cbb212522b0a6b5c775fa7ee76ef5b6bad65c8822f5ecb4767c8c4d42b1c",
+    "crates/varena/src/abi/retirement.rs": "eecfcc1d44eb77e1b0682454c9e4a737fe0172347789844e64d302b8882e49ba",
+    "crates/varena/src/async_fill.rs": "4aa20857fc9468a88b6d530f05824fd14b362159cc77cc5f20b43096c7091b37",
+    "crates/varena/src/retirement.rs": "5cd2e46c081662ad854128beeeaafcd26eb58b0af7efaae739868052737d9376",
+    "crates/varena/src/cuda.rs": "a7abfe934f8b2d5dbbdc37abd19de68c4d0366671b3f5e63ddbe3580efaa0939",
+    "crates/varena/include/varena.h": "060dac3c4e80cb864b021d9e81ac83802c8fbb69564e54b6377d33eb437af4ae",
+    "crates/varena-client/src/lib.rs": "a96740c6aefcda71cf6411fa4d31f3b9b932382253d12610a6c98741f58d28af",
+    "crates/varena-client/src/source.rs": "bff19fa5f41b8a32807680c52a6a46dc27f2af7fd2102ab980e53b91fd588786",
+    "crates/varena-client/examples/source.rs": "e0c6b17ace774401be6657ec1b4d692e729aa8408ef1b06fbc2970f21353a7ee",
+    "release-gate/suites/varena/public-source/source.c": "da77fb2e76d7fe3bc2e462756a78b6163d01723a3ab02dd1172a7ded3132a341",
+    "release-gate/suites/varena/public-api/native.c": "c78e234a544fc3e7e1580c178ac3adeb3700e27760fccdfffecef0916097b5a5"
+  },
+  "logs": {
+    "integrated-check-001.log": "c6b3009f553871ba116a3d6e1d470de3afc662d69db69b559476e948f35954b0",
+    "core-build-002.log": "cde601c328412dd043a9e05fba5f74c70cd074700cd0c9a46723579c835ced88",
+    "rust-source-build-002.log": "b19db1782061d8da3e20d436d3cedd404418dee07795bdfe8da58babba70ba32",
+    "bindings-check-001.log": "35428bec0b067f90d15885a7887a8b08be7df2b412f2dfb936714038a4fbfba5",
+    "c-host-002.json": "aea89bc58cd3e57938269a825d4dc36f12b06e2c74f4c7fe522f089804c4f56f",
+    "root-review-94afd2275.json": "5216046f70c5aa9390357b43c232c31623c47c210105e9d0bb014cea2da9105d"
+  },
+  "checks": {
+    "native_rust_integrated": "PASS1.32s",
+    "native_shared_library_build": "PASS8.70s",
+    "rust_provider_build": "PASS; exact elapsed in log",
+    "tensorfs_python_bindings": "PASS2m38s",
+    "c_cpp_headers": "PASS C11/C++17 -Wall -Wextra -Werror",
+    "c_host": "PASS real constructor ownership refusal; no libcuda",
+    "exports": "new distinct constructor present; old by-value constructor absent",
+    "rust_linkage": "libvarena.so dependency; no embedded allocator",
+    "python": "only approved Use docstring; parse passed",
+    "gpu": "UNRUN",
+    "portable": "NOT BUILT",
+    "rental": "NONE"
+  },
+  "gpu_helpers": {
+    "c": "source-c MODE GPU-UUID DEVICE; MODE ordering, partial, prepare_error, source_pending, retained, host_bytes",
+    "rust": "varena-client example source GPU-UUID DEVICE"
+  },
+  "review": "Root read-only reviewed exact source.rs/host_source.rs hashes at94afd; no new concrete ownership blocker. Not a full branch review or GPU result.",
+  "limitations": [
+    "actual GPU producer ordering and >2MiB stage reuse",
+    "gated independent stream progress",
+    "real Pending/failed-prepare and Source lifetime cases",
+    "driver failure paths",
+    "mixed Python GPU ownership and held-GIL proof",
+    "model quality/performance",
+    "native TensorFS public Source adapter",
+    "passive Working keepalive integration owned by root/P3"
+  ]
+}

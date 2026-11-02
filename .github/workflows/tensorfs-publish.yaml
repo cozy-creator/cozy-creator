@@ -112,26 +112,36 @@ jobs:
       - if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i python3.10 python3.11
           manylinux: auto
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
-            cargo build --release --locked -p tensorfs --bin tfs
-            install -D -m 755 ../../target/release/tfs wheel-data/scripts/tfs
+            triple=$(rustc -vV | sed -n "s/^host: //p")
+            /opt/python/cp310-cp310/bin/python backend/stage_cli.py --release --target "$triple" \
+              -i /opt/python/cp310-cp310/bin/python /opt/python/cp311-cp311/bin/python
       - if: runner.os != 'Linux'
+        env:
+          PY310: ${{ steps.py310.outputs.python-path }}
+          PY311: ${{ steps.py311.outputs.python-path }}
         run: |
-          cargo build --release --locked -p tensorfs --bin tfs
-          cp ../../target/release/tfs$([ "$RUNNER_OS" = Windows ] && echo .exe) wheel-data/scripts/
+          interpreters=()
+          if [ -n "$PY310" ]; then interpreters+=("$PY310"); fi
+          interpreters+=("$PY311")
+          python backend/stage_cli.py --release --target "${{ matrix.target }}" -i "${interpreters[@]}"
       - if: runner.os != 'Linux'
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i ${{ steps.py310.outputs.python-path }} ${{ steps.py311.outputs.python-path }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify and tag the complete Linux wheel
+        if: runner.os == 'Linux'
+        run: uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_2_17_$(uname -m)"
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.name }}
@@ -159,7 +169,7 @@ jobs:
         run: crates/tensorfs-py/scripts/dev-version.sh
       - uses: PyO3/maturin-action@v1
         with:
-          maturin-version: v1.15.0
+          maturin-version: v1.16.0
           working-directory: crates/tensorfs-py
           command: sdist
           args: --out dist
