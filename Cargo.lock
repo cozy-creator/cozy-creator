@@ -4615,6 +4615,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "varena-public-probe"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "varena",
+]
+
+[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
