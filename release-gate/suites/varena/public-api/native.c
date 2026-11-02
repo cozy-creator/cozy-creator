@@ -23,6 +23,9 @@ static int source_prepare(void *context, int32_t device, uint64_t offset, uint64
 }
 static int source_retire(void *context) { (void)context; return VR_OK; }
 int mixed_c_contract(void) {
+    /* Intent-only entry points validate actual handles without touching CUDA. */
+    if (vr_v1_plan_activate(0, "absent") != VR_INVALID) return 0;
+    if (vr_v1_plan_deactivate(0) != VR_INVALID) return 0;
     vr_handle output = UINT64_MAX;
     vr_source_provider_v1 source = {source_prepare, source_retire, source_drop, NULL};
     int before = drops;

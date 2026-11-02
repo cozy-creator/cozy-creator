@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import functools
 import threading
 import types
 import weakref
@@ -84,6 +85,11 @@ class _Version:
     owner: _Device
     region: object = None
 
+    def reservation(self):
+        if self.region is None:
+            self.region = self.owner.gpu.region(self.source)
+        return self.region
+
     def tensor(self, shape, strides, offset, stream):
         dtype = getattr(torch, self.source.dtype)
         if self.owner.gpu is None:
@@ -96,9 +102,7 @@ class _Version:
             return torch.empty_strided(
                 shape, strides, dtype=dtype, device=self.owner.device
             )
-        if self.region is None:
-            self.region = self.owner.gpu.region(self.source)
-        return self.region.tensor(
+        return self.reservation().tensor(
             dtype=dtype,
             shape=shape,
             strides=strides,
@@ -399,6 +403,22 @@ class Offload:
         self._roots = roots
         self._hooks = []
         self._overrides = []
+        self._intent_plan = None
+        self._intent_dirty = True
+        self._intent_failed = False
+        self._intent_frames = []
+        self._intent_regions = {}
+        self._boundary_modules = {}
+        self._boundary_names = {}
+        self._intent_entries = {}
+        for name in inventory.boundaries:
+            root = next(
+                key for key in roots if name == key or name.startswith(key + ".")
+            )
+            module = roots[root].get_submodule(name[len(root) + 1 :])
+            self._boundary_modules[name] = module
+            self._boundary_names.setdefault(id(module), name)
+            self._intent_entries[name] = 0
         versions = {
             key: _Version(value, self._owner) for key, value in snapshots.items()
         }
@@ -454,6 +474,77 @@ class Offload:
     def _check(self):
         if self.closed:
             raise OffloadError("offload handle is closed")
+        if self._intent_failed:
+            raise OffloadError(
+                "native intent cleanup failed; close/retry the retained handle"
+            )
+
+    def _refresh_intent(self):
+        if not self._intent_dirty:
+            return
+        definitions = {}
+        for name, module in self._boundary_modules.items():
+            versions = {}
+            for parameter in module.parameters():
+                if not isinstance(parameter, _Weight):
+                    raise OffloadError("module parameters changed after adoption")
+                version = parameter._version_owner
+                if parameter.numel():
+                    versions[id(version)] = version
+            definitions[name] = list(versions.values())
+        if self._owner.gpu is not None:
+            plan = self._owner.gpu.plan(
+                {
+                    name: [v.reservation() for v in versions]
+                    for name, versions in definitions.items()
+                }
+            )
+            if self._intent_plan is not None:
+                self._intent_plan.close()
+            self._intent_plan = plan
+        self._intent_regions = {
+            name: len(versions) for name, versions in definitions.items()
+        }
+        self._intent_dirty = False
+
+    @contextmanager
+    def _intent(self, module):
+        with self._owner.lock:
+            self._check()
+            if not self._intent_frames:
+                self._refresh_intent()
+            name = self._boundary_names[id(module)]
+            if self._intent_plan is not None:
+                self._intent_plan.activate(name)
+            self._intent_frames.append(name)
+            self._intent_entries[name] += 1
+            try:
+                yield
+            finally:
+                if not self._intent_failed:
+                    try:
+                        if self._intent_plan is not None:
+                            if len(self._intent_frames) > 1:
+                                self._intent_plan.activate(self._intent_frames[-2])
+                            else:
+                                self._intent_plan.deactivate()
+                    except BaseException:
+                        self._intent_failed = True
+                        raise
+                    else:
+                        self._intent_frames.pop()
+
+    def intent_facts(self):
+        """Report declared module intent; CPU entries do not claim native activation."""
+        with self._owner.lock:
+            return {
+                "regions": dict(self._intent_regions),
+                "entries": dict(self._intent_entries),
+                "active": self._intent_frames[-1] if self._intent_frames else None,
+                "native": self._intent_plan is not None,
+                "pending_refresh": self._intent_dirty,
+                "cleanup_failed": self._intent_failed,
+            }
 
     def _copy_buffer(self, buffer, **kwargs):
         caller = (
@@ -470,14 +561,16 @@ class Offload:
     def _install(self, module):
         reference = weakref.ref(self)
 
-        def replace(name, function):
+        def replace(name, function, *, bind=True):
             previous = (
                 module,
                 name,
                 name in module.__dict__,
                 module.__dict__.get(name),
             )
-            setattr(module, name, types.MethodType(function, module))
+            setattr(
+                module, name, types.MethodType(function, module) if bind else function
+            )
             self._overrides.append(previous)
 
         def handle():
@@ -500,6 +593,17 @@ class Offload:
                 )
 
         self._hooks.append(module.register_forward_pre_hook(before, with_kwargs=True))
+
+        if id(module) in self._boundary_names:
+            original = module.forward
+
+            @functools.wraps(original)
+            def forward(*args, **kwargs):
+                before(module, args, kwargs)
+                with handle()._intent(module):
+                    return original(*args, **kwargs)
+
+            replace("forward", forward, bind=False)
 
         def convert(current, *args, **kwargs):
             device, dtype, _nonblocking, memory_format = torch._C._nn._parse_to(
@@ -557,6 +661,8 @@ class Offload:
         if not (dtype.is_floating_point or dtype.is_complex):
             raise TypeError("Module.to requires a floating or complex dtype")
         with self._owner.lock:
+            if self._intent_frames:
+                raise OffloadError("convert outside an active declared module boundary")
             versions, changes, buffers, copied = {}, [], [], {}
             for parameter in module.parameters():
                 if not isinstance(parameter, _Weight):
@@ -606,13 +712,23 @@ class Offload:
                 raise
             for child, name, value in buffers:
                 child._buffers[name] = value
+            self._intent_dirty = True
 
     def __call__(self, *args, **kwargs):
         self._check()
         return self.model(*args, **kwargs)
 
     def close(self):
-        self.closed = True
+        with self._owner.lock:
+            if self._intent_frames and not self._intent_failed:
+                raise OffloadError("close outside an active declared module boundary")
+            if self._intent_plan is not None:
+                self._intent_plan.deactivate()
+                self._intent_plan.close()
+                self._intent_plan = None
+            self._intent_frames.clear()
+            self._intent_failed = False
+            self.closed = True
 
 
 def offload(model_or_pipeline, device=0, *, source=None):
