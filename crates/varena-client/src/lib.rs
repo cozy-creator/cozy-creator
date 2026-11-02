@@ -313,6 +313,12 @@ pub struct Use {
 }
 #[allow(unsafe_code)]
 impl Use {
+    /// Wait only this Use's producers and checked native resource retirement.
+    /// Call outside capture/replay; this does not wait for consumers or promise
+    /// capture admission against other producers. Refusal retains this Use.
+    pub fn wait_ready(&self) -> Result<()> {
+        check(unsafe { ffi::vr_v1_use_wait_ready(self.handle) })
+    }
     /// This address is valid for kernel submissions only while this Use lives.
     pub fn ptr(&self, index: usize) -> Result<u64> {
         let mut pointer = 0;
@@ -595,6 +601,7 @@ mod ffi {
             out: *mut u64,
         ) -> i32;
         pub fn vr_v1_done(used: u64) -> i32;
+        pub fn vr_v1_use_wait_ready(used: u64) -> i32;
         pub fn vr_v1_alloc(gpu: u64, bytes: u64, stream: u64, out: *mut u64) -> i32;
         pub fn vr_v1_allocation_ptr(allocation: u64, out: *mut u64) -> i32;
         pub fn vr_v1_record_stream(allocation: u64, stream: u64) -> i32;

@@ -111,6 +111,11 @@ VR_API vr_status vr_v1_region_close(vr_handle);
  * completion; each Region publishes only whole contents, but the group is not atomic. */
 VR_API vr_status vr_v1_use(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_use_ptr(vr_handle use, size_t index, uint64_t *out);
+/* Outside capture/replay, await only this retained Use's current fill producers
+ * and checked resource retirement. Refusal/failure retains ownership. This is
+ * not consumer completion or global capture admission; unrelated producers may
+ * still prevent capture. Concurrent done waits for this operation's pins lease. */
+VR_API vr_status vr_v1_use_wait_ready(vr_handle use);
 /* Producer ordering covers only the stream supplied to use. Additional readers need
  * another Use on their stream, or a CUDA dependency behind the ordered stream BEFORE
  * reading. All additional consumers must join the retained stream before done.

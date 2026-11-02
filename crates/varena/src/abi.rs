@@ -625,6 +625,19 @@ pub unsafe extern "C" fn vr_v1_use_ptr(id: u64, index: usize, out: *mut u64) -> 
     })
 }
 #[unsafe(no_mangle)]
+pub extern "C" fn vr_v1_use_wait_ready(id: u64) -> i32 {
+    boundary(|| {
+        // The lease excludes capture/replay without retaining the capture mutex.
+        // Keeping pins locked prevents concurrent close from ending this Use.
+        let used = usage(id)?;
+        used._weights[0].gpu.eager(used.stream)?;
+        let pins = lock(&used.pins)?;
+        let pins = pins.as_ref().ok_or_else(|| invalid("Use has ended"))?;
+        crate::async_fill::wait_use_ready(pins)?;
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_done(id: u64) -> i32 {
     boundary(|| {
         let held = get(id, false)?;
