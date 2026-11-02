@@ -324,17 +324,26 @@ def capture_footprint(device: DeviceLike, pool: PoolId) -> _ext._VarenaGraphFoot
 
 @contextmanager
 def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None, footprint: _ext._VarenaGraphFootprint | None = None) -> Iterator[Any]:
-    """Prepare, capture and finish one graph. Shared-pool replay order remains the owner's contract."""
+    """Prepare and finish capture, joining only its explicit stream and the caller.
+
+    Other producer streams must already be joined by the caller. Native capture
+    admission still refuses unrelated producers; pool preparation may allocate/wait.
+    Shared-pool replay order remains the owner's contract.
+    """
     _installed()
     import torch
 
     device = _device(stream.device if stream is not None else None)
+    caller = torch.cuda.current_stream(device)
     stream = torch.cuda.Stream(device=device) if stream is None else stream
     pool = cast(PoolId, torch.cuda.graph_pool_handle()) if pool is None else pool
     try:
         prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
-        # Preparation is outside capture; native allocations during capture use this pool only.
-        torch.cuda.synchronize(device)
+        # Include caller preparation, but never drain unrelated device streams.
+        # Native allocations during capture use this already prepared pool only.
+        if stream != caller:
+            stream.wait_stream(caller)
+        stream.synchronize()
     except BaseException:
         cancel_preparation(pool, device)
         raise

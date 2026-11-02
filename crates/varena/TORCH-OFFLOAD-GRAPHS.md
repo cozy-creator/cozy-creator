@@ -108,22 +108,26 @@ admission on this device for the duration of the call. The wait set is scoped; t
 operation is not zero-cost or concurrency-neutral. Completed/retired warm controls
 take the native fast path. No adapter performance claim follows from that contract.
 
-The existing `vt.graph` currently context-synchronizes during preparation. The adapter
-requires an agreed `synchronize=False` opt-out after scoped readiness and capture-stream
-warmup completion; the default helper behavior remains unchanged. This helper amendment
-has been requested but is not silently implemented in the adapter. Missing native/helper
-capabilities refuse explicitly. The capture-helper amendment remains unapplied pending
-root's one-writer assignment; the separately agreed replay_scope wrapper is present.
+`vt.graph` prepares its pool outside capture, joins the caller/preparation stream onto
+the explicit capture stream, then synchronizes only that capture stream. This is the
+hard-cut helper contract; there is no whole-device barrier or synchronization opt-out.
+Other producer streams must be explicitly joined by the caller before entry. Omitting
+`stream` still creates a capture stream, with the same dependency on the actual caller.
+The active Runtime and direct release-gate caller audit is in
+`release-gate/suites/varena/torch-offload/GRAPH-CALLERS.md`. Existing capture/routing,
+footprint, cancellation and exception cleanup are preserved. The thin public
+`replay_scope` separately wraps only the existing native host replay guard.
 
-False skips only that Python convenience synchronization. Existing prepare_pool can
-still allocate/recover, trim or wait on reclaimable backing under pressure; preparation
-is not globally nonblocking. Caller readiness must cover static input/buffer contents,
-prebound weights, RNG/library/workspace initialization and all capture-stream dependencies
-before completion is established. Use.wait_ready covers only the selected native Sources.
+Existing prepare_pool can still allocate/recover, trim or wait on reclaimable backing
+under pressure; preparation is not globally nonblocking. Caller readiness must cover
+static input/buffer contents, prebound weights, RNG/library/workspace initialization
+and all capture-stream dependencies before completion is established. Use.wait_ready
+covers only the selected native Sources. Atomic native admission can still refuse
+unrelated active producers; the helper does not drain their streams or jobs.
 The unrelated-producer regression prepares/warms the graph, exact explicit pool/reserve,
 buffers and kernels before arming the gate, then passes the same pool/reserve so the
 second preparation exercises the existing have>=wanted metadata path. It tests atomic
-admission refusal plus default compatibility/failure cleanup, not arbitrary-pressure
+admission refusal plus caller ordering/compatibility/failure cleanup, not arbitrary-pressure
 preparation latency.
 
 ## Replay ownership

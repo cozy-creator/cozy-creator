@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextvars
-import inspect
 import os
 import threading
 from contextlib import contextmanager
@@ -367,10 +366,6 @@ class GraphSegment:
             raise NotImplementedError(
                 "graph capture requires scoped native Use.wait_ready"
             )
-        if "synchronize" not in inspect.signature(vt.graph).parameters:
-            raise NotImplementedError(
-                "graph capture requires agreed scoped vt.graph preparation without a context sync"
-            )
         if not isinstance(module, nn.Module) or not any(
             module is child
             for root in owner._roots.values()
@@ -480,7 +475,6 @@ class GraphSegment:
                             stream=stream,
                             reserve_bytes=reserve_bytes,
                             footprint=definition.footprint,
-                            synchronize=False,
                         ),
                         binding.scope(),
                     ):

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import inspect
 import json
 
 import torch
@@ -27,10 +26,6 @@ if getattr(Offload, "capture", None) is None:
     )
 if not hasattr(api.Use, "wait_ready"):
     raise NotImplementedError("graph frontend requires scoped native Use.wait_ready")
-if "synchronize" not in inspect.signature(vt.graph).parameters:
-    raise NotImplementedError(
-        "graph frontend requires agreed scoped capture preparation"
-    )
 torch.manual_seed(17)
 model = torch.nn.Sequential(torch.nn.Linear(32, 32), torch.nn.Linear(32, 32)).eval()
 controls = [

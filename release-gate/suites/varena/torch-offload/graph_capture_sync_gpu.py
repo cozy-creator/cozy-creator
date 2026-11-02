@@ -1,7 +1,7 @@
-"""Real scoped/default capture-helper controls; coordinator GPU execution only.
+"""Real scoped capture-helper controls; coordinator GPU execution only.
 
 Exact pool/reserve, graphs, buffers and copy kernels are prepared BEFORE the
-unrelated producer gate. False skips only the helper's Python convenience sync;
+unrelated producer gate. Preparation joins caller -> capture, not the device;
 native preparation/recovery is not claimed globally nonblocking.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import inspect
 import json
 import threading
 import time
@@ -20,10 +19,63 @@ from tensorfs.varena import Source, api
 from tensorfs.varena import torch as vt
 
 
+def preparation_ordering(device, capture, fixture, pool, reserve, timeout_s):
+    """Real producer -> caller -> capture dependencies, with a mapped host gate."""
+    producer = torch.cuda.Stream(device=device)
+    caller = torch.cuda.Stream(device=device)
+    value = torch.zeros(32, dtype=torch.uint8, device=device)
+    output = torch.empty_like(value)
+    graph = torch.cuda.CUDAGraph()
+    producer.wait_stream(capture)
+    fixture.extra_gate_set(0)
+    fixture.extra_gate_wait(producer.cuda_stream)
+    with torch.cuda.stream(producer):
+        value.fill_(91)
+    value.record_stream(producer)
+    caller.wait_stream(producer)  # Other producers are an explicit caller obligation.
+    returned, result = threading.Event(), {}
+
+    def attempt():
+        try:
+            with (
+                torch.cuda.device(device),
+                torch.cuda.stream(caller),
+                vt.graph(graph, pool=pool, stream=capture, reserve_bytes=reserve),
+            ):
+                output.copy_(value)
+        except BaseException as error:  # noqa: BLE001 - propagate thread failures to its owner
+            result["error"] = error
+        finally:
+            returned.set()
+
+    thread = threading.Thread(target=attempt)
+    thread.start()
+    try:
+        deadline = time.monotonic() + timeout_s
+        while not fixture.stream_pending(capture.cuda_stream):
+            assert not returned.is_set(), result
+            if time.monotonic() >= deadline:
+                raise TimeoutError("capture preparation never ordered the caller gate")
+            time.sleep(0.005)
+        assert fixture.stream_pending(producer.cuda_stream)
+        assert not returned.is_set(), result
+    finally:
+        fixture.extra_gate_set(1)
+        thread.join(timeout_s)
+        assert not thread.is_alive(), "coordinator must terminate failed isolated child"
+    if "error" in result:
+        raise result["error"]
+    with vt.replay_scope(device):
+        vt.replay(graph, stream=capture)
+    capture.synchronize()
+    assert torch.equal(output.cpu(), torch.full((32,), 91, dtype=torch.uint8))
+    graph.reset()
+    value.record_stream(capture)
+    return {"producer_caller_capture_ordering": True, "readback": 91}
+
+
 def run(device, provider_path, provider_python, timeout_s):
-    if "synchronize" not in inspect.signature(vt.graph).parameters or not hasattr(
-        api.Use, "wait_ready"
-    ):
+    if not hasattr(api.Use, "wait_ready"):
         raise NotImplementedError(
             "scoped capture helper and readiness must be integrated"
         )
@@ -57,7 +109,7 @@ def run(device, provider_path, provider_python, timeout_s):
         output = torch.empty(32, dtype=torch.uint8, device=device)
         output.copy_(weight)
         capture.synchronize()
-        # Default True is exercised before any unrelated producer work is armed.
+        # Ordinary caller compatibility is exercised before unrelated work is armed.
         with vt.graph(warm_graph, pool=pool, stream=capture, reserve_bytes=reserve):
             output.copy_(weight)
         with vt.replay_scope(device):
@@ -68,6 +120,22 @@ def run(device, provider_path, provider_python, timeout_s):
             pool, reserve, device
         )  # Exact existing have>=wanted path later.
         capture.synchronize()
+        ordering = preparation_ordering(
+            device, capture, fixture, pool, reserve, timeout_s
+        )
+        # A real body exception must end capture/routing and preserve the live pool.
+        try:
+            with vt.graph(
+                failed_graph, pool=pool, stream=capture, reserve_bytes=reserve
+            ):
+                output.copy_(weight)
+                raise RuntimeError("intentional capture-helper body failure")
+        except RuntimeError as error:
+            assert str(error) == "intentional capture-helper body failure", str(error)
+        else:
+            raise AssertionError("actual capture body failure was swallowed")
+        assert not torch.cuda.is_current_stream_capturing()
+        failed_graph.reset()
 
         def attempt_scoped_capture():
             try:
@@ -79,7 +147,6 @@ def run(device, provider_path, provider_python, timeout_s):
                         pool=pool,
                         stream=capture,
                         reserve_bytes=reserve,
-                        synchronize=False,
                     ),
                 ):
                     output.copy_(weight)
@@ -125,7 +192,6 @@ def run(device, provider_path, provider_python, timeout_s):
             pool=pool,
             stream=capture,
             reserve_bytes=reserve,
-            synchronize=False,
         ):
             output.copy_(weight)
         # Shared-pool successful definitions replay in capture order, serially.
@@ -157,7 +223,9 @@ def run(device, provider_path, provider_python, timeout_s):
                 "gpu_executed": True,
                 "torch": torch.__version__,
                 "mode": "capture_helper_scoped_sync",
-                "default_path_compatibility": True,
+                "ordinary_caller_compatibility": True,
+                "preparation_ordering": ordering,
+                "actual_capture_body_failure_cleanup": True,
                 "scoped_existing_pool_refuses_unrelated_producer_without_draining_it": True,
                 "failure_cleanup_preserves_live_pool": True,
                 "scoped_success_replay": True,
