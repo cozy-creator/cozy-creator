@@ -262,10 +262,17 @@ fi
 
 # The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (blocks at 0/13/27), one character picture, Turbo. Its timing
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
-# Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Its seams are judged by span_seams.
+# Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Its seams are judged by span_seams below.
 cell h3-shot-40s "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
   prompt=$'[Shot 1] <Rider> rolls out of a garage onto a wet street at dawn, riding a bicycle through an old town, one continuous tracking shot, ambient sound.\nAt 00:13.000, <Rider> weaves through a quiet market as stalls open.\nAt 00:27.000, <Rider> stops on a bridge and looks out over the river.' \
   duration_s:=40 seed:=$((R + 95))
+# A three-segment take holds with no continuation text (se-096). One take can't prove this (26253: no cut at 13.67 or 27.83 s),
+# so every gate checks it: three pieces, none told to carry on, and a sheet to judge by eye (its seams are judged below).
+if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then
+  s=$("$CLI" run show "$(cat h3-shot-40s.number)" --once 2>/dev/null)
+  expect h3-take-no-continuation "$(grep -q 'h3 shot pieces .*pieces=3' <<< "$s" && ! grep -qE 'The same unbroken take|For its first two seconds|One continuous shot with no cuts' <<< "$s" && echo PASS || echo FAIL)" "$(grep -m1 'h3 shot pieces' <<< "$s" | cut -c1-200)"
+  nice -n 19 ffmpeg -v error -y -i "$(video_of h3-shot-40s)" -vf "fps=1,scale=224:-2,tile=10x5" -frames:v 1 h3-shot-40s-sheet.png && log "h3-shot-40s: judge by eye for a cut at each join: $PWD/h3-shot-40s-sheet.png"
+fi
 if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then
   av h3-shot-40s 768
   expect h3-shot-40s-length "$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$(video_of h3-shot-40s)" \
