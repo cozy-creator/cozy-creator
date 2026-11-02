@@ -20,6 +20,10 @@ with torch.inference_mode():
 segment.close()
 ```
 
+`segment.facts()` is passive definition metadata: `phase`, `region_handles`,
+`version_dtypes`, `pool` and `closed`. It does not acquire residency, wait, or infer
+streaming from a flag. The fixture checks actual native Pin/mapping state independently.
+
 The first implementation captures an explicit module or pure callable boundary whose
 managed weights belong to this owner. It is the primitive for caching graphs at
 inventoried boundaries, not a permanent eager-only exception. General pipeline
@@ -134,6 +138,12 @@ CPU work can validate signatures, metadata, immutable version selection and refu
 transactions on real Torch. It cannot qualify CUDA capture, stable-VA refill, pool
 retirement or streamed memory savings. No GPU execution, rental, merge or release is
 authorized in this lane.
+
+The prepared actual frontend client is
+`release-gate/suites/varena/torch-offload/graph_frontend_gpu.py`. It calls the proposed
+public owner capture/replay API and the existing native scalar observer. It refuses
+before CUDA initialization if the frontend is absent. It is unrun and is not proof of
+an implemented API; native/shared-file confirmation precedes dependent implementation.
 
 ## Files and coordination
 
