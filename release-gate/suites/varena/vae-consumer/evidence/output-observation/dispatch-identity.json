@@ -1,0 +1,46 @@
+{
+  "rows": [
+    {
+      "inference": false,
+      "grad": false,
+      "python_is": false,
+      "data_ptr_equal": true,
+      "tensor_impl_equal": false,
+      "storage_equal": true,
+      "output_inference": false,
+      "observed_inference": false
+    },
+    {
+      "inference": false,
+      "grad": true,
+      "python_is": false,
+      "data_ptr_equal": true,
+      "tensor_impl_equal": false,
+      "storage_equal": true,
+      "output_inference": false,
+      "observed_inference": false
+    },
+    {
+      "inference": true,
+      "grad": false,
+      "python_is": false,
+      "data_ptr_equal": true,
+      "tensor_impl_equal": false,
+      "storage_equal": true,
+      "output_inference": true,
+      "observed_inference": true
+    },
+    {
+      "inference": true,
+      "grad": true,
+      "python_is": false,
+      "data_ptr_equal": true,
+      "tensor_impl_equal": false,
+      "storage_equal": true,
+      "output_inference": true,
+      "observed_inference": true
+    }
+  ],
+  "torch_version": "2.14.0+cu130",
+  "cuda_initialized": false
+}

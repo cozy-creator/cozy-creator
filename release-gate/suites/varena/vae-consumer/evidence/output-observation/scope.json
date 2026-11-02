@@ -1,0 +1,9 @@
+{
+  "gpu_failure": 26096,
+  "original_python_identity_invalid_on_pinned_torch": true,
+  "asserted_contract": "same live StorageImpl, data pointer, offset, shape, strides, dtype, device and exact whole-output logical storage bytes",
+  "product_changed": false,
+  "numeric_tolerance_changed": false,
+  "case_count": 16,
+  "gpu_rerun": false
+}

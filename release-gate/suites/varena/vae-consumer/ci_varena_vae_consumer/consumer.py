@@ -216,7 +216,30 @@ def one(request, vt, loaded, x, rotary, marker, storage, mode, reference, record
         assert len(held['dense_calls']) == 6
         assert not record['submission']['published']
     else:
-        assert failure is None and output is census.output
+        assert failure is None and isinstance(output, torch.Tensor)
+        assert isinstance(census.output, torch.Tensor)
+        # Torch's factory dispatch may return a new TensorImpl around the exact same
+        # StorageImpl. The owned allocation and its complete layout are the contract.
+        observed = census.output
+        identity = {
+            'python_is': output is observed,
+            'storage_equal': output.untyped_storage()._cdata == observed.untyped_storage()._cdata,
+            'pointer_equal': output.data_ptr() == observed.data_ptr(),
+            'shape': tuple(output.shape), 'observed_shape': tuple(observed.shape),
+            'stride': tuple(output.stride()), 'observed_stride': tuple(observed.stride()),
+            'offset': output.storage_offset(), 'observed_offset': observed.storage_offset(),
+            'dtype': str(output.dtype), 'observed_dtype': str(observed.dtype),
+            'device': str(output.device), 'observed_device': str(observed.device),
+            'storage_bytes': output.untyped_storage().nbytes(),
+            'observed_storage_bytes': observed.untyped_storage().nbytes(),
+        }
+        held['output_observation'] = identity
+        assert identity['storage_equal'] and identity['pointer_equal'], identity
+        assert identity['shape'] == identity['observed_shape'] == (BATCH, TOKENS, WIDTH), identity
+        assert identity['stride'] == identity['observed_stride'] == (TOKENS * WIDTH, WIDTH, 1), identity
+        assert identity['offset'] == identity['observed_offset'] == 0, identity
+        assert output.dtype == observed.dtype == torch.float32 and output.device == observed.device, identity
+        assert identity['storage_bytes'] == identity['observed_storage_bytes'] == BATCH * TOKENS * WIDTH * 4, identity
         got, want = output.cpu(), reference
         expected_windows = math.ceil(BATCH / target_batch)
         assert len(held['dense_calls']) == 6 * expected_windows
