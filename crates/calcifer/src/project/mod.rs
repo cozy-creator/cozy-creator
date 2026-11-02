@@ -1281,13 +1281,14 @@ impl Walk {
     /// Lists `made` as its node's newest version (dropping the pending run under `key` in the same
     /// write), approved when `approve`, and says it landed.
     fn record(&self, key: Option<&str>, made: &Made, approve: bool, kind: &str, noun: &str) -> Result<(), Error> {
+        let number = std::cell::Cell::new(made.number);
         self.folder().update_lock(|lock| {
             if let Some(key) = key {
                 lock.pending.remove(key);
             }
-            lock.record(made.clone(), kind, approve);
+            number.set(lock.record(made.clone(), kind, approve));
         })?;
-        let (name, number, assets) = (made.node.clone(), made.number, listed(made));
+        let (name, number, assets) = (made.node.clone(), number.get(), listed(made));
         let path = made.primary().map(|asset| asset.path.clone()).unwrap_or_default();
         self.say(Event::Landed { name, noun: noun.into(), number, assets, path });
         Ok(())
