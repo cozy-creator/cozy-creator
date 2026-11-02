@@ -1,8 +1,11 @@
 # General Torch/Diffusers offload: adapter contract for coordination
 
-Status: proposed, awaiting API/Source-owner agreement. This document does not declare
-offload implemented or GPU-qualified. Native checkpoint: Creator #2397 at
-`2ba51b29e5c84927c4a7d45337374d0ea8ff27b3`.
+Status: approved by the coordinator; adapter implementation in progress, with GPU
+qualification pending. The approved native interfaces are in
+[TORCH-NATIVE-EXPORTS.md](TORCH-NATIVE-EXPORTS.md): `69f87ef30` → `2fcc4f747` →
+coordinator correction `22586041aa1dfee93edd76d3ff3717f6e32409c7`, on the frozen
+Creator #2397 `2ba51b29e5` input. Implemented behavior and limits are recorded in
+[TORCH-OFFLOAD.md](TORCH-OFFLOAD.md).
 
 ## Ownership and files
 
@@ -17,7 +20,7 @@ an owning offload handle while keeping the original module/pipeline callable. Ad
 is for immutable inference; training, in-place weight mutation and unadapted raw-pointer
 extensions are refused. No application-code retry follows allocation failure.
 
-## Required native/API agreement before shared-file edits
+## Native/API requirements (resolved by the approved export interfaces)
 
 1. **Storage ownership:** a supported typed Torch/DLPack export from the canonical
    Region/Use path, carrying dtype, shape, strides and byte offset. Its storage deleter
@@ -73,9 +76,9 @@ producer/consumer streams and final alias completion; SDXL VAE dtype cycle; real
 Torch/Diffusers inference and the separate 8 GB/quality/performance gates. Capture and
 custom access need explicit supported ownership; unsupported routes fail clearly.
 
-No edits to the shared API/Source files are proposed from this lane. Please confirm
-the entry point, alias/conversion/stream contract, file ownership, and concrete native
-export/Source signatures before the shared Torch entry point is changed.
+The coordinator approved the entry point, alias/conversion/stream contract and file
+ownership before the lazy shared Torch export was added. API/Source implementation
+changes are imported from their owners; this adapter does not edit those mechanisms.
 
 ## CPU feasibility findings, Torch 2.14.1+cpu
 
@@ -100,7 +103,7 @@ The experiments also preserve these counterexamples:
 - Swapping a Parameter also swaps its Python attributes. Adoption must preserve user
   metadata deliberately, and failed adoption/conversion must preserve the original model.
 
-The non-mutating CPU inventory is independently implemented and tested. It does not
-activate offload, create native Sources or edit shared Torch/API/Source modules.
+The earlier non-mutating CPU inventory is independently implemented and tested.
+Those original receipts predate adapter implementation and do not prove native offload.
 Receipts and retained counterexamples are in
 `release-gate/suites/varena/torch-offload/evidence/2026-11-02-contract-cpu`.
