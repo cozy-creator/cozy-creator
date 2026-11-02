@@ -1,6 +1,7 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
 mod tensor_export;
+mod census;
 mod cache;
 mod cache_owner;
 #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
@@ -814,6 +815,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<cache::PyCache>()?;
     working::install(module)?;
     tensor_export::install(module)?;
+    census::install(module)?;
     #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
     cooperative::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
