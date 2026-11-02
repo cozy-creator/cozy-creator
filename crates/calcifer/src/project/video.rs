@@ -1,6 +1,6 @@
 //! The `video` project type: entities (characters, props and environments; an environment's camera
-//! setups are nodes of their own), world states that shots write and read, shots of any length with
-//! beats, an upscale per shot, and the edit, cut here with ffmpeg. Each node renders through its
+//! setups are nodes of their own), world states that shots write and read, shots of any length, an
+//! upscale per shot, and the edit, cut here with ffmpeg. Each node renders through its
 //! render block: a function, cozy run's model choices and the function's options.
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +9,7 @@ use std::{
 };
 
 use protocol::error::{Error, Kind};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -40,46 +40,80 @@ pub fn skeleton() -> String {
     r#"# A short film, ready to render: cozy project render all --on <machine>
 # Change anything. More kinds and options (props, world states, references, plates, LoRAs, upscales,
 # the edit's frames) are in the README.
-style: bright hand-painted anime, studio ghibli style
+style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
 aspect_ratio: "16:9"
 fps: 24
 
 entities:
   - name: kyogre
     kind: character
-    description: Kyogre, the colossal blue legendary Pokémon of the sea, whale-like, with vast fin-like arms and glowing red lines along its body.
+    description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
 
   - name: groudon
     kind: character
-    description: Groudon, the colossal red legendary Pokémon of the land, armored in grey stone plates, with huge claws and glowing black lines along its body.
+    description: Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
 
   - name: coast
     kind: environment
-    description: a volcanic coast in Hoenn where a raging storm sea meets cliffs running with lava, the crater city of Sootopolis small in the distance
+    description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
     setups:
+      - name: sea
+        camera: The camera stands at the water's edge and looks left, out to sea, with the crater city small on the far right.
+      - name: cliffs
+        camera: The camera stands at the foot of the cliffs and looks right, up at them, with the crater city small on the far left.
       - name: wide
-        camera: "wide: the storm sea on the left, the lava cliffs on the right, Sootopolis small and far between them"
+        camera: The camera stands high and far back, with the sea on the left, the cliffs on the right, and the crater city small at the center.
 
 shots:
   - name: awaken
-    setup: coast.wide
-    prompt: <kyogre> rises out of the black sea off <coast>, water pouring from its fins as a torrential storm gathers around it.
+    setup: coast.sea
     duration_s: 6
+    description: |
+      summary:
+      The target video shows <kyogre> bursting out of the stormy sea of <coast>.
+
+      detailed_description:
+      [Shot 1] A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
+
+      overall_soundscape:
+      Howling wind, crashing waves, and rolling thunder.
+
+      non_diegetic_music:
+      N/A
 
   - name: erupt
-    setup: coast.wide
-    prompt: <groudon> climbs out of the lava on the cliffs of <coast> and roars, the rain turning to steam around it under a burning sun.
+    setup: coast.cliffs
     duration_s: 6
+    description: |
+      summary:
+      The target video shows <groudon> clawing its way out of the lava cliffs of <coast> and roaring.
+
+      detailed_description:
+      [Shot 1] A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
+
+      overall_soundscape:
+      Cracking rock, hissing lava, heavy footfalls, and a deep roar.
+
+      non_diegetic_music:
+      N/A
 
   - name: clash
     setup: coast.wide
-    prompt: <kyogre> and <groudon> charge each other across <coast> as storm and sun collide overhead.
-    duration_s: 10
-    beats:
-      - at: 0
-        prompt: <kyogre> blasts a huge column of water at <groudon>, which erupts into steam against its armor.
-      - at: 5
-        prompt: <groudon> answers with a torrent of fire, and the two titans crash together in the surf.
+    duration_s: 38
+    description: |
+      summary:
+      The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
+
+      detailed_description:
+      [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
+      At 00:14.000, <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
+      At 00:28.000, <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
+
+      overall_soundscape:
+      Crashing surf, roaring fire, bursts of steam, and deep impacts.
+
+      non_diegetic_music:
+      N/A
 "#
     .into()
 }
@@ -100,13 +134,13 @@ struct Project {
     aspect_ratio: Option<String>,
     /// The edit's frame rate, which its `edit:` positions count in (default 24, H3's).
     fps: Option<f64>,
-    #[serde(default, deserialize_with = "listed")]
+    #[serde(default, deserialize_with = "or_default")]
     entities: Vec<Entity>,
-    #[serde(default, deserialize_with = "listed")]
+    #[serde(default, deserialize_with = "or_default")]
     references: Vec<Reference>,
-    #[serde(default, deserialize_with = "listed")]
+    #[serde(default, deserialize_with = "or_default")]
     world_states: Vec<WorldState>,
-    #[serde(default, deserialize_with = "listed")]
+    #[serde(default, deserialize_with = "or_default")]
     shots: Vec<Shot>,
     /// None: every shot, in order, whole.
     edit: Option<Vec<Cut>>,
@@ -239,10 +273,11 @@ struct Shot {
     name: String,
     /// `Environment.Setup`.
     setup: Option<String>,
-    prompt: String,
+    /// Its whole text, sent as its function's `prompt`: opaque here but for its `<mentions>`. A
+    /// person writes the function's own conventions in it, and cozy adds none.
+    #[serde(default, deserialize_with = "or_default")]
+    description: String,
     duration_s: f64,
-    #[serde(default)]
-    beats: Vec<Beat>,
     /// World states its frame at `at` seconds (default: its end) becomes the next revision of.
     #[serde(default)]
     writes: Vec<Write>,
@@ -262,11 +297,13 @@ struct Write {
     at: Option<f64>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct Beat {
-    at: f64,
-    prompt: String,
+impl Shot {
+    /// The state each of its writes is of, and where, inside its length.
+    fn written(&self) -> impl Iterator<Item = (&str, f64)> {
+        (self.writes.iter()).map(|write| (write.state.as_str(), write.at.unwrap_or(self.duration_s).min(self.duration_s).max(0.0)))
+    }
 }
+
 
 #[derive(Default, Deserialize)]
 struct Upscale {
@@ -333,6 +370,20 @@ fn available(shape: &Shape, fps: f64) -> u64 {
 pub struct Cutted {
     pub frames: u64,
     pub retimed: Vec<String>,
+}
+
+/// Takes from `pieces` what starts past its take's end, a take being what its renderer made however
+/// long it was asked for, and says each.
+pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
+    let mut said = vec![];
+    pieces.retain(|piece| {
+        let past = piece.frames(fps).is_some_and(|(start, end)| start >= end);
+        if past {
+            said.push(format!("the edit cuts {} from frame {}, past its take's end: that cut is left out", piece.node, piece.start));
+        }
+        !past
+    });
+    said
 }
 
 /// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.
@@ -464,7 +515,10 @@ impl Video {
     /// are `warnings`.
     pub fn load(folder: &Folder) -> Result<Self, Error> {
         let value = protocol::yaml::to_json(&folder.text()?)
-            .map_err(|why| invalid("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
+            .map_err(|why| {
+                invalid("project_yaml", format!("{}: {why}", folder::PROJECT))
+                    .remedy("text that starts with `[`, such as `[Shot 1]`, goes on the lines under `description: |`")
+            })?;
         let mut ignored: Vec<String> = vec![];
         let mut note = |path: serde_ignored::Path<'_>| ignored.push(path.to_string().replace("?.", ""));
         let read = serde_ignored::Deserializer::new(&value, &mut note);
@@ -559,6 +613,7 @@ impl Video {
                 order: None,
                 texts: vec![entity.description.clone()],
                 needs: vec![],
+                implied: vec![],
                 writes: vec![],
                 inputs: reads,
                 file,
@@ -577,6 +632,7 @@ impl Video {
                     order: None,
                     texts: vec![setup.camera.clone()],
                     needs: vec![setup.frame.as_ref().map_or_else(|| entity.name.clone(), |frame| frame.shot.clone())],
+                    implied: vec![],
                     writes: vec![],
                     inputs: vec![],
                     file,
@@ -596,6 +652,7 @@ impl Video {
                 order: None,
                 texts: vec![],
                 needs: vec![],
+                implied: vec![],
                 writes: vec![],
                 inputs: vec![],
                 file,
@@ -616,9 +673,10 @@ impl Video {
                     .remedy(fix));
                 };
                 if !(0.0..shot.duration_s).contains(&frame.at) {
-                    let said =
-                        format!("{id}'s frame is at {} s, outside {}'s 0–{} s", frame.at, shot.name, shot.duration_s);
-                    return Err(invalid("frame_outside", said).remedy(fix));
+                    warnings.push(format!(
+                        "{id}'s frame is at {} s, outside {}'s 0–{} s: the nearest frame stands in",
+                        frame.at, shot.name, shot.duration_s
+                    ));
                 }
             }
         }
@@ -633,6 +691,7 @@ impl Video {
                 order: None,
                 texts: vec![state.init.clone(), state.blocking.clone()],
                 needs: vec![],
+                implied: vec![],
                 writes: vec![],
                 inputs: vec![],
                 file,
@@ -641,9 +700,8 @@ impl Video {
             items.push(Item::State(w));
         }
         for (k, shot) in project.shots.iter().enumerate() {
-            let texts: Vec<String> =
-                std::iter::once(shot.prompt.clone()).chain(shot.beats.iter().map(|b| b.prompt.clone())).collect();
-            let mut needs = vec![];
+            let texts = vec![shot.description.clone()];
+            let (mut needs, mut implied) = (vec![], vec![]);
             if let Some(setup) = &shot.setup {
                 if !nodes.iter().any(|n| n.kind == "setup" && name_key(&n.id) == name_key(setup)) {
                     return Err(invalid(
@@ -661,7 +719,7 @@ impl Video {
                 if let Some(env) = env.filter(|env| framed.as_deref() != Some(&name_key(&env.name)))
                     && let Some(first) = env.setups.first()
                 {
-                    needs.push(format!("{}.{}", env.name, first.name));
+                    implied.push(format!("{}.{}", env.name, first.name));
                 }
             }
             let (file, made) = versions(&shot.name, &shot.video, false)?;
@@ -674,6 +732,7 @@ impl Video {
                 order: Some(k),
                 texts,
                 needs,
+                implied,
                 writes: shot.writes.iter().map(|write| write.state.clone()).collect(),
                 inputs: shot_inputs(&input_file, shot)?,
                 file,
@@ -691,6 +750,7 @@ impl Video {
                 order: None,
                 texts: vec![],
                 needs: vec![shot.name.clone()],
+                implied: vec![],
                 writes: vec![],
                 inputs: vec![],
                 file,
@@ -702,36 +762,46 @@ impl Video {
             let said = format!("{} is named `{ALL}`, which `cozy project render {ALL}` means", all.id);
             return Err(invalid("name_reserved", said).remedy("rename it"));
         }
-        let graph = Graph::new(nodes)?;
+        let mut graph = Graph::new(nodes)?;
         warnings.extend(graph.unknown.iter().map(|(i, mention)| {
             format!(
                 "{} mentions {mention}, which is nothing in the project: it reaches the renderer as written",
                 graph.nodes[*i].id
             )
         }));
+        warnings.extend(graph.closing.iter().map(|&(reader, read)| {
+            let (reader, read) = (&graph.nodes[reader].id, &graph.nodes[read].id);
+            format!("{reader} mentions {read}, which is made from it: that mention stays plain text")
+        }));
         for shot in &project.shots {
+            if shot.video.is_none() && shot.description.trim().is_empty() {
+                warnings.push(format!("{} has no description: its renderer is given no text", shot.name));
+            }
             let mut written = BTreeSet::new();
             for write in &shot.writes {
                 let at = write.at.unwrap_or(shot.duration_s);
                 if !(at > 0.0 && at <= shot.duration_s) {
-                    let said = format!("{} writes {} at {at} s, outside its 0–{} s", shot.name, write.state, shot.duration_s);
-                    return Err(invalid("write_outside", said));
+                    warnings.push(format!(
+                        "{} writes {} at {at} s, outside its 0–{} s: the nearest frame stands in",
+                        shot.name, write.state, shot.duration_s
+                    ));
                 }
                 if !written.insert(name_key(&write.state)) {
                     return Err(invalid("write_twice", format!("{} writes {} twice", shot.name, write.state)));
                 }
             }
         }
-        // A still is made from pictures: a clip or a sound is for a shot.
-        for (node, upstream) in graph.nodes.iter().zip(&graph.upstream).filter(|(node, _)| node.kind != "shot") {
-            for edge in upstream {
-                let Item::Reference(r) = items[edge.node] else { continue };
+        // A still is made from pictures: a clip or a sound mentioned there stays plain text.
+        for (node, reads) in graph.nodes.iter().zip(&mut graph.upstream).filter(|(node, _)| node.kind != "shot") {
+            reads.retain(|edge| {
+                let Item::Reference(r) = items[edge.node] else { return true };
                 let (field, _) = project.references[r].file();
                 if field != "image" {
-                    let said = format!("{} mentions {}, a {field} reference, which only a shot reads", node.id, graph.nodes[edge.node].id);
-                    return Err(invalid("reference_reader", said).remedy("mention it in a shot, or give this one a picture"));
+                    let name = &graph.nodes[edge.node].id;
+                    warnings.push(format!("{} mentions {name}, a {field} reference, which only a shot reads: it stays plain text", node.id));
                 }
-            }
+                field == "image"
+            });
         }
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref(), project.fps)?;
         let shapes = (graph.nodes.iter())
@@ -821,19 +891,6 @@ impl Video {
         lock.made(&node.id, &file.0).is_none().then(|| file.clone())
     }
 
-    /// Shots longer than their renderer's longest piece with no beats, as node index, name and
-    /// length: each one's renderer decides.
-    pub fn beatless(&self) -> Vec<(usize, &str, f64)> {
-        (self.items.iter().enumerate())
-            .filter_map(|(i, item)| match item {
-                Item::Shot(k) if self.project.shots[*k].beats.is_empty() => {
-                    Some((i, self.project.shots[*k].name.as_str(), self.project.shots[*k].duration_s))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
     /// The files gone that node `i` reads, its own or through what it reads: it cannot render until
     /// they are linked again.
     pub fn missing(&self, i: usize) -> Vec<&str> {
@@ -873,11 +930,15 @@ impl Video {
     /// The request that makes a version of node `i`, from what it reads now, as its function
     /// (`renderer`) takes it; a shot's is its first call.
     pub fn request(&self, folder: &Folder, lock: &Lock, i: usize, renderer: &Renderer) -> Result<Request, Error> {
+        let mut said = vec![];
         let call = match self.items[i] {
-            Item::Shot(k) => Some(Call { ends: self.ends(k), ..Default::default() }),
+            Item::Shot(k) => Some(Call { ends: self.ends(k, &renderer.accepts, &mut said), ..Default::default() }),
             _ => None,
         };
-        self.compile(folder, lock, i, renderer, call, &BTreeMap::new())
+        let mut request = self.compile(folder, lock, i, renderer, call, &BTreeMap::new())?;
+        request.made.warnings.extend(said.iter().cloned());
+        request.warnings.extend(said);
+        Ok(request)
     }
 
     /// Shot `i`'s next call (`call`, which continues `call.from`), with the frames the shot wrote
@@ -976,7 +1037,7 @@ impl Video {
                     .map(|(n, read)| {
                         let up = &graph.nodes[read.edge.node];
                         let (name, at) = match n {
-                            0 => (env.name.as_str(), setup.frame.as_ref().map(|frame| frame.at)),
+                            0 => (env.name.as_str(), setup.frame.as_ref().map(|frame| frame.at.max(0.0))),
                             _ => (up.id.as_str(), None),
                         };
                         json!({"name": name, "image": read.input(&mut files, format!("pictures.{n}.image"), at)})
@@ -997,11 +1058,10 @@ impl Video {
             }
             Item::Upscale(k) => {
                 // The text the shot was made from, for an upscaler that re-renders it (Paul, 10-31: the
-                // upscaler gets the details of the original): its prompt and beats, the descriptions of
+                // upscaler gets the details of the original): its description, the descriptions of
                 // what it reads, and the style.
                 let shot = &self.project.shots[k];
-                let beats = shot.beats.iter().map(|beat| format!("Then, {}", beat.prompt.trim()));
-                let mut text = std::iter::once(shot.prompt.trim().to_owned()).chain(beats).collect::<Vec<_>>().join(" ");
+                let mut text = shot.description.trim().to_owned();
                 let read = self.graph.find(&shot.name).map(|s| &self.graph.upstream[s]).into_iter().flatten();
                 for edge in read {
                     let (name, description) = match (self.items[edge.node], &edge.state) {
@@ -1039,30 +1099,47 @@ impl Video {
             files.retain(|input| input.field.split('.').next() != Some(key.as_str()));
             warnings.push(format!("{} takes no {key}: {}'s is left out", self.render(i).target(), node.id));
         }
+        let made = Made { warnings: warnings.clone(), ..made };
         Ok(Request { payload, made, field: self.field(i), call, files, render: self.render(i), warnings })
     }
 
-    /// Where shot `k`'s consecutive calls end: at each time it writes a state a later beat of it
-    /// mentions (that read is of its own write, so the call after it reads the frame), and at its
-    /// end.
-    fn ends(&self, k: usize) -> Vec<f64> {
+    /// Where shot `k`'s consecutive calls end: at each time it writes a state its text mentions (a
+    /// read of its own write, so the call after it reads the frame), and at its end. Its text stays
+    /// opaque: times in it are its function's. A renderer that cannot continue a video, or whose
+    /// shortest piece the split would go under, renders on through: the state reads as it stood
+    /// before, and it is said.
+    fn ends(&self, k: usize, accepts: &Accepts, said: &mut Vec<String>) -> Vec<f64> {
         let shot = &self.project.shots[k];
-        let read_after = |state: &str, at: f64| {
-            (shot.beats.iter()).any(|beat| beat.at > at && mentions(&beat.prompt).iter().any(|m| name_key(m) == name_key(state)))
-        };
-        let mut ends: Vec<f64> = (shot.writes.iter())
-            .map(|write| (write.state.as_str(), write.at.unwrap_or(shot.duration_s)))
-            .filter(|&(state, at)| at < shot.duration_s && read_after(state, at))
-            .map(|(_, at)| at)
+        let read = mentions(&shot.description);
+        let mut splits: Vec<(&str, f64)> = (shot.written())
+            .filter(|&(state, at)| at > 0.0 && at < shot.duration_s && read.iter().any(|m| name_key(m) == name_key(state)))
             .collect();
-        ends.sort_by(f64::total_cmp);
-        ends.dedup();
+        splits.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let (mut ends, mut from) = (vec![], 0.0);
+        for (state, at) in splits {
+            if ends.last() == Some(&at) {
+                continue;
+            }
+            let why = match accepts.min_piece_s.filter(|min| at - from < *min) {
+                _ if !accepts.fields.contains("continue_from") => Some("its renderer cannot continue a video (continue_from)".to_owned()),
+                Some(min) => Some(format!("a call from {from} s to {at} s is under its renderer's {min} s")),
+                None => None,
+            };
+            match why {
+                Some(why) => said.push(format!("{} mentions {state} and writes it at {at} s, but {why}: it reads {state} as it stood before", shot.name)),
+                None => {
+                    ends.push(at);
+                    from = at;
+                }
+            }
+        }
         ends.push(shot.duration_s);
         ends
     }
 
     /// Shot `k`'s call `call` as its function takes it (`accepts`), on the shot's one timeline:
-    /// - its text up to the call's end: `prompt`, the beats before it, the project's style,
+    /// - its whole text, each call: `description` as `prompt` (times before the call's start are its
+    ///   function's history, on the shot's one timeline), the project's style,
     ///   soundscape and aspect ratio;
     /// - `references`: each entity it reads (its description, a character's voice), its setup's
     ///   picture as its environment's, each world state as a loose environment picture with its
@@ -1071,8 +1148,7 @@ impl Video {
     /// - its plate, its first frame (first call), its last frame (last call), and the call before
     ///   it as `continue_from`.
     ///
-    /// What the function does not take is left out and said (`said`), or refused where leaving it
-    /// out would make another shot: a plate, or the calls a read of its own write needs.
+    /// What the function does not take is left out and said (`said`).
     #[allow(clippy::too_many_arguments)]
     fn shot(
         &self,
@@ -1089,19 +1165,6 @@ impl Video {
         let (index, last) = (call.index, call.index + 1 == call.ends.len());
         let (start, end) = (if index == 0 { 0.0 } else { call.ends[index - 1] }, call.ends[index]);
         let takes = |field: &str| accepts.fields.contains(field);
-        let refuse = |what: String| invalid("shot_unrenderable", format!("{}: {what}", shot.name));
-        if call.ends.len() > 1 {
-            if !takes("continue_from") {
-                return Err(refuse("it reads a state it wrote itself, which needs its renderer to continue a video \
-                                   (continue_from), and it takes none".into()));
-            }
-            let spans = call.ends.iter().scan(0.0, |from, &to| Some((std::mem::replace(from, to), to)));
-            if let Some(min) = accepts.min_piece_s
-                && let Some((from, to)) = spans.take(call.ends.len() - 1).find(|(from, to)| to - from < min)
-            {
-                return Err(refuse(format!("its call from {from} s to {to} s is under its renderer's {min} s")));
-            }
-        }
         let framed: BTreeSet<usize> = (reads.iter())
             .filter_map(|read| match self.items[read.edge.node] {
                 Item::Setup(a, _) => Some(a),
@@ -1180,12 +1243,7 @@ impl Video {
             add(reference.entry(), vec![(reference.file().0, read.path.clone(), read.digest.clone())], files);
         }
         let mut payload = Map::new();
-        let mut text = shot.prompt.clone();
-        let beats: Vec<&Beat> = shot.beats.iter().filter(|beat| beat.at < end).collect();
-        match takes("beats") {
-            true => drop(payload.insert("beats".into(), json!(beats))),
-            false => (beats.iter()).for_each(|beat| text = format!("{text} Then, {}", beat.prompt.trim())),
-        }
+        let mut text = shot.description.clone();
         let style = self.project.style.trim();
         match (takes("style"), style.is_empty()) {
             (true, false) => drop(payload.insert("style".into(), json!(style))),
@@ -1209,10 +1267,9 @@ impl Video {
         if takes("aspect_ratio") {
             payload.insert("aspect_ratio".into(), json!(self.canvas.aspect));
         }
-        if let Some(plate) = &shot.plate {
-            if !takes("plate") {
-                return Err(refuse("its renderer takes no plate, the video it edits".into()));
-            }
+        if shot.plate.is_some() && !takes("plate") {
+            said.push(format!("{}'s renderer takes no plate: it renders without it", shot.name));
+        } else if let Some(plate) = &shot.plate {
             let mut plate = plate.clone();
             if let Some(path) = plate.get("video").and_then(Value::as_str) {
                 let (path, digest) = file(path)?;
@@ -1241,9 +1298,9 @@ impl Video {
             }
             payload.insert("continue_from".into(), Value::Object(from));
         }
-        call.writes = (shot.writes.iter())
-            .map(|write| (write.state.clone(), write.at.unwrap_or(shot.duration_s)))
+        call.writes = (shot.written())
             .filter(|(_, at)| *at >= start && (*at < end || last))
+            .map(|(state, at)| (state.to_owned(), at))
             .collect();
         Ok((Value::Object(payload), call))
     }
@@ -1326,10 +1383,6 @@ pub fn cut(
         return Err(failed(format!("no frame rate is recorded for {}'s file", unprobed.join(", "))));
     };
     let ranges: Vec<(u64, u64)> = pieces.iter().filter_map(|piece| piece.frames(fps)).collect();
-    if let Some((piece, _)) = pieces.iter().zip(&ranges).find(|(_, (start, end))| start >= end) {
-        let said = format!("the edit cuts {} from frame {}, past its take's end", piece.node, piece.start);
-        return Err(invalid("cut_past_end", said).remedy("start its edit entry before its take's last frame"));
-    }
     let native = |piece: &Piece| piece.shape.is_some_and(|shape| !retimed(&shape, fps));
     let io = |e: std::io::Error| failed(format!("{}: {e}", cache.display()));
     std::fs::create_dir_all(cache).map_err(io)?;
@@ -1749,9 +1802,9 @@ fn named(project: &Project) -> Vec<&str> {
     files
 }
 
-/// A list a person may leave empty as `key:` alone (a null).
-fn listed<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(read: D) -> Result<Vec<T>, D::Error> {
-    Ok(Option::<Vec<T>>::deserialize(read)?.unwrap_or_default())
+/// A field a person may leave empty as `key:` alone (a null).
+fn or_default<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + Default>(read: D) -> Result<T, D::Error> {
+    Ok(Option::<T>::deserialize(read)?.unwrap_or_default())
 }
 
 fn invalid(code: &str, message: String) -> Error {

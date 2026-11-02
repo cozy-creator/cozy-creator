@@ -320,6 +320,19 @@ said (`reference changed`), and a gone original is `reference missing: relink`, 
 A clone or copy is the project's own: the original moving changes nothing. Names live only in project.yaml and
 project.lock. Calcifer deletes from `assets/` only what project.lock no longer names.
 
+A shot's `description` is opaque text but for its `<mentions>`, sent as its function's `prompt`. Calcifer adds nothing:
+a person writes the function's own conventions in it.
+
+```yaml
+shots:
+  - name: fight
+    duration_s: 20
+    description: |
+      [Shot 1] <theo> and <juno> on <dock>. They circle.
+      At 00:05.000, <juno> lunges.
+      [Shot 2] At 00:10.000, the shot cuts to <juno> sweeping his legs.
+```
+
 A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
 field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reused) and is a set of assets
 (`{path, sha256, original?}`, `original` the path project.yaml writes for a file it names).
@@ -340,7 +353,9 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
   keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none. A
   file under `references:` is a node of kind `reference`: shots read it by mention, and it has no versions.
-- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?}]}`.
+  `warnings` holds what project.yaml's reading said and what each node's current version says: its function's
+  warnings and what was left out of its request. A cut past a take's end is left out and said here.
+- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?}]}`.
 - `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?}` (`Idempotency-Key`): `n` new takes
   or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
   cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1); a reference is refused

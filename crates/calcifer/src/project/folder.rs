@@ -78,6 +78,9 @@ pub struct Made {
     /// The runs that made it, in order: one per call of a shot made in consecutive calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<u64>,
+    /// What its function said of it, and what was left out of its request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// A picture's clean, which is never cleaned again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleaned: bool,

@@ -912,26 +912,6 @@ async fn runtime(api: &Arc<Api>, on: &On) -> Option<String> {
     machine.status.map(|status| status.runtime).filter(|runtime| !runtime.is_empty())
 }
 
-/// `prepare` without installing: the code's interface when one is kept here for it and the
-/// machine's Runtime, else none (a read, such as a project's status, installs nothing).
-pub async fn described(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result<Prepared, Error> {
-    let hubs = &api.machines.hubs;
-    let home = hubs.home().clone();
-    let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-    let reader = hubs.reader(origin.as_str())?;
-    let code = source(&home, path, on, (&reader, &origin)).await?;
-    let runtime = runtime(api, on).await;
-    Ok(Prepared {
-        interface: runtime.as_deref().and_then(|runtime| kept(&home, &code, runtime)),
-        package: code.package,
-        source: code.source,
-        files: code.inputs,
-        installation: None,
-        machine: None,
-        install: None,
-    })
-}
-
 /// `uv` (cozy's pinned uv, else PATH's: `tools::uv`) in `dir`, quiet and colorless.
 pub fn uv(uv: &Path, dir: &Path) -> Command {
     let mut command = Command::new(uv);

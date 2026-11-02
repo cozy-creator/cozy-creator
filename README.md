@@ -100,9 +100,50 @@ of assets, numbered from 1 and never renumbered: a shot's take is its video and 
 makes the folder with a `project.yaml` holding a short film that renders as it stands; change it, or write your own:
 
 ```yaml
-style: soft watercolor
-resolution: 1440p
+style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
+aspect_ratio: "16:9"
 fps: 24
+
+entities:
+  - name: kyogre
+    kind: character
+    description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
+
+  - name: groudon
+    kind: character
+    description: Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
+
+  - name: coast
+    kind: environment
+    description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
+    setups:
+      - name: wide
+        camera: The camera stands high and far back, with the sea on the left, the cliffs on the right, and the crater city small at the center.
+
+shots:
+  - name: clash
+    setup: coast.wide
+    duration_s: 38
+    description: |
+      summary:
+      The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
+
+      detailed_description:
+      [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
+      At 00:14.000, <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
+      At 00:28.000, <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
+
+      overall_soundscape:
+      Crashing surf, roaring fire, bursts of steam, and deep impacts.
+
+      non_diegetic_music:
+      N/A
+```
+
+What else a project can set:
+
+```yaml
+resolution: 1440p
 soundscape: gulls, surf, wind
 
 defaults:
@@ -111,64 +152,35 @@ defaults:
     options:
       turbo: true
 
-entities:
-  - name: theo
-    kind: character
-    description: A tall man in a green raincoat.
-  - name: juno
-    kind: character
-    description: <theo>'s sister, in a red coat.
-    render:
-      with: flux-2/generate
-  - name: dock
-    kind: environment
-    description: a foggy harbour at dawn
-    setups:
-      - name: a
-        camera: "wide: the red hut near on the left, the crates far on the right"
-
 references:
   - name: kata
     video: ~/footage/kata.mp4
 
 world_states:
-  - name: stage
-    init: <juno> and <theo> face off on <dock>.
-    blocking: juno by the crates.
+  - name: shore
+    init: <coast> after the fight.
+    blocking: <groudon> on the rocks.
 
 shots:
-  - name: fight
-    setup: dock.a
-    prompt: <theo> and <juno> spar, moving like <kata>.
-    duration_s: 20
+  - name: clash
     writes:
-      - state: stage
-        at: 12
-    beats:
-      - at: 0
-        prompt: They circle.
-      - at: 10
-        prompt: <juno> sweeps his legs.
-  - name: reaction
-    prompt: Close on <theo>, wincing, after <stage>.
-    duration_s: 4
+      - state: shore
+        at: 30
 
 edit:
-  - shot: fight
+  - shot: clash
+    start: 24
     end: 192
-  - shot: reaction
-  - shot: fight
-    start: 240
 ```
 
 ```sh
 cd garden
 cozy project render all --on <machine>     # everything missing or out of date, then the edit
-cozy project render fight -n 3 --on <machine>
-                                           # three more takes of fight
-cozy project approve fight 2               # approve take 2: what is made from it goes out of date
-cozy project render theo --approve --on <machine>
-                                           # a new version of theo, approved when it lands
+cozy project render clash -n 3 --on <machine>
+                                           # three more takes of clash
+cozy project approve clash 2               # approve take 2: what is made from it goes out of date
+cozy project render kyogre --approve --on <machine>
+                                           # a new version of kyogre, approved when it lands
 cozy project status                        # what is missing, out of date and why, and the cuts
 cozy project ls                            # every project this computer has opened
 ```
@@ -178,14 +190,26 @@ another, as `git -C` does. Each take or version is sent as soon as what it reads
 ones render at once and the machine's scheduler places them. `--on a,b` spreads them over machines (the
 least busy, one that holds the models first), and a render asked while another goes joins it.
 
+A shot's `description` is its whole text, sent to its function as `prompt`. cozy reads only its `<mentions>` and adds
+nothing, so you write the function's own format, on the lines under `description: |`. For `minimax-h3` that is
+`summary:`, `detailed_description:`, `overall_soundscape:` and `non_diegetic_music:`. In the details, `[Shot 1]` opens a
+shot, a line starting `At 00:14.000, …` moves it on within the take, and `[Shot 2] At 00:20.000, the shot cuts to …` is
+a real cut; it plans its pieces from those. A writer who wants one take says so (`One continuous shot with no cuts.`),
+because cozy no longer adds it. Nothing you write is refused: an empty description gets a warning and renders anyway.
+
+A take can be shorter than `duration_s`: `minimax-h3` renders 15 s of a longer shot with no timestamps. The edit cuts
+the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
+
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
-names and changes the ones it `writes` (each a `state`, and `at`, by default its end); a beat that mentions a state
-reads it as it stands then, so a shot that writes one and reads it later renders as consecutive calls
-(`continue_from`).
+names and changes the ones it `writes` (each a `state`, and `at`, by default its end). A shot that mentions a state it
+writes partway renders as consecutive calls split there (`continue_from`), the later one reading its own frame. A
+renderer that cannot continue, or a call under its shortest piece, renders on through: the shot reads the state as it
+stood before, and `status` says so. A clip or sound mentioned by anything but a shot, or a mention that would make
+something from itself, stays plain text, also said.
 
 A file that is no entity goes under `references:` with a name and one `video:`, `audio:` or `image:` (sent as a
-prop). A shot or beat that mentions it gets it, exactly as with an entity: any other field, such as `use_audio:
+prop). A shot that mentions it gets it, exactly as with an entity: any other field, such as `use_audio:
 true`, goes to its function, and editing the file puts only those shots out of date. Names are shared with entities,
 in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
 shot. What a function does not take is left out and said.
@@ -207,8 +231,8 @@ LoRAs and options but never the canvas). `render all` makes the upscales and cut
 canvas; `preview.mp4`, the native cut, is redone as shots land, and `render all --preview` stops there.
 
 `fps:` (24 by default) is the edit's frame rate, fixed per project. `edit:` lists shots, each with an optional `start` and `end` in
-frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`), so every cut lands on an
-exact frame; a shot's `duration_s`, beats and other inputs stay in seconds. A take at another rate is retimed to
+frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`, or its take's end if sooner), so every cut lands on an
+exact frame; a shot's `duration_s` and `writes` stay in seconds. A take at another rate is retimed to
 the project's (each frame its nearest in time), and `status` names it. Each cut writes `edit.otio` (and
 `preview.otio`) with it: the project's rate, a video and an audio track, one clip per `edit:` entry with its
 frames, referencing that take's asset.

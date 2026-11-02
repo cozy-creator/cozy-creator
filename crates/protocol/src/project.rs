@@ -169,6 +169,9 @@ pub struct Version {
     pub runs: Vec<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approved: bool,
+    /// What its function said of it, and what was left out of its request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every node

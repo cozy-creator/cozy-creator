@@ -44,6 +44,7 @@ cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed
 # The new project's film parses as it stands: its nodes are all listed, nothing refused.
 cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
 for node in kyogre groudon coast coast.wide awaken erupt clash; do grep -q "$node" "$OUT/project-new-status.txt" || check "a new project's status names no $node"; done
+grep -q 'cozy reads no field' "$OUT/project-new-status.txt" && check "a new project's film writes a field cozy does not read: $(grep 'cozy reads no field' "$OUT/project-new-status.txt")"
 mkdir -p "$P/plates" "$E"
 plate "$P/plates/a.mp4" testsrc2 440 1800; plate "$P/plates/b.mp4" testsrc 550 900; plate "$P/plates/c.mp4" rgbtestsrc 660 1200
 plate "$E/look.mp4" smptebars 330 600; still "$E/stage.png" teal
@@ -57,8 +58,8 @@ references:
   - name: look
     video: $E/look.mp4
 shots:
-  - {name: a, prompt: "test pattern a, moving like <look>", duration_s: 6, video: plates/a.mp4}
-  - {name: b, prompt: "test pattern b", duration_s: 6, video: plates/b.mp4}
+  - {name: a, description: "test pattern a, moving like <look>", duration_s: 6, video: plates/a.mp4}
+  - {name: b, description: "test pattern b", duration_s: 6, video: plates/b.mp4}
 edit: [{shot: a, start: 12, end: 132}, {shot: b, start: 12, end: 132}]
 YAML
 local A B C
@@ -144,6 +145,7 @@ cozy --json project -p "$P" status > "$OUT/project-renamed.json" 2>/dev/null || 
   || check "after the rename yard is not place's 3 versions with 2 approved: $(jq -c '{orphans, yard: (.nodes[]? | select(.name == "yard"))}' "$OUT/project-renamed.json")"
 
 references
+never_refuse
 reflinked
 frames_otio
 http_surface "$P" "$ID"
@@ -164,14 +166,14 @@ cozy --json project ls > "$OUT/project-ls-3.json" || true
   || check "DELETE did not forget the project, or touched its folder"
 }
 
-# references: a top-level reference reaches the shots that mention it (in a prompt, in a beat, in any case) and no other,
+# references: a top-level reference reaches the shots that mention it (on any line, in any case) and no other,
 # as the function gets it (shoot.py says what it was given); editing its file puts only those out of date and
 # render all remakes only those; gone, they cannot render and the rest can. What is refused and warned about.
 references() {
 step "a project: references reach the shots that mention them"
 local R=$OUT/refs
 cozy project new "$R" > /dev/null 2>&1 || check "project new for references failed"
-cp "$here/project/shoot.py" "$R/shoot.py"
+cp "$here/project/shoot.py" "$R/shoot.py"; cp "$here/project/draw.py" "$R/draw.py"
 plate "$R/one.mp4" testsrc2 440 300; plate "$R/two.mp4" testsrc 550 300; plate "$R/three.mp4" rgbtestsrc 660 300
 plate "$R/clip.mp4" smptebars 330 300; still "$R/look.png" teal
 ffmpeg -v error -y -f lavfi -i "sine=frequency=220:sample_rate=32000:duration=2" "$R/voice.wav"
@@ -190,20 +192,19 @@ references:
     image: look.png
 shots:
   - name: mentions
-    prompt: <clip> again, <narrator> over it, in <look>.
+    description: <clip> again, <narrator> over it, in <look>.
     duration_s: 6
     plate:
       video: one.mp4
-  - name: beat
-    prompt: A plain opening.
+  - name: again
+    description: |
+      [Shot 1] A plain opening.
+      At 00:03.000, then as in <CLIP>.
     duration_s: 6
     plate:
       video: two.mp4
-    beats:
-      - at: 0
-        prompt: Then as in <CLIP>.
   - name: plain
-    prompt: Nothing named here.
+    description: Nothing named here.
     duration_s: 6
     plate:
       video: three.mp4
@@ -211,13 +212,13 @@ YAML
 local code=0
 cozy project -p "$R" render all --on local > "$OUT/refs-render.txt" 2>&1 || code=$?
 [ "$code" = 0 ] || { check "references: render all: exit $code: $(tail -c 400 "$OUT/refs-render.txt")"; return; }
-given() { jq -c '[.[] | {name, kind, sha256, use_audio}]' "$R/$(jq -r --arg s "$1" '.nodes[$s].versions[-1].assets.given.path' "$R/project.lock")"; }
+given() { jq -c '[.references[] | {name, kind, sha256, use_audio}]' "$R/$(jq -r --arg s "$1" '.nodes[$s].versions[-1].assets.given.path' "$R/project.lock")"; }
 local CLIP LOOK VOICE want
 CLIP=$(sha "$R/clip.mp4") LOOK=$(sha "$R/look.png") VOICE=$(sha "$R/voice.wav")
 want="[{\"kind\":\"video\",\"name\":\"clip\",\"sha256\":\"$CLIP\",\"use_audio\":true},{\"kind\":\"audio\",\"name\":\"narrator\",\"sha256\":\"$VOICE\",\"use_audio\":false},{\"kind\":\"prop\",\"name\":\"look\",\"sha256\":\"$LOOK\",\"use_audio\":false}]"
-ONE=$(given mentions) TWO=$(given beat) THREE=$(given plain)
+ONE=$(given mentions) TWO=$(given again) THREE=$(given plain)
 [ "$(jq -cS . <<< "$ONE")" = "$(jq -cS . <<< "$want")" ] || check "references: mentions was given $ONE, not $want"
-[ "$(jq -c '[.[].name]' <<< "$TWO")" = '["clip"]' ] || check "references: a mention in a beat, in another case, was given $TWO"
+[ "$(jq -c '[.[].name]' <<< "$TWO")" = '["clip"]' ] || check "references: a mention on a later line, in another case, was given $TWO"
 [ "$THREE" = '[]' ] || check "references: a shot that mentions none was given $THREE"
 J '.nodes.mentions.versions[-1].upstream | any(.node == "clip" and .asset == "sha256:'"$CLIP"'")' "$R/project.lock" \
   || check "references: the take does not record what it read: $(jq -c '.nodes.mentions.versions[-1].upstream' "$R/project.lock")"
@@ -232,13 +233,13 @@ plate "$R/clip.mp4" rgbtestsrc 330 400
 cozy project -p "$R" status > "$OUT/refs-changed.txt" 2>&1 || true
 grep -q 'reference changed: clip.mp4' "$OUT/refs-changed.txt" || check "references: status does not say clip.mp4 changed: $(tail -c 300 "$OUT/refs-changed.txt")"
 cozy --json project -p "$R" status > "$OUT/refs-changed.json" 2> /dev/null || true
-J '[.stale[] | "\(.name): \(.why)"] | sort == ["beat: clip changed", "mentions: clip changed"]' "$OUT/refs-changed.json" \
-  || check "references: out of date: $(jq -c .stale "$OUT/refs-changed.json"), not exactly beat and mentions"
+J '[.stale[] | "\(.name): \(.why)"] | sort == ["again: clip changed", "mentions: clip changed"]' "$OUT/refs-changed.json" \
+  || check "references: out of date: $(jq -c .stale "$OUT/refs-changed.json"), not exactly again and mentions"
 cozy project -p "$R" render all --on local > "$OUT/refs-render-2.txt" 2>&1 || check "references: render all after the edit: $(tail -c 300 "$OUT/refs-render-2.txt")"
-J '(.nodes.mentions.versions | length) == 2 and (.nodes.beat.versions | length) == 2 and (.nodes.plain.versions | length) == 1' "$R/project.lock" \
+J '(.nodes.mentions.versions | length) == 2 and (.nodes.again.versions | length) == 2 and (.nodes.plain.versions | length) == 1' "$R/project.lock" \
   || check "references: render all did not remake exactly the two: $(jq -c '.nodes | map_values(.versions | length)' "$R/project.lock")"
 CLIP=$(sha "$R/clip.mp4")
-[ "$(given beat | jq -r '.[0].sha256')" = "$CLIP" ] || check "references: beat's new take was not given the edited clip: $(given beat)"
+[ "$(given again | jq -r '.[0].sha256')" = "$CLIP" ] || check "references: again's new take was not given the edited clip: $(given again)"
 
 step "a project: a reference gone, a reference rendered, a name used twice"
 mv "$R/clip.mp4" "$R/clip-moved.mp4"
@@ -262,12 +263,16 @@ code=0; cozy project -p "$R" status > "$OUT/refs-twice.txt" 2>&1 || code=$?
 cp "$OUT/refs-ok.yaml" "$R/project.yaml"
 cat >> "$R/project.yaml" <<YAML
 entities:
-  - name: prop
-    kind: prop
+  - name: set
+    kind: environment
     description: Seen in <clip>.
+    render:
+      with: ./draw.py/draw
 YAML
 code=0; cozy project -p "$R" status > "$OUT/refs-reader.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'which only a shot reads' "$OUT/refs-reader.txt"; } || check "references: an entity mentioning a clip was not refused (exit $code): $(tail -c 300 "$OUT/refs-reader.txt")"
+{ [ "$code" = 0 ] && grep -q 'which only a shot reads: it stays plain text' "$OUT/refs-reader.txt"; } || check "references: an entity mentioning a clip did not warn and go on (exit $code): $(tail -c 300 "$OUT/refs-reader.txt")"
+cozy project -p "$R" render set --on local > "$OUT/refs-reader-render.txt" 2>&1 || check "references: an entity mentioning a clip did not render: $(tail -c 300 "$OUT/refs-reader-render.txt")"
+J '.nodes.set.versions[-1].upstream | all(.node != "clip")' "$R/project.lock" || check "references: an entity read the clip it mentioned: $(jq -c '.nodes.set.versions[-1].upstream' "$R/project.lock")"
 
 step "a project: a shot's own references: is ignored, with the warning"
 cp "$OUT/refs-ok.yaml" "$R/project.yaml"
@@ -276,6 +281,166 @@ cozy --json project -p "$R" status > "$OUT/refs-old.json" 2> "$OUT/refs-old.err"
 J '.warnings | any(test("cozy reads no field shots\\.2\\.references; it is ignored"))' "$OUT/refs-old.json" \
   || check "references: a shot's references: did not warn: $(jq -c .warnings "$OUT/refs-old.json")"
 J '[.nodes[].name] | index("old") == null' "$OUT/refs-old.json" || check "references: a shot's references: was read: $(jq -c '[.nodes[].name]' "$OUT/refs-old.json")"
+}
+
+# never_refuse: nothing a shot says is refused. A take shorter than duration_s is cut at its real length, a write or a
+# setup's frame past its end takes its last frame, a plate its function does not take is left out, and status says so
+# and what its function said. No text renders, and a shot's text reaches each of its calls
+# as written. A shot mentioning a state it writes splits there and reads its own frame, or, where it cannot, renders on
+# through and says so. A mention that closes a cycle stays plain text, while a cycle of setup: and frame: is refused. An
+# edit past a take's end leaves that cut out. A stale prompt: or beats: is a field cozy does not read, and a
+# text opening a YAML line with `[` is told where it goes.
+never_refuse() {
+step "a project: nothing a shot says is refused"
+local N=$OUT/never code
+cozy project new "$N" > /dev/null 2>&1 || check "project new for never_refuse failed"
+cp "$here/project/shoot.py" "$N/shoot.py"; cp "$here/project/draw.py" "$N/draw.py"
+plate "$N/plate.mp4" testsrc2 440 300; still "$N/still.png" teal
+cat > "$N/project.yaml" <<YAML
+defaults:
+  shot:
+    with: ./shoot.py/shoot
+references:
+  - name: clip
+    video: plate.mp4
+entities:
+  - name: place
+    kind: environment
+    description: A plain room.
+    image: still.png
+    setups:
+      - name: a
+        camera: wide
+        frame:
+          shot: long
+          at: 30
+        render:
+          with: ./draw.py/draw
+  - name: left
+    kind: environment
+    description: Beside <right>.
+    render:
+      with: ./draw.py/draw
+  - name: right
+    kind: environment
+    description: Beside <left>.
+    render:
+      with: ./draw.py/draw
+world_states:
+  - name: closing
+    image: still.png
+  - name: marked
+    image: still.png
+  - name: too-short
+    image: still.png
+  - name: uncontinued
+    image: still.png
+shots:
+  - name: long
+    description: A long shot with no timestamps.
+    duration_s: 20
+    plate:
+      video: plate.mp4
+    writes:
+      - state: closing
+        at: 12
+  - name: silent
+    duration_s: 6
+    plate:
+      video: plate.mp4
+  - name: timed
+    description: |
+      [Shot 1] A plain room.
+      At 00:03.000, the rest, after <marked>.
+      [Shot 2] At 00:04.000, the shot cuts to a wall.
+    duration_s: 6
+    plate:
+      video: plate.mp4
+    writes:
+      - state: marked
+        at: 2
+  - name: plated
+    description: As in <clip>.
+    duration_s: 6
+    render:
+      with: ./shoot.py/bare
+    plate:
+      video: plate.mp4
+  - name: short
+    description: One call, its renderer's shortest piece over the write, after <too-short>.
+    duration_s: 6
+    render:
+      with: ./shoot.py/pieces
+    plate:
+      video: plate.mp4
+    writes:
+      - state: too-short
+        at: 2
+  - name: whole
+    description: One call, its renderer cannot continue, as in <clip>, after <uncontinued>.
+    duration_s: 6
+    render:
+      with: ./shoot.py/bare
+    writes:
+      - state: uncontinued
+        at: 2
+YAML
+code=0; cozy project -p "$N" render all --on local > "$OUT/never-render.txt" 2>&1 || code=$?
+[ "$code" = 0 ] || { check "never_refuse: render all: exit $code: $(tail -c 500 "$OUT/never-render.txt")"; return; }
+cozy --json project -p "$N" status > "$OUT/never-status.json" 2> /dev/null || check "never_refuse: status failed"
+said() { J --arg t "$1" '.warnings | any(contains($t))' "$OUT/never-status.json" || check "never_refuse: status does not say '$1': $(jq -c .warnings "$OUT/never-status.json")"; }
+said 'long: rendered 6 s of 20 s'
+said 'long: its video ends before 11.98 s: its last frame stands in'
+said 'silent has no description'
+said "place.a's frame is at 30 s, outside long's 0–20 s: the nearest frame stands in"
+said 'place.a: its video ends before 30.00 s: its last frame stands in'
+said "plated's renderer takes no plate: it renders without it"
+said 'right mentions left, which is made from it: that mention stays plain text'
+said "short mentions too-short and writes it at 2 s, but a call from 0 s to 2 s is under its renderer's 5 s"
+said 'whole mentions uncontinued and writes it at 2 s, but its renderer cannot continue a video'
+seen() { jq -e "$2" "$N/$(jq -r --arg s "$1" '.nodes[$s].versions[-1].assets.given.path' "$N/project.lock")" > /dev/null || check "never_refuse: $1 was given $(jq -c . "$N/$(jq -r --arg s "$1" '.nodes[$s].versions[-1].assets.given.path' "$N/project.lock")"), not $2"; }
+seen long '.duration_s == 20'
+seen silent '.prompt == ""'
+seen plated '[.references[].name] == ["clip"]'
+seen timed '.continues and .prompt == "[Shot 1] A plain room.\nAt 00:03.000, the rest, after <marked>.\n[Shot 2] At 00:04.000, the shot cuts to a wall.\n" and ([.references[].name] == ["marked"])'
+seen short '(.continues | not) and .duration_s == 6'
+seen whole '.duration_s == 6'
+J '(.nodes.timed.versions[-1] | (.runs | length) == 2 and .writes.marked != null) and (.nodes.short.versions[-1].runs | length) == 1 and (.nodes.whole.versions[-1].runs | length) == 1' "$N/project.lock" \
+  || check "never_refuse: calls: $(jq -c '.nodes | map_values(.versions[-1].runs)' "$N/project.lock")"
+J '(.nodes.left.versions | length) == 1 and (.nodes.right.versions | length) == 1 and (.nodes.left.versions[-1].upstream | any(.node == "right")) and (.nodes.right.versions[-1].upstream | length == 0)' "$N/project.lock" \
+  || check "never_refuse: a cycle of mentions: $(jq -c '[.nodes.left, .nodes.right] | map(.versions[-1].upstream)' "$N/project.lock")"
+J '.nodes["place.a"].versions | length == 1' "$N/project.lock" || check "never_refuse: a setup's frame past its shot made no version: $(jq -c '.nodes["place.a"]' "$N/project.lock")"
+[ -s "$N/$(jq -r '.nodes.long.versions[-1].writes.closing.path' "$N/project.lock")" ] || check "never_refuse: long's write past its end kept no frame: $(jq -c '.nodes.long.versions[-1].writes' "$N/project.lock")"
+frames() { ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1"; }
+local cut; cut=$(jq -r '.cuts[] | select(.cut == "edit.mp4") | .frames' "$OUT/never-status.json")
+{ [ "$cut" = $((6 * 144)) ] && [ "$(frames "$N/edit.mp4")" = "$cut" ]; } \
+  || check "never_refuse: every take is 6 s, but status says $cut frames and edit.mp4 has $(frames "$N/edit.mp4"), not $((6 * 144))"
+
+step "a project: an edit past a take's end, stale fields, and a line opened with a bracket"
+cat >> "$N/project.yaml" <<YAML
+edit:
+  - shot: long
+    start: 200
+  - shot: silent
+YAML
+cozy project -p "$N" render all --on local > "$OUT/never-past.txt" 2>&1 || check "never_refuse: an edit past a take's end was refused: $(tail -c 300 "$OUT/never-past.txt")"
+grep -q "the edit cuts long from frame 200, past its take's end: that cut is left out" "$OUT/never-past.txt" || check "never_refuse: render all did not say the cut is left out: $(tail -c 300 "$OUT/never-past.txt")"
+[ "$(frames "$N/edit.mp4")" = 144 ] || check "never_refuse: edit.mp4 is not silent's 144 frames: $(frames "$N/edit.mp4")"
+cp "$N/project.yaml" "$OUT/never-ok.yaml"
+sed -i 's|^  - name: silent$|  - name: silent\n    prompt: Stale.\n    beats:\n      - at: 0\n        prompt: Stale.|' "$N/project.yaml"
+cozy --json project -p "$N" status > "$OUT/never-stale.json" 2> /dev/null || check "never_refuse: status with stale fields failed"
+J '[.warnings[] | select(test("cozy reads no field shots\\.1\\.(prompt|beats); it is ignored"))] | length == 2' "$OUT/never-stale.json" \
+  || check "never_refuse: stale prompt: and beats: did not warn: $(jq -c .warnings "$OUT/never-stale.json")"
+cp "$OUT/never-ok.yaml" "$N/project.yaml"
+# A cycle of what the file declares, with no mention in it, is a malformed project.
+sed -i 's|^          shot: long$|          shot: long-way|; s|^  - name: silent$|  - name: long-way\n    setup: place.a\n    duration_s: 6\n  - name: silent|' "$N/project.yaml"
+code=0; cozy project -p "$N" status > "$OUT/never-cycle.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'a cycle: ' "$OUT/never-cycle.txt"; } || check "never_refuse: a cycle of setup: and frame: was not refused (exit $code): $(tail -c 300 "$OUT/never-cycle.txt")"
+cp "$OUT/never-ok.yaml" "$N/project.yaml"
+sed -i 's|^    description: A long shot with no timestamps\.$|    description: [Shot 1] A long shot.|' "$N/project.yaml"
+code=0; cozy project -p "$N" status > "$OUT/never-bracket.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'description: |' "$OUT/never-bracket.txt"; } || check "never_refuse: a line opened with [ did not say where it goes (exit $code): $(tail -c 300 "$OUT/never-bracket.txt")"
+cp "$OUT/never-ok.yaml" "$N/project.yaml"
 }
 
 # A reference on a filesystem with copy-on-write clones (an XFS image made here): taken in by reflink, the project's
@@ -327,8 +492,8 @@ SA=$(sha "$P/plates/a.mp4") SB=$(sha "$P/plates/b.mp4") SR=$(sha "$P/plates/r.mp
 cat > "$P/project.yaml" <<'YAML'
 fps: 24
 shots:
-  - {name: a, prompt: "test pattern a", duration_s: 8, video: plates/a.mp4}
-  - {name: b, prompt: "test pattern b", duration_s: 8, video: plates/b.mp4}
+  - {name: a, description: "test pattern a", duration_s: 8, video: plates/a.mp4}
+  - {name: b, description: "test pattern b", duration_s: 8, video: plates/b.mp4}
 edit: [{shot: a, start: 7, end: 151}, {shot: b, start: 13, end: 140}, {shot: a, start: 48, end: 96}, {shot: b, start: 150, end: 161}]
 YAML
 ls -1 "$CACHE" 2>/dev/null | sort > "$OUT/frames-cache-0.txt" || true

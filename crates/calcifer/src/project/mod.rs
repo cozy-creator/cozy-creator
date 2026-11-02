@@ -52,7 +52,7 @@ use tracing::warn;
 use crate::api::{Api, Refusal, parse};
 use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
-use host::{Host, Install};
+use host::Host;
 use video::{ALL, Canvas, Render, Video};
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
@@ -317,18 +317,16 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let project = api.projects.get(&api, &id)?;
     let video = Video::load(&project.folder).map_err(Refusal)?;
     let lock = project.folder.lock().map_err(Refusal)?;
-    let (beatless, mut warnings) = match beatless(&Host::new(&api), "", &video, &project.folder.dir, &[]).await {
-        Ok(beatless) => (beatless, video.warnings.clone()),
-        Err(error) => (
-            vec![],
-            [video.warnings.clone(), vec![format!("shot lengths are not checked: {}", error.message)]].concat(),
-        ),
-    };
+    let mut warnings = video.warnings.clone();
+    for node in &video.graph.nodes {
+        let made = node.file.as_ref().and_then(|(path, _)| lock.made(&node.id, path));
+        warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().cloned()));
+    }
     warnings.dedup();
     let (mut missing, mut stale, status) = (vec![], vec![], video.graph.status(&lock));
     let nodes = (video.graph.order.iter())
         .map(|&i| {
-            let (row, standing) = row(&video, &lock, &status, i, &beatless);
+            let (row, standing) = row(&video, &lock, &status, i);
             match standing {
                 Standing::Missing => missing.push(row.name.clone()),
                 Standing::Stale(why) => stale.push(Stale { name: row.name.clone(), why }),
@@ -344,13 +342,14 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
             .and_then(|m| m.modified())
             .ok()
             .map(|at| at.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as i64));
-        let (pieces, skips) = match video.cuts(&project.folder, preview) {
+        let (mut pieces, skips) = match video.cuts(&project.folder, preview) {
             Ok(cut) => cut,
             Err(error) => {
                 warnings.push(error.message);
                 (vec![], vec![])
             }
         };
+        warnings.extend(video::past_end(&mut pieces, video.canvas.fps));
         // What the cut is as project.lock records its takes: frames, and the takes retimed.
         let made = video::measure(&pieces, video.canvas.fps);
         let (frames, retimed) = (made.as_ref().map(|made| made.frames), made.map(|made| made.retimed).unwrap_or_default());
@@ -372,14 +371,13 @@ enum Standing {
 }
 
 /// Node `i` as `GET /v1/projects/{id}` lists it: its approved version, assets and status in its own
-/// noun (`status`: every node's; `beatless`: the lines naming shots that need beats).
-fn row(video: &Video, lock: &Lock, status: &[Status], i: usize, beatless: &[String]) -> (Row, Standing) {
+/// noun (`status`: every node's).
+fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standing) {
     let (node, status) = (&video.graph.nodes[i], &status[i]);
     let making: Vec<String> = (lock.pending.values())
         .filter(|p| name_key(&p.made.node) == name_key(&node.id) && p.run > 0)
         .map(|p| p.run.to_string())
         .collect();
-    let flagged = beatless.iter().find(|line| line.starts_with(&format!("{} ", node.id)));
     let made = node.file.as_ref().and_then(|(path, _)| lock.made(&node.id, path));
     // The version project.lock approves; a file attached by hand (or its clean) is none.
     let approved = (lock.node(&node.id).and_then(|n| n.approved.as_ref()))
@@ -394,20 +392,19 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize, beatless: &[Stri
         (None, None) => BTreeMap::new(),
     };
     let gone = video.missing(i);
-    let (status, standing) = match (making.as_slice(), flagged, status) {
-        ([run], ..) => (format!("making (run {run})"), Standing::Other),
-        ([], _, _) if !gone.is_empty() => (format!("reference missing: {}: relink", gone.join(", ")), Standing::Missing),
-        (runs @ [_, ..], ..) => (format!("making (runs {})", runs.join(", ")), Standing::Other),
-        ([], Some(line), _) => (line.clone(), Standing::Other),
-        ([], None, Status::Current) if video.unclean(lock, i).is_some() => {
+    let (status, standing) = match (making.as_slice(), status) {
+        ([run], _) => (format!("making (run {run})"), Standing::Other),
+        ([], _) if !gone.is_empty() => (format!("reference missing: {}: relink", gone.join(", ")), Standing::Missing),
+        (runs @ [_, ..], _) => (format!("making (runs {})", runs.join(", ")), Standing::Other),
+        ([], Status::Current) if video.unclean(lock, i).is_some() => {
             ("picture not cleaned yet".into(), Standing::Missing)
         }
-        ([], None, Status::Empty) if !video.wanted(i) => {
+        ([], Status::Empty) if !video.wanted(i) => {
             ("not needed: no resolution, or its shot meets it".into(), Standing::Other)
         }
-        ([], None, Status::Empty) => (shown(status, node.noun), Standing::Missing),
-        ([], None, Status::Stale(why)) => (shown(status, node.noun), Standing::Stale(why.clone())),
-        ([], None, Status::Current) => (shown(status, node.noun), Standing::Other),
+        ([], Status::Empty) => (shown(status, node.noun), Standing::Missing),
+        ([], Status::Stale(why)) => (shown(status, node.noun), Standing::Stale(why.clone())),
+        ([], Status::Current) => (shown(status, node.noun), Standing::Other),
     };
     let row = Row {
         name: node.id.clone(),
@@ -441,7 +438,7 @@ async fn node(
     let project = api.projects.get(&api, &id)?;
     let (video, lock) = (Video::load(&project.folder).map_err(Refusal)?, project.folder.lock().map_err(Refusal)?);
     let i = find(&video, &name).map_err(Refusal)?;
-    let (node, _) = row(&video, &lock, &video.graph.status(&lock), i, &[]);
+    let (node, _) = row(&video, &lock, &video.graph.status(&lock), i);
     let approved = lock.node(&node.name).and_then(|n| n.approved.clone());
     let versions = (lock.node(&node.name).into_iter().flat_map(|n| &n.versions))
         .map(|made| Version {
@@ -450,6 +447,7 @@ async fn node(
             made_by: made.made_by.as_ref().map(|by| by.with.clone()),
             runs: made.runs.clone(),
             approved: made.primary().is_some_and(|asset| Some(&asset.path) == approved.as_ref()),
+            warnings: made.warnings.clone(),
         })
         .collect();
     Ok(Json(NodeVersions { node, versions }))
@@ -595,21 +593,6 @@ async fn runs(
     let target = Target { on: asked.on, hub: asked.hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let mut takes = vec![];
-    if all {
-        match beatless(&Host::new(&api), &target.hub, &video, &project.folder.dir, &target.on).await {
-            Ok(beatless) if !beatless.is_empty() => {
-                return Err(Refusal(
-                    Error::new(Kind::Validation, "beats_needed", beatless[0].clone())
-                        .remedy("give it beats:, each with at: and prompt:; nothing was rendered"),
-                ));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                let message = format!("shot lengths are not checked: {}", error.message);
-                let _ = project.events.send(Event::Warning { message });
-            }
-        }
-    }
     for name in asked.names.iter().filter(|_| !all) {
         let i = find(&video, name).map_err(Refusal)?;
         let node = video.graph.nodes[i].id.clone();
@@ -897,18 +880,19 @@ impl Walk {
                 return self.clean(&key, &target.hub, &video.clean_render(), picture, made, Then::Attached, &settle).await;
             }
             let renderer = (self.host)
-                .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on, Install::Wait)
+                .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on)
                 .await?;
             let request = video.request(self.folder(), lock, i, &renderer)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let then = if video.cleans(i) { Then::Clean { approve } } else { Then::List { approve } };
-            let (mut payload, mut files, mut frames) = (request.payload, vec![], vec![]);
+            let (mut payload, mut files, mut frames, mut said) = (request.payload, vec![], vec![], vec![]);
             for input in request.files {
                 // A frame of a video, taken out here: held until the run has been sent.
                 let (path, digest) = match input.at {
                     None => (input.path, input.digest),
                     Some(at) => {
-                        let frame = self.frame(&id, &input.path, at).await?;
+                        let (frame, past) = self.frame(&id, &input.path, at).await?;
+                        said.extend(past);
                         let digest = folder::hash(frame.path())?;
                         set(&mut payload, &input.field, Value::String(digest.clone()));
                         frames.push(frame);
@@ -917,8 +901,9 @@ impl Walk {
                 };
                 files.push((input.field, path, digest));
             }
-            let (made, field, call, hub) =
+            let (mut made, field, call, hub) =
                 (request.made.clone(), request.field.into(), request.call.clone(), target.hub.clone());
+            made.warnings.extend(said);
             let pending = Pending { made, run: 0, hub, field, on: vec![], call, then };
             self.submit(&key, &payload, files, &request.render, &target.on, pending, &settle).await
         };
@@ -948,6 +933,12 @@ impl Walk {
             // A file taken in before this computer had an ffprobe is probed now.
             if pieces.iter().any(|piece| piece.shape.is_none()) {
                 pieces = Video::load(self.folder())?.cuts(self.folder(), preview)?.0;
+            }
+            for message in video::past_end(&mut pieces, video.canvas.fps) {
+                self.say(Event::Warning { message });
+            }
+            if pieces.is_empty() {
+                continue;
             }
             let (folder, cutting, began) =
                 (Folder::open(&self.folder().dir, self.folder().tools.clone())?, self.project.cutting.clone(), Instant::now());
@@ -1025,7 +1016,8 @@ impl Walk {
         };
         for (state, at) in &call.writes {
             // Half a frame early: a write at the shot's end is its last frame.
-            let frame = self.frame(&node, &folder.path(&video_asset.path), (at - 1.0 / 48.0).max(0.0)).await?;
+            let (frame, past) = self.frame(&node, &folder.path(&video_asset.path), (at - 1.0 / 48.0).max(0.0)).await?;
+            made.warnings.extend(past);
             made.writes.insert(state.clone(), folder.keep(frame.path())?);
         }
         if call.index + 1 < call.ends.len() {
@@ -1036,7 +1028,7 @@ impl Walk {
                 from: Some((video_asset, made.assets.get("latents").cloned())),
             };
             let lock = folder.lock()?;
-            let renderer = self.host.renderer(hub, video.render(i).target(), &folder.dir, on, Install::Wait).await?;
+            let renderer = self.host.renderer(hub, video.render(i).target(), &folder.dir, on).await?;
             let request = video.next_call(folder, &lock, i, &renderer, next, &made.writes)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let carried = Made {
@@ -1045,6 +1037,7 @@ impl Walk {
                 upstream: made.upstream.clone(),
                 writes: made.writes.clone(),
                 runs: made.runs.clone(),
+                warnings: made.warnings.clone(),
                 ..Default::default()
             };
             let then = Then::List { approve };
@@ -1099,7 +1092,7 @@ impl Walk {
         settle: &impl Fn(&mut Lock),
     ) -> Result<(), Error> {
         let target = render.target();
-        let renderer = self.host.renderer(&pending.hub, target, &self.folder().dir, on, Install::Wait).await?;
+        let renderer = self.host.renderer(&pending.hub, target, &self.folder().dir, on).await?;
         let node = pending.made.node.clone();
         let named = |e: Error| Error { message: format!("{node}'s render: {}", e.message), ..e };
         let mut payload = payload.clone();
@@ -1257,6 +1250,13 @@ impl Walk {
         };
         let mut made = Made { number, ..pending.made.clone() };
         made.runs.push(run.number);
+        for said in said_by(run) {
+            let message = format!("{node}: {said}");
+            self.say(Event::Warning { message: message.clone() });
+            if !made.warnings.contains(&message) {
+                made.warnings.push(message);
+            }
+        }
         if let Then::Clean { approve } = pending.then {
             // Listed once cleaned, made by both runs: the render as its `image`, and its `clean`.
             made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
@@ -1309,33 +1309,45 @@ impl Walk {
         Ok(())
     }
 
-    /// The frame of `video` at `at` seconds, as a PNG beside the project's files.
-    async fn frame(&self, id: &str, video: &FsPath, at: f64) -> Result<tempfile::NamedTempFile, Error> {
+    /// The frame of `video` at `at` seconds as a PNG beside the project's files, or its last when it
+    /// ends before that (a take is what its renderer made), which is said and returned.
+    async fn frame(&self, id: &str, video: &FsPath, at: f64) -> Result<(tempfile::NamedTempFile, Option<String>), Error> {
         let (ffmpeg, _) = self.host.ffmpeg().await?;
         let io = |e: std::io::Error| {
             Error::new(Kind::Unavailable, "project_io", format!("a frame of {}: {e}", video.display()))
         };
         let frame = tempfile::Builder::new().suffix(".png").tempfile_in(&self.folder().dir).map_err(io)?;
         let (video_path, out) = (video.to_owned(), frame.path().to_owned());
-        let done = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(ffmpeg)
-                .args(["-y", "-v", "error", "-ss", &format!("{at}"), "-i"])
-                .arg(video_path)
-                .args(["-frames:v", "1", "-update", "1"])
-                .arg(out)
-                .output()
+        let grab = move |seek: Vec<String>, once: bool| {
+            let mut command = std::process::Command::new(&ffmpeg);
+            command.args(["-y", "-v", "error"]).args(seek).arg("-i").arg(&video_path);
+            command.args(if once { &["-frames:v", "1", "-update", "1"][..] } else { &["-update", "1"][..] }).arg(&out);
+            let done = command.output();
+            let empty = std::fs::metadata(&out).map_or(true, |meta| meta.len() == 0);
+            (done, empty)
+        };
+        let task = |e: tokio::task::JoinError| Error::new(Kind::Internal, "frame", e.to_string());
+        let (done, past) = tokio::task::spawn_blocking(move || {
+            let (done, empty) = grab(vec!["-ss".into(), format!("{at}")], true);
+            match (done, empty) {
+                (Ok(done), false) if done.status.success() => (Ok(done), false),
+                // Its last frame: the frames of its last second, each over the one before.
+                _ => (grab(vec!["-sseof".into(), "-1".into()], false).0, true),
+            }
         })
         .await
-        .map_err(|e| Error::new(Kind::Internal, "frame", e.to_string()))?
-        .map_err(io)?;
+        .map_err(task)?;
+        let done = done.map_err(io)?;
         if !done.status.success() || std::fs::metadata(frame.path()).map_or(0, |m| m.len()) == 0 {
             let said = String::from_utf8_lossy(&done.stderr);
-            let said = format!("{id}'s frame: its shot's video has no frame at {at} s ({})", said.trim());
-            return Err(
-                Error::new(Kind::Validation, "frame_missing", said).remedy("move `at:` inside the shot's length")
-            );
+            let said = format!("{id}'s frame: its shot's video has no frame ({})", said.trim());
+            return Err(Error::new(Kind::Validation, "frame_missing", said));
         }
-        Ok(frame)
+        let past = past.then(|| format!("{id}: its video ends before {at:.2} s: its last frame stands in"));
+        if let Some(message) = &past {
+            self.say(Event::Warning { message: message.clone() });
+        }
+        Ok((frame, past))
     }
 }
 
@@ -1389,19 +1401,11 @@ fn new_key() -> String {
     format!("project-{}", hex::encode(key))
 }
 
-/// Shots longer than their renderer's pieces with no beats, as lines naming each: each shot's own
-/// renderer states its longest piece (`max_piece_s`).
-async fn beatless(host: &Host, hub: &str, video: &Video, folder: &FsPath, on: &[On]) -> Result<Vec<String>, Error> {
-    let mut lines = vec![];
-    for (i, shot, seconds) in video.beatless() {
-        let render = video.render(i);
-        let target = render.target();
-        let renderer = host.renderer(hub, target, folder, on, Install::Never).await?;
-        if let Some(max) = renderer.accepts.max_piece_s.filter(|max| seconds > *max) {
-            lines.push(format!("{shot} needs beats: {seconds} s, and {target} renders pieces of at most {max} s"));
-        }
-    }
-    Ok(lines)
+/// What a run's function said of its result (its `warnings`), and its machine's.
+fn said_by(run: &Run) -> Vec<String> {
+    let result = run.result.as_ref().and_then(|result| result["warnings"].as_array()).into_iter().flatten();
+    let result = result.filter_map(|said| said.as_str().map(str::to_owned));
+    run.warnings.iter().map(|warning| warning.message.clone()).chain(result).collect()
 }
 
 /// `value` at `field` (`assets.0.image`) in `payload`.

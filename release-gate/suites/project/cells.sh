@@ -1,13 +1,13 @@
 # Suite `project` (xs-139, cl-716): `cozy project render` on fixture projects, the walk in this computer's Calcifer (the
 # candidate cozy), the runs on $M. Each cell is a project folder under $OUT, judged from its project.lock and assets:
-# - project-split: a 10 s shot whose write at 5 s a later beat reads: two calls, the second continuing the first
+# - project-split: a 10 s shot whose text reads a state it writes at 5 s: two calls, the second continuing the first
 #   (`continue_from`, the first's latents), the written frame kept, the join smooth; project-upscale: its upscale from
 #   those latents, at 1080p and the shot's aspect, and edit.mp4 at the 1920x1080 canvas.
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
 # - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character cleaned.
 # - project-local: a node rendered `with: ./still.py/draw`, local code made ready by Calcifer.
-# - project-refusals: a plate to a function that takes none, and an option that sets the canvas, refused before any run.
+# - project-refusals: an option that sets the canvas, refused before any run.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg/fn names the gate's folder; a project reads `with:` from its own.
 abs() { [[ $1 == ./* ]] && echo "$OUT/${1#./}" || echo "$1"; }
@@ -33,7 +33,6 @@ SEAMBAR='if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] 
 
 if want project-split || want project-upscale; then
   P=$(project project-split <<YAML
-type: video
 style: "naturalistic photo, warm late-afternoon light, handheld camera"
 aspect_ratio: "16:9"
 resolution: 1080p
@@ -45,13 +44,12 @@ world_states:
   - {name: wall, init: "<yard>'s long wall, bare.", blocking: "a stepladder against the wall", image: place.png}
 shots:
   - name: mural
-    prompt: "<hero> paints a sign on the long wall of <yard>."
+    description: |
+      [Shot 1] <hero> paints a sign on the long wall of <yard>, rolling bright orange paint across it in big letters that read OPEN.
+      At 00:06.000, <hero> steps back from <wall>, where the orange letters read OPEN, and says "Done."
     duration_s: 10
     render: {options: {seed: $((R + 300))}}
     writes: [{state: wall, at: 5}]
-    beats:
-      - {at: 0, prompt: "<hero> rolls bright orange paint across the wall, painting big letters that read OPEN."}
-      - {at: 6, prompt: "<hero> steps back from <wall>, where the orange letters read OPEN, and says \"Done.\""}
 YAML
 )
   render project-split "$P" all --preview || expect project-split FAIL "render all --preview: $(tail -c 300 project-split.log)"
@@ -84,13 +82,12 @@ fi
 
 if want project-plate; then
   P=$(project project-plate <<YAML
-type: video
 aspect_ratio: "16:9"
 defaults: {shot: {with: $H3GEN}}
 entities:
   - {name: pattern, kind: environment, description: "a synthetic broadcast test pattern", image: plate.png}
 shots:
-  - {name: follow, prompt: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears.",
+  - {name: follow, description: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears.",
      duration_s: 5, plate: {video: plate.mp4}, render: {options: {seed: $((R + 301))}}}
 YAML
 )
@@ -105,14 +102,13 @@ fi
 
 if want project-voice; then
   P=$(project project-voice <<YAML
-type: video
 aspect_ratio: "16:9"
 defaults: {shot: {with: $H3GEN}, clean: {with: $CLEAN}}
 entities:
   - {name: host, kind: character, description: "$CHAR", image: hero.png, voice: voice.wav}
   - {name: yard, kind: environment, description: "$SCENE", image: place.png}
 shots:
-  - {name: hello, prompt: "<host> stands in <yard>, looks into the camera and says \"Welcome to the yard.\"", duration_s: 5,
+  - {name: hello, description: "<host> stands in <yard>, looks into the camera and says \"Welcome to the yard.\"", duration_s: 5,
      render: {options: {seed: $((R + 302))}}}
 YAML
 )
@@ -131,7 +127,6 @@ fi
 
 if want project-stills; then
   P=$(project project-stills <<YAML
-type: video
 aspect_ratio: "16:9"
 defaults: {entity: {with: $STILL}, setup: {with: $STILL}, clean: {with: $CLEAN}}
 entities:
@@ -158,7 +153,6 @@ fi
 
 if want project-local; then
   P=$(project project-local <<YAML
-type: video
 aspect_ratio: "16:9"
 entities:
   - {name: lot, kind: environment, description: "$SCENE", render: {with: ./still.py/draw}}
@@ -173,17 +167,14 @@ fi
 
 if want project-refusals; then
   P=$(project project-refusals <<YAML
-type: video
 aspect_ratio: "16:9"
 entities:
   - {name: yard, kind: environment, description: "$SCENE", image: place.png}
 shots:
-  - {name: plated, prompt: "<yard>.", duration_s: 5, plate: {video: plate.mp4}, render: {with: $SDXL}}
-  - {name: square, prompt: "<yard>.", duration_s: 5, render: {with: $SDXL, options: {aspect_ratio: "1:1"}}}
+  - {name: square, description: "<yard>.", duration_s: 5, render: {with: $SDXL, options: {aspect_ratio: "1:1"}}}
 YAML
 )
-  nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
-  for c in "plated:takes no plate" "square:set by the project"; do
+  for c in "square:set by the project"; do
     n=${c%%:*} why=${c#*:}
     if render "project-refusal-$n" "$P" "$n" || ! grep -q "$why" "project-refusal-$n.log"; then
       expect "project-refusal-$n" FAIL "not refused ($why): $(tail -c 300 "project-refusal-$n.log")"
