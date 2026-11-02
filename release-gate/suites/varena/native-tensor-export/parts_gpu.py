@@ -54,6 +54,17 @@ def run(device: int):
                             stream=stream.cuda_stream)
         assert empty.numel() == 0 and empty.shape == (0,)
         assert empty.untyped_storage().data_ptr() == whole.data_ptr()
+        for metadata in (
+            {"dtype": "uint8", "shape": (0,), "byte_offset": 257},
+            {"dtype": "float32", "shape": (0,), "byte_offset": 255},
+            {"dtype": "uint8", "shape": (1,), "byte_offset": 256},
+        ):
+            try:
+                tiny.tensor(**metadata, stream=stream.cuda_stream)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"invalid empty/nonempty packed view accepted: {metadata}")
         escaped_empty = empty.detach()
         with torch.cuda.stream(empty_stream):
             empty_stream.wait_stream(stream)
