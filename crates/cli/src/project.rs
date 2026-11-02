@@ -240,9 +240,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             }
             Event::Said { message } => output::say(ctx, &message),
             Event::Warning { message } => output::warn(&message),
-            Event::Cut { cut, seconds } => {
+            Event::Cut { cut, frames, fps, retimed, took_s } => {
                 let path = output::link(ctx, &opened.path.join(&cut));
-                output::say(ctx, &format!("cut {path} in {seconds:.1} s"));
+                output::say(ctx, &format!("cut {path}: {}{} in {took_s:.1} s", length(frames, fps), retimes(&retimed, fps)));
             }
             Event::Ended { error: Some(error) } => return Err(error),
             Event::Ended { error: None } => return Ok(ExitCode::SUCCESS),
@@ -273,10 +273,12 @@ fn summary(ctx: &Context, state: &State) {
             skips => format!("; it skips {} (nothing made yet)", skips.join(", ")),
         };
         let name = cut.cut.trim_end_matches(".mp4");
+        let made = cut.frames.map(|frames| format!(", {}", length(frames, state.fps))).unwrap_or_default();
+        let retimed = retimes(&cut.retimed, state.fps);
         match cut.cut_at_ms {
             Some(at_ms) => output::say(
                 ctx,
-                &format!("{name}: {}, cut {} ago{skips}", output::link(ctx, &cut.path), output::age(at_ms)),
+                &format!("{name}: {}{made}, cut {} ago{retimed}{skips}", output::link(ctx, &cut.path), output::age(at_ms)),
             ),
             None => output::say(ctx, &format!("{name}: not cut yet ({})", cut.path.display())),
         }
@@ -284,6 +286,19 @@ fn summary(ctx: &Context, state: &State) {
     let uncut = state.cuts.iter().any(|cut| cut.cut_at_ms.is_none());
     if !state.missing.is_empty() || !state.stale.is_empty() || uncut {
         output::next(ctx, &["cozy project render all --on <machine>"]);
+    }
+}
+
+/// A cut's length: `271 frames (11.3 s at 24 fps)`.
+fn length(frames: u64, fps: f64) -> String {
+    format!("{frames} frames ({:.1} s at {fps} fps)", frames as f64 / fps)
+}
+
+/// `; it retimes b (25 fps) to 24 fps`, when it does.
+fn retimes(retimed: &[String], fps: f64) -> String {
+    match retimed {
+        [] => String::new(),
+        takes => format!("; it retimes {} to {fps} fps", takes.join(", ")),
     }
 }
 

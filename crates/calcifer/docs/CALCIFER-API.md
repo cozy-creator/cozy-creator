@@ -112,12 +112,14 @@ Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects
 A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/`, and its cuts
-(`edit.mp4`, with `resolution:` also `preview.mp4`). Its id is fixed by its folder. Every file the project uses
+(`edit.mp4`, with `resolution:` also `preview.mp4`), each with its timeline beside it (`edit.otio`). Its id is
+fixed by its folder. Every file the project uses
 is in `assets/<sha256>.<ext>`, flat: what cozy makes as real files, and each file project.yaml names (relative,
 absolute or `~/…`) taken in on first use, by the first method that works: a copy-on-write clone (reflink:
 Btrfs, XFS, ZFS 2.2+, APFS), else a symlink to the original, else (Windows without the right) a hard link on
 the same volume, else a copy, said once. project.lock records each file's path, size, sha256 and method under
-the path written. A changed original is taken in again and what read it goes out of date; for a link that is
+the path written, and with every video asset (made or named) its shape, probed once: `{width, height, fps,
+frames}`. A changed original is taken in again and what read it goes out of date; for a link that is
 said (`reference changed`), and a gone original is `reference missing: relink`, what reads it not rendering.
 A clone or copy is the project's own: the original moving changes nothing. Names live only in project.yaml and
 project.lock. Calcifer deletes from `assets/` only what project.lock no longer names.
@@ -133,8 +135,10 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
-- `GET /v1/projects/{id}`: `{id, path, nodes, missing, stale: [{name, why}], orphans: [{name, kind, versions,
-  renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, skips}], warnings}`. Each node is `{name, kind, noun,
+- `GET /v1/projects/{id}`: `{id, path, fps, nodes, missing, stale: [{name, why}], orphans: [{name, kind, versions,
+  renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, frames?, retimed?, skips}], warnings}`. `fps` is the
+  edit's frame rate; a cut's `frames` its length at it and `retimed` the takes in it at another rate
+  (`<node> (<fps> fps)`), both from the shapes project.lock records. Each node is `{name, kind, noun,
   versions, approved?, assets, path?, made_by?, status}`: `versions` counts them, `approved` is the approved
   one's number (absent for a file attached by hand), `assets` what the node reads as now by output name,
   `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
@@ -152,14 +156,19 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
   again when a shot's take changed.
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
-  `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, seconds}` and
+  `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, frames, fps, retimed?, took_s}` and
   `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
 - `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
-- `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`): the cut as last made (Files), so a
-  `<video>` seeks it; `404 file_missing` before the first cut. Its encoded edge pieces are kept in cozy's
-  cache folder (`$XDG_CACHE_HOME/cozy/cuts`, `~/Library/Caches/cozy/cuts`, `%LOCALAPPDATA%\cozy\cache\cuts`) by
-  take, span and encoding, unused ones pruned after 14 days and the oldest past 10 GiB.
+- `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`, and each one's `.otio`): the cut or its
+  timeline as last made (Files), so a `<video>` seeks it; `404 file_missing` before the first cut. Every in
+  and out point is an exact frame at the project's `fps`. The timeline is OpenTimelineIO JSON
+  (`application/json`): the project's rate, a video and an audio track (a piece without sound is a gap), one
+  clip per edit entry with its frame-exact `source_range`, referencing that take's asset
+  (`assets/<sha256>.<ext>`); a retimed clip's metadata is `{cozy: {retimed_from_fps}}`. The encoded edge
+  pieces are kept in cozy's cache folder (`$XDG_CACHE_HOME/cozy/cuts`, `~/Library/Caches/cozy/cuts`,
+  `%LOCALAPPDATA%\cozy\cache\cuts`) by take, frames and encoding, unused ones pruned after 14 days and the oldest
+  past 10 GiB.
 
 ### Tools and Calcifer
 Calcifer fetches the tools it runs on first need, pinned builds held to their sha256, into `~/.cozy/tools`:
