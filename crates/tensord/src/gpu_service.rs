@@ -505,7 +505,7 @@ struct Session {
     /// Its Start ran: its devices, group and package are up.
     started: bool,
     /// Immutable categorical device mode, negotiated before this executor opens CUDA.
-    cooperation: Option<Cooperation>,
+    cooperation: Vec<Cooperation>,
     /// Each construction it loaded, and where TensorD last had its models brought (Runtime places
     /// them): `host` once loaded, `gpu` after a call or a `gpu` warming.
     loaded: BTreeMap<String, Level>,
@@ -3382,7 +3382,7 @@ impl Pool {
                     import_only: true,
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
-                    cooperation: None,
+                    cooperation: vec![],
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3687,11 +3687,11 @@ impl Pool {
         };
         // Hello is CPU-only. Bind the one device policy BEFORE any GPU byte fallback or
         // CUDA Start. The old Runtime path still makes room before it opens its device.
-        let cooperation = if plan.degree == 0 { None } else {
+        let cooperation = if plan.degree == 0 { vec![] } else {
             let lane = start..start + plan.degree as usize;
-            let capable = cfg!(target_os = "linux") && plan.degree == 1 && executor.hello.cooperative_owner;
+            let capable = cfg!(target_os = "linux") && executor.hello.cooperative_owner;
             let selected = self.memory_modes.bind(lane.clone(), capable)?;
-            let settings = self.cooperation_settings(start, selected)?;
+            let settings = self.cooperation_settings(lane.clone(), selected)?;
             self.notes.note(serde_json::json!({"event":"gpu_memory_policy", "pid":executor.birth.pid,
                 "gpus":lane.clone().collect::<Vec<_>>(), "mode":format!("{selected:?}")}));
             if selected == MemoryMode::Legacy {
@@ -3718,7 +3718,7 @@ impl Pool {
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
                 lookahead: (plan.degree == 1 && executor.hello.request_lookahead).then(|| executor.lookahead()),
-                room: (cooperation.is_none() && executor.hello.room).then(|| executor.line()),
+                room: (cooperation.is_empty() && executor.hello.room).then(|| executor.line()),
             });
         }
         let selections = plan.selections();
@@ -3752,20 +3752,27 @@ impl Pool {
         })
     }
 
-    fn cooperation_settings(&self, start: usize, mode: MemoryMode) -> io::Result<Option<Cooperation>> {
-        if mode != MemoryMode::Cooperative { return Ok(None); }
-        let gpu = self.devices.get(start).and_then(|d| self.inventory(&d.entry))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "cooperative GPU identity is unavailable"))?;
-        if !gpu.device_uuid.starts_with("GPU-") && !gpu.device_uuid.starts_with("MIG-") {
-            return Err(io::Error::new(io::ErrorKind::Unsupported, "cooperation requires the actual GPU/MIG UUID"));
-        }
+    fn cooperation_settings(&self, lane: std::ops::Range<usize>, mode: MemoryMode) -> io::Result<Vec<Cooperation>> {
+        if mode != MemoryMode::Cooperative { return Ok(vec![]); }
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
         let directory = varena::cooperative::default_directory()?;
         #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
         let directory: PathBuf = return Err(io::Error::new(io::ErrorKind::Unsupported,
             "native cooperation requires Linux with 64-bit atomics"));
-        Ok(Some(Cooperation { uuid: gpu.device_uuid.clone(), directory,
-            shared: self.config.host.mode == HostMode::Shared, priority: 0 }))
+        let mut settings = Vec::with_capacity(lane.len());
+        for index in lane {
+            let gpu = self.devices.get(index).and_then(|d| self.inventory(&d.entry))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "cooperative GPU identity is unavailable"))?;
+            if !gpu.device_uuid.starts_with("GPU-") && !gpu.device_uuid.starts_with("MIG-") {
+                return Err(io::Error::new(io::ErrorKind::Unsupported, "cooperation requires the actual GPU/MIG UUID"));
+            }
+            if settings.iter().any(|setting: &Cooperation| setting.uuid.eq_ignore_ascii_case(&gpu.device_uuid)) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "cooperation requires distinct GPU/MIG identities"));
+            }
+            settings.push(Cooperation { uuid: gpu.device_uuid.clone(), directory: directory.clone(),
+                shared: self.config.host.mode == HostMode::Shared, priority: 0 });
+        }
+        Ok(settings)
     }
 
     /// Start the process once, load the plan's construction into it once and invoke it, active
@@ -3845,7 +3852,7 @@ impl Pool {
                 }),
                 &mut callbacks,
             )?)?;
-            if started.cooperation_active != session.cooperation.is_some() {
+            if started.cooperation_active == session.cooperation.is_empty() {
                 return Err(io::Error::new(io::ErrorKind::Unsupported,
                     "executor Start did not acknowledge its negotiated GPU memory policy"));
             }
