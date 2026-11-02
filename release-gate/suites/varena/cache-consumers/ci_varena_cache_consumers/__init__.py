@@ -13,7 +13,7 @@ from pathlib import Path
 import msgspec
 import torch
 from cozy_runtime.author import App, Context
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 from tensorfs.varena import torch as vt
 
 from .model import Loaded

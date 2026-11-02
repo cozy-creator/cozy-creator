@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "ci-varena-lm-owner"
 version = "0.1.0"
 requires-python = ">=3.12,<3.15"
-dependencies = ["cozy-runtime>=0.36.23,<0.37", "msgspec>=0.19", "torch==2.14.0", "transformers==5.17.0"]
+dependencies = ["cozy-runtime>=0.37.1,<0.38", "msgspec>=0.19", "torch==2.14.0", "transformers==5.17.0"]
 
 [project.entry-points."cozy.application"]
 default = "ci_varena_lm_owner:app"
