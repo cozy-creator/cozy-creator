@@ -105,6 +105,15 @@ Conversion and close must occur outside active declared forwards. A failed inten
 cleanup retains its exact Plan/Region/Source owners and refuses new module entry;
 explicit close can retry retirement.
 
+An actual dtype-version change retires obsolete Plan custody before conversion commits,
+so the final VAE downcast does not leave old Regions Ready solely for a stale Plan.
+Tentative Parameter changes are rolled back if Plan close refuses; old Plan, versions,
+buffers and intent state stay owned, and the native failure propagates. A prior setter
+failure does not close the old Plan. No-op dtype calls preserve current intent. Escaped
+aliases and current packed members retain their own owners; native fences and existing
+reclamation determine when physical bytes can actually be released. Conversion does
+not trim or promise an immediate drop in mapped bytes.
+
 ## Supported boundary and runnable clients
 
 Supported scope is ordinary materialized CPU eval models, immutable eager ATen reads,
@@ -126,6 +135,8 @@ python adapter_cpu.py                    # installed package, Torch CPU + Diffus
 python review_cpu.py                     # stock out=/complex conversion regressions
 python intent.py                         # actual CPU declaration/nesting/failure flow
 python intent.py --device 0              # coordinator GPU: native phase view observation
+python plan_retirement_cpu.py            # actual CPU transaction/native refusal boundary
+python plan_retirement_gpu.py --device 0 # coordinator: packed retirement/alias/refill
 python adapter_gpu.py --device 0         # coordinator GPU, matching native Torch shim
 python sdxl_gpu.py /existing/local/sdxl   # coordinator GPU, no model downloads
 ```

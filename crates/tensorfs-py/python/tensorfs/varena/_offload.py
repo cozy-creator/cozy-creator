@@ -773,13 +773,20 @@ class Offload:
                 for parameter, candidate, previous in changes:
                     _rebind(parameter, candidate)
                     changed.append((parameter, previous))
+                # The old Plan owns native Regions even after their Python
+                # Versions disappear. Retire it before committing new versions;
+                # refusal rolls back under the same owner lock.
+                if changes and self._intent_plan is not None:
+                    self._intent_plan.close()
             except BaseException:
                 for parameter, previous in reversed(changed):
                     _rebind(parameter, previous)
                 raise
             for child, name, value in buffers:
                 child._buffers[name] = value
-            self._intent_dirty = True
+            if changes:
+                self._intent_plan = None
+                self._intent_dirty = True
 
     def __call__(self, *args, **kwargs):
         self._check()
