@@ -24,7 +24,6 @@ pub mod release;
 #[cfg(feature = "fetch")]
 pub mod native_bundle;
 pub mod service;
-pub mod shm;
 pub mod tail;
 pub mod tools;
 pub mod watch;
