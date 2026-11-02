@@ -95,7 +95,7 @@ versions; `status` suggests it.
 
 A shot's alternatives (and its upscale's) are takes; every other node's are versions. Each one is a set
 of assets, numbered from 1 and never renumbered: a shot's take is its video and latents. `cozy project new garden`
-makes the folder with a commented `project.yaml`; fill it in:
+makes the folder with a `project.yaml` holding a short film that renders as it stands; change it, or write your own:
 
 ```yaml
 style: soft watercolor

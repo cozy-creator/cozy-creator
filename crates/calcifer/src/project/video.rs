@@ -34,34 +34,36 @@ const RENDERERS: [(&str, &str); 6] = [
     ("clean", "birefnet/remove_background"),
 ];
 
-/// A new project's project.yaml: each kind shown, commented out. Cozy never writes it again: each
-/// node's versions, and which is approved, are in project.lock.
+/// A new project's project.yaml: a short film that renders as it stands. Cozy never writes it again:
+/// each node's versions, and which is approved, are in project.lock.
 pub fn skeleton() -> String {
-    "# A video project (`cozy project --help`). Fill in the lists, then, inside this folder,
-#   cozy project render all --on <machine>
-# makes everything missing or out of date, in order, and cuts edit.mp4 (and its timeline, edit.otio) here. A file named here
-# (relative to this folder, or absolute) is linked into assets/ on first use; everything cozy makes
-# is kept there too, by content, and `cozy project status` prints each node's file.
-style: \"\"   # the look, added to every picture and shot
-# defaults:   # each node kind's render block; a node's own render: wins
-#   shot: {with: minimax-h3/generate, lora: [{ref: org/lora, strength: 0.8}], options: {turbo: true}}
-entities:   # characters, props, and environments with camera setups (camera text in screen terms)
-  # - {name: theo, kind: character, description: \"A tall man in a green raincoat.\"}
-  # - {name: dock, kind: environment, description: \"a foggy harbour at dawn\",
-  #    setups: [{name: a, camera: \"wide: the red hut near on the left, the crates far on the right\"}]}
-world_states:   # how a set stands; a shot that writes one changes it for the shots after
-  # - {name: stage, init: \"<theo> stands on <dock>.\", blocking: \"theo by the hut.\"}
-shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
-  # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [{state: stage}],
-  #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}],
-  #    references: [{name: stride, kind: video, video: ~/footage/walk.mp4}]}   # also plate: {video: …}, first_frame, last_frame
-# a node's render: {with: <function or ./dir/function>, models: {...}, lora: [...], options: {...}} renders it another way
-# image: (or a shot's video:) attaches your own file (theo.png), used until you approve one cozy made
-# resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
-# aspect_ratio: \"16:9\"   # the canvas every shot fills; both are the project's alone
-# fps: 24   # the edit's frame rate, fixed per project: edit: positions are frames at it
-# edit: [{shot: walk, start: 12, end: 156}]   # shots and frames (end exclusive) the edit cuts; absent: every shot, whole
-"
+    r#"# A short film, ready to render: cozy project render all --on <machine>
+# Change anything. More kinds and options (props, world states, references, plates, LoRAs, upscales,
+# the edit's frames) are in the README.
+style: "bright hand-painted anime, soft golden light, an adventure film"
+aspect_ratio: "16:9"
+fps: 24
+entities:
+  - {name: mika, kind: character, description: "A cheerful ten-year-old girl in a red cap, a blue jacket and a yellow backpack."}
+  - {name: sparkit, kind: character, description: "A small round yellow fox-like creature with lightning-bolt ears and a glowing tail."}
+  - name: meadow
+    kind: environment
+    description: "a windy hillside meadow of tall grass above a seaside town, at golden hour"
+    setups:
+      - {name: wide, camera: "wide: a lone oak near on the left, the town and the sea far on the right"}
+shots:
+  - name: rustle
+    setup: meadow.wide
+    prompt: "<mika> walks through the tall grass of <meadow> and stops as something rustles near her feet."
+    duration_s: 6
+  - name: friends
+    setup: meadow.wide
+    prompt: "<sparkit> bursts out of the grass in front of <mika>, its tail crackling with sparks."
+    duration_s: 8
+    beats:
+      - {at: 0, prompt: "<mika> jumps back, startled, then laughs."}
+      - {at: 4, prompt: "<mika> kneels and holds out her hand, and <sparkit> hops up onto her shoulder."}
+"#
     .into()
 }
 

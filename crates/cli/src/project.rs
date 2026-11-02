@@ -127,7 +127,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::New { path } => {
             let opened = open(ctx, Some(&path), true).await?;
             let folder = output::link(ctx, &opened.path);
-            output::say(ctx, &format!("made {folder}: add entities, world states and shots to its project.yaml"));
+            output::say(ctx, &format!("made {folder}: a short film, ready to render or change in its project.yaml"));
             output::next(ctx, &[&format!("cd {} && cozy project render all --on <machine>", opened.path.display())]);
         }
         Verb::Ls => {
