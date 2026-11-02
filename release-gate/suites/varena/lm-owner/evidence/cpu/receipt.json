@@ -1,0 +1,17 @@
+{
+  "runtime_control": "74cce8aea0cdb6b7b6388330f4c98323446a97b3",
+  "runtime_candidate": "53402332844b958f27de21299577f6af1a81f2d5",
+  "gpu_executed": false,
+  "mechanism": "actual Qwen checkpoint -> resolver/Backend/ModelRegistry/Placement -> public lm.generate -> idle Region.discard -> rebuild -> lm.release",
+  "cpu_entry_sha256": "aa995d9d92278e9de4ceae20e62678acf859192d16262a2623541098fbceaf63",
+  "model_sha256": "325eb4bb2e11052c4c909d7b03431c45971d589f3316e747417d541dff4e34dd",
+  "interpreter": "/home/fidika/cozy_v2/packages/minimax-h3/.venv/bin/python -I -B",
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1"
+  },
+  "candidate_assertion": "--require-closed",
+  "review": "core_restart independently reviewed _try_drop lock/completion ordering; no concrete source blocker, no GPU fixture qualification",
+  "cpu_capture_contract": "CPU placement installs real float32 widening hooks; custom Python hooks refusal is expected. No GPU capture qualification."
+}
