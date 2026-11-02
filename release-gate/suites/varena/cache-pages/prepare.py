@@ -18,6 +18,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-receipt', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--async-binary', type=Path, required=True)
+    parser.add_argument('--native-libraries', type=Path, required=True,
+                        help='exact bundled libvarena.so and matching Rust std from the TensorFS wheel')
     parser.add_argument('--native-extension-sha256', required=True)
     parser.add_argument('--gpu-uuid', default='UNBOUND')
     parser.add_argument('--expected-devices', type=int, choices=(1, 2), default=1)
@@ -57,9 +60,39 @@ def main():
     target.mkdir()
     shutil.copyfile(args.binary, target / 'varena-cache-pages')
     (target / 'varena-cache-pages').chmod(0o755)
-    (target / 'provenance.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    libraries = [args.native_libraries / 'libvarena.so', *args.native_libraries.glob('libstd-*.so')]
+    assert len(libraries) == 2 and all(p.is_file() for p in libraries)
+    (target / 'lib').mkdir()
+    for library in libraries:
+        info = subprocess.check_output(['readelf', '--version-info', str(library)], text=True)
+        floor = {tuple(map(int, x)) for x in re.findall(r'GLIBC_(\d+)\.(\d+)', info)}
+        assert not floor or max(floor) <= (2, 28)
+        assert 'GLIBC_ABI_' not in info and 'GLIBC_PRIVATE' not in info
+        assert subprocess.check_output(['patchelf', '--print-rpath', str(library)], text=True).strip() == '$ORIGIN'
+        shutil.copy2(library, target / 'lib' / library.name)
+    manifest['libraries'] = {p.name: sha(p) for p in libraries}
+    subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/lib', str(target / 'varena-cache-pages')], check=True)
+    manifest['binary_sha256'] = sha(target / 'varena-cache-pages')
+    async_binary = target / 'varena-async-fill'
+    shutil.copy2(args.async_binary, async_binary)
+    async_binary.chmod(0o755)
+    subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/lib', str(async_binary)], check=True)
+    async_dynamic = subprocess.check_output(['readelf', '-d', str(async_binary)], text=True)
+    async_versions = subprocess.check_output(['readelf', '--version-info', str(async_binary)], text=True)
+    async_needed = re.findall(r'Shared library: \[([^]]+)\]', async_dynamic)
+    async_glibc = sorted({tuple(map(int, x)) for x in re.findall(r'GLIBC_(\d+)\.(\d+)', async_versions)})
+    assert async_glibc and async_glibc[-1] <= (2, 28)
+    assert 'GLIBC_ABI_' not in async_versions and 'GLIBC_PRIVATE' not in async_versions
+    assert 'libvarena.so' in async_needed and 'libvarena.so' in needed
+    assert not any('python' in name.lower() or 'torch' in name.lower() for name in async_needed)
+    async_manifest = {**manifest, 'binary_sha256': sha(async_binary),
+                      'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': async_needed,
+                              'glibc_versions': async_glibc, 'glibc_max': async_glibc[-1]}}
+    (target / 'varena-cache-pages.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (target / 'varena-async-fill.json').write_text(json.dumps(async_manifest, indent=2) + '\n')
     payload = {'source_sha': source['source_sha'], 'helper_sha256': manifest['binary_sha256'],
-               'native_extension_sha256': args.native_extension_sha256, 'gpu_uuid': args.gpu_uuid,
+               'native_extension_sha256': args.native_extension_sha256,
+               'native_core_sha256': manifest['libraries']['libvarena.so'], 'gpu_uuid': args.gpu_uuid,
                'expected_devices': args.expected_devices, 'other_gpu_uuid': args.other_gpu_uuid}
     if args.runtime_wheel:
         names = ('internal/cache_owners.py', 'internal/loop.py', 'internal/prepared.py',
@@ -93,12 +126,15 @@ def main():
             'gil_gate_needed': gate_needed, 'gil_gate_glibc_versions': gate_glibc,
             'boundary': 'fixture PyDLL calls real Storage.resize_ while holding the GIL; no allocator interception',
         }
-        (target / 'provenance.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        (target / 'varena-cache-pages.json').write_text(json.dumps(manifest, indent=2) + '\n')
         for name, text in [('header', gate_header), ('dynamic', gate_dynamic), ('versions', gate_versions)]:
             (args.output / f'gil-gate-elf-{name}.txt').write_text(text)
     (args.output / 'input-template.json').write_text(json.dumps(payload, indent=2) + '\n')
+    async_payload = {**payload, 'helper_sha256': async_manifest['binary_sha256']}
+    (args.output / 'async-input-template.json').write_text(json.dumps(async_payload, indent=2) + '\n')
     files = {str(path.relative_to(project)): sha(path) for path in sorted(project.rglob('*')) if path.is_file()}
     receipt = {'manifest': manifest, 'project': str(project), 'files': files, 'input': payload,
+               'async_manifest': async_manifest, 'async_input': async_payload,
                'gpu_uuid_bound': args.gpu_uuid != 'UNBOUND', 'gpu_executed': False}
     (args.output / 'ready.json').write_text(json.dumps(receipt, indent=2) + '\n')
     for name, text in [('elf-header', header), ('elf-dynamic', dynamic), ('elf-versions', versions)]:

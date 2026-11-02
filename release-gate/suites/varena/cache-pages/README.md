@@ -129,3 +129,16 @@ exact command, source and binary hashes. Pass that artifact and the actual candi
 wheel to `prepare.py --gil-gate ... --runtime-wheel ...` together. Both are optional
 for standalone cells. Source/ELF checks and CPU construction do not qualify GPU
 progress, capture races or graph-owner lifetimes.
+
+## Current shared-core helpers
+
+The current controller requires the exact two bundled native libraries from the installed
+TensorFS wheel. `prepare.py --native-libraries DIR --async-binary PATH` copies those unchanged
+libraries, sets helper-relative RPATHs and records every hash. Setup checks both bundled files
+and the actual parent's mapped core/std against the manifest before launching a child. Earlier
+static-helper receipts remain frozen; this source does not accept a missing core bundle.
+
+The six `async_*` entrypoints run the genuine native async-fill modes through the ordinary
+Cozy request path. Separate async input records bind the actual executable hash. GPU UUID,
+exact owned process identity, complete native result and checked child exit are required.
+There is no second native implementation or CUDA simulation in this controller.

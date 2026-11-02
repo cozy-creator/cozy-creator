@@ -25,6 +25,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     source_sha: str
     helper_sha256: str
     native_extension_sha256: str
+    native_core_sha256: str
     gpu_uuid: str
     timeout_s: float = 60.0
     expected_devices: int = 1
@@ -48,16 +49,24 @@ def birth(pid):
     return int(Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()[19])
 
 
-def setup(payload, ctx, *, cache_required=False):
+def setup(payload, ctx, *, cache_required=False, helper="varena-cache-pages"):
     import torch
     from tensorfs import _ext
 
     root = Path(__file__).parent / 'bin'
-    binary = root / 'varena-cache-pages'
-    manifest = json.loads((root / 'provenance.json').read_text())
+    binary = root / helper
+    manifest = json.loads((root / (helper + '.json')).read_text())
     assert manifest['source_sha'] == payload.source_sha
     assert manifest['binary_sha256'] == payload.helper_sha256 == digest(binary)
     assert payload.native_extension_sha256 == digest(_ext.__file__)
+    libraries = manifest['libraries']
+    assert libraries['libvarena.so'] == payload.native_core_sha256
+    mapped = {line.split(maxsplit=5)[-1] for line in Path('/proc/self/maps').read_text().splitlines()
+              if len(line.split(maxsplit=5)) == 6}
+    for name, expected in libraries.items():
+        assert digest(root / 'lib' / name) == expected
+        actual = {path for path in mapped if Path(path).name == name}
+        assert len(actual) == 1 and digest(next(iter(actual))) == expected, (name, actual)
     assert manifest['elf']['glibc_max'] <= [2, 28]
     assert not any('python' in name.lower() or 'torch' in name.lower() for name in manifest['elf']['needed'])
     if cache_required:
@@ -82,16 +91,17 @@ def setup(payload, ctx, *, cache_required=False):
                     'driver_before': dict(zip(('free', 'total'), torch.cuda.mem_get_info(0), strict=True))}
 
 
-def native(payload, ctx, mode):
+def native(payload, ctx, mode, *, helper="varena-cache-pages"):
     result = {'passed': False, 'mode': mode}
     child = pidfd = directory = None
     stdout = stderr = ''
     try:
-        binary, provenance = setup(payload, ctx)
+        binary, provenance = setup(payload, ctx, helper=helper)
         result['provenance'] = provenance
         directory = tempfile.mkdtemp(prefix='varena-cache-pages-', dir='/dev/shm')
         os.chmod(directory, 0o700)
-        command = [str(binary), mode, directory, payload.gpu_uuid, '0']
+        command = ([str(binary), mode, payload.gpu_uuid, '0'] if helper == 'varena-async-fill'
+                   else [str(binary), mode, directory, payload.gpu_uuid, '0'])
         if mode == 'arena_retirement_cross_device':
             import torch
             assert payload.expected_devices == 2 and payload.other_gpu_uuid.startswith(('GPU-', 'MIG-'))
@@ -116,14 +126,24 @@ def native(payload, ctx, mode):
                 continue
         rows = [json.loads(line) for line in stdout.splitlines()]
         result.update(stdout=rows, stderr=stderr, returncode=child.returncode)
-        ready = next(row for row in rows if row.get('event') == 'ready')
-        assert ready['pid'] == child.pid and ready['start_ticks'] == started
-        assert ready['gpu_uuid'] == payload.gpu_uuid and ready['mode'] == mode
-        reports = [row for row in rows if row.get('event') == 'result']
-        assert len(reports) == 1 and reports[0]['passed'] and child.returncode == 0, result
-        for row in (ready, reports[0]):
-            assert not row['libraries']['python_loaded'] and not row['libraries']['torch_loaded']
-            assert row['libraries']['cuda_loaded']
+        if helper == 'varena-async-fill':
+            assert len(rows) == 1, result
+            reports = rows
+            report = reports[0]
+            normalize = lambda value: value.removeprefix('GPU-').replace('-', '').lower()
+            assert report['passed'] and child.returncode == 0, result
+            assert report['pid'] == child.pid and report['mode'] == mode
+            assert normalize(report['gpu_uuid']) == normalize(payload.gpu_uuid)
+            assert report['native_only']
+        else:
+            ready = next(row for row in rows if row.get('event') == 'ready')
+            assert ready['pid'] == child.pid and ready['start_ticks'] == started
+            assert ready['gpu_uuid'] == payload.gpu_uuid and ready['mode'] == mode
+            reports = [row for row in rows if row.get('event') == 'result']
+            assert len(reports) == 1 and reports[0]['passed'] and child.returncode == 0, result
+            for row in (ready, reports[0]):
+                assert not row['libraries']['python_loaded'] and not row['libraries']['torch_loaded']
+                assert row['libraries']['cuda_loaded']
         result.update(passed=True, report=reports[0])
     except Exception as error:  # noqa: BLE001 - preserve the actual native failure without rerunning it
         result.update(error=f'{type(error).__name__}: {error}', traceback=traceback.format_exc())
@@ -337,3 +357,39 @@ def arena_retirement_unproven(payload: Probe, ctx: Context) -> Report:
 def arena_retirement_cross_device(payload: Probe, ctx: Context) -> Report:
     assert payload.expected_devices == 2
     return native(payload, ctx, 'arena_retirement_cross_device')
+
+
+@app.entrypoint(accelerator=True)
+def async_ordering(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'ordering', helper="varena-async-fill")
+
+
+@app.entrypoint(accelerator=True)
+def async_abort(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'abort', helper="varena-async-fill")
+
+
+@app.entrypoint(accelerator=True)
+def async_capture(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'capture', helper="varena-async-fill")
+
+
+@app.entrypoint(accelerator=True)
+def async_abandoned(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'abandoned', helper="varena-async-fill")
+
+
+@app.entrypoint(accelerator=True)
+def async_retirement_pending(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'retirement_pending', helper="varena-async-fill")
+
+
+@app.entrypoint(accelerator=True)
+def async_arena_retirement(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'arena_retirement', helper="varena-async-fill")

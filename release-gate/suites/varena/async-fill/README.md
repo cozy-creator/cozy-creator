@@ -6,14 +6,15 @@ binary and dylib dependencies and hashes. No Python or Torch is loaded by the ch
 Root owns builds, installation, GPU identity and rental/termination.
 
 ```sh
-cargo build --locked --offline -p varena --example async_fill -j 1
+# Build the complete dependency cohort described in ../native-gpu/README.md.
+# Do not overwrite its dependency core with a primary -p varena build.
 # Invoke each mode in its own child process with the observed GPU UUID:
-async_fill ordering GPU-... 0
-async_fill abort GPU-... 0
-async_fill capture GPU-... 0
-async_fill abandoned GPU-... 0
-async_fill retirement_pending GPU-... 0
-async_fill arena_retirement GPU-... 0
+varena-async-fill ordering GPU-... 0
+varena-async-fill abort GPU-... 0
+varena-async-fill capture GPU-... 0
+varena-async-fill abandoned GPU-... 0
+varena-async-fill retirement_pending GPU-... 0
+varena-async-fill arena_retirement GPU-... 0
 ```
 
 `ordering` keeps one of two actual producer streams behind a CUDA memory-value gate,
