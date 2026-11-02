@@ -188,4 +188,5 @@ test = "gate: cli-project: an entity's render approved, its version locked"
 ["render"]
 test = "gate: cli-project: the project's renders through Calcifer on the gate's pod"
 "--project" = "gate: cli-project"
+"--preview" = "gate: project suite, project-split renders all --preview (release-gate/suites/project/cells.sh)"
 "--on" = "gate: cli-project, on the gate's pod"
