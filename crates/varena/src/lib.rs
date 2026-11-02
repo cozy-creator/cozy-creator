@@ -2322,17 +2322,22 @@ fn reclaim_retired(device: i32, wanted: usize) -> Result<usize> {
     for arena in &inventory.arenas {
         if report.reclaimed_bytes >= wanted { break; }
         let mut state = arena.lock()?;
-        let _context = arena.driver.enter()?;
         let candidates: Vec<_> = state.entries.iter()
             .filter(|(_, entry)| entry.handle.is_some()
                 && entry.uses.pins() == 0 && entry.uses.state() == Contents::Retired)
             .map(|(id, _)| *id).collect();
-        for id in candidates {
-            if report.reclaimed_bytes >= wanted { break; }
-            if arena.completion(&mut state, id)? == Completion::Done {
-                arena.evict(&mut state, id, ReclaimReason::Allocator, &mut report)?;
+        if candidates.is_empty() { continue; }
+        let result = (|| {
+            let _context = arena.driver.enter()?;
+            for id in candidates {
+                if report.reclaimed_bytes >= wanted { break; }
+                if arena.completion(&mut state, id)? == Completion::Done {
+                    arena.evict(&mut state, id, ReclaimReason::Allocator, &mut report)?;
+                }
             }
-        }
+            Ok(())
+        })();
+        result.map_err(|error| poison(&mut state, error))?;
     }
     Ok(report.reclaimed_bytes)
 }
