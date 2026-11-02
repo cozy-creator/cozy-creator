@@ -55,6 +55,8 @@ struct Cohort {
     cozy: Option<String>,
     /// The most memory each GPU offers, in bytes; 0 lifts it (`--gpu-memory-limit`).
     gpu_memory_limit: Option<u64>,
+    /// Categorical sharing policy, applied by the same drain/restart as other machine settings.
+    mode: Option<protocol::config::MachineMode>,
     #[serde(flatten)]
     unknown: BTreeMap<String, serde_json::Value>,
 }
@@ -276,6 +278,7 @@ fn stage(
         tensorfs: Member::choice(cohort.tensorfs, "tensorfs", "tensorfs", |v| choose("tensorfs", "", v))?,
         cozy: cohort.cozy,
         gpu_memory_limit: limit,
+        mode: cohort.mode,
         binary,
         toolchain,
     };

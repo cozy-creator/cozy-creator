@@ -1,5 +1,10 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
-mod allocator;
+mod working;
+mod cache;
+mod cache_owner;
+#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+mod cooperative;
+mod plan;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
@@ -88,7 +93,12 @@ impl Consumers {
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
     let class = match error {
-        varena::Error::OutOfMemory { .. } => "OutOfMemoryError",
+        varena::Error::Callback(_) => {
+            let error = PyRuntimeError::new_err(message);
+            let _ = error.value(py).setattr("varena_no_retry", true);
+            return error;
+        },
+        varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
         _ => return PyRuntimeError::new_err(message),
@@ -98,6 +108,11 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         // Torch's exception types take the ordinary RuntimeError constructor arguments.
         // The CUDA error code is an attribute, not an accepted constructor keyword.
         let exception = class.call1((message.clone(),))?;
+        if let varena::Error::Exhausted { requested_bytes, available_bytes } = error {
+            exception.setattr("varena_no_retry", true)?;
+            exception.setattr("required_bytes", requested_bytes)?;
+            exception.setattr("available_bytes", available_bytes)?;
+        }
         if let varena::Error::DeviceFault { code, .. } | varena::Error::Cuda { code, .. } = error {
             exception.setattr("error_code", code)?;
         }
@@ -108,59 +123,213 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
 
 #[pyclass(name = "_VarenaArena", module = "tensorfs._ext", frozen)]
 struct PyArena {
-    arena: Deferred<Arc<varena::Arena>>,
+    root: Mutex<ArenaRoot>,
+    pid: u32,
+    id: u64,
+}
+
+enum ArenaRoot {
+    Live(Arc<varena::Arena>),
+    Transferring,
+    Closed(Arc<varena::ArenaRetirement>),
+}
+
+impl PyArena {
+    fn check(&self) -> PyResult<()> {
+        if self.pid != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "CUDA arenas cannot be used after fork",
+            ));
+        }
+        Ok(())
+    }
+
+    // Genuine operation leases are acquired before all native exclusion/state guards.
+    // Closing the Python root never revokes an operation that already owns its Arc.
+    fn owner(&self) -> PyResult<Arc<varena::Arena>> {
+        self.check()?;
+        let root = self
+            .root
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Python arena root mutex poisoned"))?;
+        match &*root {
+            ArenaRoot::Live(arena) => Ok(arena.clone()),
+            ArenaRoot::Transferring => Err(PyRuntimeError::new_err(
+                "arena retirement handoff is in progress",
+            )),
+            ArenaRoot::Closed(_) => Err(PyRuntimeError::new_err("arena is closed")),
+        }
+    }
+}
+
+impl Drop for PyArena {
+    fn drop(&mut self) {
+        let root = std::mem::replace(
+            self.root.get_mut().unwrap_or_else(|e| e.into_inner()),
+            ArenaRoot::Transferring,
+        );
+        if let ArenaRoot::Live(arena) = root {
+            if self.pid != std::process::id() {
+                std::mem::forget(arena); // Never touch inherited native queue/metadata locks.
+            } else {
+                match arena.defer_retirement() {
+                    Ok(ticket) => drop(ticket), // Native job/quarantine retains actual custody.
+                    Err((arena, _)) => std::mem::forget(arena), // PID rejection precedes locks.
+                }
+            }
+        }
+    }
+}
+
+#[pyclass(name = "_VarenaArenaRetirement", module = "tensorfs._ext", frozen)]
+struct PyArenaRetirement {
+    ticket: Arc<varena::ArenaRetirement>,
+}
+
+#[pymethods]
+impl PyArenaRetirement {
+    fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let facts = py
+            .detach(|| self.ticket.facts())
+            .map_err(|error| raise(py, error))?;
+        let out = PyDict::new(py);
+        out.set_item("arena_id", facts.arena_id)?;
+        out.set_item("device", facts.device)?;
+        out.set_item("state", format!("{:?}", facts.state))?;
+        out.set_item("observers_detached", facts.observers_detached)?;
+        out.set_item("remaining_physical_bytes", facts.remaining_physical_bytes)?;
+        out.set_item("failure", facts.failure)?;
+        Ok(out)
+    }
+    fn try_complete(&self, py: Python<'_>) -> PyResult<bool> {
+        py.detach(|| self.ticket.try_complete())
+            .map_err(|error| raise(py, error))
+    }
 }
 #[pymethods]
 impl PyArena {
     #[new]
     fn new(py: Python<'_>, device: i32) -> PyResult<Self> {
+        let arena = py
+            .detach(|| varena::Arena::new(device))
+            .map_err(|e| raise(py, e))?;
         Ok(Self {
-            arena: Deferred::new(
-                py.detach(|| varena::Arena::new(device))
-                    .map_err(|e| raise(py, e))?,
-            ),
+            id: arena.id(),
+            pid: std::process::id(),
+            root: Mutex::new(ArenaRoot::Live(arena)),
         })
     }
     #[getter]
-    fn granularity(&self) -> usize {
-        self.arena.granularity()
+    fn granularity(&self) -> PyResult<usize> {
+        Ok(self.owner()?.granularity())
+    }
+    #[getter]
+    fn id(&self) -> u64 {
+        self.id
+    }
+    #[getter]
+    fn closed(&self) -> PyResult<bool> {
+        self.check()?;
+        Ok(!matches!(
+            &*self
+                .root
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Python arena root mutex poisoned"))?,
+            ArenaRoot::Live(_)
+        ))
+    }
+    fn close(&self, py: Python<'_>) -> PyResult<PyArenaRetirement> {
+        self.check()?;
+        let arena = {
+            let mut root = self
+                .root
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Python arena root mutex poisoned"))?;
+            match &*root {
+                ArenaRoot::Closed(ticket) => {
+                    return Ok(PyArenaRetirement {
+                        ticket: ticket.clone(),
+                    });
+                }
+                ArenaRoot::Transferring => {
+                    return Err(PyRuntimeError::new_err(
+                        "arena retirement handoff is in progress",
+                    ));
+                }
+                ArenaRoot::Live(_) => {}
+            }
+            let ArenaRoot::Live(arena) = std::mem::replace(&mut *root, ArenaRoot::Transferring)
+            else {
+                unreachable!()
+            };
+            arena
+        };
+        match py.detach(|| arena.request_retirement()) {
+            Ok(ticket) => {
+                let ticket = Arc::new(ticket);
+                *self.root.lock().unwrap_or_else(|e| e.into_inner()) =
+                    ArenaRoot::Closed(ticket.clone());
+                Ok(PyArenaRetirement { ticket })
+            }
+            Err((arena, error)) => {
+                *self.root.lock().unwrap_or_else(|e| e.into_inner()) = ArenaRoot::Live(arena);
+                Err(raise(py, error))
+            }
+        }
     }
     fn reserve(&self, py: Python<'_>, bytes: usize) -> PyResult<PyRegion> {
+        let arena = self.owner()?;
         Ok(PyRegion {
             region: Deferred::new(
-                py.detach(|| self.arena.reserve(bytes))
+                py.detach(|| arena.reserve(bytes))
                     .map_err(|e| raise(py, e))?,
             ),
         })
     }
     fn set_streaming_limit(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
-        py.detach(|| self.arena.set_streaming_limit(bytes))
+        let arena = self.owner()?;
+        py.detach(|| arena.set_streaming_limit(bytes))
+            .map_err(|e| raise(py, e))
+    }
+
+    fn clear_streaming_limit(&self, py: Python<'_>) -> PyResult<()> {
+        let arena = self.owner()?;
+        py.detach(|| arena.clear_streaming_limit())
             .map_err(|e| raise(py, e))
     }
 
     #[getter]
     fn streaming_limit_bytes(&self, py: Python<'_>) -> PyResult<usize> {
-        py.detach(|| self.arena.streaming_limit())
+        let arena = self.owner()?;
+        py.detach(|| arena.streaming_limit())
             .map_err(|e| raise(py, e))
     }
     fn reclaim(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
-        py.detach(|| self.arena.reclaim(bytes))
+        let arena = self.owner()?;
+        py.detach(|| arena.reclaim(bytes))
             .map(|r| r.reclaimed_bytes)
             .map_err(|e| raise(py, e))
     }
     fn reset_preferences(&self, py: Python<'_>) -> PyResult<()> {
-        py.detach(|| self.arena.reset_preferences())
+        let arena = self.owner()?;
+        py.detach(|| arena.reset_preferences())
             .map_err(|e| raise(py, e))
     }
     fn reclaim_unpreferred(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
-        py.detach(|| self.arena.reclaim_unpreferred(bytes))
+        let arena = self.owner()?;
+        py.detach(|| arena.reclaim_unpreferred(bytes))
             .map(|r| r.reclaimed_bytes)
             .map_err(|e| raise(py, e))
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let stats = py.detach(|| self.arena.stats()).map_err(|e| raise(py, e))?;
+        let arena = self.owner()?;
+        let stats = py.detach(|| arena.stats()).map_err(|e| raise(py, e))?;
         let output = PyDict::new(py);
-        output.set_item("streaming_limit_bytes", self.streaming_limit_bytes(py)?)?;
+        output.set_item(
+            "streaming_limit_bytes",
+            py.detach(|| arena.streaming_limit())
+                .map_err(|e| raise(py, e))?,
+        )?;
         for (name, value) in [
             ("reserved_bytes", stats.reserved_bytes as u64),
             ("resident_bytes", stats.resident_bytes as u64),
@@ -177,6 +346,7 @@ impl PyArena {
             ("evictions", stats.evictions),
             ("reclaimed_bytes", stats.reclaimed_bytes),
             ("context_joins", stats.context_joins),
+            ("driver_physical_ooms", stats.driver_physical_ooms),
             ("event_waits", stats.event_waits),
         ] {
             output.set_item(name, value)?;
@@ -199,9 +369,10 @@ impl PyArena {
         Ok(output)
     }
     fn enter_capture(&self, py: Python<'_>) -> PyResult<PyCapture> {
+        let arena = self.owner()?;
         Ok(PyCapture {
             guard: Mutex::new(Some(
-                py.detach(|| self.arena.enter_capture())
+                py.detach(|| arena.enter_capture())
                     .map_err(|e| raise(py, e))?,
             )),
             pid: std::process::id(),
@@ -623,17 +794,6 @@ impl PyNoCapture {
     }
 }
 
-#[pyfunction]
-fn _varena_install_allocator(py: Python<'_>) -> PyResult<usize> {
-    py.detach(allocator::install)
-        .map_err(PyRuntimeError::new_err)
-}
-#[pyfunction]
-#[pyo3(signature = (device, limit = None))]
-fn _varena_set_activation_limit(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<()> {
-    py.detach(|| allocator::set_limit(device, limit))
-        .map_err(PyRuntimeError::new_err)
-}
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
 #[pyo3(signature = (device, limit = None))]
@@ -643,20 +803,24 @@ fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyRes
         .map_err(|e| raise(py, e))
 }
 #[pyfunction]
-fn _varena_allocator_stats(
-    py: Python<'_>,
-    device: i32,
-) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    py.detach(|| allocator::stats(device))
-        .map_err(PyRuntimeError::new_err)
+fn _varena_core_identity() -> u64 {
+    varena::abi::vr_v1_core_identity()
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_varena_core_identity, module)?)?;
+    cache_owner::install(module)?;
+    module.add_class::<cache::PyCache>()?;
+    working::install(module)?;
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    cooperative::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;
     module.add("VarenaPoisonedError", poisoned)?;
     module.add_class::<PyArena>()?;
+    module.add_class::<PyArenaRetirement>()?;
+    module.add_class::<plan::PyPlan>()?;
     module.add_class::<PyRegion>()?;
     module.add_class::<PyUse>()?;
     module.add_class::<PyCapture>()?;
@@ -674,9 +838,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<stage_continuation::StageJob>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
-    module.add_function(wrap_pyfunction!(_varena_install_allocator, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_set_activation_limit, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_allocator_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_make_room, module)?)?;
     Ok(())
 }
