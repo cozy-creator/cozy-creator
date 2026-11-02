@@ -66,6 +66,13 @@ class Provider:
             ("gate_wait", [C.c_void_p, C.c_uint64], C.c_int32),
             ("extra_gate_set", [C.c_void_p, C.c_uint32], C.c_int32),
             ("extra_gate_wait", [C.c_void_p, C.c_uint64], C.c_int32),
+            ("job_retirement_hold", [C.c_void_p, C.c_uint32], C.c_int32),
+            ("source_retirement_hold", [C.c_void_p, C.c_uint32], C.c_int32),
+            (
+                "job_retirement_pending",
+                [C.c_void_p, C.POINTER(C.c_uint32)],
+                C.c_int32,
+            ),
             (
                 "stream_pending",
                 [C.c_void_p, C.c_uint64, C.POINTER(C.c_int32)],
@@ -195,6 +202,28 @@ class Fixture:
         with self._lock:
             self._call("source_pending", C.byref(value))
         return bool(value.value)
+
+    def job_retirement_hold(self, hold: bool) -> None:
+        """Hold/release real Job retirement; release on the same Python thread."""
+        self._retirement_hold("job_retirement_hold", hold)
+
+    def source_retirement_hold(self, hold: bool) -> None:
+        """Hold the literal provider's Source.borrowed mutex on this thread."""
+        self._retirement_hold("source_retirement_hold", hold)
+
+    def _retirement_hold(self, name: str, hold: bool) -> None:
+        value = operator.index(hold)
+        if value not in (0, 1):
+            raise ValueError("retirement hold must be zero or one")
+        with self._lock:
+            self._call(name, value)
+
+    def job_retirement_pending(self) -> int:
+        """Count actual VR_BUSY returns from the native Job retirement mutex."""
+        value = C.c_uint32()
+        with self._lock:
+            self._call("job_retirement_pending", C.byref(value))
+        return value.value
 
     def counts(self) -> dict[str, int]:
         value = _Counts()

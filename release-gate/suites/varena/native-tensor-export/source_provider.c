@@ -18,6 +18,10 @@ struct te_fixture {
     struct te_gate gates[2];
     struct Source *source;
     pthread_mutex_t observation;
+    pthread_mutex_t job_retirement;
+    pthread_t job_hold_owner, source_hold_owner;
+    int job_held, source_held;
+    atomic_uint job_pending;
     uint64_t producer;
     CU borrowed[16];
     size_t borrowed_count;
@@ -109,13 +113,22 @@ static int te_stream_context(struct te_fixture *fixture,uint64_t stream) {
     return VR_OK;
 }
 
-/* These adapters add observation exclusion only. All source/job work remains
+/* These adapters add observation and controlled retirement exclusion only.
+   All source/job work remains
    the literal provider above, including its real closed partial-failure mode. */
 static int te_job_retire(void *context) {
     struct te_fixture *fixture=atomic_load_explicit(&te_active,memory_order_acquire);
     if(!fixture||fixture->pid!=getpid()) return VR_FAULT;
     pthread_mutex_lock(&fixture->observation);
+    /* Actual retirement exclusion, not an invented CUDA completion result.
+       The original Job and stream stay untouched on every Busy retry. */
+    if(pthread_mutex_trylock(&fixture->job_retirement)!=0) {
+        atomic_fetch_add(&fixture->job_pending,1);
+        pthread_mutex_unlock(&fixture->observation);
+        return VR_BUSY;
+    }
     int result=job_retire(context);
+    pthread_mutex_unlock(&fixture->job_retirement);
     pthread_mutex_unlock(&fixture->observation);
     return result;
 }
@@ -187,6 +200,8 @@ int te_create(vr_handle gpu,uint64_t bytes,int32_t mode,void **out_fixture,vr_ha
     struct te_fixture *fixture=calloc(1,sizeof(*fixture));
     if(!fixture){result=te_fail(VR_SOURCE_ERROR,"cannot allocate Source test fixture");goto finish;}
     fixture->pid=getpid();pthread_mutex_init(&fixture->observation,NULL);
+    pthread_mutex_init(&fixture->job_retirement,NULL);
+    atomic_init(&fixture->job_pending,0);
     CU current=NULL;
     result=te_cuda(te_context.current(&current),"cuCtxGetCurrent");
     if(result||!current){if(!result)result=te_fail(VR_INVALID,"install Varena and select the explicit Torch device first");goto failed;}
@@ -250,6 +265,41 @@ static int te_gate_wait_index(struct te_fixture *fixture,unsigned index,uint64_t
 }
 int te_gate_wait(void *context,uint64_t stream) {return te_gate_wait_index(context,0,stream);}
 int te_extra_gate_wait(void *context,uint64_t stream) {return te_gate_wait_index(context,1,stream);}
+static int te_retirement_hold(struct te_fixture *fixture,uint32_t hold,int source) {
+    int result=te_require(fixture);if(result)return result;
+    if(hold>1)return te_fail(VR_INVALID,"retirement hold must be zero or one");
+    pthread_mutex_lock(&fixture->observation);
+    int *held=source?&fixture->source_held:&fixture->job_held;
+    pthread_t *owner=source?&fixture->source_hold_owner:&fixture->job_hold_owner;
+    pthread_mutex_t *mutex=&fixture->job_retirement;
+    if(source) {
+        if(!fixture->source){result=te_fail(VR_INVALID,"Source already dropped");goto finish;}
+        if(hold&&fixture->source->retired){result=te_fail(VR_INVALID,"Source already retired");goto finish;}
+        mutex=&fixture->source->borrowed;
+    }
+    if(hold) {
+        if(*held){result=te_fail(VR_INVALID,"retirement mutex already held");goto finish;}
+        if(pthread_mutex_trylock(mutex)!=0){result=te_fail(VR_BUSY,"retirement mutex is busy");goto finish;}
+        *owner=pthread_self();*held=1;
+    } else {
+        if(!*held||!pthread_equal(*owner,pthread_self())) {
+            result=te_fail(VR_INVALID,"retirement mutex must be released by its holding thread");goto finish;
+        }
+        *held=0;pthread_mutex_unlock(mutex);
+    }
+finish:
+    pthread_mutex_unlock(&fixture->observation);
+    return result;
+}
+int te_job_retirement_hold(void *context,uint32_t hold) {return te_retirement_hold(context,hold,0);}
+int te_source_retirement_hold(void *context,uint32_t hold) {return te_retirement_hold(context,hold,1);}
+int te_job_retirement_pending(void *context,uint32_t *pending) {
+    int result=te_require(context);if(result)return result;
+    if(!pending)return te_fail(VR_INVALID,"null Job retirement Busy count");
+    struct te_fixture *fixture=context;
+    *pending=atomic_load(&fixture->job_pending);
+    return VR_OK;
+}
 int te_stream_pending(void *context,uint64_t stream,int32_t *pending) {
     if(!pending)return te_fail(VR_INVALID,"null pending output");
     *pending=0;struct te_fixture *fixture=context;
@@ -289,7 +339,7 @@ int te_close(void *context) {
     int result=te_require(fixture);if(result)return result;
     pthread_mutex_lock(&te_guard);
     pthread_mutex_lock(&fixture->observation);
-    int retained=fixture->source!=NULL||atomic_load(&counts.job_retired)!=atomic_load(&counts.job_dropped);
+    int retained=fixture->job_held||fixture->source_held||fixture->source!=NULL||atomic_load(&counts.job_retired)!=atomic_load(&counts.job_dropped);
     pthread_mutex_unlock(&fixture->observation);
     if(retained){result=te_fail(VR_BUSY,"native Source/jobs still retain the fixture gates and code");goto finish;}
     result=te_enter(fixture);if(result)goto finish;
@@ -306,6 +356,7 @@ int te_close(void *context) {
     result=te_leave(fixture,result);if(result)goto finish;
     result=te_cuda(te_context.release(fixture->device),"cuDevicePrimaryCtxRelease_v2");if(result)goto finish;
     atomic_store_explicit(&te_active,NULL,memory_order_release);
+    pthread_mutex_destroy(&fixture->job_retirement);
     pthread_mutex_destroy(&fixture->observation);free(fixture);
 finish:
     pthread_mutex_unlock(&te_guard);
