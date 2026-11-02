@@ -158,6 +158,7 @@ for _name, _args in {
     "region_close": [_u],
     "use": [_u, _h, C.c_size_t, _u, _h],
     "use_ptr": [_u, C.c_size_t, _h],
+    "use_wait_ready": [_u],
     "done": [_u],
     "alloc": [_u, _u, _u, _h],
     "allocation_ptr": [_u, _h],
@@ -393,6 +394,15 @@ class Use(_Owned):
     """
 
     _close = "done"
+
+    def wait_ready(self) -> None:
+        """Await this Use's producer completion and checked resource retirement.
+
+        Call outside capture/replay. CDLL releases the GIL; native custody is
+        retained across concurrent close. This neither waits for consumers nor
+        promises capture admission while unrelated producers are active.
+        """
+        _call("use_wait_ready", self._handle)
 
     def __init__(
         self, handle: int, gpu: Gpu, regions: list[Region], stream: int
