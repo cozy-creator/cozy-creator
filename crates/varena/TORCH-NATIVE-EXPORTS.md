@@ -56,7 +56,8 @@ pub fn TensorExport::record_stream(&self, stream: u64) -> crate::Result<()>;
 pub struct tensor_consumers::Consumers; // Clone
 pub fn Consumers::new(pin: &Pin, initial_stream: u64) -> crate::Result<Self>;
 pub fn Consumers::record(&self, stream: u64) -> crate::Result<()>;
-pub unsafe fn Consumers::release(&self, pin: Pin) -> Arc<Region>;
+pub unsafe fn Consumers::release(&self, pin: Pin)
+    -> Result<Arc<Region>, (Pin, Error)>;
 ```
 
 `export_use` clones the canonical Use Pin and calls its existing `order_on(actual_stream)` before exposing storage. The Pin retains the in-flight submission ticket; this orders producer events without inferring completion or launching another fill. Explicit stream overrides order the same producer on the override. A native DLPack storage owner retains that Pin, its consumer family, and the canonical Weight, including Source and GPU-service custody. No Python attribute or temporary Use wrapper supplies storage lifetime.
@@ -65,7 +66,7 @@ The PyO3 bridge `_varena_public_use_dlpack(handle, index, code, bits, shape, str
 
 Every later consumer must establish CUDA dependencies before reading and call `tensor.record_stream(actual_stream)` before final storage release. A weak native range registry routes both base pointers and logical interior addresses to every live exported storage family for that Region. Registered reservation padding is rejected. Legacy default stream handles 0/1 are supported for later consumers; initial exports require an explicit stream and per-thread sentinel 2 is unsupported. Streams must remain live through final alias release.
 
-The final native storage deleter records consumer tails after its last alias disappears, then transfers the exact canonical Weight to the existing native retirement queue. It does not attach Python or wait for GPU completion. Recording uncertainty falls back to the existing conservative context join at reclamation. Forked destructors retain inherited owners without entering inherited CUDA/owner locks.
+The final native storage deleter records consumer tails after its last alias disappears, then transfers the exact canonical Weight to the existing native retirement queue. It does not attach Python or wait for GPU completion. A refused or uncertain tail retains the exact physical Pin, consumer family and canonical Weight in explicit unproven custody. Those bytes stay pinned and accounted; reclamation never substitutes a context-wide join. The retirement statistics count the quarantined export without misclassifying its shared weight bytes as abandoned Cache bytes. Forked destructors retain inherited owners without entering inherited CUDA/owner locks.
 
 ## Qualification boundary
 

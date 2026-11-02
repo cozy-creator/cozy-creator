@@ -1418,6 +1418,10 @@ impl Region {
         if let Some(captures) = &captures {
             ensure_not_capturing(captures, self.device())?;
         }
+        self.record_fences_inner(streams, submission)
+    }
+
+    fn record_fences_inner(&self, streams: &[u64], submission: Option<&async_fill::Control>) -> Result<()> {
         let ordered = submission.is_some_and(|control| {
             control.generation == self.uses.generation.load(Ordering::Acquire)
                 && self.uses.state() == Contents::Published
@@ -2102,6 +2106,38 @@ impl Pin {
             decrement(&region.uses.pins);
         }
         region
+    }
+
+    /// Record final consumers, retaining the exact physical Pin on any refusal.
+    /// Unlike `into_fenced_region`, failure never selects a context-join fallback.
+    /// A storage owner that cannot retry must transfer the returned Pin and its
+    /// Source/service custody to explicit quarantine; it must not simply drop it.
+    ///
+    /// # Safety
+    /// The caller has closed submission by every alias of this physical use.
+    /// Every consumer is represented by a live stream in this device's primary
+    /// context. No consumer may submit after this call, including after failure.
+    #[allow(unsafe_code)]
+    pub unsafe fn try_into_fenced_region(
+        mut self,
+        streams: &[u64],
+    ) -> std::result::Result<Arc<Region>, (Self, Error)> {
+        if self.region().arena.pid != std::process::id() {
+            return Err((self, Error::Invalid("physical Pin inherited after fork")));
+        }
+        // Exclude capture for Ready Pins too, including capture on another stream
+        // of this device. Do not recursively lock the ordered-Pin wrapper.
+        let recorded = (|| {
+            let captures = capture_counts()?;
+            ensure_not_capturing(&captures, self.device())?;
+            self.region().record_fences_inner(streams, self.submission.as_deref())
+        })();
+        if let Err(error) = recorded {
+            return Err((self, error));
+        }
+        let region = self.region.take().expect("live pin");
+        decrement(&region.uses.pins);
+        Ok(region)
     }
 }
 
