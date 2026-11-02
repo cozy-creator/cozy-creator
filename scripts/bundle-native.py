@@ -301,16 +301,23 @@ def bundle(
     return manifest
 
 
-def archive(directory: Path, destination: Path, prefix: str = ""):
+def archive(directory: Path, destination: Path, prefix: str = "", extras=()):
+    manifest = json.loads((directory / "varena-native.json").read_text())
+    names = {manifest["binary"], "varena-native.json", "native-linkage.json"}
+    names.update(library["name"] for library in manifest["libraries"])
+    names.update(extras)
+    # Output may be inside the build directory. Never archive itself, stale bundles,
+    # or a previous binary/library generation just because it remains beside this one.
+    files = [directory / name for name in sorted(names)]
+    files = [file for file in files if file.is_file() and file.resolve() != destination.resolve()]
     if destination.suffix == ".zip":
         with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as writer:
-            for file in sorted(directory.rglob("*")):
-                if file.is_file():
-                    writer.write(file, prefix + file.relative_to(directory).as_posix())
+            for file in files:
+                writer.write(file, prefix + file.relative_to(directory).as_posix())
     else:
         with tarfile.open(destination, "w:gz") as writer:
-            for file in sorted(directory.iterdir()):
-                writer.add(file, arcname=prefix + file.name)
+            for file in files:
+                writer.add(file, arcname=prefix + file.relative_to(directory).as_posix())
 
 
 def owned_archives(manifest, target_root, targets):
@@ -362,10 +369,11 @@ def dist(manifest_path: Path, target_root: Path, targets, max_glibc=None):
                     source.extractall(unpacked, filter="data")
                 prefix = name.removesuffix(".tar.gz") + "/"
                 directory, binary_name = unpacked / prefix, "cozy"
+            extras = [file.relative_to(directory).as_posix() for file in directory.rglob("*") if file.is_file()]
             bundle(
                 directory / binary_name, profile, directory, triple, max_glibc=max_glibc
             )
-            archive(directory, path, prefix)
+            archive(directory, path, prefix, extras)
             # cargo-dist collected linkage before the final dependency rewrite. Do
             # not publish that stale field as evidence about these new archive bytes.
             # The attested archive carries native-linkage.json from the final images.
