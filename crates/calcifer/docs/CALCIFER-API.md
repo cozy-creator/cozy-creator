@@ -117,7 +117,8 @@ a spec.
   - `notes` are what binding said, in order (`info`: a clip cut; `warning`: fields dropped, a machine with no
     GPU). `preparing`: the run is local code's install; follow it, then send the same request under the same key.
   - Refusals name the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
-    `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, ….
+    `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, …. `local_unavailable`
+    (`on: local` where this OS runs no models) comes once the target names a function, or at once for local code.
 - `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
   (`RunQuote`). Nothing is rented or recorded.
 - `GET /v1/targets?target=&cwd=&hub=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it:
