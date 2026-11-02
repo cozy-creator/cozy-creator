@@ -156,6 +156,7 @@ def main():
         # Keep the raw service's final-close proof above uncontaminated by Runtime's
         # intentional process-lifetime keeper. Use a new service generation for
         # actual Runtime constructor adoption/mismatch; do not weaken row-gone above.
+        verification.close()  # The row-gone witness must release its own participant.
         runtime_seed = varena.CooperationOwner(
             0, config["gpu_uuid"], config["directory"], shared=True, priority=7
         )
