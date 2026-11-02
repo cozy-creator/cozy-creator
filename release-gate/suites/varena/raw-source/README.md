@@ -59,7 +59,9 @@ to extend Source submission. The fixture uses them only before submission and re
 resources until all work finishes; it does not add a product gate method or mutate the
 producer list. Consumers use CUDA-visible Varena event dependencies. The gate operations
 follow the current [NVIDIA stream-memory API](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__MEMOP.html);
-no CUDA13.4 driver/toolkit execution is claimed from documentation review.
+The fixture resolves the current `_v2` stream-memory entry points, matching the CUDA13
+header aliases, without an older-symbol fallback. No CUDA13.4 driver/toolkit execution
+is claimed from documentation review.
 
 The example's ten-second checks are explicit fixture protocol deadlines. The operator must
 also bound the whole child process because an actual driver failure can prevent CUDA calls
