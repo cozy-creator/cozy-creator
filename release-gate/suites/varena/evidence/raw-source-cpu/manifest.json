@@ -1,0 +1,56 @@
+{
+  "recorded_at": "2026-11-02T00:40:41.492064+00:00",
+  "owner": "/root/async_integration_review",
+  "product": "507c23c74e69cf143ace96ca405a48676bd53501",
+  "current_fixture_head": "67ff347f582745778924018603a46687f7c97a3c",
+  "base": "55198061027e188722eaa8d94659111b6fe8871a",
+  "native_input": "3df797f56e70180d9ff7a45feec896c31b439b0a",
+  "branch": "codex/xs138-p4-raw-source-adoption",
+  "draft_pr": 2429,
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-raw-source-adoption",
+  "files": {
+    "crates/tensorfs-py/src/varena/refill.rs": "ab2d530857b399eb38ed723ef52531d0911385d3b2f13e8331489114185d5533",
+    "crates/tensorfs-py/src/varena/refill/raw.rs": "a48d0e0be3a2d856a6869870b79964bc547e4ceace1813b5e2d318e23caea26e",
+    "crates/tensorfs/Cargo.toml": "cd4ba4c790f9bf4721fb2fc443e11ff7262da1f25963dcb71e2306607df4a145",
+    "crates/tensorfs/examples/raw_source.rs": "4b139362e9728974ce610a480cb764f2181b897d7de542acd78ecbc4679f7956",
+    "crates/tensorfs/examples/raw_source/extra.rs": "8670b6d48dfe5bab9f142f632321d5418660bb96bbae36672cedf7a2297c19de",
+    "crates/tensorfs/examples/raw_source/gpu.rs": "e747d85b889b516dbf61a4de44904022e78fa568ed65beabeb54e4a574f7e740",
+    "crates/tensorfs/examples/raw_source/mod.rs": "41cb06241c0e30e73cad14372cffc7677a97a9db5ae7f6bd812f35e8d536ab98",
+    "crates/tensorfs/src/io/device.rs": "9e242af116267092e272ca6cecc57a55e2fe37c7a04226f4ede6f7bf01627493",
+    "crates/tensorfs/src/io/device/owned.rs": "52c0def24dc3be95df1a69aef26feb39734deb48efb93b2ad8c02388b140da19",
+    "crates/tensorfs/src/io/source.rs": "32b15753d3c4c926bba1bcc78195a283c030b7cc336336f14c0993473fe187e0",
+    "crates/tensorfs/src/io/source/raw.rs": "c04610512361292308a9bace62baac7128910d1bb101e9de2a510f261a3b0af5",
+    "crates/tensorfs/src/session/checkpoint.rs": "cbd7de0a3bb51d73c13b8415a87b16a4250ce3bb1615885b33ff798194ead150"
+  },
+  "checks": {
+    "bindings_example": "PASS check-0076.07s; core product507",
+    "no_store": "PASS26.26s; same product507 library source",
+    "fixture_current": "PASS check-fixture-0085.75s; exact67ff fixture",
+    "host": "PASS actual Writer/Checkpoint/file+inline+padding1060881 bytes; logical1048593; no libcuda",
+    "original_native_core_and_six_async_cases": "unchanged from3df",
+    "resources": "one job/nice19; coordinated CPU slot",
+    "gpu": "all7Source modes unrun",
+    "portable": "not built",
+    "rental": "none"
+  },
+  "logs": {
+    "check-007.log": "db9f854ae3b3da2a0d7f66d85fbfa9aa87cff22749e2f9a620452540ff928041",
+    "check-no-store-001.log": "c7bf00be9f1eb51f0f1043657cb5b86402dafc085de388f825b7d6b7a85e4cc1",
+    "check-fixture-008.log": "64acd23aa3fa5ea0e6b25414b959aead595d869835c0a5e61e67ae82812f5a64",
+    "host-003.stdout": "3121d7e215169cef9ac1df1965f8264e700c35d07cee348880fe63e3636c4a93",
+    "host-003.stderr": "c1a0868708b94444b0c7d512d83fa62310fb723cac2480832314441ca0c15b8a"
+  },
+  "review_scope": "Core owner reviewed an exact9-file WIP snapshot over3cc562878, before final metrics/timing refinements; no additional concrete blocker. It is not a full507/67ff review. Two identified GPU-case gaps were authored afterward and remain unrun.",
+  "preserved_failures": {
+    "host-001": "incorrect fixture assumption that joined host cancellation skipped initial padding; host.rs unchanged; host-002/003 verify exact existing padding-only progress",
+    "raw-source-check-001": "OwnedRead Send bound and closure Result inference fixed; log retained in sibling fill-retirement outputs"
+  },
+  "outside_scope": [
+    "full-model quality/performance",
+    "actively held GIL GPU proof",
+    "multiple devices",
+    "cross-process Source proof",
+    "decode/continuation/host export adoption",
+    "external P4 public ABI adoption"
+  ]
+}

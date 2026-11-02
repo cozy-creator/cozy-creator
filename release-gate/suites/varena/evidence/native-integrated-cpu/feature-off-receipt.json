@@ -1,0 +1,29 @@
+{
+  "source": "3efea023dfde83b44d5a15bed6deb19c4ac96fc1",
+  "label": "feature-off",
+  "started_at": "2026-11-01T14:40:24.113480+00:00",
+  "cuda_execution": false,
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "-p",
+    "varena",
+    "--example",
+    "fork_guard_cpu",
+    "-j",
+    "1",
+    "--target-dir",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache/check-target",
+    "--no-default-features"
+  ],
+  "build_seconds": 5.472257295972668,
+  "build_returncode": 0,
+  "binary_sha256": "1faf383f96e23f305fb907eab426ffe28ffd8ab0cab4ecdfeddc5961072d96f6",
+  "run_seconds": 0.03240918798837811,
+  "run_returncode": 0
+}

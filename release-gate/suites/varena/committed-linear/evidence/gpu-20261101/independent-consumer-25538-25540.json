@@ -1,0 +1,38 @@
+{
+  "consumer_run": 25538,
+  "cleanup_run": 25540,
+  "passed": true,
+  "pid": 119854,
+  "runtime": "fcdebb8b4ece25d51041d1f40c0a0920431492f6",
+  "tensorfs_artifact": "b6fdd9ba67837f315db2f640972522e03ec892f3",
+  "extension_sha256": "f333f890496a62b35d1438715b643ca63a97d99ee4f074cc80a6eb4085c9c866",
+  "gpu_uuid": "846689c6-daf3-15b1-580e-f2a78bdf6748",
+  "cases": 10,
+  "full_output_comparisons": 6,
+  "max_relative_l2": 0.0,
+  "all_compared_outputs_bit_exact": true,
+  "each_real_forward_calls": 1,
+  "measured_prefetch_calls": 2,
+  "bytes_per_prefetch": 4198400,
+  "whole_rows": 8195,
+  "tight_rows": 4098,
+  "preserved_working_baseline": {
+    "allocated_bytes": 17039360,
+    "mapped_bytes": 20971520,
+    "pending_bytes": 0,
+    "pools_bytes": 0,
+    "event_handles": 0
+  },
+  "weight_baseline": {
+    "resident_bytes": 0,
+    "reserved_bytes": 0,
+    "pinned_bytes": 0,
+    "regions": 0
+  },
+  "same_pid_already_retired_keys": 9,
+  "raw_hashes": {
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/committed-execution/consumer-result.json": "3f22f4164998b083e102a45cae2a07eb402683525160b9a660bf8f1e41ccfb28",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/committed-execution/cleanup-result.json": "64ac464ac6d2091d3e1d23ed668c87ae67dc708ea72c2f5de9e1937ea0a759cb"
+  },
+  "scope": "explicit single raw-source linear phase on this exact GPU/cohort; no full-H3 prefetch or performance claim; remaining9-case protocol uses its corrected fixture"
+}
