@@ -7,7 +7,7 @@ use std::{
     fs::File,
     io, iter, mem,
     os::windows::{
-        io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle},
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
         process::{CommandExt, ExitStatusExt},
     },
     path::Path,
@@ -302,6 +302,8 @@ pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>) -> io
             // SAFETY: the new thread's handle, not needed; the process's is now ours.
             unsafe { CloseHandle(process.hThread) };
             return Ok(Detached {
+                // SAFETY: CreateProcessW succeeded, so this is a live handle that only this
+                // function holds, and nothing else closes it.
                 process: unsafe { OwnedHandle::from_raw_handle(process.hProcess) },
                 pid: process.dwProcessId,
             });
@@ -482,9 +484,11 @@ pub(super) fn peak_resident() -> io::Result<u64> {
         ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         Threading::GetCurrentProcess,
     };
-    // SAFETY: plain-old-data the call fills, its size passed.
+    // SAFETY: plain-old-data; all-zero is a valid value.
     let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { mem::zeroed() };
     let size = mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: the current process's pseudo-handle, which needs no closing, and a writable struct
+    // of the `size` passed.
     if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -572,12 +576,6 @@ fn open_process(pid: u32, access: u32) -> io::Result<OwnedHandle> {
 
 fn created(process: &OwnedHandle) -> io::Result<u64> {
     Ok(ticks(times(raw(process))?[0]))
-}
-
-/// The birth of process `pid` read from a handle the caller keeps to it (a pipe's peer), never
-/// from the pid again.
-pub(crate) fn birth_of_handle(pid: u32, process: BorrowedHandle<'_>) -> io::Result<Birth> {
-    Ok(Birth { pid, boot_id: String::new(), start_ticks: ticks(times(process.as_raw_handle())?[0]) })
 }
 
 /// Creation, exit, kernel and user times.

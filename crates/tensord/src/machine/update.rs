@@ -915,13 +915,12 @@ impl Updates {
         };
         let publication = (|| {
             write_json(&self.paths.update("pending.json"), &pending)?;
-            if let Some(staged) = staged {
-                let launch = &binary.as_ref().expect("staged binary").launch;
+            if let (Some(b), Some(staged)) = (&binary, staged) {
                 platform::native_bundle::copy_libraries(
                     staged.parent().unwrap_or(Path::new(".")),
-                    launch.parent().unwrap_or(Path::new(".")),
+                    b.launch.parent().unwrap_or(Path::new(".")),
                 )?;
-                super::binary::swap(staged)?;
+                super::binary::swap(&b.launch, staged)?;
             }
             if let Some(candidate) = &candidate {
                 relink(&self.paths.current_sdk_link(), Some(candidate))?;
@@ -974,18 +973,51 @@ impl Updates {
                 _ => Ok(None),
             };
         };
+        if !super::binary::previous(&launch.path).is_file() {
+            return Err(self.unrecoverable(launch));
+        }
         let version = super::binary::version(&launch.path).map_err(|e| coded("binary_mismatch", e.to_string()))?;
         if let Some(named) = request.cozy.as_ref().filter(|named| **named != version) {
             return Err(coded("binary_mismatch", format!("{} is cozy {version}, not {named}", launch.path.display())));
         }
-        let previous = super::binary::previous(&launch.path);
-        if !previous.is_file() {
-            return Err(coded(
-                "binary_unrecoverable",
-                format!("{} is missing: nothing to roll back to", previous.display()),
-            ));
-        }
         Ok(Some(Binary { launch: launch.path.clone(), version, staged: None, dev: false }))
+    }
+
+    /// The refusal of every update while the launch path holds a binary `cozy update` did not
+    /// place, with no `.cozy-previous` to roll back to: what becomes of this machine, and what to
+    /// do. Only an exec moves it: this computer's machine exits idle and its next use starts the
+    /// file there; a rental ends idle instead, so only a kept rollback lets an update through.
+    fn unrecoverable(&self, launch: &super::binary::Launch) -> io::Error {
+        let (path, previous) = (launch.path.display(), super::binary::previous(&launch.path));
+        let placed = super::binary::check(&launch.path);
+        let said = match &placed {
+            Ok(version) => format!("cozy {version}"),
+            Err(why) => format!("cannot run here: {why}"),
+        };
+        let (rental, grace) = self.lifecycle.as_ref().map_or((false, super::lifecycle::IDLE_GRACE_MS), |l| (l.rental, l.grace));
+        let minutes = (grace / 60_000).max(1);
+        let idle = match (self.running)().len() {
+            0 => format!("after {minutes} minutes idle (`cozy machine ls` shows when)"),
+            1 => format!("{minutes} minutes after its run in flight ends"),
+            runs => format!("{minutes} minutes after its {runs} runs in flight end"),
+        };
+        let remedy = match (rental, &placed) {
+            (false, Ok(_)) => format!("It moves by itself: it exits {idle}, its next use starts that binary, and updates work again"),
+            (false, Err(_)) => format!("Put a cozy that runs at that path (the installer does): it exits {idle}, and cannot start again until then"),
+            (true, placed) => format!(
+                "A rental ends when idle and never restarts onto it. To update this one now, keep what it runs as the rollback: run `cp /proc/{}/exe {}` on it, then update again{}",
+                std::process::id(),
+                previous.display(),
+                if placed.is_ok() { "" } else { " with `--tensord` naming a cozy that runs" },
+            ),
+        };
+        io::Error::other(Coded {
+            code: "binary_unrecoverable",
+            message: format!(
+                "{path} ({said}) was replaced outside `cozy update` and {} is missing, so there is nothing to roll back to and this machine stays on cozy {VERSION}, taking no update. {remedy}",
+                previous.display()
+            ),
+        })
     }
 
     /// A release the machine fetches, or a dev binary the caller staged, digest-checked; then
@@ -997,12 +1029,8 @@ impl Updates {
         let launch = super::binary::launch()
             .ok_or_else(|| coded("binary_unsupported", "this machine was not started from a cozy binary".into()))?;
         if launch.swapped() {
-            let previous = super::binary::previous(&launch.path);
-            if !previous.is_file() {
-                return Err(coded(
-                    "binary_unrecoverable",
-                    format!("{} is missing: nothing to roll back to", previous.display()),
-                ));
+            if !super::binary::previous(&launch.path).is_file() {
+                return Err(self.unrecoverable(launch));
             }
             let placed = super::binary::version(&launch.path).ok();
             let release = choice.file.is_empty() && choice.url.is_empty();

@@ -73,6 +73,12 @@ impl Accepts {
 }
 
 impl Renderer {
+    /// Whether its model draws a transparent background when asked in its model card's words. Such a
+    /// picture needs no clean.
+    pub fn draws_transparent(&self) -> bool {
+        self.package.rsplit('/').next() == Some("qwen-image-2")
+    }
+
     /// `function` of the package interface `document`.
     fn read(
         package: &str,
