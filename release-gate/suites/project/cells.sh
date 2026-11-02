@@ -5,7 +5,8 @@
 #   those latents, at 1080p and the shot's aspect, and edit.mp4 at the 1920x1080 canvas.
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
-# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character cleaned.
+# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's sheet at 16:9,
+#   transparent with no clean.
 # - project-local: a node rendered `with: ./still.py/draw`, local code made ready by Calcifer.
 # - project-refusals: an option that sets the canvas, refused before any run.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
@@ -143,8 +144,11 @@ YAML
     f=$(jq -r "$PRIMARY" <<< "$(approved "$P" $n)")
     expect "project-stills-$n" "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"
   done
-  expect project-stills-clean "$(lockq "$P" "'PASS' if any(v.get('cleaned') for v in lock['nodes']['cook']['versions']) else 'FAIL'" || echo FAIL)" \
-    "cook's picture cleaned before use"
+  f=$(jq -r "$PRIMARY" <<< "$(approved "$P" cook)")
+  expect project-stills-sheet "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"
+  ymin=$([ -n "$f" ] && ffmpeg -v error -i "$P/$f" -vf alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=- -f null - | grep -oE 'YMIN=[0-9]+' | head -1)
+  expect project-stills-transparent "$(lockq "$P" "'FAIL' if any(v.get('cleaned') for v in lock['nodes']['cook']['versions']) else 'PASS'" || echo FAIL)" "cook's sheet not cleaned"
+  expect project-stills-alpha "$([ "$ymin" = YMIN=0 ] && echo PASS || echo FAIL)" "cook's sheet has transparent pixels: $ymin"
   sed -i 's/aspect_ratio: "16:9"/aspect_ratio: "9:16"/' "$P/project.yaml"
   render project-stills-916 "$P" kitchen
   f=$(lockq "$P" "lock['nodes']['kitchen']['versions'][-1]['assets']['image']['path']")

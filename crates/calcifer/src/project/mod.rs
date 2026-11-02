@@ -851,7 +851,8 @@ impl Walk {
     }
 
     /// Sends `next` under its key: a new version made `on` its target's machines (chosen for
-    /// `all`, or when the entity has none; a picture is cleaned before it is listed), else its
+    /// `all`, or when the entity has none; a picture its renderer can't draw transparent is cleaned
+    /// before it is listed), else its
     /// chosen picture's clean. Recorded as pending together with what it settles of the walk, before
     /// the run is sent; one that fails is settled all the same.
     async fn send(&self, video: &Video, lock: &Lock, next: Next) -> Result<(), Error> {
@@ -884,7 +885,10 @@ impl Walk {
                 .await?;
             let request = video.request(self.folder(), lock, i, &renderer)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
-            let then = if video.cleans(i) { Then::Clean { approve } } else { Then::List { approve } };
+            let then = match video.cleans(i) && !renderer.draws_transparent() {
+                true => Then::Clean { approve },
+                false => Then::List { approve },
+            };
             let (mut payload, mut files, mut frames, mut said) = (request.payload, vec![], vec![], vec![]);
             for input in request.files {
                 // A frame of a video, taken out here: held until the run has been sent.
