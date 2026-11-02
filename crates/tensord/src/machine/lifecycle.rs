@@ -53,9 +53,9 @@ struct State {
 }
 
 pub struct Lifecycle {
-    rental: bool,
+    pub(super) rental: bool,
     /// The idle window: `IDLE_GRACE_MS` unless the grant names another.
-    grace: i64,
+    pub(super) grace: i64,
     path: PathBuf,
     state: Mutex<State>,
     admissions: AtomicUsize,
