@@ -18,6 +18,8 @@ use super::continuation::{self, Continuation, Status};
 use super::{PyRegion, raise};
 use crate::store::PyCheckpoint;
 
+mod raw;
+
 static OBSERVATION_CLOCK: OnceLock<Instant> = OnceLock::new();
 fn monotonic_ns() -> u64 {
     (OBSERVATION_CLOCK
@@ -397,6 +399,10 @@ impl Shared {
     }
 
     fn run(self: Arc<Self>, mut work: Work) {
+        if raw::eligible(&work) {
+            raw::run(self, work);
+            return;
+        }
         let device = self.region.device();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             if self.cancel.canceled() {
