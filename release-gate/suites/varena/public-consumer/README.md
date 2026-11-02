@@ -74,3 +74,22 @@ parsing, Ruff, offline Cargo resolution and the native helper type check pass.
 `evidence/source-checks.json` records exact scope. Portable artifact loading, actual
 GPU execution and installed software qualification remain pending. The fixture
 does not claim a donation-to-another-process proof or a full-model performance pass.
+
+## Canonical wheel copies and direct helper build
+
+Maturin1.16 distributes identical native libraries in both `tensorfs/.native/` and
+its CLI `.data/data/lib/varena-v1/` directory. Preparation selects the Python
+`.native` pair and verifies every additional core/std copy against its exact bytes.
+Different std names, differing bytes, missing canonical members and duplicate ZIP
+member names refuse preparation. Runtime still requires one loaded core and std.
+The actual parity004 wheel passes; differing duplicate core and std fixtures refuse.
+
+`direct-rustc.py` compiles only this fixture cdylib, with no Cargo invocation. Use
+the same pinned manylinux image and Rust toolchain, after the portable target owner
+releases it, mounting `/target` and `/rust` read-only. Supply `--profile /target/release`,
+`--extension-fingerprint` for the final extension's Cargo fingerprint,
+`--expected-core-sha256`, `--expected-extension-sha256`, `--output` and `--receipt`.
+Without `--run` it prints the audited command. Dependency selection verifies the
+extension's exact Cargo1.99 fingerprint against the companion dependency records;
+it never chooses an rlib by modification time. The wrapper alone is written to
+the output directory, with before/after core and extension hash checks.

@@ -1,0 +1,11 @@
+{
+  "base_fixture": "b33199a236c6ca1c52e752191b8289c38b7ac6eb",
+  "scope": "fixture-only duplicate wheel member validation and direct rustc recipe; consumer/native product bodies unchanged",
+  "files": {
+    "release-gate/suites/varena/public-consumer/prepare.py": "953af4936e8c9d87d1599dea8ffc56c02713cb38661d22405655181b98f22472",
+    "release-gate/suites/varena/public-consumer/direct-rustc.py": "514e3a6466f33b572bc0f77ee78004cc9736cc09c041c2ca04b4647b103a3139",
+    "release-gate/suites/varena/public-consumer/README.md": "1c68ac4332e27b6f541e56c2c4857b2fcb1fd570d2fbae0cde6176e2ea108a2d"
+  },
+  "actual_wheel_copy_check": "evidence/duplicate-native-copy-check.json",
+  "gpu_executed": false
+}

@@ -33,6 +33,55 @@ def wheel_version(wheel):
     return found[1]
 
 
+def native_libraries(wheel):
+    """Choose Python's canonical copies; every extra installed copy must match exactly."""
+    core = [
+        item for item in wheel.infolist() if item.filename.endswith("/libvarena.so")
+    ]
+    std = [
+        item
+        for item in wheel.infolist()
+        if re.search(r"/libstd-[^/]+\.so$", item.filename)
+    ]
+    canonical_core = [
+        item for item in core if item.filename == "tensorfs/.native/libvarena.so"
+    ]
+    canonical_std = [
+        item
+        for item in std
+        if re.fullmatch(r"tensorfs/\.native/libstd-[^/]+\.so", item.filename)
+    ]
+    assert len(canonical_core) == len(canonical_std) == 1, (
+        "one canonical Python core/std pair is required"
+    )
+    entries = core + std
+    assert len({item.filename for item in entries}) == len(entries), (
+        "duplicate wheel member names are ambiguous"
+    )
+    libraries = {
+        "libvarena.so": wheel.read(canonical_core[0]),
+        Path(canonical_std[0].filename).name: wheel.read(canonical_std[0]),
+    }
+    copies = {}
+    for item in entries:
+        name = Path(item.filename).name
+        assert name in libraries, (
+            item.filename,
+            "a different Rust std cohort is distributed",
+        )
+        data = wheel.read(item)
+        assert data == libraries[name], (
+            item.filename,
+            "distributed native copy differs from canonical Python bytes",
+        )
+        copies[item.filename] = data_sha(data)
+    return libraries, {
+        "canonical_core": canonical_core[0].filename,
+        "canonical_std": canonical_std[0].filename,
+        "distributed_copies": copies,
+    }
+
+
 def elf(path):
     header = subprocess.check_output(["readelf", "-h", str(path)], text=True)
     dynamic = subprocess.check_output(["readelf", "-d", str(path)], text=True)
@@ -98,14 +147,10 @@ def main():
         assert len(extension) == 1
         payload["extension_sha256"] = data_sha(wheel.read(extension[0]))
         payload["shim_sha256"] = data_sha(wheel.read("tensorfs/_varena_torch.so"))
-        core = [name for name in wheel.namelist() if name.endswith("/libvarena.so")]
-        std = [
-            name for name in wheel.namelist() if re.search(r"/libstd-[^/]+\.so$", name)
-        ]
-        assert len(core) == len(std) == 1
-        payload["core_sha256"] = data_sha(wheel.read(core[0]))
-        payload["std_name"] = Path(std[0]).name
-        payload["std_sha256"] = data_sha(wheel.read(std[0]))
+        libraries, native_distribution = native_libraries(wheel)
+        payload["core_sha256"] = data_sha(libraries["libvarena.so"])
+        payload["std_name"] = Path(native_distribution["canonical_std"]).name
+        payload["std_sha256"] = data_sha(libraries[payload["std_name"]])
         assert all(
             payload[name] == built[name]
             for name in ("core_sha256", "std_name", "std_sha256")
@@ -121,10 +166,6 @@ def main():
         )
         payload["tensorfs_files"] = {
             name: data_sha(wheel.read("tensorfs/" + name)) for name in tfs_names
-        }
-        libraries = {
-            "libvarena.so": wheel.read(core[0]),
-            payload["std_name"]: wheel.read(std[0]),
         }
     with zipfile.ZipFile(args.runtime_wheel) as wheel:
         payload["runtime_version"] = wheel_version(wheel)
@@ -193,11 +234,14 @@ def main():
     manifest = {
         "source_sha": args.source_sha,
         "native_build": built,
+        "native_distribution": native_distribution,
         "native_build_receipt_sha256": sha(args.native_build_receipt),
         "binaries": hashes,
         "elf": elf_facts,
         "python_helpers": python_helpers,
-        "retirement_successor": json.loads((fixture / "retirement-origin.json").read_text()),
+        "retirement_successor": json.loads(
+            (fixture / "retirement-origin.json").read_text()
+        ),
         "public_source_helper_source_sha256": data_sha(source_helper),
         "wheels": {
             "runtime": {

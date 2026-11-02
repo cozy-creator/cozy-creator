@@ -1,0 +1,19 @@
+{
+  "actual_wheel": "/home/fidika/cozy_v2/outputs/xs138-native-api-integrated/linux-08a0d955e-parity-004/wheels/tensorfs-0.17.16+dev.g08a0d955-cp311-abi3-linux_x86_64.whl",
+  "actual_wheel_sha256": "307c9e3abe65534cbcf5f11aa1b7814113261b6289f7ea4cdffc66b896b1aa05",
+  "native_distribution": {
+    "canonical_core": "tensorfs/.native/libvarena.so",
+    "canonical_std": "tensorfs/.native/libstd-7e719de9c4abc98f.so",
+    "distributed_copies": {
+      "tensorfs/.native/libvarena.so": "f0cf14ddfc8e12a175d57ac5b48e621fafd854afd6abba78c63278d60a0875d2",
+      "tensorfs-0.17.16+dev.g08a0d955.data/data/lib/varena-v1/libvarena.so": "f0cf14ddfc8e12a175d57ac5b48e621fafd854afd6abba78c63278d60a0875d2",
+      "tensorfs/.native/libstd-7e719de9c4abc98f.so": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c",
+      "tensorfs-0.17.16+dev.g08a0d955.data/data/lib/varena-v1/libstd-7e719de9c4abc98f.so": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c"
+    }
+  },
+  "identical_copy_selection_passed": true,
+  "mismatch_refused": [
+    "core",
+    "std"
+  ]
+}
