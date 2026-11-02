@@ -428,6 +428,10 @@ pub struct Video {
     shapes: Vec<Option<Shape>>,
 }
 
+/// How far a take's aspect may be from the canvas's and still be it: models round their sizes to
+/// multiples, which moves it this much at most (832x480 is 2.5% from 16:9).
+const ROUNDED: f64 = 0.03;
+
 /// The canvas the edit fills: its aspect, as W:H in whole numbers for a request and as a ratio,
 /// and its short edge when `resolution:` sets one.
 #[derive(Clone, Debug)]
@@ -469,6 +473,20 @@ impl Canvas {
         let g = gcd(a, b).max(1);
         (a, b) = (a / g, b / g);
         Ok(Self { aspect: format!("{a}:{b}"), ratio: w / h, short, fps })
+    }
+
+    /// The edit's size: `resolution:`'s, else the first take's own (`first`) when its aspect is this one
+    /// but for how models round their sizes and its sides are even (H3's 1344x768 at 16:9), so takes of
+    /// that size join with no encode; else this aspect at that take's short edge.
+    pub fn edit_size(&self, first: (u64, u64)) -> (u64, u64) {
+        if let Some(short) = self.short {
+            return self.size(short);
+        }
+        let rounded = (first.0 as f64 / first.1 as f64 / self.ratio - 1.0).abs() <= ROUNDED;
+        match rounded && first.0 % 2 == 0 && first.1 % 2 == 0 {
+            true => first,
+            false => self.size(first.0.min(first.1)),
+        }
     }
 
     /// Width and height on this aspect for `short` as its short edge, each even.
@@ -1393,7 +1411,7 @@ pub fn cut(
 ) -> Result<Cutted, Error> {
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
-    let (width, height) = canvas.size(canvas.short.unwrap_or_else(|| probes[0].size.0.min(probes[0].size.1)));
+    let (width, height) = canvas.edit_size(probes[0].size);
     // Each piece's frames at the project's rate, within its take, as project.lock records it.
     let Some(made) = measure(pieces, fps) else {
         let unprobed: Vec<&str> = pieces.iter().filter(|piece| piece.shape.is_none()).map(|piece| piece.node.as_str()).collect();
