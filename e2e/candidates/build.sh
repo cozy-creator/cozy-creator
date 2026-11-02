@@ -4,8 +4,8 @@
 # checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
 #                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
-# With $GITHUB_OUTPUT, `name` is the artifact's: candidate-<what>-<inputs>, <inputs> the build inputs' tree hash (the
-# Runtime's: its commit). A release candidate is no build: e2e takes its exact version through `cozy machine update`
+# With $GITHUB_OUTPUT, `name` is the artifact's: candidate-<what>[-<os>-<arch>]-<inputs>, <inputs> the build inputs'
+# tree hash (the Runtime's: its commit), <os>-<arch> for any but Linux x64. A release candidate is no build: e2e takes its exact version through `cozy machine update`
 # (candidates/action.yml), which fetches and verifies it.
 set -euo pipefail
 what=$1 src=$2 out=$3
@@ -37,7 +37,10 @@ sha=$(git -C "$src" rev-parse HEAD)
 inputs=$sha
 [ "$repo" != cozy-creator ] || inputs=$(git -C "$src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock \
   HEAD:rust-toolchain.toml HEAD:e2e/candidates | sha256sum | cut -c1-40)
-name=candidate-$what-$inputs
+# Another OS's or CPU's build (macOS, Windows: e2e.yaml's cli-os legs build their own) is named for it.
+plat=$(printf '%s-%s' "${RUNNER_OS:-Linux}" "${RUNNER_ARCH:-X64}" | tr '[:upper:]' '[:lower:]')
+[ "$plat" != linux-x64 ] || plat=''
+name=candidate-$what${plat:+-$plat}-$inputs
 if [ -n "${REUSE:-}" ]; then
   # REUSE=1 only reuses: nothing is written, and no name, when no run has these sources' candidate.
   reuse || { echo "$what: no e2e run of cozy-creator holds a build of ${sha:0:12}'s build inputs ($inputs)" >&2; exit 0; }

@@ -86,11 +86,37 @@ runs:
         repository: cozy-creator/cozy-runtime
         ref: ${{ inputs.runtime_ref }}
         path: .rt
-    - if: inputs.from != 'artifacts'
+    # cozy as an earlier merge-group or dispatched run built it for this OS from the same build inputs (a PR's own
+    # dispatch, for its queue entry), else built here and kept for the next (build.sh).
+    - id: reuse
+      if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == ''
+      shell: bash
+      env:
+        REUSE: "1"
+        GH_TOKEN: ${{ github.token }}
+        CREATOR: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }}
+      run: bash "${{ github.action_path }}/build.sh" cozy "$CREATOR" "$RUNNER_TEMP/candidates" > /dev/null
+    - if: inputs.from != 'artifacts' && (steps.reuse.outputs.name == '' || runner.os == 'Linux')
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }} -> target
         save-if: ${{ github.ref == 'refs/heads/master' }}
+    - id: cozy
+      if: inputs.from != 'artifacts' && inputs.tensord == '' && inputs.release == '' && steps.reuse.outputs.name == ''
+      shell: bash
+      env:
+        CARGO_INCREMENTAL: "0"
+        CREATOR: ${{ inputs.repo == 'cozy-creator' && '.src' || '.stack' }}
+      run: bash "${{ github.action_path }}/build.sh" cozy "$CREATOR" "$RUNNER_TEMP/candidates" > /dev/null
+    - if: steps.cozy.outputs.name != '' && runner.os != 'Linux'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.cozy.outputs.name }}
+        path: ${{ runner.temp }}/candidates
+        if-no-files-found: error
+        retention-days: 14
+        # cli-os and mps (or cli-release) on one OS in one run build the same cozy.
+        overwrite: true
     # The run's files in one directory, as its release would hold them (e2e/lib.sh --release).
     - if: inputs.release != ''
       shell: bash
@@ -124,7 +150,6 @@ runs:
           creator=.stack runtime=.rt
           [ "$REPO" != cozy-creator ] || creator=.src
           [ "$REPO" != cozy-runtime ] || runtime=.src
-          [ -n "$TENSORD$RELEASE" ] || bash "$BUILD_SH" cozy "$creator" "$out" > /dev/null
           [ -n "$TENSORFS" ] || [ -z "$machine" ] || bash "$BUILD_SH" tensorfs "$creator" "$out" > /dev/null
           [ -n "$RUNTIME" ] || [ -z "$machine" ] || bash "$BUILD_SH" runtime "$runtime" "$out" > /dev/null
         fi
