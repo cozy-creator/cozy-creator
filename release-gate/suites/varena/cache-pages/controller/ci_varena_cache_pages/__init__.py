@@ -523,3 +523,9 @@ def modern_host_pool(payload: Probe, ctx: Context) -> Report:
 def modern_host_vmm(payload: Probe, ctx: Context) -> Report:
     """Actual HOST VMM capability, byte-copy and closed-gate retirement diagnostic."""
     return native(payload, ctx, 'vmm', helper='varena-modern-host')
+
+
+@app.entrypoint(accelerator=True)
+def modern_host_pool_small(payload: Probe, ctx: Context) -> Report:
+    """Exact2MiB host-Source size and maxSize, with actual reserved/used pool facts."""
+    return native(payload, ctx, 'pool_small', helper='varena-modern-host')

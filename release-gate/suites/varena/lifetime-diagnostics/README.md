@@ -142,3 +142,8 @@ The successor additionally measures target event/stream destruction before the
 unrelated gate opens. Only the unrelated gate's event/stream/pinned word are
 cleaned afterward. HOST VMM granularity status/value are always reported; that
 value is not silently assumed to be the stream-ordered pool's granularity.
+
+`modern_host_pool_small` measures the exact2MiB host-Source stage with maxSize2MiB,
+without silently rounding up. Both pool modes report actual reserved/used bytes
+after allocation completion and after free completion. A granularity/cap refusal
+is preserved as such; VMM granularity is not substituted for pool evidence.

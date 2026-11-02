@@ -8,7 +8,7 @@
 #define FN(name) __typeof__(&name) name
 static struct {
     FN(cuDeviceGetAttribute); FN(cuMemPoolCreate); FN(cuMemPoolSetAccess);
-    FN(cuMemAllocFromPoolAsync); FN(cuMemFreeAsync); FN(cuMemPoolDestroy);
+    FN(cuMemAllocFromPoolAsync); FN(cuMemFreeAsync); FN(cuMemPoolDestroy); FN(cuMemPoolGetAttribute);
     FN(cuMemGetAllocationGranularity); FN(cuMemAddressReserve); FN(cuMemCreate);
     FN(cuMemMap); FN(cuMemSetAccess); FN(cuMemUnmap); FN(cuMemRelease);
     FN(cuMemAddressFree); FN(cuMemAlloc_v2); FN(cuMemFree_v2);
@@ -25,6 +25,7 @@ struct ModernTrial {
     CUmemGenericAllocationHandle handle;
     CUmemoryPool pool;
     size_t size;
+    uint64_t reserved_after_alloc, reserved_after_free, used_after_alloc, used_after_free;
     int pooled;
     _Atomic int entered,returned,release_completed;
     uint64_t entered_ns,returned_ns,completed_ns;
@@ -36,6 +37,8 @@ static void *modern_trial(void *raw) {
         stage("before_free_async");OK("cuMemFreeAsync",modern.cuMemFreeAsync(t->pointer,t->stream));stage("after_free_async");
         OK("free event record",api.record(t->event,t->stream));completed(t->event,"free event completion");
         t->completed_ns=now_ns();atomic_store_explicit(&t->release_completed,1,memory_order_release);
+        OK("pool reserved after free",modern.cuMemPoolGetAttribute(t->pool,CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT,&t->reserved_after_free));
+        OK("pool used after free",modern.cuMemPoolGetAttribute(t->pool,CU_MEMPOOL_ATTR_USED_MEM_CURRENT,&t->used_after_free));
         stage("before_pool_destroy");OK("cuMemPoolDestroy",modern.cuMemPoolDestroy(t->pool));stage("after_pool_destroy");
     } else {
         stage("before_unmap");OK("cuMemUnmap",modern.cuMemUnmap(t->pointer,t->size));stage("after_unmap");
@@ -48,21 +51,21 @@ static void *modern_trial(void *raw) {
     t->returned_ns=now_ns();Obj old=NULL;OK("worker pop",api.pop(&old));
     atomic_store_explicit(&t->returned,1,memory_order_release);return NULL;
 }
-static int unsupported(const char *mode,const char *stage_name,int rc,int host_pool,int numa_pool,int device) {
+static int unsupported(const char *mode,const char *stage_name,int rc,int host_pool,int numa_pool,int device,const char *uuid) {
     Obj old=NULL;OK("unsupported pop",api.pop(&old));OK("unsupported release",api.release(device));
-    printf("{\"passed\":true,\"qualified\":false,\"supported\":false,\"mode\":\"%s\",\"stage\":\"%s\",\"status\":%d,\"host_pool_support\":%d,\"host_numa_pool_support\":%d,\"scope\":\"capability refusal; no allocation/release claim\"}\n",mode,stage_name,rc,host_pool,numa_pool);
+    printf("{\"passed\":true,\"qualified\":false,\"supported\":false,\"mode\":\"%s\",\"gpu_uuid\":\"%s\",\"stage\":\"%s\",\"status\":%d,\"host_pool_support\":%d,\"host_numa_pool_support\":%d,\"scope\":\"capability refusal; no allocation/release claim\"}\n",mode,uuid,stage_name,rc,host_pool,numa_pool);
     return 0;
 }
 int main(int argc,char **argv) {
-    REQUIRE(argc==3||argc==4,"expected pool|vmm actual-UUID [device]");
-    int pooled=!strcmp(argv[1],"pool");REQUIRE(pooled||!strcmp(argv[1],"vmm"),"mode");
+    REQUIRE(argc==3||argc==4,"expected pool|pool_small|vmm actual-UUID [device]");
+    int small=!strcmp(argv[1],"pool_small");int pooled=small||!strcmp(argv[1],"pool");REQUIRE(pooled||!strcmp(argv[1],"vmm"),"mode");
     int device=argc==4?atoi(argv[3]):0;
     void *lib=dlopen("libcuda.so.1",RTLD_NOW|RTLD_LOCAL);REQUIRE(lib!=NULL,"libcuda");
     LOAD(init,"cuInit");LOAD(retain,"cuDevicePrimaryCtxRetain");LOAD(push,"cuCtxPushCurrent_v2");LOAD(pop,"cuCtxPopCurrent_v2");LOAD(release,"cuDevicePrimaryCtxRelease_v2");
     LOAD(uuid,"cuDeviceGetUuid_v2");LOAD(stream_new,"cuStreamCreate");LOAD(stream_destroy,"cuStreamDestroy_v2");LOAD(wait,"cuStreamWaitValue32_v2");
     LOAD(event_new,"cuEventCreate");LOAD(record,"cuEventRecord");LOAD(query,"cuEventQuery");LOAD(event_destroy,"cuEventDestroy_v2");
     LOAD(host_new,"cuMemHostAlloc");LOAD(host_device,"cuMemHostGetDevicePointer_v2");LOAD(host_free,"cuMemFreeHost");
-    MOD(cuDeviceGetAttribute);MOD(cuMemPoolCreate);MOD(cuMemPoolSetAccess);MOD(cuMemAllocFromPoolAsync);MOD(cuMemFreeAsync);MOD(cuMemPoolDestroy);
+    MOD(cuDeviceGetAttribute);MOD(cuMemPoolCreate);MOD(cuMemPoolSetAccess);MOD(cuMemAllocFromPoolAsync);MOD(cuMemFreeAsync);MOD(cuMemPoolDestroy);MOD(cuMemPoolGetAttribute);
     MOD(cuMemGetAllocationGranularity);MOD(cuMemAddressReserve);MOD(cuMemCreate);MOD(cuMemMap);MOD(cuMemSetAccess);MOD(cuMemUnmap);MOD(cuMemRelease);MOD(cuMemAddressFree);
     MOD(cuMemAlloc_v2);MOD(cuMemFree_v2);MOD(cuMemcpyHtoDAsync_v2);MOD(cuMemcpyDtoHAsync_v2);
     OK("init",api.init(0));Obj context=NULL;OK("retain",api.retain(&context,device));OK("push",api.push(context));
@@ -75,13 +78,13 @@ int main(int argc,char **argv) {
     int host_rc=modern.cuDeviceGetAttribute(&host_pool,CU_DEVICE_ATTRIBUTE_HOST_MEMORY_POOLS_SUPPORTED,device);
     int numa_rc=modern.cuDeviceGetAttribute(&numa_pool,CU_DEVICE_ATTRIBUTE_HOST_NUMA_MEMORY_POOLS_SUPPORTED,device);
     fprintf(stderr,"{\"host_pool_support\":%d,\"host_pool_status\":%d,\"host_numa_pool_support\":%d,\"host_numa_pool_status\":%d,\"CUDA_header_version\":%d}\n",host_pool,host_rc,numa_pool,numa_rc,CUDA_VERSION);fflush(stderr);
-    if(pooled&&(host_rc||!host_pool))return unsupported(argv[1],"HOST_MEMORY_POOLS_SUPPORTED",host_rc,host_pool,numa_pool,device);
+    if(pooled&&(host_rc||!host_pool))return unsupported(argv[1],"HOST_MEMORY_POOLS_SUPPORTED",host_rc,host_pool,numa_pool,device,argv[2]);
     CUmemAllocationProp prop={0};prop.type=CU_MEM_ALLOCATION_TYPE_PINNED;prop.location.type=CU_MEM_LOCATION_TYPE_HOST;
-    size_t bytes=4u<<20,granularity=0;
+    size_t bytes=(small?2u:4u)<<20,granularity=0;size_t maximum=small?bytes:8u<<20;
     int granularity_status=modern.cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM);
     fprintf(stderr,"{\"host_vmm_granularity_status\":%d,\"host_vmm_granularity\":%zu}\n",granularity_status,granularity);fflush(stderr);
     if(!pooled) {
-        if(granularity_status)return unsupported(argv[1],"HOST granularity",granularity_status,host_pool,numa_pool,device);
+        if(granularity_status)return unsupported(argv[1],"HOST granularity",granularity_status,host_pool,numa_pool,device,argv[2]);
         REQUIRE(granularity&&granularity<=64u<<20,"bounded granularity");
         bytes=((bytes+granularity-1)/granularity)*granularity;
     }
@@ -92,11 +95,14 @@ int main(int argc,char **argv) {
     CUmemAccessDesc access[2]={0};access[0].location.type=CU_MEM_LOCATION_TYPE_DEVICE;access[0].location.id=device;access[0].flags=CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     access[1].location.type=CU_MEM_LOCATION_TYPE_HOST;access[1].flags=CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     if(pooled) {
-        CUmemPoolProps properties={0};properties.allocType=CU_MEM_ALLOCATION_TYPE_PINNED;properties.location.type=CU_MEM_LOCATION_TYPE_HOST;properties.maxSize=8u<<20;
+        CUmemPoolProps properties={0};properties.allocType=CU_MEM_ALLOCATION_TYPE_PINNED;properties.location.type=CU_MEM_LOCATION_TYPE_HOST;properties.maxSize=maximum;
         stage("before_pool_create");OK("HOST pool create",modern.cuMemPoolCreate(&t.pool,&properties));stage("after_pool_create");
         OK("pool device access",modern.cuMemPoolSetAccess(t.pool,access,1));
         OK("pool alloc",modern.cuMemAllocFromPoolAsync(&t.pointer,bytes,t.pool,stream));
         OK("allocation event",api.record(event,stream));completed(event,"allocation completion before CPU access");
+        OK("pool reserved after alloc",modern.cuMemPoolGetAttribute(t.pool,CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT,&t.reserved_after_alloc));
+        OK("pool used after alloc",modern.cuMemPoolGetAttribute(t.pool,CU_MEMPOOL_ATTR_USED_MEM_CURRENT,&t.used_after_alloc));
+        REQUIRE(t.reserved_after_alloc<=maximum,"pool actual backing exceeds maxSize");
     } else {
         stage("before_vmm_create");OK("HOST VMM create",modern.cuMemCreate(&t.handle,bytes,&prop,0));stage("after_vmm_create");
         OK("reserve",modern.cuMemAddressReserve(&t.pointer,bytes,0,0,0));OK("map",modern.cuMemMap(t.pointer,bytes,0,t.handle,0));
@@ -126,6 +132,7 @@ int main(int argc,char **argv) {
     REQUIRE(!pthread_join(thread,NULL),"join");completed(gate_event,"gate complete");
     OK("destroy gate event",api.event_destroy(gate_event));OK("destroy blocked",api.stream_destroy(blocked));OK("free gate",api.host_free(gate_raw));
     Obj old=NULL;OK("pop",api.pop(&old));OK("release context",api.release(device));
+    if(pooled)fprintf(stderr,"{\"event\":\"pool_accounting\",\"maximum_bytes\":%zu,\"allocation_bytes\":%zu,\"reserved_after_alloc\":%llu,\"used_after_alloc\":%llu,\"reserved_after_free\":%llu,\"used_after_free\":%llu}\n",maximum,bytes,(unsigned long long)t.reserved_after_alloc,(unsigned long long)t.used_after_alloc,(unsigned long long)t.reserved_after_free,(unsigned long long)t.used_after_free);
     printf("{\"passed\":true,\"supported\":true,\"qualified\":%s,\"mode\":\"%s\",\"gpu_uuid\":\"%s\",\"bytes\":%zu,\"host_pool_support\":%d,\"host_numa_pool_support\":%d,\"full_byte_readback\":true,\"entire_target_retirement_measured\":true,\"returned_while_gate_closed\":%s,\"release_completed_while_gate_closed\":%s,\"entered_ns\":%llu,\"completed_ns\":%llu,\"returned_ns\":%llu,\"CPU_gate_released_ns\":%llu,\"gate_release_used_cuda\":false,\"scope\":\"one direct API capability/progress sample; not a product or all-platform guarantee\"}\n",returned_closed&&completed_closed?"true":"false",argv[1],argv[2],bytes,host_pool,numa_pool,returned_closed?"true":"false",completed_closed?"true":"false",(unsigned long long)t.entered_ns,(unsigned long long)t.completed_ns,(unsigned long long)t.returned_ns,(unsigned long long)release_ns);
     return 0;
 }
