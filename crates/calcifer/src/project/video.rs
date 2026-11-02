@@ -19,7 +19,6 @@ use super::{
     host::{Accepts, Renderer},
 };
 
-pub const TYPE: &str = "video";
 /// The name `cozy project render all` means: every node, brought up to date.
 pub const ALL: &str = "all";
 
@@ -43,7 +42,6 @@ pub fn skeleton() -> String {
 # makes everything missing or out of date, in order, and cuts edit.mp4 (and its timeline, edit.otio) here. A file named here
 # (relative to this folder, or absolute) is linked into assets/ on first use; everything cozy makes
 # is kept there too, by content, and `cozy project status` prints each node's file.
-type: video
 style: \"\"   # the look, added to every picture and shot
 # defaults:   # each node kind's render block; a node's own render: wins
 #   shot: {with: minimax-h3/generate, lora: [{ref: org/lora, strength: 0.8}], options: {turbo: true}}
@@ -69,8 +67,6 @@ shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a s
 
 #[derive(Deserialize)]
 struct Project {
-    #[serde(rename = "type")]
-    kind: String,
     /// Each node kind's render block, by `RENDERERS`' kinds.
     #[serde(default)]
     defaults: BTreeMap<String, Render>,
@@ -431,12 +427,6 @@ impl Video {
             .iter()
             .map(|path| format!("{}: cozy reads no field {path}; it is ignored", folder::PROJECT))
             .collect();
-        if project.kind != TYPE {
-            return Err(invalid(
-                "project_type",
-                format!("{} is a {} project; this cozy makes {TYPE} projects", folder::PROJECT, project.kind),
-            ));
-        }
         warnings.extend(
             (project.defaults.keys())
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))

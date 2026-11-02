@@ -98,7 +98,6 @@ of assets, numbered from 1 and never renumbered: a shot's take is its video and 
 makes the folder with a commented `project.yaml`; fill it in:
 
 ```yaml
-type: video
 style: soft watercolor
 resolution: 1440p
 fps: 24

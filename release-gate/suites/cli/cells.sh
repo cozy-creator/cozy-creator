@@ -65,7 +65,6 @@ project_cell() {
   rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
   [ -f "$P/project.yaml" ] || cli_fail "project new made no project.yaml"; mkdir -p "$P/notes"
   cat > "$P/project.yaml" <<YAML
-type: video
 defaults: {entity: {with: $(pkg qwen-image-2 generate)}, setup: {with: $(pkg qwen-image-2 generate)},
            world_state: {with: $(pkg qwen-image-2 generate)}, shot: {with: $(pkg minimax-h3 generate)},
            clean: {with: $(pkg birefnet remove_background)}}

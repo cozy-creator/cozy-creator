@@ -46,7 +46,6 @@ plate "$P/plates/a.mp4" testsrc2 440 1800; plate "$P/plates/b.mp4" testsrc 550 9
 plate "$E/look.mp4" smptebars 330 600; still "$E/stage.png" teal
 cp "$here/project/draw.py" "$P/draw.py"
 cat > "$P/project.yaml" <<YAML
-type: video
 entities:
   - {name: place, kind: environment, description: "a plain test card", render: {with: ./draw.py/draw}}
   - {name: stage, kind: environment, description: "a teal stage", image: $E/stage.png,
@@ -170,7 +169,6 @@ local P=$X/clone
 cozy project new "$P" > /dev/null 2>&1 || check "project new on XFS failed"
 mkdir -p "$P/refs"; cp "$here/project/draw.py" "$P/draw.py"; still "$P/refs/stage.png" navy
 cat > "$P/project.yaml" <<YAML
-type: video
 entities:
   - {name: stage, kind: environment, description: "a navy stage", image: refs/stage.png,
      setups: [{name: a, camera: "wide", render: {with: ./draw.py/draw}}]}
@@ -206,7 +204,6 @@ gop() { ffmpeg -v error -y -f lavfi -i "$2=size=854x480:rate=$3:duration=8" -f l
 gop "$P/plates/a.mp4" testsrc2 24 440; gop "$P/plates/b.mp4" testsrc 24 550; gop "$P/plates/r.mp4" testsrc 25 550
 SA=$(sha "$P/plates/a.mp4") SB=$(sha "$P/plates/b.mp4") SR=$(sha "$P/plates/r.mp4")
 cat > "$P/project.yaml" <<'YAML'
-type: video
 fps: 24
 shots:
   - {name: a, prompt: "test pattern a", duration_s: 8, video: plates/a.mp4}
