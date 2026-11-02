@@ -1,0 +1,281 @@
+{
+  "child_exited": true,
+  "command": [
+    "/var/lib/cozy/tensord/editable/08b1dea709d6d408/ci-varena-cache-pages/source-4af87fc27cebe21b5ebd3832b7c5901f8d3f828d358b30a0627a124cc100da56/tree/ci_varena_cache_pages/bin/varena-cache-pages",
+    "arena_concurrency",
+    "/dev/shm/varena-cache-pages-0jfc2ju1",
+    "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+    "0"
+  ],
+  "driver_after_child": {
+    "free": 24616173568,
+    "total": 25252724736
+  },
+  "mode": "arena_concurrency",
+  "passed": true,
+  "pid": 118984,
+  "pidfd_exit_observed": true,
+  "provenance": {
+    "controller_pid": 118956,
+    "driver_before": {
+      "free": 24616173568,
+      "total": 25252724736
+    },
+    "input": {
+      "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+      "helper_sha256": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+      "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+      "source_sha": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+      "timeout_s": 60.0
+    },
+    "manifest": {
+      "archive_sha256": "2f59e406385dc3e19edc166cc321ea5322bd87cf3b1906dbb11ef91451c132e0",
+      "binary_sha256": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+      "elf": {
+        "class": "ELF64",
+        "glibc_max": [
+          2,
+          28
+        ],
+        "glibc_versions": [
+          [
+            2,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            2,
+            10
+          ],
+          [
+            2,
+            12
+          ],
+          [
+            2,
+            14
+          ],
+          [
+            2,
+            16
+          ],
+          [
+            2,
+            17
+          ],
+          [
+            2,
+            18
+          ],
+          [
+            2,
+            28
+          ]
+        ],
+        "machine": "x86_64",
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "mixed_sources": null,
+      "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+      "native_source": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+      "native_tree": "5d96df72e5259e0e81a8a40d034d07b70ba6cf18",
+      "scope": "native Cache owner queue, finite allocator hook, strict ready-only collection, registry concurrency and actual native_owners/arena_concurrency fixture; no Python/Runtime graph callback adoption in this checkpoint; GPU pending",
+      "source_receipt_sha256": "e123c5c1f5a0244fbcc5796b5fe0aaa1adb56d42758f2856b3a4aff15f4be3dc",
+      "source_sha": "9b98c10b958cb705b257d87cee26cec9fa11bf11"
+    },
+    "native_extension": "/var/lib/cozy/tensord/generations/00ca8fa47d96f4e021128cee3a1b1d7f/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so",
+    "parent_cache_binding_available": true,
+    "request_id": "30",
+    "versions": {
+      "cozy-runtime": "0.36.22+dev.g7adc1e82",
+      "tensorfs": "0.17.16+dev.ga96c7c3e",
+      "torch": "2.14.0"
+    }
+  },
+  "report": {
+    "baseline": {
+      "cache_live": 0,
+      "cache_mapped": 0,
+      "cache_pending": 0,
+      "cache_ready": 0,
+      "cache_reserved": 0,
+      "caches": 0,
+      "capacity": 0,
+      "events": 0,
+      "live": 0,
+      "mapped": 0,
+      "memory_calls": 1,
+      "pending": 0,
+      "physical_ooms": 0,
+      "pools": 0
+    },
+    "detail": {
+      "actual_creation_fill_readback_drop_passes": 128,
+      "actual_peer_publications": 1311,
+      "actual_reclaim_and_resident_snapshot_passes": 2009,
+      "production_probe_hooks": false,
+      "publication_passes_while_creating": 1311,
+      "reclaim_passes_while_creating": 2009,
+      "simultaneous_start_barrier": true,
+      "typed_deferred_publications": 0
+    },
+    "driver": {
+      "free": 24205852672,
+      "total": 25252724736
+    },
+    "event": "result",
+    "final": {
+      "cache_live": 0,
+      "cache_mapped": 0,
+      "cache_pending": 0,
+      "cache_ready": 0,
+      "cache_reserved": 0,
+      "caches": 0,
+      "capacity": 0,
+      "events": 0,
+      "live": 0,
+      "mapped": 0,
+      "memory_calls": 1,
+      "pending": 0,
+      "physical_ooms": 0,
+      "pools": 0
+    },
+    "final_accounting": {
+      "cache_idle": 0,
+      "cache_live": 0,
+      "cache_pending": 0,
+      "pending_release": 0,
+      "physical": 0,
+      "reclaimable": 0,
+      "refreshed": true,
+      "weight_idle": 0,
+      "weight_live": 0,
+      "weight_pending": 0
+    },
+    "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+    "libraries": {
+      "cuda_loaded": true,
+      "python_loaded": false,
+      "torch_loaded": false
+    },
+    "mode": "arena_concurrency",
+    "passed": true,
+    "pid": 118984
+  },
+  "returncode": 0,
+  "start_ticks": 111154283,
+  "stderr": "",
+  "stdout": [
+    {
+      "baseline": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "driver": {
+        "free": 24205852672,
+        "total": 25252724736
+      },
+      "event": "ready",
+      "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "arena_concurrency",
+      "pid": 118984,
+      "start_ticks": 111154283
+    },
+    {
+      "baseline": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "detail": {
+        "actual_creation_fill_readback_drop_passes": 128,
+        "actual_peer_publications": 1311,
+        "actual_reclaim_and_resident_snapshot_passes": 2009,
+        "production_probe_hooks": false,
+        "publication_passes_while_creating": 1311,
+        "reclaim_passes_while_creating": 2009,
+        "simultaneous_start_barrier": true,
+        "typed_deferred_publications": 0
+      },
+      "driver": {
+        "free": 24205852672,
+        "total": 25252724736
+      },
+      "event": "result",
+      "final": {
+        "cache_live": 0,
+        "cache_mapped": 0,
+        "cache_pending": 0,
+        "cache_ready": 0,
+        "cache_reserved": 0,
+        "caches": 0,
+        "capacity": 0,
+        "events": 0,
+        "live": 0,
+        "mapped": 0,
+        "memory_calls": 1,
+        "pending": 0,
+        "physical_ooms": 0,
+        "pools": 0
+      },
+      "final_accounting": {
+        "cache_idle": 0,
+        "cache_live": 0,
+        "cache_pending": 0,
+        "pending_release": 0,
+        "physical": 0,
+        "reclaimable": 0,
+        "refreshed": true,
+        "weight_idle": 0,
+        "weight_live": 0,
+        "weight_pending": 0
+      },
+      "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+      "libraries": {
+        "cuda_loaded": true,
+        "python_loaded": false,
+        "torch_loaded": false
+      },
+      "mode": "arena_concurrency",
+      "passed": true,
+      "pid": 118984
+    }
+  ]
+}

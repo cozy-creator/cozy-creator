@@ -1,0 +1,7 @@
+{
+  "source": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-owner/crates/tensord/src/gpu_service/memory_mode.rs",
+  "source_sha256": "27e62e3003de38bc211b99575d85bf69f9cd77ed0f984483fcc4cedb9b5ed501",
+  "build_exit": 0,
+  "run_exit": 0,
+  "scope": "actual unchanged policy module, real thread races and atomic whole-lane mode binding; no GPU or fake inference"
+}

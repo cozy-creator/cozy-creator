@@ -1,0 +1,31 @@
+{
+  "product_source": "6ab1dabac1121072127d6c71e868f777a72c740e",
+  "updater_bridge": "fa64d02912bca7439539b81c6e697b8d50f07697",
+  "helper_fixes": {
+    "retirement": "2b45471347dc87a2aeb0435fa5d3d68fa5744aa9",
+    "loader": "9861b940f1cf218692626705bc4aadde6fae6c54",
+    "packaging": "34853f58996ffd44d0c61e0b3e18973ff30aa4f6"
+  },
+  "header_exports": 30,
+  "host": "Linux x86_64; Rust 1.99.1; CPython 3.12",
+  "gpu_executed": false,
+  "machines_altered": false,
+  "release_or_merge": false,
+  "coordinator_shared_service": "db7014b0377259f8ab7831251c5a3754d4fb52b1",
+  "coordinator_integration": "106581cb66f161a218672032ebcbc0b59b89dd01",
+  "observer_retirement_interface": "assigned to coordinator; no implementation commit supplied",
+  "archives": {
+    "cozy-6ab.tar.gz": "5c8d13c148d4a0796de5a60838e888762789dfe02e7f959d4554e966c9d344b5",
+    "tensord-6ab.tar.gz": "1a58bf1b5572ec82830e36cc608fc7640aa6b1af10f9bc3e8dd4a09d76c27010"
+  },
+  "archive_builder_final_sha256": "eee8f189ecbaebf08608f972417cb22c316ffb363f132a29b378a4c03ee38db7",
+  "preserved_artifacts": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes",
+  "unqualified": [
+    "GPU close/retry/callback/driver baseline",
+    "multi-arena Plan",
+    "asynchronous Source ticket",
+    "general Torch offload",
+    "manylinux and non-Linux execution",
+    "live service rollout"
+  ]
+}
