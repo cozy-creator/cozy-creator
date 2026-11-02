@@ -342,12 +342,13 @@ pub fn project(home: &Home, path: &Path) -> Result<PathBuf, Error> {
 
 /// `path` (a package directory or a script) as the machine `on` installs it. This computer's
 /// machine reads the files where they are (`in_place`); another is sent them. A project whose
-/// sources name its account's index (`{ index = "tensorhub" }`) needs `hub`'s signed-in client.
+/// sources name the `tensorhub` index takes the namespace its lock was made for (`_` for a
+/// first-party checkout), read through `hub`'s reader: anonymous when this computer is signed out.
 pub async fn source(
     home: &Home,
     path: &Path,
     on: &On,
-    hub: Option<(&hub_client::Client, &Origin)>,
+    (reader, hub): (&hub_client::Client, &Origin),
 ) -> Result<Source, Error> {
     let in_place = matches!(on, On::Machine(name) if name.eq_ignore_ascii_case("local"));
     let project_dir = project(home, path)?;
@@ -421,12 +422,20 @@ pub async fn source(
     }
     let mut indexes = BTreeMap::new();
     if project.account_index {
-        let (client, hub) = hub.ok_or_else(|| {
-            Error::new(Kind::Credential, "account_index_unreached", "its `tensorhub` sources need this computer signed in to the Hub")
-                .next("cozy login <email>")
-        })?;
-        let account = account(client).await?;
-        indexes.insert(INDEX.to_owned(), index_url(client, hub, &account).await?);
+        let namespace = match locked_namespace(&project_dir) {
+            Some(namespace) => namespace,
+            // Unlocked, its sources are the signed-in account's own.
+            None if matches!(reader.credential(), hub_client::Credential::User(_)) => account(reader).await?,
+            None => {
+                return Err(Error::new(
+                    Kind::Credential,
+                    "account_index_unreached",
+                    "its `tensorhub` sources name no index in a uv.lock, so they are this computer's account's: sign in",
+                )
+                .next("cozy login <email>"));
+            }
+        };
+        indexes.insert(INDEX.to_owned(), index_url(reader, hub, &namespace).await?);
     }
     let manifest = Manifest {
         package: format!("local/{}", project.name),
@@ -847,8 +856,8 @@ pub async fn prepare(
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-    let client = hubs.client(origin.as_str()).ok();
-    let code = source(&home, path, on, client.as_ref().map(|client| (client, &origin))).await?;
+    let reader = hubs.reader(origin.as_str())?;
+    let code = source(&home, path, on, (&reader, &origin)).await?;
     let runtime = runtime(api, on).await;
     let prepared = |interface, installation, machine, install| Prepared {
         package: code.package.clone(),
@@ -909,8 +918,8 @@ pub async fn described(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Resul
     let hubs = &api.machines.hubs;
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
-    let client = hubs.client(origin.as_str()).ok();
-    let code = source(&home, path, on, client.as_ref().map(|client| (client, &origin))).await?;
+    let reader = hubs.reader(origin.as_str())?;
+    let code = source(&home, path, on, (&reader, &origin)).await?;
     let runtime = runtime(api, on).await;
     Ok(Prepared {
         interface: runtime.as_deref().and_then(|runtime| kept(&home, &code, runtime)),
@@ -1030,6 +1039,15 @@ pub fn locked_runtime(root: &Path) -> Option<String> {
     }
     let lock: Lock = toml::from_str(&fs::read_to_string(root.join("uv.lock")).ok()?).ok()?;
     lock.package.into_iter().find(|p| p.name == "cozy-runtime").map(|p| p.version)
+}
+
+/// The Tensorhub namespace the uv.lock in `root` takes `tensorhub` sources from: the account its
+/// `…/v1/index/<account>/` URLs name (`_`, the root, for first-party packages).
+pub fn locked_namespace(root: &Path) -> Option<String> {
+    let lock = fs::read_to_string(root.join("uv.lock")).ok()?;
+    let at = lock.find("/v1/index/")? + "/v1/index/".len();
+    let namespace = lock[at..].split(['/', '"']).next()?;
+    (!namespace.is_empty()).then(|| namespace.to_owned())
 }
 
 /// What Runtime's static describer reads from the source at `dir`, with `runtime`'s release (else

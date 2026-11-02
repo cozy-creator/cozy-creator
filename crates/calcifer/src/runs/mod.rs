@@ -64,8 +64,8 @@ pub(crate) async fn quote(
             let hub = hub(&api, &ask.hub);
             let home = api.machines.hubs.home();
             let origin = protocol::config::Origin::parse(&hub).map_err(Refusal)?;
-            let client = api.machines.hubs.client(&hub).ok();
-            let source = crate::local_code::source(home, &path, &on, client.as_ref().map(|c| (c, &origin)))
+            let reader = api.machines.hubs.reader(&hub).map_err(Refusal)?;
+            let source = crate::local_code::source(home, &path, &on, (&reader, &origin))
                 .await
                 .map_err(Refusal)?;
             crate::local_code::install_run(home, &hub, on, &source)
