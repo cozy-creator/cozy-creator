@@ -5,27 +5,18 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{
-        self, Ended, Keepalive, Machine, MachineKind, MachineList, MachineState, MachineStatus, On,
-        RunsEvent, StagedInput, SubmitRun,
-    },
-    config::Origin,
+    calcifer::{self, Component, Ended, Keepalive, Machine, MachineKind, MachineList, MachineState, MachineStatus, MachineUpdate, Updating},
     error::{Error, Kind},
     ids::Digest,
-    machine as v1,
 };
 
 use super::{Following, clock, machine, now_ms, route, usd};
-use crate::{
-    Context,
-    calcifer_client::{Client, Watch},
-    context::hub_answer,
-    output,
-};
+use crate::{Context, calcifer_client::Client, output};
 
-/// Ends a rental, returning once its Hub affirms the pod gone, or removes an added machine. It
-/// waits first for its runs' outputs to land here, unless `force`. Both waits follow Calcifer's
-/// streams: its runs' changes, then the machine's.
+/// Ends a rental, returning once its Hub affirms the pod gone, or removes an added machine
+/// (`DELETE /v1/machines/{name}`). Calcifer carries the end out once the outputs of its runs have
+/// landed here, unless `force`; this follows it on the machine's stream. Ctrl-C stops following,
+/// never the end.
 pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let path = route(name)?;
@@ -33,45 +24,11 @@ pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Err
         true => format!("{path}?force=true"),
         false => path.clone(),
     };
-    let mut said = String::new();
-    // The runs stream, and the machine's name its runs carry.
-    let mut runs: Option<(Watch<RunsEvent>, String)> = None;
     let Ended {
         mut machine,
         changed,
         abandoned,
-    } = loop {
-        match calcifer.delete(&asked).await {
-            Err(e) if e.code == "outputs_exporting" => {
-                if e.message != said {
-                    output::say(ctx, &format!("Waiting to end {name}: {}", e.message));
-                    said = e.message;
-                }
-                let Some((watch, on)) = runs.as_mut() else {
-                    // Subscribed after the refusal: asked again first, a landing in between counts.
-                    let watch = calcifer.watch("/v1/runs/events").await?;
-                    let machine: Machine = calcifer.get(&path).await?;
-                    runs = Some((watch, machine.name));
-                    continue;
-                };
-                tokio::select! {
-                    moved = run_moved(watch, on) => if !moved {
-                        runs = None;
-                    },
-                    _ = tokio::signal::ctrl_c() => {
-                        return Err(Error::new(
-                            Kind::Unavailable,
-                            "end_waiting",
-                            format!("stopped waiting; {name} was not ended and its outputs keep landing"),
-                        )
-                        .remedy("--force ends it now and gives up the outputs that have not landed")
-                        .next(format!("cozy machine end {name}")));
-                    }
-                }
-            }
-            ended => break ended?,
-        }
-    };
+    } = calcifer.delete(&asked).await?;
     if !abandoned.is_empty() {
         output::warn(&format!(
             "Gave up outputs that had not landed: {}",
@@ -79,14 +36,13 @@ pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Err
         ));
     }
     if machine.state == MachineState::Ending {
-        output::say(ctx, &format!("Shutting down {}…", machine.name));
         // Followed by its rental id: the name is the Hub's and an alias may be what was typed.
         let id = machine
             .rental_id
             .clone()
             .unwrap_or_else(|| machine.name.clone());
         let (following, now) = Following::open(&calcifer, &id).await?;
-        machine = released(&calcifer, following, now, &route(&id)?).await?;
+        machine = ended(ctx, &calcifer, following, now, &route(&id)?).await?;
     }
     if ctx.json {
         output::json(&Ended {
@@ -110,40 +66,23 @@ pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Err
     };
     println!("{said}");
     if let Ok(list) = calcifer.get::<MachineList>("/v1/machines").await {
-        let live: Vec<_> = list
-            .machines
-            .iter()
-            .filter(|m| m.state != MachineState::Ended)
-            .filter_map(|m| m.rental.as_ref())
-            .collect();
-        let burn: i64 = live.iter().map(|r| r.usd_micros_per_hour).sum();
-        println!("Rentals running: {} · {}/hour now", live.len(), usd(burn));
+        let live = &list.rentals;
+        println!("Rentals running: {} · {}/hour now", live.count, usd(live.usd_micros_per_hour));
     }
     output::next(ctx, &["cozy machine ls"]);
     Ok(ExitCode::SUCCESS)
 }
 
-/// Waits for a change to a run on `machine` (an output landed or lost, a run moved on); false
-/// once the stream ended.
-async fn run_moved(runs: &mut Watch<RunsEvent>, machine: &str) -> bool {
-    loop {
-        match runs.next().await {
-            Some(RunsEvent::Updated { run }) if run.machine.as_deref() == Some(machine) => {
-                return true;
-            }
-            Some(_) => {}
-            None => return false,
-        }
-    }
-}
-
-/// Follows an ending rental until its Hub affirms the pod gone.
-async fn released(
+/// Follows an ending machine until it has ended: while its end waits for its runs' outputs to
+/// land, what it waits for; then its release, until its Hub affirms the pod gone.
+async fn ended(
+    ctx: &Context,
     calcifer: &Client,
     mut following: Following,
     mut machine: Machine,
     path: &str,
 ) -> Result<Machine, Error> {
+    let (mut waited, mut releasing) = (String::new(), false);
     while machine.state == MachineState::Ending {
         if machine.reason.as_deref() == Some("release_unconfirmed") {
             return Err(Error::new(
@@ -157,19 +96,44 @@ async fn released(
             .remedy("Calcifer keeps the record and keeps asking; the pod may still be billing")
             .next(format!("cozy machine show {}", machine.name)));
         }
+        match &machine.ending {
+            Some(waits) if *waits != waited => {
+                output::say(ctx, &format!("Waiting to end {}: {waits}", machine.name));
+                waited.clone_from(waits);
+            }
+            None if !releasing => {
+                output::say(ctx, &format!("Shutting down {}…", machine.name));
+                releasing = true;
+            }
+            _ => {}
+        }
         tokio::select! {
             next = following.next(calcifer) => machine = match next? {
                 Some(next) => next,
-                // Left the list: as Calcifer records it now.
-                None => calcifer.get(path).await?,
+                // Left the list: as Calcifer records it now. An added machine, which has no
+                // rental id, is named no more once removed.
+                None => match calcifer.get(path).await {
+                    Err(_) if machine.kind == MachineKind::Added => Machine { state: MachineState::Ended, ..machine },
+                    now => now?,
+                },
             },
             _ = tokio::signal::ctrl_c() => {
-                return Err(Error::new(
-                    Kind::Unavailable,
-                    "end_unconfirmed",
-                    format!("stopped watching; the release of {} continues in Calcifer", machine.name),
-                )
-                .next(format!("cozy machine show {}", machine.name)));
+                let (name, waits) = (&machine.name, machine.ending.is_some());
+                return Err(match waits {
+                    true => Error::new(
+                        Kind::Unavailable,
+                        "end_waiting",
+                        format!("stopped watching; {name} ends once its outputs land, as Calcifer carries it out"),
+                    )
+                    .remedy("--force ends it now and gives up the outputs that have not landed")
+                    .next(format!("cozy machine end {name} --force")),
+                    false => Error::new(
+                        Kind::Unavailable,
+                        "end_unconfirmed",
+                        format!("stopped watching; the release of {name} continues in Calcifer"),
+                    )
+                    .next(format!("cozy machine show {name}")),
+                });
             }
         }
     }
@@ -200,12 +164,11 @@ pub async fn keepalive(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
 }
 
 /// Updates a machine's Runtime, TensorFS and TensorD (its `cozy` binary) in one run and one
-/// restart: each named as a release version the machine fetches itself (PyPI for the wheels, the
-/// GitHub release for `cozy`), or a local path, a dev build the CLI sends (a wheel or a project to
-/// build; a `cozy` binary or the cozy-creator checkout to build). With none named, each moves to
-/// its Hub's target. A numbered run of kind update, which holds new runs behind it and waits for
-/// those in flight, naming them, and is followed like any run; once it succeeds, the machine must
-/// report what it asked for.
+/// restart (`POST /v1/machines/{name}/update`): each named as a release version, or a local path,
+/// a dev build sent from here (a wheel or a project to build here; a `cozy` binary or the
+/// cozy-creator checkout to build here). With none named, each moves to its Hub's target. The
+/// update is a numbered run, followed like any run; Calcifer fails it unless the machine then
+/// runs what it asked for.
 pub async fn update(
     ctx: &Context,
     name: &str,
@@ -215,295 +178,85 @@ pub async fn update(
     gpu_memory_limit: Option<u64>,
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
-    let mut payload = serde_json::Map::new();
-    let (mut staged, mut inputs, mut named, mut want) = (vec![], vec![], vec![], vec![]);
-    let mut asked = vec![];
-    for (member, distribution, value) in [
-        ("runtime", "cozy_runtime", runtime),
-        ("tensorfs", "tensorfs", tensorfs),
-        ("tensord", "", tensord),
-    ] {
-        if let Some(value) = value {
-            asked.push((member, distribution, Component::of(&value, distribution)?));
-        }
-    }
-    let m = machine(ctx, name).await?;
-    let hub = match m.hub.as_str() {
-        "" => ctx.hub().clone(),
-        origin => Origin::parse(origin)?,
+    let ask = MachineUpdate {
+        runtime: runtime.map(|v| component(&v, "cozy_runtime")).transpose()?,
+        tensorfs: tensorfs.map(|v| component(&v, "tensorfs")).transpose()?,
+        tensord: tensord.map(|v| component(&v, "")).transpose()?,
+        gpu_memory_limit,
     };
-    let flagless = asked.is_empty() && gpu_memory_limit.is_none();
-    // The cozy `cozy update` installed here and `local` has not moved to yet: the update activates
-    // it, unless `--tensord` names another binary.
-    let mut placed = placed(ctx, &m);
-    if let Some(version) = &placed {
-        asked.retain(|(member, _, c)| !(*member == "tensord" && matches!(c, Component::Release(v) if v == version)));
-        if asked.iter().any(|(member, _, _)| *member == "tensord") {
-            placed = None;
-        }
+    let dev = matches!(ask.tensord, Some(Component::File(_)));
+    let path = format!("{}/update", route(name)?);
+    let calcifer = ctx.calcifer().await?;
+    let Updating { machine: m, run, warnings, .. } = calcifer.post(&path, &ask, Some(&mint_key())).await?;
+    for warning in &warnings {
+        output::warn(warning);
     }
-    if flagless {
-        let Some(status) = &m.status else {
-            return Err(Error::new(
-                Kind::Unavailable,
-                "machine_unanswered",
-                format!("{} has not reported the software it runs", m.name),
-            )
-            .next(format!("cozy machine show {}", m.name)));
-        };
-        let target = hub_answer(ctx.hub_anonymous(&hub).get_software().await)?;
-        // An unpinned target older than the machine's software is no reason to go back.
-        let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));
-        let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy) && placed.is_none());
-        for (member, distribution, running, wanted) in [
-            ("runtime", "cozy_runtime", status.runtime.as_str(), Some(target.runtime.as_str())),
-            ("tensorfs", "tensorfs", status.tensorfs.as_str(), Some(target.tensorfs.as_str())),
-            ("tensord", "", status.version.as_str(), cozy),
-        ] {
-            if let Some(wanted) = wanted.filter(|wanted| moves(running, wanted)) {
-                asked.push((member, distribution, Component::Release(wanted.into())));
-            }
-        }
-        if asked.is_empty() && placed.is_none() {
-            return up_to_date(ctx, &m, status);
-        }
-    }
-    let status = m.status.clone().unwrap_or_default();
-    // A dev `cozy` built or picked here, which `local` then runs (Calcifer too).
-    let mut dev = false;
-    for (member, distribution, component) in asked {
-        let path = match component {
-            Component::Release(version) => {
-                want.push(reports(member, &version));
-                // A wheel version PyPI lacks is its GitHub prerelease, an exact version being an
-                // explicit ask: the machine fetches the wheel itself, held to its digest.
-                let value = match member {
-                    "tensord" => None,
-                    _ => prerelease(distribution, &version, &status.platform).await?,
-                };
-                match value {
-                    Some((url, sha256)) => {
-                        named.push(format!("{member} {version} (prerelease)"));
-                        payload.insert(member.into(), serde_json::json!({ "url": url, "sha256": sha256 }));
-                    }
-                    None => {
-                        named.push(format!("{member} {version}"));
-                        payload.insert(member.into(), version.into());
-                    }
-                }
-                continue;
-            }
-            Component::Build(path) => path,
-        };
-        let (file, input) = wheel(&path, distribution)?;
-        dev |= member == "tensord";
-        want.push(match member {
-            "tensord" => built_version(&path).map_or(("dev", true.into()), |v| ("version", v.into())),
-            _ => reports(member, &file),
-        });
-        named.push(match reports(member, &file) {
-            (_, serde_json::Value::String(stamped)) if member != "tensord" => format!("{member} {stamped} (dev)"),
-            _ => format!("{member} {file} (dev)"),
-        });
-        inputs.push(v1::InputFile {
-            field: member.into(),
-            digest: input.digest.to_string(),
-            length: input.length,
-            media_type: match distribution {
-                "" => "application/octet-stream",
-                _ => "application/zip",
-            }
-            .into(),
-            order: 0,
-        });
-        payload.insert(member.into(), file.into());
-        staged.push(input);
-    }
-    if let Some(version) = placed {
-        // The guard every TensorD carries out: the binary at its launch path, that release, activates.
-        named.push(format!("cozy {version} (installed)"));
-        want.push(reports("tensord", &version));
-        payload.insert("cozy".into(), version.into());
-    }
-    let restarts = payload.contains_key("tensord") || payload.contains_key("cozy");
-    if let Some(limit) = gpu_memory_limit {
-        named.push(match limit {
-            0 => "no GPU memory limit".into(),
-            bytes => format!("a GPU memory limit of {}", output::bytes(bytes)),
-        });
-        payload.insert("gpu_memory_limit".into(), limit.into());
-    }
-    // A new binary or a limit restarts the machine: either way its warm models reload.
-    if (restarts || gpu_memory_limit.is_some())
-        && m.status
-            .as_ref()
-            .is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()))
-    {
-        output::warn(&format!("{}'s warm models reload after it restarts", m.name));
-    }
-    let spec = v1::RunSpec {
-        kind: v1::RunKind::Update,
-        payload: Some(
-            v1::Json::parse(serde_json::Value::Object(payload).to_string()).expect("JSON"),
-        ),
-        inputs,
-        ..Default::default()
+    let Some(run) = run else {
+        return up_to_date(ctx, &m, &m.status.clone().unwrap_or_default());
     };
-    let submit = SubmitRun {
-        agreed: None,
-        on: On::Machine(m.name.clone()),
-        hub: hub.clone().into(),
-        kind: calcifer::Kind::Update,
-        target: named.join(", "),
-        spec,
-        inputs: staged,
-        out: None,
-        warnings: vec![],
-    };
-    let submitted = crate::run::submit(ctx, submit, None).await?;
-    let run = crate::run::follow(ctx, submitted.run).await?;
-    if run.status == calcifer::Status::Completed {
-        updated(ctx, &m.name, &verify(ctx, &m.name, &run, &want).await?);
+    let run = crate::run::follow(ctx, run).await?;
+    if run.status != calcifer::Status::Completed {
+        return Ok(crate::run::exit_code(&run));
     }
-    if dev && m.kind == MachineKind::Local && run.status == calcifer::Status::Completed {
+    // What the update left, which Calcifer held it to: the machine's word, unless it is
+    // restarting again.
+    let now = machine(ctx, &m.name).await?;
+    let status = match (&now.unreachable, run.result.as_ref().map(|r| &r["to"])) {
+        (Some(_), Some(to)) => MachineStatus {
+            version: to["cozy"].as_str().unwrap_or_default().into(),
+            runtime: to["runtime"].as_str().unwrap_or_default().into(),
+            tensorfs: to["tensorfs"].as_str().unwrap_or_default().into(),
+            ..now.status.clone().unwrap_or_default()
+        },
+        _ => now.status.clone().unwrap_or_default(),
+    };
+    updated(ctx, &m.name, &status);
+    if dev && m.kind == MachineKind::Local {
         // `local` runs the installed cozy, the dev binary now: Calcifer runs it too.
         crate::daemon::restart(ctx).await?;
-        let version = run.result.as_ref().and_then(|r| r["to"]["cozy"].as_str());
         output::warn(&format!(
             "this computer's cozy is now {}, a dev build; `cozy update` returns it to a release",
-            version.unwrap_or("a dev build")
+            status.version
         ));
     }
     Ok(crate::run::exit_code(&run))
 }
 
-/// The release of this computer's installed cozy when `m` is `local` and runs another: the binary
-/// `cozy update` renamed over its launch path, which it moves to at its next update.
-fn placed(ctx: &Context, m: &Machine) -> Option<String> {
-    let running = m.status.as_ref().filter(|_| m.kind == MachineKind::Local)?.version.as_str();
-    let installed = crate::calcifer_client::installed(&ctx.home).ok()?;
-    let said = std::process::Command::new(installed).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
-    let version = String::from_utf8_lossy(&said.stdout).trim().strip_prefix("cozy ")?.to_owned();
-    (said.status.success() && !version.is_empty() && version != running).then_some(version)
-}
-
-/// Asks `local` to move to the cozy `cozy update` just installed once its runs in flight end: an
-/// update run naming that release, submitted and not followed. Its number.
-pub(crate) async fn activate(ctx: &Context) -> Result<Option<u64>, Error> {
+/// Asks `local` to move to cozy `version`, the release `cozy update` just installed, once its
+/// runs in flight end: an update naming it, submitted and not followed. Its number; none when
+/// `local` runs it already.
+pub(crate) async fn activate(ctx: &Context, version: &str) -> Result<Option<u64>, Error> {
     let m = machine(ctx, "local").await?;
-    let Some(version) = placed(ctx, &m) else { return Ok(None) };
-    let hub = match m.hub.as_str() {
-        "" => ctx.hub().clone(),
-        origin => Origin::parse(origin)?,
-    };
-    let spec = v1::RunSpec {
-        kind: v1::RunKind::Update,
-        payload: Some(v1::Json::parse(serde_json::json!({ "cozy": version }).to_string()).expect("JSON")),
-        ..Default::default()
-    };
-    let submit = SubmitRun {
-        agreed: None,
-        on: On::Machine(m.name.clone()),
-        hub: hub.into(),
-        kind: calcifer::Kind::Update,
-        target: format!("cozy {version} (installed)"),
-        spec,
-        inputs: vec![],
-        out: None,
-        warnings: vec![],
-    };
-    Ok(Some(crate::run::submit(ctx, submit, None).await?.run.number))
-}
-
-/// `distribution` `version`'s prerelease wheel for `platform` (`linux/x86_64`), when PyPI does not
-/// hold that version: the GitHub prerelease (cozy-runtime `v<version>`, cozy-creator
-/// `tensorfs-v<version>`) names it in its `SHA256SUMS`, the platform's own wheel first, else the
-/// pure one. Its URL and sha256; `None` for a PyPI release, which the machine fetches from PyPI.
-async fn prerelease(
-    distribution: &str,
-    version: &str,
-    platform: &str,
-) -> Result<Option<(String, String)>, Error> {
-    let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", e.to_string());
-    let http = reqwest::Client::builder()
-        .user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(failed)?;
-    let project = distribution.replace('_', "-");
-    let pypi = http.get(format!("https://pypi.org/pypi/{project}/{version}/json")).send().await.map_err(failed)?;
-    if pypi.status().is_success() {
+    if m.status.as_ref().is_some_and(|s| s.version == version) {
         return Ok(None);
     }
-    let base = match distribution {
-        "cozy_runtime" => format!("https://github.com/cozy-creator/cozy-runtime/releases/download/v{version}"),
-        _ => format!("https://github.com/cozy-creator/cozy-creator/releases/download/tensorfs-v{version}"),
+    let ask = MachineUpdate {
+        tensord: Some(Component::Version(version.into())),
+        ..Default::default()
     };
-    let sums = http.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
-    if !sums.status().is_success() {
-        return Err(Error::new(
-            Kind::NotFound,
-            "release_not_found",
-            format!("{project} {version} is neither on PyPI nor a GitHub prerelease ({base}/SHA256SUMS: HTTP {})", sums.status()),
-        ));
-    }
-    let sums = sums.text().await.map_err(failed)?;
-    let prefix = format!("{distribution}-{version}-");
-    let wheels: Vec<(&str, &str)> = sums
-        .lines()
-        .filter_map(|line| line.split_once(char::is_whitespace))
-        .map(|(sha256, file)| (sha256.trim(), file.trim().trim_start_matches('*')))
-        .filter(|(sha256, file)| sha256.len() == 64 && file.starts_with(&prefix) && file.ends_with(".whl"))
-        .collect();
-    let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
-    // A version-specific (`cp310-cp310`) wheel fits one Python only; the stable-ABI one fits all.
-    let native = |file: &str| file.contains("-abi3-") && match (os, arch) {
-        ("linux", arch) => file.contains("manylinux") && file.contains(arch),
-        ("macos", "aarch64") => file.contains("macosx") && file.contains("arm64"),
-        ("macos", arch) => file.contains("macosx") && file.contains(arch),
-        ("windows", "x86_64") => file.contains("win_amd64"),
-        ("windows", _) => file.contains("win_arm64"),
-        _ => false,
+    let path = format!("{}/update", route("local")?);
+    let updating: Updating = ctx.calcifer().await?.post(&path, &ask, Some(&mint_key())).await?;
+    Ok(updating.run.map(|run| run.number))
+}
+
+/// What `cozy machine update` installs of one component: a release version, or a file here, built
+/// here first when the path is a project to build.
+fn component(value: &str, distribution: &str) -> Result<Component, Error> {
+    let path = Path::new(value);
+    let file = match () {
+        _ if path.is_file() => path.to_path_buf(),
+        _ if path.is_dir() => build(path, distribution)?,
+        _ => return Ok(Component::Version(value.into())),
     };
-    let chosen = (wheels.iter().find(|(_, file)| native(file)))
-        .or_else(|| wheels.iter().find(|(_, file)| file.ends_with("-none-any.whl")))
-        .ok_or_else(|| {
-            Error::new(
-                Kind::NotFound,
-                "release_wheel_absent",
-                format!("{project} {version}'s prerelease holds no wheel for {platform}"),
-            )
-        })?;
-    Ok(Some((format!("{base}/{}", chosen.1), chosen.0.to_owned())))
+    let absolute = std::path::absolute(&file)
+        .map_err(|e| Error::new(Kind::Validation, "component_refused", format!("{}: {e}", file.display())))?;
+    Ok(Component::File(absolute))
 }
 
-/// The release a `cozy` binary built here says it is, when it runs here.
-fn built_version(path: &Path) -> Option<String> {
-    let out = std::process::Command::new(path).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().strip_prefix("cozy ").map(str::to_owned).filter(|_| out.status.success())
-}
-
-/// What `cozy machine update` installs of one component: a release version, or a local path.
-enum Component {
-    Release(String),
-    /// A wheel or `cozy` binary file, built here first when the path is a project to build.
-    Build(PathBuf),
-}
-
-impl Component {
-    fn of(value: &str, distribution: &str) -> Result<Component, Error> {
-        let path = Path::new(value);
-        if path.is_file() {
-            return Ok(Component::Build(path.to_path_buf()));
-        }
-        if path.is_dir() {
-            return build(path, distribution).map(Component::Build);
-        }
-        let version = value.trim_start_matches('v');
-        if !version.is_empty() && version.bytes().all(|c| c.is_ascii_alphanumeric() || b".-+".contains(&c)) {
-            return Ok(Component::Release(version.into()));
-        }
-        Err(Error::new(Kind::Validation, "component_refused", format!("{value:?} is neither a release version nor a path here")))
-    }
+fn mint_key() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("the OS has randomness");
+    format!("update-{}", hex::encode(bytes))
 }
 
 /// Builds the project at `dir`: a Runtime or TensorFS wheel (`uv build`), else the `cozy` binary
@@ -642,95 +395,6 @@ fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
     }
 }
 
-/// What a machine running `named` (a version, or a wheel file) as `member` reports.
-fn reports(member: &'static str, named: &str) -> (&'static str, serde_json::Value) {
-    match (member, named.strip_suffix(".whl")) {
-        ("tensord", _) => ("version", named.into()),
-        (_, Some(wheel)) => (member, wheel.split('-').nth(1).unwrap_or_default().into()),
-        (_, None) => (member, named.into()),
-    }
-}
-
-/// A succeeded update must leave the machine reporting what it asked for (`want`): one that
-/// ignored what it could not carry out fails here, with its log's line about the update. A machine
-/// restarting again (for an update queued behind this one) is judged by what this update's outcome
-/// says it left; a dev build's flag is the status's alone.
-async fn verify(ctx: &Context, name: &str, run: &calcifer::Run, want: &[(&str, serde_json::Value)]) -> Result<MachineStatus, Error> {
-    let m = machine(ctx, name).await?;
-    let status = m.status.unwrap_or_default();
-    if m.unreachable.is_none() && runs(&status, want) {
-        return Ok(status);
-    }
-    let to = run.result.as_ref().map(|result| &result["to"]);
-    let left = to.map(|to| MachineStatus {
-        version: to["cozy"].as_str().unwrap_or_default().into(),
-        runtime: to["runtime"].as_str().unwrap_or_default().into(),
-        tensorfs: to["tensorfs"].as_str().unwrap_or_default().into(),
-        ..status.clone()
-    });
-    let named: Vec<_> = want.iter().filter(|(field, _)| *field != "dev").cloned().collect();
-    if let Some(left) = left.filter(|left| m.unreachable.is_some() && runs(left, &named)) {
-        return Ok(left);
-    }
-    let run = run.id.as_str();
-    let log = format!("{}/logs/tensord?lines=1000", route(name)?);
-    let log = ctx.calcifer().await?.text(&log).await.unwrap_or_default();
-    let line = m.unreachable.or_else(|| log.lines().rfind(|l| l.contains(run)).map(str::to_owned));
-    Err(unapplied(name, &status, want, line.as_deref()))
-}
-
-fn runs(status: &MachineStatus, want: &[(&str, serde_json::Value)]) -> bool {
-    let status = serde_json::to_value(status).unwrap_or_default();
-    want.iter().all(|(field, value)| status[*field] == *value)
-}
-
-fn unapplied(name: &str, s: &MachineStatus, want: &[(&str, serde_json::Value)], line: Option<&str>) -> Error {
-    let asked: Vec<String> = (want.iter())
-        .map(|(field, value)| match (*field, value.as_str()) {
-            ("runtime", Some(version)) => format!("cozy-runtime {version}"),
-            (field, Some(version)) => format!("{field} {version}"),
-            _ => "dev build".into(),
-        })
-        .collect();
-    let build = if s.dev { "dev build" } else { "release" };
-    let mut message = format!(
-        "{name}'s update succeeded but it runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {}, not the requested {}",
-        s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs, asked.join(", ")
-    );
-    if let Some(line) = line {
-        message = format!("{message}: {}", line.trim());
-    }
-    Error::new(Kind::Conflict, "update_unapplied", message).next(format!("cozy machine logs {name}"))
-}
-
-/// A local wheel of `distribution` (or, empty, a `cozy` binary), measured once: its file name and
-/// what the run stages.
-fn wheel(path: &Path, distribution: &str) -> Result<(String, StagedInput), Error> {
-    let refused = |why: String| Error::new(Kind::Validation, "wheel_refused", why);
-    let file = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
-    let regular = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
-    let named = file.starts_with(&format!("{distribution}-")) && file.ends_with(".whl");
-    if !regular || (!distribution.is_empty() && !named) {
-        return Err(refused(match distribution {
-            "" => format!("{} is not a file", path.display()),
-            _ => format!(
-                "{} is not a {distribution} wheel file ({distribution}-<version>-….whl)",
-                path.display()
-            ),
-        }));
-    }
-    let bytes = std::fs::read(path).map_err(|e| refused(e.to_string()))?;
-    let input = StagedInput {
-        path: std::path::absolute(path).map_err(|e| refused(e.to_string()))?,
-        digest: Digest::of(&bytes),
-        length: bytes.len() as u64,
-    };
-    Ok((file.to_owned(), input))
-}
-
 fn up_to_date(ctx: &Context, m: &Machine, s: &MachineStatus) -> Result<ExitCode, Error> {
     if ctx.json {
         output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
@@ -741,10 +405,4 @@ fn up_to_date(ctx: &Context, m: &Machine, s: &MachineStatus) -> Result<ExitCode,
         ));
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// Whether release `a` is newer than `b`, by their leading dotted numbers.
-fn newer(a: &str, b: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> { v.split('.').map_while(|p| p.parse().ok()).collect() };
-    parts(a) > parts(b)
 }

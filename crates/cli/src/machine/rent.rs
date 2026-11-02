@@ -5,14 +5,13 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{Ended, Machine, MachineState, NewMachine, Quote, Rented, RunQuote},
+    calcifer::{Machine, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
     config::Origin,
     error::{Error, Kind},
 };
-use hub_client::types::{RentalSku, RentalSkuStatus};
 
 use super::{Following, list::state_cell, usd};
-use crate::{Context, context::hub_answer, output};
+use crate::{Context, output};
 
 #[derive(clap::Args, Debug)]
 pub struct Rent {
@@ -67,11 +66,10 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let hub = ctx.hub();
     let provider = rent.provider();
     let Some(sku) = rent.sku else {
-        return catalog(ctx, &hub).await;
+        return catalog(ctx, hub).await;
     };
     let gpus = rent.gpus.unwrap_or(1);
     let ssh_key = rent.ssh.as_ref().map(|file| ssh_key(ctx, file.as_deref())).transpose()?;
-    admit(ctx, &hub, &sku, gpus).await?;
     // One key names this order: Calcifer keeps the ask under it, and a retry never orders twice.
     let key = mint_key();
     let ask = |agreed| NewMachine::Rent {
@@ -85,7 +83,8 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         ssh_key: ssh_key.clone(),
     };
     let calcifer = ctx.calcifer().await?;
-    // The Hub's price for exactly this order, agreed before it is placed or resumed.
+    // The Hub's price for exactly this order, agreed before it is placed or resumed. Calcifer
+    // admits the product first: an explicit ask is honoured or refused, never widened.
     let quote = calcifer.post("/v1/rental-quotes", &ask(None), None).await?;
     let quoted = RunQuote {
         sku: sku.clone(),
@@ -120,9 +119,6 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
             "gpus": gpus,
             "replay": rented.replay,
         }));
-    }
-    if ssh_key.is_some() {
-        ssh_ordered(ctx, &hub, &calcifer, &rented.machine).await?;
     }
     let mut notices = Notices::default();
     for note in notices.fresh(&rented.machine) {
@@ -172,38 +168,6 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     // The last line is the order's end, for a person and a script alike.
     anstream::println!("{name}: {}", state_cell(&machine));
     Ok(ExitCode::SUCCESS)
-}
-
-/// The Hub holds the order's SSH key. A Calcifer older than `--ssh` drops the key unread, and its
-/// pod can never be logged into (two rtx-pro-4000 pods, 2026-10-29, ordered by a newer cozy than
-/// the Calcifer that placed them): such an order ends at once, before it boots and bills.
-async fn ssh_ordered(
-    ctx: &Context,
-    hub: &Origin,
-    calcifer: &crate::calcifer_client::Client,
-    machine: &Machine,
-) -> Result<(), Error> {
-    let Some(id) = machine.rental_id.as_deref() else {
-        return Ok(());
-    };
-    let rental = hub_answer(ctx.hub_signed_in(hub)?.get_rental(id).await)?;
-    if rental.development {
-        return Ok(());
-    }
-    let ended = calcifer
-        .delete::<Ended>(&format!("{}?force=true", super::route(id)?))
-        .await;
-    let fate = match ended {
-        Ok(_) => "it was ended before it booted".to_owned(),
-        Err(e) => format!("ending it failed ({}): `cozy machine end {id}` ends it", e.message),
-    };
-    Err(Error::new(
-        Kind::Conflict,
-        "rental_ssh_dropped",
-        format!("{} reached the Hub without its SSH key, so nobody could log in; {fate}", machine.name),
-    )
-    .remedy("this computer's Calcifer runs an older cozy that drops `--ssh`: rent with the installed cozy (`cozy update` brings both to one release)")
-    .next(format!("cozy machine rent {} --ssh", rental.sku.as_deref().unwrap_or("<sku>"))))
 }
 
 /// The OpenSSH public key `--ssh` names (none: the user's own), as one line.
@@ -455,86 +419,11 @@ fn mint_key() -> String {
     format!("rent-{}", hex::encode(bytes))
 }
 
-/// An explicit ask is honoured or refused, never widened to another card or count; the refusal names
-/// which absence it hit.
-async fn admit(ctx: &Context, hub: &Origin, sku: &str, gpus: u32) -> Result<(), Error> {
-    let status = hub_answer(ctx.hub_anonymous(hub).get_rental_sku_status(sku, gpus).await)?;
-    if status.known && status.offered {
-        return Ok(());
-    }
-    Err(sku_refusal(sku, gpus, &status))
-}
-
-fn sku_refusal(sku: &str, gpus: u32, status: &RentalSkuStatus) -> Error {
-    let (ask, retry) = match gpus {
-        1 => (sku.to_string(), format!("cozy machine rent {sku}")),
-        _ => (
-            format!("{sku} ×{gpus}"),
-            format!("cozy machine rent {sku} --gpus {gpus}"),
-        ),
-    };
-    if !status.known {
-        return Error::new(
-            Kind::Validation,
-            "sku_unknown",
-            format!("the Hub sells no machine named {sku:?}; nothing was rented"),
-        )
-        .next("cozy machine rent");
-    }
-    // The Hub's reason, of the offer that frees first; an older Hub gives none.
-    let why = match status.held_for.as_deref() {
-        Some("no_capacity") => "has no capacity in the offers we can buy",
-        Some("failed_boot") => "is held back after a recent boot failure",
-        _ => "is held back",
-    };
-    let held = match status.unavailable_reason.as_deref() {
-        Some("cooldown") => Some((
-            "sku_cooldown",
-            match &status.retry_after {
-                Some(at) => format!("{ask} {why}; retry after {at}"),
-                None => format!("{ask} {why}; retry shortly"),
-            },
-        )),
-        Some("retry_in_progress") => Some((
-            "sku_retry_in_progress",
-            format!("{ask} {why} while another rental retries it; try again once that ends"),
-        )),
-        _ => None,
-    };
-    if let Some((code, message)) = held {
-        return Error::new(Kind::Capacity, code, message)
-            .next(retry)
-            .next("cozy machine rent");
-    }
-    let mut message =
-        format!("no provider has {ask} right now; nothing else was rented in its place.");
-    if let Some(at) = &status.last_seen_at {
-        message += &format!(" It was last offered at {at}.");
-    }
-    let offered: Vec<String> = status
-        .sku
-        .iter()
-        .flat_map(|s| &s.widths)
-        .map(|w| w.accelerator_count.to_string())
-        .collect();
-    let error = match offered.first() {
-        Some(first) => {
-            message += &format!(" {sku} is offered now with {} GPU(s).", offered.join(", "));
-            Error::new(Kind::Capacity, "sku_out_of_stock", message)
-                .next(format!("cozy machine rent {sku} --gpus {first}"))
-        }
-        None => Error::new(Kind::Capacity, "sku_out_of_stock", message).next(retry),
-    };
-    error.next("cozy machine rent")
-}
-
-/// The catalog, cheapest first: each product's GPUs and what we charge for them an hour.
+/// The catalog, cheapest first: each product's GPUs and what we charge for them an hour
+/// (`GET /v1/rental-skus`).
 async fn catalog(ctx: &Context, hub: &Origin) -> Result<ExitCode, Error> {
-    let mut skus: Vec<RentalSku> =
-        hub_answer(ctx.hub_anonymous(hub).list_rental_skus().await)?;
-    skus.retain(|sku| !sku.widths.is_empty());
-    let hourly = |sku: &RentalSku| sku.widths[0].price_usd_micros_per_hour;
-    skus.sort_by(|a, b| hourly(a).cmp(&hourly(b)).then_with(|| a.name.cmp(&b.name)));
+    let query = [("hub", hub.to_string())];
+    let RentalSkus { rental_skus: skus } = ctx.calcifer().await?.get_query("/v1/rental-skus", &query).await?;
     if ctx.json {
         output::json(&skus);
         return Ok(ExitCode::SUCCESS);

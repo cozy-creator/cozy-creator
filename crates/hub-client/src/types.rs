@@ -570,73 +570,8 @@ pub struct RentalQuote {
     pub expected_price: RentalPriceEstimate,
 }
 
-/// What a rental is expected to cost at its prices, for the expected hours plus its download.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct RentalPriceEstimate {
-    pub hours: f64,
-    pub download_gb: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub download_mbps: Option<i64>,
-    pub download_hours: f64,
-    pub gpu_usd_micros: i64,
-    pub disk_usd_micros: i64,
-    pub download_usd_micros: i64,
-    pub total_usd_micros: i64,
-}
-
-/// One product (a GPU card, or the CPU machine) with the widths buyable now.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RentalSku {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub accelerator_model: String,
-    #[serde(default)]
-    pub base_worker_profile: String,
-    /// major.minor; empty for the CPU product.
-    #[serde(default)]
-    pub compute_capability: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_arch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_class: Option<String>,
-    #[serde(default)]
-    pub vram_gb: i64,
-    #[serde(default, deserialize_with = "null_is_empty")]
-    pub python_provisionable_minors: Vec<String>,
-    #[serde(default, deserialize_with = "null_is_empty")]
-    pub python_interpreters: Vec<RentalPythonInterpreter>,
-    /// The GPU counts buyable now, ascending.
-    #[serde(default, deserialize_with = "null_is_empty")]
-    pub widths: Vec<RentalSkuWidth>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct RentalPythonInterpreter {
-    pub version: String,
-    pub abi: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RentalSkuWidth {
-    #[serde(default)]
-    pub accelerator_count: i64,
-    #[serde(default)]
-    pub price_usd_micros_per_hour: i64,
-    #[serde(default)]
-    pub storage_usd_micros_per_hour: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bandwidth_usd_micros_per_gb: Option<i64>,
-    #[serde(default)]
-    pub container_disk_gb: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vcpu_count: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_gb: Option<i64>,
-    pub expected_price: RentalPriceEstimate,
-}
+/// The catalog: Calcifer answers it as the Hub does.
+pub use protocol::calcifer::{RentalPriceEstimate, RentalPythonInterpreter, RentalSku, RentalSkuWidth};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]

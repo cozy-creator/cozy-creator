@@ -28,8 +28,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use platform::{durable, paths::Home};
 use protocol::{
     calcifer::{
-        self as wire, Ended, Event, Keepalive, Machine, MachineKind, MachineList, MachineLog,
-        MachineState, MachineStatus, MachinesEvent, NewMachine, On, SubmitRun,
+        self as wire, Ended, Event, Keepalive, LogEvent, Machine, MachineKind, MachineList,
+        MachineLog, MachineState, MachineStatus, MachinesEvent, NewMachine, On, SubmitRun,
     },
     config,
     error::{Error, Kind},
@@ -71,8 +71,10 @@ pub struct Machines {
     pub(crate) renting: Mutex<HashSet<RunId>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
     pub(crate) placing: Notify,
+    /// Told when an end stops waiting for its machine's outputs (`--force`).
+    pub(crate) end_waits: Notify,
     /// This computer's machine, started when something uses it.
-    local: crate::local::Local,
+    pub(crate) local: crate::local::Local,
     tasks: Mutex<JoinSet<()>>,
 }
 
@@ -121,6 +123,7 @@ impl Machines {
             booting: Mutex::default(),
             renting: Mutex::default(),
             placing: Notify::new(),
+            end_waits: Notify::new(),
             local,
             tasks: Mutex::default(),
             calcifer,
@@ -189,11 +192,14 @@ impl Machines {
         }
         let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows);
         machines.extend(others);
+        let live = machines.iter().filter(|m| m.state != MachineState::Ended);
+        let rentals = wire::LiveRentals::of(live.filter_map(|m| m.rental.as_ref()));
         Ok(MachineList {
             machines,
             hubs,
             unanswered,
             signed_out,
+            rentals,
         })
     }
 
@@ -470,8 +476,9 @@ impl Machines {
     }
 
     /// Ends a rental at its Hub (`ending` until the Hub affirms it), or removes an added machine
-    /// from this controller. `local` is never ended. While outputs of its runs have not landed
-    /// it is refused `outputs_exporting`; `force` ends it anyway and names them given up.
+    /// from this controller, once the outputs of its runs have landed here: the end is recorded
+    /// at once and carried out then (`end_here`). `force` ends it now and names the outputs given
+    /// up. `local` is never ended.
     pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
         if text == "local" {
             return Err(local_refusal());
@@ -490,23 +497,7 @@ impl Machines {
                 abandoned: vec![],
             });
         }
-        let owed = self.calcifer.owed_on(&row.name).map_err(internal)?;
-        if !owed.is_empty() && !force {
-            return Err(exporting(&row.name, &owed));
-        }
-        let mut ended = match row.kind {
-            MachineKind::Rental => self.end_rental(row).await?,
-            _ => {
-                self.ended(&row.name, "removed from this controller");
-                Ended {
-                    machine: self.picture(&self.row(&row.name)?)?,
-                    changed: true,
-                    abandoned: vec![],
-                }
-            }
-        };
-        ended.abandoned = owed.iter().map(ToString::to_string).collect();
-        Ok(ended)
+        self.end_here(row, force)
     }
 
     /// Starts a rental's 15-minute idle clock over, once the machine acknowledges it.
@@ -603,15 +594,11 @@ impl Machines {
         machine.alias = store.alias(&row.name).map_err(internal)?;
         let load = store.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
-        let ending = store
-            .pending_asks()
-            .map_err(internal)?
-            .into_iter()
-            .any(|ask| {
-                ask.kind == AskKind::End && ask.machine.as_deref() == Some(row.name.as_str())
-            });
-        if ending && row.state != MachineState::Ended {
+        let ending = self.pending_end(&row.name)?;
+        if let Some(ask) = ending.filter(|_| row.state != MachineState::Ended) {
             machine.state = MachineState::Ending;
+            let owed = self.end_owes(&ask.key, &row.name);
+            machine.ending = (!owed.is_empty()).then(|| exporting(&owed));
         } else if row.state == MachineState::Ready
             && let Some(reason) = self.offline(&row.name)
         {
@@ -868,6 +855,11 @@ impl Machines {
         if row.state == MachineState::Ended {
             let reason = row.reason.as_deref().unwrap_or("no reason was given");
             return Err(ended_refusal(&name, reason));
+        }
+        // Its end waits only for what its runs owe here: it takes no new run.
+        if self.pending_end(&name)?.is_some() {
+            let message = format!("{name} is ending: it takes no new runs");
+            return Err(Error::new(Kind::Conflict, "machine_ending", message).next("cozy machine ls"));
         }
         if row.endpoint.is_none() {
             return Ok(());
@@ -1253,6 +1245,8 @@ pub(crate) async fn quote(
             "only a rent has a price",
         )));
     };
+    // The product asked for is honoured or refused, never widened to another.
+    api.machines.admit_sku(&hub, &sku, gpus.unwrap_or(1)).await.map_err(Refusal)?;
     let shape = Shape {
         gpus,
         disk_gb,
@@ -1263,6 +1257,38 @@ pub(crate) async fn quote(
         ..Shape::default()
     };
     Ok(Json(api.machines.quote(&hub, &sku, shape).await.map_err(Refusal)?))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HubQuery {
+    hub: Option<String>,
+    since_ms: Option<i64>,
+}
+
+impl HubQuery {
+    fn hub(&self, machines: &Machines) -> String {
+        self.hub.clone().unwrap_or_else(|| machines.hubs.default_origin())
+    }
+}
+
+/// `GET /v1/rental-skus[?hub=]`: what the Hub has for rent now, cheapest first.
+pub(crate) async fn rental_skus(
+    State(api): State<Arc<Api>>,
+    query: Result<Query<HubQuery>, QueryRejection>,
+) -> Result<Json<wire::RentalSkus>, Refusal> {
+    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let hub = query.hub(&api.machines);
+    Ok(Json(api.machines.rental_skus(&hub).await.map_err(Refusal)?))
+}
+
+/// `GET /v1/rentals[?since_ms=&hub=]`: every rental of this account at the Hub, with the sums.
+pub(crate) async fn rentals(
+    State(api): State<Arc<Api>>,
+    query: Result<Query<HubQuery>, QueryRejection>,
+) -> Result<Json<wire::RentalHistory>, Refusal> {
+    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let hub = query.hub(&api.machines);
+    Ok(Json(api.machines.history(&hub, query.since_ms).await.map_err(Refusal)?))
 }
 
 /// `POST /v1/run-quotes`: what a `new` run (a `SubmitRun`) would rent and its price, from the same
@@ -1373,7 +1399,10 @@ pub(crate) struct LogQuery {
     /// The newest N whole lines; 0: all it keeps.
     #[serde(default)]
     lines: u64,
-    /// Following: on from this batch's place.
+    /// Only lines from this instant on (unix ms): those before the first stamped at or after it
+    /// are left out.
+    since_ms: Option<i64>,
+    /// Following: on from this batch's place (or `Last-Event-ID`).
     after: Option<String>,
 }
 
@@ -1398,35 +1427,73 @@ pub(crate) async fn logs(
             )));
         }
     };
-    let follows = headers
-        .get(header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
+    let follows = (headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()))
         .is_some_and(|v| v.contains("text/event-stream"));
+    let mut since = Since(query.since_ms);
     if !follows {
         let bytes = api
             .machines
             .logs(&name, log, query.lines)
             .await
             .map_err(Refusal)?;
-        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response());
+        let text = since.keep(&String::from_utf8_lossy(&bytes));
+        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response());
     }
+    let resumed = headers.get("last-event-id").and_then(|v| v.to_str().ok());
+    let after = query.after.or_else(|| resumed.map(str::to_owned));
     let lines = api
         .machines
-        .follow_logs(&name, log, query.lines, query.after.as_deref())
+        .follow_logs(&name, log, query.lines, after.as_deref())
         .await
         .map_err(Refusal)?;
     // Ends when the machine's stream does, or Calcifer stops: the follower resumes from its id.
     let events = lines
         .take_while(|batch| std::future::ready(batch.is_ok()))
-        .filter_map(|batch| async move {
-            let batch = batch.ok()?;
-            let event = sse::Event::default().event("lines").id(&batch.after);
-            event.json_data(&batch).ok().map(Ok::<_, Infallible>)
+        .filter_map(move |batch| {
+            let event = batch.ok().map(|batch| {
+                let lines = LogEvent::Lines { text: since.keep(&batch.text), after: batch.after.clone() };
+                let data = serde_json::to_string(&lines).expect("an event serializes");
+                Ok::<_, Infallible>(sse::Event::default().id(&batch.after).data(data))
+            });
+            std::future::ready(event)
         })
         .take_until(api.stopped());
     Ok(Sse::new(events)
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+/// A log read from an instant on: lines before the first stamped at or after it are left out. A
+/// line's stamp is its first word, an RFC 3339 instant (TensorD's own log) or Unix seconds (the
+/// TensorFS and memory logs); a line without one goes with the line before it.
+struct Since(Option<i64>);
+
+impl Since {
+    fn keep(&mut self, text: &str) -> String {
+        let Some(cutoff) = self.0 else {
+            return text.to_owned();
+        };
+        let mut kept = String::new();
+        for line in text.split_inclusive('\n') {
+            if self.0.is_some() {
+                if stamp(line).is_none_or(|at| at < cutoff) {
+                    continue;
+                }
+                self.0 = None;
+            }
+            kept.push_str(line);
+        }
+        kept
+    }
+}
+
+fn stamp(line: &str) -> Option<i64> {
+    let word = line.split_whitespace().next()?;
+    let rfc3339 = time::OffsetDateTime::parse(word, &time::format_description::well_known::Rfc3339);
+    match rfc3339 {
+        Ok(at) => Some((at.unix_timestamp_nanos() / 1_000_000) as i64),
+        Err(_) => word.parse::<f64>().ok().map(|seconds| (seconds * 1000.0) as i64),
+    }
 }
 
 fn usage(message: String) -> Error {
@@ -1784,26 +1851,18 @@ pub(crate) fn not_found(text: &str) -> Error {
     .next("cozy machine ls")
 }
 
-/// The refusal to end `name` while outputs of its runs have not landed.
-fn exporting(name: &str, owed: &[crate::outputs::Owed]) -> Error {
+/// What an ending machine waits for: the outputs of its runs not landed here yet.
+fn exporting(owed: &[crate::outputs::Owed]) -> String {
     let (moved, length) = (owed.iter()).fold((0, 0), |(m, l), o| (m + o.moved, l + o.length));
     let outputs = match owed.len() {
         1 => "1 output".to_owned(),
         n => format!("{n} outputs"),
     };
-    Error::new(
-        Kind::Conflict,
-        "outputs_exporting",
-        format!(
-            "{outputs} of its runs have not landed on this computer yet: {} of {} in place",
-            crate::bytes(moved as f64),
-            crate::bytes(length as f64)
-        ),
+    format!(
+        "{outputs} of its runs have not landed on this computer yet: {} of {} in place",
+        crate::bytes(moved as f64),
+        crate::bytes(length as f64)
     )
-    .remedy(format!(
-        "{name} ends once they land; ending it now loses them"
-    ))
-    .next(format!("cozy machine end {name} --force"))
 }
 
 pub(crate) fn internal(e: impl ToString) -> Error {

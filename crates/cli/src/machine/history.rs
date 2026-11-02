@@ -1,95 +1,16 @@
 //! `cozy machine ls --history`: every rental the Hub holds for this account, ended ones too and
-//! rented from any computer, newest first, with what each cost, a total per UTC day and in all.
-//! An operator also reads what the providers billed, the money that drains their balances.
-use std::{collections::BTreeMap, process::ExitCode};
+//! rented from any computer, newest first, with what each cost, a total per UTC day and in all
+//! (`GET /v1/rentals`). An operator also reads what the providers billed.
+use std::process::ExitCode;
 
 use jiff::{SignedDuration, Timestamp};
 use protocol::{
-    calcifer::clock,
-    error::{Error, Kind},
+    calcifer::{RentalHistory, RentalSum, clock},
+    error::Error,
 };
-use serde::Serialize;
 
 use super::usd;
-use crate::{Context, context::hub_answer, output};
-
-#[derive(Serialize)]
-struct History {
-    /// Rentals started at or after this instant; none: every one.
-    since: Option<Timestamp>,
-    rentals: Vec<Row>,
-    days: Vec<Sum>,
-    total: Sum,
-}
-
-#[derive(Serialize)]
-struct Row {
-    rental_id: String,
-    name: String,
-    sku: String,
-    gpus: i64,
-    state: String,
-    started_at: Timestamp,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ended_at: Option<Timestamp>,
-    /// From its order to its end, or to now while it lives.
-    seconds: i64,
-    /// What it cost its renter: `charged`, `unmetered` (priced, not charged) or `estimate`.
-    spend_usd_micros: i64,
-    spend_basis: String,
-    /// What its provider billed Tensorhub (an operator's read): `provider_billed` or `estimate`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider_cost_usd_micros: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider_cost_basis: Option<String>,
-}
-
-/// Rentals' costs summed, each on its weakest basis.
-#[derive(Default, Serialize)]
-struct Sum {
-    /// A UTC day, `2026-10-30`; none for the whole total.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    day: Option<String>,
-    rentals: usize,
-    spend_usd_micros: i64,
-    spend_basis: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider_cost_usd_micros: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider_cost_basis: Option<String>,
-}
-
-impl Sum {
-    fn add(&mut self, row: &Row) {
-        self.rentals += 1;
-        self.spend_usd_micros += row.spend_usd_micros;
-        self.spend_basis = weakest(&self.spend_basis, &row.spend_basis, "charged");
-        if let (Some(micros), Some(basis)) = (row.provider_cost_usd_micros, &row.provider_cost_basis) {
-            *self.provider_cost_usd_micros.get_or_insert(0) += micros;
-            let held = self.provider_cost_basis.take().unwrap_or_default();
-            self.provider_cost_basis = Some(weakest(&held, basis, "provider_billed"));
-        }
-    }
-
-    fn spend(&self) -> String {
-        cost(self.spend_usd_micros, &self.spend_basis)
-    }
-
-    fn provider(&self) -> Option<String> {
-        Some(cost(self.provider_cost_usd_micros?, self.provider_cost_basis.as_deref()?))
-    }
-}
-
-/// The weaker of two bases: an estimate is weaker than anything known, unmetered than charged.
-fn weakest(held: &str, next: &str, settled: &str) -> String {
-    let rank = |basis: &str| match basis {
-        "" => 0,
-        b if b == settled => 1,
-        "unmetered" => 2,
-        _ => 3,
-    };
-    if rank(next) > rank(held) { next } else { held }.to_owned()
-}
+use crate::{Context, output};
 
 /// A cost as `cozy machine ls` shows spend: a settled one plain, else marked.
 fn cost(micros: i64, basis: &str) -> String {
@@ -116,45 +37,12 @@ pub(super) fn since(text: &str) -> Result<SignedDuration, String> {
 }
 
 pub async fn list(ctx: &Context, since: Option<SignedDuration>) -> Result<ExitCode, Error> {
-    let hub = ctx.hub();
-    let listing = hub_answer(ctx.hub_signed_in(hub)?.list_rentals("all").await)?;
-    let now = Timestamp::now();
-    let since = since.map(|d| now - d);
-    let instant = |at: &str| -> Result<Timestamp, Error> {
-        at.parse().map_err(|e| {
-            Error::new(Kind::Unavailable, "hub.rental_time_invalid", format!("the Hub's rental time {at:?}: {e}"))
-        })
-    };
-    let mut rentals = vec![];
-    for r in listing.rentals {
-        let started_at = instant(&r.created_at)?;
-        if since.is_some_and(|since| started_at < since) {
-            continue;
-        }
-        let ended_at = r.ended_at.as_deref().map(instant).transpose()?;
-        rentals.push(Row {
-            seconds: ended_at.unwrap_or(now).duration_since(started_at).as_secs(),
-            sku: r.sku.unwrap_or(r.requested_accelerator_model),
-            gpus: r.accelerator_count,
-            rental_id: r.rental_id,
-            name: r.name,
-            state: r.state,
-            started_at,
-            ended_at,
-            spend_usd_micros: r.spend_usd_micros,
-            spend_basis: r.spend_basis,
-            provider_cost_basis: r.provider_cost_basis.filter(|b| !b.is_empty()),
-            provider_cost_usd_micros: r.provider_cost_usd_micros,
-        });
+    let mut query = vec![("hub", ctx.hub().to_string())];
+    if let Some(window) = since {
+        let at = Timestamp::now().saturating_sub(window).unwrap_or_default();
+        query.push(("since_ms", at.as_millisecond().to_string()));
     }
-    rentals.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    let (mut days, mut total) = (BTreeMap::<String, Sum>::new(), Sum::default());
-    for row in &rentals {
-        let day = row.started_at.strftime("%Y-%m-%d").to_string();
-        days.entry(day.clone()).or_insert_with(|| Sum { day: Some(day), ..Sum::default() }).add(row);
-        total.add(row);
-    }
-    let history = History { since, days: days.into_values().rev().collect(), total, rentals };
+    let history: RentalHistory = ctx.calcifer().await?.get_query("/v1/rentals", &query).await?;
     if ctx.json {
         output::json(&history);
         return Ok(ExitCode::SUCCESS);
@@ -163,21 +51,22 @@ pub async fn list(ctx: &Context, since: Option<SignedDuration>) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-fn print(ctx: &Context, h: &History) {
+fn print(ctx: &Context, h: &RentalHistory) {
     let operator = h.total.provider_cost_usd_micros.is_some();
     let mut header = vec!["RENTAL", "GPUS", "STARTED (UTC)", "RAN", "STATE", "COST"];
     if operator {
         header.push("PROVIDER COST");
     }
+    let utc = |ms: i64| Timestamp::from_millisecond(ms).unwrap_or_default().strftime("%Y-%m-%d %H:%M").to_string();
     let mut table = output::Table::new(ctx, header);
     for row in &h.rentals {
         let mut cells = vec![
             row.name.clone(),
             format!("{}× {}", row.gpus, row.sku),
-            row.started_at.strftime("%Y-%m-%d %H:%M").to_string(),
-            match row.ended_at {
-                Some(_) => clock(row.seconds * 1000),
-                None => format!("{} so far", clock(row.seconds * 1000)),
+            utc(row.started_at_ms),
+            match row.ended_at_ms {
+                Some(_) => clock(row.ran_s * 1000),
+                None => format!("{} so far", clock(row.ran_s * 1000)),
             },
             row.state.clone(),
             cost(row.spend_usd_micros, &row.spend_basis),
@@ -189,16 +78,19 @@ fn print(ctx: &Context, h: &History) {
         table = table.row(cells);
     }
     table.print();
-    let line = |sum: &Sum| match sum.provider() {
-        Some(provider) => format!("{} rentals, {}; providers billed {provider}", sum.rentals, sum.spend()),
-        None => format!("{} rentals, {}", sum.rentals, sum.spend()),
+    let line = |sum: &RentalSum| {
+        let spend = cost(sum.spend_usd_micros, &sum.spend_basis);
+        match sum.provider_cost_usd_micros.zip(sum.provider_cost_basis.as_deref()) {
+            Some((micros, basis)) => format!("{} rentals, {spend}; providers billed {}", sum.rentals, cost(micros, basis)),
+            None => format!("{} rentals, {spend}", sum.rentals),
+        }
     };
     if h.days.len() > 1 {
         for day in &h.days {
             println!("{}: {}", day.day.as_deref().unwrap_or_default(), line(day));
         }
     }
-    let since = h.since.map_or(String::new(), |at| format!(" since {}", at.strftime("%Y-%m-%d %H:%M UTC")));
+    let since = h.since_ms.map_or(String::new(), |ms| format!(" since {} UTC", utc(ms)));
     println!("Total{since}: {}", line(&h.total));
     let bases = [Some(h.total.spend_basis.as_str()), h.total.provider_cost_basis.as_deref()];
     if bases.iter().flatten().any(|b| !matches!(*b, "charged" | "provider_billed")) {

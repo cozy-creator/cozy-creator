@@ -18,7 +18,7 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use protocol::{
     calcifer::{Down, Event, Run, RunList, RunsEvent, Status, SubmitRun, Submitted},
@@ -143,6 +143,14 @@ pub fn router(api: Arc<Api>) -> Router {
         )
         .route("/v1/machines/{name}/keepalive", post(machines::keepalive))
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
+        .route("/v1/machines/{name}/update", post(crate::update::update))
+        .route("/v1/machines/{name}/authorized-keys", get(crate::authorized::list))
+        .route(
+            "/v1/machines/{name}/authorized-keys/{key}",
+            put(crate::authorized::add).delete(crate::authorized::remove),
+        )
+        .route("/v1/rental-skus", get(machines::rental_skus))
+        .route("/v1/rentals", get(machines::rentals))
         .route("/v1/rental-quotes", post(machines::quote))
         .route("/v1/run-quotes", post(machines::run_quote))
         .route("/v1/session", post(session).delete(end_session))
