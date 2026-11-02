@@ -1,0 +1,5 @@
+{
+  "passed": false,
+  "scope": "actual CPU-only executor Hello/Shutdown socket, no Start or GPU work",
+  "error": "AssertionError: {'exit_code': 0, 'torch_imported': False, 'cuda_initialized': False, 'driver_loaded': False, 'cooperation_capability': 0, 'native_service_protocol': 0, 'native_threads': ['python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python', 'python'], 'extension': '/home/fidika/cozy_v2/outputs/xs138-p3-native-service/overlay-old/tensorfs/_ext.abi3.so', 'native_version': '0.17.16+dev.gafa6f922', 'runtime_executor_source': '/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p3-native-service/src/cozy_runtime/internal/executor.py', 'runtime_executor_sha256': '25eb59e5315af27cc8a1581d0865fe4065ef29973e0a6204f87bcc51eead13aa', 'runtime_owner_sha256': 'e4246f0730051c16c0cd585bbcd6521e6218b05ae8557ead8724bdf86479f486', 'threads': ['MainThread']}"
+}

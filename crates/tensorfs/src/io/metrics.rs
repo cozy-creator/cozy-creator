@@ -198,8 +198,10 @@ impl Drop for PrimaryContext {
 /// Actual probe owners, including the context lease. A failed completion check retains the
 /// entire owner box for process lifetime; no failed stream or allocation is ever reused.
 struct ProbeResources {
+    _producer: varena::ProducerGuard,
     _context: PrimaryContext,
     ctx: cuda::CUcontext,
+    device: i32,
     host: *mut c_void,
     dev: u64,
     streams: Vec<cuda::Stream>,
@@ -237,8 +239,9 @@ impl Drop for Probe {
         // Every private stream has a checked completion proof before either allocation frees.
         // SAFETY: the probe allocated both buffers in its context, and every stream completed (checked above).
         unsafe {
-            if owners.dev != 0 {
-                (driver.mem_free)(owners.dev);
+            if owners.dev != 0 && varena::working::free_completed(owners.device, owners.dev).is_err() {
+                std::mem::forget(owners);
+                return;
             }
             if !owners.host.is_null() {
                 (driver.mem_free_host)(owners.host);
@@ -252,8 +255,10 @@ impl Drop for Probe {
 fn measure_h2d(device: i32, ctx: cuda::CUcontext, retained: PrimaryContext) -> Result<(f64, u32)> {
     let driver = cuda::driver()?;
     let mut probe = Probe(Some(Box::new(ProbeResources {
+        _producer: varena::enter_producer(device)?,
         _context: retained,
         ctx,
+        device,
         host: std::ptr::null_mut(),
         dev: 0,
         streams: Vec::new(),
@@ -265,7 +270,7 @@ fn measure_h2d(device: i32, ctx: cuda::CUcontext, retained: PrimaryContext) -> R
             "cuMemHostAlloc",
             (driver.mem_host_alloc)(&mut p.host, H2D_PROBE, 0),
         )?;
-        cuda::check("cuMemAlloc", (driver.mem_alloc)(&mut p.dev, H2D_PROBE))?;
+        p.dev = cuda::allocate_ready(device, H2D_PROBE)?;
     }
     for _ in 0..4 {
         p.streams.push(cuda::Stream::new(device)?);
