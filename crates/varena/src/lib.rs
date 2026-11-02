@@ -2311,6 +2311,32 @@ pub fn room_limit(device: i32) -> Result<Option<usize>> {
     Ok((limit != usize::MAX).then_some(limit))
 }
 
+/// Release completed retired backing before Working evicts reusable cache. This is
+/// a nonwaiting pressure pass; Ready/Cold contents and pending/unjoined uses stay put.
+fn reclaim_retired(device: i32, wanted: usize) -> Result<usize> {
+    if wanted == 0 { return Ok(0); }
+    let inventory = arena_inventory(device)?;
+    let captures = capture_counts()?;
+    ensure_recovery_allowed(&captures, device)?;
+    let mut report = ReclaimReport { requested_bytes: wanted, ..ReclaimReport::default() };
+    for arena in &inventory.arenas {
+        if report.reclaimed_bytes >= wanted { break; }
+        let mut state = arena.lock()?;
+        let _context = arena.driver.enter()?;
+        let candidates: Vec<_> = state.entries.iter()
+            .filter(|(_, entry)| entry.handle.is_some()
+                && entry.uses.pins() == 0 && entry.uses.state() == Contents::Retired)
+            .map(|(id, _)| *id).collect();
+        for id in candidates {
+            if report.reclaimed_bytes >= wanted { break; }
+            if arena.completion(&mut state, id)? == Completion::Done {
+                arena.evict(&mut state, id, ReclaimReason::Allocator, &mut report)?;
+            }
+        }
+    }
+    Ok(report.reclaimed_bytes)
+}
+
 /// Allocator-pressure entry point: one native pass, with no callbacks. It may wait for
 /// submitted consumer fences or join unannotated GPU work; owner collection instead uses
 /// the separate strictly ready-only pass. Actual reclaimed bytes are observations, not grants.
