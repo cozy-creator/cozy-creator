@@ -27,7 +27,7 @@ use sha2::{Digest as _, Sha256};
 use super::{origin, reader, refusal, signed_in, work::Work};
 use crate::{
     api::Api,
-    local_code::{INDEX, Project, account, describe_with, index_url, python, refuse, run, source_files, uv},
+    local_code::{INDEX, Project, account, describe_with, index_url, locked_namespace, python, refuse, run, source_files, uv},
     tools::Say,
 };
 
@@ -202,12 +202,24 @@ pub(super) async fn lock(api: &Arc<Api>, ask: LockAsk, work: &Work) -> Result<Lo
     let project = blocking(|| Project::read(ask.dir.clone()))?;
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
+    // The namespace it is locked for: the root's with `root`, else the one its lock already names,
+    // else the signed-in account's. Only the last needs a sign-in.
     let account_index = match project.account_index {
         false => None,
         true => {
-            let client = signed_in(api, &hub).map_err(|r| r.0)?;
-            let account = publisher(&client, ask.root).await?;
-            let url = index_url(&client, &hub, &account).await?;
+            let namespace = match ask.root {
+                true => Some(protocol::names::ROOT.to_owned()),
+                false => locked_namespace(&project.root),
+            };
+            let (client, namespace) = match namespace {
+                Some(namespace) => (reader(api, &hub).map_err(|r| r.0)?, namespace),
+                None => {
+                    let client = signed_in(api, &hub).map_err(|r| r.0)?;
+                    let account = account(&client).await?;
+                    (client, account)
+                }
+            };
+            let url = index_url(&client, &hub, &namespace).await?;
             stage.bind(&url)?;
             Some(url)
         }
