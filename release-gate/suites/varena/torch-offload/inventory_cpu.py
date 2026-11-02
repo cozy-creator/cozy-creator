@@ -98,6 +98,30 @@ def main():
     right.child = Block(2, 2)
     scoped = inventory.inspect_cpu_roots({"left": left.eval(), "right": right.eval()})
     assert scoped.boundaries == ("left.child", "right")
+
+    # Transformers post_init turns class-level lists into instance sets. Names
+    # are membership declarations; boundary order follows the module tree.
+    declarations = nn.Module().eval()
+    declarations.z_first = Block(2, 2).eval()
+    declarations.a_second = nn.Linear(2, 2).eval()
+    for container in (tuple, list, set):
+        declarations._no_split_modules = container(("Linear", "Block"))
+        inspected = inventory.inspect_cpu_roots({"declared": declarations})
+        assert inspected.boundaries == (
+            "declared.z_first",
+            "declared.a_second",
+        )
+    for invalid in (
+        "Block",
+        {"Block": True},
+        iter(["Block"]),
+        7,
+        ["Block", 7],
+        ("Block", 7),
+        {"Block", 7},
+    ):
+        declarations._no_split_modules = invalid
+        refused(declarations, "invalid _no_split_modules declaration")
     fallback = inventory.inspect_cpu_roots(
         {
             "layers": nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 2)).eval(),
