@@ -292,10 +292,14 @@ if [ -n "${lt:-}" ] && [ -e "$lt" ]; then
     references:="[{\"name\": \"Lighthouse\", \"kind\": \"environment\", \"image\": \"$OUT/latents-shot-last.png\"}]" \
     duration_s:=10 seed:=$((R + 94)) continue_from:="{\"video\": \"$lv\", \"latents\": \"$lt\"}"
   if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
-    cv=$(video_of h3-continue); L=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$lv")
+    # The head is latents-shot's frames, counted (its container duration runs a little past its last frame, and a
+    # trim to it took the first continued frame too: 25905's 0.899 was frame 124, the head's own lowest 0.980).
+    cv=$(video_of h3-continue)
+    N=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$lv")
+    L=$(awk -v n="$N" 'BEGIN { printf "%.6f", n / 24 }')
     n=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$cv")
     head=$(nice -n 19 ffmpeg -v error -i "$cv" -i "$lv" -filter_complex \
-      "[0:v]trim=0:$L,setpts=PTS-STARTPTS[a];[1:v]trim=0:$L,setpts=PTS-STARTPTS[b];[a][b]ssim=stats_file=-" -f null - 2>/dev/null \
+      "[0:v]trim=end_frame=$N,setpts=PTS-STARTPTS[a];[1:v]trim=end_frame=$N,setpts=PTS-STARTPTS[b];[a][b]ssim=stats_file=-" -f null - 2>/dev/null \
       | grep -o 'All:[0-9.]*' | cut -d: -f2 | sort -n | head -1)
     expect h3-continue-whole "$(awk -v n="$n" -v h="$head" 'BEGIN { print (n >= 9.5 && n <= 11.5 && h >= 0.95) ? "PASS" : "FAIL" }')" \
       "${n:-?} s back for 10 s asked; head SSIM against latents-shot at its lowest ${head:-unread}"
