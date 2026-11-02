@@ -100,8 +100,14 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
         result['provenance'] = provenance
         directory = tempfile.mkdtemp(prefix='varena-cache-pages-', dir='/dev/shm')
         os.chmod(directory, 0o700)
-        command = ([str(binary), mode, payload.gpu_uuid, '0'] if helper == 'varena-async-fill'
-                   else [str(binary), mode, directory, payload.gpu_uuid, '0'])
+        if helper in ('varena-async-fill', 'varena-public-source'):
+            command = [str(binary), mode, payload.gpu_uuid, '0']
+        elif helper == 'varena-rust-source':
+            command = [str(binary), payload.gpu_uuid, '0']
+        elif helper == 'varena-raw-source':
+            command = [str(binary), mode, str(Path(directory) / 'checkpoint'), payload.gpu_uuid, '0']
+        else:
+            command = [str(binary), mode, directory, payload.gpu_uuid, '0']
         if mode == 'arena_retirement_cross_device':
             import torch
             assert payload.expected_devices == 2 and payload.other_gpu_uuid.startswith(('GPU-', 'MIG-'))
@@ -126,15 +132,19 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
                 continue
         rows = [json.loads(line) for line in stdout.splitlines()]
         result.update(stdout=rows, stderr=stderr, returncode=child.returncode)
-        if helper == 'varena-async-fill':
+        if helper != 'varena-cache-pages':
             assert len(rows) == 1, result
             reports = rows
             report = reports[0]
             normalize = lambda value: value.removeprefix('GPU-').replace('-', '').lower()
             assert report['passed'] and child.returncode == 0, result
-            assert report['pid'] == child.pid and report['mode'] == mode
+            if helper in ('varena-async-fill', 'varena-raw-source'):
+                assert report['pid'] == child.pid
+            if helper != 'varena-rust-source':
+                assert report['mode'] == mode
             assert normalize(report['gpu_uuid']) == normalize(payload.gpu_uuid)
-            assert report['native_only']
+            if helper == 'varena-async-fill':
+                assert report['native_only']
         else:
             ready = next(row for row in rows if row.get('event') == 'ready')
             assert ready['pid'] == child.pid and ready['start_ticks'] == started
@@ -399,3 +409,87 @@ def async_arena_retirement(payload: Probe, ctx: Context) -> Report:
 def owner_try_close(payload: Probe, ctx: Context) -> Report:
     """Real service final-close pending during capture, then exact completion/new generation."""
     return native(payload, ctx, 'owner_try_close')
+
+
+@app.entrypoint(accelerator=True)
+def raw_ordering(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'ordering', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def raw_cancel(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'cancel', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def raw_prepared_drop(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'prepared_drop', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def raw_partial_error(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'partial_error', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def raw_capture(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'capture', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def raw_cancel_active(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'cancel_active', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def raw_multi_fill(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'multi_fill', helper='varena-raw-source')
+
+
+@app.entrypoint(accelerator=True)
+def source_ordering(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'ordering', helper='varena-public-source')
+
+
+@app.entrypoint(accelerator=True)
+def source_partial(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'partial', helper='varena-public-source')
+
+
+@app.entrypoint(accelerator=True)
+def source_prepare_error(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'prepare_error', helper='varena-public-source')
+
+
+@app.entrypoint(accelerator=True)
+def source_source_pending(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'source_pending', helper='varena-public-source')
+
+
+@app.entrypoint(accelerator=True)
+def source_retained(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'retained', helper='varena-public-source')
+
+
+@app.entrypoint(accelerator=True)
+def source_host_bytes(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, 'host_bytes', helper='varena-public-source')
+
+
+@app.entrypoint(accelerator=True)
+def rust_source(payload: Probe, ctx: Context) -> Report:
+    assert payload.expected_devices == 1
+    return native(payload, ctx, "source", helper="varena-rust-source")

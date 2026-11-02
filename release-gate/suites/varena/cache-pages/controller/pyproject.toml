@@ -7,7 +7,7 @@ name = "ci-varena-cache-pages"
 version = "0.1.0"
 description = "Real owner-addressed native Cache page proof through Cozy"
 requires-python = ">=3.12,<3.15"
-dependencies = ["cozy-runtime>=0.36.18,<0.37", "msgspec>=0.19", "torch==2.14.0"]
+dependencies = ["cozy-runtime>=0.37.1,<0.38", "msgspec>=0.19", "torch==2.14.0"]
 
 [project.entry-points."cozy.application"]
 default = "ci_varena_cache_pages:app"

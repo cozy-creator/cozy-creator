@@ -174,6 +174,12 @@ impl Fill {
 }
 
 impl FillSession {
+    // ABI observers need failure visibility even when a Prepared/Writing owner cannot
+    // return a submitted ticket. This clone contains no GPU ownership or cancellation.
+    pub(crate) fn observer(&self) -> FillTicket {
+        FillTicket { control: self.control.clone() }
+    }
+
     pub fn facts(&self) -> Result<FillFacts> {
         self.control.facts()
     }

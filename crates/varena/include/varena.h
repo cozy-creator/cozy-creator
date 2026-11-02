@@ -50,23 +50,60 @@ VR_API vr_status vr_v1_retirement_stats(vr_retirement_stats_v1 *out, size_t out_
 VR_API vr_status vr_v1_gpu_open(int32_t device, vr_handle *out);
 VR_API vr_status vr_v1_gpu_close(vr_handle gpu); /* children retain GPU ownership */
 
-/* Immutable weights. Host constructor copies bytes, retained for future refills.
- * Source ownership transfers only on success. Source callbacks may run on a caller
- * thread, without allocator locks. They must be thread-safe and must not reenter the
- * same Region's use. fill initializes all bytes and retains staging until completion,
- * including failure. ABI 1 conservatively joins the context before publishing a fill.
- * drop runs after all Regions, Uses and Plans referencing the Source have retired.
- */
-typedef vr_status (*vr_fill_fn)(void *, uint64_t offset, uint64_t bytes, uint64_t dst, uint64_t stream);
+/* Immutable weights. Host construction copies immutable bytes immediately; cold
+ * host fills use bounded pinned staging and explicit stream ordering. Neither provider
+ * implies host-visible GPU completion. Native Source ownership transfers only on
+ * successful region construction. */
 typedef void (*vr_drop_fn)(void *);
-typedef struct { vr_fill_fn fill; vr_drop_fn drop; void *context; } vr_source_v1;
-VR_API vr_status vr_v1_region_new(vr_handle, uint64_t bytes, vr_source_v1, vr_handle *out);
+typedef struct vr_source_job_v1 vr_source_job_v1;
+typedef vr_status (*vr_source_prepare_fn)(void *source, int32_t device,
+    uint64_t offset, uint64_t bytes, vr_source_job_v1 *out);
+typedef vr_status (*vr_source_submit_fn)(void *job, uint64_t dst, uint64_t bytes);
+typedef vr_status (*vr_source_retire_fn)(void *context);
+/* Prepare gets no destination and submits NO GPU work. Failure transfers nothing:
+ * Source retains every failed-prepare owner for checked final retirement. Success
+ * returns a complete owned job and transfers its context. Producer handles are
+ * actual nonzero primary-context CUstreams, never 0/1/2 sentinels. Their array/code/
+ * source/staging owners remain retained; core copies the fixed array before begin.
+ * Submit receives dst only after native admission and returns with every host
+ * submitter closed. VR_OK certifies every byte initialized/enqueued; a normal error
+ * aborts. VR_FAULT means closure is unproven and quarantines actual owners.
+ * No callback may unwind, reenter the same Region, or run under an ABI/allocator lock.
+ */
+struct vr_source_job_v1 {
+    const uint64_t *streams;
+    size_t stream_count;
+    vr_source_submit_fn submit;
+    vr_source_retire_fn retire;
+    vr_drop_fn drop;
+    void *context;
+};
+typedef struct {
+    vr_source_prepare_fn prepare;
+    vr_source_retire_fn retire;
+    vr_drop_fn drop;
+    void *context;
+} vr_source_provider_v1;
+/* Both retire callbacks run on the native per-device queue under retirement exclusion.
+ * VR_BUSY retains pending ownership, VR_OK leaves the wrapper inert (or transfers
+ * equivalent custody), every other error quarantines without retry. They never wait
+ * for Python/the GIL. drop is host-only/inert after checked retirement; it may not
+ * run CUDA or arbitrary Python finalizers. Persistent Source outlives all its jobs.
+ * Asynchronous failure/pending cleanup remains visible in retirement_stats.
+ * The old by-value Source constructor is removed; there is no compatibility adapter.
+ */
+VR_API vr_status vr_v1_region_from_source(vr_handle gpu, uint64_t bytes,
+    const vr_source_provider_v1 *, size_t source_size, vr_handle *out);
 VR_API vr_status vr_v1_region_from_host(vr_handle, const uint8_t *, size_t, vr_handle *out);
 VR_API vr_status vr_v1_region_ptr(vr_handle, uint64_t *out); /* VA only, never a pin */
 VR_API vr_status vr_v1_region_close(vr_handle);
+/* Success orders consumer stream work after Published producers. It is not host GPU
+ * completion; each Region publishes only whole contents, but the group is not atomic. */
 VR_API vr_status vr_v1_use(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_use_ptr(vr_handle use, size_t index, uint64_t *out);
-/* All additional consumer streams must join the stream retained by use before done.
+/* Producer ordering covers only the stream supplied to use. Additional readers need
+ * another Use on their stream, or a CUDA dependency behind the ordered stream BEFORE
+ * reading. All additional consumers must join the retained stream before done.
  * Success consumes the Use. Fencing failure retains the core's conservative context
  * fence. No alias may access a Region after its last Use ends. */
 VR_API vr_status vr_v1_done(vr_handle use);

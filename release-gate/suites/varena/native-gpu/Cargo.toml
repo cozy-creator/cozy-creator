@@ -18,8 +18,14 @@ path = "../cache-pages/src/main.rs"
 name = "varena-ledger-peer"
 path = "../../../../crates/varena/examples/ledger_peer.rs"
 
+[[bin]]
+name = "varena-raw-source"
+path = "../../../../crates/tensorfs/examples/raw_source.rs"
+
 [dependencies]
 varena.workspace = true
 libloading.workspace = true
 libc.workspace = true
 serde_json.workspace = true
+tensorfs = { workspace = true, features = ["store"] }
+tokio.workspace = true

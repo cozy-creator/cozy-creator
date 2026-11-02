@@ -120,6 +120,11 @@ class CooperationOwner:
         """CPU-only sampled-pressure capability; no CUDA/NVML initialization."""
         return 0 if _Owner is None else int(_Owner.PRESSURE_PROTOCOL)
 
+    @staticmethod
+    def custody_capability() -> int:
+        """Required passive Working-lifetime contract; metadata only, never a fallback."""
+        return 0 if _Owner is None else int(getattr(_Owner, "CUSTODY_PROTOCOL", 0))
+
     initialize = staticmethod(Cooperation.initialize)
 
     def __init__(self, device: int, uuid: str, directory: str | os.PathLike[str], *,
@@ -135,6 +140,10 @@ class CooperationOwner:
     def request_boundary(self, *, begin: bool) -> None:
         """Actual request lifecycle only; native code observes and decides every byte."""
         self._native.request_boundary(begin)
+
+    def retain_working_lifetime(self) -> None:
+        """Keep publication alive with existing Working, without adding an execution client."""
+        self._native.retain_working_lifetime()
 
     def facts(self) -> dict[str, Any]:
         """Per-client active/closed plus service client count and stable row identity.

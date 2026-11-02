@@ -638,6 +638,9 @@ struct Working {
     room: Arc<crate::Room>,
     external_callbacks: Arc<std::sync::atomic::AtomicUsize>,
     state: Mutex<State>,
+    cooperation_bound: AtomicBool,
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    cooperation: Mutex<Option<crate::cooperative::ProcessKeepalive>>,
 }
 
 static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
@@ -673,6 +676,52 @@ fn owner(device: i32) -> Result<Arc<Working>> {
     existing(device)?.ok_or(Error::Invalid(
         "working allocator is not initialized on this device",
     ))
+}
+
+/// Whether an actual process/device service hold is installed. Never initializes CUDA.
+pub fn cooperation_bound(device: i32) -> Result<bool> {
+    Ok(existing(device)?.is_some_and(|owner| owner.cooperation_bound.load(Ordering::Acquire)))
+}
+
+pub fn require_cooperation(device: i32) -> Result<()> {
+    if !cooperation_bound(device)? {
+        return Err(Error::Invalid(
+            "activate this Varena device before Torch GPU work",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+pub(crate) fn retain_cooperation(
+    device: i32,
+    keepalive: crate::cooperative::ProcessKeepalive,
+) -> Result<()> {
+    let owner = owner(device)?; // Existing initialized Working only; no GPU creation here.
+    let mut candidate = Some(keepalive);
+    let result = {
+        let mut held = owner
+            .cooperation
+            .lock()
+            .map_err(|_| Error::Poisoned("working service custody".into()))?;
+        match held.as_ref() {
+            Some(existing)
+                if !existing.same_service(candidate.as_ref().expect("owned candidate")) =>
+            {
+                Err(Error::Invalid(
+                    "working storage already belongs to another service",
+                ))
+            }
+            Some(_) => Ok(()),
+            None => {
+                *held = candidate.take();
+                owner.cooperation_bound.store(true, Ordering::Release);
+                Ok(())
+            }
+        }
+    };
+    drop(candidate); // No Working/capture/allocator/ledger guard owns a final host release.
+    result
 }
 
 fn rounded(bytes: usize, align: usize) -> Result<usize> {
@@ -1360,6 +1409,9 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
         room,
         external_callbacks,
         state: Mutex::new(state),
+        cooperation_bound: AtomicBool::new(false),
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        cooperation: Mutex::new(None),
     });
     devices.insert(device, Arc::clone(&owner));
     Ok(owner)
@@ -1376,18 +1428,27 @@ fn valid_stream(stream: u64) -> Result<()> {
 
 /// Allocate from a prepared pool during capture, or the device's working slabs otherwise.
 pub fn alloc(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
-    let result = alloc_inner(device, bytes, stream, pool);
+    alloc_mode(device, bytes, stream, pool, false)
+}
+
+/// Torch callbacks must not initialize an unactivated device or create a service.
+pub fn alloc_bound(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
+    alloc_mode(device, bytes, stream, pool, true)
+}
+
+fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
+    let result = alloc_inner(device, bytes, stream, pool, bound);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "allocation_error");
     }
     result
 }
 
-fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> Result<u64> {
+fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
     let mut recovery = crate::Recovery::default();
     loop {
         let mut physical = None;
-        let result = alloc_local(device, bytes, stream, pool, &mut physical);
+        let result = alloc_local(device, bytes, stream, pool, &mut physical, bound);
         if pool.is_none() && let Err(Error::OutOfMemory { requested_bytes }) = &result
             && recovery.next(device, physical.unwrap_or(*requested_bytes), physical.is_some())?
         {
@@ -1401,17 +1462,23 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>) -> 
 }
 
 fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
-               physical: &mut Option<usize>) -> Result<u64> {
+               physical: &mut Option<usize>, bound: bool) -> Result<u64> {
     valid_stream(stream)?;
-    if bytes == 0 {
+    if bytes == 0 && !bound {
         crate::check_process()?;
         return Ok(0);
     }
-    let owner = if pool.is_none() {
+    let owner = if bound {
+        existing(device)?.ok_or(Error::Invalid("activate this Varena device before Torch GPU work"))?
+    } else if pool.is_none() {
         initialize_owner(device)?
     } else {
         owner(device)?
     };
+    if bound && !owner.cooperation_bound.load(Ordering::Acquire) {
+        return Err(Error::Invalid("activate this Varena device before Torch GPU work"));
+    }
+    if bytes == 0 { return Ok(0); }
     let class = size_class(bytes, owner.page)?;
     {
         let mut state = owner.lock()?;

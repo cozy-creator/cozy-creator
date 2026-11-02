@@ -56,6 +56,9 @@ type SetAccess = unsafe extern "system" fn(Pointer, usize, *const Access, usize)
 type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
 type Release = unsafe extern "system" fn(Handle) -> Status;
 type CopyHost = unsafe extern "system" fn(Pointer, *const c_void, usize) -> Status;
+type CopyHostAsync = unsafe extern "system" fn(Pointer, *const c_void, usize, Object) -> Status;
+type HostAllocate = unsafe extern "system" fn(*mut Object, usize, c_uint) -> Status;
+type StreamCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
 type StreamWaitEvent = unsafe extern "system" fn(Object, Object, c_uint) -> Status;
@@ -91,6 +94,11 @@ pub(crate) struct Driver {
     unmap: Unmap,
     release: Release,
     copy_host: CopyHost,
+    copy_host_async: CopyHostAsync,
+    host_allocate: HostAllocate,
+    host_free: EventOp,
+    stream_create: StreamCreate,
+    stream_destroy: EventOp,
     event_create: EventCreate,
     event_record: EventRecord,
     event_query: EventOp,
@@ -143,6 +151,11 @@ impl Driver {
             unmap: symbol!("cuMemUnmap", Unmap),
             release: symbol!("cuMemRelease", Release),
             copy_host: symbol!("cuMemcpyHtoD_v2", CopyHost),
+            copy_host_async: symbol!("cuMemcpyHtoDAsync_v2", CopyHostAsync),
+            host_allocate: symbol!("cuMemHostAlloc", HostAllocate),
+            host_free: symbol!("cuMemFreeHost", EventOp),
+            stream_create: symbol!("cuStreamCreate", StreamCreate),
+            stream_destroy: symbol!("cuStreamDestroy_v2", EventOp),
             event_create: symbol!("cuEventCreate", EventCreate),
             event_record: symbol!("cuEventRecord", EventRecord),
             event_query: symbol!("cuEventQuery", EventOp),
@@ -372,6 +385,36 @@ impl Driver {
         status("cuStreamWaitEvent", unsafe {
             (self.stream_wait_event)(stream as Object, event as Object, 0)
         })
+    }
+
+    pub(crate) fn create_stream(&self) -> Result<usize> {
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        let mut stream = std::ptr::null_mut();
+        // SAFETY: writable output and entered primary context; always nonblocking.
+        status("cuStreamCreate(nonblocking)", unsafe { (self.stream_create)(&mut stream, 1) })?;
+        Ok(stream as usize)
+    }
+    pub(crate) fn destroy_stream(&self, stream: usize) -> Result<()> {
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: caller retains this exact stream and checked every producer complete.
+        status("cuStreamDestroy_v2", unsafe { (self.stream_destroy)(stream as Object) })
+    }
+    pub(crate) fn allocate_host(&self, bytes: usize) -> Result<usize> {
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        let mut host = std::ptr::null_mut();
+        // SAFETY: writable output, exact bounded length, current primary context.
+        status("cuMemHostAlloc", unsafe { (self.host_allocate)(&mut host, bytes, 1) })?;
+        Ok(host as usize)
+    }
+    pub(crate) fn free_host(&self, host: usize) -> Result<()> {
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: caller owns the pinned allocation and proved all DMA readers complete.
+        status("cuMemFreeHost", unsafe { (self.host_free)(host as Object) })
+    }
+    pub(crate) unsafe fn copy_pinned_async(&self, dst: u64, host: usize, bytes: usize, stream: usize) -> Result<()> {
+        self.counters.activity_calls.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: caller retains the whole pinned source and exclusive destination spans.
+        status("cuMemcpyHtoDAsync_v2", unsafe { (self.copy_host_async)(dst, host as *const c_void, bytes, stream as Object) })
     }
 
     pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {

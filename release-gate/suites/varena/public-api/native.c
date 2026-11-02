@@ -17,16 +17,17 @@ int mixed_c_free(vr_handle allocation) { return vr_v1_free(allocation); }
 
 static int drops;
 static void source_drop(void *context) { (void)context; ++drops; }
-static int source_fill(void *context, uint64_t offset, uint64_t bytes, uint64_t dst, uint64_t stream) {
-    (void)context; (void)offset; (void)bytes; (void)dst; (void)stream;
+static int source_prepare(void *context, int32_t device, uint64_t offset, uint64_t bytes, vr_source_job_v1 *out) {
+    (void)context; (void)device; (void)offset; (void)bytes; (void)out;
     return VR_SOURCE_ERROR;
 }
+static int source_retire(void *context) { (void)context; return VR_OK; }
 int mixed_c_contract(void) {
     vr_handle output = UINT64_MAX;
-    vr_source_v1 source = {source_fill, source_drop, NULL};
+    vr_source_provider_v1 source = {source_prepare, source_retire, source_drop, NULL};
     int before = drops;
     /* A real refused constructor, no fake allocator/driver. Caller still owns Source. */
-    if (vr_v1_region_new(0, 64, source, &output) != VR_INVALID || output || drops != before) return 0;
+    if (vr_v1_region_from_source(0, 64, &source, sizeof(source), &output) != VR_INVALID || output || drops != before) return 0;
     source.drop(source.context);
     if (drops != before + 1) return 0;
     output = UINT64_MAX;
