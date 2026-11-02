@@ -1,0 +1,15 @@
+{
+  "source_base": "75189efe449071733c22794e82717cdeac5a0bce",
+  "script_source_sha": "6e22f6ea6f485707640a3fcaa3dd60fd1a1ac6d6",
+  "scripts": {
+    "gpu.py": "796abecb5b9fd8adde8351b7972becd91123560e1f5d39992a9a492d42a6e847",
+    "failed_tail_gpu.py": "fdf2491cc79929c071a1755a1884700058bb2dff5d9f00df397e42900ff84e02"
+  },
+  "original_script_bytes_unchanged": true,
+  "ast": true,
+  "uv_lock_offline": true,
+  "ruff": true,
+  "gpu_executed": false,
+  "native_build": false,
+  "scope": "source wrapper only; separate children for normal lifetime and intentional quarantine"
+}
