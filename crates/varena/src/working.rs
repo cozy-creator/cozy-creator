@@ -1507,6 +1507,8 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
         }
     }
     // Never hold working state while asking the weight pager to reclaim: it has its own lock.
+    let mapped = if class <= 1 << 20 { owner.page } else { class };
+    let mut retired_reclaimed = 0;
     for attempt in 0..3 {
         *physical = None;
         let result = {
@@ -1520,11 +1522,10 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
                 if let Some(ptr) = owner.take(&mut state, class, bytes, stream, None) {
                     return Ok(Working::activate(&mut state, ptr, bytes));
                 }
-                let mapped = if class <= 1 << 20 { owner.page } else { class };
                 if attempt == 2 {
                     owner.wait_reclaimable(&mut state, mapped, None)?;
-                } else if attempt != 0 {
-                    owner.trim(&mut state, mapped, None)?;
+                } else if attempt != 0 && retired_reclaimed < mapped {
+                    owner.trim(&mut state, mapped - retired_reclaimed, None)?;
                 }
                 owner.map(&mut state, mapped, None, class)?;
                 let ptr = owner
@@ -1539,8 +1540,8 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
         };
         match result {
             Err(Error::OutOfMemory { .. }) if attempt == 0 => {
-                // The next attempt trims only the mapping's need from completed working
-                // pages. Keep other cached classes, and ask weights only if that retry fails.
+                // Try completed retired backing before sacrificing reusable working pages.
+                retired_reclaimed = crate::reclaim_retired(device, mapped)?;
                 *physical = None;
             }
             Err(Error::OutOfMemory { .. }) if attempt == 1 => {
