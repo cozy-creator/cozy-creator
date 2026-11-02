@@ -38,3 +38,11 @@ This direct build check does not qualify installed wheel packaging or GPU behavi
 It checks typed interior and independent override-stream exports, escaped aliases after Use/Region closure, actual pending side-stream consumers with record_stream, final-alias release plus trim, immutable host/dtype versions, invalid native layouts and scalar/empty/broadcast exports. `--device` selects the actual device and `--delay-cycles` controls the explicit pending-consumer proof. An already completed CUDA event refuses that pending case and requires a longer delay; elapsed time alone never counts as a pass.
 
 Additional coordinator gates remain: deterministically in-flight/failing foreign Sources, capture/custom access, actual offload adapter identity/mutation behavior, SDXL VAE dtype cycles and real model quality/performance. No host result is evidence for those gates.
+
+`failed_tail_gpu.py` is a separate final-child regression for the coordinator's
+checked retirement correction. It drops the last typed storage alias during an
+actual CUDA graph capture, then verifies explicit quarantine and continued weight
+accounting after ordinary trim. It intentionally retains that physical Pin and
+Source/service custody until process exit; it is not a graceful-reclamation test.
+The initial export, Source completion and capture resources are prepared before
+capture. This fixture is authored, not GPU-qualified by the source commit.
