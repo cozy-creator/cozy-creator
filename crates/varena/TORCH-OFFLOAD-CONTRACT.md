@@ -94,6 +94,13 @@ The experiments also preserve these counterexamples:
 - `aten.native_batch_norm(training=True)` mutates running mean/variance without write
   alias annotations. Schema checks alone are insufficient: reject training and the
   known hidden-mutation routes, and explicitly bound the admitted operator contract.
+- Eval/frozen weights still permit input autograd. Refuse gradient-bearing requests
+  explicitly rather than detaching them. Initial enrollment requires a sole TensorImpl
+  owner; a second owner can be an existing graph or DLPack export, not just AccumulateGrad.
+- Swapping a Parameter also swaps its Python attributes. Adoption must preserve user
+  metadata deliberately, and failed adoption/conversion must preserve the original model.
 
 The non-mutating CPU inventory is independently implemented and tested. It does not
 activate offload, create native Sources or edit shared Torch/API/Source modules.
+Receipts and retained counterexamples are in
+`release-gate/suites/varena/torch-offload/evidence/2026-11-02-contract-cpu`.
