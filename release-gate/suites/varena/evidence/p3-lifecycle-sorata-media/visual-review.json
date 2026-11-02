@@ -1,0 +1,75 @@
+{
+  "reviewer": "/root/retention_restart",
+  "runs": [
+    25482,
+    25499
+  ],
+  "sampled_frames": [
+    0,
+    52,
+    103,
+    155,
+    206,
+    258,
+    309,
+    361
+  ],
+  "sampled_times_s": [
+    0.0,
+    2.1666666666666665,
+    4.291666666666667,
+    6.458333333333333,
+    8.583333333333334,
+    10.75,
+    12.875,
+    15.041666666666666
+  ],
+  "video_format": {
+    "width": 1344,
+    "height": 768,
+    "nb_read_frames": "362",
+    "r_frame_rate": "24/1",
+    "duration": "15.083333",
+    "pix_fmt": "yuv420p"
+  },
+  "audio_format": [
+    {
+      "codec_name": "aac",
+      "sample_rate": "32000",
+      "channels": 2,
+      "duration": "15.075000"
+    },
+    {
+      "codec_name": "aac",
+      "sample_rate": "32000",
+      "channels": 2,
+      "duration": "15.075000"
+    }
+  ],
+  "visual_verdict": "Comparable sampled visual quality; materially different compositions, not visual identity",
+  "observations": [
+    "Both samples preserve a detailed clockmaker workbench, warm golden-hour lighting, an outdoor window view and legible tool silhouettes.",
+    "Candidate adds a prominent desk lamp and different tool/machinery placement. Those content differences persist across the matched samples.",
+    "No obvious candidate blank frames, numerical corruption, systematic blur or loss of scene detail was visible in these eight samples.",
+    "The sampled positions suggest the same kind of tracking-shot progression, but no full-motion playback was performed."
+  ],
+  "numerical_boundary": "All video latents finite and metadata equal; large numeric differences are disclosed, not treated as a perceptual equality pass.",
+  "no_claims": [
+    "bit or pixel equality",
+    "full-motion coherence",
+    "audio listening or perceptual audio equivalence",
+    "statistical quality across seeds",
+    "blanket no-worse performance"
+  ],
+  "contact_sheets": [
+    {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-p3-idle-lifecycle/review-leg16/media-independent/matched-frames-1.webp",
+      "sha256": "3442ccecf56f82592b27152d9bc1096df71537d55daec5450ea7844957a1e2bb"
+    },
+    {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-p3-idle-lifecycle/review-leg16/media-independent/matched-frames-2.webp",
+      "sha256": "a6e58382c8d23e25f436f0557288b39b61c1db319c8aa5bba6cf8e81a34a2490"
+    }
+  ],
+  "numeric_report_sha256": "99c4cae33929b7db64ecc4b5ad36d87e6c6d823b6323d947b461799ef53442dd"
+}
