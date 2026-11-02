@@ -187,7 +187,29 @@ def main():
         custody = runtime_seed.facts()
         assert custody["closed"] and custody["clients"] == 0 and custody["passive_holds"] == 1
         assert not custody["stopping"] and not custody["retired"] and custody["activity"] == "Unknown"
-        custody_table = verification.snapshot()
+        # Observe the retained service without registering another execution participant.
+        manifest = json.loads((Path(__file__).parent / "bin/observer.json").read_text())
+        helper_path = Path(__file__).parent / "bin/observer.so"
+        assert digest(helper_path) == manifest["helper_sha256"]
+        mapped = {line.split(maxsplit=5)[-1] for line in Path("/proc/self/maps").read_text().splitlines()
+                  if len(line.split(maxsplit=5)) == 6}
+        for name, expected in (("libvarena.so", manifest["core_sha256"]),
+                               (manifest["std_name"], manifest["std_sha256"])):
+            actual_paths = {value for value in mapped if Path(value).name == name}
+            assert len(actual_paths) == 1 and digest(next(iter(actual_paths))) == expected
+        observer = C.CDLL(str(helper_path))
+        observer.probe_core_identity.restype = C.c_uint64
+        assert observer.probe_core_identity() == _ext._varena_core_identity()
+        observer.probe_table_snapshot.argtypes = [C.c_char_p, C.c_char_p]
+        observer.probe_table_snapshot.restype = C.c_char_p
+
+        def observe_table():
+            value = json.loads(observer.probe_table_snapshot(
+                config["gpu_uuid"].encode(), os.fsencode(config["directory"])))
+            assert "error" not in value, value
+            return None if value.get("deferred") else value
+
+        custody_table = until(observe_table)
         assert any(value["id"] == runtime_row["id"] for value in custody_table["rows"])
         result = {
             "passed": True,
