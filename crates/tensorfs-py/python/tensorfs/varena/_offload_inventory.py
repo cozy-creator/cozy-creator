@@ -78,7 +78,7 @@ def _walk(
         raise InventoryError(f"module cycle at {path or '<root>'}")
     names = getattr(module, "_no_split_modules", None)
     if names is not None:
-        if not isinstance(names, (tuple, list)) or any(
+        if not isinstance(names, (tuple, list, set)) or any(
             not isinstance(name, str) for name in names
         ):
             raise InventoryError(
