@@ -32,6 +32,7 @@ struct Cuda {
     sync: Sync,
     setup: Ctx,
     destroy: Sync,
+    close_started: bool,
 }
 
 fn check(name: &str, code: i32) -> Result<()> {
@@ -77,6 +78,7 @@ impl Cuda {
                 sync,
                 setup,
                 destroy,
+                close_started: false,
             })
         }
     }
@@ -92,6 +94,14 @@ impl Cuda {
         // Wait only for this helper's actual setup/release stream. A pending independent
         // consumer must remain pending while another Arena makes progress.
         check("setup cuStreamSynchronize", unsafe { (self.sync)(self.setup) })
+    }
+    fn close(&mut self) -> Result<()> {
+        if self.close_started { return Err(io::Error::other("setup stream close already attempted").into()); }
+        self.close_started = true; // Ambiguous failure must not be retried by Drop.
+        self.finish_setup()?;
+        check("destroy completed setup stream", unsafe { (self.destroy)(self.setup) })?;
+        self.setup = std::ptr::null_mut();
+        Ok(())
     }
     fn stream(&self) -> u64 { self.setup as u64 }
     fn fill(&self, ptr: u64, bytes: usize, value: u8) -> Result<()> {
@@ -130,7 +140,7 @@ impl Drop for Cuda {
         unsafe {
             // If completion is unproven, retain the actual stream instead of presenting
             // destructor success as proof. The failed child does not claim cleanup.
-            if (self.sync)(self.setup) == 0 { let _ = (self.destroy)(self.setup); }
+            if !self.close_started && (self.sync)(self.setup) == 0 { let _ = (self.destroy)(self.setup); }
             let mut popped = std::ptr::null_mut();
             let _ = (self.pop)(&mut popped);
             let _ = (self.release)(self.device);
@@ -211,7 +221,7 @@ fn run() -> Result<Value> {
     )?;
     ledger::initialize()?;
     let device = args[4].parse::<i32>()?;
-    let cuda = Cuda::open(device)?;
+    let mut cuda = Cuda::open(device)?;
     let peer = cooperative::Peer::open(
         device,
         ledger::Device::parse(&args[3])?,
@@ -267,10 +277,12 @@ fn run() -> Result<Value> {
         std::mem::forget(peer);
         return Err(error.into());
     }
+    let driver = cuda.memory()?;
+    cuda.close()?;
     Ok(
         json!({"event":"result","passed":true,"mode":args[1],"pid":std::process::id(),
         "gpu_uuid":args[3],"libraries":libraries()?,"baseline":baseline,"detail":detail,
-        "final":final_stats,"final_accounting":final_accounting,"driver":cuda.memory()?}),
+        "final":final_stats,"final_accounting":final_accounting,"driver":driver}),
     )
 }
 fn main() {
