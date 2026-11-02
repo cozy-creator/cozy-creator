@@ -37,13 +37,20 @@ def main():
               'shim_sha256': digest(Path(tensorfs.__file__).parent / '_varena_torch.so')}
     assert all(config[key] == value for key, value in actual.items()), actual
     varena.CooperationOwner.initialize()
-    vt.install(0)
+    varena.bind_torch_allocator()
+    shared, priority = config.get('shared', True), config.get('priority', -10)
+    owner = retry(lambda: varena.CooperationOwner(0, config['gpu_uuid'], config['directory'],
+                                                shared=shared, priority=priority))
+    startup = retry(owner.snapshot)
+    selected = next(row for row in startup['rows'] if row['id'] == startup['owner'])
+    assert (selected['sharing'], selected['priority']) == ('Shared' if shared else 'Dedicated', priority), selected
+    owner.retain_working_lifetime()
+    assert owner.facts()['clients'] == owner.facts()['passive_holds'] == 1
+    vt.initialize(0)
     warm = torch.full((1,), 7, dtype=torch.uint8, device='cuda')
     assert int(warm[0]) == 7
     del warm
     torch.cuda.synchronize(); vt.trim(0)
-    owner = retry(lambda: varena.CooperationOwner(0, config['gpu_uuid'], config['directory'],
-                                                shared=config.get('shared', True), priority=config.get('priority', -10)))
     live = torch.full((8 << 20,), 23, dtype=torch.uint8, device='cuda')
     idle = torch.full((config['idle_bytes'],), 19, dtype=torch.uint8, device='cuda')
     torch.cuda.synchronize(); del idle; gc.collect()
@@ -55,7 +62,9 @@ def main():
         assert time.monotonic() < end, mine
         time.sleep(.005)
     emit({'ready': True, 'pid': os.getpid(), 'row': table['owner'], 'before': mine,
-          'facts': owner.facts(), 'provenance': actual})
+          'facts': owner.facts(), 'provenance': actual,
+          'startup': {'explicit_domain': config['directory'], 'row': selected,
+                      'private_cpu_bind_before_owner': True, 'custody_before_torch_cuda': True}})
     try:
         for line in sys.stdin:
             command = line.strip()

@@ -1,4 +1,4 @@
-"""Actual shared Python owner leases on CUDA; no Torch allocator/root is installed."""
+"""Raw final-close first, then Runtime custody on a new generation; no Torch allocator."""
 
 import ctypes as C
 import hashlib
@@ -35,7 +35,7 @@ def main():
     }
     assert all(actual[key] == config[key] for key in actual), actual
     varena.CooperationOwner.initialize()
-    a = b = counter = verification = None
+    a = b = counter = verification = runtime_seed = runtime = None
     driver = None
     context = C.c_void_p()
     stream = C.c_void_p()
@@ -82,30 +82,7 @@ def main():
             and inherited["priority"] == 7
         )
         assert a.facts()["clients"] == b.facts()["clients"] == 2
-
-        # Real Runtime adapter, real existing native row: successful same-config adoption
-        # and fail-closed mismatch are construction-only and never execute package code.
-        failures = []
-        same = cooperation.Config(config["gpu_uuid"], Path(config["directory"]), True, 7)
-        runtime = cooperation.Owner(0, same, failures.append)
-        assert runtime.facts()["owner"] == first["id"] and runtime.facts()["clients"] == 3
-        runtime.check()
-        runtime.close()
-        assert a.facts()["clients"] == 2 and a.facts()["active"]
-        measured = a.facts()["pressure"]["measured_requests"]
-        mismatch = cooperation.Config(config["gpu_uuid"], Path(config["directory"]), False, 81)
-        try:
-            cooperation.Owner(0, mismatch, failures.append)
-        except cooperation.Failure as error:
-            assert error.varena_no_retry and "differs from negotiated Start" in str(error)
-            rejected = str(error)
-        else:
-            raise AssertionError(
-                "Runtime silently adopted or overwrote mismatched lifecycle settings"
-            )
-        assert row(a)["sharing"] == "Shared" and row(a)["priority"] == 7
-        assert a.facts()["clients"] == 2 and a.facts()["pressure"]["measured_requests"] == measured
-        assert not failures
+        assert a.facts()["passive_holds"] == b.facts()["passive_holds"] == 0
 
         before = b.facts()["serviced"]
         a.close()
@@ -175,14 +152,54 @@ def main():
         retired_table = verification.snapshot()
         assert all(item["id"] != first["id"] for item in retired_table["rows"])
         assert retired_table["owner"] != first["id"]
+
+        # Keep the raw service's final-close proof above uncontaminated by Runtime's
+        # intentional process-lifetime keeper. Use a new service generation for
+        # actual Runtime constructor adoption/mismatch; do not weaken row-gone above.
+        runtime_seed = varena.CooperationOwner(
+            0, config["gpu_uuid"], config["directory"], shared=True, priority=7
+        )
+        runtime_row = row(runtime_seed)
+        assert runtime_row["id"] != first["id"]
+        failures = []
+        same = cooperation.Config(config["gpu_uuid"], Path(config["directory"]), True, 7)
+        runtime = cooperation.Owner(0, same, failures.append)
+        assert runtime.facts()["owner"] == runtime_row["id"] and runtime.facts()["clients"] == 2
+        assert runtime.facts()["passive_holds"] == 1
+        runtime.check()
+        runtime.close()
+        assert runtime_seed.facts()["clients"] == 1 and runtime_seed.facts()["active"]
+        measured = runtime_seed.facts()["pressure"]["measured_requests"]
+        mismatch = cooperation.Config(config["gpu_uuid"], Path(config["directory"]), False, 81)
+        try:
+            cooperation.Owner(0, mismatch, failures.append)
+        except cooperation.Failure as error:
+            assert error.varena_no_retry and "differs from negotiated Start" in str(error)
+            rejected = str(error)
+        else:
+            raise AssertionError("Runtime silently adopted or overwrote mismatched lifecycle settings")
+        assert row(runtime_seed)["sharing"] == "Shared" and row(runtime_seed)["priority"] == 7
+        assert runtime_seed.facts()["clients"] == 1
+        assert runtime_seed.facts()["pressure"]["measured_requests"] == measured
+        assert not failures
+        runtime_seed.close()
+        custody = runtime_seed.facts()
+        assert custody["closed"] and custody["clients"] == 0 and custody["passive_holds"] == 1
+        assert not custody["stopping"] and not custody["retired"] and custody["activity"] == "Unknown"
+        custody_table = verification.snapshot()
+        assert any(value["id"] == runtime_row["id"] for value in custody_table["rows"])
         result = {
             "passed": True,
+            "case": "raw_owner_final_close_then_runtime_custody",
             "provenance": actual,
             "pid": os.getpid(),
             "row": first["id"],
             "initial": first,
             "inherited": inherited,
             "runtime_same_config_adopted": True,
+            "runtime_row": runtime_row,
+            "runtime_custody": custody,
+            "runtime_custody_table": custody_table,
             "runtime_mismatch_refused": rejected,
             "failed_start_did_not_train_H": True,
             "closed_first": closed_a,
@@ -191,7 +208,7 @@ def main():
             "retired": retired,
             "retired_original_table": retired_table,
             "native_driver_calls_during_final_close": 0,
-            "scope": "real CUDA service/stream/capture, shared Python leases and Runtime constructor seam; no Torch permanent allocator root",
+            "scope": "raw native/CUDA-only final-close on the first service generation; Runtime constructor/custody on a later generation; no Torch allocator and no claim that Runtime custody retires before process exit",
         }
     finally:
         if captured:
@@ -207,7 +224,7 @@ def main():
                 check(destroy_graph(graph))
             if stream.value:
                 check(destroy_stream(stream))
-        for owner in (a, b, counter, verification):
+        for owner in (runtime, runtime_seed, a, b, counter, verification):
             if owner is not None:
                 owner.close()
         if pushed:
