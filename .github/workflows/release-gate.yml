@@ -186,7 +186,8 @@ jobs:
             args+=(--tensord "$bin/cozy")
           else
             gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
-            install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"; args+=(--tensord "$bin/cozy")
+            bundle=$(ls dev/cozy-*/cozy-linux-x86_64.tar.gz)
+            python3 scripts/install-native.py "$bundle" "$bin"; args+=(--tensord "$bundle")
           fi
           # A wheel is a URL#sha256 the gate fetches and checks, or an artifact of this run.
           for w in "runtime-wheel|$RUNTIME_WHEEL|cozy_runtime" "tensorfs-wheel|$TENSORFS_WHEEL|tensorfs"; do

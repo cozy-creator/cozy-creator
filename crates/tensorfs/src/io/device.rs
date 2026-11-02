@@ -1,4 +1,4 @@
-//! B7's bounded pinned staging and reuse policy, independent of varena's placement types.
+//! Bounded pinned host staging; every native device buffer belongs to Varena working memory.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
@@ -8,6 +8,9 @@ use std::time::Instant;
 
 use super::cuda::{self, CUcontext, CUevent, CUstream, CtxGuard};
 use super::{host, Copy, Dst, Error, Issued, ReadControl, ReadOpts, ReadStats, Src};
+
+mod owned;
+pub(super) use owned::OwnedRead;
 
 const PIECE: usize = 2 << 20;
 const READERS: usize = 8;
@@ -23,7 +26,8 @@ fn failed(copy: usize, error: cuda::Error) -> Error {
             code: cuda::ERROR_OUT_OF_MEMORY,
             ..
         } => io::ErrorKind::OutOfMemory,
-        cuda::Error::CudaUnavailable(_) => io::ErrorKind::Unsupported,
+        cuda::Error::Allocation(varena::Error::OutOfMemory { .. }) => io::ErrorKind::OutOfMemory,
+        cuda::Error::Allocation(varena::Error::Unsupported(_)) | cuda::Error::CudaUnavailable(_) => io::ErrorKind::Unsupported,
         _ => io::ErrorKind::Other,
     };
     Error {
@@ -233,8 +237,8 @@ struct Engine {
 /// Completed events an engine keeps for reuse; more than this go.
 const EVENTS: usize = 64;
 
-/// An engine-owned CUDA allocation. DLPack holders share it; the last owner frees it in its
-/// primary context, independently of Python checkpoint and component handles.
+/// A Varena working allocation. DLPack holders share it; completed decoder owners return it
+/// directly. An unannotated final owner joins its primary context before permitting reuse.
 pub struct DeviceBuffer {
     ptr: u64,
     len: usize,
@@ -244,15 +248,10 @@ pub struct DeviceBuffer {
 
 impl DeviceBuffer {
     pub fn new(device: i32, len: usize) -> cuda::Result<DeviceBuffer> {
+        let _producer = varena::enter_producer(device)?;
         let engine = Engine::get(device)?;
         let _ctx = CtxGuard::enter(engine.ctx)?;
-        let mut ptr = 0;
-        if len != 0 {
-            // SAFETY: `ptr` is a writable out-pointer and the engine's context is current.
-            cuda::check("cuMemAlloc", unsafe {
-                (cuda::driver()?.mem_alloc)(&mut ptr, len)
-            })?;
-        }
+        let ptr = cuda::allocate_ready(device, len)?;
         Ok(DeviceBuffer {
             ptr,
             len,
@@ -291,11 +290,8 @@ impl DeviceBuffer {
             return Ok(());
         }
         self.release_failed = true;
-        let _ctx = CtxGuard::enter(self.engine.ctx)?;
-        // SAFETY: the caller certified all users complete and this object owns the pointer.
-        cuda::check("cuMemFree(checked)", unsafe {
-            (cuda::driver()?.mem_free)(self.ptr)
-        })?;
+        // SAFETY: the caller certified every use complete and exclusively owns the pointer.
+        unsafe { varena::working::free_completed(self.engine.device, self.ptr) }?;
         self.ptr = 0;
         self.len = 0;
         self.release_failed = false;
@@ -306,11 +302,12 @@ impl DeviceBuffer {
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
         if self.ptr != 0 && !self.release_failed {
-            if let (Ok(d), Ok(_ctx)) = (cuda::driver(), CtxGuard::enter(self.engine.ctx)) {
-                // SAFETY: this buffer allocated `ptr` in the engine's context, which is current; freed once, here.
-                unsafe { (d.mem_free)(self.ptr) };
-            }
+            // Unknown DLPack consumers may still run. Varena records retirement without CUDA
+            // work, including during capture, and joins the context before reuse or unmap.
+            // SAFETY: this is the final native owner; no further submissions may use its pointer.
+            let _ = unsafe { varena::working::free_untracked(self.engine.device, self.ptr) };
         }
+        // A failed metadata transition leaves the live block retained by Varena.
     }
 }
 
@@ -330,6 +327,18 @@ fn checked_take<T, E>(
 ) -> Result<Vec<T>, E> {
     check(owners)?;
     Ok(std::mem::take(owners))
+}
+
+// A scoped reader may unwind before its normal ring return. Keep those actual slots
+// in the engine's retained set instead of running GPU-owning Slot destructors there.
+struct ReaderRing<'a> {
+    engine: &'a Engine,
+    slots: Vec<Slot>,
+}
+impl Drop for ReaderRing<'_> {
+    fn drop(&mut self) {
+        for slot in self.slots.drain(..) { self.engine.hold_slot(slot); }
+    }
 }
 
 struct RunHold<'a> {
@@ -502,6 +511,12 @@ impl Engine {
             self.synchronize(owners)?;
         }
         let mut first = None;
+        for buffer in owners.iter_mut().flat_map(|r| &mut r._buffers) {
+            // SAFETY: all private streams completed; these are quarantined private owners.
+            if let Err(error) = unsafe { buffer.release_completed() } {
+                first.get_or_insert(error);
+            }
+        }
         for pin in owners.iter_mut().flat_map(|r| &mut r.pins) {
             if let Err(error) = pin.release() {
                 first.get_or_insert(error);
@@ -581,12 +596,13 @@ impl Engine {
     }
 
     fn run(
-        &self,
+        self: &Arc<Self>,
         copies: &[(usize, Copy)],
         opts: &ReadOpts,
         staged_host: bool,
         issued: Option<Issued>,
         cancel: Option<&ReadControl>,
+        mut deferred: Option<&mut OwnedRead>,
     ) -> Result<ReadStats, Error> {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         let first = copies[0].0;
@@ -600,15 +616,27 @@ impl Engine {
             .unwrap_or_else(|e| e.into_inner())
             .is_empty()
         {
+            if deferred.is_some() {
+                return Err(Error { copy: first, source: io::Error::new(
+                    io::ErrorKind::WouldBlock, "owned read cannot join prior unproven engine work",
+                ) });
+            }
             self.recover().map_err(|e| failed(first, e))?;
         }
         let _ctx = CtxGuard::enter(self.ctx).map_err(|e| failed(first, e))?;
         let streams = opts.streams.clamp(1, STREAMS);
+        let owned_submission = deferred.is_some();
+        let issued_bytes = AtomicU64::new(0);
+        let queued = owned_submission.then_some(Queued { control: cancel, bytes: &issued_bytes });
         let mut hold = RunHold {
             engine: self,
             owners: Some(Retained::default()),
         };
         let mut complete = false;
+        let mut timing = None;
+        let mut start_events = None;
+        let mut submitted_stats = ReadStats::default();
+        let mut recording_failure = None;
         let result = (|| {
             let owners = hold.owners.as_mut().expect("run owners live");
             let mut jobs = Vec::new();
@@ -626,7 +654,9 @@ impl Engine {
                     self.wait(event, streams).map_err(|e| failed(copy, e))?;
                 }
                 if let Dst::Device { stream, .. } = c.dst {
-                    if stream != 0 {
+                    // Owned raw Fills are exclusive fresh destinations. Their explicit
+                    // engine stream is a producer identity, not a prior consumer dependency.
+                    if deferred.is_none() && stream != 0 {
                         owners
                             .events
                             .push(self.event(false).map_err(|e| failed(copy, e))?);
@@ -686,6 +716,7 @@ impl Engine {
                     .record(stream.raw() as CUstream)
                     .map_err(|e| failed(first, e))?;
             }
+            start_events = Some(start);
             let next = AtomicUsize::new(0);
             let stopped = AtomicBool::new(false);
             let error = Mutex::new(None);
@@ -694,8 +725,8 @@ impl Engine {
             jobs.iter().for_each(|job| _ = left[job.local].fetch_add(1, Relaxed));
             let raw: Vec<usize> = self.streams[..streams].iter().map(|s| s.raw()).collect();
             let done = |job: &Job| {
-                if let Some(control) = cancel {
-                    control.issue(job.len);
+                if !owned_submission {
+                    if let Some(control) = cancel { control.issue(job.len); }
                 }
                 if let Some(issued) = issued {
                     if left[job.local].fetch_sub(1, AcqRel) == 1 {
@@ -717,6 +748,7 @@ impl Engine {
                     stopped.store(true, Relaxed);
                     break;
                 }
+                if let Some(queued) = queued { queued.issue(job.len); }
                 done(job);
             }
             // A failed copy's slots stay retained until checked completion: read with the rest.
@@ -730,17 +762,21 @@ impl Engine {
             }
             let work = || {
                 self.near.enter();
-                let mut ring = {
-                    let mut free = self.free();
-                    let at = free.len() - RING;
-                    free.split_off(at)
+                let mut ring = ReaderRing {
+                    engine: self,
+                    slots: {
+                        let mut free = self.free();
+                        let at = free.len() - RING;
+                        free.split_off(at)
+                    },
                 };
                 let mut turn = 0;
                 while !stopped.load(Relaxed) && !canceled() {
                     let at = next.fetch_add(1, Relaxed);
                     let Some(job) = jobs.get(at) else { break };
                     turn += 1;
-                    match self.piece(job, at % streams, opts, &tally, &mut ring[turn % RING]) {
+                        match self.piece(job, at % streams, opts, &tally, &mut ring.slots[turn % RING],
+                            queued) {
                         Ok(()) => done(job),
                         Err(failure) => {
                             error.lock().unwrap().get_or_insert(failure);
@@ -749,7 +785,7 @@ impl Engine {
                     }
                 }
                 // After any failure a slot may still be in flight: kept until checked completion.
-                for slot in ring {
+                for slot in ring.slots.drain(..) {
                     match stopped.load(Relaxed) {
                         true => self.hold_slot(slot),
                         false => self.free().push(slot),
@@ -767,27 +803,33 @@ impl Engine {
             }
             let mut busy_ns = 0;
             let mut all_complete = true;
+            let mut ends = Vec::new();
             for (lane, stream) in self.streams[..streams].iter().enumerate() {
                 let drained = (|| {
                     owners.events.push(self.event(true)?);
-                    let end = owners.events.last().expect("end event inserted");
+                    let index = owners.events.len() - 1;
+                    let end = &owners.events[index];
                     end.record(stream.raw() as CUstream)?;
-                    end.sync()?;
-                    end.since(&owners.events[start + lane])
+                    ends.push(index); // Only successfully recorded events certify submission.
+                    if deferred.is_some() {
+                        Ok(0)
+                    } else {
+                        end.sync()?;
+                        end.since(&owners.events[start + lane])
+                    }
                 })();
                 match drained {
                     Ok(ns) => busy_ns += ns,
                     Err(e) => {
                         all_complete = false;
+                        recording_failure.get_or_insert_with(|| e.clone());
                         error.lock().unwrap().get_or_insert(failed(first, e));
                     }
                 }
             }
-            complete = all_complete;
-            if let Some(error) = error.into_inner().unwrap() {
-                return Err(error);
-            }
-            Ok(ReadStats {
+            timing = Some((Some(start), ends, all_complete));
+            complete = all_complete && deferred.is_none();
+            submitted_stats = ReadStats {
                 direct: tally.direct.load(Relaxed),
                 cached: tally.cached.load(Relaxed),
                 bounced: tally.bounced.load(Relaxed),
@@ -795,8 +837,40 @@ impl Engine {
                 staged: tally.staged.load(Relaxed),
                 busy_ns,
                 ..ReadStats::default()
-            })
+            };
+            if let Some(error) = error.into_inner().unwrap() {
+                return Err(error);
+            }
+            Ok(submitted_stats)
         })();
+        if let Some(deferred) = deferred.as_mut() {
+            // An early ordinary error can follow direct zero copies or recorded start
+            // events. Close the exact stream set even on that path; an unrecorded event
+            // can never certify completion or return to the completed-event pool.
+            if timing.is_none() {
+                let owners = hold.owners.as_mut().expect("run owners live");
+                let mut ends = Vec::new();
+                let mut recorded = true;
+                for stream in &self.streams[..streams] {
+                    let closed = (|| {
+                        owners.events.push(self.event(start_events.is_some())?);
+                        let index = owners.events.len() - 1;
+                        owners.events[index].record(stream.raw() as CUstream)?;
+                        ends.push(index);
+                        Ok::<_, cuda::Error>(())
+                    })();
+                    if let Err(error) = closed {
+                        recorded = false;
+                        recording_failure.get_or_insert(error);
+                    }
+                }
+                timing = Some((start_events, ends, recorded));
+            }
+            // Every scoped CPU reader has joined on every normal return. This transfers
+            // actual custody, without a stream/context wait or an engine recovery call.
+            deferred.close(hold.take(), timing, submitted_stats, issued_bytes.load(Relaxed), recording_failure);
+            return result;
+        }
         let released = hold.finish(complete).map_err(|e| failed(first, e));
         let stats = result?;
         released?;
@@ -839,6 +913,7 @@ impl Engine {
         opts: &ReadOpts,
         tally: &Tally,
         slot: &mut Slot,
+        queued: Option<Queued<'_>>,
     ) -> Result<(), Error> {
         let _ctx = CtxGuard::enter(self.ctx).map_err(|e| failed(job.copy, e))?;
         let d = cuda::driver().map_err(|e| failed(job.copy, e))?;
@@ -891,6 +966,9 @@ impl Engine {
         slot.pending = true;
         slot.recorded = false;
         cuda::check("cuMemcpyAsync", rc).map_err(|e| failed(job.copy, e))?;
+        // Count a successful device enqueue even if its following tracking-event record
+        // fails. Zero counted bytes is never an unknown-completion certificate.
+        if let Some(queued) = queued { queued.issue(job.len); }
         slot.done.record(stream).map_err(|e| failed(job.copy, e))?;
         slot.recorded = true;
         if let Dst::Host { ptr, .. } = job.c.dst {
@@ -913,6 +991,18 @@ fn lane(at: usize, streams: usize) -> usize {
 /// threads allow and the free staging rings hold.
 fn readers(staged: usize, opts: &ReadOpts, free_slots: usize) -> usize {
     opts.threads.clamp(1, READERS).min(staged).min(free_slots / RING)
+}
+
+#[derive(Clone, Copy)]
+struct Queued<'a> {
+    control: Option<&'a ReadControl>,
+    bytes: &'a AtomicU64,
+}
+impl Queued<'_> {
+    fn issue(self, len: usize) {
+        self.bytes.fetch_add(len as u64, Relaxed);
+        if let Some(control) = self.control { control.issue(len); }
+    }
 }
 
 struct Job<'a> {
@@ -975,7 +1065,7 @@ pub(super) unsafe fn fill(
     for ((device, kind), copies) in groups {
         let engine = Engine::get(device).map_err(|e| failed(copies[0].0, e))?;
         let start = Instant::now();
-        let stats = engine.run(&copies, opts, staged_host, issued, cancel)?;
+        let stats = engine.run(&copies, opts, staged_host, issued, cancel, None)?;
         #[cfg(unix)]
         {
             let ns = start.elapsed().as_nanos() as u64;

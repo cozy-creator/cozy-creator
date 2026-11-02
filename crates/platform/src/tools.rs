@@ -200,7 +200,12 @@ pub fn unpack(
     archive.read_exact(&mut magic)?;
     archive.rewind()?;
     if magic == *b"PK" {
-        return std::io::copy(&mut zip::ZipArchive::new(archive)?.by_name(member)?, out);
+        let mut zip = zip::ZipArchive::new(archive)?;
+        let mut entry = zip.by_name(member).map_err(|error| match error {
+            zip::result::ZipError::FileNotFound => std::io::Error::new(std::io::ErrorKind::NotFound, format!("the archive holds no {member}")),
+            other => std::io::Error::other(other),
+        })?;
+        return std::io::copy(&mut entry, out);
     }
     for entry in tar::Archive::new(flate2::read::GzDecoder::new(archive)).entries()? {
         let mut entry = entry?;

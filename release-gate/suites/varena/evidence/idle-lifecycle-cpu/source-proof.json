@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "gpu_qualified": false,
+  "native_check": "native-check-001.log",
+  "product": {
+    "crates/tensord/src/gpu_service.rs": "dcfee27f84580e2c350a064cba13f27f6e9afb2fb2386665c299b09fb405b938"
+  },
+  "fixture_sources": {
+    "release-gate/suites/varena/idle-lifecycle/app.py": "951906cdb983dc7183e19aeefe2588b6ec15bb28eadb255ef4c70f3134c66732",
+    "release-gate/suites/varena/idle-lifecycle/stage.py": "f353c4ac2a68c5fe58823b814eceee7d928e367f404a2ec237e6b73f3ecec2c2",
+    "release-gate/suites/varena/idle-lifecycle/sequence.py": "59ae34a2b95f7b269cf9fb69b147cd6e03a59689511c149a5910e79c9be1f83d"
+  },
+  "fixture_ast": true,
+  "generated_distinct_apps_and_manifests": true,
+  "scope": "source compilation and fixture staging only; no GPU/process-retirement execution"
+}

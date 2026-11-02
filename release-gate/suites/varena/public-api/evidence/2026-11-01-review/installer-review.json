@@ -1,0 +1,26 @@
+{
+  "relocated_versions": [
+    "cozy 0.15.7",
+    "tensord 0.15.7"
+  ],
+  "loader_without_build_environment": "\tlinux-vdso.so.1 (0x000078b88375e000)\n\tlibvarena-private-2c6fec10a6184d2b7a4309691bab6128.so => /home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/agent-native/relocated/libvarena-private-2c6fec10a6184d2b7a4309691bab6128.so (0x000078b87ca00000)\n\tlibstd-private-a6542f0e553640385e5dbe14978e8254.so => /home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/agent-native/relocated/libstd-private-a6542f0e553640385e5dbe14978e8254.so (0x000078b87c8ce000)\n\tlibgcc_s.so.1 => /lib/x86_64-linux-gnu/libgcc_s.so.1 (0x000078b88370a000)\n\tlibm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x000078b87d117000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x000078b87c600000)\n\t/lib64/ld-linux-x86-64.so.2 (0x000078b883760000)\n\tlibrt.so.1 => /lib/x86_64-linux-gnu/librt.so.1 (0x000078b883703000)\n\tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x000078b8836fe000)\n\tlibdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x000078b8836f9000)\n",
+  "patched_shell_install_version": "cozy 0.15.7",
+  "patched_shell_reinstall_version": "cozy 0.15.7",
+  "patch_script_sha256": "50315d788c393d8c370adc3afedba8f8e5195b4aae590692043ce4075af76307",
+  "libraries": [
+    "libstd-private-a6542f0e553640385e5dbe14978e8254.so",
+    "libvarena-private-2c6fec10a6184d2b7a4309691bab6128.so"
+  ],
+  "gpu_used": false,
+  "real_machine_update": false,
+  "home_override": false,
+  "scope": "Linux x86_64 existing debug artifacts; installer install() body with original helpers and isolated forced prefix; no network-download installer path or platform release qualification",
+  "library_sha256": {
+    "libstd-private-a6542f0e553640385e5dbe14978e8254.so": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c",
+    "libvarena-private-2c6fec10a6184d2b7a4309691bab6128.so": "2c6fec10a6184d2b7a4309691bab6128976acf4f4165dc388cf201a060543d56"
+  },
+  "shell_install_exit": 0,
+  "shell_reinstall_exit": 0,
+  "windows_execution": false,
+  "macos_execution": false
+}
