@@ -205,32 +205,6 @@ same_text h3-shot-moves-on-text h3-shot-moves-on 25472 \
 same_text h3-moves-on-text-text h3-moves-on-text 25500 \
   "329dba4600de1b74dbb4d63eb683dfab21ff02b9f48e3c9b1b0f81c12d70fa78 2b8e25fbb70f3e23c47671a12d75abebc5c98651b444678cc4e7d015c79ea2f5 35918e8dd2207b0aaed8ca1f27b0579e3714c9bcf041fd3a271658530fd6d383"
 
-# A prompt in MiniMax's own form is used as written, each cut where it says (minimax-h3 `piece_texts`; it used to become
-# `[Shot 1] [Shot 1] ...` and be told "One continuous shot"). A text-only shot that marks its own cut. Then 20 s with all
-# six sections and cuts in two pieces: the later piece opens on the carried frames with its shot renumbered and timed on
-# its own clock, and drops the summary. Both are also judged by eye.
-own_form() {  # own_form <check> <cell> <what its first piece's text opens with> <cut seconds>...
-  [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || return 0
-  local check=$1 name=$2 opens=$3 s first v t at r; shift 3
-  s=$("$CLI" run show "$(cat "$name.number")" --once 2>/dev/null | grep 'h3 piece prompt')
-  first=$(head -1 <<< "$s")
-  expect "$check-text" "$(grep -qF "head=\"$opens" <<< "$first" && ! grep -qE 'One continuous shot|\[Shot 1\] \[Shot 1\]' <<< "$s" && echo PASS || echo FAIL)" "$(cut -c1-260 <<< "$first")"
-  v=$(video_of "$name")
-  for t in "$@"; do  # a hard change within half a second of the time the text cuts
-    at=$(awk -v t="$t" 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), t + i / 8 }')  # seams reads 3 frames per time
-    r=$("${FR[@]}" seams "$v" --at "$at" 2>&1 | tail -1)
-    expect "$check-cut-$t" "$(jq -r 'if ([.boundaries[].ratio] | max) >= 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
-  done
-  nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=2,scale=224:-2,tile=10x4" -frames:v 1 "$name-sheet.png" && log "$name: judge by eye: $PWD/$name-sheet.png"
-}
-cell h3-own-shots "$SHOT" duration_s:=6 seed:=$((R + 140)) \
-  prompt="[Shot 1] A red kite rises over a windy beach, filmed from the sand, surf and wind. [Shot 2] At 00:03.000, the shot cuts to a close-up of the kite's string pulling through a child's hands."
-own_form h3-own-shots h3-own-shots "[Shot 1] A red kite" 3
-OWN=$'subject_definitions:\n<Coast> is the coastline in <Picture 1>.\n\nsummary:\n[reference generation] A keeper walks the cliff path to the lighthouse and climbs to the lamp.\n\nretention_analysis:\n<Coast>: fully_preserved - the cliff, the sea and the lighthouse are retained.\n\ndetailed_description:\nThe target video is in a cinematic style with overcast light.\n[Shot 1] A wide shot of <Coast>: a keeper in a yellow coat walks the cliff path toward the lighthouse, wind in the grass.\n[Shot 2] At 00:05.000, the shot cuts to a close-up of the keeper\'s boots climbing wet stone steps.\n[Shot 3] At 00:17.000, the shot cuts to a close-up of the great lamp as it lights and begins to turn.\n\noverall_soundscape:\nWind, gulls and distant surf.\n\nnon_diegetic_music:\nN/A'
-cell h3-own-sections "$SHOT" duration_s:=20 seed:=$((R + 141)) prompt="$OWN" \
-  references:="[{\"name\": \"Coast\", \"kind\": \"environment\", \"image\": \"$REF\"}]"
-own_form h3-own-sections h3-own-sections "subject_definitions:" 5 17
-
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
 # first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316): a
 # reference video (Ref2VA) then a text-only one (FL2VA) through generate.

@@ -321,8 +321,26 @@ impl FileId {
 pub fn device(path: &Path) -> Result<u64> {
     #[cfg(target_os = "linux")]
     {
-        use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
-        let stat = statx(CWD, path, AtFlags::STATX_DONT_SYNC, StatxFlags::BASIC_STATS).map_err(io::Error::from)?;
+        let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: plain-old-data the call fills, and a NUL-terminated path. The raw syscall:
+        // glibc's wrapper is newer than the manylinux floor the binary links against.
+        let mut stat: libc::statx = unsafe { std::mem::zeroed() };
+        let flags = libc::AT_STATX_DONT_SYNC;
+        // SAFETY: as above.
+        if unsafe {
+            libc::syscall(
+                libc::SYS_statx,
+                libc::AT_FDCWD,
+                c.as_ptr(),
+                flags,
+                libc::STATX_BASIC_STATS,
+                &mut stat,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
         Ok(u64::from(stat.stx_dev_major) << 32 | u64::from(stat.stx_dev_minor))
     }
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -590,7 +608,14 @@ pub struct Space {
 pub fn space(path: &Path) -> Result<Space> {
     #[cfg(unix)]
     {
-        let stat = rustix::fs::statvfs(path).map_err(io::Error::from)?;
+        let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: plain-old-data the call fills, and a NUL-terminated path.
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
         let unit = (stat.f_frsize as u64).max(1);
         #[allow(clippy::unnecessary_cast)] // the widths differ by OS
         Ok(Space {
@@ -619,39 +644,6 @@ pub fn space(path: &Path) -> Result<Space> {
             inodes: 0,
             free_inodes: 0,
         })
-    }
-}
-
-/// `to`, a new file, as a copy-on-write clone of `from` (a reflink): its own file, sharing `from`'s
-/// blocks until either is written, so it costs no space and stays whatever `from` becomes. Linux's
-/// `FICLONE` (Btrfs, XFS, ZFS 2.2+, bcachefs) and macOS's `clonefile` (APFS); refused on another
-/// filesystem, across two, and on Windows, where callers link or copy instead.
-pub fn reflink(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let source = File::open(from)?;
-        let clone = OpenOptions::new().write(true).create_new(true).open(to)?;
-        rustix::fs::ioctl_ficlone(&clone, &source).map_err(|error| {
-            drop(clone);
-            let _ = fs::remove_file(to);
-            io::Error::from(error)
-        })
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        let name = |path: &Path| std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other);
-        let (from, to) = (name(from)?, name(to)?);
-        // SAFETY: both are NUL-terminated paths that outlive the call.
-        match unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) } {
-            0 => Ok(()),
-            _ => Err(io::Error::last_os_error()),
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (from, to);
-        Err(io::ErrorKind::Unsupported.into())
     }
 }
 

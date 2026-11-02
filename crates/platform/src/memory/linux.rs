@@ -4,10 +4,6 @@ use super::clean;
 use super::unix::{Owned, Stream};
 use crate::shm::Region;
 use crate::{Error, Result};
-use rustix::{
-    event::{PollFd, PollFlags},
-    io::Errno,
-};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
@@ -63,7 +59,11 @@ impl Endpoint {
             Ok(s) => {
                 s.set_nonblocking(true)?;
                 // Each datagram carries its sender's credentials.
-                rustix::net::sockopt::set_socket_passcred(&s, true).map_err(|e| Error::os("wake credentials")(e.into()))?;
+                let one: libc::c_int = 1;
+                // SAFETY: an int option on a socket we hold.
+                if unsafe { libc::setsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PASSCRED, (&one as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) } != 0 {
+                    return Err(Error::os("wake credentials")(std::io::Error::last_os_error()));
+                }
                 Ok(Some(Endpoint(s.into())))
             }
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => Ok(None),
@@ -79,10 +79,13 @@ impl Endpoint {
     /// Blocks until a uid `accept` takes signals it, clearing every signal so far.
     pub fn wait(&self, accept: impl Fn(u32) -> bool) -> Result<()> {
         loop {
-            let mut poll = [PollFd::new(&self.0, PollFlags::IN)];
-            match rustix::event::poll(&mut poll, None) {
-                Ok(_) | Err(Errno::INTR) => {}
-                Err(e) => return Err(Error::os("wait for a wake")(e.into())),
+            let mut poll = libc::pollfd { fd: self.handle().as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            // SAFETY: one live descriptor.
+            if unsafe { libc::poll(&mut poll, 1, -1) } < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(Error::os("wait for a wake")(e));
+                }
             }
             if self.clear(&accept) {
                 return Ok(());
@@ -231,7 +234,8 @@ pub fn uid_of(pid: u32) -> Result<u32> {
 
 /// The calling thread's id.
 pub fn thread_id() -> u32 {
-    rustix::thread::gettid().as_raw_pid() as u32
+    // SAFETY: gettid has no arguments and cannot fail.
+    unsafe { libc::syscall(libc::SYS_gettid) as u32 }
 }
 
 /// Thread `tid` of `pid` cannot run: it is stopped (`T`; a traced `t` never counts), or its

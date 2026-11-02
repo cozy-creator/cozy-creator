@@ -47,7 +47,6 @@ pub use fp8_blockwise::quantize_fp8_blockwise;
 pub use int8::CONVROT_STRATEGY;
 pub use nvfp4::MIN_SSE_STRATEGY;
 pub use nvfp4::{GlobalScale, NibbleOrder};
-#[cfg(feature = "quantize")]
 pub use svdq::{
     SVDQ_FIT_STRATEGY, SVDQ_NUMERICAL_IDENTITY, SvdqFitted, svdq_fit, svdq_fit_workspace,
 };

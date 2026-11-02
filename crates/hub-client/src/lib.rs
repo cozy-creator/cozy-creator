@@ -4,7 +4,6 @@
 //! workload grant (`workload`). Bulk bytes
 //! (presigned GET/PUT) are not here: TensorFS moves them.
 #![forbid(unsafe_code)]
-pub mod cards;
 mod client;
 mod device;
 pub mod latest;

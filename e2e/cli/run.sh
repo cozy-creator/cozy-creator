@@ -15,14 +15,12 @@
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
-. "$(dirname "$0")/project.sh"
 
 start() {
 step install; install_cozy
 user_services
 step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
-[ "$SHARD" != commands ] || version_skew
 step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
@@ -120,10 +118,7 @@ cozy --json run "$(birefnet)" --describe > "$OUT/describe.json" 2> "$OUT/describ
 grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe.json" || check "the description of $(birefnet) names no image input"
 }
 
-# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model); run_flags' --warm
-# levels resolve, download, import and hold BiRefNet on every run.
 first_run() {
-[ -n "$MODEL" ] || { echo "BiRefNet's forward pass: not selected (ci/affected's model)"; return 0; }
 step "BiRefNet on the CPU, from a YAML request"
 dog=$(picture dog1.jpg)
 # The request file names its image relative to itself, as a person writes one beside their files.
@@ -138,13 +133,13 @@ if [ "$first" != none ]; then
 fi
 }
 
-# The restarted machine runs a request with a file input in a new executor (weightless: the first run loads weights).
+# After describe, which installs BiRefNet's environment: the restarted machine runs it in a new executor.
 second_executor() {
 step "a second executor"
 machine_stop || check "the local machine did not stop"
 machine_ready
-note=$OUT/second-note.txt; echo "second $RANDOM" > "$note"
-(cd "$here" && cell second ./weightless/fidelities --file "notes=$note") || true
+dog=$(picture dog2.jpg)
+if cell second "$(birefnet)" --file "image=$dog"; then white_background "$(output second webp)" "$dog" || check "second: not a background removal"; fi
 
 step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
@@ -170,32 +165,6 @@ if calcifer_stuck; then
 fi
 }
 
-# cl-716 B: a run followed while Calcifer restarts goes on being followed to its end; a burst of restarts past
-# systemd's start limit (five in 10 s) leaves Calcifer startable by the next command. Last, as these stop Calcifer.
-calcifer_restarts() {
-[ "$RUNNER_OS" = Linux ] || return 0
-step "a run followed across a Calcifer restart"
-local code n
-(cd "$here" && cozy run ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
-local follower=$!
-for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
-[ -n "$n" ] || check "across: the run never began"
-systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
-wait "$follower" || true
-code=$(cat "$OUT/across.code" 2>/dev/null) || code=
-{ [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
-  || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
-cozy --json run show "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
-
-step "a burst of Calcifer restarts past systemd's start limit"
-for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
-systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" || true
-echo "after the burst: $(cat "$OUT/burst-result.txt")"
-cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && cozy --json status | J '.calcifer.running == true' \
-  || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
-(cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
-}
-
 update() { step update; update_to_newest; }
 # Every log cozy wrote (Calcifer, TensorD, executors), before removal erases ~/.cozy: what a failed step left behind.
 logs() { step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true; }
@@ -203,11 +172,11 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play machines completions calcifer_faults update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
-  executors) parts="second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs logs" ;;
-  follow) parts="script_package image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
+  executors) parts="describe second_executor lifetime update remove" ;;
+  commands) parts="catalog basics yaml_requests run_filters logs" ;;
+  follow) parts="script_package image_ratio run_follow machines completions calcifer_faults logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"

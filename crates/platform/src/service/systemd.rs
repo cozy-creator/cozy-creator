@@ -46,19 +46,8 @@ pub(super) fn current(dir: &Path, spec: &ServiceSpec) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// A start the manager refuses for having started it too often lately (`start-limit-hit`: every
-/// restart of a cozy update, a swap or a skew counts) is cleared and asked once more; any other
-/// failure, or the same one twice, is the refusal.
 pub(super) fn start(_: &Path, spec: &ServiceSpec) -> Result<()> {
-    let unit = unit(&spec.name);
-    run(MANAGER, systemctl().args(["start", &unit])).or_else(|first| {
-        let limited = systemctl().args(["show", "--property=Result", "--value", &unit]).output();
-        if !limited.is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "start-limit-hit") {
-            return Err(first);
-        }
-        run(MANAGER, systemctl().args(["reset-failed", &unit]))?;
-        run(MANAGER, systemctl().args(["start", &unit]))
-    })
+    run(MANAGER, systemctl().args(["start", &unit(&spec.name)]))
 }
 
 pub(super) fn announce(_: &Path, _: &str) -> Result<()> {

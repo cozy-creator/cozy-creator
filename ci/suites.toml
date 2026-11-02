@@ -6,9 +6,6 @@
 # Tokens:
 #   cli, imports, mps, gpu, gpu-datacenter   suites
 #   cli-release                             cozy's signed-in commands (e2e/release/run.sh): a release only, with the CI key
-#   model                                   the cli suite's real inference on the CPU (BiRefNet's forward pass): what the
-#                                           Runtime, TensorD, TensorFS, varena or the package decides. Every cli run
-#                                           still resolves, downloads, imports and warms BiRefNet
 #   varena                                  the memory manager's own suite (release-gate/suites/varena)
 #   pkg:<name>                              a package's cells; pkg:* every package
 #   os:macos, os:windows                    the cli suite on that OS too (Linux always). A PR takes them only from its
@@ -23,7 +20,7 @@
 # Apple silicon) and every package's uv.lock is Linux-only. It joins `everything`, `platform` and the BiRefNet/SDXL
 # extras when all land.
 
-everything = ["cli", "imports", "model", "gpu", "gpu-datacenter", "varena", "pkg:*"]
+everything = ["cli", "imports", "gpu", "gpu-datacenter", "varena", "pkg:*"]
 release = ["everything", "os:macos", "os:windows", "cli-release"]
 
 [cozy-creator]
@@ -32,16 +29,11 @@ rules = [
   { paths = ["**/*.md", "docs/**", "LICENSE", ".gitignore"], select = [] },
   # The browser player is GitHub Pages' site; pages.yaml deploys it.
   { paths = ["web/**"], select = [] },
-  # The cli suite's own parts and coverage map: a PR's cells. The imports suite cannot break by them.
-  { paths = ["e2e/cli/run.sh"], select = ["cli", "model", "build:cozy"] },
-  { paths = ["e2e/cli/**", "e2e/coverage.*"], select = ["cli", "build:cozy"] },
-  { paths = ["ci/**", "e2e/**", ".github/workflows/e2e.yaml"], select = ["cli", "imports", "model", "build:cozy"] },
+  { paths = ["ci/**", "e2e/**", ".github/workflows/e2e.yaml"], select = ["cli", "imports", "build:cozy"] },
   { paths = ["release-gate/**", ".github/workflows/release-gate.yml"], select = ["gpu", "gpu-datacenter", "varena", "pkg:*"] },
   # Installers and release archives: the cli suite installs them on every OS at release.
   { paths = [".github/workflows/cozy-publish.yaml", ".github/workflows/cozy-attestations.yaml", ".github/workflows/cozy-promote.yaml", "dist-workspace.toml", "scripts/patch-installers.sh"], select = ["cli", "os:macos", "os:windows"] },
   { paths = [".github/**"], select = [] },
-  # build's memory-safety step alone reads these.
-  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
 ]
 
 # The macOS and Windows cli legs (a cold cozy build there is 6 and 13 min) run for what is OS-specific: the
@@ -58,12 +50,11 @@ paths = [
 ]
 select = ["os:macos", "os:windows"]
 
-# Whether every published package still installs and imports, and a real model's forward pass, are the Runtime's and
-# the packages' questions, and of the crates that install, load and run them; a crate TensorD only depends on
-# (protocol, platform) is not.
+# Whether every published package still installs and imports is the Runtime's and the packages' question, and of the
+# crates that install and load them; a crate TensorD only depends on (protocol, platform) is not.
 [[cozy-creator.also]]
-paths = ["crates/tensord/**", "crates/executor-protocol/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**"]
-select = ["imports", "model"]
+paths = ["crates/tensord/**", "crates/tensorfs/**", "crates/tensorfs-py/**", "crates/varena/**"]
+select = ["imports"]
 
 # A crate's own change selects its tokens here, and also the tokens of every crate that depends on
 # it (Cargo.toml dependency tables, transitively): changing `platform` selects what `tensord` does.
@@ -74,7 +65,6 @@ calcifer = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 hub-client = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 protocol = ["cli", "gpu", "pkg:sdxl", "build:cozy"]
 platform = ["cli", "os:macos", "os:windows", "build:cozy"]
-executor-protocol = ["cli", "build:cozy"]
 tensord = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 tensorfs = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
 varena = ["cli", "gpu", "gpu-datacenter", "varena", "pkg:*", "build:cozy"]
@@ -85,10 +75,8 @@ unmapped = ["everything", "build:runtime"]
 rules = [
   { paths = ["**/*.md", "docs/**", "changelog.d/**", "research/**", "examples/**", "LICENSE"], select = [] },
   { paths = ["scripts/build-benchmark-site.py"], select = [] },
-  { paths = [".github/workflows/e2e.yaml"], select = ["cli", "imports", "model", "build:runtime"] },
+  { paths = [".github/workflows/e2e.yaml"], select = ["cli", "imports", "build:runtime"] },
   { paths = [".github/**"], select = [] },
-  # build's memory-safety step alone reads these.
-  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
   # Device detection and OS-specific code: every suite, and the cli suite on macOS and Windows.
   { paths = ["src/cozy_runtime/internal/accel.py", "**/*mps*", "**/*windows*", "**/*darwin*", "**/*macos*"], select = ["everything", "os:macos", "os:windows", "build:runtime"] },
   # `cozy-runtime describe` and `cozy new`: the author CLI.
@@ -101,10 +89,8 @@ rules = [
   { paths = ["**/*.md", "docs/**", "research/**", "examples/**", "LICENSE", "NOTICE"], select = [] },
   # Linting config and publish tasks: no package's behaviour.
   { paths = ["pyproject.toml", "Taskfile.yaml"], select = [] },
-  { paths = [".github/workflows/e2e.yaml"], select = ["cli", "imports", "model", "pkg:birefnet", "build:package"] },
+  { paths = [".github/workflows/e2e.yaml"], select = ["cli", "imports", "pkg:birefnet", "build:package"] },
   { paths = [".github/**"], select = [] },
-  # build's memory-safety step alone reads these.
-  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
   { paths = ["scripts/h3*"], select = ["gpu", "pkg:minimax-h3"] },
 ]
 
@@ -112,7 +98,7 @@ rules = [
 # shared-environment canary. `extra` adds the suites that run a package's own cells (cli: BiRefNet on the CPU).
 [packages.package]
 select = ["imports", "gpu", "pkg:{dir}", "pkg:sdxl", "build:package"]
-extra = { birefnet = ["cli", "model"] }
+extra = { birefnet = ["cli"] }
 
 [tensorhub]
 unmapped = []

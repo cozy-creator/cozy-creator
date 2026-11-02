@@ -1,15 +1,15 @@
 //! The Linux trigger: PSI on the system or this cgroup, inotify on each limited cgroup v2's
 //! `memory.events`, and an eventfd TensorD's own events write.
+#![allow(unsafe_code)]
 use super::{HostMode, WINDOW};
-use rustix::{
-    event::{EventfdFlags, PollFd, PollFlags, eventfd, poll},
-    fs::inotify::{self, CreateFlags, WatchFlags},
-    io::{Errno, read, write},
-};
 use std::{
+    ffi::CString,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    os::{fd::OwnedFd, unix::fs::OpenOptionsExt},
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+    },
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -30,8 +30,8 @@ pub struct Nudge(Arc<OwnedFd>);
 
 impl Nudge {
     pub fn send(&self) {
-        // A full counter only coalesces.
-        let _ = write(&*self.0, &1u64.to_ne_bytes());
+        // SAFETY: an eventfd write of one u64 from our own stack; a full counter only coalesces.
+        unsafe { libc::write(self.0.as_raw_fd(), (&1u64 as *const u64).cast(), 8) };
     }
 }
 
@@ -39,7 +39,13 @@ impl Pressure {
     /// Armed on whatever this process may watch, each limit on its own; `how` says what and why
     /// not. An error only when not even an eventfd exists.
     pub fn arm(mode: HostMode) -> crate::Result<Self> {
-        let nudge = Nudge(Arc::new(eventfd(0, EventfdFlags::NONBLOCK | EventfdFlags::CLOEXEC).map_err(io::Error::from)?));
+        // SAFETY: plain flags; the descriptor is owned below.
+        let raw = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        // SAFETY: a descriptor eventfd just returned and nothing else owns.
+        let nudge = Nudge(Arc::new(unsafe { OwnedFd::from_raw_fd(raw) }));
         let cgroups = super::super::host_memory::cgroups();
         let (path, kind) = match (mode, own_cgroup().filter(|c| c.join("memory.pressure").exists())) {
             (HostMode::Dedicated, Some(cgroup)) => (cgroup.join("memory.pressure"), "full"),
@@ -76,31 +82,30 @@ impl Pressure {
     /// Blocks until the kernel reports a stall, a watched `memory.events` changes, or a nudge
     /// comes: no timeout, no work in between.
     pub fn wait(&mut self) -> crate::Result<()> {
-        let mut fds = vec![];
-        if let Some(psi) = &self.psi {
-            fds.push(PollFd::new(psi, PollFlags::PRI));
-        }
-        if let Some(events) = &self.events {
-            fds.push(PollFd::new(events, PollFlags::IN));
-        }
-        fds.push(PollFd::new(&*self.nudge.0, PollFlags::IN));
+        let fd = |file: Option<i32>, events| libc::pollfd { fd: file.unwrap_or(-1), events, revents: 0 };
+        let mut fds = [
+            fd(self.psi.as_ref().map(AsRawFd::as_raw_fd), libc::POLLPRI),
+            fd(self.events.as_ref().map(AsRawFd::as_raw_fd), libc::POLLIN),
+            fd(Some(self.nudge.0.as_raw_fd()), libc::POLLIN),
+        ];
         loop {
-            match poll(&mut fds, None) {
-                Ok(0) | Err(Errno::INTR) => continue,
-                Err(error) => return Err(io::Error::from(error).into()),
-                Ok(_) => break,
+            // SAFETY: live descriptors (-1 is ignored by poll).
+            if unsafe { libc::poll(fds.as_mut_ptr(), 3, -1) } > 0 {
+                if fds[0].revents & libc::POLLERR != 0 {
+                    return Err(io::Error::other("the PSI trigger is gone").into());
+                }
+                let mut buf = [0u8; 4096];
+                for drained in [self.events.as_ref(), Some(&*self.nudge.0)].into_iter().flatten() {
+                    // SAFETY: reads into our own buffer from a nonblocking descriptor, until empty.
+                    while unsafe { libc::read(drained.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+                }
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error.into());
             }
         }
-        if self.psi.is_some() && fds[0].revents().contains(PollFlags::ERR) {
-            return Err(io::Error::other("the PSI trigger is gone").into());
-        }
-        drop(fds);
-        let mut buf = [0u8; 4096];
-        for drained in [self.events.as_ref(), Some(&*self.nudge.0)].into_iter().flatten() {
-            // Nonblocking, until empty.
-            while read(drained, &mut buf).is_ok_and(|n| n > 0) {}
-        }
-        Ok(())
     }
 }
 
@@ -118,17 +123,25 @@ fn watch(files: &[PathBuf], how: &mut Vec<String>) -> Option<OwnedFd> {
         how.push("no limited cgroup v2".into());
         return None;
     }
-    let fd = match inotify::init(CreateFlags::NONBLOCK | CreateFlags::CLOEXEC) {
-        Ok(fd) => fd,
-        Err(error) => {
-            how.push(format!("no inotify ({})", io::Error::from(error)));
-            return None;
-        }
-    };
+    // SAFETY: plain flags; the descriptor is owned below.
+    let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    if raw < 0 {
+        how.push(format!("no inotify ({})", io::Error::last_os_error()));
+        return None;
+    }
+    // SAFETY: a descriptor inotify_init1 just returned and nothing else owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     let mut watched = false;
     for file in files {
-        match inotify::add_watch(&fd, file, WatchFlags::MODIFY).map_err(io::Error::from) {
-            Ok(_) => {
+        let added = CString::new(file.as_os_str().as_bytes()).map_err(io::Error::other).and_then(|path| {
+            // SAFETY: a live inotify descriptor and a NUL-terminated path.
+            match unsafe { libc::inotify_add_watch(fd.as_raw_fd(), path.as_ptr(), libc::IN_MODIFY) } {
+                ..0 => Err(io::Error::last_os_error()),
+                _ => Ok(()),
+            }
+        });
+        match added {
+            Ok(()) => {
                 how.push(format!("inotify {}", file.display()));
                 watched = true;
             }

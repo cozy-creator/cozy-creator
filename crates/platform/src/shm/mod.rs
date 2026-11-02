@@ -39,7 +39,8 @@ pub enum Region {
 
 #[cfg(unix)]
 pub fn page_size() -> usize {
-    rustix::param::page_size().max(4096)
+    // SAFETY: sysconf reads a constant.
+    (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize).max(4096)
 }
 
 /// Faults in every page of `[base, base+len)` for writing, in `threads` slices: pages a memfd

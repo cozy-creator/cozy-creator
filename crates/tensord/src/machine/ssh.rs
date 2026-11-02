@@ -25,7 +25,7 @@ pub fn start(public_key: &str) -> io::Result<()> {
     let (Some(keygen), Some(sshd)) = (tool("ssh-keygen"), tool("sshd")) else {
         return Err(io::Error::other("sshd not found: no SSH into this dev machine; see `cozy doctor`"));
     };
-    if !rustix::process::geteuid().is_root() {
+    if !nix::unistd::geteuid().is_root() {
         return Err(io::Error::other("sshd needs root: no SSH into this dev machine; see `cozy doctor`"));
     }
     launch(public_key, keygen, sshd).map_err(|error| {

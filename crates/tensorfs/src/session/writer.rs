@@ -219,22 +219,18 @@ impl Context {
 }
 
 impl Writer {
-    #[cfg(feature = "quantize")]
     pub(super) fn base_id(&self) -> Option<&ObjectRef> {
         self.context.base.as_ref().map(Checkpoint::id)
     }
 
-    #[cfg(feature = "quantize")]
     pub(super) fn bind_quantization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
         self.with(|raw| raw.bind_quantization(identity, selected).map_err(from_writer))
     }
 
-    #[cfg(feature = "quantize")]
     pub(super) fn bind_normalization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
         self.with(|raw| raw.bind_normalization(identity, selected).map_err(from_writer))
     }
 
-    #[cfg(feature = "quantize")]
     pub(super) fn scratch(&mut self) -> Result<crate::writer::Scratch> {
         self.with(|raw| raw.scratch().map_err(from_writer))
     }

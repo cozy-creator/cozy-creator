@@ -630,7 +630,7 @@ def cancel(payload: Request) -> dict[str, Any]:
                     control=tensorfs.ConversionControl(),
                 )
             except tensorfs.InvalidError as error:
-                assert "selected by another conversion" in str(error)
+                assert "recipe changed" in str(error)
                 refusals.append(str(error))
             else:
                 raise AssertionError("resume accepted a changed calibration/seed")

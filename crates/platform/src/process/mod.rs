@@ -419,7 +419,7 @@ pub(crate) use sys::command_line;
 #[cfg(windows)]
 pub(crate) use sys::job;
 #[cfg(unix)]
-pub use unix::{SupervisorSignals, Woken, cloexec_from, unblock_signals};
+pub use unix::cloexec_from;
 
 /// A child inherits no descriptor its spawner does not hand on explicitly. Unix closes every
 /// one past stdio at exec (run it before any other `pre_exec`, which then clear close-on-exec on

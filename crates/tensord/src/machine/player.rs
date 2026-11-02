@@ -83,7 +83,9 @@ fn interfaces(port: u16) -> Vec<String> {
 
 #[cfg(unix)]
 fn addresses() -> Vec<Ipv4Addr> {
-    platform::net::ipv4_addresses()
+    (nix::ifaddrs::getifaddrs().into_iter().flatten())
+        .filter_map(|interface| interface.address?.as_sockaddr_in().map(|v4| v4.ip()))
+        .collect()
 }
 
 /// Where this computer's default route leaves from, and loopback: Windows has no getifaddrs,

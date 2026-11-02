@@ -1,21 +1,61 @@
 //! `cozy package install|remove|ls --on`: runs on a machine through Calcifer. The machine resolves
 //! releases from the Hub and owns its environments; the CLI reads only the release it names and
 //! that release's card, which the next `cozy run` binds against.
-use std::process::ExitCode;
+use std::{path::Path, process::ExitCode};
 
 use protocol::{
-    calcifer::{Environment, Machine, MachineState, On, Run, Status, Submitted},
+    calcifer::{self, Environment, Machine, MachineState, On, Run, Status, SubmitRun},
+    config::Origin,
     error::{Error, Kind},
-    hub::{AfterRun, PackageInstall, PackageRemoval, PackageRemovals},
+    machine::{self as v1, Source},
 };
 use serde::{Deserialize, Serialize};
 
+use super::PackageRef;
 use crate::{
     Context,
     machine::{Followed, Notices, route, until_ready},
     output::{self, Table},
     run,
 };
+
+fn spec(kind: v1::RunKind, source: Source, catalog_revision: String) -> v1::RunSpec {
+    v1::RunSpec {
+        kind,
+        source: Some(source),
+        catalog_revision,
+        ..Default::default()
+    }
+}
+
+fn release(package: &str, release: &str) -> Source {
+    Source::Release(v1::Release {
+        package: package.to_owned(),
+        release: release.to_owned(),
+    })
+}
+
+async fn submit(
+    ctx: &Context,
+    on: On,
+    hub: &str,
+    kind: calcifer::Kind,
+    target: String,
+    spec: v1::RunSpec,
+) -> Result<Run, Error> {
+    let ask = SubmitRun {
+        agreed: None,
+        on,
+        hub: hub.to_owned(),
+        kind,
+        target,
+        spec,
+        inputs: vec![],
+        out: None,
+        warnings: vec![],
+    };
+    Ok(run::submit(ctx, ask, None).await?.run)
+}
 
 /// Waits for `run` to settle, quietly: the verb reports the outcome itself.
 async fn settle(ctx: &Context, run: Run) -> Result<Run, Error> {
@@ -41,46 +81,75 @@ fn failure(run: &Run) -> String {
 #[derive(Deserialize)]
 struct Installed {
     #[serde(default)]
-    package: String,
-    #[serde(default)]
     release: String,
     #[serde(default)]
     interface: serde_json::Value,
-    #[serde(default)]
-    after: AfterRun,
 }
 
-/// Installs `package` (`org/name`, else a package directory's or script's absolute path) on a
-/// machine through Calcifer: its environment, no weights. Calcifer names the newest release when
-/// none is given, and retires the older ones the machine holds once it is in.
-pub async fn install(ctx: &Context, package: String, release: Option<String>, on: On) -> Result<ExitCode, Error> {
-    let mut ask = PackageInstall { hub: Some(ctx.hub().to_string()), package, release, on: on.clone(), agreed: None };
-    let submitted: Submitted = crate::ask::start(
-        ctx,
-        "/v1/package-installs",
-        "/v1/package-install-quotes",
-        &on,
-        &mut ask,
-        |a, agreed| a.agreed = Some(agreed),
-    )
-    .await?;
-    let settled = run::follow(ctx, submitted.run).await?;
+/// A warm run naming the release (none: the Hub's newest, as `cozy run` takes it) and no
+/// function: the package environment only, no weights.
+pub async fn install(
+    ctx: &Context,
+    package: &PackageRef,
+    on: On,
+) -> Result<ExitCode, Error> {
+    let hub = ctx.hub();
+    let name = package.package();
+    let chosen = match &package.release {
+        Some(chosen) => chosen.clone(),
+        None => run::fresh(ctx, hub, &name).await?,
+    };
+    let warm = spec(v1::RunKind::Warm, release(&name, &chosen), String::new());
+    let target = format!("{name}@{chosen}");
+    let install = async {
+        let submitted = submit(ctx, on, hub, calcifer::Kind::Warm, target, warm).await?;
+        installed(ctx, submitted, &name).await
+    };
+    // The release's card, kept while its machine installs: the first run after an install binds
+    // against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s on it).
+    // A failed read is the run's to repeat.
+    let (installed, _) = tokio::join!(install, run::card(ctx, hub, &name, &chosen));
+    installed
+}
+
+/// A package directory or a script, installed live: the next run reads its files as they are
+/// then. This computer's machine reads them in place; another is sent what it lacks.
+pub async fn install_directory(
+    ctx: &Context,
+    path: &Path,
+    on: On,
+) -> Result<ExitCode, Error> {
+    let local = super::local::source(ctx, path, &on).await?;
+    let ask = run::local::install_run(&ctx.home, ctx.hub(), on, &local);
+    let submitted = run::submit(ctx, ask, None).await?.run;
+    installed(ctx, submitted, &local.package).await
+}
+
+/// Follows an install to its outcome and says what the machine holds now.
+async fn installed(
+    ctx: &Context,
+    submitted: Run,
+    package: &str,
+) -> Result<ExitCode, Error> {
+    let settled = run::follow(ctx, submitted).await?;
     if ctx.json || settled.status != Status::Completed {
         return Ok(run::exit_code(&settled));
     }
-    let installed: Option<Installed> = settled.result.clone().and_then(|r| serde_json::from_value(r).ok());
+    let installed: Option<Installed> = settled
+        .result
+        .clone()
+        .and_then(|r| serde_json::from_value(r).ok());
     let machine = settled.machine.clone().unwrap_or_default();
     let mut next = vec![format!("cozy package ls --on {machine}")];
     if let Some(installed) = installed {
-        let package = &installed.package;
-        output::say(ctx, &format!("{package}@{} is installed on {machine}", installed.release));
-        for retired in &installed.after.retired {
-            match &retired.reason {
-                None => output::say(ctx, &format!("{package}@{} left {machine}", retired.release)),
-                Some(why) => output::say(ctx, &format!("{package}@{} stays on {machine}: {why}", retired.release)),
-            }
+        output::say(
+            ctx,
+            &format!("{package}@{} is installed on {machine}", installed.release),
+        );
+        if !package.starts_with("local/") {
+            retire(ctx, &machine, package, &installed.release).await?;
         }
-        let first = protocol::interface::Interface::parse(&installed.interface)
+        let first = run::interface::Interface::parse(&installed.interface)
             .ok()
             .and_then(|interface| interface.public().first().map(|name| name.to_string()));
         if let Some(callable) = first {
@@ -89,6 +158,36 @@ pub async fn install(ctx: &Context, package: String, release: Option<String>, on
     }
     output::next(ctx, &next.iter().map(String::as_str).collect::<Vec<_>>());
     Ok(ExitCode::SUCCESS)
+}
+
+/// Installing over an installed package updates it: the machine's older releases of `package` on
+/// the same Hub go once `release` is in. A newer one stays (a pre-release, or one the Hub yanked
+/// since), and one that will not go is said, never a failure of the install.
+async fn retire(ctx: &Context, machine: &str, package: &str, release: &str) -> Result<(), Error> {
+    let on = On::Machine(machine.to_owned());
+    let held = machines(ctx, Some(&on)).await?.remove(0);
+    let envs = environments(&held);
+    let hub = envs
+        .iter()
+        .find(|env| env.package == package && env.release == release)
+        .map(|env| canonical(&env.hub));
+    let Some(hub) = hub else { return Ok(()) };
+    for env in envs.iter().filter(|env| {
+        env.package == package
+            && canonical(&env.hub) == hub
+            && env.release != release
+            && tensorfs::format::newest_by([env.release.as_str(), release], |r| *r) == Some(release)
+    }) {
+        let source = Source::Installation(env.installation.clone());
+        let target = format!("{package}@{}", env.release);
+        let removal = spec(v1::RunKind::Remove, source, String::new());
+        let ran = settle(ctx, submit(ctx, on.clone(), &hub, calcifer::Kind::Remove, target, removal).await?).await?;
+        match ran.status {
+            Status::Completed => output::say(ctx, &format!("{package}@{} left {machine}", env.release)),
+            _ => output::say(ctx, &format!("{package}@{} stays on {machine}: {}", env.release, failure(&ran))),
+        }
+    }
+    Ok(())
 }
 
 /// The machines this command reads: `on` alone, read from the machine now (so a run that just
@@ -139,12 +238,34 @@ fn environments(machine: &Machine) -> Vec<&Environment> {
     machine.status.iter().flat_map(|s| &s.environments).collect()
 }
 
+/// What a run on an installation's Hub names it: its one spelling (a machine may write
+/// `https://tensorhub.com:443`), or as the machine wrote it.
+fn canonical(hub: &str) -> String {
+    Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from)
+}
+
 /// Where an installation came from: `local` code, the Hub, or another Hub by its URL.
 fn source(ctx: &Context, hub: &str) -> String {
     match (hub.is_empty(), ctx.other_hub(hub)) {
         (true, _) => "local".into(),
         (_, Some(other)) => other.into(),
         _ => "hub".into(),
+    }
+}
+
+/// Refuses a name the machine does not hold, before any run.
+fn held(names: &[String], envs: &[&Environment], machine: &str) -> Result<(), Error> {
+    match names
+        .iter()
+        .find(|name| !envs.iter().any(|env| &&env.package == name))
+    {
+        Some(name) => Err(Error::new(
+            Kind::NotFound,
+            "package_not_installed",
+            format!("{name} is not installed on {machine}"),
+        )
+        .next(format!("cozy package ls --on {machine}"))),
+        None => Ok(()),
     }
 }
 
@@ -244,39 +365,67 @@ struct Removed {
     hub: String,
 }
 
-/// Removes every release of each package from a machine: Calcifer sends one remove run per
-/// package and Hub the machine holds it from; each is followed quietly and summed here.
+/// One REMOVE run per (package, Hub) the machine holds: every release of it from that Hub.
 pub async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode, Error> {
-    let ask = PackageRemoval {
-        hub: Some(ctx.hub().to_string()),
-        packages: names.to_vec(),
-        machine: named(&on)?.to_ascii_lowercase(),
-    };
-    let calcifer = ctx.calcifer().await?;
-    let removals: PackageRemovals = calcifer.post("/v1/package-removals", &ask, Some(&run::mint_key())).await?;
+    let machine = machines(ctx, Some(&on)).await?.remove(0);
+    let envs = environments(&machine);
+    held(names, &envs, &machine.name)?;
+    let default_hub = ctx.hub();
+    let mut targets: Vec<(&str, String)> = envs
+        .iter()
+        .filter(|env| names.contains(&env.package))
+        .map(|env| (env.package.as_str(), canonical(&env.hub)))
+        .collect();
+    targets.sort();
+    targets.dedup();
     let (mut removed, mut reclaimed, mut retained, mut failed) = (vec![], 0, false, vec![]);
-    for ran in removals.runs {
-        let ran = settle(ctx, ran).await?;
+    for (package, hub) in targets {
+        let hub = if hub.is_empty() {
+            default_hub.as_str()
+        } else {
+            hub.as_str()
+        };
+        let spec = spec(v1::RunKind::Remove, release(package, ""), String::new());
+        let on = On::Machine(machine.name.clone());
+        let ran = settle(
+            ctx,
+            submit(
+                ctx,
+                on,
+                hub,
+                calcifer::Kind::Remove,
+                package.to_owned(),
+                spec,
+            )
+            .await?,
+        )
+        .await?;
         if ran.status != Status::Completed {
-            failed.push(format!("{}: {}", ran.target, failure(&ran)));
+            failed.push(format!("{package}: {}", failure(&ran)));
             continue;
         }
-        let result: Removal = ran.result.and_then(|r| serde_json::from_value(r).ok()).unwrap_or_default();
+        let result: Removal = ran
+            .result
+            .and_then(|r| serde_json::from_value(r).ok())
+            .unwrap_or_default();
         reclaimed += result.reclaimed_bytes;
         retained |= !result.retained.is_empty();
         removed.extend(result.removed);
     }
-    let machine = removals.machine;
     if ctx.json {
         output::json(&serde_json::json!({
-            "machine": machine, "removed": removed, "reclaimed_bytes": reclaimed, "failed": failed,
+            "machine": machine.name, "removed": removed, "reclaimed_bytes": reclaimed, "failed": failed,
         }));
     } else {
         let mut table = Table::new(ctx, ["PACKAGE", "RELEASE", "SOURCE"]);
         for row in &removed {
             table = table.row([row.package.clone(), row.release.clone(), source(ctx, &row.hub)]);
         }
-        table = table.note(format!("{} reclaimed on {machine}", output::bytes(reclaimed)));
+        table = table.note(format!(
+            "{} reclaimed on {}",
+            output::bytes(reclaimed),
+            machine.name
+        ));
         if retained {
             table = table.note("Files a running executor still uses stay until it ends.");
         }
@@ -285,5 +434,10 @@ pub async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode,
         }
         table.print();
     }
-    Ok(if failed.is_empty() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+    Ok(if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
+

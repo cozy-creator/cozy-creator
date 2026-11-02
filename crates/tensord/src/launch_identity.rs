@@ -16,7 +16,7 @@ use std::os::{
 /// This process's user: the effective uid, or 0 where there is none (Windows).
 pub(crate) fn euid() -> u32 {
     #[cfg(unix)]
-    return rustix::process::geteuid().as_raw();
+    return nix::unistd::geteuid().as_raw();
     #[cfg(windows)]
     0
 }
@@ -24,7 +24,7 @@ pub(crate) fn euid() -> u32 {
 /// This process's group: the effective gid, or 0 where there is none (Windows).
 pub(crate) fn egid() -> u32 {
     #[cfg(unix)]
-    return rustix::process::getegid().as_raw();
+    return nix::unistd::getegid().as_raw();
     #[cfg(windows)]
     0
 }
