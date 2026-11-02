@@ -12,7 +12,9 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   fails the suite: a request is the client's drift, a response the document's.
 - `run.sh`: how every suite (and the release gate) runs `cozy run`: `--out`, the record's `output[].path`, and a run
   followed by the CLI's own events to its end or a typed error; nothing is cut for time.
-- `cli/run.sh`: install, up, the local machine, the candidates, a weightless request through them, BiRefNet on the CPU, a second
+- `cli/run.sh`: install, up, the local machine, the candidates, a weightless request through them, BiRefNet resolved,
+  downloaded and warmed (its forward pass on the CPU only when ci/affected selects `model`: the Runtime, TensorD,
+  TensorFS, varena or the package changed), a second
   executor, down, uninstall. macOS and Windows run no models themselves yet (`platform::Os::local_inference`): there it checks
   what needs no machine and that every local verb refuses `local_unavailable`.
 - `imports/run.sh`: every published first-party package release installs (`cozy package install`) and imports on the candidates;

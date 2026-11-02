@@ -120,7 +120,10 @@ cozy --json run "$(birefnet)" --describe > "$OUT/describe.json" 2> "$OUT/describ
 grep -Eq '(^|[[:space:]"])image("|:)' "$OUT/describe.json" || check "the description of $(birefnet) names no image input"
 }
 
+# The forward pass (~190 s on a runner's two cores) runs when the change can alter it (--model); run_flags' --warm
+# levels resolve, download, import and hold BiRefNet on every run.
 first_run() {
+[ -n "$MODEL" ] || { echo "BiRefNet's forward pass: not selected (ci/affected's model)"; return 0; }
 step "BiRefNet on the CPU, from a YAML request"
 dog=$(picture dog1.jpg)
 # The request file names its image relative to itself, as a person writes one beside their files.

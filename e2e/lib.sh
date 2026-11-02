@@ -19,13 +19,14 @@
 #   --release DIR         a cozy release's files (cozy-publish.yaml's artifacts, a dry run's too): its own installer
 #                         installs cozy from DIR, served on loopback, in place of tensorhub.com's (the candidate)
 #   --shard S             one part of the suite, on its own runner (cli: a name; imports: K/N, every Nth package)
+#   --model               the cli suite's real inference on the CPU too (BiRefNet's forward pass; ci/affected's `model`)
 #
 # Installed by the suite, cozy reaches tensorhub.com through e2e/hubcheck (config.toml's hub_url and $COZY_HUB_URL),
 # which holds every request and response to the API document the Hub serves; `finish` fails on any mismatch.
 
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' RELEASE='' MAX_HOURLY=0.50 MAX_USD=0.07 QUOTE=''
+OUT='' CAND_COZY='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=0.50 MAX_USD=0.07 QUOTE=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -50,6 +51,7 @@ parse() {
       --quote) QUOTE=1; shift; continue ;;
       --installed) INSTALLED=1; shift; continue ;;
       --shard) SHARD=$2 ;;
+      --model) MODEL=1; shift; continue ;;
       --release) RELEASE=$(cd "$2" && pwd) ;;
       *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
