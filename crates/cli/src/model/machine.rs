@@ -43,7 +43,7 @@ fn folder(path: &Path, profile: Option<&String>, manifests: &Path, memo: &Path) 
     if profile.is_some() {
         return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-format"));
     }
-    let staged = crate::run::tree::stage(path, Some(memo), manifests)?;
+    let staged = protocol::stage::stage(path, Some(memo), manifests)?;
     let input = InputFile {
         field: "model".into(),
         digest: staged.manifest.digest.to_string(),

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-inspect"
+version = "0.1.0"
+description = "The cli suite's bound run: what a function was given, as Calcifer bound it"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime[media]>=0.37", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "e2e_inspect:app"
+
+[tool.uv.build-backend]
+module-name = "e2e_inspect"
+module-root = ""

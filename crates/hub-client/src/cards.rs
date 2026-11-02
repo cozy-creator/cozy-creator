@@ -1,18 +1,15 @@
-//! Release cards this computer keeps. A release never changes, so its card is read from the Hub
-//! once and kept forever, by release. Which release a run binds and runs is resolved before
-//! (`super::resolve`): the one asked, else the package's newest as this computer keeps it.
+//! Release cards this computer keeps under its cozy home (`root`). A release never changes, so its
+//! card is read from the Hub once and kept forever, by release; a package's newest release is kept
+//! beside them ([`crate::latest`]). Calcifer resolves runs with these, and so do the verbs that name
+//! a release.
 use std::path::{Path, PathBuf};
 
-use platform::{durable, paths::Home};
-use protocol::config::Origin;
+use platform::durable;
 use protocol::error::{Error, Kind};
+use protocol::interface::Interface;
 use serde_json::Value;
 
-use super::interface::Interface;
-use crate::{
-    Context,
-    context::{hub_answer, hub_error},
-};
+use crate::Client;
 
 #[derive(Debug)]
 pub struct Card {
@@ -29,6 +26,11 @@ impl Card {
         self.document["summary"].as_str().unwrap_or_default()
     }
 
+    /// The package interface document, as the Hub answered it.
+    pub fn interface_document(&self) -> &Value {
+        &self.document["package_interface"]
+    }
+
     /// A callable's request struct as its card spells it, with `accelerator: false` for a CPU
     /// function: what `--describe --json` prints.
     pub fn request(&self, name: &str) -> Value {
@@ -36,42 +38,55 @@ impl Card {
     }
 }
 
-/// Where `(hub, package)`'s cards live, beside its newest release (`hub_client::latest`).
-fn dir(home: &Home, hub: &str, package: &str) -> PathBuf {
-    hub_client::latest::dir(home.root(), hub, package)
+/// Where `(hub, package)`'s cards live, beside its newest release.
+fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
+    crate::latest::dir(root, hub, package)
+}
+
+/// A failed Hub call as a refusal.
+pub fn refusal(error: crate::Error) -> Error {
+    error.refusal(|| "cozy login <email>".into())
 }
 
 /// The card of `release`: the kept one, else the Hub's, which is then kept.
-pub async fn card(ctx: &Context, hub: &Origin, package: &str, release: &str) -> Result<Card, Error> {
-    if let Some(card) = kept(&ctx.home, hub, package, release) {
+/// `client` is made only when the Hub is read.
+pub async fn card(
+    client: impl FnOnce() -> Result<Client, Error>,
+    root: &Path,
+    hub: &str,
+    package: &str,
+    release: &str,
+) -> Result<Card, Error> {
+    if let Some(card) = kept(root, hub, package, release) {
         return Ok(card);
     }
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let answer = ctx
-        .hub_client(hub)?
-        .get_package_release(org, name, release)
-        .await;
-    let document = hub_answer(answer).map_err(|e| absent(e, &format!("{package}@{release}")))?;
+    let answer = client()?.get_package_release(org, name, release).await;
+    let document = answer.map_err(|e| absent(refusal(e), &format!("{package}@{release}")))?;
     let document = serde_json::to_value(&document).expect("a card serializes");
-    keep(&ctx.home, hub, package, &document)
+    keep(root, hub, package, &document)
 }
 
 /// The newest release of `package` this computer keeps, which Calcifer refreshes in the background:
 /// a run makes no Hub read for a package it knows. One it never knew is read once ([`fresh`]).
-pub async fn latest(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
-    match hub_client::latest::kept(&dir(&ctx.home, hub, package)) {
+pub async fn latest(
+    client: impl FnOnce() -> Result<Client, Error>,
+    root: &Path,
+    hub: &str,
+    package: &str,
+) -> Result<String, Error> {
+    match crate::latest::kept(&dir(root, hub, package)) {
         Some(release) => Ok(release),
-        None => fresh(ctx, hub, package).await,
+        None => fresh(&client()?, root, hub, package).await,
     }
 }
 
 /// The Hub's newest published release of `package` now, and kept: what an install names.
-pub async fn fresh(ctx: &Context, hub: &Origin, package: &str) -> Result<String, Error> {
+pub async fn fresh(client: &Client, root: &Path, hub: &str, package: &str) -> Result<String, Error> {
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let client = ctx.hub_client(hub)?;
-    let release = hub_client::latest::read(&client, &dir(&ctx.home, hub, package), org, name)
+    let release = crate::latest::read(client, &dir(root, hub, package), org, name)
         .await
-        .map_err(|e| absent(hub_error(e), package))?;
+        .map_err(|e| absent(refusal(e), package))?;
     release.ok_or_else(|| {
         Error::new(
             Kind::NotFound,
@@ -101,16 +116,16 @@ fn absent(error: Error, what: &str) -> Error {
 }
 
 /// The kept card of `release`.
-pub fn kept(home: &Home, hub: &str, package: &str, release: &str) -> Option<Card> {
-    let path = file(&dir(home, hub, package), release);
+pub fn kept(root: &Path, hub: &str, package: &str, release: &str) -> Option<Card> {
+    let path = file(&dir(root, hub, package), release);
     let document: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     read(&document).ok()
 }
 
 /// Keeps a release card as the Hub answered it.
-pub fn keep(home: &Home, hub: &str, package: &str, document: &Value) -> Result<Card, Error> {
+pub fn keep(root: &Path, hub: &str, package: &str, document: &Value) -> Result<Card, Error> {
     let card = read(document)?;
-    let dir = dir(home, hub, package);
+    let dir = dir(root, hub, package);
     let kept = durable::private_dir(&dir).and_then(|()| {
         durable::replace(
             &file(&dir, &card.release),

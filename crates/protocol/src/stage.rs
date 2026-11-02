@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use protocol::{
+use crate::{
     calcifer::StagedInput,
     error::{Error, Kind},
     ids::Digest,
@@ -35,7 +35,7 @@ pub fn stage(root: &Path, memo: Option<&Path>, manifests: &Path) -> Result<Stage
     let found = tree::walk(root, true).map_err(|e| Error::new(Kind::Usage, "tree_unreadable", e.to_string()))?;
     for (name, path) in found {
         let length = fs::metadata(&path).map_err(|e| unreadable(&path, e))?.len();
-        let digest = super::digests::of(memo, &path)?;
+        let digest = crate::digests::of(memo, &path)?;
         let sha256 = hex::encode(digest.bytes());
         members.insert(name, Member { length, sha256 });
         files.push(StagedInput {
