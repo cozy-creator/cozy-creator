@@ -76,3 +76,24 @@ custom access need explicit supported ownership; unsupported routes fail clearly
 No edits to the shared API/Source files are proposed from this lane. Please confirm
 the entry point, alias/conversion/stream contract, file ownership, and concrete native
 export/Source signatures before the shared Torch entry point is changed.
+
+## CPU feasibility findings, Torch 2.14.1+cpu
+
+Real CPU dispatcher experiments preserve tied Parameter identity and exact Linear
+results with a managed wrapper. Views/detach can stay managed; independent copies
+remain ordinary mutable tensors. These are frontend experiments, not a mock or proof
+of Varena residency, Source completion, GPU ordering or physical reclamation.
+
+The experiments also preserve these counterexamples:
+
+- Stock Module._apply/swap_tensors refuses a dtype change when an escaped managed
+  view retains the old TensorImpl. Supporting the required VAE cycle needs controlled
+  version rebinding; a plain call to the stock swap path is insufficient.
+- `.data = ...` and `.requires_grad_(True)` can bypass `__torch_dispatch__`. Public
+  mutation/gradient guards need the Tensor attribute/`__torch_function__` boundary too.
+- `aten.native_batch_norm(training=True)` mutates running mean/variance without write
+  alias annotations. Schema checks alone are insufficient: reject training and the
+  known hidden-mutation routes, and explicitly bound the admitted operator contract.
+
+The non-mutating CPU inventory is independently implemented and tested. It does not
+activate offload, create native Sources or edit shared Torch/API/Source modules.
