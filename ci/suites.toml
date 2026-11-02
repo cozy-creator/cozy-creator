@@ -29,6 +29,8 @@ rules = [
   { paths = ["**/*.md", "docs/**", "LICENSE", ".gitignore"], select = [] },
   # The browser player is GitHub Pages' site; pages.yaml deploys it.
   { paths = ["web/**"], select = [] },
+  # The cli suite's own parts and coverage map: a PR's cells. The imports suite cannot break by them.
+  { paths = ["e2e/cli/**", "e2e/coverage.*"], select = ["cli", "build:cozy"] },
   { paths = ["ci/**", "e2e/**", ".github/workflows/e2e.yaml"], select = ["cli", "imports", "build:cozy"] },
   { paths = ["release-gate/**", ".github/workflows/release-gate.yml"], select = ["gpu", "gpu-datacenter", "varena", "pkg:*"] },
   # Installers and release archives: the cli suite installs them on every OS at release.
