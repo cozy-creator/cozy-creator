@@ -92,7 +92,14 @@ class Cooperation:
 
 
 class CooperationOwner:
-    """Native automatic service; lifecycle and status calls contain no memory policy."""
+    """One lease on the process/device's native automatic service.
+
+    Creation-only shared/priority defaults apply when no service exists. Joining a
+    ready same-domain service inherits its actual settings; inspect snapshot() for
+    its row. configure() is an explicit process-wide lifecycle change. close() only
+    releases this lease; other clients continue. Final close remains retryable when
+    capture excludes native retirement. No call owns a separate memory byte policy.
+    """
 
     @staticmethod
     def capability() -> int:
@@ -120,6 +127,11 @@ class CooperationOwner:
         self._native.request_boundary(begin)
 
     def facts(self) -> dict[str, Any]:
+        """Per-client active/closed plus service client count and stable row identity.
+
+        A closed lease may retain its last row identity for diagnostics; it is not a
+        live-row or free-capacity promise. The final native worker owns retirement.
+        """
         return json.loads(self._native.facts())
 
     def configure(self, *, shared: bool, priority: int) -> None:

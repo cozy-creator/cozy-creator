@@ -283,3 +283,13 @@ def shortage(payload: Shortage, ctx: Context) -> Report:
     except Exception as error:
         return Report(False, json.dumps({'passed': False, 'error': f'{type(error).__name__}: {error}',
                                         'traceback': traceback.format_exc()}, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def shared_python_clients(payload: Probe, ctx: Context) -> Report:
+    from .shared_python import exercise as exercise_shared_python
+    try:
+        return exercise_shared_python(payload, ctx)
+    except Exception as error:
+        return Report(False, json.dumps({'passed': False, 'error': f'{type(error).__name__}: {error}',
+                                        'traceback': traceback.format_exc()}, sort_keys=True))
