@@ -394,6 +394,16 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
     cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))
 
 
+@contextmanager
+def replay_scope(device: int) -> Iterator[None]:
+    """Exclude recovery around host launch only; acquire weight owners beforehand."""
+    guard = _ext._VarenaAllocatorCapture(device, replay=True)
+    try:
+        yield
+    finally:
+        guard.close()
+
+
 def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
     """Replay an owned graph and retain its pool through completion on the selected stream."""
     _installed()

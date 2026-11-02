@@ -122,7 +122,7 @@ For each call, under the segment's submission lock:
    Replay relies on native producer-event ordering rather than inserting an unnecessary
    host readiness/retirement wait. Capture alone uses wait_ready after its typed bindings
    exist. No overlap or latency improvement is qualified by the host checks.
-3. Copy inputs, enter the existing `_runtime.replay` host guard, and call
+3. Copy inputs, enter the agreed public `vt.replay_scope(device)` host guard, and call
    `vt.replay(graph, stream=stream)`. Reuse native pool retain/record/release ownership.
    Exit replay exclusion before output-copy allocation and before Use close/fencing;
    its eager ownership validation must not be invoked inside that guard.
@@ -211,3 +211,9 @@ Agent 2 delivered the agreed readiness feature in draft #2486:
 `1761c0612f6aa2f69f6841a62806ff8dce3c3f4e`; context `4463a4fd9` is excluded.
 Host/native checks do not qualify valid-Use GPU waiting or graph behavior. No further
 native ownership class or unchecked tensor export is required. Frozen #2449 is preserved.
+
+`vt.replay_scope(device)` is exactly the agreed thin wrapper: construct existing
+`_ext._VarenaAllocatorCapture(device, replay=True)`, yield, close in finally. It adds
+no driver call, changes to `vt.replay` or native exclusion semantics. It is host launch
+exclusion, not GPU completion or weight/pool ownership. The separate capture-helper
+context-sync opt-out remains pending; replay agreement does not authorize that edit.
