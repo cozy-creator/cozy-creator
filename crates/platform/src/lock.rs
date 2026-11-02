@@ -326,6 +326,7 @@ mod sys {
         }
         let lock = DirLock(mutex);
         // An abandoned mutex (its holder died) is granted to the waiter.
+        // SAFETY: the mutex created above, whose handle `lock` keeps open through the wait.
         match unsafe { WaitForSingleObject(mutex, INFINITE) } {
             WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(lock),
             _ => Err(io::Error::last_os_error().into()),

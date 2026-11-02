@@ -35,9 +35,9 @@ use windows_sys::Win32::{
     System::{
         IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         Pipes::{
-            ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeInfo,
+            ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId,
             GetNamedPipeServerProcessId, NMPWAIT_WAIT_FOREVER, PIPE_READMODE_BYTE, PeekNamedPipe,
-            PIPE_REJECT_REMOTE_CLIENTS, PIPE_SERVER_END, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
+            PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
             PIPE_WAIT, WaitNamedPipeW,
         },
         Threading::{
@@ -478,31 +478,6 @@ pub fn pair() -> Result<(LocalStream, LocalStream)> {
     }
     let client = LocalStream::new(client, Side::Client).map_err(Error::os("pair"))?;
     Ok((client, server))
-}
-
-/// The pipe end whose handle the caller hands over.
-///
-/// # Safety
-/// `raw` must be an open, connected pipe handle the caller owns and gives up.
-pub unsafe fn adopt(raw: i64) -> LocalStream {
-    // SAFETY: the caller's promise above.
-    let pipe = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
-    let mut flags = 0u32;
-    // SAFETY: a live pipe handle and a writable flags word.
-    let side = match unsafe {
-        GetNamedPipeInfo(
-            pipe.as_raw_handle(),
-            &mut flags,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    } {
-        0 => Side::Client,
-        _ if flags & PIPE_SERVER_END != 0 => Side::Server,
-        _ => Side::Client,
-    };
-    LocalStream::new(pipe, side).expect("an event for an adopted pipe")
 }
 
 fn pipe_name(text: &str) -> Vec<u16> {

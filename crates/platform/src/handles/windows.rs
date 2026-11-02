@@ -24,37 +24,6 @@ pub fn peer(stream: &LocalStream) -> io::Result<Peer> {
     Ok(Peer { pid, uid: 0, gid: 0 })
 }
 
-/// The peer's birth, read from the process handle the stream keeps (the one handles are
-/// duplicated into), so a pid reused after the pipe was handed on is never taken for it.
-pub fn peer_birth(stream: &LocalStream) -> Result<crate::process::Birth> {
-    Ok(crate::process::birth_of_handle(stream.peer_pid()?, stream.peer_process()?)?)
-}
-
-/// Whether [`send_fd`] can reach the peer; the error says why not (a peer of a higher
-/// integrity level), before anything is written to the stream.
-pub fn accepts_handles(stream: &LocalStream) -> io::Result<()> {
-    stream.peer_accepts_handles()
-}
-
-/// Whether the connecting process descends from this machine.
-pub fn peer_descends_from_machine(stream: &LocalStream) -> Result<bool> {
-    let mut pid = peer(stream)?.pid;
-    let machine = std::process::id();
-    while pid > 0 {
-        if pid == machine {
-            return Ok(true);
-        }
-        let parent = crate::process::parent_of(pid)?;
-        // A parent's ID can be reused by a later process: a parent that is its own child's
-        // successor ends the walk rather than looping.
-        if parent == pid {
-            break;
-        }
-        pid = parent;
-    }
-    Ok(false)
-}
-
 /// One handle, duplicated into the peer and named there.
 pub fn send_fd(stream: &LocalStream, handle: &impl AsRawHandle) -> Result<()> {
     let value = crate::ipc::duplicate_into_peer(stream, handle.as_raw_handle())
