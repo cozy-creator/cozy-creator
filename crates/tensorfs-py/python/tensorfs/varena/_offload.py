@@ -7,7 +7,7 @@ import functools
 import threading
 import types
 import weakref
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 
 import torch
@@ -84,6 +84,29 @@ class _Version:
     source: Source
     owner: _Device
     region: object = None
+    member_offset: int = 0
+
+    def byte_offset(self, shape, strides, offset):
+        # Native export bounds cover the whole packed Region. Keep alias bounds
+        # local to the original physical storage before adding its pack offset.
+        if (
+            len(shape) != len(strides)
+            or offset < 0
+            or any(size < 0 for size in shape)
+            or any(step < 0 for step in strides)
+        ):
+            raise OffloadError("invalid managed storage view")
+        itemsize = getattr(torch, self.source.dtype).itemsize
+        start = offset * itemsize
+        extent = (
+            0
+            if 0 in shape
+            else (1 + sum((size - 1) * step for size, step in zip(shape, strides)))
+            * itemsize
+        )
+        if start + extent > self.source.nbytes:
+            raise OffloadError("managed tensor view exceeds its original storage")
+        return start
 
     def reservation(self):
         if self.region is None:
@@ -92,6 +115,7 @@ class _Version:
 
     def tensor(self, shape, strides, offset, stream):
         dtype = getattr(torch, self.source.dtype)
+        byte_offset = self.byte_offset(shape, strides, offset)
         if self.owner.gpu is None:
             # Real host execution over an immutable snapshot; no simulated allocator.
             if not self.source.data:
@@ -106,7 +130,7 @@ class _Version:
             dtype=dtype,
             shape=shape,
             strides=strides,
-            byte_offset=offset * dtype.itemsize,
+            byte_offset=self.member_offset + byte_offset,
             stream=stream.cuda_stream,
         )
 
@@ -114,6 +138,7 @@ class _Version:
 class _Weight(torch.Tensor):
     @staticmethod
     def __new__(cls, version, shape, strides, offset=0):
+        version.byte_offset(shape, strides, offset)
         return torch.Tensor._make_wrapper_subclass(
             cls,
             shape,
@@ -357,6 +382,23 @@ def _rebind(parameter, candidate):
         _REBIND.reset(token)
 
 
+def _unreserved_groups(definitions):
+    """Group current versions only by identical existing intent memberships.
+
+    Missing versions are unclassified: their direct-read reservation stays a
+    singleton. Already reserved versions never participate in a new layout.
+    """
+    memberships = {}
+    for name, versions in definitions.items():
+        for version in versions:
+            if version.region is None:
+                memberships.setdefault(version, set()).add(name)
+    groups = {}
+    for version, names in memberships.items():
+        groups.setdefault(frozenset(names), []).append(version)
+    return list(groups.values())
+
+
 class Offload:
     """Own an adopted model. Retain this handle while calling the model.
 
@@ -493,15 +535,40 @@ class Offload:
                     versions[id(version)] = version
             definitions[name] = list(versions.values())
         if self._owner.gpu is not None:
-            plan = self._owner.gpu.plan(
-                {
-                    name: [v.reservation() for v in versions]
+            # Stage every new layout and its Plan before publishing any version.
+            # A failed constructor cannot relocate a subset of the model.
+            staged, placements, plan = [], {}, None
+            try:
+                for group in _unreserved_groups(definitions):
+                    region, offsets = self._owner.gpu.region_parts(
+                        [version.source for version in group]
+                    )
+                    staged.append(region)
+                    placements.update(
+                        (version, (region, offset))
+                        for version, offset in zip(group, offsets, strict=True)
+                    )
+                regions = {
+                    name: list(
+                        dict.fromkeys(
+                            placements[v][0] if v in placements else v.region
+                            for v in versions
+                        )
+                    )
                     for name, versions in definitions.items()
                 }
-            )
-            if self._intent_plan is not None:
-                self._intent_plan.close()
+                plan = self._owner.gpu.plan(regions)
+                if self._intent_plan is not None:
+                    self._intent_plan.close()
+            except BaseException:
+                for resource in ([plan] if plan is not None else []) + staged:
+                    with suppress(Exception):
+                        resource.defer_close()
+                raise
+            for version, (region, offset) in placements.items():
+                version.region, version.member_offset = region, offset
             self._intent_plan = plan
+            definitions = regions
         self._intent_regions = {
             name: len(versions) for name, versions in definitions.items()
         }

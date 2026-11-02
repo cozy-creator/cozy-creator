@@ -12,6 +12,13 @@ No client downloads weights. GPU execution belongs to the coordinator.
 - `intent.py`: real CPU forwards through repeated/declared nested boundaries,
   exception cleanup and dtype refresh. `--device 0` additionally observes the actual
   native phase view on the coordinator GPU; that mode remains unrun in this lane.
+- `packing.py`: real CPU ties, cross-group physical aliases, storage-local bounds,
+  partial casts and rollback, plus explicitly metadata-only reservation doubles.
+  `--device 0` uses the real `Gpu.region_parts` factory to check shared Regions,
+  direct-read singleton stability, failed-constructor cleanup and trim/refill.
+  It requires the matching native factory and is not qualified by CPU results.
+- `packing_metadata_cpu.py`: inert handles check all-group/Plan failure rollback,
+  preservation of published reservations and deduplication of Plan Regions.
 - `adapter_gpu.py --device 0`: prepared actual CUDA client for native typed reads,
   default and explicit streams, later consumers, ties, old aliases and tiny VAE.
 - `sdxl_gpu.py /existing/local/model --device 0`: prepared stock SDXL baseline/adopted
