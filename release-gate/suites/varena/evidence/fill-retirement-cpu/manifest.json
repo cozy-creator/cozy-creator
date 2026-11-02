@@ -1,0 +1,51 @@
+{
+  "source": "569649a8cdcd4db8214624e4d08866e27700a954",
+  "recorded_at": "2026-11-01T23:50:59.392956+00:00",
+  "owner": "/root/async_integration_review",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-fill-retirement",
+  "branch": "codex/xs138-p4-fill-retirement",
+  "draft_pr": 2426,
+  "base": "55198061027e188722eaa8d94659111b6fe8871a",
+  "inputs": {
+    "coordinator": "7a653de293d41200a3ebe5f5d8778e01b95d112e",
+    "async": "8b77294bb898b472f8e573f5f40f9cb7dee62386",
+    "arena_retirement": "49685f0871f429d9003d00687f89d65834c10688",
+    "current_format": "2ed2d1926a27292202cce420fc59d5f150ff7790"
+  },
+  "files": {
+    "crates/varena/src/async_fill.rs": "e1879a5a6c81c824dee0e283d7d47d4f199ae1bf61ecb018617fa1c9b4952b59",
+    "crates/varena/src/retirement.rs": "75ef4a3923b4178d24d1a4d04ed180c1d6f43d69e91841e55f1b53c34bbb51a3",
+    "crates/varena/src/arena_retirement.rs": "772006ecd4daeef12e8e76c34d935f998cc32375d3a0816c62247ae0e687d46a",
+    "crates/varena/src/cuda.rs": "f757155f5831f30fb3ea2790d76c7f2fef2b9ffe14bcc23b3bb150f85f32fc5f",
+    "crates/varena/src/lib.rs": "a48adaa359d3dc5bc0e09b0a0d229d8311338545b4e4c54a652c1d0c9309282e",
+    "crates/varena/src/plan.rs": "851fbf1f2ca7638a0ba11fcbf0664745e8119ae63f365b4c9d16ecce7f6a5669",
+    "crates/varena/examples/async_fill.rs": "c90b2e6adc5c0f79fa1310260c4082f742d7ff6e18cabc82807820ed9f7236ab",
+    "crates/varena/examples/async_fill/retirement.rs": "cf0cf3bd17ae9c4472641b746c66b198a27a391a625ed8859a8dda64d3045d11"
+  },
+  "logs": {
+    "composed-native-example-check-003.log": {
+      "sha256": "d67ec87c39414e3c5d5abeaa91fe50ff33ffb873650f8201da5751dfc69a2a74",
+      "result": "pass"
+    },
+    "composed-bindings-check-001.log": {
+      "sha256": "292c08d1bdf15712993901e61420c03d05b9ffa1b1b4de5a9335c121b72ac0f3",
+      "result": "pass"
+    }
+  },
+  "checks": {
+    "native_example": "cargo check --locked --offline -p varena --lib --example async_fill -j 1",
+    "bindings": "cargo check --locked --offline -p tensorfs-py -j 1",
+    "original_five_gpu_cases_unchanged": true,
+    "diff_check": "pass",
+    "gpu_execution": "unrun",
+    "portable_artifact": "not built",
+    "rental": "none"
+  },
+  "review": "P3 owner read-only reviewed shared queue; fixture handoff failure preserves returned Arena Arc. No product blocker found.",
+  "preserved_prior_logs": {
+    "merged-native-check-001.log": "initial cache build; source integration changed during its wall-time window, not exact-source proof",
+    "merged-native-check-002.log": "passed exact251d library check before Arena composition",
+    "composed-native-example-check-001.log": "passed pre-composition Arena+async merge; patch script assertion matched comment and was corrected, not shared-queue proof",
+    "composed-native-example-check-002.log": "passed composed source before fixture owned-error follow-up"
+  }
+}

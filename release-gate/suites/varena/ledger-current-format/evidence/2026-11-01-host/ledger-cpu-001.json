@@ -1,0 +1,243 @@
+{
+  "passed": false,
+  "binary": "/home/fidika/cozy_v2/outputs/xs138-ledger-current-format/target/debug/examples/ledger_peer",
+  "binary_sha256": "48c0be4568b67139f38e6285cb77ae8f7396d069c409ddd6cedd7158f53e249b",
+  "cuda_initialized": false,
+  "scope": "metadata/process proof only; published byte counts are fixture observations, not actual GPU releases",
+  "stale_samples": {
+    "early_sample": 8,
+    "completed_round": 7,
+    "pre_release_sample_refused": true,
+    "unfinished_round_joined": true,
+    "physical_publication_invalidates": true,
+    "in_flight_sample_commit_refused": true,
+    "concurrent_sample_commit_once": true,
+    "duplicate_acks_do_not_advance_capacity": true,
+    "pending_is_not_capacity": true,
+    "fresh_sample_opens_next_round": true,
+    "final": {
+      "capacity_epoch": 10,
+      "device": 29,
+      "generation": 23,
+      "inode": 2430083,
+      "round": {
+        "aborted": false,
+        "completed": 40,
+        "donors": [
+          {
+            "answer": "Complete",
+            "completed": 40,
+            "incarnation": 2,
+            "pending": 0,
+            "requested": 40,
+            "slot": 1
+          }
+        ],
+        "finished": true,
+        "id": 20,
+        "requested": 40,
+        "sample": 19
+      },
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 1,
+          "live": 0,
+          "pending": 0,
+          "pid": 3455611,
+          "priority": 0,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 0,
+          "start_ticks": 59462792,
+          "want": 40
+        },
+        {
+          "idle": 50,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 3455610,
+          "priority": 0,
+          "reclaimable": 50,
+          "sharing": "Shared",
+          "slot": 1,
+          "start_ticks": 59462792,
+          "want": 0
+        },
+        {
+          "idle": 0,
+          "incarnation": 3,
+          "live": 0,
+          "pending": 0,
+          "pid": 3455612,
+          "priority": 0,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 2,
+          "start_ticks": 59462792,
+          "want": 40
+        }
+      ],
+      "sample": {
+        "attributable": false,
+        "capacity_epoch": 8,
+        "id": 19,
+        "reserve": null,
+        "total": 10000,
+        "used": 950
+      }
+    }
+  },
+  "close_on_exec": {
+    "child_descriptions": 1,
+    "close_on_exec": true
+  },
+  "descriptor_bound": {
+    "bounded": 256,
+    "extra_connections": 254,
+    "recovered": true
+  },
+  "asks_and_liveness": {
+    "concurrent_round": 72,
+    "pending_not_credited": true,
+    "duplicate_acks_counted_once": true,
+    "stopped_owner_retained": true,
+    "reap_did_not_credit_memory": true,
+    "stale_incarnation_rejected": true,
+    "thread_publication": true,
+    "snapshot": {
+      "capacity_epoch": 74,
+      "device": 29,
+      "generation": 78,
+      "inode": 2430085,
+      "round": {
+        "aborted": false,
+        "completed": 50,
+        "donors": [
+          {
+            "answer": "OwnerGone",
+            "completed": 50,
+            "incarnation": 1,
+            "pending": 0,
+            "requested": 80,
+            "slot": 0
+          }
+        ],
+        "finished": true,
+        "id": 72,
+        "requested": 80,
+        "sample": 71
+      },
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 3455643,
+          "priority": 10,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 1,
+          "start_ticks": 59462799,
+          "want": 999
+        },
+        {
+          "idle": 0,
+          "incarnation": 3,
+          "live": 0,
+          "pending": 0,
+          "pid": 3455645,
+          "priority": 20,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 2,
+          "start_ticks": 59462800,
+          "want": 120
+        }
+      ],
+      "sample": {
+        "attributable": false,
+        "capacity_epoch": 70,
+        "id": 71,
+        "reserve": null,
+        "total": 10000,
+        "used": 1000
+      }
+    }
+  },
+  "round_owner_death": {
+    "aborted_round": 82,
+    "new_round": 86,
+    "no_release_invented": true,
+    "fresh_sample_required": true,
+    "stale_ask_keeps_exact_reap": true
+  },
+  "row_bound": {
+    "independent_processes": 64,
+    "next_registration_refused": true,
+    "all_closed": true
+  },
+  "fork": {
+    "parent_death_child_survives": true,
+    "reused_fd_not_double_closed": true,
+    "fresh_child_registration": true,
+    "live_parent_lock_not_unlocked": true,
+    "parent": {
+      "child": 3455733,
+      "fork_parent": 3455732,
+      "incarnation": 1,
+      "slot": 0
+    },
+    "child": {
+      "fd_reuse": true,
+      "fork_child": 3455733,
+      "incarnation": 2,
+      "inherited_rejected": true,
+      "slot": 1,
+      "snapshot": {
+        "capacity_epoch": 4,
+        "device": 29,
+        "generation": 4,
+        "inode": 2430090,
+        "round": null,
+        "rows": [
+          {
+            "idle": 123,
+            "incarnation": 1,
+            "live": 0,
+            "pending": 0,
+            "pid": 3455732,
+            "priority": 0,
+            "reclaimable": 123,
+            "sharing": "Shared",
+            "slot": 0,
+            "start_ticks": 59462823,
+            "want": 0
+          },
+          {
+            "idle": 0,
+            "incarnation": 2,
+            "live": 0,
+            "pending": 0,
+            "pid": 3455733,
+            "priority": 3,
+            "reclaimable": 0,
+            "sharing": "Shared",
+            "slot": 1,
+            "start_ticks": 59462824,
+            "want": 0
+          }
+        ],
+        "sample": null
+      }
+    }
+  },
+  "fork_after_single_threaded_initialization": {
+    "concurrent_opens": 271,
+    "departures_reaped": 1,
+    "fork_open_close_iterations": 32,
+    "passed": true
+  }
+}
