@@ -19,8 +19,10 @@ from tensorfs.varena._offload import Offload
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0)
 args = parser.parse_args()
-if not callable(getattr(Offload, "capture", None)):
-    raise RuntimeError("graph frontend is pending; run only after adapter integration")
+if getattr(Offload, "capture", None) is None:
+    raise NotImplementedError(
+        "graph frontend is pending; run only after adapter integration"
+    )
 torch.manual_seed(17)
 model = torch.nn.Sequential(torch.nn.Linear(32, 32), torch.nn.Linear(32, 32)).eval()
 controls = [
