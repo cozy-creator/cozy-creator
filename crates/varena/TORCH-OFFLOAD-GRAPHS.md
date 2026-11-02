@@ -103,6 +103,11 @@ settle unrelated producers or promise capture admission. `export_use` calls
 `gpu.eager`, so it must never be invoked during capture.
 GraphFootprint accounts captured Working; it does not itself account weight residency.
 
+The native wait retains an ABI retirement lease that excludes new capture/replay
+admission on this device for the duration of the call. The wait set is scoped; the
+operation is not zero-cost or concurrency-neutral. Completed/retired warm controls
+take the native fast path. No adapter performance claim follows from that contract.
+
 The existing `vt.graph` currently context-synchronizes during preparation. The adapter
 requires an agreed `synchronize=False` opt-out after scoped readiness and capture-stream
 warmup completion; the default helper behavior remains unchanged. This helper amendment
@@ -119,9 +124,13 @@ For each call, under the segment's submission lock:
    deduplicated Regions and fresh ordinary checked exports (one valid uint8 span per
    Region is enough). Existing TensorExport owns Pin/family/Weight and preserves exact
    final-fence quarantine. Bare Use close is not the checked replay safety contract.
-   Replay relies on native producer-event ordering rather than inserting an unnecessary
-   host readiness/retirement wait. Capture alone uses wait_ready after its typed bindings
-   exist. No overlap or latency improvement is qualified by the host checks.
+   Call wait_ready after the transient typed exports exist for every acquired capture
+   and replay epoch, outside both exclusion guards. Producer ordering alone has no
+   scoped acknowledgement for errors observed later by the producer/retirement worker.
+   This initial wait surfaces selected producer/job/staging failure before graph work;
+   consumer fences protect lifetime and do not substitute for that Source-success result.
+   Future graph/device failures and final persistent Source/service teardown remain
+   separate error/ownership paths. No overlap or latency improvement is qualified here.
 3. Copy inputs, enter the agreed public `vt.replay_scope(device)` host guard, and call
    `vt.replay(graph, stream=stream)`. Reuse native pool retain/record/release ownership.
    Exit replay exclusion before output-copy allocation and before Use close/fencing;

@@ -305,9 +305,6 @@ class _Epoch:
                         dtype=getattr(torch, version.source.dtype),
                         device=definition.owner._owner.device,
                     )
-            # Published ordering alone is not capture admission: retain all
-            # ordinary typed bindings while scoped producer retirement settles.
-            self.used.wait_ready()
         else:
             # One valid storage export pins the entire Region and supplies its
             # checked consumer family; it need not duplicate every typed view.
@@ -317,6 +314,10 @@ class _Epoch:
                         index, dtype="uint8", shape=(1,), stream=self.stream.cuda_stream
                     )
                 )
+        # Ordering is not a selected Source-success acknowledgement. Keep exact
+        # exports while completion/retirement settles, before either exclusion.
+        # The native retirement lease temporarily excludes new device admission.
+        self.used.wait_ready()
 
     def release(self):
         if self.released:
