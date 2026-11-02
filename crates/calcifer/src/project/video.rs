@@ -40,22 +40,22 @@ pub fn skeleton() -> String {
     r#"# A short film, ready to render: cozy project render all --on <machine>
 # Change anything. More kinds and options (props, world states, references, plates, LoRAs, upscales,
 # the edit's frames) are in the README.
-style: bright hand-painted anime, soft golden light, an adventure film
+style: bright hand-painted anime, studio ghibli style
 aspect_ratio: "16:9"
 fps: 24
 
 entities:
-  - name: mika
+  - name: ash
     kind: character
-    description: A cheerful ten-year-old girl in a red cap, a blue jacket and a yellow backpack.
+    description: Ash Ketchum, a cheerful ten-year-old Pokémon trainer in a red-and-white cap, a blue jacket and green fingerless gloves.
 
-  - name: sparkit
+  - name: pikachu
     kind: character
-    description: A small round yellow fox-like creature with lightning-bolt ears and a glowing tail.
+    description: Pikachu, a small yellow electric Pokémon with black-tipped ears, red cheeks and a lightning-bolt tail.
 
   - name: meadow
     kind: environment
-    description: a windy hillside meadow of tall grass above a seaside town, at golden hour
+    description: a windy hillside meadow of tall grass above Pallet Town, at golden hour
     setups:
       - name: wide
         camera: "wide: a lone oak near on the left, the town and the sea far on the right"
@@ -63,18 +63,18 @@ entities:
 shots:
   - name: rustle
     setup: meadow.wide
-    prompt: <mika> walks through the tall grass of <meadow> and stops as something rustles near her feet.
+    prompt: <ash> walks through the tall grass of <meadow> and stops as something rustles near his feet.
     duration_s: 6
 
   - name: friends
     setup: meadow.wide
-    prompt: <sparkit> bursts out of the grass in front of <mika>, its tail crackling with sparks.
+    prompt: <pikachu> bursts out of the grass in front of <ash>, its cheeks crackling with sparks.
     duration_s: 8
     beats:
       - at: 0
-        prompt: <mika> jumps back, startled, then laughs.
+        prompt: <ash> jumps back, startled, then laughs.
       - at: 4
-        prompt: <mika> kneels and holds out her hand, and <sparkit> hops up onto her shoulder.
+        prompt: <ash> kneels and holds out his hand, and <pikachu> hops up onto his shoulder.
 "#
     .into()
 }
