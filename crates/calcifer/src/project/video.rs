@@ -292,10 +292,15 @@ pub struct Cutted {
 /// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.
 pub fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
     let frames = pieces.iter().map(|piece| piece.frames(fps).map(|(start, end)| end - start)).sum::<Option<u64>>()?;
-    let retimed = (pieces.iter())
-        .filter_map(|piece| piece.shape.filter(|shape| retimed(shape, fps)).map(|shape| format!("{} ({} fps)", piece.node, shape.fps)))
-        .collect();
-    Some(Cutted { frames, retimed })
+    let mut takes: Vec<String> = vec![];
+    for piece in pieces {
+        let Some(shape) = piece.shape.filter(|shape| retimed(shape, fps)) else { continue };
+        let take = format!("{} ({} fps)", piece.node, shape.fps);
+        if !takes.contains(&take) {
+            takes.push(take);
+        }
+    }
+    Some(Cutted { frames, retimed: takes })
 }
 
 pub struct Video {
