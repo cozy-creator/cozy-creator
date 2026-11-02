@@ -167,6 +167,32 @@ if calcifer_stuck; then
 fi
 }
 
+# cl-716 B: a run followed while Calcifer restarts goes on being followed to its end; a burst of restarts past
+# systemd's start limit (five in 10 s) leaves Calcifer startable by the next command. Last, as these stop Calcifer.
+calcifer_restarts() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a run followed across a Calcifer restart"
+local code n
+(cd "$here" && cozy run ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
+local follower=$!
+for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
+[ -n "$n" ] || check "across: the run never began"
+systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
+wait "$follower" || true
+code=$(cat "$OUT/across.code" 2>/dev/null) || code=
+{ [ "$code" = 0 ] && grep -q "Calcifer restarted; following run $n again" "$OUT/across.txt"; } \
+  || check "across: the follow of run ${n:-?} did not go on past the restart (exit $code): $(tail -c 300 "$OUT/across.txt")"
+cozy --json run show "$n" --once | J '.status == "completed"' || check "across: run $n did not complete"
+
+step "a burst of Calcifer restarts past systemd's start limit"
+for _ in 1 2 3 4 5 6 7; do systemctl --user restart cozy-calcifer > /dev/null 2>&1 || true; done
+systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" || true
+echo "after the burst: $(cat "$OUT/burst-result.txt")"
+cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && cozy --json status | J '.calcifer.running == true' \
+  || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
+(cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
+}
+
 update() { step update; update_to_newest; }
 # Every log cozy wrote (Calcifer, TensorD, executors), before removal erases ~/.cozy: what a failed step left behind.
 logs() { step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true; }
@@ -174,11 +200,11 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects machines completions calcifer_faults update remove" ;;
+  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="describe second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects logs" ;;
-  follow) parts="script_package image_ratio run_follow machines completions calcifer_faults logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters projects bound_runs logs" ;;
+  follow) parts="script_package image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"

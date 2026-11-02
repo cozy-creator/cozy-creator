@@ -165,6 +165,45 @@ echo "homebrew: $(cat "$OUT/brew-version.txt")"
 brew uninstall cozy > /dev/null 2>&1 || check "brew uninstall cozy failed"
 }
 
+# cl-716 B: a run asked unbound, which Calcifer binds: a local function's video clip cut (`#t=`), a picture and a
+# folder; a file uploaded by its digest and named by it; a digest Calcifer does not hold refused; and the release's CLI,
+# which builds its run itself, refused as outdated. Fixtures by ffmpeg (the job's, on this shell's PATH).
+bound_runs() {
+step "a run Calcifer binds: a clip cut, a picture, a folder"
+local dir=$OUT/bound lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr token hex size code before
+mkdir -p "$dir/folder/sub"; echo one > "$dir/folder/a.txt"; echo two > "$dir/folder/sub/b.txt"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=8 -c:v libx264 -pix_fmt yuv420p -g 24 "$dir/clip.mp4"
+ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$dir/still.png"
+size=$(stat -c %s "$dir/still.png")
+if (cd "$dir" && cell bound "$here/inspect/inspect" --file "clip=./clip.mp4#t=2,6" --file still=./still.png folder=./folder label=bound); then
+  grep -qE '"clip_seconds": *(3\.9|4\.0|4\.1)' "$OUT/bound.ndjson" && grep -qE "\"still_bytes\": *$size" "$OUT/bound.ndjson" \
+    && grep -qE '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]' "$OUT/bound.ndjson" \
+    || check "bound: not a 4 s clip, the picture and the folder's two files: $(grep -oE '"(clip_seconds|still_bytes|folder_files)": *[^,}]*' "$OUT/bound.ndjson" | head -3 | paste -sd' ')"
+fi
+cozy --json run "$here/inspect/inspect" --describe --on local > "$OUT/bound-describe.json" 2> "$OUT/bound-describe.err" \
+  && grep -q '"clip"' "$OUT/bound-describe.json" && grep -q '"folder"' "$OUT/bound-describe.json" \
+  || check "run inspect --describe: no clip or folder input: $(tail -c 300 "$OUT/bound-describe.err")"
+
+step "a file uploaded by its digest, and one Calcifer does not hold"
+addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock") hex=$(sha256sum "$dir/still.png" | cut -c1-64)
+[ "$(curl -sS -o "$OUT/put.json" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" --data-binary "@$dir/still.png" "http://$addr/v1/files/sha256:$hex")" = 201 ] \
+  || check "PUT /v1/files/sha256:$hex is not 201: $(head -c 300 "$OUT/put.json")"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" "http://$addr/v1/files/sha256:$hex")" = 200 ] || check "HEAD of an uploaded file is not 200"
+if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$hex" folder=./folder label=digest); then
+  grep -qE "\"still_bytes\": *$size" "$OUT/bound-digest.ndjson" || check "bound-digest: the run was not given the uploaded picture"
+fi
+before=$(cozy --json run ls --limit 0 | jq '.runs | length')
+(cd "$dir" && ALLOW=file_not_held cell bound-unheld "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$(head -c 64 /dev/urandom | sha256sum | cut -c1-64)" folder=./folder) || true
+{ [ -f "$OUT/bound-unheld.refused" ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
+  || check "a digest Calcifer does not hold was not refused file_not_held before any run"
+
+step "the release's CLI against this Calcifer"
+code=0; (cd "$here" && "$HOME/.cozy/bin/.cozy-previous" run ./weightless/reverse text=old --on local) > "$OUT/old-cli.txt" 2>&1 || code=$?
+cat "$OUT/old-cli.txt"
+{ [ "$code" != 0 ] && grep -q client_outdated "$OUT/old-cli.txt" && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
+  || check "the release's CLI ($("$HOME/.cozy/bin/.cozy-previous" --version 2>&1)) was not refused client_outdated, or its run was recorded (exit $code)"
+}
+
 yaml_requests() {
 step "a YAML request, then inline inputs over it"
 text=yaml-$RANDOM back=''
