@@ -13,6 +13,8 @@ from tensorfs.varena import torch as vt
 from tensorfs.varena._offload_graph import (
     GraphSegment,
     _CaptureBindings,
+    _live_storages,
+    _storage_tokens,
     _tree_signature,
 )
 
@@ -99,9 +101,26 @@ with binding.scope():
     refused(lambda: model.weight.add_(1), "immutable")
     refused(lambda: model.constant.add_(1), "module buffers or inputs")
     refused(lambda: inputs.add_(1), "module buffers or inputs")
+    ordinary = torch.empty(0)
+    refused(lambda: ordinary.set_(model.weight), "reassign ordinary storage")
+    assert not ordinary.numel()
 assert model.weight.dtype == torch.float32 and model.constant.item() == 2
 checks.append(
     "conversion, weight/buffer/input mutation refused before changing real contents"
+)
+
+storage_tensor = torch.arange(3.0)
+detached = storage_tensor.detach()
+tokens = _storage_tokens([storage_tensor])
+del storage_tensor
+kept = _live_storages(tokens)
+assert len(kept) == 1 and kept[0]._cdata == detached.untyped_storage()._cdata
+del detached
+assert _live_storages(tokens), "exact surviving export Storage was not retained"
+del kept
+assert not _live_storages(tokens)
+checks.append(
+    "C10 Storage ownership covers detached aliases and preserves exact live storage without creating an unpinned tensor"
 )
 
 before = GraphSegment._parameters(model)

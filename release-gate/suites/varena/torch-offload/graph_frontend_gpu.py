@@ -126,6 +126,22 @@ with torch.inference_mode(), torch.cuda.stream(stream):
         )
         observations.append(current)
 
+    # A known enclosing offload Plan is suspended/restored outside the graph guard.
+    with owner._intent(model[0]):
+        parent_result = segments[0](example, stream=stream)
+        selected = vt.split_select(
+            args.device,
+            "graph-parent-intent-observation",
+            [("no-allocation", [])],
+            preferred="no-allocation",
+            stream=stream.cuda_stream,
+        )
+        assert selected["phase"] == owner._boundary_names[id(model[0])]
+    stream.synchronize()
+    torch.testing.assert_close(
+        parent_result.cpu(), torch.nn.functional.linear(torch.ones(1, 32), *controls[0])
+    )
+
     # Definition weights stay bound to their immutable original versions.
     pending_old = segments[1](example, stream=stream)
     model.double()
@@ -161,6 +177,7 @@ print(
             "definition_weight_pins_zero": True,
             "same_va_trim_refill_cycles": 3,
             "independent_outputs": True,
+            "enclosing_plan_restored": True,
             "old_dtype_definitions": True,
             "observations": observations,
         }
