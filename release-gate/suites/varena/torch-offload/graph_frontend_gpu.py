@@ -12,9 +12,10 @@ import json
 
 import torch
 from tensorfs import _ext
-from tensorfs.varena import Source, api
+from tensorfs.varena import api
 from tensorfs.varena import torch as vt
 from tensorfs.varena._offload import Offload
+from tensorfs.varena._offload_graph import GraphInvalidated
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0)
@@ -23,6 +24,8 @@ if getattr(Offload, "capture", None) is None:
     raise NotImplementedError(
         "graph frontend is pending; run only after adapter integration"
     )
+if not hasattr(api.Use, "wait_ready"):
+    raise NotImplementedError("graph frontend requires scoped native Use.wait_ready")
 torch.manual_seed(17)
 model = torch.nn.Sequential(torch.nn.Linear(32, 32), torch.nn.Linear(32, 32)).eval()
 controls = [
@@ -67,20 +70,29 @@ with torch.inference_mode(), torch.cuda.stream(stream):
     )
 
     # An ordinary native escaped alias is an independent physical-owner control.
-    control = gpu.region(Source.from_tensor(torch.arange(32, dtype=torch.float32)))
-    escaped = control.tensor(
-        dtype=torch.float32, shape=(32,), stream=stream.cuda_stream
-    )
+    control = segments[0]._definition.regions[0]
+    escaped = control.tensor(dtype="uint8", shape=(32,), stream=stream.cuda_stream)
     escaped_view = escaped[1:]
-    control.close()
+    escaped_expected = escaped_view.cpu().clone()
+    pinned = _ext._varena_public_residency_snapshot(gpu._handle, [control._handle])[
+        "region_handles"
+    ][0]["region_id"]
     del escaped
     stream.synchronize()
     gpu.trim()
     observations.append([observe(segment) for segment in segments])
-    assert all(
-        row["mapped_bytes"] == 0 for item in observations[-1] for row in item["entries"]
-    )
-    assert torch.equal(escaped_view.cpu(), torch.arange(1, 32, dtype=torch.float32))
+    for item in observations[-1]:
+        for row in item["entries"]:
+            assert (
+                row["mapped_bytes"] > 0
+                if row["id"] == pinned
+                else row["mapped_bytes"] == 0
+            )
+    assert torch.equal(escaped_view.cpu(), escaped_expected)
+    del escaped_view
+    gc.collect()
+    stream.synchronize()
+    gpu.trim()
 
     old_outputs = []
     for cycle in range(3):
@@ -110,22 +122,26 @@ with torch.inference_mode(), torch.cuda.stream(stream):
         observations.append(current)
 
     # Definition weights stay bound to their immutable original versions.
+    pending_old = segments[1](example, stream=stream)
     model.double()
     stream.synchronize()
     other.wait_stream(stream)
     example.record_stream(other)
     with torch.cuda.stream(other):
-        result = segments[0](example, stream=other)
+        try:
+            segments[0](example, stream=other)
+        except GraphInvalidated:
+            pass
+        else:
+            raise AssertionError("stale dtype definition admitted a new replay")
     other.synchronize()
     torch.testing.assert_close(
-        result.cpu(), torch.nn.functional.linear(torch.ones(1, 32), *controls[0])
+        pending_old.cpu(), torch.nn.functional.linear(torch.ones(1, 32), *controls[1])
     )
     assert (
         segments[0].facts()["version_dtypes"]
         == definitions[0]["facts"]["version_dtypes"]
     )
-    del escaped_view
-    gc.collect()
     stream.synchronize()
     other.synchronize()
     for segment in segments:
