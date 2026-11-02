@@ -1,0 +1,87 @@
+{
+  "boundary": "audited source, unchanged safety/advisories, native builds and actual host/CPU clients only; GPU unrun",
+  "fetched_master": "7626bc995a5d14bb81e7fd3712896c77b8f4ccdd",
+  "approved_native_parent": "14e8f95dab4fff76f52b02616bdb453b62f94c8c",
+  "coherent_context_merge": "83944039e6cd59124fdd2e42ccc4af60c357d575",
+  "readiness_base_after_authorized_cleanup": "b6caa5a053ea9a837877b7d327d78c71e56b1fa7",
+  "zero_span_cleanup_ports": {
+    "4da921349aeb35b0044a624b02401cd8d7d0fc80": "dd97d102f93b6a86e571067f9038dfdb9685e876",
+    "475ad2b20950079cc94fac72376b47f798f83e00": "aa2acfb119c66783c9b6a538cfb72c792c2d5617",
+    "dbd75b3bd57e2dd7bb4d80c5f6938ac99b24ee9f": "b6caa5a053ea9a837877b7d327d78c71e56b1fa7"
+  },
+  "readiness_ports": {
+    "186165d9fa07af7c27583d179ce2e24fe8b92c98": "549f4915534c6f6d6840465b905d69038b07bbe7",
+    "1761c0612f6aa2f69f6841a62806ff8dce3c3f4e": "12425d44ff3de33b791f79937a2645c827529b51"
+  },
+  "old_snapshots_replayed": false,
+  "canonical_or_frozen_worktree_writes": false,
+  "checks": [
+    {
+      "command": "cargo check --locked --offline -p cli -p calcifer -p tensord -p platform -p tensorfs -p tensorfs-py -p varena -j 1",
+      "exit": 0
+    },
+    {
+      "command": "cargo build --locked --offline -p tensorfs-py -j 1",
+      "exit": 0
+    },
+    {
+      "command": "VARENA_LIB_DIR=private/deps cargo build --locked --offline -p varena-client --example parts -j 1",
+      "exit": 0
+    },
+    {
+      "command": "unchanged scripts/memory-safety.sh with private CARGO_HOME/TMPDIR, jobs1/RAYON1",
+      "exit": 0,
+      "inventory": "pass",
+      "advisories": "pass"
+    },
+    {
+      "command": "use_ready_host.py --extension private/lib_ext.so; actual Python Use.wait_ready Invalid propagation",
+      "exit": 0,
+      "cuda_loaded": false
+    },
+    {
+      "command": "actual built extension/core native_host.py; Werror C parts/provider host contracts",
+      "exit": 0
+    },
+    {
+      "command": "zero_span_cpu.py and packing.py --device cpu against private copied package/new audited core with Torch2.14.1+cpu",
+      "exit": 0,
+      "cuda_initialized": false
+    },
+    {
+      "command": "Ruff --no-cache, rustfmt, source/guard/executor preservation and diff checks",
+      "exit": 0
+    }
+  ],
+  "gpu_fixtures": "Use readiness4 modes, parts/packing and generic graph frontend remain coordinator-owned and unrun here",
+  "private_cache_only": true,
+  "maximum_product_build_jobs": 1,
+  "protected_sha256": {
+    "deny.toml": "9f34f6657d5f9db9ee7ab57239260df9a685b338dec58e81647e2c85c7025412",
+    "scripts/memory-safety.sh": "545038298fd5a3a0281f7b064435c7679b8840bb91172576898b6d7d69dbbc35",
+    ".github/workflows/build.yaml": "be28f35fc7f7007673ba103975766ad7a55ca88c510afde7b692922fdc05cecb",
+    "unsafe-boundaries.txt": "b549e5bfea522897a576fdf416e4af124e91f73bffb35254ea3efd75ede36566",
+    "crates/executor-protocol/src/lib.rs": "c070ef3e0882f635f30f81b3682a0d895879313bb79ed551e088346dbdecd5a5"
+  },
+  "source_sha256": {
+    "Cargo.lock": "01b01f26b0b06af8f751b96af49a7cdb0c9a54a527041b48ff180bf88de8bdff",
+    "crates/varena/Cargo.toml": "340a66351dacfee06d7c22b609894d6cf7ab9c6425d5ab184fb2defb9305e4cd",
+    "crates/varena/src/abi.rs": "d6ecb2f0c9b3239593296b2b3e3f55c0e838e9b54d743da773dcc23da7b970f4",
+    "crates/varena/src/async_fill.rs": "ef16f11681a802571a3331383bd59a5f0bf9ee6935d502ca00c3a2b9e56e4519",
+    "crates/varena/include/varena.h": "9460ff4754113dcd9e1a7a214f2ffe0871c633a3b93f9936345473d1c65dd595",
+    "crates/varena-client/src/lib.rs": "1413f70e1b9c2c447dd9b41f17afa8c81d90cff08d13e5629d988df587a0ea0b",
+    "crates/tensorfs-py/python/tensorfs/varena/api.py": "fbfdff99a026e58fd2ec6364c710b486f3ac500c01c4d2c64db9b93f7f255e0f",
+    "release-gate/suites/varena/native-tensor-export/source_provider.c": "5a574d965f3873bbd8d1bafc729bcdbb39e0c7de0625d110009eb97f1475f56d",
+    "release-gate/suites/varena/native-tensor-export/provider.py": "edbde16566ae6d63d3a686ca40af857865658ab86c3182d57efece0fbaf17654",
+    "release-gate/suites/varena/native-tensor-export/use_ready_host.py": "466cd5582f3da1ba461cf213f4c99d3bbff6f7572ac13696fa89774f7ffa1281",
+    "release-gate/suites/varena/native-tensor-export/use_ready_gpu.py": "7738a4eb9b36b0b70cefc555d326f5eb75363d7beebcf1637b5e462e9574e257",
+    "release-gate/suites/varena/native-tensor-export/parts_gpu.py": "69c2f17083c6838120d3e40cd000e3140175c21ed726e9ff5af882f031deb215",
+    "release-gate/suites/varena/torch-offload/packing.py": "56a8443bc69fa02126ac22772422def1d803a294326f5e1909da8985d83793c9"
+  },
+  "artifact_sha256": {
+    ".task/target/debug/lib_ext.so": "cf0ec25f2c59c006a72f0e102632983ce9f4f4678a346b104d6ed5ba30ebff64",
+    ".task/target/debug/deps/libvarena.so": "1d6b24dd4a32bd285daaa2f827f9dcd714ff96638080b78957d43c328ef854e0",
+    ".task/audited-provider.so": "f706c5d041f0c557d57f89794993c110c3b8c12a6ba1a7db940e0c904230bedd",
+    ".task/audited-parts-contract": "53126167887c4b609591ab81d8f31b021d58ed243bb2d227a314a4ae62b585c7"
+  }
+}

@@ -66,3 +66,13 @@ Run one isolated child per mode: `retirement_pending`, `unrelated_retirement`, `
 The first mode checks both an ordered Use and a second Use acquired after Ready publication while resource retirement is still held, exercising distinct native wait Signals on the same fill. The unrelated mode checks scoped host Source readiness while another Source's checked retirement and another CUDA stream remain pending. Capture/replay refusal preserves the original Use. Concurrent-close is bounded stress only: a Python thread-start marker does not prove native wait entry, and the report explicitly says so. No false deterministic-entry claim is made.
 
 All four GPU modes are prepared and unrun in this lane. The coordinator owns matched installed-cohort preparation, whole-child deadlines/cancellation and execution. Source/retirement driver failures and full generic graph-offload behavior remain their own qualification gates. Current-master guard/build files and executor protocol are preserved in the context; feature commits add no unsafe Rust file and do not alter those guards or canonical branches. The complete root reconciliation/advisory guard is not claimed from an old native context build.
+
+## Preferred audited composition
+
+The preferred source/host context is now the audited-parent port in draft #2489:
+coordinator parent `14e8f95d` coherently integrated with fetched master `7626bc995`,
+then only the authorized zero-span/cleanup feature patches. Scoped readiness is
+separate at `549f49155` and `12425d44f`; no old snapshot or guard-restoration prefix
+is for adoption. Fresh qualification is recorded in
+`evidence/use-ready-audited-host/manifest.json`; earlier receipts retain their original
+context. Source checking and unchanged safety/advisories do not qualify GPU execution.

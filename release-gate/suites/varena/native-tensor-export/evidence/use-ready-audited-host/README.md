@@ -1,0 +1,11 @@
+# Audited-parent scoped readiness checks
+
+This is a fresh source/host qualification on the coordinator's preferred audited native parent `14e8f95dab4fff76f52b02616bdb453b62f94c8c`. The new owned branch starts from fetched master `7626bc995a5d14bb81e7fd3712896c77b8f4ccdd`, which also contains the later `92d3eb804` platform-handle cleanup and current release-gate README. Coherent integration merge `83944039e6cd59124fdd2e42ccc4af60c357d575` preserves those landed changes and the audited native/Calcifer bridge. It is not an old-tree snapshot restore.
+
+Only authorized zero-span/cleanup originals were replayed: `4da921349` -> `dd97d102f93b6a86e571067f9038dfdb9685e876`, `475ad2b20` -> `aa2acfb119c66783c9b6a538cfb72c792c2d5617`, `dbd75b3bd` -> `b6caa5a053ea9a837877b7d327d78c71e56b1fa7`. Their patch IDs are identical. The scoped readiness implementation is separately ported as `549f4915534c6f6d6840465b905d69038b07bbe7`, with clients/contracts `12425d44ff3de33b791f79937a2645c827529b51`. The implementation's added/removed lines are identical to the original feature, while surrounding audited root-deny/FFI scopes remain intact.
+
+No `c9f535842` snapshot or `4463a4fd9` old preservation prefix was replayed. Root chooses its source composition and adopts only the needed feature commits. The PR's base `codex/xs138-graph-native-audited-base` is `b6caa5a05`, exposing readiness separately from the audited context and prior narrow fixes.
+
+The manifest records the exact final source and artifact hashes plus fresh one-job seven-package/native/Rust builds, unchanged memory-safety/advisory run, actual C/Python invalid-handle host and real provider checks, real CPU DLPack checks, inventory and preserved-master verification. Old receipts in `use-ready-host`, `zero-span-host` and `packing-cleanup-host` stay unchanged; they do not acquire this new context by relabeling.
+
+All GPU fixtures remain prepared and unrun here. In particular, valid-Use capture readiness, blocked resource retirement, unrelated native Source work, concurrent close, actual same-VA graph refill, pool/reset/alias safety and packing performance remain coordinator-owned GPU gates. The frozen `0af` GPU baseline, original2397/2450 worktrees, canonical audit branches, installed cohorts and operator caches/artifacts are untouched.
