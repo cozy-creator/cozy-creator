@@ -23,6 +23,12 @@ native = ctypes.CDLL(str(args.extension.resolve()))
 native.vr_v1_core_identity.restype = ctypes.c_uint64
 assert native.vr_v1_core_identity() == ext._varena_core_identity()
 export = ext._varena_public_use_dlpack
+try:
+    ext._varena_public_gpu_event_counts(0)
+except RuntimeError as error:
+    assert "invalid public Gpu handle" in str(error), str(error)
+else:
+    raise AssertionError("read-only native event observer accepted a missing Gpu")
 
 # Actual production metadata validation must reject these before touching a Use,
 # allocator or CUDA. The handle is deliberately absent, not a mocked owner.
@@ -72,6 +78,7 @@ print(
             "invalid_layouts_refused": len(invalid),
             "valid_layouts_require_torch_install": len(valid),
             "cuda_execution": False,
+            "native_event_observer_refuses_missing_gpu": True,
         }
     )
 )
