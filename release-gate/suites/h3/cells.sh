@@ -217,7 +217,7 @@ own_form() {  # own_form <check> <cell> <what its first piece's text opens with>
   expect "$check-text" "$(grep -qF "head=\"$opens" <<< "$first" && ! grep -qE 'One continuous shot|\[Shot 1\] \[Shot 1\]' <<< "$s" && echo PASS || echo FAIL)" "$(cut -c1-260 <<< "$first")"
   v=$(video_of "$name")
   for t in "$@"; do  # a hard change within half a second of the time the text cuts
-    at=$(awk -v t="$t" 'BEGIN { printf "%g,%g,%g,%g,%g", t - 0.5, t - 0.25, t, t + 0.25, t + 0.5 }')
+    at=$(awk -v t="$t" 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), t + i / 8 }')  # seams reads 3 frames per time
     r=$("${FR[@]}" seams "$v" --at "$at" 2>&1 | tail -1)
     expect "$check-cut-$t" "$(jq -r 'if ([.boundaries[].ratio] | max) >= 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
   done
