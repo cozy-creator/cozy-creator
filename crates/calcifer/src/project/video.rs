@@ -103,6 +103,8 @@ struct Project {
     #[serde(default, deserialize_with = "listed")]
     entities: Vec<Entity>,
     #[serde(default, deserialize_with = "listed")]
+    references: Vec<Reference>,
+    #[serde(default, deserialize_with = "listed")]
     world_states: Vec<WorldState>,
     #[serde(default, deserialize_with = "listed")]
     shots: Vec<Shot>,
@@ -165,6 +167,42 @@ impl EntityKind {
     }
 }
 
+/// A file that is no entity, which each shot mentioning its `name` is given: one `video` (a motion
+/// guide), `audio`, or `image` (a `prop` to its renderer). Any other field is its function's
+/// (`use_audio`, `description`, `follow`).
+#[derive(Deserialize)]
+struct Reference {
+    name: String,
+    video: Option<String>,
+    audio: Option<String>,
+    image: Option<String>,
+    #[serde(flatten)]
+    fields: Map<String, Value>,
+}
+
+impl Reference {
+    /// The files it names, by field; `load` refuses any but one.
+    fn files(&self) -> Vec<(&'static str, &str)> {
+        let fields = [("video", &self.video), ("audio", &self.audio), ("image", &self.image)];
+        fields.into_iter().filter_map(|(field, path)| Some((field, path.as_deref()?))).collect()
+    }
+
+    /// Its file, by field.
+    fn file(&self) -> (&'static str, &str) {
+        self.files()[0]
+    }
+
+    /// As its renderer's `references` takes it, its file left for `add` to fill in.
+    fn entry(&self) -> Map<String, Value> {
+        let field = self.file().0;
+        let mut entry = self.fields.clone();
+        entry.insert("name".into(), json!(self.name));
+        entry.insert("kind".into(), json!(if field == "image" { "prop" } else { field }));
+        entry.insert(field.into(), Value::Null);
+        entry
+    }
+}
+
 /// A camera setup on its environment; its versions are setup plates.
 #[derive(Deserialize)]
 struct Setup {
@@ -208,12 +246,7 @@ struct Shot {
     /// World states its frame at `at` seconds (default: its end) becomes the next revision of.
     #[serde(default)]
     writes: Vec<Write>,
-    /// Files that guide it, as its renderer's `references` list: `{name, kind, …}`, `kind` one of
-    /// `character`, `prop`, `environment` (`image`), `video`, `audio`. After the ones the project
-    /// compiles from what it reads.
-    #[serde(default)]
-    references: Vec<Map<String, Value>>,
-    /// The video it edits: `{video, use_audio?}`.
+    /// The video it edits: `video`, and `use_audio` to keep its sound.
     plate: Option<Map<String, Value>>,
     first_frame: Option<String>,
     last_frame: Option<String>,
@@ -228,9 +261,6 @@ struct Write {
     state: String,
     at: Option<f64>,
 }
-
-/// The fields of a shot's reference that are files here.
-const FILE_FIELDS: [&str; 4] = ["image", "video", "audio", "voice"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Beat {
@@ -257,6 +287,7 @@ struct Cut {
 #[derive(Clone, Copy)]
 enum Item {
     Entity(usize),
+    Reference(usize),
     Setup(usize, usize),
     State(usize),
     Shot(usize),
@@ -435,17 +466,30 @@ impl Video {
         let value = protocol::yaml::to_json(&folder.text()?)
             .map_err(|why| invalid("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
         let mut ignored: Vec<String> = vec![];
-        let mut note = |path: serde_ignored::Path<'_>| ignored.push(path.to_string());
+        let mut note = |path: serde_ignored::Path<'_>| ignored.push(path.to_string().replace("?.", ""));
         let read = serde_ignored::Deserializer::new(&value, &mut note);
         let project: Project = serde_path_to_error::deserialize(read).map_err(|e| {
             let at = e.path().to_string();
             invalid("project_yaml", format!("{}: {at}: {}", folder::PROJECT, e.into_inner()))
-                .remedy("each entity is {name, kind, …}: see `cozy project --help`")
+                .remedy("each entity has a name and a kind: see `cozy project --help`")
         })?;
+        // A reference's kind follows from its file.
+        ignored.extend(
+            (project.references.iter().enumerate())
+                .filter(|(_, reference)| reference.fields.contains_key("kind"))
+                .map(|(n, _)| format!("references.{n}.kind")),
+        );
         let mut warnings: Vec<String> = ignored
             .iter()
             .map(|path| format!("{}: cozy reads no field {path}; it is ignored", folder::PROJECT))
             .collect();
+        for reference in &project.references {
+            let n = reference.files().len();
+            if n != 1 {
+                let said = format!("reference {} names {n} files", reference.name);
+                return Err(invalid("reference_file", said).remedy("give it one of video:, audio: or image:"));
+            }
+        }
         warnings.extend(
             (project.defaults.keys())
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
@@ -541,10 +585,28 @@ impl Video {
                 items.push(Item::Setup(a, s));
             }
         }
+        for (r, reference) in project.references.iter().enumerate() {
+            let (file, made) = versions(&reference.name, &Some(reference.file().1.to_owned()), false)?;
+            nodes.push(Node {
+                id: reference.name.clone(),
+                kind: "reference",
+                noun: "version",
+                mentionable: true,
+                state: false,
+                order: None,
+                texts: vec![],
+                needs: vec![],
+                writes: vec![],
+                inputs: vec![],
+                file,
+                versions: made,
+            });
+            items.push(Item::Reference(r));
+        }
         for entity in &project.entities {
             for (setup, frame) in entity.setups.iter().filter_map(|s| s.frame.as_ref().map(|f| (s, f))) {
                 let id = format!("{}.{}", entity.name, setup.name);
-                let fix = "write frame: {shot: <a shot's name>, at: <seconds into it>}";
+                let fix = "give frame: a shot: (its name) and an at: (seconds into it)";
                 let shot = project.shots.iter().find(|shot| name_key(&shot.name) == name_key(&frame.shot));
                 let Some(shot) = shot else {
                     return Err(invalid(
@@ -659,12 +721,15 @@ impl Video {
                     return Err(invalid("write_twice", format!("{} writes {} twice", shot.name, write.state)));
                 }
             }
-            let mut named = BTreeSet::new();
-            for entry in &shot.references {
-                let name = entry.get("name").and_then(Value::as_str).unwrap_or_default();
-                if graph.find(name).is_some() || !named.insert(name_key(name)) {
-                    let said = format!("{}'s reference {name} has a name already taken", shot.name);
-                    return Err(invalid("reference_name", said).remedy("each reference's name is its own: rename it"));
+        }
+        // A still is made from pictures: a clip or a sound is for a shot.
+        for (node, upstream) in graph.nodes.iter().zip(&graph.upstream).filter(|(node, _)| node.kind != "shot") {
+            for edge in upstream {
+                let Item::Reference(r) = items[edge.node] else { continue };
+                let (field, _) = project.references[r].file();
+                if field != "image" {
+                    let said = format!("{} mentions {}, a {field} reference, which only a shot reads", node.id, graph.nodes[edge.node].id);
+                    return Err(invalid("reference_reader", said).remedy("mention it in a shot, or give this one a picture"));
                 }
             }
         }
@@ -684,6 +749,7 @@ impl Video {
     pub fn render(&self, i: usize) -> Render {
         let (kind, own) = match self.items[i] {
             Item::Entity(a) => ("entity", self.project.entities[a].render.as_ref()),
+            Item::Reference(_) => ("reference", None),
             Item::Setup(a, s) => ("setup", self.project.entities[a].setups[s].render.as_ref()),
             Item::State(w) => ("world_state", self.project.world_states[w].render.as_ref()),
             Item::Shot(k) => ("shot", self.project.shots[k].render.as_ref()),
@@ -721,8 +787,14 @@ impl Video {
     pub fn field(&self, i: usize) -> &'static str {
         match self.items[i] {
             Item::Shot(_) | Item::Upscale(_) => "video",
+            Item::Reference(r) => self.project.references[r].file().0,
             _ => "image",
         }
+    }
+
+    /// Whether node `i` is a person's file (`references:`), of which cozy makes nothing.
+    pub fn is_reference(&self, i: usize) -> bool {
+        matches!(self.items[i], Item::Reference(_))
     }
 
     /// Whether `render all` makes the node: every node but an upscale the edit does not need. A
@@ -785,14 +857,13 @@ impl Video {
                 let entity = &self.project.entities[a];
                 files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
             }
+            Item::Reference(r) => files.push(self.project.references[r].file().1),
             Item::Setup(a, s) => files.extend(self.project.entities[a].setups[s].image.as_deref()),
             Item::State(w) => files.extend(self.project.world_states[w].image.as_deref()),
             Item::Shot(k) => {
                 let shot = &self.project.shots[k];
                 files.extend([&shot.video, &shot.first_frame, &shot.last_frame].into_iter().filter_map(Option::as_deref));
                 files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
-                let references = shot.references.iter().flat_map(|entry| FILE_FIELDS.iter().filter_map(|field| entry.get(*field)));
-                files.extend(references.filter_map(Value::as_str));
             }
             Item::Upscale(k) => files.extend(self.project.shots[k].upscale.video.as_deref()),
         }
@@ -885,6 +956,7 @@ impl Video {
                 let prompt = styled(format!("{}\n\n{shown}", entity.description.trim()));
                 (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": ratio}), None)
             }
+            Item::Reference(_) => return Err(reference_made(&node.id)),
             Item::Setup(a, s) => {
                 // The environment's picture (or a shot's frame) first, and the camera in screen terms
                 // as written (environment-angles REPORT.md): bare camera words return a mirror.
@@ -995,7 +1067,7 @@ impl Video {
     /// - `references`: each entity it reads (its description, a character's voice), its setup's
     ///   picture as its environment's, each world state as a loose environment picture with its
     ///   blocking (the version current at the call's start: the shot's own frame once it wrote it,
-    ///   `own`), then the shot's own references;
+    ///   `own`), then each file of `references:` it mentions;
     /// - its plate, its first frame (first call), its last frame (last call), and the call before
     ///   it as `continue_from`.
     ///
@@ -1102,15 +1174,10 @@ impl Video {
                 _ => {}
             }
         }
-        for entry in &shot.references {
-            let mut sources = vec![];
-            for field in FILE_FIELDS {
-                if let Some(path) = entry.get(field).and_then(Value::as_str) {
-                    let (path, digest) = file(path)?;
-                    sources.push((field, path, digest));
-                }
-            }
-            add(entry.clone(), sources, files);
+        for read in reads {
+            let Item::Reference(r) = self.items[read.edge.node] else { continue };
+            let reference = &self.project.references[r];
+            add(reference.entry(), vec![(reference.file().0, read.path.clone(), read.digest.clone())], files);
         }
         let mut payload = Map::new();
         let mut text = shot.prompt.clone();
@@ -1194,7 +1261,7 @@ impl Video {
         for (name, start, end) in cuts {
             let k = (self.project.shots.iter()).position(|s| name_key(&s.name) == name_key(name)).ok_or_else(|| {
                 invalid("cut_unknown", format!("the edit cuts {name}, which is no shot"))
-                    .remedy("each edit entry is {shot: <a shot's name>, start?, end?}")
+                    .remedy("each edit entry names a shot:, with an optional start: and end:")
             })?;
             let shot = &self.project.shots[k];
             let upscale = self.graph.find(&format!("{}.upscale", shot.name)).expect("a shot's upscale is a node");
@@ -1206,7 +1273,7 @@ impl Video {
             let (start, end) = (start.unwrap_or(0), end.unwrap_or((shot.duration_s * self.canvas.fps).round() as u64));
             if start >= end {
                 let said = format!("the edit cuts {name} from frame {start} to {end}: nothing");
-                return Err(invalid("cut_empty", said).remedy("each edit entry is {shot, start?, end?} in frames, start before end"));
+                return Err(invalid("cut_empty", said).remedy("each edit entry names a shot:, with start: and end: in frames, start before end"));
             }
             match &node.file {
                 Some((file, digest)) => {
@@ -1621,17 +1688,9 @@ fn input_file(inputs: &BTreeMap<String, folder::Input>, id: &str, field: &str, p
     Ok((format!("{id}.{field}"), sha256))
 }
 
-/// A shot's own files: its references', its plate's, its first and last frames.
+/// A shot's own files: its plate's, its first and last frames.
 fn shot_inputs(input_file: &impl Fn(&str, &str, &str) -> Result<(String, String), Error>, shot: &Shot) -> Result<Vec<(String, String)>, Error> {
     let mut found = vec![];
-    for entry in &shot.references {
-        let name = entry.get("name").and_then(Value::as_str).unwrap_or_default();
-        for field in FILE_FIELDS {
-            if let Some(path) = entry.get(field).and_then(Value::as_str) {
-                found.push(input_file(&shot.name, &format!("{name}.{field}"), path)?);
-            }
-        }
-    }
     if let Some(path) = shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str) {
         found.push(input_file(&shot.name, "plate", path)?);
     }
@@ -1672,21 +1731,20 @@ fn current(
     Ok((Some((clean.path.clone(), clean.sha256.clone())), versions))
 }
 
-/// Every file project.yaml names: attached pictures and videos, voices, shots' references, plates
-/// and frames.
+/// Every file project.yaml names: attached pictures and videos, voices, references, plates and
+/// frames.
 fn named(project: &Project) -> Vec<&str> {
     let mut files: Vec<&str> = vec![];
     for entity in &project.entities {
         files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
         files.extend(entity.setups.iter().filter_map(|setup| setup.image.as_deref()));
     }
+    files.extend(project.references.iter().map(|reference| reference.file().1));
     files.extend(project.world_states.iter().filter_map(|state| state.image.as_deref()));
     for shot in &project.shots {
         let own = [&shot.video, &shot.upscale.video, &shot.first_frame, &shot.last_frame];
         files.extend(own.into_iter().filter_map(Option::as_deref));
-        let plate = shot.plate.as_ref().and_then(|plate| plate.get("video"));
-        let references = shot.references.iter().flat_map(|entry| FILE_FIELDS.iter().filter_map(|field| entry.get(*field)));
-        files.extend(plate.into_iter().chain(references).filter_map(Value::as_str));
+        files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
     }
     files
 }
@@ -1698,6 +1756,12 @@ fn listed<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(read: D) -> Res
 
 fn invalid(code: &str, message: String) -> Error {
     Error::new(Kind::Validation, code, message)
+}
+
+/// The refusal to render a reference.
+pub fn reference_made(name: &str) -> Error {
+    let said = format!("{name} is a file project.yaml names: cozy makes no versions of it");
+    Error::new(Kind::Usage, "reference_file", said).remedy("render a shot that mentions it")
 }
 
 fn failed(message: String) -> Error {

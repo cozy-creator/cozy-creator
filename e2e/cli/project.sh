@@ -53,8 +53,11 @@ entities:
   - {name: place, kind: environment, description: "a plain test card", render: {with: ./draw.py/draw}}
   - {name: stage, kind: environment, description: "a teal stage", image: $E/stage.png,
      setups: [{name: a, camera: "wide", render: {with: ./draw.py/draw}}]}
+references:
+  - name: look
+    video: $E/look.mp4
 shots:
-  - {name: a, prompt: "test pattern a", duration_s: 6, video: plates/a.mp4, references: [{name: look, kind: video, video: $E/look.mp4}]}
+  - {name: a, prompt: "test pattern a, moving like <look>", duration_s: 6, video: plates/a.mp4}
   - {name: b, prompt: "test pattern b", duration_s: 6, video: plates/b.mp4}
 edit: [{shot: a, start: 12, end: 132}, {shot: b, start: 12, end: 132}]
 YAML
@@ -140,6 +143,7 @@ cozy --json project -p "$P" status > "$OUT/project-renamed.json" 2>/dev/null || 
   && [ "$(jq -r .nodes.yard.approved "$P/project.lock")" = "$approved" ]; } \
   || check "after the rename yard is not place's 3 versions with 2 approved: $(jq -c '{orphans, yard: (.nodes[]? | select(.name == "yard"))}' "$OUT/project-renamed.json")"
 
+references
 reflinked
 frames_otio
 http_surface "$P" "$ID"
@@ -158,6 +162,120 @@ done
 cozy --json project ls > "$OUT/project-ls-3.json" || true
 { J --arg a "$ID" --arg b "$id2" '.projects | all(.id != $a and .id != $b)' "$OUT/project-ls-3.json" && [ -f "$OUT/garden-moved/project.yaml" ]; } \
   || check "DELETE did not forget the project, or touched its folder"
+}
+
+# references: a top-level reference reaches the shots that mention it (in a prompt, in a beat, in any case) and no other,
+# as the function gets it (shoot.py says what it was given); editing its file puts only those out of date and
+# render all remakes only those; gone, they cannot render and the rest can. What is refused and warned about.
+references() {
+step "a project: references reach the shots that mention them"
+local R=$OUT/refs
+cozy project new "$R" > /dev/null 2>&1 || check "project new for references failed"
+cp "$here/project/shoot.py" "$R/shoot.py"
+plate "$R/one.mp4" testsrc2 440 300; plate "$R/two.mp4" testsrc 550 300; plate "$R/three.mp4" rgbtestsrc 660 300
+plate "$R/clip.mp4" smptebars 330 300; still "$R/look.png" teal
+ffmpeg -v error -y -f lavfi -i "sine=frequency=220:sample_rate=32000:duration=2" "$R/voice.wav"
+local ONE TWO THREE
+cat > "$R/project.yaml" <<YAML
+defaults:
+  shot:
+    with: ./shoot.py/shoot
+references:
+  - name: clip
+    video: clip.mp4
+    use_audio: true
+  - name: narrator
+    audio: voice.wav
+  - name: look
+    image: look.png
+shots:
+  - name: mentions
+    prompt: <clip> again, <narrator> over it, in <look>.
+    duration_s: 6
+    plate:
+      video: one.mp4
+  - name: beat
+    prompt: A plain opening.
+    duration_s: 6
+    plate:
+      video: two.mp4
+    beats:
+      - at: 0
+        prompt: Then as in <CLIP>.
+  - name: plain
+    prompt: Nothing named here.
+    duration_s: 6
+    plate:
+      video: three.mp4
+YAML
+local code=0
+cozy project -p "$R" render all --on local > "$OUT/refs-render.txt" 2>&1 || code=$?
+[ "$code" = 0 ] || { check "references: render all: exit $code: $(tail -c 400 "$OUT/refs-render.txt")"; return; }
+given() { jq -c '[.[] | {name, kind, sha256, use_audio}]' "$R/$(jq -r --arg s "$1" '.nodes[$s].versions[-1].assets.given.path' "$R/project.lock")"; }
+local CLIP LOOK VOICE want
+CLIP=$(sha "$R/clip.mp4") LOOK=$(sha "$R/look.png") VOICE=$(sha "$R/voice.wav")
+want="[{\"kind\":\"video\",\"name\":\"clip\",\"sha256\":\"$CLIP\",\"use_audio\":true},{\"kind\":\"audio\",\"name\":\"narrator\",\"sha256\":\"$VOICE\",\"use_audio\":false},{\"kind\":\"prop\",\"name\":\"look\",\"sha256\":\"$LOOK\",\"use_audio\":false}]"
+ONE=$(given mentions) TWO=$(given beat) THREE=$(given plain)
+[ "$(jq -cS . <<< "$ONE")" = "$(jq -cS . <<< "$want")" ] || check "references: mentions was given $ONE, not $want"
+[ "$(jq -c '[.[].name]' <<< "$TWO")" = '["clip"]' ] || check "references: a mention in a beat, in another case, was given $TWO"
+[ "$THREE" = '[]' ] || check "references: a shot that mentions none was given $THREE"
+J '.nodes.mentions.versions[-1].upstream | any(.node == "clip" and .asset == "sha256:'"$CLIP"'")' "$R/project.lock" \
+  || check "references: the take does not record what it read: $(jq -c '.nodes.mentions.versions[-1].upstream' "$R/project.lock")"
+{ [ "$(readlink "$R/assets/$CLIP.mp4")" = "$R/clip.mp4" ] && J '.inputs["clip.mp4"].method == "symlink"' "$R/project.lock"; } \
+  || check "references: clip.mp4 not taken in by symlink: $(jq -c '.inputs["clip.mp4"]' "$R/project.lock")"
+cozy --json project -p "$R" status > "$OUT/refs-status.json" 2> /dev/null || check "references: status failed"
+J '(.stale | length == 0) and (.warnings | length == 0) and (.nodes[] | select(.name == "clip") | .kind == "reference" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
+  || check "references: after render all: $(jq -c '{stale, warnings, clip: (.nodes[]? | select(.name == "clip"))}' "$OUT/refs-status.json")"
+
+step "a project: a reference edited puts only what mentions it out of date"
+plate "$R/clip.mp4" rgbtestsrc 330 400
+cozy project -p "$R" status > "$OUT/refs-changed.txt" 2>&1 || true
+grep -q 'reference changed: clip.mp4' "$OUT/refs-changed.txt" || check "references: status does not say clip.mp4 changed: $(tail -c 300 "$OUT/refs-changed.txt")"
+cozy --json project -p "$R" status > "$OUT/refs-changed.json" 2> /dev/null || true
+J '[.stale[] | "\(.name): \(.why)"] | sort == ["beat: clip changed", "mentions: clip changed"]' "$OUT/refs-changed.json" \
+  || check "references: out of date: $(jq -c .stale "$OUT/refs-changed.json"), not exactly beat and mentions"
+cozy project -p "$R" render all --on local > "$OUT/refs-render-2.txt" 2>&1 || check "references: render all after the edit: $(tail -c 300 "$OUT/refs-render-2.txt")"
+J '(.nodes.mentions.versions | length) == 2 and (.nodes.beat.versions | length) == 2 and (.nodes.plain.versions | length) == 1' "$R/project.lock" \
+  || check "references: render all did not remake exactly the two: $(jq -c '.nodes | map_values(.versions | length)' "$R/project.lock")"
+CLIP=$(sha "$R/clip.mp4")
+[ "$(given beat | jq -r '.[0].sha256')" = "$CLIP" ] || check "references: beat's new take was not given the edited clip: $(given beat)"
+
+step "a project: a reference gone, a reference rendered, a name used twice"
+mv "$R/clip.mp4" "$R/clip-moved.mp4"
+cozy project -p "$R" status > "$OUT/refs-missing.txt" 2>&1 || true
+grep -q 'reference missing: clip.mp4: relink' "$OUT/refs-missing.txt" || check "references: a moved file: status does not say relink: $(tail -c 300 "$OUT/refs-missing.txt")"
+code=0; cozy project -p "$R" render mentions --on local > "$OUT/refs-missing-render.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'reference missing' "$OUT/refs-missing-render.txt"; } || check "references: mentions rendered with its file gone (exit $code): $(tail -c 300 "$OUT/refs-missing-render.txt")"
+cozy project -p "$R" render plain --on local > "$OUT/refs-plain.txt" 2>&1 || check "references: plain did not render with an unrelated file gone: $(tail -c 300 "$OUT/refs-plain.txt")"
+mv "$R/clip-moved.mp4" "$R/clip.mp4"
+code=0; cozy project -p "$R" render clip --on local > "$OUT/refs-made.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q reference_file "$OUT/refs-made.txt"; } || check "references: render clip was not refused (exit $code): $(tail -c 300 "$OUT/refs-made.txt")"
+cp "$R/project.yaml" "$OUT/refs-ok.yaml"
+cat >> "$R/project.yaml" <<YAML
+entities:
+  - name: CLIP
+    kind: prop
+    description: A clip.
+YAML
+code=0; cozy project -p "$R" status > "$OUT/refs-twice.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'two nodes are named' "$OUT/refs-twice.txt"; } || check "references: a name used twice, in another case, was not refused (exit $code): $(tail -c 300 "$OUT/refs-twice.txt")"
+cp "$OUT/refs-ok.yaml" "$R/project.yaml"
+cat >> "$R/project.yaml" <<YAML
+entities:
+  - name: prop
+    kind: prop
+    description: Seen in <clip>.
+YAML
+code=0; cozy project -p "$R" status > "$OUT/refs-reader.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'which only a shot reads' "$OUT/refs-reader.txt"; } || check "references: an entity mentioning a clip was not refused (exit $code): $(tail -c 300 "$OUT/refs-reader.txt")"
+
+step "a project: a shot's own references: is ignored, with the warning"
+cp "$OUT/refs-ok.yaml" "$R/project.yaml"
+sed -i 's|^  - name: plain$|  - name: plain\n    references:\n      - name: old\n        kind: video\n        video: clip.mp4|' "$R/project.yaml"
+cozy --json project -p "$R" status > "$OUT/refs-old.json" 2> "$OUT/refs-old.err" || check "references: status with a shot's references: failed: $(tail -c 300 "$OUT/refs-old.err")"
+J '.warnings | any(test("cozy reads no field shots\\.2\\.references; it is ignored"))' "$OUT/refs-old.json" \
+  || check "references: a shot's references: did not warn: $(jq -c .warnings "$OUT/refs-old.json")"
+J '[.nodes[].name] | index("old") == null' "$OUT/refs-old.json" || check "references: a shot's references: was read: $(jq -c '[.nodes[].name]' "$OUT/refs-old.json")"
 }
 
 # A reference on a filesystem with copy-on-write clones (an XFS image made here): taken in by reflink, the project's

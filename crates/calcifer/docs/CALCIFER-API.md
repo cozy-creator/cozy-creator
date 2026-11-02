@@ -338,11 +338,13 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   versions, approved?, assets, path?, made_by?, status}`: `versions` counts them, `approved` is the approved
   one's number (absent for a file attached by hand), `assets` what the node reads as now by output name,
   `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
-  keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none.
+  keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none. A
+  file under `references:` is a node of kind `reference`: shots read it by mention, and it has no versions.
 - `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?}]}`.
 - `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?}` (`Idempotency-Key`): `n` new takes
   or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
-  cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). `202 {id, path}`; the
+  cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1); a reference is refused
+  (`400 reference_file`). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.
 - `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from`
   (versions, approval, what other versions read of it, what is owed) is kept as `to`, a node project.yaml names

@@ -50,7 +50,7 @@ pub struct Node {
     pub needs: Vec<String>,
     /// States it writes, by name.
     pub writes: Vec<String>,
-    /// Files it reads that are no node's (a shot's references, a character's voice), by a key and
+    /// Files it reads that are no node's (a shot's plate, a character's voice), by a key and
     /// their digest: a version made from another file is out of date.
     pub inputs: Vec<(String, String)>,
     /// The file it reads as now (relative to the project) and its digest: the approved version's
