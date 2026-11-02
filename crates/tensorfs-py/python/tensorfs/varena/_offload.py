@@ -139,16 +139,19 @@ class _Weight(torch.Tensor):
     @staticmethod
     def __new__(cls, version, shape, strides, offset=0):
         version.byte_offset(shape, strides, offset)
-        return torch.Tensor._make_wrapper_subclass(
-            cls,
-            shape,
-            strides=strides,
-            storage_offset=offset,
-            dtype=getattr(torch, version.source.dtype),
-            device=version.owner.device,
-            layout=torch.strided,
-            requires_grad=False,
-        )
+        # Alias dispatch shares version counters. Only the immutable metadata
+        # shell needs one; actual computation keeps the caller's inference mode.
+        with torch.inference_mode(False):
+            return torch.Tensor._make_wrapper_subclass(
+                cls,
+                shape,
+                strides=strides,
+                storage_offset=offset,
+                dtype=getattr(torch, version.source.dtype),
+                device=version.owner.device,
+                layout=torch.strided,
+                requires_grad=False,
+            )
 
     def __init__(self, version, shape, strides, offset=0):
         self._version_owner = version
