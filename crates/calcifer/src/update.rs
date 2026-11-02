@@ -6,6 +6,7 @@
 //! run holds new runs behind it and waits for those in flight; it succeeds only when the machine
 //! then runs what it asked for (`verified`).
 use std::{path::Path, sync::Arc};
+use sha2::Digest as _;
 
 use axum::{
     Json,
@@ -53,7 +54,7 @@ impl Machines {
             "" => self.hubs.default_origin(),
             hub => hub.to_owned(),
         };
-        let flagless = asked.is_empty() && ask.gpu_memory_limit.is_none();
+        let flagless = asked.is_empty() && ask.gpu_memory_limit.is_none() && ask.mode.is_none();
         // The cozy `cozy update` installed here and `local` has not moved to yet: it goes with the
         // update, unless another `cozy` is named.
         let mut placed = placed(self, &m).await;
@@ -87,6 +88,7 @@ impl Machines {
         }
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
         let (mut payload, mut inputs, mut staged, mut named) = (serde_json::Map::new(), vec![], vec![], vec![]);
+        let (mut input_owners, mut original_paths) = (vec![], vec![]);
         for (member, distribution, component) in asked {
             let path = match component {
                 Component::Version(version) => {
@@ -111,9 +113,11 @@ impl Machines {
                 }
                 Component::File(path) => path,
             };
-            let (file, input, version) = tokio::task::spawn_blocking(move || measured(&path, distribution))
+            original_paths.push(path.clone());
+            let Measured { file, input, version, bundle } = tokio::task::spawn_blocking(move || measured(&path, distribution))
                 .await
                 .map_err(internal)??;
+            input_owners.extend(bundle);
             named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));
             inputs.push(v1::InputFile {
                 field: member.into(),
@@ -147,10 +151,14 @@ impl Machines {
             });
             payload.insert("gpu_memory_limit".into(), limit.into());
         }
+        if let Some(mode) = ask.mode {
+            named.push(format!("mode {}", mode.name()));
+            payload.insert("mode".into(), mode.name().into());
+        }
         let mut warnings = vec![];
-        // A new binary or a limit restarts the machine: either way its warm models reload.
+        // Binary, limit and mode changes all use the ordinary drain and restart.
         let warm = m.status.as_ref().is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()));
-        if (restarts || ask.gpu_memory_limit.is_some()) && warm {
+        if (restarts || ask.gpu_memory_limit.is_some() || ask.mode.is_some()) && warm {
             warnings.push(format!("{}'s warm models reload after it restarts", m.name));
         }
         let target = named.join(", ");
@@ -170,7 +178,11 @@ impl Machines {
             out: None,
             warnings: vec![],
         };
-        let submitted = self.calcifer.submit(key, submit).await.map_err(|e| Refusal::from(e).0)?;
+        // Generated bundle directories are custody, not request identity. Keep the
+        // original file names plus actual packed digests stable across same-key retries.
+        let digest = submission_identity(&submit, &original_paths);
+        let submitted = self.calcifer.submit_with_input_owners(key, &digest, submit, input_owners)
+            .await.map_err(|e| Refusal::from(e).0)?;
         let updating = Updating { machine: m, run: Some(submitted.run), target, warnings };
         Ok((updating, !submitted.replay))
     }
@@ -184,7 +196,19 @@ impl Machines {
             return outcome;
         };
         let want = wanted(&row.spec);
-        let Ok(m) = self.show(name).await else { return outcome };
+        let m = match self.show(name).await {
+            Ok(machine) => machine,
+            Err(error) if want.iter().any(|(field, _)| *field == "mode") => {
+                outcome.status = "failed".into();
+                outcome.reason = Some(v1::Reason {
+                    code: "update_unapplied".into(),
+                    message: format!("{name}'s update could not verify the requested mode: {error}"),
+                    origin: "machine".into(), detail: String::new(),
+                });
+                return outcome;
+            }
+            Err(_) => return outcome,
+        };
         let status = m.status.clone().unwrap_or_default();
         if m.unreachable.is_none() && runs(&status, &want) {
             return outcome;
@@ -197,7 +221,10 @@ impl Machines {
             ..status.clone()
         });
         let named: Vec<_> = want.iter().filter(|(field, _)| *field != "dev").cloned().collect();
-        if left.is_some_and(|left| m.unreachable.is_some() && runs(&left, &named)) {
+        // Software `to` does not report mode. A requested mode requires live status.
+        if !want.iter().any(|(field, _)| *field == "mode")
+            && left.is_some_and(|left| m.unreachable.is_some() && runs(&left, &named))
+        {
             return outcome;
         }
         let log = self.logs(name, wire::MachineLog::Tensord, 1000).await.unwrap_or_default();
@@ -310,9 +337,27 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
     Ok(Some((format!("{base}/{}", chosen.1), chosen.0.to_owned())))
 }
 
+fn submission_identity(submit: &SubmitRun, originals: &[std::path::PathBuf]) -> String {
+    let mut identity = submit.clone();
+    assert_eq!(identity.inputs.len(), originals.len());
+    for (input, original) in identity.inputs.iter_mut().zip(originals) {
+        input.path = original.clone();
+    }
+    format!("sha256:{}", hex::encode(sha2::Sha256::digest(
+        serde_json::to_vec(&identity).expect("submission JSON"),
+    )))
+}
+
 /// A local wheel of `distribution` (or, empty, a `cozy` binary), measured once: its file name, what
 /// the run stages, and for a `cozy` binary the release it says it is when it runs here.
-fn measured(path: &Path, distribution: &str) -> Result<(String, StagedInput, Option<String>), Error> {
+struct Measured {
+    file: String,
+    input: StagedInput,
+    version: Option<String>,
+    bundle: Option<tempfile::TempDir>,
+}
+
+fn measured(path: &Path, distribution: &str) -> Result<Measured, Error> {
     let refused = |why: String| Error::new(Kind::Validation, "wheel_refused", why);
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let regular = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
@@ -323,13 +368,24 @@ fn measured(path: &Path, distribution: &str) -> Result<(String, StagedInput, Opt
             _ => format!("{} is not a {distribution} wheel file named by its absolute path ({distribution}-<version>-….whl)", path.display()),
         }));
     }
-    let bytes = std::fs::read(path).map_err(|e| refused(format!("{}: {e}", path.display())))?;
-    let input = StagedInput { path: path.to_path_buf(), digest: Digest::of(&bytes), length: bytes.len() as u64 };
-    let version = match distribution {
-        "" => says(path),
-        _ => None,
-    };
-    Ok((file.to_owned(), input, version))
+    // Read the original runnable binary's version, never try to execute its archive.
+    let version = distribution.is_empty().then(|| says(path)).flatten();
+    let mut source = path.to_path_buf();
+    let mut bundle = None;
+    if distribution.is_empty() {
+        let failed = |error: std::io::Error| Error::new(Kind::Validation, "native_bundle_failed", error.to_string());
+        let temporary = tempfile::Builder::new().prefix("cozy-native-").tempdir().map_err(failed)?;
+        if let Some(packed) = platform::native_bundle::pack_binary(path, &temporary.path().join("cozy-native.tar.gz"))
+            .map_err(failed)?
+        {
+            source = packed;
+            bundle = Some(temporary);
+        }
+    }
+    let bytes = std::fs::read(&source).map_err(|e| refused(format!("{}: {e}", source.display())))?;
+    let file = source.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+    let input = StagedInput { path: source, digest: Digest::of(&bytes), length: bytes.len() as u64 };
+    Ok(Measured { file, input, version, bundle })
 }
 
 /// What a machine that carried out update `spec` reports: each wheel's version (a staged one's
@@ -355,6 +411,9 @@ fn wanted(spec: &v1::RunSpec) -> Vec<(&'static str, Value)> {
             None => {}
         }
     }
+    if let Some(mode) = payload["mode"].as_str() {
+        want.push(("mode", mode.into()));
+    }
     want
 }
 
@@ -374,8 +433,9 @@ fn unapplied(m: &Machine, s: &MachineStatus, want: &[(&str, Value)], line: Optio
         .collect();
     let build = if s.dev { "dev build" } else { "release" };
     let message = format!(
-        "{}'s update succeeded but it runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {}, not the requested {}",
-        m.name, s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs, asked.join(", ")
+        "{}'s update succeeded but it runs cozy {} ({build} {}), cozy-runtime {}, tensorfs {}, mode {}, not the requested {}",
+        m.name, s.version, s.commit.get(..12).unwrap_or(&s.commit), s.runtime, s.tensorfs,
+        if s.mode.is_empty() { "unknown" } else { &s.mode }, asked.join(", ")
     );
     match line {
         Some(line) => format!("{message}: {}", line.trim()),
@@ -388,3 +448,7 @@ fn newer(a: &str, b: &str) -> bool {
     let parts = |v: &str| -> Vec<u64> { v.split('.').map_while(|p| p.parse().ok()).collect() };
     parts(a) > parts(b)
 }
+
+
+#[cfg(test)]
+mod proof;

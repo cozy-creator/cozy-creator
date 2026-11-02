@@ -176,6 +176,7 @@ pub async fn update(
     tensorfs: Option<String>,
     tensord: Option<String>,
     gpu_memory_limit: Option<u64>,
+    mode: Option<protocol::config::MachineMode>,
 ) -> Result<ExitCode, Error> {
     protocol::calcifer::local_usable(name)?;
     let ask = MachineUpdate {
@@ -183,6 +184,7 @@ pub async fn update(
         tensorfs: tensorfs.map(|v| component(&v, "tensorfs")).transpose()?,
         tensord: tensord.map(|v| component(&v, "")).transpose()?,
         gpu_memory_limit,
+        mode,
     };
     let dev = matches!(ask.tensord, Some(Component::File(_)));
     let path = format!("{}/update", route(name)?);
@@ -281,7 +283,27 @@ fn build(dir: &Path, distribution: &str) -> Result<PathBuf, Error> {
         Err(e) => return Err(failed(e.to_string())),
     }
     if distribution.is_empty() {
-        return Ok(dir.join("target/release").join(if cfg!(windows) { "cozy.exe" } else { "cozy" }));
+        let profile = std::path::absolute(dir.join("target/release")).map_err(|e| failed(e.to_string()))?;
+        let binary = profile.join(if cfg!(windows) { "cozy.exe" } else { "cozy" });
+        let bundled = std::path::absolute(out.join("native")).map_err(|e| failed(e.to_string()))?;
+        std::fs::create_dir_all(&bundled).map_err(|e| failed(e.to_string()))?;
+        let script = std::path::absolute(dir.join("scripts/bundle-native.py")).map_err(|e| failed(e.to_string()))?;
+        let mut command = std::process::Command::new("uv");
+        command.args(["run", "--no-project"]);
+        if cfg!(target_os = "linux") { command.args(["--with", "patchelf"]); }
+        let output = command.arg("python").arg(&script)
+            .arg("--binary").arg(&binary).arg("--target").arg(&profile)
+            .arg("--out").arg(&bundled).current_dir(dir)
+            .stdin(std::process::Stdio::null()).output().map_err(|e| failed(e.to_string()))?;
+        let mut log = output.stdout;
+        log.extend_from_slice(&output.stderr);
+        std::fs::write(out.join("native-bundle.log"), &log).map_err(|e| failed(e.to_string()))?;
+        if !output.status.success() {
+            return Err(failed(format!("native dependency bundling exited {}: {}", output.status, String::from_utf8_lossy(&log))));
+        }
+        // Calcifer measures the runnable binary's version and packs these verified
+        // private-linked sidecars with it; no CLI network update route is involved.
+        return Ok(bundled.join(binary.file_name().expect("binary name")));
     }
     let newest = std::fs::read_dir(&out)
         .map_err(|e| failed(e.to_string()))?
@@ -388,16 +410,17 @@ fn stamp(wheel: &Path, local: &str) -> std::io::Result<PathBuf> {
 /// The machine's three components after an update.
 fn updated(ctx: &Context, name: &str, s: &MachineStatus) {
     if ctx.json {
-        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
+        output::json(&serde_json::json!({"machine": name, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode": s.mode}));
     } else {
         let build = if s.dev { " (dev build)" } else { "" };
-        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}", s.version, s.runtime, s.tensorfs));
+        output::say(ctx, &format!("{name} runs TensorD (cozy) {}{build}, Runtime {}, TensorFS {}, mode {}", s.version, s.runtime, s.tensorfs,
+            if s.mode.is_empty() { "unknown" } else { &s.mode }));
     }
 }
 
 fn up_to_date(ctx: &Context, m: &Machine, s: &MachineStatus) -> Result<ExitCode, Error> {
     if ctx.json {
-        output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs}));
+        output::json(&serde_json::json!({"machine": m.name, "changed": false, "tensord": s.version, "runtime": s.runtime, "tensorfs": s.tensorfs, "mode": s.mode}));
     } else {
         output::say(ctx, &format!(
             "{} runs TensorD (cozy) {}, Runtime {}, TensorFS {}: the Hub's target, nothing to update",
