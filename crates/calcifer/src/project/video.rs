@@ -45,36 +45,41 @@ aspect_ratio: "16:9"
 fps: 24
 
 entities:
-  - name: ash
+  - name: kyogre
     kind: character
-    description: Ash Ketchum, a cheerful ten-year-old Pokémon trainer in a red-and-white cap, a blue jacket and green fingerless gloves.
+    description: Kyogre, the colossal blue legendary Pokémon of the sea, whale-like, with vast fin-like arms and glowing red lines along its body.
 
-  - name: pikachu
+  - name: groudon
     kind: character
-    description: Pikachu, a small yellow electric Pokémon with black-tipped ears, red cheeks and a lightning-bolt tail.
+    description: Groudon, the colossal red legendary Pokémon of the land, armored in grey stone plates, with huge claws and glowing black lines along its body.
 
-  - name: meadow
+  - name: coast
     kind: environment
-    description: a windy hillside meadow of tall grass above Pallet Town, at golden hour
+    description: a volcanic coast in Hoenn where a raging storm sea meets cliffs running with lava, the crater city of Sootopolis small in the distance
     setups:
       - name: wide
-        camera: "wide: a lone oak near on the left, the town and the sea far on the right"
+        camera: "wide: the storm sea on the left, the lava cliffs on the right, Sootopolis small and far between them"
 
 shots:
-  - name: rustle
-    setup: meadow.wide
-    prompt: <ash> walks through the tall grass of <meadow> and stops as something rustles near his feet.
+  - name: awaken
+    setup: coast.wide
+    prompt: <kyogre> rises out of the black sea off <coast>, water pouring from its fins as a torrential storm gathers around it.
     duration_s: 6
 
-  - name: friends
-    setup: meadow.wide
-    prompt: <pikachu> bursts out of the grass in front of <ash>, its cheeks crackling with sparks.
-    duration_s: 8
+  - name: erupt
+    setup: coast.wide
+    prompt: <groudon> climbs out of the lava on the cliffs of <coast> and roars, the rain turning to steam around it under a burning sun.
+    duration_s: 6
+
+  - name: clash
+    setup: coast.wide
+    prompt: <kyogre> and <groudon> charge each other across <coast> as storm and sun collide overhead.
+    duration_s: 10
     beats:
       - at: 0
-        prompt: <ash> jumps back, startled, then laughs.
-      - at: 4
-        prompt: <ash> kneels and holds out his hand, and <pikachu> hops up onto his shoulder.
+        prompt: <kyogre> blasts a huge column of water at <groudon>, which erupts into steam against its armor.
+      - at: 5
+        prompt: <groudon> answers with a torrent of fire, and the two titans crash together in the surf.
 "#
     .into()
 }

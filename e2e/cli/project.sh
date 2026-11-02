@@ -43,7 +43,7 @@ cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed
 [ "$(ls -A "$P" 2>/dev/null)" = project.yaml ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.yaml"
 # The new project's film parses as it stands: its nodes are all listed, nothing refused.
 cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
-for node in ash pikachu meadow meadow.wide rustle friends; do grep -q "$node" "$OUT/project-new-status.txt" || check "a new project's status names no $node"; done
+for node in kyogre groudon coast coast.wide awaken erupt clash; do grep -q "$node" "$OUT/project-new-status.txt" || check "a new project's status names no $node"; done
 mkdir -p "$P/plates" "$E"
 plate "$P/plates/a.mp4" testsrc2 440 1800; plate "$P/plates/b.mp4" testsrc 550 900; plate "$P/plates/c.mp4" rgbtestsrc 660 1200
 plate "$E/look.mp4" smptebars 330 600; still "$E/stage.png" teal
