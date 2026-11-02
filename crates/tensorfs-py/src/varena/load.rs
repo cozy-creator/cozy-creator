@@ -60,7 +60,7 @@ impl LoadSlot {
                 "load slot needs nonempty stored parts and destination",
             ));
         }
-        let arena = arena.arena.clone();
+        let arena = arena.owner()?;
         let checkpoint = checkpoint.core(py)?;
         let (region, work) = py
             .detach(|| {
@@ -99,7 +99,7 @@ impl LoadSlot {
         max_scratch_bytes: usize,
         threads: usize,
     ) -> PyResult<Self> {
-        let arena = arena.arena.clone();
+        let arena = arena.owner()?;
         let checkpoint = checkpoint.core(py)?;
         let (region, work) = py
             .detach(|| {

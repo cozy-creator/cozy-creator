@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "source_sha": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+    "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "native_source": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+    "mixed_sources": {
+      "repository_base": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "crates/varena": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "release-gate/suites/varena/cache-pages": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24"
+    },
+    "native_tree": "293b1e2dece4709171dc9b7f3d8c49649311ea08",
+    "binary_sha256": "a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf",
+    "archive_sha256": "7e7482161aa7b08c461b4627446fd5bdb826ae7811bdc35b85e4aea538e9cd04",
+    "source_receipt_sha256": "246461ed443e2a15944541ffd34eaf02bf3084ca985f035633f6545bba284fae",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "scope": "red-e545: identical actual Cache split-choice fixture; only native core differs; no callback bridge or GPU proof yet"
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/choice-pair/red-e545/controller-hitoshiki/project",
+  "files": {
+    "ci_varena_cache_pages/__init__.py": "73c60e0a0fb4a679091b8c702a306626b3ed8710d732262080fa493f8aa6f4d1",
+    "ci_varena_cache_pages/bin/provenance.json": "ca977b7e10e51be47d00da94fcc31dd1acd04e1eb8f9bdd0f7d5b2242d217008",
+    "ci_varena_cache_pages/bin/varena-cache-pages": "a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf",
+    "pyproject.toml": "b7ed2af66a12cd5d1ff21283219f6c1d3dea5b37840abcb80917860c48878cd2",
+    "uv.lock": "d8ff437c54f8215e4d07c9e5047d40d52c8a55d125648dd6f2969a37e0663370"
+  },
+  "input": {
+    "source_sha": "c7f1b214a67a3f400e176bbb717a3fcc32b1bf24",
+    "helper_sha256": "a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf",
+    "native_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+  },
+  "gpu_uuid_bound": true,
+  "gpu_executed": false
+}
