@@ -4611,6 +4611,8 @@ dependencies = [
  "libc",
  "libloading 0.9.0",
  "serde_json",
+ "tensorfs",
+ "tokio",
  "varena",
 ]
 

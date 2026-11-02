@@ -19,6 +19,9 @@ def main():
     parser.add_argument('--source-receipt', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--async-binary', type=Path, required=True)
+    parser.add_argument('--raw-source-binary', type=Path, required=True)
+    parser.add_argument('--public-source-binary', type=Path, required=True)
+    parser.add_argument('--rust-source-binary', type=Path, required=True)
     parser.add_argument('--native-libraries', type=Path, required=True,
                         help='exact bundled libvarena.so and matching Rust std from the TensorFS wheel')
     parser.add_argument('--native-extension-sha256', required=True)
@@ -68,7 +71,8 @@ def main():
         floor = {tuple(map(int, x)) for x in re.findall(r'GLIBC_(\d+)\.(\d+)', info)}
         assert not floor or max(floor) <= (2, 28)
         assert 'GLIBC_ABI_' not in info and 'GLIBC_PRIVATE' not in info
-        assert subprocess.check_output(['patchelf', '--print-rpath', str(library)], text=True).strip() == '$ORIGIN'
+        rpath = subprocess.check_output(['patchelf', '--print-rpath', str(library)], text=True).strip()
+        assert rpath == '$ORIGIN' if library.name == 'libvarena.so' else rpath in ('', '$ORIGIN')
         shutil.copy2(library, target / 'lib' / library.name)
     manifest['libraries'] = {p.name: sha(p) for p in libraries}
     subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/lib', str(target / 'varena-cache-pages')], check=True)
@@ -90,6 +94,29 @@ def main():
                               'glibc_versions': async_glibc, 'glibc_max': async_glibc[-1]}}
     (target / 'varena-cache-pages.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (target / 'varena-async-fill.json').write_text(json.dumps(async_manifest, indent=2) + '\n')
+    extra_manifests = {}
+    for name, binary in [('varena-raw-source', args.raw_source_binary),
+                         ('varena-public-source', args.public_source_binary),
+                         ('varena-rust-source', args.rust_source_binary)]:
+        copied = target / name
+        shutil.copy2(binary, copied)
+        copied.chmod(0o755)
+        subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/lib', str(copied)], check=True)
+        extra_header = subprocess.check_output(['readelf', '-h', str(copied)], text=True)
+        extra_dynamic = subprocess.check_output(['readelf', '-d', str(copied)], text=True)
+        extra_versions = subprocess.check_output(['readelf', '--version-info', str(copied)], text=True)
+        assert 'ELF64' in extra_header and 'Advanced Micro Devices X86-64' in extra_header
+        extra_needed = re.findall(r'Shared library: \[([^]]+)\]', extra_dynamic)
+        extra_glibc = sorted({tuple(map(int, x)) for x in re.findall(r'GLIBC_(\d+)\.(\d+)', extra_versions)})
+        assert extra_glibc and extra_glibc[-1] <= (2, 28)
+        assert 'GLIBC_ABI_' not in extra_versions and 'GLIBC_PRIVATE' not in extra_versions
+        assert 'libvarena.so' in extra_needed
+        assert not any('python' in x.lower() or 'torch' in x.lower() for x in extra_needed)
+        extra = {**manifest, 'binary_sha256': sha(copied),
+                 'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': extra_needed,
+                         'glibc_versions': extra_glibc, 'glibc_max': extra_glibc[-1]}}
+        extra_manifests[name] = extra
+        (target / (name + '.json')).write_text(json.dumps(extra, indent=2) + '\n')
     payload = {'source_sha': source['source_sha'], 'helper_sha256': manifest['binary_sha256'],
                'native_extension_sha256': args.native_extension_sha256,
                'native_core_sha256': manifest['libraries']['libvarena.so'], 'gpu_uuid': args.gpu_uuid,
@@ -132,9 +159,14 @@ def main():
     (args.output / 'input-template.json').write_text(json.dumps(payload, indent=2) + '\n')
     async_payload = {**payload, 'helper_sha256': async_manifest['binary_sha256']}
     (args.output / 'async-input-template.json').write_text(json.dumps(async_payload, indent=2) + '\n')
+    extra_inputs = {}
+    for name, extra in extra_manifests.items():
+        extra_inputs[name] = {**payload, 'helper_sha256': extra['binary_sha256']}
+        (args.output / (name + '-input-template.json')).write_text(json.dumps(extra_inputs[name], indent=2) + '\n')
     files = {str(path.relative_to(project)): sha(path) for path in sorted(project.rglob('*')) if path.is_file()}
     receipt = {'manifest': manifest, 'project': str(project), 'files': files, 'input': payload,
                'async_manifest': async_manifest, 'async_input': async_payload,
+               'extra_manifests': extra_manifests, 'extra_inputs': extra_inputs,
                'gpu_uuid_bound': args.gpu_uuid != 'UNBOUND', 'gpu_executed': False}
     (args.output / 'ready.json').write_text(json.dumps(receipt, indent=2) + '\n')
     for name, text in [('elf-header', header), ('elf-dynamic', dynamic), ('elf-versions', versions)]:
