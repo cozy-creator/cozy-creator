@@ -493,3 +493,9 @@ def source_host_bytes(payload: Probe, ctx: Context) -> Report:
 def rust_source(payload: Probe, ctx: Context) -> Report:
     assert payload.expected_devices == 1
     return native(payload, ctx, "source", helper="varena-rust-source")
+
+
+@app.entrypoint(accelerator=True)
+def event_trim(payload: Probe, ctx: Context) -> Report:
+    """Explicit event-cache trim with live-anchor, real pending work and capture exclusions."""
+    return native(payload, ctx, 'event_trim')

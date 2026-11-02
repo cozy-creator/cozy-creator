@@ -11,6 +11,7 @@ mod probes;
 mod multi_plan;
 mod arena_retirement;
 mod owner_retirement;
+mod event_trim;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Ctx = *mut c_void;
 type Retain = unsafe extern "C" fn(*mut Ctx, i32) -> i32;
@@ -223,10 +224,15 @@ fn run() -> Result<Value> {
     ledger::initialize()?;
     let device = args[4].parse::<i32>()?;
     let mut cuda = Cuda::open(device)?;
+    let counter_directory = if args[1] == "owner_try_close" {
+        let path = std::path::Path::new(&args[2]).join("cuda-counter");
+        std::fs::create_dir(&path)?;
+        Some(path)
+    } else { None };
     let peer = cooperative::Peer::open(
         device,
         ledger::Device::parse(&args[3])?,
-        std::path::Path::new(&args[2]),
+        counter_directory.as_deref().unwrap_or_else(|| std::path::Path::new(&args[2])),
         ledger::Sharing::Shared,
         0,
     )?;
@@ -248,6 +254,7 @@ fn run() -> Result<Value> {
         "arena_retirement" => arena_retirement::observers(&cuda,&peer,device,&args[2],&args[3])?,
         "arena_retirement_cross_device" => arena_retirement::cross_device(&cuda,&peer,device,&args[2],&args[5])?,
         "arena_retirement_unproven" => arena_retirement::unproven(&cuda,&peer,device)?,
+        "event_trim" => event_trim::run(&cuda, &peer, device)?,
         "owner_try_close" => owner_retirement::poll(&cuda, &peer, device, &args[2], &args[3])?,
         "multi_plan" => multi_plan::same_device(&cuda, &peer, device)?,
         "multi_plan_cross_device" => multi_plan::mismatched_device(device)?,
