@@ -443,3 +443,13 @@ def _bind_stats(torch: ModuleType) -> None:
     for module in (torch.cuda, torch.cuda.memory):
         for name, function in readers.items():
             setattr(module, name, function)
+
+
+def offload(model_or_pipeline, device=0, *, source=None):
+    """Adopt immutable eager Torch/Diffusers weights; retain the returned owner.
+
+    See crates/varena/TORCH-OFFLOAD.md for inference, alias and stream contracts.
+    """
+    from ._offload import offload as adopt
+
+    return adopt(model_or_pipeline, device, source=source)
