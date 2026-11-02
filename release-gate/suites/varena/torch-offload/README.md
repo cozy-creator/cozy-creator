@@ -24,7 +24,8 @@ No client downloads weights. GPU execution belongs to the coordinator.
 - The original metadata-only mock checks were removed from maintained clients.
   Their historical receipts remain unchanged in `evidence/2026-11-02-packing-cpu`.
 - `plan_retirement_cpu.py`: real CPU conversion/alias/rollback plus actual absent-handle
-  native close refusal. Closed wrappers test Python metadata; no CUDA Plan is created.
+  native close refusal and public unsupported dtype refusal. No injected setter,
+  substitute Plan success, CUDA Plan construction or native retirement proof.
 - `plan_retirement_gpu.py --device 0`: prepared actual packed-Plan retirement and
   escaped native/managed alias controls, existing trim and old/new-version refill.
   This lane does not execute it or claim physical reclamation from CPU checks.

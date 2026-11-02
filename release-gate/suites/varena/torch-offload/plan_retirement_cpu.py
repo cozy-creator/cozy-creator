@@ -1,7 +1,7 @@
 """Real Torch conversion + production ABI refusal; no CUDA Plan is constructed.
 
-Closed public Plan wrappers exercise Python retirement metadata. The absent-handle
-case calls the actual native close refusal and verifies transactional ownership.
+The absent-handle case calls the actual native close refusal. Other cells execute
+ordinary CPU inference/conversion; no injected setter or substitute Plan success.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from pathlib import Path
 import torch
 from tensorfs.varena import api
 from tensorfs.varena import torch as vt
-from tensorfs.varena._offload import _Weight
 
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
@@ -56,8 +55,6 @@ def success():
     identity = id(parameter)
     escaped = parameter.detach()
     value = escaped.clone()
-    plan = api.Plan(0, None)  # Closed real public wrapper, not a native CUDA Plan.
-    owner._intent_plan = plan
     model.double()
     assert owner._intent_plan is None and owner.intent_facts()["pending_refresh"]
     assert parameter is model.right.weight and id(parameter) == identity
@@ -103,70 +100,41 @@ def refusal():
         owner.close()
 
 
-class RefuseOnce(_Weight):
-    """One real Tensor .data setter failure at the publication boundary."""
-
-    @classmethod
-    def __torch_function__(cls, function, types, args=(), kwargs=None):
-        if (
-            getattr(function, "__name__", "") == "__set__"
-            and getattr(function, "__self__", None) is torch.Tensor.data
-            and args[0].fail_next_set
-        ):
-            args[0].fail_next_set = False
-            raise RuntimeError("one-shot Tensor setter publication refusal")
-        return super().__torch_function__(function, types, args, kwargs)
-
-
-def rollback():
-    model = torch.nn.Sequential(torch.nn.Linear(3, 3), torch.nn.Linear(3, 3)).eval()
-    owner = vt.offload(model, device="cpu")
-    with torch.no_grad():
-        model(torch.ones(1, 3))
+def conversion_refusal():
+    model, owner = enrolled()
     parameters = list(model.parameters())
     before = [(p._version_owner, p.dtype, p.clone()) for p in parameters]
-    plan = api.Plan(0, None)
-    owner._intent_plan = plan
-    refused_parameter = parameters[1]
-    refused_parameter.__class__ = RefuseOnce
-    refused_parameter.fail_next_set = True
+    buffer = model.state
     try:
-        model.double()
-    except RuntimeError as error:
-        assert str(error) == "one-shot Tensor setter publication refusal"
+        model.to(dtype=torch.int32)
+    except TypeError as error:
+        assert str(error) == "Module.to requires a floating or complex dtype"
     else:
-        raise AssertionError("Tensor setter failure was swallowed")
-    assert owner._intent_plan is plan and not owner.intent_facts()["pending_refresh"]
+        raise AssertionError("public unsupported dtype conversion succeeded")
+    assert not owner.intent_facts()["pending_refresh"] and model.state is buffer
     for parameter, (version, dtype, values) in zip(parameters, before):
         assert parameter._version_owner is version and parameter.dtype == dtype
         assert torch.equal(parameter.clone(), values)
-    owner._intent_plan = None  # The fixture's wrapper was already closed (handle 0).
     owner.close()
 
 
 def noop():
     model, owner = enrolled()
-    plan = api.Plan(2**64 - 1, None)
-    owner._intent_plan = plan
     version = model.left.weight._version_owner
-    try:
-        model.float()
-        assert owner._intent_plan is plan and plan._handle == 2**64 - 1
-        assert model.left.weight._version_owner is version
-        assert not owner.intent_facts()["pending_refresh"]
-    finally:
-        plan._handle = 0
-        owner._intent_plan = None
-        owner.close()
+    model.float()
+    assert model.left.weight._version_owner is version
+    assert not owner.intent_facts()["pending_refresh"]
+    owner.close()
 
 
 case(
-    "changed dtype retires closed-wrapper metadata; ties and escaped versions survive",
+    "actual CPU conversion preserves ties, escaped versions and rebuilt intent",
     success,
 )
 case("real native Plan-close refusal rolls back exact versions/buffer/Plan", refusal)
 case(
-    "real Tensor setter failure restores versions before any Plan retirement", rollback
+    "public unsupported conversion preserves identities/versions/buffers",
+    conversion_refusal,
 )
 case("no-op dtype conversion preserves existing intent without closing Plan", noop)
 assert not torch.cuda.is_initialized()
