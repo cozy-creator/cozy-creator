@@ -174,18 +174,22 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 ["project new"]
-test = "gate: cli-project (release-gate/suites/cli/cells.sh): a project from its script, entities written"
-"--project" = "gate: cli-project"
+test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
+
+["project ls"]
+test = "pr: projects: the index, a moved folder missing, a DELETEd one gone"
 
 ["project status"]
-test = "gate: cli-project: each entity's state and its renders"
-"--project" = "gate: cli-project"
+test = "pr: projects: by -p from elsewhere; references changed and missing; a rename suggested"
+
+["project render"]
+test = "pr: projects: render all from a subfolder, versions by local code, re-cuts from the cut cache"
+"--on" = "pr: projects: --on local"
+"--approve" = "pr: projects: --approve with -n 2 refused before any run"
+"--preview" = "gate: project (release-gate/suites/project/cells.sh): render all --preview"
 
 ["project approve"]
-test = "gate: cli-project: an entity's render approved, its version locked"
-"--project" = "gate: cli-project"
+test = "pr: projects: version 2 approved, only in project.lock"
 
-["render"]
-test = "gate: cli-project: the project's renders through Calcifer on the gate's pod"
-"--project" = "gate: cli-project"
-"--on" = "gate: cli-project, on the gate's pod"
+["project rename"]
+test = "pr: projects: place renamed yard, its versions and approval kept"

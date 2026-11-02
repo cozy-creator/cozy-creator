@@ -354,6 +354,9 @@ jobs:
           tensorfs: ${{ inputs.tensorfs }}
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
+      # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
+      - if: matrix.shard == 'commands'
+        uses: AnimMouse/setup-ffmpeg@v1
       - name: cli suite
         env:
           PINS: ${{ inputs.pins }}

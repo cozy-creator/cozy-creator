@@ -15,12 +15,14 @@
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
+. "$(dirname "$0")/project.sh"
 
 start() {
 step install; install_cozy
 user_services
 step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
+[ "$SHARD" != commands ] || version_skew
 step candidates; candidates
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
@@ -172,10 +174,10 @@ remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play machines completions calcifer_faults update remove" ;;
+  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects machines completions calcifer_faults update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters projects logs" ;;
   follow) parts="script_package image_ratio run_follow machines completions calcifer_faults logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
