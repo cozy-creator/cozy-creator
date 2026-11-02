@@ -146,6 +146,8 @@ impl Gpu {
             handle,
         })))
     }
+    /// Orders source production on this stream only. Another reader stream needs its
+    /// own Use or a dependency behind this stream before reading; join side work before done.
     pub fn use_regions(&self, regions: &[&Region], stream: &Stream) -> Result<Use> {
         self.stream(stream)?;
         let ids = regions.iter().map(|r| r.0.handle).collect::<Vec<_>>();

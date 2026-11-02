@@ -49,8 +49,10 @@ VR_API vr_status vr_v1_retirement_stats(vr_retirement_stats_v1 *out, size_t out_
 VR_API vr_status vr_v1_gpu_open(int32_t device, vr_handle *out);
 VR_API vr_status vr_v1_gpu_close(vr_handle gpu); /* children retain GPU ownership */
 
-/* Immutable weights. Host bytes are a separate known-completed provider.
- * Native Source ownership transfers only on successful region construction. */
+/* Immutable weights. Host construction copies immutable bytes immediately; cold
+ * host fills use bounded pinned staging and explicit stream ordering. Neither provider
+ * implies host-visible GPU completion. Native Source ownership transfers only on
+ * successful region construction. */
 typedef void (*vr_drop_fn)(void *);
 typedef struct vr_source_job_v1 vr_source_job_v1;
 typedef vr_status (*vr_source_prepare_fn)(void *source, int32_t device,
@@ -98,7 +100,9 @@ VR_API vr_status vr_v1_region_close(vr_handle);
  * completion; each Region publishes only whole contents, but the group is not atomic. */
 VR_API vr_status vr_v1_use(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_use_ptr(vr_handle use, size_t index, uint64_t *out);
-/* All additional consumer streams must join the stream retained by use before done.
+/* Producer ordering covers only the stream supplied to use. Additional readers need
+ * another Use on their stream, or a CUDA dependency behind the ordered stream BEFORE
+ * reading. All additional consumers must join the retained stream before done.
  * Success consumes the Use. Fencing failure retains the core's conservative context
  * fence. No alias may access a Region after its last Use ends. */
 VR_API vr_status vr_v1_done(vr_handle use);

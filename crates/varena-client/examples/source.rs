@@ -23,6 +23,9 @@ struct Cuda {
     set: unsafe extern "system" fn(u64, u8, usize, Obj) -> i32,
     copy: unsafe extern "system" fn(u64, u64, usize, Obj) -> i32,
     read: unsafe extern "system" fn(*mut c_void, u64, usize) -> i32,
+    host_allocate: unsafe extern "system" fn(*mut Obj, usize, u32) -> i32,
+    host_device: unsafe extern "system" fn(*mut u64, Obj, u32) -> i32,
+    host_free: unsafe extern "system" fn(Obj) -> i32,
     uuid: String,
 }
 fn check(operation: &str, status: i32) -> varena_client::Result<()> {
@@ -83,6 +86,9 @@ impl Cuda {
                 set: *library.get(b"cuMemsetD8Async\0")?,
                 copy: *library.get(b"cuMemcpyDtoDAsync_v2\0")?,
                 read: *library.get(b"cuMemcpyDtoH_v2\0")?,
+                host_allocate: *library.get(b"cuMemHostAlloc\0")?,
+                host_device: *library.get(b"cuMemHostGetDevicePointer_v2\0")?,
+                host_free: *library.get(b"cuMemFreeHost\0")?,
                 _library: library,
                 uuid,
             }))
@@ -214,17 +220,30 @@ fn run() -> Result<()> {
     let consumer = cuda.stream()?;
     let control_view = unsafe { gpu.borrow_stream(control) };
     let consumer_view = unsafe { gpu.borrow_stream(consumer) };
-    let mut gate = gpu.alloc(4, &control_view)?;
+    // Retained mapped host gate: Source-owned streams may be destroyed before its
+    // release, so this is not a Working allocation with unrecorded borrowed consumers.
+    let mut gate_host = std::ptr::null_mut();
+    let mut gate = 0;
+    unsafe {
+        check(
+            "mapped host gate",
+            (cuda.host_allocate)(&mut gate_host, 4, 3),
+        )?;
+        check(
+            "gate device address",
+            (cuda.host_device)(&mut gate, gate_host, 0),
+        )?;
+    }
     let mut output = gpu.alloc(BYTES, &consumer_view)?;
     unsafe {
-        check("gate init", (cuda.write)(control as Obj, gate.ptr()?, 0, 0))?;
+        check("gate init", (cuda.write)(control as Obj, gate, 0, 0))?;
     }
     cuda.sync(control)?;
     let counts = Arc::new(Counts::default());
     let source = Provider {
         cuda: cuda.clone(),
         gpu: gpu.clone(),
-        gate: gate.ptr()?,
+        gate: gate,
         counts: counts.clone(),
         retired: false,
     };
@@ -258,7 +277,7 @@ fn run() -> Result<()> {
         "pending Source was invisible to retirement stats",
     )?;
     unsafe {
-        check("open gate", (cuda.write)(control as Obj, gate.ptr()?, 1, 0))?;
+        check("open gate", (cuda.write)(control as Obj, gate, 1, 0))?;
     }
     cuda.sync(control)?;
     cuda.sync(consumer)?;
@@ -290,7 +309,6 @@ fn run() -> Result<()> {
         "job drop count differs",
     )?;
     output.free()?;
-    gate.free()?;
     cuda.sync(consumer)?;
     cuda.sync(control)?;
     gpu.trim()?;
@@ -299,7 +317,7 @@ fn run() -> Result<()> {
         stats.weights_resident == 0 && stats.working_live == 0 && stats.working_mapped == 0,
         "physical baseline differs",
     )?;
-    drop((output, gate, consumer_view, control_view, gpu));
+    drop((output, consumer_view, control_view, gpu));
     let deadline = Instant::now() + Duration::from_secs(10);
     while varena_client::retirement_stats()?.queued != 0 {
         require(
@@ -309,6 +327,7 @@ fn run() -> Result<()> {
         std::thread::sleep(Duration::from_millis(1));
     }
     unsafe {
+        check("free checked host gate", (cuda.host_free)(gate_host))?;
         check("destroy consumer", (cuda.destroy)(consumer as Obj))?;
         check("destroy control", (cuda.destroy)(control as Obj))?;
     }

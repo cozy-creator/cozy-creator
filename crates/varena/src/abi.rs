@@ -3,6 +3,7 @@
 
 mod retirement;
 pub(crate) mod source;
+mod host_source;
 pub use source::{Job as SourceJob, Provider as SourceProvider};
 
 use crate::{Arena, Error, Pin, Region, cache_owner, working};
@@ -390,7 +391,7 @@ pub extern "C" fn vr_v1_gpu_close(id: u64) -> i32 {
 
 pub type DropFn = unsafe extern "C" fn(*mut c_void);
 enum Bytes {
-    Host(Vec<u8>),
+    Host(Arc<[u8]>),
     Foreign(Arc<source::Owner>),
 }
 struct Weight {
@@ -429,7 +430,7 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
             output(out)?;
         }
         let gpu = gpu(g)?;
-        let bytes = unsafe { slice(bytes, len)? }.to_vec();
+        let bytes: Arc<[u8]> = unsafe { slice(bytes, len)? }.into();
         let region = gpu.arena.reserve(len)?;
         unsafe {
             out.write(insert(Handle::Region(Arc::new(Weight {
@@ -509,13 +510,8 @@ pub unsafe extern "C" fn vr_v1_use(
             for w in &weights {
                 let pin = match unsafe { w.region.prepare_on(stream)? } {
                     crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
-                    crate::StreamPreparation::Fill(mut fill) => match &w.bytes {
-                        Bytes::Host(bytes) => {
-                            // Separate known-completed provider. Pageable H2D return alone
-                            // is not completion; retain its existing checked commit join.
-                            fill.copy_from_host(bytes)?;
-                            fill.commit()?
-                        }
+                    crate::StreamPreparation::Fill(fill) => match &w.bytes {
+                        Bytes::Host(bytes) => host_source::acquire(w, bytes.clone(), fill, stream)?,
                         Bytes::Foreign(provider) => source::acquire(w, provider, fill, stream)?,
                     },
                 };

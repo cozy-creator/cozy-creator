@@ -5,7 +5,7 @@ constructor, fixed owned nonblocking producer streams, native ordered consumer U
 checked job/Source retirement. GPU modes are authored but unrun; root owns every GPU lane.
 
 The C executable accepts `host`, or `MODE GPU-UUID DEVICE` where MODE is ordering,
-partial, prepare_error or source_pending. Ordering holds actual producer work behind a
+partial, prepare_error, source_pending, retained or host_bytes. Ordering holds actual producer work behind a
 CUDA memory-value gate and verifies the consumer waits, then checks every output byte.
 Partial submits only half the destination and returns a closed Source error, then refills
 at the same VA. Prepare_error creates a real stream retained by persistent Source custody
@@ -38,8 +38,13 @@ VR_FAULT quarantines unproven ownership. Each published Region is whole, while p
 across several Regions is not transactional. Checked retire is the only GPU cleanup path;
 inert drop callbacks are host-only and cannot wait for the GIL.
 
-The current foreign-provider checkpoint preserves the existing checked host-byte provider.
-Its separately approved stream-scoped bounded staging successor will follow. Full-model
+The foreign-provider checkpoint d52dc19b5 preserves the prior checked host path. Its
+successor uses immutable Arc bytes, one <=2MiB pinned stage, one owned nonblocking stream
+and a reuse event; it never joins the context. host_bytes verifies a multi-chunk payload
+while an independent stream is still gated. retained closes the original Region, then
+proves Use and Plan preserve provider context until their own retirement. Mapped HOST
+gates remain owned through all Source-created streams and are not Working allocations
+with hidden side-stream consumers. Full-model
 quality/performance, mixed Python GPU ownership and real driver-failure paths remain open.
 The enclosing operator must bound whole GPU child processes: a driver or ownership bug can
 block a CUDA call before the fixture's host polling deadline can run.

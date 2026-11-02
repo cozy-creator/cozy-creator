@@ -36,3 +36,19 @@ ticket and cannot silently disappear when the last Region/Use/Plan drops.
 
 Source/header and real fixtures are required before GPU qualification. Root owns GPU
 execution and rentals. Keep the PR draft; no merge or release authorization.
+
+## Bounded host provider successor
+
+Root approved replacing the previous safe context-joined host path after the foreign
+checkpoint. Immutable bytes remain in Arc storage. Each cold fill owns one pinned stage
+of min(bytes,2MiB), one nonblocking stream and one reuse event. It waits only for its own
+previous DMA before overwriting that stage; the last chunk stays asynchronous. Native
+FillSession retains stage/stream/source until checked completion and retirement. Partial
+preparation moves its exact known owners into no-write native cleanup. There is no
+TensorFS dependency, file I/O, host cache or full-weight pinned duplicate.
+
+A Use orders only its supplied consumer stream. Extra readers need another Use or an
+explicit CUDA dependency before reading, as well as joining consumers before done.
+The C helper's host_bytes mode checks a multi-chunk payload while an unrelated GPU stream
+remains gated. Its retained mode checks that both Use and Plan preserve the provider after
+the original Region handle closes. All GPU modes remain unrun.

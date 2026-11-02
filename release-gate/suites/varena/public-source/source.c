@@ -21,6 +21,9 @@ static struct {
     int (*set)(uint64_t,unsigned char,size_t,CU);
     int (*copy)(uint64_t,uint64_t,size_t,CU);
     int (*read)(void *,uint64_t,size_t);
+    int (*host_allocate)(void **,size_t,unsigned);
+    int (*host_device)(uint64_t *,void *,unsigned);
+    int (*host_free)(void *);
 } cuda;
 static struct {
     atomic_uint prepares, submits, job_retired, job_dropped, source_retired, source_dropped;
@@ -138,13 +141,44 @@ static int host_contract(void) {
     puts("{\"passed\":true,\"mode\":\"host\",\"constructor_retained_provider\":true,\"cuda_loaded\":false}");
     return 0;
 }
+static int host_bytes(int device,const char *uuid) {
+    CU control=NULL,consumer=NULL,blocked=NULL;
+    OK(cuda.stream_create(&control,1));OK(cuda.stream_create(&consumer,1));OK(cuda.stream_create(&blocked,1));
+    void *host_gate=NULL;uint64_t gate=0;OK(cuda.host_allocate(&host_gate,4,3));OK(cuda.host_device(&gate,host_gate,0));
+    OK(cuda.write(control,gate,0,0));OK(cuda.stream_sync(control));
+    OK(cuda.wait(blocked,gate,1,1));REQUIRE(cuda.stream_query(blocked)==600);
+    vr_handle gpu=0,region=0,used=0,allocation=0;uint64_t out=0,pointer=0;
+    const size_t bytes=(5u<<20)+31; /* More than two reuse boundaries and a short tail. */
+    unsigned char *source=malloc(bytes);REQUIRE(source!=NULL);
+    for(size_t i=0;i<bytes;++i) source[i]=(unsigned char)((i*17+9)%251);
+    OK(vr_v1_gpu_open(device,&gpu));
+    OK(vr_v1_region_from_host(gpu,source,bytes,&region));memset(source,0,bytes);free(source);
+    OK(vr_v1_alloc(gpu,bytes,(uint64_t)(uintptr_t)consumer,&allocation));OK(vr_v1_allocation_ptr(allocation,&out));
+    /* A context-wide source join would block here behind the independent gate. */
+    OK(vr_v1_use(gpu,&region,1,(uint64_t)(uintptr_t)consumer,&used));OK(vr_v1_use_ptr(used,0,&pointer));
+    OK(cuda.copy(out,pointer,bytes,consumer));OK(cuda.stream_sync(consumer));
+    REQUIRE(cuda.stream_query(blocked)==600);
+    unsigned char *read=malloc(bytes);REQUIRE(read!=NULL);OK(cuda.read(read,out,bytes));
+    for(size_t i=0;i<bytes;++i) {REQUIRE(read[i]==(unsigned char)((i*17+9)%251));}free(read);
+    OK(vr_v1_done(used));OK(vr_v1_region_close(region));
+    OK(cuda.write(control,gate,1,0));OK(cuda.stream_sync(control));OK(cuda.stream_sync(blocked));
+    OK(vr_v1_free(allocation));OK(cuda.stream_sync(consumer));uint64_t released=0;OK(vr_v1_trim(gpu,&released));
+    OK(vr_v1_gpu_close(gpu));
+    uint64_t deadline=now_ms()+10000;vr_retirement_stats_v1 stats={0};
+    do{OK(vr_v1_retirement_stats(&stats,sizeof(stats)));if(!stats.queued)break;pause_poll();}while(now_ms()<deadline);
+    REQUIRE(!stats.queued&&!stats.quarantined);OK(cuda.host_free(host_gate));
+    OK(cuda.stream_destroy(blocked));OK(cuda.stream_destroy(consumer));OK(cuda.stream_destroy(control));
+    printf("{\"passed\":true,\"mode\":\"host_bytes\",\"gpu_uuid\":\"%s\",\"full_bytes\":%zu,\"caller_bytes_dropped\":true,\"independent_gate_still_pending_during_readback\":true}\n",uuid,bytes);
+    return 0;
+}
 int main(int argc,char **argv) {
     if(argc==2&&strcmp(argv[1],"host")==0) return host_contract();
     if(argc!=4){fprintf(stderr,"usage: source-c MODE GPU-UUID DEVICE\n");return 2;}
     const char *mode=argv[1];int device=atoi(argv[3]);
     int partial=strcmp(mode,"partial")==0, prepare_failure=strcmp(mode,"prepare_error")==0;
-    int held=strcmp(mode,"source_pending")==0;
-    REQUIRE(partial||prepare_failure||held||strcmp(mode,"ordering")==0);
+    int held=strcmp(mode,"source_pending")==0, retained=strcmp(mode,"retained")==0;
+    int host_mode=strcmp(mode,"host_bytes")==0;
+    REQUIRE(partial||prepare_failure||held||retained||host_mode||strcmp(mode,"ordering")==0);
     cuda.library=dlopen("libcuda.so.1",RTLD_NOW|RTLD_LOCAL);REQUIRE(cuda.library!=NULL);
     int (*init)(unsigned),(*retain)(CU*,int),(*push)(CU),(*uuid)(unsigned char*,int);
     *(void **)(&init)=dlsym(cuda.library,"cuInit");*(void **)(&retain)=dlsym(cuda.library,"cuDevicePrimaryCtxRetain");
@@ -159,17 +193,22 @@ int main(int argc,char **argv) {
     LOAD(stream_sync,"cuStreamSynchronize");LOAD(stream_query,"cuStreamQuery");
     LOAD(write,"cuStreamWriteValue32_v2");LOAD(wait,"cuStreamWaitValue32_v2");
     LOAD(set,"cuMemsetD8Async");LOAD(copy,"cuMemcpyDtoDAsync_v2");LOAD(read,"cuMemcpyDtoH_v2");
+    LOAD(host_allocate,"cuMemHostAlloc");LOAD(host_device,"cuMemHostGetDevicePointer_v2");LOAD(host_free,"cuMemFreeHost");
+    if(host_mode) return host_bytes(device,actual);
     CU control=NULL,consumer=NULL;OK(cuda.stream_create(&control,1));OK(cuda.stream_create(&consumer,1));
-    vr_handle gpu=0,gate_allocation=0,out_allocation=0,region=0,used=0;
+    vr_handle gpu=0,out_allocation=0,region=0,used=0,plan=0;
     const uint64_t bytes=1<<20;uint64_t gate=0,out=0,pointer=0,stable=0;
-    OK(vr_v1_gpu_open(device,&gpu));OK(vr_v1_alloc(gpu,4,(uint64_t)(uintptr_t)control,&gate_allocation));
-    OK(vr_v1_allocation_ptr(gate_allocation,&gate));
+    OK(vr_v1_gpu_open(device,&gpu));
+    /* This retained mapped HOST gate is not a GPU allocation or a borrowed Working
+       side stream. Source-created streams may retire before this gate is released. */
+    void *host_gate=NULL;OK(cuda.host_allocate(&host_gate,4,3));OK(cuda.host_device(&gate,host_gate,0));
     OK(vr_v1_alloc(gpu,bytes,(uint64_t)(uintptr_t)consumer,&out_allocation));OK(vr_v1_allocation_ptr(out_allocation,&out));
     OK(cuda.write(control,gate,0,0));OK(cuda.stream_sync(control));
     struct Source *source=calloc(1,sizeof(*source));REQUIRE(source!=NULL);source->gate=gate;
     atomic_init(&source->partial,partial);source->fail_prepare=prepare_failure;pthread_mutex_init(&source->borrowed,NULL);
     vr_source_provider_v1 provider={source_prepare,source_retire,source_drop,source};
     OK(vr_v1_region_from_source(gpu,bytes,&provider,sizeof(provider),&region));OK(vr_v1_region_ptr(region,&stable));
+    if(retained) {vr_phase_v1 phase={"weights",&region,1};OK(vr_v1_plan_new(gpu,&phase,1,&plan));}
     int status=vr_v1_use(gpu,&region,1,(uint64_t)(uintptr_t)consumer,&used);
     if(prepare_failure) {
         REQUIRE(status==VR_SOURCE_ERROR&&used==0&&atomic_load(&counts.submits)==0);
@@ -186,7 +225,8 @@ int main(int argc,char **argv) {
         OK(cuda.copy(out,pointer,(size_t)bytes,consumer));REQUIRE(cuda.stream_query(consumer)==600);
         REQUIRE(atomic_load(&counts.job_dropped)==(partial?1u:0u));
         if(held) pthread_mutex_lock(&source->borrowed);
-        OK(vr_v1_done(used));OK(vr_v1_region_close(region));
+        OK(vr_v1_region_close(region));
+        if(!retained) {OK(vr_v1_done(used));}
         vr_retirement_stats_v1 pending={0};OK(vr_v1_retirement_stats(&pending,sizeof(pending)));REQUIRE(pending.queued>0);
         OK(cuda.write(control,gate,1,0));OK(cuda.stream_sync(control));OK(cuda.stream_sync(consumer));
         unsigned char *data=malloc((size_t)bytes);REQUIRE(data!=NULL);OK(cuda.read(data,out,(size_t)bytes));
@@ -199,9 +239,14 @@ int main(int argc,char **argv) {
             OK(vr_v1_retirement_stats(&pending,sizeof(pending)));REQUIRE(pending.queued>0);
             pthread_mutex_unlock(&source->borrowed);
         }
+        if(retained) {
+            REQUIRE(retired_until(1,0));REQUIRE(atomic_load(&counts.source_dropped)==0);
+            OK(vr_v1_done(used));REQUIRE(atomic_load(&counts.source_dropped)==0);
+            OK(vr_v1_plan_close(plan));
+        }
         REQUIRE(retired_until(partial?2:1,1));
     }
-    OK(vr_v1_free(out_allocation));OK(vr_v1_free(gate_allocation));
+    OK(vr_v1_free(out_allocation));
     OK(cuda.stream_sync(consumer));OK(cuda.stream_sync(control));uint64_t released=0;OK(vr_v1_trim(gpu,&released));
     vr_stats_v1 final={0};OK(vr_v1_stats(gpu,&final,sizeof(final)));
     REQUIRE(final.weights_resident==0&&final.working_live==0&&final.working_pending==0&&final.working_mapped==0);
@@ -209,6 +254,7 @@ int main(int argc,char **argv) {
     uint64_t deadline=now_ms()+10000;vr_retirement_stats_v1 retirement={0};
     do {OK(vr_v1_retirement_stats(&retirement,sizeof(retirement)));if(!retirement.queued)break;pause_poll();} while(now_ms()<deadline);
     REQUIRE(!retirement.queued&&!retirement.quarantined);
+    OK(cuda.host_free(host_gate));
     OK(cuda.stream_destroy(consumer));OK(cuda.stream_destroy(control));
     printf("{\"passed\":true,\"mode\":\"%s\",\"gpu_uuid\":\"%s\",\"prepares\":%u,\"submits\":%u,\"job_drops\":%u,\"source_drops\":%u,\"retirement_pending_observed\":%u,\"physical_baseline\":true}\n",
         mode,actual,atomic_load(&counts.prepares),atomic_load(&counts.submits),atomic_load(&counts.job_dropped),atomic_load(&counts.source_dropped),atomic_load(&counts.source_pending));
