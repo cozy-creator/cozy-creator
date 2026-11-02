@@ -23,11 +23,11 @@ No client downloads weights. GPU execution belongs to the coordinator.
   preservation, typed aliases, capture, refill and final-alias retirement.
 - The original metadata-only mock checks were removed from maintained clients.
   Their historical receipts remain unchanged in `evidence/2026-11-02-packing-cpu`.
-  Mid-publication rebinding and Plan-retirement rollback are not inferred from
-  public conversion refusals. Agent1 owns the real Plan-retirement clients
-  (`plan_retirement_cpu.py` / `plan_retirement_gpu.py`, draft #2482 commit
-  `3b7f30affda313560a2be01045988be431421410`); compose that separate change
-  before running those clients. This cleanup does not edit or duplicate them.
+- `plan_retirement_cpu.py`: real CPU conversion/alias/rollback plus actual absent-handle
+  native close refusal. Closed wrappers test Python metadata; no CUDA Plan is created.
+- `plan_retirement_gpu.py --device 0`: prepared actual packed-Plan retirement and
+  escaped native/managed alias controls, existing trim and old/new-version refill.
+  This lane does not execute it or claim physical reclamation from CPU checks.
 - `adapter_gpu.py --device 0`: prepared actual CUDA client for native typed reads,
   default and explicit streams, later consumers, ties, old aliases and tiny VAE.
 - `sdxl_gpu.py /existing/local/model --device 0`: prepared stock SDXL baseline/adopted
