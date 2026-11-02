@@ -2,6 +2,10 @@
 #![allow(unsafe_code)]
 use super::Map;
 use crate::{Error, Result};
+use rustix::{
+    event::{PollFd, PollFlags},
+    io::Errno,
+};
 use std::os::fd::{AsRawFd, OwnedFd};
 
 pub type Owned = OwnedFd;
@@ -23,11 +27,7 @@ pub fn size(f: &Owned) -> Result<u64> {
 }
 
 pub fn resize(f: &Owned, len: u64) -> Result<()> {
-    // SAFETY: sizing a file we hold.
-    if unsafe { libc::ftruncate(f.as_raw_fd(), len as libc::off_t) } != 0 {
-        return Err(Error::os("resize")(std::io::Error::last_os_error()));
-    }
-    Ok(())
+    rustix::fs::ftruncate(f, len).map_err(|error| Error::os("resize")(error.into()))
 }
 
 /// `len` bytes of `f` from `offset` (a multiple of [`granularity`]).
@@ -101,8 +101,7 @@ pub fn own(f: &Owned) -> Result<u32> {
 }
 
 pub fn euid() -> u32 {
-    // SAFETY: geteuid reads a process attribute.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 /// The peer: its pid and uid, whoever it runs as (the caller decides whom it accepts).
@@ -131,21 +130,22 @@ pub fn linked(f: &Owned) -> Result<bool> {
 /// up.
 pub(super) fn serve_listener(listener: &std::os::unix::net::UnixListener, stop: &std::sync::atomic::AtomicBool, accept: impl Fn(u32) -> bool, answer: impl Fn(&[u8]) -> Vec<u8>) {
     use std::io::{Read, Write};
-    use std::os::fd::AsRawFd;
     if listener.set_nonblocking(true).is_err() {
         return;
     }
     let mut conns: Vec<(Stream, Vec<u8>)> = vec![];
     loop {
-        let mut polls: Vec<libc::pollfd> = std::iter::once(listener.as_raw_fd()).chain(conns.iter().map(|(s, _)| s.as_raw_fd())).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
-        // SAFETY: live descriptors in a correctly sized array.
-        if unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, -1) } < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+        let mut polls: Vec<PollFd<'_>> = std::iter::once(PollFd::new(listener, PollFlags::IN))
+            .chain(conns.iter().map(|(s, _)| PollFd::new(s, PollFlags::IN)))
+            .collect();
+        if rustix::event::poll(&mut polls, None).is_err_and(|error| error != Errno::INTR) {
             return;
         }
         if stop.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        let ready: Vec<bool> = polls.iter().map(|p| p.revents != 0).collect();
+        let ready: Vec<bool> = polls.iter().map(|p| !p.revents().is_empty()).collect();
+        drop(polls);
         let mut next = vec![];
         for (i, (s, mut buf)) in conns.drain(..).enumerate() {
             if !ready.get(i + 1).copied().unwrap_or(false) {
@@ -222,24 +222,22 @@ impl Signal {
 /// Blocks until any of `items` is readable, hung up or failed, then answers every one that is, in
 /// order, so none starves behind a lower one. No timeout.
 pub fn wait_any(items: &[Waitable<'_>]) -> Result<Vec<super::Ready>> {
-    let mut fds: Vec<libc::pollfd> = items.iter().map(|fd| libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 }).collect();
+    let mut fds: Vec<PollFd<'_>> = items.iter().map(|fd| PollFd::new(fd, PollFlags::IN)).collect();
     loop {
-        // SAFETY: descriptors the caller borrows for the call; no timeout.
-        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } >= 0 {
-            let ready: Vec<super::Ready> = fds
-                .iter()
-                .enumerate()
-                .filter(|(_, fd)| fd.revents != 0)
-                .map(|(index, fd)| super::Ready { index, broken: fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 })
-                .collect();
-            if !ready.is_empty() {
-                return Ok(ready);
-            }
-            continue;
+        match rustix::event::poll(&mut fds, None) {
+            Err(Errno::INTR) => continue,
+            Err(error) => return Err(Error::os("wait")(error.into())),
+            Ok(_) => {}
         }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(Error::os("wait")(error));
+        let broken = PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL;
+        let ready: Vec<super::Ready> = fds
+            .iter()
+            .enumerate()
+            .filter(|(_, fd)| !fd.revents().is_empty())
+            .map(|(index, fd)| super::Ready { index, broken: fd.revents().intersects(broken) })
+            .collect();
+        if !ready.is_empty() {
+            return Ok(ready);
         }
     }
 }

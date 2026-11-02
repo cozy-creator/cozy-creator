@@ -321,26 +321,8 @@ impl FileId {
 pub fn device(path: &Path) -> Result<u64> {
     #[cfg(target_os = "linux")]
     {
-        let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        // SAFETY: plain-old-data the call fills, and a NUL-terminated path. The raw syscall:
-        // glibc's wrapper is newer than the manylinux floor the binary links against.
-        let mut stat: libc::statx = unsafe { std::mem::zeroed() };
-        let flags = libc::AT_STATX_DONT_SYNC;
-        // SAFETY: as above.
-        if unsafe {
-            libc::syscall(
-                libc::SYS_statx,
-                libc::AT_FDCWD,
-                c.as_ptr(),
-                flags,
-                libc::STATX_BASIC_STATS,
-                &mut stat,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error().into());
-        }
+        use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+        let stat = statx(CWD, path, AtFlags::STATX_DONT_SYNC, StatxFlags::BASIC_STATS).map_err(io::Error::from)?;
         Ok(u64::from(stat.stx_dev_major) << 32 | u64::from(stat.stx_dev_minor))
     }
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -608,14 +590,7 @@ pub struct Space {
 pub fn space(path: &Path) -> Result<Space> {
     #[cfg(unix)]
     {
-        let c = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()))
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        // SAFETY: plain-old-data the call fills, and a NUL-terminated path.
-        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-        // SAFETY: as above.
-        if unsafe { libc::statvfs(c.as_ptr(), &mut stat) } != 0 {
-            return Err(io::Error::last_os_error().into());
-        }
+        let stat = rustix::fs::statvfs(path).map_err(io::Error::from)?;
         let unit = (stat.f_frsize as u64).max(1);
         #[allow(clippy::unnecessary_cast)] // the widths differ by OS
         Ok(Space {
@@ -654,19 +629,13 @@ pub fn space(path: &Path) -> Result<Space> {
 pub fn reflink(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::AsRawFd as _;
-        const FICLONE: libc::c_ulong = 0x4004_9409;
         let source = File::open(from)?;
         let clone = OpenOptions::new().write(true).create_new(true).open(to)?;
-        // SAFETY: both descriptors are open for the call.
-        let done = unsafe { libc::ioctl(clone.as_raw_fd(), FICLONE as _, source.as_raw_fd()) };
-        if done == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        drop(clone);
-        let _ = fs::remove_file(to);
-        Err(error)
+        rustix::fs::ioctl_ficlone(&clone, &source).map_err(|error| {
+            drop(clone);
+            let _ = fs::remove_file(to);
+            io::Error::from(error)
+        })
     }
     #[cfg(target_os = "macos")]
     {

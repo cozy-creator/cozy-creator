@@ -12,13 +12,11 @@
 //! activated or restored binary is simply the next service it starts. The service's Job Object
 //! ends its tree with the parent; Windows has no orphans to reap.
 #[cfg(unix)]
-use nix::{
-    errno::Errno,
-    sys::{
-        signal::{kill, SigSet, Signal},
-        wait::{waitpid, WaitPidFlag, WaitStatus},
-    },
-    unistd::Pid,
+use platform::process::{SupervisorSignals, Woken};
+#[cfg(unix)]
+use rustix::{
+    io::Errno,
+    process::{getpid, kill_process, waitpid, Pid, WaitOptions, WaitStatus},
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
@@ -90,19 +88,16 @@ pub fn supervise(
 /// on a rental's `provider` credential.
 #[cfg(unix)]
 pub fn supervise(paths: &super::update::Paths, provider: Option<ProviderSelf>) -> io::Result<Ready> {
-    let mut signals = SigSet::empty();
-    for signal in [Signal::SIGTERM, Signal::SIGINT, Signal::SIGCHLD] {
-        signals.add(signal);
-    }
+    let signals = SupervisorSignals::new();
     platform::process::keep_sigchld()?;
-    signals.thread_block().map_err(io::Error::from)?;
+    signals.block()?;
     // Orphans of the service reparent here, not to a PID 1 that may not reap them. Elsewhere
     // (macOS) they reparent to launchd, which reaps them, and executor trees end by group.
     match platform::process::become_subreaper() {
         Err(error) if error.is_unsupported() => {}
         other => other?,
     }
-    let parent = nix::unistd::getpid();
+    let parent = getpid();
     let mut failures_before_ready = 0;
     loop {
         if let Recovered::Exec(launch) = super::update::recover_activation(paths)? {
@@ -115,23 +110,23 @@ pub fn supervise(paths: &super::update::Paths, provider: Option<ProviderSelf>) -
             platform::process::Forked::Child => {
                 drop(read);
                 // The service never outlives its supervisor.
-                if !platform::process::die_with_parent(parent.as_raw() as u32)? {
+                if !platform::process::die_with_parent(parent.as_raw_pid() as u32)? {
                     std::process::exit(1);
                 }
-                SigSet::empty().thread_set_mask().map_err(io::Error::from)?;
+                platform::process::unblock_signals()?;
                 return Ok(Ready(Some(File::from(write))));
             }
-            platform::process::Forked::Parent(child) => Pid::from_raw(child as i32),
+            platform::process::Forked::Parent(child) => {
+                Pid::from_raw(child as i32).ok_or_else(|| io::Error::other("fork answered no child"))?
+            }
         };
         drop(write);
         let (status, stopping) = wait_service(child, &signals)?;
         let mut byte = [0u8; 1];
         let ready = File::from(read).read(&mut byte).unwrap_or(0) == 1;
-        let code = match status {
-            WaitStatus::Exited(_, code) => code,
-            WaitStatus::Signaled(_, signal, _) => 128 + signal as i32,
-            _ => 1,
-        };
+        let code = (status.exit_status())
+            .or(status.terminating_signal().map(|signal| 128 + signal))
+            .unwrap_or(1);
         if stopping || code == 0 {
             std::process::exit(code);
         }
@@ -166,10 +161,10 @@ pub fn supervise(paths: &super::update::Paths, provider: Option<ProviderSelf>) -
 /// Replaces this parent with the binary at `launch`. One that will not exec is rolled back, and
 /// this image serves on.
 #[cfg(unix)]
-fn exec(paths: &super::update::Paths, launch: &std::path::Path, provider: Option<&ProviderSelf>, signals: &SigSet) -> io::Result<()> {
+fn exec(paths: &super::update::Paths, launch: &std::path::Path, provider: Option<&ProviderSelf>, signals: &SupervisorSignals) -> io::Result<()> {
     tracing::info!("running {}", launch.display());
     let error = super::binary::exec(launch, provider);
-    signals.thread_block().map_err(io::Error::from)?;
+    signals.block()?;
     let cause = format!("cannot run {}: {error}", launch.display());
     tracing::error!("{cause}");
     super::update::rollback_pending(paths, &cause).map(drop)
@@ -187,19 +182,19 @@ pub(super) fn inherit(fd: std::os::fd::OwnedFd, at: i32) -> bool {
 
 /// Waits for the service to end, reaping every orphan meanwhile and forwarding stop signals.
 #[cfg(unix)]
-fn wait_service(child: Pid, signals: &SigSet) -> io::Result<(WaitStatus, bool)> {
+fn wait_service(child: Pid, signals: &SupervisorSignals) -> io::Result<(WaitStatus, bool)> {
     let mut stopping = false;
     loop {
-        match signals.wait().map_err(io::Error::from)? {
-            signal @ (Signal::SIGTERM | Signal::SIGINT) => {
+        match signals.wait()? {
+            Woken::Stop(signal) => {
                 stopping = true;
-                let _ = kill(child, signal);
+                let _ = kill_process(child, signal);
             }
-            _ => loop {
-                match waitpid(None, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) | Err(Errno::ECHILD) => break,
-                    Ok(status) if status.pid() == Some(child) => return Ok((status, stopping)),
-                    Ok(_) | Err(Errno::EINTR) => continue,
+            Woken::Child => loop {
+                match waitpid(None, WaitOptions::NOHANG) {
+                    Ok(None) | Err(Errno::CHILD) => break,
+                    Ok(Some((pid, status))) if pid == child => return Ok((status, stopping)),
+                    Ok(Some(_)) | Err(Errno::INTR) => continue,
                     Err(error) => return Err(error.into()),
                 }
             },

@@ -28,6 +28,7 @@ fetch = ["dep:flate2", "dep:sigstore-verify", "dep:tar", "dep:zip"]
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "param", "process", "thread"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

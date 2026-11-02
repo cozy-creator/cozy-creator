@@ -1,9 +1,16 @@
 //! Linux: births from `/proc`, exact handles by pidfd (TensorD `process.rs`).
 #![allow(unsafe_code)]
 use super::{Birth, State, unix};
+use rustix::{
+    io::Errno,
+    process::{
+        Pid, PidfdFlags, Signal, getpid, getppid, pidfd_open, pidfd_send_signal, set_child_subreaper,
+        set_parent_process_death_signal, setpriority_process,
+    },
+};
 use std::{
     fs, io,
-    os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsFd, OwnedFd},
     time::Duration,
 };
 
@@ -44,18 +51,13 @@ pub(super) fn open(birth: &Birth) -> io::Result<Option<Handle>> {
     if boot_id()? != birth.boot_id {
         return Ok(None);
     }
-    // SAFETY: pidfd_open takes a PID and flags, no memory.
-    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, birth.pid, 0) } as i32;
-    if raw < 0 {
-        let error = io::Error::last_os_error();
-        return match error.raw_os_error() {
-            // ESRCH: reaped. EINVAL: a leader already exiting (its threads tearing down).
-            Some(libc::ESRCH | libc::EINVAL) => Ok(None),
-            _ => Err(error),
-        };
-    }
-    // SAFETY: pidfd_open returned a new descriptor that is now ours.
-    let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let pid = Pid::from_raw(birth.pid as i32).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let pidfd = match pidfd_open(pid, PidfdFlags::empty()) {
+        Ok(pidfd) => pidfd,
+        // ESRCH: reaped. EINVAL: a leader already exiting (its threads tearing down).
+        Err(Errno::SRCH | Errno::INVAL) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     // Read after opening: the pidfd now pins whichever task holds the PID.
     match stat(birth.pid) {
         Ok(stat) if stat.start_ticks == birth.start_ticks => Ok(Some(Handle(pidfd))),
@@ -69,19 +71,7 @@ pub(super) fn kill(handle: &Handle, birth: &Birth) -> io::Result<()> {
     // A group's number is not reused while a member lives, so a group this birth leads is its own.
     let leads_group = stat(birth.pid)
         .is_ok_and(|stat| stat.start_ticks == birth.start_ticks && stat.pgrp as u32 == birth.pid);
-    unix::signaled(
-        // SAFETY: a live pidfd, a signal number and no siginfo.
-        unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                handle.0.as_raw_fd(),
-                libc::SIGKILL,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        } as libc::c_int,
-        birth.pid,
-    )?;
+    unix::signaled(pidfd_send_signal(&handle.0, Signal::KILL), birth.pid)?;
     if leads_group {
         unix::signal_group(birth.pid)?;
     }
@@ -93,27 +83,17 @@ pub(super) fn wait(handle: &Handle, period: Option<Duration>) -> io::Result<bool
 }
 
 pub(super) fn background_thread() {
-    // SAFETY: all three act on the calling thread alone (Linux keeps nice and the I/O class per
-    // thread): setpriority names its tid (the raw syscall: glibc's gettid is newer than the
-    // manylinux floor), ioprio_set's IOPRIO_WHO_PROCESS 0 is the caller.
-    unsafe {
-        let tid = libc::syscall(libc::SYS_gettid);
-        libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 19);
-        libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13);
-    }
+    // All act on the calling thread alone: Linux keeps nice and the I/O class per thread.
+    let _ = setpriority_process(Some(rustix::thread::gettid()), 19);
+    // SAFETY: ioprio_set takes scalars; IOPRIO_WHO_PROCESS 0 is the caller. rustix has no ioprio_set.
+    unsafe { libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13) };
 }
 
 pub(super) fn set_name(name: &str) -> crate::Result<()> {
-    let failed = crate::Error::os("name this process");
     let name = std::ffi::CString::new(name)
-        .map_err(|error| failed(io::Error::new(io::ErrorKind::InvalidInput, error)))?;
-    // SAFETY: a NUL-terminated name, of which the kernel copies at most 16 bytes.
-    if unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr()) } < 0 {
-        return Err(crate::Error::os("name this process")(
-            io::Error::last_os_error(),
-        ));
-    }
-    Ok(())
+        .map_err(|error| crate::Error::os("name this process")(io::Error::new(io::ErrorKind::InvalidInput, error)))?;
+    // The kernel copies at most 16 bytes.
+    rustix::thread::set_name(&name).map_err(|error| crate::Error::os("name this process")(error.into()))
 }
 
 pub(super) fn parent_of(pid: u32) -> io::Result<u32> {
@@ -165,8 +145,7 @@ pub(super) fn meter(pid: u32) -> Option<(u64, u64)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let fields: Vec<_> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
     let ticks = fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?;
-    // SAFETY: sysconf takes a scalar key.
-    let hertz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+    let hertz = rustix::param::clock_ticks_per_second().max(1);
     let waited: u64 = fs::read_dir(format!("/proc/{pid}/task"))
         .into_iter()
         .flatten()
@@ -203,24 +182,13 @@ pub(super) fn written_bytes(pid: u32) -> Option<u64> {
 }
 
 pub(super) fn become_subreaper() -> crate::Result<()> {
-    // SAFETY: prctl with scalar arguments.
-    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) } < 0 {
-        return Err(crate::Error::os("become a subreaper")(
-            io::Error::last_os_error(),
-        ));
-    }
-    Ok(())
+    set_child_subreaper(Some(getpid())).map_err(|error| crate::Error::os("become a subreaper")(error.into()))
 }
 
+/// Async-signal-safe: rustix's Linux backend makes these syscalls itself.
 pub(super) fn die_with_parent(parent: u32) -> crate::Result<bool> {
-    // SAFETY: prctl with scalar arguments; async-signal-safe, as is getppid.
-    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } < 0 {
-        return Err(crate::Error::os("die with the parent")(
-            io::Error::last_os_error(),
-        ));
-    }
-    // SAFETY: getppid has no arguments.
-    Ok(unsafe { libc::getppid() } as u32 == parent)
+    set_parent_process_death_signal(Some(Signal::KILL)).map_err(|error| crate::Error::os("die with the parent")(error.into()))?;
+    Ok(Pid::as_raw(getppid()) as u32 == parent)
 }
 
 pub(super) fn transient(error: &io::Error) -> bool {

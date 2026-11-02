@@ -200,11 +200,11 @@ fn reexec(own: Option<&ProviderSelf>) -> io::Error {
 /// closed); None when it handed none.
 #[cfg(target_os = "linux")]
 fn inherited() -> Option<ProviderSelf> {
-    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use rustix::fs::{fcntl_setfl, OFlags};
     // The parent's pipe, written and closed before the exec; nonblocking, so whatever else
     // sits there never makes a read wait.
     let pipe = platform::process::take_handed(CREDENTIAL_FD)?;
-    fcntl(&pipe, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).ok()?;
+    fcntl_setfl(&pipe, OFlags::NONBLOCK).ok()?;
     let mut bytes = Vec::new();
     let _ = pipe.take(64 << 10).read_to_end(&mut bytes);
     serde_json::from_slice(&bytes).ok()

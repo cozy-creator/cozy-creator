@@ -1,10 +1,13 @@
 //! Unix: Unix sockets.
 #![allow(unsafe_code)]
 use crate::{Error, Result, process::Exact};
+use rustix::{
+    event::{PollFd, PollFlags},
+    io::Errno,
+};
 use std::{
-    io,
     os::{
-        fd::{AsFd, AsRawFd, FromRawFd},
+        fd::{AsFd, FromRawFd},
         unix::net::{UnixListener, UnixStream},
     },
     path::Path,
@@ -35,29 +38,18 @@ impl LocalListener {
     pub fn accept_unless(&self, process: &Exact) -> Result<Option<LocalStream>> {
         loop {
             let mut poll = [
-                libc::pollfd {
-                    fd: self.0.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: process.as_fd().as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
+                PollFd::new(&self.0, PollFlags::IN),
+                PollFd::new(process, PollFlags::IN),
             ];
-            // SAFETY: two live descriptors and their count.
-            if unsafe { libc::poll(poll.as_mut_ptr(), 2, -1) } < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(Error::os("wait for a dialer")(error));
+            match rustix::event::poll(&mut poll, None) {
+                Err(Errno::INTR) => continue,
+                Err(error) => return Err(Error::os("wait for a dialer")(error.into())),
+                Ok(_) => {}
             }
-            if poll[0].revents & libc::POLLIN != 0 {
+            if poll[0].revents().contains(PollFlags::IN) {
                 return self.accept().map(Some);
             }
-            if poll[1].revents != 0 {
+            if !poll[1].revents().is_empty() {
                 return Ok(None);
             }
         }
