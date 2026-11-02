@@ -20,6 +20,7 @@ pub mod arena_retirement;
 mod retirement;
 pub use arena_retirement::{ArenaRetirement, ArenaRetirementFacts, ArenaRetirementState};
 pub mod working;
+pub(crate) mod tensor_consumers;
 pub mod cache_owner;
 pub use cache_owner::CacheOwner;
 pub use working::{Cache, CacheStats};
