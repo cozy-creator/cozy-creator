@@ -24,7 +24,7 @@ pub fn cozy(version: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Re
     let archive = super::pypi::object_at(machine, &url, &release.sha256, None, None, stop).map_err(|e| io::Error::other(format!("{url}: {e}")))?;
     fs::create_dir_all(dir)?;
     let binary = dir.join(format!("cozy-{version}"));
-    release.unpack(fs::File::open(archive)?, &mut fs::File::create(&binary)?)?;
+    release.unpack_with_libraries(fs::File::open(archive)?, &mut fs::File::create(&binary)?, dir)?;
     tracing::info!("cozy {version}: {url} sha256 {}, signed by {signer}", release.sha256);
     Ok(binary)
 }

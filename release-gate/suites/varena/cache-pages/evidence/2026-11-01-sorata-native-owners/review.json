@@ -1,0 +1,83 @@
+{
+  "passed": true,
+  "reviewer": "/root/retention_restart",
+  "source": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+  "helper_sha256": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+  "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748",
+  "source_files_verified": 1183,
+  "raw_equals_extracted": true,
+  "prepared_files_verified": true,
+  "parent_sdk": {
+    "runtime": "0.36.22+dev.g7adc1e82",
+    "tensorfs": "0.17.16+dev.ga96c7c3e",
+    "extension": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6"
+  },
+  "runs": [
+    {
+      "number": 25511,
+      "execution_ms": 1893,
+      "pid": 118973,
+      "start_ticks": 111154214,
+      "busy_owner_callbacks": 1,
+      "busy_owner_declined": 1,
+      "available_owner_callbacks": 1,
+      "actual_released_bytes": 2097152,
+      "cache_mapped_before": 4194304,
+      "cache_mapped_after": 2097152,
+      "pending_unjoined_weight_bytes_unchanged": 6291456,
+      "context_join_delta": 0,
+      "event_wait_delta": 0,
+      "actual_pending_release_bytes": 2097152,
+      "full_readback": true,
+      "callbacks_retired": true,
+      "final_native_physical": 0,
+      "parent_driver_free_delta": -60817408
+    },
+    {
+      "number": 25512,
+      "execution_ms": 419,
+      "pid": 118984,
+      "start_ticks": 111154283,
+      "creation_fill_readback_drop_passes": 128,
+      "bytes_fully_read_per_pass": 2097152,
+      "reclaim_scans_overlapping_creation": 2009,
+      "peer_publications_overlapping_creation": 1311,
+      "typed_deferred_publications": 0,
+      "production_probe_hooks": false,
+      "final_native_physical": 0,
+      "parent_driver_free_delta": 0
+    }
+  ],
+  "both_children": {
+    "exit_code": 0,
+    "pidfd_exit_observed": true,
+    "python_loaded": false,
+    "torch_loaded": false,
+    "cuda_loaded": true,
+    "all_working_cache_pool_pending_event_counts_final_zero": true
+  },
+  "not_proven": [
+    "allocator-triggered owner progress",
+    "Python callback/GIL availability",
+    "logical graph retirement during unrelated replay",
+    "coherent dfb Plan/Cache merge",
+    "Cooperative/Foreign donor credit or v3 requestability",
+    "total CUDA-driver memory equality after child exit"
+  ],
+  "files": {
+    "native-owners-25511.json": "27c3e70f4f3fca1b1de96e8d8116f2a658de2d36ac676a719231bd0287ae204d",
+    "native-owners-result.json": "c287581e010994ee5d9298afbe0777564e17fabf84e3018fea218ab7d19bf5e2",
+    "native-owners-invocation.json": "aacc3d4973b3b7ed568178ff889820ce485b3f50e5d5d20d7079c2a4847c1d5f",
+    "native-owners.ndjson": "adeb6c70c935e9a89bc075c9d450eb7a8a2955855b277583caa916aed147429e",
+    "native-owners.err": "fa8d53827dd9cf35ab0302a2188d9cdfc5fcc09ef0221b2d3f88e3c05dad3e11",
+    "arena-concurrency-25512.json": "c2b467ff46fa7fc54a6732707d3d4e81a93a7137d4d7024c8f9da720ac358b96",
+    "arena-concurrency-result.json": "a2f0a1f06829988ccd1d30621299bc7ecec672865a8160a92a580003e6f84d1e",
+    "arena-concurrency-invocation.json": "5acf52b44cd1807f53620e6a9f16e3a81c91e79a7c59062840486ec08a66e404",
+    "arena-concurrency.ndjson": "ba453827e0eac1b3ac4c3fb96fe1ac76297eec2d32bcead3c7011e2625ced0a9",
+    "arena-concurrency.err": "0bc8588b737eb9e11efa333f1e9341388fdef2959e703f84267e3908125ac63c",
+    "source.json": "e123c5c1f5a0244fbcc5796b5fe0aaa1adb56d42758f2856b3a4aff15f4be3dc",
+    "binary.json": "33248cf2f7813a91bb07d35cebc39639e6c0c4c5bf198952b4712c4057afdb7f",
+    "prepared-controller.json": "bd5986432525fa112790c8e6e101bad4b561b318be0981ded2204199cc85ad9f",
+    "input.json": "46eec608724df6bd27c320d53a0929ca0bcac08c73f1697b2793f3d722f92937"
+  }
+}

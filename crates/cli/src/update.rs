@@ -197,7 +197,7 @@ fn unpack(release: &Release, archive: File, binary: &Path) -> io::Result<tempfil
         .prefix(".cozy-update-")
         .suffix(std::env::consts::EXE_SUFFIX)
         .tempfile_in(binary.parent().unwrap_or(Path::new(".")))?;
-    release.unpack(archive, &mut file)?;
+    release.unpack_with_libraries(archive, &mut file, binary.parent().unwrap_or(Path::new(".")))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -19,6 +19,8 @@ pub mod paths;
 pub mod process;
 #[cfg(feature = "fetch")]
 pub mod release;
+#[cfg(feature = "fetch")]
+pub mod native_bundle;
 pub mod service;
 pub mod shm;
 pub mod tail;
