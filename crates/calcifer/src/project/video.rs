@@ -19,7 +19,6 @@ use super::{
     host::{Accepts, Renderer},
 };
 
-pub const TYPE: &str = "video";
 /// The name `cozy project render all` means: every node, brought up to date.
 pub const ALL: &str = "all";
 
@@ -35,42 +34,58 @@ const RENDERERS: [(&str, &str); 6] = [
     ("clean", "birefnet/remove_background"),
 ];
 
-/// A new project's project.yaml: each kind shown, commented out. Cozy never writes it again: each
-/// node's versions, and which is approved, are in project.lock.
+/// A new project's project.yaml: a short film that renders as it stands. Cozy never writes it again:
+/// each node's versions, and which is approved, are in project.lock.
 pub fn skeleton() -> String {
-    "# A video project (`cozy project --help`). Fill in the lists, then, inside this folder,
-#   cozy project render all --on <machine>
-# makes everything missing or out of date, in order, and cuts edit.mp4 (and its timeline, edit.otio) here. A file named here
-# (relative to this folder, or absolute) is linked into assets/ on first use; everything cozy makes
-# is kept there too, by content, and `cozy project status` prints each node's file.
-type: video
-style: \"\"   # the look, added to every picture and shot
-# defaults:   # each node kind's render block; a node's own render: wins
-#   shot: {with: minimax-h3/generate, lora: [{ref: org/lora, strength: 0.8}], options: {turbo: true}}
-entities:   # characters, props, and environments with camera setups (camera text in screen terms)
-  # - {name: theo, kind: character, description: \"A tall man in a green raincoat.\"}
-  # - {name: dock, kind: environment, description: \"a foggy harbour at dawn\",
-  #    setups: [{name: a, camera: \"wide: the red hut near on the left, the crates far on the right\"}]}
-world_states:   # how a set stands; a shot that writes one changes it for the shots after
-  # - {name: stage, init: \"<theo> stands on <dock>.\", blocking: \"theo by the hut.\"}
-shots:   # in order; past its renderer's longest piece (15 s for minimax-h3) a shot needs beats
-  # - {name: walk, setup: dock.a, prompt: \"<theo> crosses <dock>.\", duration_s: 8, writes: [{state: stage}],
-  #    beats: [{at: 0, prompt: \"He walks to the edge.\"}, {at: 4, prompt: \"He looks out to sea.\"}],
-  #    references: [{name: stride, kind: video, video: ~/footage/walk.mp4}]}   # also plate: {video: …}, first_frame, last_frame
-# a node's render: {with: <function or ./dir/function>, models: {...}, lora: [...], options: {...}} renders it another way
-# image: (or a shot's video:) attaches your own file (theo.png), used until you approve one cozy made
-# resolution: 1440p   # the edit's short edge: shots below it are upscaled (their approved version), and
-# aspect_ratio: \"16:9\"   # the canvas every shot fills; both are the project's alone
-# fps: 24   # the edit's frame rate, fixed per project: edit: positions are frames at it
-# edit: [{shot: walk, start: 12, end: 156}]   # shots and frames (end exclusive) the edit cuts; absent: every shot, whole
-"
+    r#"# A short film, ready to render: cozy project render all --on <machine>
+# Change anything. More kinds and options (props, world states, references, plates, LoRAs, upscales,
+# the edit's frames) are in the README.
+style: bright hand-painted anime, studio ghibli style
+aspect_ratio: "16:9"
+fps: 24
+
+entities:
+  - name: kyogre
+    kind: character
+    description: Kyogre, the colossal blue legendary Pokémon of the sea, whale-like, with vast fin-like arms and glowing red lines along its body.
+
+  - name: groudon
+    kind: character
+    description: Groudon, the colossal red legendary Pokémon of the land, armored in grey stone plates, with huge claws and glowing black lines along its body.
+
+  - name: coast
+    kind: environment
+    description: a volcanic coast in Hoenn where a raging storm sea meets cliffs running with lava, the crater city of Sootopolis small in the distance
+    setups:
+      - name: wide
+        camera: "wide: the storm sea on the left, the lava cliffs on the right, Sootopolis small and far between them"
+
+shots:
+  - name: awaken
+    setup: coast.wide
+    prompt: <kyogre> rises out of the black sea off <coast>, water pouring from its fins as a torrential storm gathers around it.
+    duration_s: 6
+
+  - name: erupt
+    setup: coast.wide
+    prompt: <groudon> climbs out of the lava on the cliffs of <coast> and roars, the rain turning to steam around it under a burning sun.
+    duration_s: 6
+
+  - name: clash
+    setup: coast.wide
+    prompt: <kyogre> and <groudon> charge each other across <coast> as storm and sun collide overhead.
+    duration_s: 10
+    beats:
+      - at: 0
+        prompt: <kyogre> blasts a huge column of water at <groudon>, which erupts into steam against its armor.
+      - at: 5
+        prompt: <groudon> answers with a torrent of fire, and the two titans crash together in the surf.
+"#
     .into()
 }
 
 #[derive(Deserialize)]
 struct Project {
-    #[serde(rename = "type")]
-    kind: String,
     /// Each node kind's render block, by `RENDERERS`' kinds.
     #[serde(default)]
     defaults: BTreeMap<String, Render>,
@@ -431,12 +446,6 @@ impl Video {
             .iter()
             .map(|path| format!("{}: cozy reads no field {path}; it is ignored", folder::PROJECT))
             .collect();
-        if project.kind != TYPE {
-            return Err(invalid(
-                "project_type",
-                format!("{} is a {} project; this cozy makes {TYPE} projects", folder::PROJECT, project.kind),
-            ));
-        }
         warnings.extend(
             (project.defaults.keys())
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
