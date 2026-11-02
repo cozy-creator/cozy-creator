@@ -37,6 +37,7 @@ and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assert
 - Frontend: multiple live definitions, weight Pins zero, same-VA trim/refill/replay,
   independent old outputs, an escaped native alias on a graph Region, and stale-version
   selection refusal with earlier output/version preservation.
+  It also observes restoration of a known enclosing offload Plan after segment replay.
 - Tail: after actual launch, gate the real copy consumer; prove native trim selected
   a last-consumer fence and stayed blocked before opening the gate. No early reclaim.
 - Reset: reset the actual CUDA executable in its launch-end hook while work is gated;

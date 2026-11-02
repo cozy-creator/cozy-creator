@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import os
 import threading
@@ -10,6 +11,7 @@ from dataclasses import dataclass, field
 
 import torch
 from torch import nn
+from torch.multiprocessing.reductions import StorageWeakRef
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_flatten, tree_map
 
@@ -21,10 +23,28 @@ from . import torch as vt
 # Uncertain launch/cleanup never loses exact graph, pool, input, Source or Pin owners.
 # No background work or retries are performed by this process-lifetime custody list.
 _UNPROVEN = []
+_ACTIVE_EXECUTION = contextvars.ContextVar("varena_graph_execution", default=None)
 
 
 class GraphInvalidated(adapter.OffloadError):
     """The current model no longer selects this immutable graph definition."""
+
+
+class CaptureOwnershipUncertain(adapter.OffloadError):
+    """Capture storage aliases were not retired; exact native owners stay retained."""
+
+
+def _storage_tokens(exports):
+    return tuple({StorageWeakRef(tensor.untyped_storage()) for tensor in exports})
+
+
+def _live_storages(tokens):
+    result = []
+    for token in tokens:
+        storage = torch.UntypedStorage._new_with_weak_ptr(token.cdata)
+        if storage is not None:
+            result.append(storage)
+    return tuple(result)
 
 
 def _ordinary(tensor):
@@ -81,6 +101,13 @@ class _BufferGuard(TorchDispatchMode):
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        if func._schema.name == "aten::set_" and any(
+            isinstance(value, adapter._Weight)
+            for value in tree_flatten((args, kwargs))[0]
+        ):
+            raise adapter.OffloadError(
+                "capture cannot reassign ordinary storage to managed weights"
+            )
         if func.namespace != "aten":
             raise adapter.OffloadError(
                 f"graph custom operator needs an adapter: {func}"
@@ -117,8 +144,10 @@ class _CaptureBindings:
             stream,
         )
         self.modules = {id(child) for child in module.modules()}
-        self.buffers = tuple(module.buffers()) + tuple(
-            v for v in tree_flatten(inputs)[0] if type(v) is torch.Tensor
+        self.buffers = (
+            tuple(module.buffers())
+            + tuple(prepared.values())
+            + tuple(v for v in tree_flatten(inputs)[0] if type(v) is torch.Tensor)
         )
 
     def validate_module(self, owner, module):
@@ -191,6 +220,50 @@ class _Epoch:
     released: bool = False
     tails_attempted: bool = False
     finished: bool = False
+    capture_storages: tuple = ()
+    retained_storages: tuple = ()
+    parent_plan: object = None
+    parent_phase: str | None = None
+    parent_suspended: bool = False
+    intent_active: bool = False
+    intent_restored: bool = False
+    intent_error: object = None
+
+    def select_intent(self):
+        owner = self.definition.owner
+        if owner._intent_frames:
+            self.parent_plan = owner._intent_plan
+            self.parent_phase = owner._intent_frames[-1]
+            if self.parent_plan is None:
+                raise adapter.OffloadError("enclosing intent has no retained Plan")
+            try:
+                self.parent_plan.deactivate()
+            except BaseException as error:
+                self.intent_error = error
+                owner._intent_failed = True
+                raise
+            self.parent_suspended = True
+        self.definition.plan.activate(self.definition.phase)
+        self.intent_active = True
+
+    def restore_intent(self):
+        if self.intent_restored:
+            return
+        if self.intent_error is not None:
+            raise self.intent_error
+        try:
+            if self.intent_active:
+                self.definition.plan.deactivate()
+                self.intent_active = False
+            if self.parent_suspended:
+                self.parent_plan.activate(self.parent_phase)
+                self.parent_suspended = False
+        except BaseException as error:
+            self.intent_error = error
+            if self.parent_plan is not None:
+                self.definition.owner._intent_failed = True
+            raise
+        self.intent_restored = True
 
     def acquire(self, *, capture):
         definition = self.definition
@@ -279,6 +352,13 @@ class GraphSegment:
         self._closed, self._busy, self._failure = False, False, None
         self._closing, self._closed_facts = False, None
         self._graph, self._definition, self._tail = None, None, None
+        if (
+            _ACTIVE_EXECUTION.get() is not None
+            or adapter._GRAPH_BINDING.get() is not None
+        ):
+            raise adapter.OffloadError(
+                "prepare graphs outside another capture/replay epoch"
+            )
         if owner._owner.device.type != "cuda":
             raise adapter.OffloadError("graph capture requires a CUDA offload owner")
         vt._installed()  # Reject inherited owners before any Python/native lock.
@@ -380,6 +460,7 @@ class GraphSegment:
                     if caller != stream:
                         stream.wait_stream(caller)
                     epoch.acquire(capture=True)
+                    epoch.capture_storages = _storage_tokens(epoch.exports)
                     definition.static_tree = tree_map(self._static_input, tree)
                     binding = _CaptureBindings(
                         owner, module, epoch.prepared, stream, definition.static_tree
@@ -420,18 +501,28 @@ class GraphSegment:
                             "captured weight aliases cannot become ordinary graph outputs"
                         )
                     epoch.release()
+                    # Track C10 Storage families, not one Tensor's Python weakref.
+                    # Reacquiring the same live Storage preserves its actual
+                    # TensorExport/Pin if a detached or hidden alias escaped.
+                    epoch.retained_storages = _live_storages(epoch.capture_storages)
+                    if epoch.retained_storages:
+                        raise CaptureOwnershipUncertain(
+                            "capture storage aliases remain; exact exports retained, streamed classification refused"
+                        )
                 plan.deactivate()
                 activated = False
                 observed = self._weight_entries()
                 if any(row["pins"] or row["unjoined"] for row in observed):
-                    raise adapter.OffloadError(
+                    raise CaptureOwnershipUncertain(
                         "capture leaves physical weight Pins; streamed graph classification refused"
                     )
                 # Resource does not reference graph/segment. Native pool/weight
                 # tails protect submitted GPU work if this definition is dropped.
                 graph.retain_object(definition, synchronize_before_release=False)
             except BaseException as error:
-                if epoch.release_attempted and not epoch.released:
+                if isinstance(error, CaptureOwnershipUncertain) or (
+                    epoch.release_attempted and not epoch.released
+                ):
                     self._retain_failure(epoch, error)
                     raise
                 try:
@@ -563,6 +654,10 @@ class GraphSegment:
 
     def _retain_failure(self, epoch, error):
         self._failure = str(error)
+        if epoch.parent_plan is not None and (
+            epoch.parent_suspended or epoch.intent_active
+        ):
+            epoch.definition.owner._intent_failed = True
         _UNPROVEN.append((self, epoch, error))
 
     def _check_process(self):
@@ -601,6 +696,13 @@ class GraphSegment:
 
     def __call__(self, *args, stream, **kwargs):
         self._check_process()
+        if (
+            _ACTIVE_EXECUTION.get() is not None
+            or adapter._GRAPH_BINDING.get() is not None
+        ):
+            raise adapter.OffloadError(
+                "host graph segmentation cannot execute inside another capture/replay epoch"
+            )
         with self._lock:
             if self._closed or self._closing:
                 raise adapter.OffloadError("graph segment is closed")
@@ -625,11 +727,10 @@ class GraphSegment:
                     definition.streams.append(actual)
             self._busy = True
             epoch = _Epoch(definition, stream, inputs=tree)
-            activated = False
             submitted = False
+            execution_token = _ACTIVE_EXECUTION.set(self)
             try:
-                definition.plan.activate(definition.phase)
-                activated = True
+                epoch.select_intent()
                 with torch.cuda.stream(stream):
                     if stream != caller:
                         stream.wait_stream(caller)
@@ -656,12 +757,7 @@ class GraphSegment:
                     result = tree_map(lambda tensor: tensor.clone(), definition.outputs)
                     epoch.outputs = result
                     self._finish_epoch(epoch)
-                activated = False
-                try:
-                    definition.plan.deactivate()
-                except BaseException as error:
-                    self._retain_failure(epoch, error)
-                    raise
+                epoch.restore_intent()
                 if stream != caller:
                     caller.wait_event(self._tail)
                     for tensor in tree_flatten(result)[0]:
@@ -687,15 +783,18 @@ class GraphSegment:
                     except BaseException as cleanup:
                         self._retain_failure(epoch, cleanup)
                         raise cleanup from error
-                if activated:
+                if epoch.intent_error is not None:
+                    self._retain_failure(epoch, epoch.intent_error)
+                elif not epoch.intent_restored:
                     try:
-                        definition.plan.deactivate()
+                        epoch.restore_intent()
                     except BaseException as cleanup:
                         self._retain_failure(epoch, cleanup)
                         raise cleanup from error
                 raise
             finally:
                 self._busy = False
+                _ACTIVE_EXECUTION.reset(execution_token)
 
     def facts(self):
         self._check_process()

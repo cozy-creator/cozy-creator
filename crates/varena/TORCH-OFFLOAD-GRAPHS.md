@@ -85,6 +85,11 @@ view adds its member offset only after original-storage span validation.
 4. End capture through existing routing/footprint cleanup. Only afterward release all
    temporary exports/Uses through normal consumer fencing. Reject hidden capture views
    or classify them explicitly as resident; never force-drop a Pin.
+   Track the actual C10 Storage families across detached aliases. If any capture Storage
+   still survives table release, retain that same Storage/export owner and the epoch,
+   then refuse streamed classification. The scalar Pin census is diagnostic/test evidence,
+   not an atomic ownership capability. Capture storage reassignment to an ordinary target
+   and writes to prepared weight aliases are refused before mutation.
 5. Publish the definition only after success. On failure keep exact captured/native
    owners through checked cleanup, retire partial metadata and expose the original
    error. Do not publish a half-initialized definition or execute an application retry.
@@ -129,6 +134,10 @@ For each call, under the segment's submission lock:
    last-consumer fences retain residency while work is pending after submission.
    A `record_stream` lifetime declaration never substitutes for a producer dependency.
 5. Deactivate intent without publishing an invented compute key or successful H sample.
+   If a known enclosing offload forward owns the device Plan, suspend it before selecting
+   the segment and restore its exact phase afterward, outside exclusion. Never replace
+   an unknown external Plan. Failed restoration retains parent/epoch ownership and the
+   model's failed-intent state; nested capture/replay from an execution hook refuses.
    Failed/unproven consumer fencing retains native custody; it does not run a context
    join, force reference counts or retry the application.
 
