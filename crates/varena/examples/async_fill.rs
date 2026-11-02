@@ -12,6 +12,8 @@ use std::{
 use varena::{Arena, FillFacts, FillOwners, FillState, Preparation, StreamPreparation, working};
 #[path = "async_fill/retirement.rs"]
 mod retirement;
+#[path = "async_fill/host.rs"]
+mod host;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Obj = *mut c_void;
 type Copy = unsafe extern "system" fn(u64, *const c_void, usize, Obj) -> i32;
@@ -44,8 +46,7 @@ struct Cuda {
     capture_begin: unsafe extern "system" fn(Obj, u32) -> i32,
     capture_end: unsafe extern "system" fn(Obj, *mut Obj) -> i32,
     graph_destroy: StreamOp,
-    host_alloc: unsafe extern "system" fn(*mut Obj, usize, u32) -> i32,
-    host_free: StreamOp,
+    host: host::Api,
     copy: Copy,
     d2d: D2D,
     read: unsafe extern "system" fn(*mut c_void, u64, usize) -> i32,
@@ -89,8 +90,7 @@ impl Cuda {
                 capture_begin: *library.get(b"cuStreamBeginCapture_v2\0")?,
                 capture_end: *library.get(b"cuStreamEndCapture\0")?,
                 graph_destroy: *library.get(b"cuGraphDestroy\0")?,
-                host_alloc: *library.get(b"cuMemHostAlloc\0")?,
-                host_free: *library.get(b"cuMemFreeHost\0")?,
+                host: host::Api::load(&library, device)?,
                 copy: *library.get(b"cuMemcpyHtoDAsync_v2\0")?,
                 d2d: *library.get(b"cuMemcpyDtoDAsync_v2\0")?,
                 read: *library.get(b"cuMemcpyDtoH_v2\0")?,
@@ -151,7 +151,7 @@ impl Cuda {
 #[derive(Default)]
 struct ResourceState {
     streams_released: usize,
-    host_released: bool,
+    stages: [host::Allocation; 2],
     failed: bool,
     retired: bool,
 }
@@ -159,28 +159,29 @@ struct Resources {
     state: Mutex<ResourceState>,
     cuda: Arc<Cuda>,
     streams: Vec<u64>,
-    host: usize,
+    host: [usize; 2],
     dropped: Arc<AtomicUsize>,
     errors: Arc<AtomicUsize>,
 }
 impl Resources {
     fn new(cuda: Arc<Cuda>) -> Result<Arc<Self>> {
-        let streams = vec![cuda.stream()?, cuda.stream()?];
-        let mut host = std::ptr::null_mut();
-        unsafe {
-            check("cuMemHostAlloc", (cuda.host_alloc)(&mut host, BYTES, 1))?;
-            let bytes = std::slice::from_raw_parts_mut(host.cast::<u8>(), BYTES);
-            bytes[..BYTES / 2].fill(41);
-            bytes[BYTES / 2..].fill(73);
+        let mut resources = Self {
+            state: Mutex::new(ResourceState::default()), cuda, streams: Vec::new(), host: [0; 2],
+            dropped: Arc::new(AtomicUsize::new(0)), errors: Arc::new(AtomicUsize::new(0)),
+        };
+        // Construct the owner first: every partial stream/handle/map remains reachable
+        // for no-write setup cleanup. Each producer owns exactly one bounded2MiB stage.
+        for index in 0..2 {
+            resources.streams.push(resources.cuda.stream()?);
+            let state = resources.state.get_mut().map_err(|_| "fixture setup lock")?;
+            resources.cuda.host.prepare(&mut state.stages[index])?;
+            resources.host[index] = state.stages[index].pointer();
+            unsafe {
+                std::slice::from_raw_parts_mut(resources.host[index] as *mut u8, BYTES / 2)
+                    .fill(if index == 0 { 41 } else { 73 });
+            }
         }
-        Ok(Arc::new(Self {
-            state: Mutex::new(ResourceState::default()),
-            cuda,
-            streams,
-            host: host as usize,
-            dropped: Arc::new(AtomicUsize::new(0)),
-            errors: Arc::new(AtomicUsize::new(0)),
-        }))
+        Ok(Arc::new(resources))
     }
 }
 impl Resources {
@@ -214,19 +215,18 @@ impl Resources {
                 (self.cuda.push)(self.cuda.context as Obj),
             )?;
             let released: varena::Result<()> = (|| {
+                for stage in &mut state.stages {
+                    if let Err(error) = self.cuda.host.release(stage) {
+                        self.errors.fetch_add(1, Ordering::SeqCst);
+                        return Err(error);
+                    }
+                }
                 while state.streams_released < self.streams.len() {
                     status(
                         "fixture cuStreamDestroy",
                         (self.cuda.stream_destroy)(self.streams[state.streams_released] as Obj),
                     )?;
                     state.streams_released += 1;
-                }
-                if !state.host_released {
-                    status(
-                        "fixture cuMemFreeHost",
-                        (self.cuda.host_free)(self.host as Obj),
-                    )?;
-                    state.host_released = true;
                 }
                 Ok(())
             })();
@@ -241,16 +241,30 @@ impl Resources {
         Ok(())
     }
 }
+struct FailedResources {
+    _cuda: Arc<Cuda>,
+    _streams: Vec<u64>,
+    _state: ResourceState,
+}
 impl Drop for Resources {
     fn drop(&mut self) {
-        // Only an unsubmitted setup failure can reach a non-inert normal destructor.
-        // A checked failure leaves its remaining handles quarantined, never retried.
-        let state = self
-            .state
-            .get_mut()
-            .unwrap_or_else(|error| error.into_inner());
+        // Only unsubmitted setup failure can reach a non-inert normal destructor.
+        // Native Fill retains failed submitted resources in its own quarantine.
+        let state = self.state.get_mut().unwrap_or_else(|error| error.into_inner());
         if !state.retired && !state.failed {
             let _ = self.retire_checked();
+        }
+        let state = self.state.get_mut().unwrap_or_else(|error| error.into_inner());
+        if !state.retired {
+            // Preserve the exact setup owner on checked cleanup refusal; no ambiguous
+            // API is retried and no raw handles are forgotten while the process lives.
+            static FAILED: std::sync::OnceLock<Mutex<Vec<FailedResources>>> = std::sync::OnceLock::new();
+            let retained = FailedResources {
+                _cuda: self.cuda.clone(), _streams: std::mem::take(&mut self.streams),
+                _state: std::mem::take(state),
+            };
+            FAILED.get_or_init(Mutex::default).lock()
+                .unwrap_or_else(|error| error.into_inner()).push(retained);
         }
     }
 }
@@ -320,7 +334,7 @@ fn submit(cuda: &Cuda, resources: &Resources, ptr: u64, gate: u64, partial: bool
             "H2D first",
             (cuda.copy)(
                 ptr,
-                resources.host as *const c_void,
+                resources.host[0] as *const c_void,
                 BYTES / 2,
                 resources.streams[0] as Obj,
             ),
@@ -330,7 +344,7 @@ fn submit(cuda: &Cuda, resources: &Resources, ptr: u64, gate: u64, partial: bool
                 "H2D second",
                 (cuda.copy)(
                     ptr + (BYTES / 2) as u64,
-                    (resources.host + BYTES / 2) as *const c_void,
+                    resources.host[1] as *const c_void,
                     BYTES / 2,
                     resources.streams[1] as Obj,
                 ),
@@ -698,7 +712,7 @@ fn retirement_pending(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
             "pending case first half",
             (cuda.copy)(
                 destination.ptr,
-                resources.host as *const c_void,
+                resources.host[0] as *const c_void,
                 BYTES / 2,
                 resources.streams[0] as Obj,
             ),
@@ -707,7 +721,7 @@ fn retirement_pending(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
             "pending case second half",
             (cuda.copy)(
                 destination.ptr + (BYTES / 2) as u64,
-                (resources.host + BYTES / 2) as *const c_void,
+                resources.host[1] as *const c_void,
                 BYTES / 2,
                 resources.streams[1] as Obj,
             ),
@@ -767,7 +781,7 @@ fn abandoned(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
             "first half",
             (cuda.copy)(
                 destination.ptr,
-                resources.host as *const c_void,
+                resources.host[0] as *const c_void,
                 BYTES / 2,
                 resources.streams[0] as Obj,
             ),
@@ -776,7 +790,7 @@ fn abandoned(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
             "second half",
             (cuda.copy)(
                 destination.ptr + (BYTES / 2) as u64,
-                (resources.host + BYTES / 2) as *const c_void,
+                resources.host[1] as *const c_void,
                 BYTES / 2,
                 resources.streams[1] as Obj,
             ),
