@@ -3,7 +3,7 @@
 //! answers these same calls.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -14,22 +14,27 @@ use protocol::{
     ids::RunId,
     interface::{self, Slot},
     model_ref::ModelRef,
-    project::LocalCode,
 };
 use serde_json::Value;
 
-use crate::api::{Api, Refusal};
+use sha2::{Digest as _, Sha256};
+
+use crate::{
+    api::{Api, Refusal},
+    local_code,
+};
 
 /// A renderer as the Hub has it (its package's newest release, or the one `@release` names), or
-/// local code as `cozy render` made it ready; and the longest piece it makes when it renders shots.
+/// local code on this computer (`with: ./dir/function`, from the project's folder); and the
+/// longest piece it makes when it renders shots.
 #[derive(Clone)]
 pub struct Renderer {
     pub package: String,
     pub function: String,
     /// For local code, its source's digest.
     pub release: String,
-    /// Local code: how each machine it was made ready on takes it.
-    pub local: Vec<LocalCode>,
+    /// Local code: its package directory or script, made ready on the machine each call goes to.
+    pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
     pub accepts: Accepts,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
@@ -75,7 +80,7 @@ impl Renderer {
         function: &str,
         release: String,
         document: &Value,
-        local: Vec<LocalCode>,
+        local: Option<PathBuf>,
     ) -> Result<Self, Error> {
         let unknown = || format!("{package}@{release} has no function {function}");
         let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
@@ -94,9 +99,9 @@ impl Renderer {
 
     /// Its run's name for people: `org/package/function@release`, or `local/<name>/function`.
     pub fn target(&self) -> String {
-        match self.local.is_empty() {
-            true => format!("{}/{}@{}", self.package, self.function, self.release),
-            false => format!("{}/{}", self.package, self.function),
+        match self.local {
+            None => format!("{}/{}@{}", self.package, self.function, self.release),
+            Some(_) => format!("{}/{}", self.package, self.function),
         }
     }
 }
@@ -105,25 +110,67 @@ pub struct Host {
     api: Arc<Api>,
     /// Read once a walk, by Hub and target.
     renderers: Mutex<HashMap<(String, String), Renderer>>,
+    /// This walk's: the installs its local code asks for are keyed under it, so a failed one is
+    /// asked again by the next walk, never replayed.
+    walk: String,
+}
+
+/// How a renderer that is local code is read when no interface is kept for it here.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Install {
+    /// Installed on the first machine it may go to, and waited for: a walk's.
+    Wait,
+    /// Not installed: a read (status, a check before a walk) says it is not described yet.
+    Never,
 }
 
 impl Host {
     pub fn new(api: &Arc<Api>) -> Self {
-        Self { api: api.clone(), renderers: Mutex::default() }
+        let mut walk = [0u8; 8];
+        getrandom::fill(&mut walk).expect("the OS has randomness");
+        Self { api: api.clone(), renderers: Mutex::default(), walk: hex::encode(walk) }
     }
 
-    /// `target` as `cozy run` takes it: local code (`./dir/function`) as `local` has it, else
+    /// What local code at `path` going `on` a machine is keyed under (`local_code::prepare`).
+    pub fn key(&self, path: &Path, on: &On) -> String {
+        let at = Sha256::digest(format!("{}\n{on:?}", path.display()));
+        format!("project-local-{}-{}", self.walk, &hex::encode(at)[..16])
+    }
+
+    /// Local code at `path` made ready `on` a machine for a call, an install waited for.
+    pub async fn ready(&self, path: &Path, on: &On, hub: &str) -> Result<local_code::Prepared, Error> {
+        local_code::ready(&self.api, path, on, hub, &self.key(path, on)).await
+    }
+
+    /// `target` as `cozy run` takes it: local code (`./dir/function` from the project's `folder`,
+    /// `~/…`, an absolute path), described on the first of `on`'s machines; else
     /// `[org/]package/function[@release]` as `hub` (empty: the default one) has it.
-    pub async fn renderer(&self, hub: &str, target: &str, local: &[LocalCode]) -> Result<Renderer, Error> {
-        let made: Vec<LocalCode> = local.iter().filter(|code| code.with == target).cloned().collect();
-        if let Some(code) = made.first() {
-            let release = code.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Renderer::read(&code.package, &code.function, release, &code.interface, made.clone());
-        }
-        let path = target.starts_with(['.', '/', '~']) || target.ends_with(".py");
-        if path || std::path::Path::new(target).is_absolute() {
-            let said = format!("{target} is local code, which `cozy render` makes ready from this computer");
-            return Err(Error::new(Kind::Unavailable, "renderer_local", said));
+    pub async fn renderer(
+        &self,
+        hub: &str,
+        target: &str,
+        folder: &Path,
+        on: &[On],
+        install: Install,
+    ) -> Result<Renderer, Error> {
+        let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
+        if let Some(found) = local_code::target(target, folder, &home) {
+            let (path, function) = found?;
+            let function = function.ok_or_else(|| {
+                Error::new(Kind::Validation, "with_unnamed", format!("with: {target} names no function"))
+                    .remedy(format!("{target}/<function>"))
+            })?;
+            let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
+            let prepared = match install {
+                Install::Wait => local_code::ready(&self.api, &path, &on, hub, &self.key(&path, &on)).await?,
+                Install::Never => local_code::described(&self.api, &path, &on, hub).await?,
+            };
+            let Some(interface) = prepared.interface else {
+                let said = format!("{target} is not described on {on:?} yet: its first render installs it");
+                return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
+            };
+            let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
+            return Renderer::read(&prepared.package, &function, release, &interface, Some(path));
         }
         let at = (hub.to_owned(), target.to_owned());
         if let Some(found) = self.renderers.lock().expect("renderers lock").get(&at) {
@@ -154,7 +201,7 @@ impl Host {
         };
         let card = client.get_package_release(&org, &name, &release).await.map_err(hub_refusal)?;
         let card = serde_json::to_value(&card).expect("a card serializes");
-        let found = Renderer::read(&format!("{org}/{name}"), function, release, &card["package_interface"], vec![])?;
+        let found = Renderer::read(&format!("{org}/{name}"), function, release, &card["package_interface"], None)?;
         self.renderers.lock().expect("renderers lock").insert(at, found.clone());
         Ok(found)
     }
@@ -218,19 +265,16 @@ impl Host {
         on.iter().min_by_key(|on| cost(on)).cloned().unwrap_or(On::Any)
     }
 
+    /// cozy's cache folder for this user (`platform::paths::cache`), else one in its home.
+    pub fn cache(&self) -> std::path::PathBuf {
+        platform::paths::cache().unwrap_or_else(|| self.api.machines.hubs.home().root().join("cache"))
+    }
+
     /// cozy's ffmpeg and ffprobe: the pinned build `cozy` fetched, else PATH's.
-    pub fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
-        let tools = self.api.machines.hubs.home().tools();
-        let path: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
-        let (found, ffprobe) = platform::tools::ffmpeg(&tools, &path).ok_or_else(|| {
-            Error::new(
-                Kind::Unavailable,
-                "ffmpeg_unavailable",
-                "the edit is cut with ffmpeg, which this computer lacks",
-            )
-            .next("cozy doctor")
-        })?;
-        Ok((found.path, ffprobe))
+    pub async fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), Error> {
+        let home = self.api.machines.hubs.home();
+        let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
+        Ok((found.ffmpeg, found.ffprobe))
     }
 }
 
