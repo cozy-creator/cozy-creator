@@ -13,7 +13,8 @@ extern "C" {
 
 /* ABI 1: fixed-width statuses and non-reused opaque handles. No CUDA SDK needed.
  * Streams/pointers are CUDA primary-context handles represented as uint64_t.
- * Zero is the legacy default stream. Handles are process-local; fork is unsupported.
+ * Default-stream sentinels 0/1/2 are refused; pass a live explicit stream.
+ * Handles are process-local; fork is unsupported.
  * Calls on live handles are thread-safe. Each handle has one owning caller: serialize
  * its close/ownership-transfer calls; close must not race use of a raw device pointer.
  * Caller buffers/UTF-8 strings must be valid for the call. Callbacks must not unwind.

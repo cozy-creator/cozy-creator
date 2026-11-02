@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const VERSION: u32 = 1;
 pub const OK: i32 = 0;
@@ -98,13 +98,49 @@ pub extern "C" fn vr_v1_error_requested_bytes() -> u64 {
     LAST.with(|v| v.borrow().1)
 }
 
+struct ServiceLease {
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    owner: crate::cooperative::Owner,
+}
+impl ServiceLease {
+    fn open(device: i32) -> Result<Self> {
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        {
+            Ok(Self { owner: crate::cooperative::Owner::get_or_open_default(device)
+                .map_err(Self::error)? })
+        }
+        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+        {
+            let _ = device;
+            Err(Failure(UNSUPPORTED, "public GPU cooperation requires Linux with 64-bit atomics".into(), 0))
+        }
+    }
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    fn error(error: crate::cooperative::Error) -> Failure {
+        match error {
+            crate::cooperative::Error::Native(error) => error.into(),
+            crate::cooperative::Error::Ledger(error @ (crate::ledger::Error::Busy
+                | crate::ledger::Error::Stale | crate::ledger::Error::StaleSample)) =>
+                Failure(BUSY, error.to_string(), 0),
+            crate::cooperative::Error::Ledger(error) => Failure(UNSUPPORTED, error.to_string(), 0),
+        }
+    }
+    fn try_close(&self) -> Result<bool> {
+        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+        { self.owner.try_close().map_err(Self::error) }
+        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+        { Ok(true) }
+    }
+}
+
 struct Gpu {
     arena: Arc<Arena>,
+    service: Option<ServiceLease>,
 }
 impl Drop for Gpu {
     fn drop(&mut self) {
         if self.arena.pid == std::process::id() {
-            retirement::arena(self.arena.clone());
+            retirement::arena(self.arena.clone(), self.service.take().expect("live GPU service lease"));
         }
     }
 }
@@ -113,10 +149,8 @@ impl Gpu {
         self.arena.device()
     }
     fn eager(&self, stream: u64) -> Result<()> {
-        if stream == 1 || stream == 2 {
-            return Err(invalid(
-                "use an explicit CUstream or legacy default stream 0",
-            ));
+        if stream <= 2 {
+            return Err(invalid("use an explicit CUDA stream handle, not a default-stream sentinel"));
         }
         let captures = crate::capture_counts()?;
         crate::ensure_recovery_allowed(&captures, self.device())?;
@@ -127,7 +161,6 @@ impl Gpu {
         Ok(())
     }
 }
-static GPUS: OnceLock<Mutex<BTreeMap<i32, Weak<Gpu>>>> = OnceLock::new();
 static HANDLES: OnceLock<Mutex<BTreeMap<u64, Entry>>> = OnceLock::new();
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -354,20 +387,15 @@ pub unsafe extern "C" fn vr_v1_gpu_open(device: i32, out: *mut u64) -> i32 {
         }
         process()?;
         retirement::start()?;
+        // Peer startup must happen before retirement exclusion; existing verified
+        // services are inherited without replacing their lifecycle configuration.
+        let service = ServiceLease::open(device)?;
         let _retirement = crate::enter_retirement(device)?;
-        let mut devices = lock(GPUS.get_or_init(Mutex::default))?;
-        let owner = match devices.get(&device).and_then(Weak::upgrade) {
-            Some(owner) => owner,
-            None => {
-                working::initialize(device)?;
-                let owner = Arc::new(Gpu {
-                    arena: Arena::new(device)?,
-                });
-                devices.insert(device, Arc::downgrade(&owner));
-                owner
-            }
-        };
-        drop(devices);
+        working::initialize(device)?;
+        let owner = Arc::new(Gpu {
+            arena: Arena::new(device)?,
+            service: Some(service),
+        });
         unsafe {
             out.write(insert(Handle::Gpu(owner))?);
         }
@@ -533,10 +561,10 @@ pub unsafe extern "C" fn vr_v1_use(
             .iter()
             .map(|id| weight(*id))
             .collect::<Result<Vec<_>>>()?;
-        gpu.eager(stream)?;
-        if weights.is_empty() || weights.iter().any(|w| !Arc::ptr_eq(&gpu, &w.gpu)) {
-            return Err(invalid("use requires regions from this GPU"));
+        if weights.is_empty() || weights.iter().any(|w| gpu.device() != w.gpu.device()) {
+            return Err(invalid("use requires regions on this GPU"));
         }
+        gpu.eager(stream)?;
         let mut pins = Vec::with_capacity(n);
         for w in &weights {
             let _fill = lock(&w.fill)?;
@@ -919,7 +947,7 @@ pub unsafe extern "C" fn vr_v1_plan_new(
                 .iter()
                 .map(|id| weight(*id))
                 .collect::<Result<Vec<_>>>()?;
-            if uses.iter().any(|w| !Arc::ptr_eq(&gpu, &w.gpu)) {
+            if uses.iter().any(|w| gpu.device() != w.gpu.device()) {
                 return Err(invalid("plan regions belong to another GPU"));
             }
             definitions.push((name, uses.iter().map(|w| w.region.clone()).collect()));
