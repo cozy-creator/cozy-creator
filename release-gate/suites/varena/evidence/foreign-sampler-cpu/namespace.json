@@ -1,0 +1,23 @@
+{
+  "host": {
+    "driver_loaded": false,
+    "host_pid_attribution": true,
+    "nvml_loaded": false,
+    "pid": 1909696,
+    "pid_namespace_inode": 4026531836
+  },
+  "gpu_execution": false,
+  "nested_command": [
+    "unshare",
+    "--user",
+    "--map-root-user",
+    "--pid",
+    "--fork",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target/debug/examples/pressure_namespace"
+  ],
+  "nested_exit": 1,
+  "nested_stderr": "unshare: write failed /proc/self/uid_map: Operation not permitted\n",
+  "nested": null,
+  "nested_qualified": false,
+  "passed_available_probes": true
+}

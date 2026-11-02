@@ -1,0 +1,11 @@
+{
+  "source_commit": "6ab1dabac1121072127d6c71e868f777a72c740e",
+  "cases": 10,
+  "passed": 10,
+  "failures": [],
+  "all_cases_one_mapped_core": true,
+  "cuda_execution": false,
+  "artifacts_and_scripts_unchanged_during_checks": true,
+  "warning": "fork-lock case reports the expected CPython multithreaded fork DeprecationWarning; this is not CUDA-fork qualification",
+  "no_cuda_library_asserted_in_all_cases": true
+}

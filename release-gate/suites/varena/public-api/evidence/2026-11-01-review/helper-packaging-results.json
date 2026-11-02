@@ -1,0 +1,21 @@
+{
+  "old_runtime_selection_refused": "too many values to unpack (expected 1, got 2)",
+  "selected_runtime": "libstd-7e719de9c4abc98f.so",
+  "extra_real_runtime": "libstd-210854cf1daa4bec.so",
+  "native_client": {
+    "abi": 1,
+    "core": 133017562779584,
+    "invalid_constructor_zeroed": true
+  },
+  "release_floor_refusal": "packaged images require glibc 2.34, above the declared 2.28 release limit",
+  "recorded_glibc": "2.34",
+  "owned_selection": [
+    "cozy-x86_64-unknown-linux-gnu.tar.gz"
+  ],
+  "missing_owned_refusal": "owned archive is missing: /home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-native-packaging/.task/proof/ownership/distrib/cozy-x86_64-unknown-linux-gnu.tar.gz",
+  "foreign_metadata_unchanged": true,
+  "selection_scope": "actual published manifest; archive path fixtures deliberately opaque; no foreign payload reads or CI execution",
+  "gpu": false,
+  "cargo_build": false,
+  "compression": false
+}

@@ -1,0 +1,3 @@
+   Compiling varena v0.17.16 (/home/fidika/cozy_v2/outputs/xs138-p4-arena-retirement/host-queue-002/native)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.82s
+     Running `/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target/debug/examples/host_queue`

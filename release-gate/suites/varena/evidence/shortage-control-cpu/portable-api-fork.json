@@ -1,0 +1,32 @@
+{
+  "passed": true,
+  "extension": "/home/fidika/cozy_v2/outputs/xs138-p3-shortage-candidate-ce943fb50/installed/tensorfs/_ext.abi3.so",
+  "extension_sha256": "b60c1c3f5a953f8ccddb9930a99151f8f05a4da71b1d10cd24e4500c29ba0196",
+  "native_version": "0.17.16+dev.gce943fb5",
+  "owner_protocol": 1,
+  "methods": [
+    "wake",
+    "facts",
+    "configure",
+    "snapshot",
+    "cuda_calls",
+    "close"
+  ],
+  "parent": {
+    "pid": 1653040,
+    "tasks": {
+      "1653040": "python"
+    },
+    "torch_imported": false,
+    "driver_loaded": false
+  },
+  "child": {
+    "pid": 1653041,
+    "tasks": {
+      "1653041": "python"
+    },
+    "torch_imported": false,
+    "driver_loaded": false
+  },
+  "scope": "portable API and metadata-only CPU-parent fork; no GPU owner, CUDA or donor execution"
+}
