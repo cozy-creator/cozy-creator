@@ -230,6 +230,8 @@ never letterboxed or stretched. A shot whose approved version is below the resol
 (`upscale` under `defaults:`, or a `render:` under a shot's own `upscale:`, which can change the function, models,
 LoRAs and options but never the canvas). `render all` makes the upscales and cuts `edit.mp4` at the
 canvas; `preview.mp4`, the native cut, is redone as shots land, and `render all --preview` stops there.
+With no `resolution:`, the edit is its first take's own size when that is the aspect but for a model's rounding
+(H3's 1344x768 at 16:9), so takes of that size join with no encode.
 
 `fps:` (24 by default) is the edit's frame rate, fixed per project. `edit:` lists shots, each with an optional `start` and `end` in
 frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`, or its take's end if sooner), so every cut lands on an
