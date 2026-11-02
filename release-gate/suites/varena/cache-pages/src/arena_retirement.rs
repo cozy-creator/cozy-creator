@@ -125,9 +125,9 @@ fn observers_inner(
     let a = Arena::new(device)?;
     let b = Arena::new(device)?;
     let page = a.granularity();
-    let (ra, pa) = probes::filled(&a, page, 37)?;
-    let (rb, pb) = probes::filled(&b, page, 53)?;
-    cuda.synchronize()?; // Explicit fixture preparation, before the pending consumer.
+    let (ra, pa) = probes::filled(cuda, &a, page, 37)?;
+    let (rb, pb) = probes::filled(cuda, &b, page, 53)?;
+    cuda.finish_setup()?; // Explicit fixture preparation, before the pending consumer.
     let mut consumer = probes::Stream::new(cuda)?;
     let active = probes::Stream::new(cuda)?;
     let event = Event::new(cuda)?;
@@ -298,8 +298,8 @@ fn observers_inner(
 pub(super) fn unproven(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
     let arena = Arena::new(device)?;
     let page = arena.granularity();
-    let (region, pin) = probes::filled(&arena, page, 89)?;
-    cuda.synchronize()?;
+    let (region, pin) = probes::filled(cuda, &arena, page, 89)?;
+    cuda.finish_setup()?;
     peer.publish(0)?;
     let ticket = request(arena)?;
     drop(pin); // Deliberately supplies no completion contract: never repair it by guessing.
@@ -356,7 +356,7 @@ pub(super) fn cross_device(
     )?;
     let arena = Arena::new(device)?;
     let page = arena.granularity();
-    let (region, pin) = probes::filled(&arena, page, 101)?;
+    let (region, pin) = probes::filled(cuda, &arena, page, 101)?;
     let plan = varena::plan::Plan::new(
         arena.clone(),
         vec![("device-zero".into(), vec![region.clone()])],

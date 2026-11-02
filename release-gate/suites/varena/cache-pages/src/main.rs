@@ -17,9 +17,9 @@ type Push = unsafe extern "C" fn(Ctx) -> i32;
 type Pop = unsafe extern "C" fn(*mut Ctx) -> i32;
 type Release = unsafe extern "C" fn(i32) -> i32;
 type Info = unsafe extern "C" fn(*mut usize, *mut usize) -> i32;
-type Set = unsafe extern "C" fn(u64, u8, usize) -> i32;
+type Set = unsafe extern "C" fn(u64, u8, usize, Ctx) -> i32;
 type Read = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
-type Sync = unsafe extern "C" fn() -> i32;
+type Sync = unsafe extern "C" fn(Ctx) -> i32;
 
 struct Cuda {
     _library: Library,
@@ -30,6 +30,8 @@ struct Cuda {
     set: Set,
     read: Read,
     sync: Sync,
+    setup: Ctx,
+    destroy: Sync,
 }
 
 fn check(name: &str, code: i32) -> Result<()> {
@@ -51,15 +53,19 @@ impl Cuda {
             let pop = *library.get::<Pop>(b"cuCtxPopCurrent_v2\0")?;
             let release = *library.get::<Release>(b"cuDevicePrimaryCtxRelease_v2\0")?;
             let info = *library.get::<Info>(b"cuMemGetInfo_v2\0")?;
-            let set = *library.get::<Set>(b"cuMemsetD8_v2\0")?;
+            let set = *library.get::<Set>(b"cuMemsetD8Async\0")?;
             let read = *library.get::<Read>(b"cuMemcpyDtoH_v2\0")?;
-            let sync = *library.get::<Sync>(b"cuCtxSynchronize\0")?;
+            let sync = *library.get::<Sync>(b"cuStreamSynchronize\0")?;
+            let create = *library.get::<unsafe extern "C" fn(*mut Ctx, u32) -> i32>(b"cuStreamCreate\0")?;
+            let destroy = *library.get::<Sync>(b"cuStreamDestroy_v2\0")?;
             let mut context = std::ptr::null_mut();
             check("cuDevicePrimaryCtxRetain", retain(&mut context, device))?;
             if let Err(error) = check("cuCtxPushCurrent", push(context)) {
                 let _ = release(device);
                 return Err(error);
             }
+            let mut setup = std::ptr::null_mut();
+            check("owned nonblocking setup stream", create(&mut setup, 1))?;
             Ok(Self {
                 _library: library,
                 device,
@@ -69,6 +75,8 @@ impl Cuda {
                 set,
                 read,
                 sync,
+                setup,
+                destroy,
             })
         }
     }
@@ -80,17 +88,19 @@ impl Cuda {
         })?;
         Ok(json!({"free":free,"total":total}))
     }
-    fn synchronize(&self) -> Result<()> {
-        // SAFETY: this thread owns a current primary context.
-        check("cuCtxSynchronize", unsafe { (self.sync)() })
+    fn finish_setup(&self) -> Result<()> {
+        // Wait only for this helper's actual setup/release stream. A pending independent
+        // consumer must remain pending while another Arena makes progress.
+        check("setup cuStreamSynchronize", unsafe { (self.sync)(self.setup) })
     }
+    fn stream(&self) -> u64 { self.setup as u64 }
     fn fill(&self, ptr: u64, bytes: usize, value: u8) -> Result<()> {
         // SAFETY: ptr/bytes name the exact live allocation just returned by Varena.
-        check("cuMemsetD8", unsafe { (self.set)(ptr, value, bytes) })?;
-        self.synchronize()
+        check("cuMemsetD8Async(setup)", unsafe { (self.set)(ptr, value, bytes, self.setup) })?;
+        self.finish_setup()
     }
     fn verify(&self, block: &Block) -> Result<()> {
-        self.synchronize()?;
+        self.finish_setup()?;
         // Read EVERY requested byte without allocating a GPU-sized host copy.
         let mut data = vec![0u8; block.bytes.min(8 << 20)];
         for offset in (0..block.bytes).step_by(data.len()) {
@@ -118,6 +128,9 @@ impl Drop for Cuda {
     fn drop(&mut self) {
         // SAFETY: this releases only this helper's balanced current-context/primary reference.
         unsafe {
+            // If completion is unproven, retain the actual stream instead of presenting
+            // destructor success as proof. The failed child does not claim cleanup.
+            if (self.sync)(self.setup) == 0 { let _ = (self.destroy)(self.setup); }
             let mut popped = std::ptr::null_mut();
             let _ = (self.pop)(&mut popped);
             let _ = (self.release)(self.device);
@@ -230,7 +243,7 @@ fn run() -> Result<Value> {
         "arena_concurrency" => probes::arena_concurrency(&peer, device)?,
         _ => return Err(io::Error::other("unknown Cache proof mode").into()),
     };
-    cuda.synchronize()?;
+    cuda.finish_setup()?;
     working::trim(device)?;
     let final_stats = working_stats(device)?;
     require(

@@ -21,8 +21,8 @@ pub(super) fn active_cancel(cuda: &Cuda, root: &Path, device: i32) -> Result<Val
     let producer_streams = read.facts()?.producer_streams;
     let control_stream = cuda.stream()?;
     let gate = working::alloc(device, 4, control_stream, None)?;
+    cuda.initialize_gate(control_stream, gate)?;
     unsafe {
-        check("clear active-cancel gate", (cuda.set)(gate, 0, 4))?;
         for &stream in &producer_streams {
             check("gate active Source", (cuda.wait)(stream as Obj, gate, 1, 1))?;
         }

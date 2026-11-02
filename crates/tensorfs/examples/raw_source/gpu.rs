@@ -19,7 +19,7 @@ struct Cuda {
     stream_query: unsafe extern "system" fn(Obj) -> i32,
     wait: unsafe extern "system" fn(Obj, u64, u32, u32) -> i32,
     write: unsafe extern "system" fn(Obj, u64, u32, u32) -> i32,
-    set: unsafe extern "system" fn(u64, u8, usize) -> i32,
+    set_async: unsafe extern "system" fn(u64, u8, usize, Obj) -> i32,
     copy: unsafe extern "system" fn(u64, u64, usize, Obj) -> i32,
     read: unsafe extern "system" fn(*mut c_void, u64, usize) -> i32,
     capture_begin: unsafe extern "system" fn(Obj, u32) -> i32,
@@ -80,7 +80,7 @@ impl Cuda {
                 stream_query: *library.get(b"cuStreamQuery\0")?,
                 wait: *library.get(b"cuStreamWaitValue32_v2\0")?,
                 write: *library.get(b"cuStreamWriteValue32_v2\0")?,
-                set: *library.get(b"cuMemsetD8_v2\0")?,
+                set_async: *library.get(b"cuMemsetD8Async\0")?,
                 copy: *library.get(b"cuMemcpyDtoDAsync_v2\0")?,
                 read: *library.get(b"cuMemcpyDtoH_v2\0")?,
                 capture_begin: *library.get(b"cuStreamBeginCapture_v2\0")?,
@@ -119,6 +119,14 @@ impl Cuda {
             )?;
         }
         Ok(bytes)
+    }
+    fn initialize_gate(&self, stream: u64, gate: u64) -> Result<()> {
+        unsafe { check("initialize gate on control stream", (self.write)(stream as Obj, gate, 0, 0))?; }
+        self.sync(stream)
+    }
+    fn initialize(&self, stream: u64, pointer: u64, bytes: usize, value: u8) -> Result<()> {
+        unsafe { check("initialize on owned stream", (self.set_async)(pointer, value, bytes, stream as Obj))?; }
+        self.sync(stream)
     }
     fn open_gate(&self, stream: u64, gate: u64) -> Result<()> {
         unsafe {
@@ -263,14 +271,15 @@ fn ordering(cuda: &Cuda, root: &Path, device: i32) -> Result<Value> {
     let other_out = working::alloc(device, 4096, other, None)?;
     let live = Arena::new(device)?;
     let live_region = live.reserve(4096)?;
-    let mut live_fill = fill(&live_region)?;
-    live_fill.copy_from_host(&[91; 4096])?;
+    let live_fill = fill(&live_region)?;
+    cuda.initialize(other, live_fill.ptr(), 4096, 91)?;
+    // SAFETY: this exact owned stream completed the entire native fill above.
     unsafe {
         drop(live_fill.commit_completed()?.into_completed_region());
     }
+    cuda.initialize_gate(control, gate)?;
+    cuda.initialize_gate(control, consumer_gate)?;
     unsafe {
-        check("clear producer gate", (cuda.set)(gate, 0, 4))?;
-        check("clear consumer gate", (cuda.set)(consumer_gate, 0, 4))?;
         // Borrowed actual producer IDs, used only before Source submission. This does not
         // add a writer of Fill bytes or mutate the inventory. Gate memory stays owned.
         for &stream in &producer_streams {

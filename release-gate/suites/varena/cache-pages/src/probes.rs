@@ -114,17 +114,19 @@ fn caches_only(
 }
 
 pub(super) fn filled(
+    cuda: &Cuda,
     arena: &std::sync::Arc<varena::Arena>,
     bytes: usize,
     value: u8,
 ) -> Result<(std::sync::Arc<varena::Region>, varena::Pin)> {
     let region = arena.reserve(bytes)?;
-    let mut fill = match region.prepare()? {
+    let fill = match region.prepare()? {
         varena::Preparation::Fill(fill) => fill,
         _ => return Err(io::Error::other("new region unexpectedly resident").into()),
     };
-    fill.copy_from_host(&vec![value; bytes])?;
-    let pin = fill.commit()?;
+    cuda.fill(fill.ptr(), bytes, value)?;
+    // SAFETY: the owned setup stream completed the entire device initialization.
+    let pin = unsafe { fill.commit_completed()? };
     Ok((region, pin))
 }
 
@@ -217,7 +219,7 @@ pub(super) fn pages(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resul
         working::PhaseMode::Eager,
     )?;
     cache.commit(3 * page, page)?;
-    let activation = working::alloc(device, page, 0, None)?;
+    let activation = working::alloc(device, page, cuda.stream(), None)?;
     sentinel(cuda, activation, page, 37)?;
     // Full readback synchronizes the only native working allocation's consumers.
     unsafe {
@@ -232,8 +234,8 @@ pub(super) fn pages(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resul
         "Cache pages changed the actual working watermark",
     )?;
     let phase_cache = cache_stats(&cache)?;
-    cache.release(3 * page, page, 0)?;
-    cuda.synchronize()?;
+    cache.release(3 * page, page, cuda.stream())?;
+    cuda.finish_setup()?;
     cache.poll()?;
     working::trim(device)?;
     require(
@@ -306,7 +308,7 @@ pub(super) fn pages(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resul
     )?;
     require(
         matches!(
-            cache.release(0, page + 1, 0),
+            cache.release(0, page + 1, cuda.stream()),
             Err(varena::Error::Invalid(_))
         ),
         "unaligned release rejected",
@@ -334,8 +336,8 @@ pub(super) fn pages(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resul
         read(cuda, base + (at * page) as u64, page, value)?;
     }
     let captured = capture(cuda, peer, &cache, device)?;
-    cache.release(0, 3 * page, 0)?;
-    cuda.synchronize()?;
+    cache.release(0, 3 * page, cuda.stream())?;
+    cuda.finish_setup()?;
     cache.poll()?;
     cache.close()?;
     Ok(json!({"page":page,"base":base,"initial":initial,
@@ -370,7 +372,7 @@ pub(super) fn rollback(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Re
         "real driver headroom for physical rollback fixture",
     )?;
     let filler_bytes = (free - margin) / page * page;
-    let filler = working::alloc(device, filler_bytes, 0, None)?;
+    let filler = working::alloc(device, filler_bytes, cuda.stream(), None)?;
     sentinel(cuda, filler, filler_bytes, 89)?;
     let actual_free = cuda.memory()?["free"]
         .as_u64()
@@ -405,13 +407,13 @@ pub(super) fn rollback(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Re
     read(cuda, base, page, 11)?;
     read(cuda, base + (2 * page) as u64, page, 23)?;
     let observed = caches_only(peer, 2 * page, 0, 0)?;
-    working::free(device, filler, 0)?;
-    cuda.synchronize()?;
+    working::free(device, filler, cuda.stream())?;
+    cuda.finish_setup()?;
     working::trim(device)?;
     for at in [0, 2] {
-        cache.release(at * page, page, 0)?;
+        cache.release(at * page, page, cuda.stream())?;
     }
-    cuda.synchronize()?;
+    cuda.finish_setup()?;
     cache.poll()?;
     cache.close()?;
     Ok(
@@ -470,7 +472,7 @@ fn choice_with_plan(
     seed.close()?;
     let weight = if planned {
         let arena = varena::Arena::new(device)?;
-        let (region, pin) = filled(&arena, page, 173)?;
+        let (region, pin) = filled(cuda, &arena, page, 173)?;
         let plan = varena::plan::Plan::new(
             std::sync::Arc::clone(&arena),
             vec![(
@@ -498,7 +500,7 @@ fn choice_with_plan(
                 ("half".into(), vec![2 * page]),
             ],
             "whole",
-            0,
+            cuda.stream(),
         )
     };
     let live = select()?;
@@ -553,7 +555,7 @@ fn choice_with_plan(
         key,
         &ready.choice_id,
         Some(token),
-        0,
+        cuda.stream(),
         Some(ready.plan_generation),
     )?;
     let after_begin = cache_stats(&cache)?;
@@ -561,7 +563,7 @@ fn choice_with_plan(
         after_begin["mapped"] == 0,
         "split begin did not reclaim actual completed Cache backing",
     )?;
-    let output = working::alloc(device, 4 * page, 0, None)?;
+    let output = working::alloc(device, 4 * page, cuda.stream(), None)?;
     sentinel(cuda, output, 4 * page, 131)?;
     unsafe {
         working::free_completed(device, output)?;
@@ -584,7 +586,7 @@ fn choice_with_plan(
     varena::set_limit(device, None)?;
     if let Some((arena, region, pin, plan)) = weight {
         read(cuda, region.ptr(), page, 173)?;
-        cuda.synchronize()?;
+        cuda.finish_setup()?;
         plan.deactivate()?;
         drop(unsafe { pin.into_completed_region() });
         arena.reclaim(page)?;
@@ -608,15 +610,15 @@ pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
     sentinel(cuda, first.base()?, page, 137)?;
     sentinel(cuda, second.base()?, page, 149)?;
     let arena = varena::Arena::new(device)?;
-    let (pending_weight, pending_pin) = filled(&arena, page, 151)?;
-    let (unjoined_weight, unjoined_pin) = filled(&arena, page, 157)?;
+    let (pending_weight, pending_pin) = filled(cuda, &arena, page, 151)?;
+    let (unjoined_weight, unjoined_pin) = filled(cuda, &arena, page, 157)?;
     let unjoined_owner = unjoined_pin.into_unpinned_region();
     let cold_weight = arena.reserve(page)?;
-    let mut cold_fill = match cold_weight.prepare()? {
+    let cold_fill = match cold_weight.prepare()? {
         varena::Preparation::Fill(fill) => fill,
         _ => return Err(io::Error::other("new cold region unexpectedly resident").into()),
     };
-    cold_fill.copy_from_host(&vec![163; page])?;
+    cuda.fill(cold_fill.ptr(), page, 163)?;
     drop(cold_fill); // Real unfinished publication: Cold backing, unannotated release.
     let mut gate = Stream::new(cuda)?;
     gate.block()?;
@@ -628,14 +630,15 @@ pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
         .map_err(|_| io::Error::other("fixture owner lock"))?;
     let first_lock = Arc::clone(&lock);
     let first_cache = Arc::clone(&first);
+    let setup_stream = cuda.stream(); // Cuda outlives both checked callback closes.
     let first_owner = varena::CacheOwner::new(device, move |_| {
         let _owner = first_lock.try_lock().map_err(|_| varena::Error::Busy)?;
-        first_cache.release(0, page, 0)?;
+        first_cache.release(0, page, setup_stream)?;
         Ok(CallbackResult::Returned)
     })?;
     let second_cache = Arc::clone(&second);
     let second_owner = varena::CacheOwner::new(device, move |_| {
-        second_cache.release(0, page, 0)?;
+        second_cache.release(0, page, setup_stream)?;
         Ok(CallbackResult::Returned)
     })?;
     let key = RequestKey {
@@ -725,8 +728,8 @@ pub(super) fn owners(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Resu
             && varena::cache_owner::requestable(device)? == 0,
         "explicit native callback retirement incomplete",
     )?;
-    first.release(0, page, 0)?;
-    cuda.synchronize()?;
+    first.release(0, page, cuda.stream())?;
+    cuda.finish_setup()?;
     first.poll()?;
     first.close()?;
     second.close()?;
@@ -767,7 +770,7 @@ pub(super) fn arena_concurrency(peer: &cooperative::Peer, device: i32) -> Result
             let cuda = cuda?;
             for _ in 0..128 {
                 let arena = varena::Arena::new(device).map_err(|error| error.to_string())?;
-                let (region, pin) = filled(&arena, 2 << 20, 173).map_err(|error| error.to_string())?;
+                let (region, pin) = filled(&cuda, &arena, 2 << 20, 173).map_err(|error| error.to_string())?;
                 read(&cuda, pin.ptr(), pin.len(), 173).map_err(|error| error.to_string())?;
                 // Full readback proves every consumer completed before this exact pin ends.
                 let done = unsafe { pin.into_completed_region() };

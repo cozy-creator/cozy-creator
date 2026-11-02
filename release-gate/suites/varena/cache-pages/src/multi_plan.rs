@@ -3,33 +3,34 @@ use super::*;
 use std::sync::Arc;
 use varena::{Arena, Preparation, Region, plan::Plan};
 
-fn fill(region: &Arc<Region>, byte: u8) -> Result<varena::Pin> {
-    let mut fill = match region.prepare()? {
+fn fill(cuda: &Cuda, region: &Arc<Region>, byte: u8) -> Result<varena::Pin> {
+    let fill = match region.prepare()? {
         Preparation::Fill(fill) => fill,
         _ => return Err(io::Error::other("expected cold real reservation").into()),
     };
-    fill.copy_from_host(&vec![byte; region.len()])?;
-    Ok(fill.commit()?)
+    cuda.fill(fill.ptr(), region.len(), byte)?;
+    // SAFETY: the owned setup stream completed every byte before publication.
+    Ok(unsafe { fill.commit_completed()? })
 }
 
-fn selected(device: i32, page: usize, key: &str) -> Result<working::SplitSelection> {
+fn selected(device: i32, page: usize, key: &str, stream: u64) -> Result<working::SplitSelection> {
     Ok(working::split_select(
         device,
         key,
         vec![("one".into(), vec![page])],
         "one",
-        0,
+        stream,
     )?)
 }
 
-fn committed(device: i32, page: usize) -> Result<working::Execution> {
+fn committed(device: i32, page: usize, stream: u64) -> Result<working::Execution> {
     Ok(working::Execution::commit(
         device,
         "multi-arena/u8/closed",
         "multi-arena-current",
         vec![("one".into(), vec![page])],
         "one",
-        0,
+        stream,
     )?)
 }
 
@@ -61,9 +62,9 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         r1.arena_id() == a.id() && r2.arena_id() == b.id(),
         "Region owning arena identity",
     )?;
-    let pin1 = fill(&r1, 43)?;
-    let cached_pin = fill(&cached, 79)?;
-    cuda.synchronize()?;
+    let pin1 = fill(cuda, &r1, 43)?;
+    let cached_pin = fill(cuda, &cached, 79)?;
+    cuda.finish_setup()?;
     drop(unsafe { cached_pin.into_completed_region() });
 
     let plan = Plan::new(
@@ -82,7 +83,7 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         "two active device plans admitted",
     )?;
     drop(other);
-    let cold = selected(device, page, "multi-arena-cold")?;
+    let cold = selected(device, page, "multi-arena-cold", cuda.stream())?;
     require(
         cold.phase_weight_bytes == 3 * page
             && cold.phase_missing_bytes == 2 * page
@@ -90,11 +91,11 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         "device-wide physical intent snapshot",
     )?;
 
-    let pin2 = fill(&r2, 59)?;
+    let pin2 = fill(cuda, &r2, 59)?;
     // Three pages of pinned phase weights plus one completed outside page fill the cap.
     // The chosen working page fits only after actual native outside-phase reclamation.
     varena::set_limit(device, Some(4 * page))?;
-    let choice = selected(device, page, "multi-arena-scratch")?;
+    let choice = selected(device, page, "multi-arena-scratch", cuda.stream())?;
     require(
         choice.preserves_phase_weights
             && choice.phase_missing_bytes == 0
@@ -111,14 +112,14 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         "multi-arena-scratch",
         "one",
         Some(phase),
-        0,
+        cuda.stream(),
         Some(choice.plan_generation),
     )?;
     require(
         !cached.is_resident()? && r1.is_resident()? && r2.is_resident()?,
         "outside reclaim changed a phase weight",
     )?;
-    let output = working::alloc(device, page, 0, None)?;
+    let output = working::alloc(device, page, cuda.stream(), None)?;
     cuda.fill(output, page, 97)?;
     cuda.verify(&Block {
         ptr: output,
@@ -149,7 +150,7 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
     varena::set_limit(device, None)?;
 
     let mut stale = Vec::new();
-    let execution = committed(device, page)?;
+    let execution = committed(device, page, cuda.stream())?;
     let key = execution.key()?.to_owned();
     let old = varena::plan::inventory_generation(device)?;
     let temporary = b.reserve(page)?;
@@ -163,7 +164,7 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
     )?;
     stale.push("region_publication");
     let first_id = temporary.id();
-    let execution = committed(device, page)?;
+    let execution = committed(device, page, cuda.stream())?;
     let old = varena::plan::inventory_generation(device)?;
     drop(temporary);
     require(
@@ -180,7 +181,7 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         replacement.id() != first_id,
         "retired Region identity was reused",
     )?;
-    let compatible = committed(device, page)?;
+    let compatible = committed(device, page, cuda.stream())?;
     require(
         compatible.key()? == key,
         "lifetime identity changed compatible compute fingerprint",
@@ -188,11 +189,11 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
     compatible.abort()?;
     drop(replacement);
 
-    let execution = committed(device, page)?;
+    let execution = committed(device, page, cuda.stream())?;
     let temporary_arena = Arena::new(device)?;
     refuse_stale(&execution, "committed entry accepted new arena inventory")?;
     stale.push("arena_publication");
-    let execution = committed(device, page)?;
+    let execution = committed(device, page, cuda.stream())?;
     let old_arena_id = temporary_arena.id();
     let before_retirement = varena::plan::inventory_generation(device)?;
     let retired = super::arena_retirement::request(temporary_arena)?;
@@ -262,14 +263,14 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
         "Plan lifetime owners did not retire",
     )?;
 
-    let concurrent = concurrent_inventory(device, page)?;
-    let refill = fill(&cached, 79)?;
+    let concurrent = concurrent_inventory(device, page, cuda.stream())?;
+    let refill = fill(cuda, &cached, 79)?;
     cuda.verify(&Block {
         ptr: cached.ptr(),
         bytes: page,
         value: 79,
     })?;
-    cuda.synchronize()?;
+    cuda.finish_setup()?;
     drop(unsafe { refill.into_completed_region() });
 
     // Only now retain arenas for instrumentation; earlier lifetime cases require real
@@ -278,7 +279,7 @@ pub(super) fn same_device(cuda: &Cuda, peer: &cooperative::Peer, device: i32) ->
     let capture = capture_refusal(cuda, peer, &plan, device, page)?;
     plan.deactivate()?;
     drop(plan);
-    cuda.synchronize()?;
+    cuda.finish_setup()?;
     drop(unsafe { pin1.into_completed_region() });
     drop(unsafe { pin2.into_completed_region() });
     for arena in [&a, &b, &outside] {
@@ -322,7 +323,7 @@ fn wait_retired(ticket: &varena::ArenaRetirement) -> Result<()> {
     Ok(())
 }
 
-fn concurrent_inventory(device: i32, page: usize) -> Result<Value> {
+fn concurrent_inventory(device: i32, page: usize, stream: u64) -> Result<Value> {
     use std::sync::atomic::{AtomicBool, Ordering};
     let before = varena::plan::inventory_generation(device)?;
     let done = Arc::new(AtomicBool::new(false));
@@ -361,7 +362,7 @@ fn concurrent_inventory(device: i32, page: usize) -> Result<Value> {
             "concurrent real arena lifecycle did not settle",
         )?;
         tries += 1;
-        match selected(device, page, "multi-arena-concurrent") {
+        match selected(device, page, "multi-arena-concurrent", stream) {
             Ok(choice) => {
                 require(
                     choice.phase_weight_bytes == 3 * page && choice.phase_missing_bytes == 0,
@@ -392,7 +393,7 @@ fn concurrent_inventory(device: i32, page: usize) -> Result<Value> {
         "actual Arena/Region publication and retirement epochs were lost",
     )?;
     require(
-        selected(device, page, "multi-arena-concurrent")?.phase_weight_bytes == 3 * page,
+        selected(device, page, "multi-arena-concurrent", stream)?.phase_weight_bytes == 3 * page,
         "stable selection did not recover after concurrent retirement",
     )?;
     Ok(
@@ -432,7 +433,7 @@ fn capture_refusal(
             "Plan activated during actual capture",
         )?;
         require(
-            selected(device, page, "multi-arena-capture").is_err(),
+            selected(device, page, "multi-arena-capture", cuda.stream()).is_err(),
             "selection entered actual capture",
         )?;
         require(

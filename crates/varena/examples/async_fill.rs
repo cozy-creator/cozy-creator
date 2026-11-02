@@ -49,7 +49,6 @@ struct Cuda {
     copy: Copy,
     d2d: D2D,
     read: unsafe extern "system" fn(*mut c_void, u64, usize) -> i32,
-    set: unsafe extern "system" fn(u64, u8, usize) -> i32,
     set_async: unsafe extern "system" fn(u64, u8, usize, Obj) -> i32,
     wait: unsafe extern "system" fn(Obj, u64, u32, u32) -> i32,
     write: unsafe extern "system" fn(Obj, u64, u32, u32) -> i32,
@@ -95,10 +94,9 @@ impl Cuda {
                 copy: *library.get(b"cuMemcpyHtoDAsync_v2\0")?,
                 d2d: *library.get(b"cuMemcpyDtoDAsync_v2\0")?,
                 read: *library.get(b"cuMemcpyDtoH_v2\0")?,
-                set: *library.get(b"cuMemsetD8_v2\0")?,
                 set_async: *library.get(b"cuMemsetD8Async\0")?,
-                wait: *library.get(b"cuStreamWaitValue32\0")?,
-                write: *library.get(b"cuStreamWriteValue32\0")?,
+                wait: *library.get(b"cuStreamWaitValue32_v2\0")?,
+                write: *library.get(b"cuStreamWriteValue32_v2\0")?,
                 uuid: encoded,
                 _library: library,
             });
@@ -113,6 +111,18 @@ impl Cuda {
     }
     fn sync(&self, stream: u64) -> Result<()> {
         unsafe { check("cuStreamSynchronize", (self.stream_sync)(stream as Obj)) }
+    }
+    fn initialize_gate(&self, gate: u64, control: u64) -> Result<()> {
+        // Gate allocation and control stream remain owned until all waiters finish.
+        unsafe { check("initialize gate on control stream", (self.write)(control as Obj, gate, 0, 0))?; }
+        self.sync(control)
+    }
+    fn initialize_pattern(&self, ptr: u64, stream: u64) -> Result<()> {
+        unsafe {
+            check("initialize first half", (self.set_async)(ptr, 41, BYTES / 2, stream as Obj))?;
+            check("initialize second half", (self.set_async)(ptr + (BYTES / 2) as u64, 73, BYTES / 2, stream as Obj))?;
+        }
+        self.sync(stream) // Exact producer completion, not a context-wide helper join.
     }
     fn pending(&self, stream: u64) -> Result<bool> {
         let code = unsafe { (self.stream_query)(stream as Obj) };
@@ -368,9 +378,7 @@ fn ordering(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let gate = working::alloc(device, 4, control, None)?;
     let out_a = working::alloc(device, BYTES, a, None)?;
     let out_b = working::alloc(device, BYTES, b, None)?;
-    unsafe {
-        check("clear gate", (cuda.set)(gate, 0, 4))?;
-    }
+    cuda.initialize_gate(gate, control)?;
     let mut session = owned(fill(&region)?, &resources);
     let destination = session.begin()?;
     submit(&cuda, &resources, destination.ptr, gate, false)?;
@@ -457,9 +465,7 @@ fn abort_fill(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let errors = Arc::clone(&resources.errors);
     let control = cuda.stream()?;
     let gate = working::alloc(device, 4, control, None)?;
-    unsafe {
-        check("clear gate", (cuda.set)(gate, 0, 4))?;
-    }
+    cuda.initialize_gate(gate, control)?;
     let raw = fill(&region)?;
     let alias = raw.pin()?;
     let mut session = owned(raw, &resources);
@@ -513,11 +519,10 @@ fn abort_fill(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
         region.release_unready()?,
         "checked aborted pages did not release",
     )?;
-    let mut refill = fill(&region)?;
-    let mut bytes = vec![41u8; BYTES];
-    bytes[BYTES / 2..].fill(73);
-    refill.copy_from_host(&bytes)?;
-    let pin = refill.commit()?;
+    let refill = fill(&region)?;
+    cuda.initialize_pattern(refill.ptr(), control)?;
+    // SAFETY: the owned control stream completed both whole-region writes above.
+    let pin = unsafe { refill.commit_completed()? };
     cuda.verify(pin.ptr())?;
     unsafe {
         drop(pin.into_completed_region());
@@ -656,8 +661,8 @@ fn retirement_pending(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let scratch = working::alloc(device, BYTES, scratch_stream, None)?;
     // SAFETY: all addresses and streams are owned here. The private write really waits
     // for a device gate; no synthetic busy/refusal or fabricated completion is supplied.
+    cuda.initialize_gate(gate, control)?;
     unsafe {
-        check("clear private gate", (cuda.set)(gate, 0, 4))?;
         check(
             "private wait",
             (cuda.wait)(scratch_stream as Obj, gate, 1, 1),
