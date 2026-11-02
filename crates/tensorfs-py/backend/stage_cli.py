@@ -11,8 +11,11 @@ import sys
 from pathlib import Path
 
 
-def stage(args: list[str], default_profile: str = "release") -> Path:
+def build_command(
+    args: list[str], default_profile: str = "release"
+) -> tuple[Path, list[str], dict[str, str]]:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("-m", "--manifest-path")
     parser.add_argument("--profile")
     parser.add_argument("-r", "--release", action="store_true")
     parser.add_argument("--target")
@@ -44,12 +47,49 @@ def stage(args: list[str], default_profile: str = "release") -> Path:
             text=True,
         )
     )
-    features = ["extension-module", "store"]
+    root = (
+        Path(options.manifest_path).resolve().parent
+        if options.manifest_path
+        else Path(__file__).resolve().parents[1]
+    )
+    # Cargo applies defaults to every explicitly selected package. Maturin selects
+    # only tensorfs-py, whose tensorfs dependency disables native package defaults.
+    # Re-enable Python's defaults explicitly, never tensorfs/default.
+    features = [
+        "tensorfs-py/default",
+        "tensorfs-py/extension-module",
+        "tensorfs-py/store",
+    ]
     if version >= [3, 11]:
         features.append("pyo3/abi3-py311")
     for value in options.features:
-        features.extend(value.replace(" ", ",").split(","))
-    root = Path(__file__).resolve().parents[1]
+        features.extend(
+            feature if "/" in feature else "tensorfs-py/" + feature
+            for feature in value.replace(",", " ").split()
+        )
+    if options.all_features:
+        # Discover declared Python-package features through Cargo JSON so this works
+        # on Python 3.10 and follows future manifest additions without TOML parsing.
+        metadata = [
+            "cargo", "metadata", "--format-version=1", "--no-deps", "--locked",
+            "--manifest-path", str(root / "Cargo.toml"),
+        ]
+        for value in options.config:
+            metadata.extend(["--config", value])
+        for flag in ("offline", "frozen"):
+            if getattr(options, flag):
+                metadata.append("--" + flag)
+        packages = json.loads(subprocess.check_output(metadata, text=True))["packages"]
+        package = next(
+            (package for package in packages
+             if package["name"] == "tensorfs-py"
+             and Path(package["manifest_path"]).resolve() == root / "Cargo.toml"),
+            None,
+        )
+        if package is None:
+            raise ValueError("CLI staging requires the tensorfs-py manifest")
+        features.extend("tensorfs-py/" + name for name in sorted(package["features"]))
+    features = list(dict.fromkeys(features))
     command = [
         "cargo",
         "build",
@@ -63,6 +103,7 @@ def stage(args: list[str], default_profile: str = "release") -> Path:
         "--lib",
         "--bin",
         "tfs",
+        "--no-default-features",
         "--features",
         ",".join(features),
         "--message-format=json-render-diagnostics",
@@ -78,11 +119,16 @@ def stage(args: list[str], default_profile: str = "release") -> Path:
             command.extend([flag, value])
     for value in options.config:
         command.extend(["--config", value])
-    for flag in ("all_features", "offline", "frozen"):
+    for flag in ("offline", "frozen"):
         if getattr(options, flag):
             command.append("--" + flag.replace("_", "-"))
     environment = os.environ.copy()
     environment["PYO3_PYTHON"] = shutil.which(interpreter) or interpreter
+    return root, command, environment
+
+
+def stage(args: list[str], default_profile: str = "release") -> Path:
+    root, command, environment = build_command(args, default_profile)
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, text=True, env=environment
     )

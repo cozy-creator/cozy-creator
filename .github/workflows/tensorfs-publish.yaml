@@ -120,12 +120,17 @@ jobs:
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
             triple=$(rustc -vV | sed -n "s/^host: //p")
-            cargo build --release --locked --target "$triple" -p tensorfs -p tensorfs-py --lib --bin tfs --features extension-module,store,pyo3/abi3-py311
-            install -D -m 755 "../../target/$triple/release/tfs" wheel-data/scripts/tfs
+            /opt/python/cp310-cp310/bin/python backend/stage_cli.py --release --target "$triple" \
+              -i /opt/python/cp310-cp310/bin/python /opt/python/cp311-cp311/bin/python
       - if: runner.os != 'Linux'
+        env:
+          PY310: ${{ steps.py310.outputs.python-path }}
+          PY311: ${{ steps.py311.outputs.python-path }}
         run: |
-          cargo build --release --locked --target "${{ matrix.target }}" -p tensorfs -p tensorfs-py --lib --bin tfs --features extension-module,store,pyo3/abi3-py311
-          cp ../../target/"${{ matrix.target }}"/release/tfs$([ "$RUNNER_OS" = Windows ] && echo .exe) wheel-data/scripts/
+          interpreters=()
+          if [ -n "$PY310" ]; then interpreters+=("$PY310"); fi
+          interpreters+=("$PY311")
+          python backend/stage_cli.py --release --target "${{ matrix.target }}" -i "${interpreters[@]}"
       - if: runner.os != 'Linux'
         uses: PyO3/maturin-action@v1
         with:

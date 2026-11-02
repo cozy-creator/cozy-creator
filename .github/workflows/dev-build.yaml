@@ -143,9 +143,10 @@ jobs:
           args: --release --locked --target-dir ../../target/manylinux2014 --out dist -i python3.11
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
-            # Match maturin's explicit target so the CLI and extension share dependency builds.
-            cargo build --release --locked --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2014 -p tensorfs -p tensorfs-py --lib --bin tfs --features extension-module,store,pyo3/abi3-py311
-            install -D -m 755 ../../target/manylinux2014/x86_64-unknown-linux-gnu/release/tfs wheel-data/scripts/tfs
+            # Match maturin's target, interpreter and feature graph through the canonical helper.
+            /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release \
+              --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2014 \
+              -i /opt/python/cp311-cp311/bin/python
       - name: Verify and tag the complete Linux wheel
         if: contains(inputs.build, 'tensorfs')
         run: uv run --no-project --with auditwheel --with patchelf python crates/tensorfs-py/backend/portable_wheels.py crates/tensorfs-py/dist --platform manylinux_2_17_x86_64
