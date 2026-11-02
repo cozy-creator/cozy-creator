@@ -1,6 +1,6 @@
 # XS-138 unsafe boundary review
 
-Base: `a0338b898060fcd16f8bb169a638afc89f08f080`. Existing master boundaries are preserved; retired Torch allocator/ELF/IAT boundaries are removed. This records source-contract review, not a claim of universal runtime or memory safety. Every changed native cohort still requires its applicable real-client and GPU gates.
+Initial source review base: `a0338b898060fcd16f8bb169a638afc89f08f080`. Reconciled master: `7a4a0407a095ff79c5344c8bffa3357a1355934f` (#2480); its six retired platform boundaries are removed. Existing master boundaries are preserved; retired Torch allocator/ELF/IAT boundaries are removed. This records source-contract review, not a claim of universal runtime or memory safety. Every changed native cohort still requires its applicable real-client and GPU gates.
 
 The new Rust client and mixed-client fixture deny unsafe at crate roots; scoped allowances identify their existing ABI adapters. The guard remains unchanged, includes examples and archived Rust proof sources, and audits the shipped dependency graph.
 
@@ -166,4 +166,4 @@ Child inherits deliberately locked owner control and must fail before access; on
 
 Exported symbols must be unique and preserve exact C signatures. Borrowed fixture stream remains alive across checked free/done retry; RETRY holds all Gpu/Region/Use/Allocation owners. C entrypoints must not unwind through caller. Apply the documented crate-root deny/boundary discipline to this new FFI fixture crate as well.
 
-The zero-span export correction and packing/source-unit-test cleanup are separately owned follow-ups; frozen GPU receipts remain attached to their original hashes. Current platform memory implementation is preserved, with consumers using only Signal, wait_any and Waitable; its separate audit owns dead-code removal.
+The zero-span export correction and packing/source-unit-test cleanup are separately owned follow-ups; frozen GPU receipts remain attached to their original hashes. The landed platform cleanup is preserved, including deleted shared-memory/dead memory APIs; consumers use only Signal, wait_any and Waitable.

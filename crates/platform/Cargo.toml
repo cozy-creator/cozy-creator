@@ -29,12 +29,12 @@ fetch = ["dep:flate2", "dep:sigstore-verify", "dep:tar", "dep:zip", "dep:tempfil
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "net", "param", "process", "thread"] }
+# use-libc-auxv: page size and clock ticks from getauxval, so they need no /proc.
+rustix = { workspace = true, features = ["event", "fs", "net", "param", "process", "thread", "use-libc-auxv"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Wdk_System_SystemInformation",
-    "Wdk_System_Threading",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -44,7 +44,6 @@ windows-sys = { workspace = true, features = [
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_System_JobObjects",
-    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
