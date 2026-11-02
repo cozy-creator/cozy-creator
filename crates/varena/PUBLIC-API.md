@@ -39,7 +39,7 @@ import torch
 import tensorfs.varena as va
 import tensorfs.varena.torch as vt
 
-vt.install(0)  # before Torch initializes its CUDA allocator
+vt.install(0)  # bind the allocator and activate this device before Torch GPU work
 work = torch.cuda.Stream(device=0)
 with torch.cuda.stream(work):
     with va.open(0) as gpu, gpu.region(b"immutable bytes") as weight:
@@ -91,8 +91,9 @@ Final Arena teardown uses the native per-device retirement queue. Persistent Pee
 and callback-worker observer roots detach there; genuine Region/Pin/Fill/Plan owners
 survive. The API worker observes only a host ticket and keeps its service client lease
 until actual Arena completion or quarantine. Closing that lease uses nonwaiting native
-polling. Process allocator keepalive is a separate integration gate: closing a public
-Gpu must not silently remove accounting for still-owned global Working/Torch storage.
+polling. The process allocator holds separate passive service custody, so closing public
+Gpu clients does not remove accounting for global Working/Torch storage. Passive
+custody is not an execution client; a process with no reporters stays Unknown.
 
 Use success orders only its supplied consumer stream behind source production; it does
 not assert host-visible GPU completion. Other readers need their own Use on that stream,

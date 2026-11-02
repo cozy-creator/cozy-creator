@@ -109,8 +109,10 @@ impl ServiceLease {
     fn open(device: i32) -> Result<Self> {
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
         {
-            Ok(Self { owner: crate::cooperative::Owner::get_or_open_default(device)
-                .map_err(Self::error)? })
+            let owner = crate::cooperative::Owner::get_or_open_default(device)
+                .map_err(Self::error)?;
+            owner.retain_working_lifetime().map_err(Self::error)?;
+            Ok(Self { owner })
         }
         #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
         {
