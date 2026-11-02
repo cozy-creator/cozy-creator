@@ -239,3 +239,92 @@ def lm_owner(payload: Probe, ctx: Context) -> Report:
             loaded.close()
         public_output = rebuilt = old_kv = ids = None
     return Report(True, json.dumps(result, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def lm_event_plateau(payload: Probe, ctx: Context) -> Report:
+    """Diagnostic final cell: same live Domain, repeated real LM lifecycles, then finish."""
+    request, provenance = actual(payload, ctx)
+    loaded = output = rebuilt = escaped = ids = None
+    result = {'passed': False, 'case': 'same_domain_repeated_lm_event_metadata',
+              'provenance': provenance, 'cycles': [],
+              'scope': 'diagnostic only; original lm_owner strict baseline remains unchanged',
+              'executor_domain_closed_at_end': True}
+    try:
+        with tempfile.TemporaryDirectory(prefix='varena-lm-events-') as directory:
+            loaded = Loaded(request.memory, Path(directory))
+            body = loaded.model.pipeline.body
+            ids = torch.tensor([[1, 4, 9]], dtype=torch.long, device=request.memory.device)
+            expected = loaded.expected(ids)
+            domain = loaded.placement.graph_domain('body')
+            domain.initialize()
+            domain.prime_blas()
+            settle()
+            result['baseline'] = {'working': vt.stats(0), 'weights': request.memory.native.stats(),
+                                  'context': event_context(domain)}
+            for index in range(6):
+                output = loaded.model.decode(ids)
+                assert torch.equal(output.cpu(), expected)
+                engine = lm._ENGINES[body]
+                loaded.placement.release()
+                assert engine.driver is None and engine._occupied() == 0 and not engine.pending
+                assert engine.recorded > 0 and engine.replayed > 0
+                owner = engine.region._cache_owner.native
+                before = owner.facts()
+                escaped = engine.cache.layers[0].keys[:, :, :ids.shape[1], :]
+                escaped_cpu = escaped.cpu().clone()
+                queued = ask(request.memory)
+                until(ctx, lambda: engine.cache is None and not owner.facts()['running'],
+                      'idle repeated-cycle owner did not retire')
+                assert owner.facts()['returned'] > before['returned']
+                assert not engine.graphs and not engine.addresses and not engine.where
+                assert torch.equal(escaped.cpu(), escaped_cpu)
+                rebuilt = loaded.model.decode(ids)
+                assert torch.equal(rebuilt.cpu(), expected) and torch.equal(output.cpu(), expected)
+                assert torch.equal(escaped.cpu(), escaped_cpu)
+                loaded.placement.release()
+                lm.release(body)
+                assert body not in lm._ENGINES
+                until(ctx, lambda: owner.facts()['retired'], 'repeated-cycle owner did not close')
+                assert not owner.facts()['requestable'] and owner.facts()['failed'] is None
+                output = rebuilt = escaped = None
+                settle()
+                request.memory.native.reclaim(request.memory.native.stats()['reclaimable_bytes'])
+                facts = {'cycle': index, 'working': vt.stats(0),
+                         'weights': request.memory.native.stats(), 'context': event_context(domain, engine),
+                         'owner': owner.facts(), 'request': queued.facts()}
+                assert not facts['context']['domain_closed'] and not facts['context']['engine_cache_present']
+                result['cycles'].append(facts)
+            counts = [row['working']['event_handles'] for row in result['cycles']]
+            result['event_counts'] = counts
+            result['last_three_event_counts_equal'] = len(set(counts[-3:])) == 1
+            byte_fields = ('allocated_bytes', 'allocated_capacity', 'mapped_bytes', 'pending_bytes',
+                           'pools', 'pools_bytes', 'cache_mapped_bytes', 'cache_reserved_bytes',
+                           'cache_live_bytes', 'cache_pending_bytes', 'cache_ready_bytes', 'caches')
+            result['last_three_byte_states_equal'] = all(
+                len({row['working'][key] for row in result['cycles'][-3:]}) == 1 for key in byte_fields)
+            loaded.close()
+            loaded = None
+            assert not request.memory.models
+            settle()
+            request.memory.native.reclaim(request.memory.native.stats()['reclaimable_bytes'])
+            result['before_domain_finish'] = {'working': vt.stats(0),
+                                             'context': event_context(domain, engine)}
+            # This closes the executor's shared graph domain. It is a named final-cell
+            # diagnostic, not permission to retire the caller-owned request stream.
+            domain.finish()
+            settle()
+            result['after_domain_finish'] = {'working': vt.stats(0),
+                                            'context': event_context(domain, engine)}
+            assert domain.closed and domain.owner is None and domain.stream is None and domain.control is None
+            result['request_stream_retired'] = False
+            result['attribution_limit'] = 'native aggregate stats; shared request stream remains owned by Runtime'
+            result['passed'] = True
+    except Exception as error:
+        raise RuntimeError(f'{type(error).__name__}: {error}; lifecycle_diagnostic={json.dumps(result, sort_keys=True)}') from error
+    finally:
+        if loaded is not None:
+            lm.release(loaded.model.pipeline.body)
+            loaded.close()
+        output = rebuilt = escaped = ids = None
+    return Report(True, json.dumps(result, sort_keys=True))
