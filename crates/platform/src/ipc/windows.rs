@@ -439,13 +439,6 @@ impl LocalListener {
     }
 }
 
-/// Dials the listener at `path`, waiting while every instance is busy.
-pub fn connect(path: &Path) -> Result<LocalStream> {
-    let name = pipe_name(&path.to_string_lossy());
-    let pipe = dial(&name).map_err(Error::io("connect", path))?;
-    LocalStream::new(pipe, Side::Client).map_err(Error::io("connect", path))
-}
-
 /// Two connected ends, on a pipe whose name nobody else knows, its dialer checked to be this
 /// process.
 pub fn pair() -> Result<(LocalStream, LocalStream)> {

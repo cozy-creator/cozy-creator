@@ -62,10 +62,6 @@ impl AsFd for LocalListener {
     }
 }
 
-pub fn connect(path: &Path) -> Result<LocalStream> {
-    UnixStream::connect(path).map_err(Error::io("connect", path))
-}
-
 /// Two connected ends.
 pub fn pair() -> Result<(LocalStream, LocalStream)> {
     Ok(LocalStream::pair()?)

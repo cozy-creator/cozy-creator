@@ -22,7 +22,6 @@ pub mod process;
 #[cfg(feature = "fetch")]
 pub mod release;
 pub mod service;
-pub mod shm;
 pub mod tail;
 pub mod tools;
 pub mod watch;
