@@ -10,6 +10,10 @@ name = "tfs"
 path = "src/bin/tfs/main.rs"
 required-features = ["store"]
 
+[[example]]
+name = "raw_source"
+required-features = ["store"]
+
 [features]
 # The store, fetch, convert and everything that opens one. Without it: the format and the
 # read engine only.
@@ -28,6 +32,7 @@ rand_chacha = { version = "=0.9.0", default-features = false, features = ["std"]
 rand_distr = { version = "=0.5.1", default-features = false, features = ["std"] }
 base64.workspace = true
 platform.workspace = true
+varena.workspace = true
 libloading.workspace = true
 minicbor = { version = "2.3.0", default-features = false, features = ["alloc"] }
 # Public tag names are PEP 440 versions, ordered as pip orders them (src/format/repo.rs).

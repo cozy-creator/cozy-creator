@@ -1,0 +1,26 @@
+{
+  "label": "default",
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "build",
+    "--offline",
+    "--locked",
+    "-p",
+    "varena",
+    "--example",
+    "fork_guard_cpu",
+    "-j",
+    "1"
+  ],
+  "build_seconds": 6.9873222630121745,
+  "run_seconds": 0.03691962402081117,
+  "returncode": 0,
+  "binary_sha256": "20fe2ce231edb67f84abf0332925d485c766ec76c1ab923691aa33bbd8a3e65a",
+  "source": "2f3f0e7b9c82103c97cb8b0116247624c28a7f4c",
+  "kernel_guard_enabled": true,
+  "contract": "one_process/1",
+  "gpu_qualified": false
+}
