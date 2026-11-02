@@ -284,15 +284,23 @@ impl Lock {
 
     /// Lists `made` (its assets kept, its number given) as its node's (of `kind`) newest version,
     /// approved when `approve`.
-    pub fn record(&mut self, made: Made, kind: &str, approve: bool) {
+    /// A version whose primary asset one already has (a render that came back the same, such as a fixed
+    /// seed's) is that version: its number is the one given back, and no second version is listed.
+    pub fn record(&mut self, made: Made, kind: &str, approve: bool) -> u32 {
         let node = self.nodes.entry(name_key(&made.node)).or_default();
         node.kind = kind.into();
         if approve {
             node.approved = made.primary().map(|asset| asset.path.clone());
         }
-        node.versions.retain(|version| version.number != made.number);
+        let same = node.versions.iter().find(|version| version.number != made.number && version.primary() == made.primary());
+        if let Some(same) = same {
+            return same.number;
+        }
+        let number = made.number;
+        node.versions.retain(|version| version.number != number);
         node.versions.push(made);
         node.versions.sort_by_key(|made| made.number);
+        number
     }
 }
 
