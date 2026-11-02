@@ -11,7 +11,7 @@ import time
 
 import torch
 import tensorfs
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 import tensorfs.varena.torch as vt
 
 # The fresh child uses -I, so load the reviewed sibling by its exact frozen path.

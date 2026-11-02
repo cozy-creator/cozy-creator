@@ -95,14 +95,17 @@ def main() -> None:
         warm = torch.arange(1024, device="cuda", dtype=torch.int32)
         assert warm.sum().item() == 1023 * 1024 // 2
         del warm
-        torch.cuda.synchronize()
-        with api.open() as gpu:
+        torch.cuda.current_stream().synchronize()
+        from streams import owned_stream
+
+        with owned_stream(torch, vt) as stream, torch.cuda.stream(stream), api.open() as gpu:
             gpu.trim()
             before = gpu.stats()
             allocation = C.c_uint64()
-            c.mixed_c_alloc.argtypes = [C.c_uint64, C.c_uint64, C.POINTER(C.c_uint64)]
+            c.mixed_c_alloc.argtypes = [C.c_uint64, C.c_uint64, C.c_uint64, C.POINTER(C.c_uint64)]
+            rust.mixed_rust_gpu.argtypes = [C.c_uint64]
             c.mixed_c_free.argtypes = [C.c_uint64]
-            assert c.mixed_c_alloc(gpu._handle, 2 << 20, C.byref(allocation)) == 0
+            assert c.mixed_c_alloc(gpu._handle, 2 << 20, stream.cuda_stream, C.byref(allocation)) == 0
             after_c = gpu.stats()
             assert after_c["working_live"] - before["working_live"] == 2 << 20
             native = _ext._varena_working_stats(0)
@@ -111,10 +114,10 @@ def main() -> None:
             assert value.sum().item() == 1023 * 1024 // 2
             after_torch = gpu.stats()
             assert after_torch["working_live"] > after_c["working_live"]
-            assert rust.mixed_rust_gpu() == 1
+            assert rust.mixed_rust_gpu(stream.cuda_stream) == 1
             assert c.mixed_c_free(allocation.value) == 0
             del value
-            torch.cuda.synchronize()
+            stream.synchronize()
             gpu.trim()
             final = gpu.stats()
             assert final["working_live"] == before["working_live"], (before, final)

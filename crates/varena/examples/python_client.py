@@ -3,28 +3,23 @@
 import ctypes as C
 import json
 
-from tensorfs.varena import api
+from tensorfs import varena
 
 
 def main() -> None:
     cuda = C.CDLL("libcuda.so.1")
-    copy = cuda.cuMemcpyDtoH_v2
-    copy.argtypes = [C.c_void_p, C.c_uint64, C.c_size_t]
-    copy.restype = C.c_int
     # Establish the same primary context for caller-owned CUDA work.
-    from cuda_driver import primary
+    from cuda_driver import Stream, primary
 
-    with primary(cuda), api.open(0) as gpu, gpu.region(bytes(range(64))) as region:
+    with primary(cuda), Stream(cuda) as stream, varena.open(0) as gpu, gpu.region(bytes(range(64))) as region:
         with gpu.plan({"read": [region]}) as plan:
             for _ in range(2):
                 with (
                     plan.phase("read", "u8/64/copy/eager"),
-                    gpu.use([region]) as used,
-                    gpu.alloc(4096),
+                    gpu.use([region], stream.handle) as used,
+                    gpu.alloc(4096, stream.handle),
                 ):
-                    result = (C.c_uint8 * 64)()
-                    assert copy(result, used.ptr(), 64) == 0
-                    assert bytes(result) == bytes(range(64))
+                    assert stream.read(used.ptr(), 64) == bytes(range(64))
                 gpu.trim()
         print(json.dumps({"python_region_refill": "pass", "stats": gpu.stats()}))
 

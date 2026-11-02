@@ -16,7 +16,8 @@ import tempfile
 import time
 
 import tensorfs
-from tensorfs import _ext, varena
+from tensorfs import _ext
+from tensorfs.varena import _runtime as varena
 import tensorfs.varena.torch as vt
 import torch
 

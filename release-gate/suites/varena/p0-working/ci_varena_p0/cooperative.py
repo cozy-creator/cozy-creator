@@ -82,8 +82,9 @@ class Actor:
 
 def child(role, config, directory):
     import tensorfs
-    from tensorfs import _ext, varena
-    from tensorfs.varena import Cooperation
+    from tensorfs import _ext
+    from tensorfs.varena import _runtime as varena
+    from tensorfs.varena._runtime import Cooperation
     import tensorfs.varena.torch as vt
     import torch
 

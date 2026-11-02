@@ -10,7 +10,8 @@ parser.add_argument('overlay', type=Path)
 parser.add_argument('output', type=Path)
 args = parser.parse_args()
 sys.path.insert(0, str(args.overlay.resolve()))
-from tensorfs import _ext, executor, varena
+from tensorfs import _ext, executor
+from tensorfs.varena import _runtime as varena
 
 payload = {'cmd': 'start', 'devices': 'GPU-13800000-0000-0000-0000-000000000003',
            'application': 'fixture', 'package_interface': '/not-opened',
