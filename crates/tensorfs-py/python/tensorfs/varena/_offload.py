@@ -231,8 +231,10 @@ class _Weight(torch.Tensor):
                 "operands from independent offload handles need explicit copies"
             )
         # Pure alias operations manipulate descriptors, retaining the exact version.
-        if func._schema.returns and all(
-            r.alias_info is not None for r in func._schema.returns
+        if (
+            not func._schema.is_mutable
+            and func._schema.returns
+            and all(r.alias_info is not None for r in func._schema.returns)
         ):
             metadata = {id(w): w._metadata() for w in weights}
             result = func(
@@ -517,7 +519,7 @@ class Offload:
         ):
 
             def cast(current, target=dtype):
-                handle()._convert(current, None, target)
+                handle()._convert(current, None, target, floating_only=True)
                 return current
 
             replace(name, cast)
@@ -540,7 +542,7 @@ class Offload:
 
         replace("train", train)
 
-    def _convert(self, module, device, dtype):
+    def _convert(self, module, device, dtype, *, floating_only=False):
         self._check()
         if device is not None:
             device = torch.device(device)
@@ -560,7 +562,8 @@ class Offload:
                 if not isinstance(parameter, _Weight):
                     raise OffloadError("module parameters changed after adoption")
                 if parameter.dtype == dtype or not (
-                    parameter.is_floating_point() or parameter.is_complex()
+                    parameter.is_floating_point()
+                    or (not floating_only and parameter.is_complex())
                 ):
                     continue
                 old = parameter._version_owner
@@ -586,7 +589,8 @@ class Offload:
             for child in module.modules():
                 for name, buffer in child._buffers.items():
                     if buffer is not None and (
-                        buffer.is_floating_point() or buffer.is_complex()
+                        buffer.is_floating_point()
+                        or (not floating_only and buffer.is_complex())
                     ):
                         if id(buffer) not in copied:
                             copied[id(buffer)] = self._copy_buffer(buffer, dtype=dtype)
