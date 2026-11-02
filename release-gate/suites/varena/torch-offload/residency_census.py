@@ -27,6 +27,7 @@ def snapshot(owner):
                         "paths": [],
                         "dtype": version.source.dtype,
                         "source_bytes": version.source.nbytes,
+                        "member_offset": version.member_offset,
                         "region_handle": (
                             version.region._handle if version.region is not None else None
                         ),
