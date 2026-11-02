@@ -27,6 +27,13 @@ if TYPE_CHECKING:
 
 PoisonedError = _ext.VarenaPoisonedError
 
+
+def bind_torch_allocator() -> None:
+    """Private CPU-only binding; Runtime must validate explicit custody before CUDA init."""
+    from .torch import _bind_allocator
+
+    _bind_allocator()
+
 def make_room(device: int, limit: int | None) -> int:
     """Hold this process's GPU bytes on `device` (resident weight pages plus mapped working allocations) to
     `limit`, None for no limit; returns the pages taken back now. Fills and working allocations stay

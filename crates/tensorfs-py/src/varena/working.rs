@@ -117,7 +117,7 @@ unsafe extern "C" fn alloc(
     failure: *mut Failure,
 ) -> u64 {
     call(failure, || {
-        varena::working::alloc(device, bytes, stream, (routed != 0).then_some((a, b)))
+        varena::working::alloc_bound(device, bytes, stream, (routed != 0).then_some((a, b)))
     })
 }
 
@@ -143,6 +143,7 @@ unsafe extern "C" fn pool_begin(
     failure: *mut Failure,
 ) -> i32 {
     call(failure, || {
+        varena::working::require_cooperation(device)?;
         varena::working::pool_begin(device, (a, b), stream).map(|()| 1)
     })
 }
@@ -206,11 +207,22 @@ fn _varena_working_bindings() -> PyResult<usize> {
 
 #[pyfunction]
 fn _varena_working_initialize(py: Python<'_>, device: i32) -> PyResult<()> {
-    py.detach(|| {
+    let bound = py.detach(|| {
         check()?;
-        varena::working::initialize(device)
+        varena::working::cooperation_bound(device)
     })
-    .map_err(|e| super::raise(py, e))
+    .map_err(|e| super::raise(py, e))?;
+    if bound { return Ok(()); }
+    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+    {
+        py.detach(|| {
+            let owner = varena::cooperative::Owner::get_or_open_default(device)?;
+            owner.retain_working_lifetime()
+        }).map_err(|e| super::cooperative::raise(py, e))
+    }
+    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
+    Err(pyo3::exceptions::PyRuntimeError::new_err(
+        "native CUDA service activation requires Linux with 64-bit atomics"))
 }
 
 #[pyfunction]

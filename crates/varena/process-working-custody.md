@@ -34,3 +34,25 @@ client or H invalidation, cold unbound native refusal without loading CUDA/NVML;
 then real Ready/Pending Working storage after public close, a new client's reuse/
 donation, default standalone activation, and explicit Dedicated Runtime startup.
 All GPU work remains root-owned and unrun in this lane.
+
+## CPU evidence
+
+Native bindings passed27.34s; the exact debug CPU extension built in165s with
+Rust1.99.1, offline/nice19/j1. No C++ shim or callback-table signature changed.
+The final native host proof passed14.30s and matches every final native source
+hash. It covers passive-only Unknown, no extra execution client or request-window
+invalidation, failed attachment without initialized Working, unbound allocations,
+nonfinal execution-client close with passive custody and same-row rejoin.
+
+The actual new extension's callback table refused cold allocations/pool creation
+without loading CUDA/NVML or importing Torch. Public install/initialize(None)
+refused before binding. The actual framed executor Hello/Shutdown and missing,
+multi-rank and no-Torch CUDA Start refusals passed on the paired Runtime source;
+no rejected command initialized CUDA or imported Torch. Type comparison has
+17 unchanged baseline findings; Python/Runtime Ruff comparisons add no findings.
+Receipts live under `outputs/xs138-p4-process-custody`.
+
+Core owns the separate isolated public-consumer GPU child: Pending→Ready Working
+after all public roots close, clients0/passive1, same-row reopening and real-byte
+reuse. A second-process actual donation cell remains a separate follow-up; none
+of these GPU assertions are claimed passed by the CPU evidence.

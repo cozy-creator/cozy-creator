@@ -21,6 +21,7 @@ parser.add_argument('--runtime-source', type=Path, required=True)
 parser.add_argument('--overlay', type=Path, required=True)
 parser.add_argument('--out', type=Path, required=True)
 parser.add_argument('--expected-capability', type=int, choices=(0, 1), default=1)
+parser.add_argument('--start-refusal', choices=('missing', 'multi_rank', 'no_torch'))
 args = parser.parse_args()
 args.out.mkdir(parents=True, exist_ok=False)
 project = tomllib.loads((args.runtime_source.parent / 'pyproject.toml').read_text())['project']
@@ -31,6 +32,9 @@ launcher = args.out / 'child.py'
 launcher.write_text('''from pathlib import Path
 import hashlib, json, sys, threading
 sys.path[:0] = [sys.argv[1], sys.argv[2], str(Path(__file__).parent / 'metadata')]
+if sys.argv[6] == 'no_torch':
+    import importlib.util
+    assert importlib.util.find_spec('torch') is None, 'requires a real no-Torch environment'
 def native_threads():
     return {p.name: p.joinpath('comm').read_text().strip() for p in Path('/proc/self/task').iterdir()}
 threads_before_import = native_threads()
@@ -47,6 +51,7 @@ result = {'exit_code': code, 'torch_imported': torch is not None,
           'driver_loaded': 'libcuda.so' in maps or 'libnvidia-ml.so' in maps,
           'cooperation_capability': int(cooperation.capable()),
           'native_service_protocol': varena.CooperationOwner.capability(),
+          'native_custody_protocol': varena.CooperationOwner.custody_capability(),
           'native_threads_before_import': threads_before_import,
           'native_threads_before_hello': threads_before_hello,
           'native_threads_after_hello': native_threads(),
@@ -75,7 +80,8 @@ def exchange(connection, value):
     assert size <= 4 * 1024 * 1024
     return json.loads(read_exact(connection, size))
 
-report = {'passed': False, 'scope': 'actual CPU-only executor Hello/Shutdown socket, no Start or GPU work'}
+report = {'passed': False, 'scope': 'actual CPU-only executor Hello/Shutdown and optional pre-GPU Start refusal',
+          'start_refusal': args.start_refusal}
 child = None
 try:
     with tempfile.TemporaryDirectory(prefix='owner-hello-', dir=args.out) as directory:
@@ -87,8 +93,11 @@ try:
                 listener.bind(address); listener.listen(1); listener.settimeout(30)
                 command = [str(args.python), '-I', '-B', str(launcher), str(args.overlay.resolve()),
                            str(args.runtime_source.resolve()), address, str(directory),
-                           str(args.out / 'child-result.json')]
+                           str(args.out / 'child-result.json'), args.start_refusal or '']
                 env = {k:v for k,v in os.environ.items() if not k.startswith(('COZY_', 'CUDA_', 'TENSORFS_', 'PYTHON'))}
+                if args.start_refusal:
+                    # A refused command's seal is metadata, not a GPU availability claim.
+                    env['CUDA_VISIBLE_DEVICES'] = '0,1' if args.start_refusal == 'multi_rank' else '0'
                 with (args.out / 'child.stdout').open('w') as stdout, (args.out / 'child.stderr').open('w') as stderr:
                     child = subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr)
                     connection, _ = listener.accept()
@@ -98,6 +107,22 @@ try:
                         assert hello['ok'] and hello['reply'] == 'hello', hello
                         assert hello['cooperative_owner'] is bool(args.expected_capability), hello
                         assert hello['pid'] == child.pid
+                        if args.start_refusal:
+                            start = {'cmd': 'start', 'devices': env['CUDA_VISIBLE_DEVICES'],
+                                     'package_interface': '/must-not-be-opened-before-refusal'}
+                            if args.start_refusal != 'missing':
+                                start['cooperation'] = {
+                                    'uuid': 'GPU-13800000-0000-0000-0000-000000000097',
+                                    'directory': '/dev/shm/not-opened-by-refusal',
+                                    'shared': False, 'priority': 0,
+                                }
+                            if args.start_refusal == 'multi_rank':
+                                start['sequence_parallel_degree'] = 2
+                            refused = exchange(connection, start)
+                            expected = 'cooperation_required' if args.start_refusal == 'missing' else 'cooperation_unsupported'
+                            assert not refused['ok'] and refused['code'] == expected, refused
+                            report['start'] = {'input': start, 'refusal': refused,
+                                              'uuid_verified': False, 'gpu_constructor_called': False}
                         shutdown = exchange(connection, {'cmd':'shutdown'})
                         assert shutdown['ok'] and shutdown['reply'] == 'shutdown', shutdown
                     child.wait(timeout=30)
