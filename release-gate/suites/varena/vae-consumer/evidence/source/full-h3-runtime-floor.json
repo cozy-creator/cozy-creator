@@ -1,0 +1,31 @@
+{
+  "package_commit": "7f6884fb7315fd125759d6a4c3c3159f0479eeff",
+  "declared_requirement": "cozy-runtime[adapters,media]>=0.37.0",
+  "reason": "actual new shot/reference contract types and schema behavior, not only a release floor",
+  "package_pr": "https://github.com/cozy-creator/packages/pull/790",
+  "implementation_pr": "https://github.com/cozy-creator/packages/pull/763",
+  "runtime_dependency_pr": "https://github.com/cozy-creator/cozy-runtime/pull/1976",
+  "required_h3_py_imports": [
+    "AudioReference",
+    "Beat",
+    "CharacterReference",
+    "ContinueFrom",
+    "EnvironmentReference",
+    "Plate",
+    "PropReference",
+    "ShotRequest",
+    "ShotResult",
+    "VideoReference"
+  ],
+  "absent_from_current_author_source": [
+    "AudioReference",
+    "CharacterReference",
+    "ContinueFrom",
+    "EnvironmentReference",
+    "Plate",
+    "PropReference",
+    "VideoReference"
+  ],
+  "current_varena_runtime_base": "cb6c66bf343d15637eaeb4af35731a37fc56d61c",
+  "note": "CPU producer-only imports succeed because they do not import h3.py. Full current H3 must use the compatible0.37 contract source/version; do not relax dependency."
+}
