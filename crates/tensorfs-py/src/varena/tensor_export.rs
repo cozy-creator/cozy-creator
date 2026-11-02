@@ -152,11 +152,17 @@ fn _varena_public_use_dlpack(
     }
     // Torch requires a zero DLPack byte_offset. Normalize the admitted interior
     // view into its data pointer; the native storage owner still pins the full
-    // Region, and record_stream routes the resulting interior address.
-    let pointer = storage
-        .ptr()
-        .checked_add(byte_offset)
-        .ok_or_else(|| invalid("tensor interior pointer overflow"))?;
+    // Region. Empty views may end exactly at its logical boundary, but Torch's
+    // record_stream uses the storage DataPtr even when numel is zero. Keep that
+    // pointer inside the Region after validating the original offset/span above.
+    let pointer = if span == 0 {
+        storage.ptr()
+    } else {
+        storage
+            .ptr()
+            .checked_add(byte_offset)
+            .ok_or_else(|| invalid("tensor interior pointer overflow"))?
+    };
     let pointer = usize::try_from(pointer)
         .map_err(|_| invalid("tensor pointer exceeds the host address width"))?;
     let device = storage.device();

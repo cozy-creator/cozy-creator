@@ -20,6 +20,7 @@ from tensorfs.varena import torch as vt
 def run(device: int):
     vt.install(device)
     stream = torch.cuda.Stream(device=device)
+    empty_stream = torch.cuda.Stream(device=device)
     gpu = api.open(device)
     checks = []
     quarantine = api.retirement_stats()["quarantined"]
@@ -39,6 +40,43 @@ def run(device: int):
                              byte_offset=offset + source.byte_offset, stream=stream.cuda_stream)
 
     try:
+        # A trailing empty member is at the logical endpoint, inside reservation
+        # padding. Its storage must retain the same Pin and a valid DataPtr for
+        # record_stream, including after the Region and other exports are closed.
+        baseline = gpu.stats()["weights_resident"]
+        tiny, tiny_offsets = gpu.region_parts((
+            Source.from_buffer(b"\x49", dtype="uint8", shape=(1,)),
+            Source.from_buffer(b"", dtype="uint8", shape=(0,)),
+        ))
+        assert tiny_offsets == (0, 256)
+        whole = tiny.tensor(dtype="uint8", shape=(256,), stream=stream.cuda_stream)
+        empty = tiny.tensor(dtype="uint8", shape=(0,), byte_offset=tiny_offsets[1],
+                            stream=stream.cuda_stream)
+        assert empty.numel() == 0 and empty.shape == (0,)
+        assert empty.untyped_storage().data_ptr() == whole.data_ptr()
+        escaped_empty = empty.detach()
+        with torch.cuda.stream(empty_stream):
+            empty_stream.wait_stream(stream)
+            empty.record_stream(empty_stream)
+            escaped_empty.record_stream(empty_stream)
+            whole.record_stream(empty_stream)
+            tiny_copy = whole.clone()
+        empty_stream.synchronize()
+        assert torch.equal(tiny_copy.cpu(), torch.tensor([0x49] + [0] * 255, dtype=torch.uint8))
+        tiny.close()
+        del tiny, whole, empty, tiny_copy
+        gc.collect()
+        settle()
+        gpu.trim()
+        assert gpu.stats()["weights_resident"] > baseline
+        escaped_empty.record_stream(empty_stream)
+        del escaped_empty
+        gc.collect()
+        settle()
+        gpu.trim()
+        assert gpu.stats()["weights_resident"] == baseline
+        checks.append("trailing empty record_stream retains its Pin until final alias and retires without quarantine")
+
         raw = bytearray([0x17]) * ((2 << 20) + 17)
         matrix = torch.arange(24, dtype=torch.float16).reshape(4, 6)
         view = matrix[1:, 1:5].T
@@ -127,7 +165,9 @@ def run(device: int):
         return {"checks": checks, "device": device, "torch": str(torch.__version__),
                 "native_stats": gpu.stats()}
     finally:
+        empty_stream.synchronize()
         stream.synchronize()
+        vt.retire_stream(empty_stream, device)
         vt.retire_stream(stream, device)
         gpu.close()
 
