@@ -1,0 +1,57 @@
+# Graph frontend qualification
+
+The implementation is a fixed-module graph primitive. It requires the native scoped
+`Use.wait_ready` feature and an agreed `vt.graph(synchronize=False)` helper. Missing
+capabilities refuse; there is no global-sync fallback. Graph/pool GPU behavior is not
+qualified by the host checks.
+
+Host frontend client, using a matching built SDK plus the exact Python feature overlay:
+
+```sh
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
+  python graph_bindings_cpu.py
+```
+
+This runs actual tied/strided Torch and tiny Diffusers VAE computation through the
+capture binding table. It checks exact eager values, zero new residency materializations,
+read-only weight/buffer/input behavior, signatures, old aliases and empty interior views.
+It uses no graph/native allocator substitute and makes no CUDA claim.
+
+The coordinator must bind the exact native SDK, Python files, helper/Runtime hashes,
+GPU UUID and ordinary-Cozy caller before running isolated GPU children. No script
+installs, rents, downloads model weights, merges or releases. Payload commands inside
+that owned ordinary-Cozy fixture are:
+
+```sh
+python graph_frontend_gpu.py --device 0
+python graph_epochs_gpu.py --device 0 --provider "$matched_source_helper" \
+  --provider-python "$matched_provider_python" --mode tail --timeout-s 60
+```
+
+Run separate fresh children for epoch modes `reset`, `source_failure`, `capture_refusal`.
+The helper is the existing real C public-Source provider; use its matched `provider.py`
+and library, including the new readiness controls. The gate is mapped HOST memory,
+not a timed CUDA sleep or a fabricated resource. The coordinator owns the child deadline
+and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assertions.
+
+- Frontend: multiple live definitions, weight Pins zero, same-VA trim/refill/replay,
+  independent old outputs, an escaped native alias on a graph Region, and stale-version
+  selection refusal with earlier output/version preservation.
+- Tail: after actual launch, gate the real copy consumer; prove native trim selected
+  a last-consumer fence and stayed blocked before opening the gate. No early reclaim.
+- Reset: reset the actual CUDA executable in its launch-end hook while work is gated;
+  independently open the gate, verify output, refuse new selection and preserve cleanup.
+  The report distinguishes a blocking reset from a reset that returns while work remains
+  pending; a Python thread marker is not completion proof.
+- Source failure: an explicit fixture adapter binds a byte-identical immutable CPU
+  recipe to the existing real foreign Source Region. Its native preparation error must
+  propagate before capture, with one attempt and no unproven ownership. This does not
+  implement general public Source-map adoption.
+- Capture refusal: keep an unrelated actual producer pending. Scoped readiness must
+  settle only this segment; capture must refuse atomically without globally draining
+  or waiting for the unrelated gated work.
+
+Private Working pools remain resident while definitions/static owners live. Shared
+pools and automatic eligible-boundary/version-cache selection are unfinished. Close
+unused/invalidated definitions; the initial primitive does not make whole-model/8 GB
+or performance claims. Only the weight lease lifetime is separated from the graph cache.

@@ -1,8 +1,9 @@
 # Required graph-capable offload: segmented adapter contract
 
-Status: proposed implementation contract; native ownership confirmation pending with
-Agent 2. Graph support is required remaining work. Nothing here declares GPU execution,
-streamed graph residency or a performance win. Product input is
+Status: native ownership contract agreed; adapter implementation and actual CPU binding
+checks are present. Scoped native readiness is an Agent 2 dependency, and a capture
+helper opt-out from context synchronization awaits shared-file agreement. No GPU
+execution, streamed residency or performance is qualified here. Product input is
 `0af634eff39c1a28ea587e1b69516f9dc326d142`, packing upstream
 `2c2d05c755195921f816719ab9e3aad39638d62d`, fixtures `3c678dfcd`.
 
@@ -24,7 +25,7 @@ segment.close()
 `version_dtypes`, `pool` and `closed`. It does not acquire residency, wait, or infer
 streaming from a flag. The fixture checks actual native Pin/mapping state independently.
 
-The first implementation captures an explicit module or pure callable boundary whose
+The first implementation captures an explicit module boundary whose
 managed weights belong to this owner. It is the primitive for caching graphs at
 inventoried boundaries, not a permanent eager-only exception. General pipeline
 orchestration stays on the host; eligible tensor compute uses segments. Unsupported
@@ -38,7 +39,9 @@ request execution. A shortfall is returned after proper capture cleanup, with no
 automatic retry. Do not repeatedly resample a process-wide peak for every segment.
 
 Inputs/kwargs have a fixed pytree, ordinary Tensor metadata and immutable scalar
-configuration. Static inputs retain their ordinary Working storage; captured outputs
+configuration. The current signature requires nonoverlapping offset-zero, nongradient
+inputs, rejects cross-input aliases and custom leaves, and permits ordinary Tensor
+outputs only. Static inputs retain their ordinary Working storage; captured outputs
 and temporaries belong to the graph pool. Both count under their existing owners,
 without counting static inputs again as captured footprint. Inputs are copied into
 their static storage before launch. Returned results are independent
@@ -86,9 +89,20 @@ view adds its member offset only after original-storage span validation.
    owners through checked cleanup, retire partial metadata and expose the original
    error. Do not publish a half-initialized definition or execute an application retry.
 
-The prebind/drop/reacquire sequence needs Agent 2 confirmation for the current public
-ABI: `export_use` currently calls `gpu.eager`, so it must never be invoked during capture.
+Agent 2 confirmed this sequence, with the additional scoped readiness call:
+`Use.wait_ready()` / `vr_v1_use_wait_ready(handle)` / Rust `&self wait_ready()`.
+It waits current-generation Region tickets through checked completion and resource
+retirement, including ProducerGuard release. It releases the GIL, preserves ownership
+on refusal, and uses no global retirement drain/context synchronization. It does not
+settle unrelated producers or promise capture admission. `export_use` calls
+`gpu.eager`, so it must never be invoked during capture.
 GraphFootprint accounts captured Working; it does not itself account weight residency.
+
+The existing `vt.graph` currently context-synchronizes during preparation. The adapter
+requires an agreed `synchronize=False` opt-out after scoped readiness and capture-stream
+warmup completion; the default helper behavior remains unchanged. This helper amendment
+has been requested but is not silently implemented in the adapter. Missing native/helper
+capabilities refuse explicitly. `torch.py` is untouched pending agreement.
 
 ## Replay ownership
 
@@ -97,13 +111,22 @@ For each call, under the segment's submission lock:
 1. Select the supplied actual stream, order input producers, and serialize access to
    static graph input/output storage behind the previous replay/copy completion event.
 2. Activate the segment's exact native Region intent outside launch. Acquire Use for
-   its deduplicated Regions; native Source preparation orders producers on this stream.
-3. Copy inputs, enter existing replay exclusion if required by Agent 2, and call
+   deduplicated Regions and fresh ordinary checked exports (one valid uint8 span per
+   Region is enough). Existing TensorExport owns Pin/family/Weight and preserves exact
+   final-fence quarantine. Bare Use close is not the checked replay safety contract.
+   Initial replay also calls scoped wait_ready before launch to surface Source/resource
+   failure; it does not claim fill/compute overlap or latency qualification.
+3. Copy inputs, enter the existing `_runtime.replay` host guard, and call
    `vt.replay(graph, stream=stream)`. Reuse native pool retain/record/release ownership.
    Exit replay exclusion before output-copy allocation and before Use close/fencing;
    its eager ownership validation must not be invoked inside that guard.
-4. Enqueue independent output copies, record the actual consumers, and close Use only
-   after submission. Native last-consumer fences retain residency while work is pending.
+4. Keep an extra existing native pool reference across launch and output-copy submission,
+   even if replay hooks reset the executable. Enqueue independent output copies,
+   record their pool/working tails, then release that reference. Record actual weight
+   consumers and drop transient exports outside exclusion; their checked storage
+   deleters, rather than bare Use completion, prove weight tails or quarantine.
+   The original Use closes while checked exports still own independent Pins. Native
+   last-consumer fences retain residency while work is pending after submission.
    A `record_stream` lifetime declaration never substitutes for a producer dependency.
 5. Deactivate intent without publishing an invented compute key or successful H sample.
    Failed/unproven consumer fencing retains native custody; it does not run a context
@@ -116,9 +139,18 @@ Closing disables new submissions and retires the definition/pool only under the
 existing in-flight/consumer ownership contract; exact abandonment semantics are a
 native confirmation item, not a Python finalizer assumption.
 
-Old definitions remain bound to old immutable dtype versions. A module conversion can
-produce a separate definition; it must not rewrite an existing executable's pointers
-or silently select new weights. Model close/definition close ownership must be explicit.
+Old definitions retain old immutable dtype versions for already submitted work. Model
+version/layout/configuration or buffer-address rebinding invalidates new selections;
+prepare a new definition. Existing output copies and escaped old aliases stay valid.
+The initial explicit primitive does not reuse derived Versions across dtype roundtrips
+or automatically select/cache eligible model boundaries; those remain required model
+integration work. Close unused/invalidated definitions to release their Working caches.
+
+Private pools are currently required. Explicit shared pools refuse until ordered-group
+replay/output semantics are implemented. Each cached Working pool retains its normal
+backing while its definition/static owners live; only weight residency is replay-scoped.
+No whole-model/scratch fit, 8 GB gate or universal stock-model graph coverage is claimed.
+This is an implementable segment primitive, not a permanent eager-only exclusion.
 
 ## Minimal actual frontend fixture
 
@@ -147,7 +179,16 @@ The prepared actual frontend client is
 `release-gate/suites/varena/torch-offload/graph_frontend_gpu.py`. It calls the proposed
 public owner capture/replay API and the existing native scalar observer. It refuses
 before CUDA initialization if the frontend is absent. It is unrun and is not proof of
-an implemented API; native/shared-file confirmation precedes dependent implementation.
+CUDA readiness; missing native/helper capabilities still refuse. `graph_epochs_gpu.py`
+adds actual C Source provider controls for source failure, unrelated producer capture
+refusal, a delayed consumer gate and reset during launch. It requires explicit matched
+provider Python/library paths and runs one isolated child per mode. No GPU mode ran here.
+
+`graph_bindings_cpu.py` executes this same frozen dispatch path on real tied/strided
+Torch and tiny Diffusers VAE inputs with exact eager parity and no new residency
+materializations. It checks real weight/buffer/input mutation refusals, version/signature
+invalidation and zero-element interior views. It simulates neither CUDA nor native
+ownership; capture/eviction/replay/tail/reset proof remains coordinator-owned.
 
 ## Files and coordination
 

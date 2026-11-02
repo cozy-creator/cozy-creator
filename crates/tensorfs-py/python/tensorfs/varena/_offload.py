@@ -19,6 +19,7 @@ from ._offload_inventory import InventoryError, inspect_cpu_roots
 from .sources import Source
 
 _REBIND = contextvars.ContextVar("varena_offload_rebind", default=False)
+_GRAPH_BINDING = contextvars.ContextVar("varena_offload_graph_binding", default=None)
 
 
 class OffloadError(RuntimeError):
@@ -296,14 +297,22 @@ class _Weight(torch.Tensor):
             return return_and_correct_aliasing(
                 func, args, kwargs, tree_map(alias, result)
             )
+        binding = _GRAPH_BINDING.get()
         caller = (
             torch.cuda.current_stream(owner.device)
-            if owner.stream is not None
+            if owner.stream is not None and binding is None
             else None
         )
-        with owner.execution(leaves) as stream:
+        execution = (
+            owner.execution(leaves) if binding is None else binding.execution(owner)
+        )
+        with execution as stream:
             materialized = {
-                id(w): w._version_owner.tensor(w._shape, w._strides, w._offset, stream)
+                id(w): (
+                    w._version_owner.tensor(w._shape, w._strides, w._offset, stream)
+                    if binding is None
+                    else binding.tensor(w)
+                )
                 for w in weights
             }
             try:
@@ -345,7 +354,7 @@ class _Weight(torch.Tensor):
 
                 result = tree_map(retain_alias, result)
             finally:
-                if stream is not None:
+                if stream is not None and binding is None:
                     for value in materialized.values():
                         value.record_stream(stream)
         if caller is not None:
@@ -578,6 +587,11 @@ class Offload:
     def _intent(self, module):
         with self._owner.lock:
             self._check()
+            binding = _GRAPH_BINDING.get()
+            if binding is not None:
+                binding.validate_module(self, module)
+                yield
+                return
             if not self._intent_frames:
                 self._refresh_intent()
             name = self._boundary_names[id(module)]
@@ -715,6 +729,10 @@ class Offload:
 
     def _convert(self, module, device, dtype, *, floating_only=False):
         self._check()
+        if _GRAPH_BINDING.get() is not None:
+            raise OffloadError(
+                "dtype conversion cannot change a frozen capture binding"
+            )
         if device is not None:
             device = torch.device(device)
             if device.type != self._owner.device.type or (
@@ -791,6 +809,20 @@ class Offload:
     def __call__(self, *args, **kwargs):
         self._check()
         return self.model(*args, **kwargs)
+
+    def capture(self, module, args, *, kwargs=None, stream, reserve_bytes, pool=None):
+        """Prepare one immutable module graph outside the application request."""
+        from ._offload_graph import GraphSegment
+
+        return GraphSegment(
+            self,
+            module,
+            args,
+            kwargs=kwargs,
+            stream=stream,
+            reserve_bytes=reserve_bytes,
+            pool=pool,
+        )
 
     def close(self):
         with self._owner.lock:
