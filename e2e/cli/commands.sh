@@ -191,7 +191,7 @@ before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
 (cd "$here" && cozy --json run ./weightless/reverse --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
-note=$OUT/inputs/note.txt; echo "an asset" > "$note"
+note=$OUT/inputs/note.txt; mkdir -p "$OUT/inputs"; echo "an asset" > "$note"
 if (cd "$here" && cell fidelity ./weightless/fidelities --file "notes=$note" --file-fidelity notes=high); then
   grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--file-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
 fi
