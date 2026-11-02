@@ -1,0 +1,74 @@
+{
+  "predecessor": "c4d75a017b7ac426e7502aa1c3f6311a58902c29",
+  "native_source_unchanged": "6e22f6ea6f485707640a3fcaa3dd60fd1a1ac6d6",
+  "preserved_failures": [
+    26129,
+    26130
+  ],
+  "gpu_py_unchanged_sha256": "796abecb5b9fd8adde8351b7972becd91123560e1f5d39992a9a492d42a6e847",
+  "failed_tail_before_sha256": "fdf2491cc79929c071a1755a1884700058bb2dff5d9f00df397e42900ff84e02",
+  "failed_tail_after_sha256": "c37ac172158fb3023201137938b6958bbb436f795e817ad35cb3883ae3abf572",
+  "failed_tail_only_change": "weights_resident assertion moved immediately outside vt.graph; driver/quarantine/cache-byte assertions remain inside; final trim/accounting unchanged",
+  "path_proof": {
+    "passed": true,
+    "old_directory_assertion": false,
+    "actual_loaded_file_assertions": true,
+    "cuda_initialized": false,
+    "distribution_root": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs",
+    "package_file": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/__init__.py",
+    "package_file_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/__init__.py",
+    "loaded_files": {
+      "raw.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/raw.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/raw.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/raw.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/raw.py"
+      },
+      "_native.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/_native.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/_native.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/_native.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/_native.py"
+      },
+      "api.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/api.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/api.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/api.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/api.py"
+      },
+      "_native_identity.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/_native_identity.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/_native_identity.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/_native_identity.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/_native_identity.py"
+      },
+      "__init__.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/__init__.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/__init__.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/__init__.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/__init__.py"
+      },
+      "varena/sources.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/varena/sources.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/varena/sources.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/varena/sources.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/varena/sources.py"
+      },
+      "varena/api.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/varena/api.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/varena/api.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/varena/api.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/varena/api.py"
+      },
+      "varena/__init__.py": {
+        "loaded": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/varena/__init__.py",
+        "resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/varena/__init__.py",
+        "installed": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site/tensorfs/varena/__init__.py",
+        "installed_resolved": "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/wheel/tensorfs/varena/__init__.py"
+      }
+    },
+    "extension_sha256": "9cac4131525265e02f82b2a5653d4ac59cda1bbfa1f7142ef82eab86cd99b97b",
+    "runner_sha256": "fcade419ceccacee2bcb0459bcb8feb0de9e80edc74e99a1eb39d4e79afb3fe3"
+  },
+  "gpu_rerun": false
+}

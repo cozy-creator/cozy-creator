@@ -58,7 +58,32 @@ import torch
 from tensorfs import _ext
 from tensorfs.varena import api
 
-assert Path(tensorfs.__file__).resolve().parent == root.resolve()
+# A seeded SDK may symlink individual files. Resolving __init__.py before
+# taking its parent then names the cache directory, not the installed package.
+# Validate the actual loaded files against the exact prechecked distribution
+# entries, preserving inode identity and every content hash.
+python_files = {}
+for relative, expected in payload["tensorfs_files"].items():
+    module_name = "tensorfs." + relative.removesuffix(".py").replace("/", ".")
+    module_name = module_name.removesuffix(".__init__")
+    module = sys.modules.get(module_name)
+    if module is None:
+        continue
+    loaded = Path(module.__file__)
+    installed = root / relative
+    facts = {
+        "loaded": str(loaded),
+        "resolved": str(loaded.resolve()),
+        "installed": str(installed),
+        "installed_resolved": str(installed.resolve()),
+    }
+    assert loaded.samefile(installed) and digest(loaded) == expected, facts
+    assert module.__spec__ is not None and Path(module.__spec__.origin).samefile(
+        installed
+    ), facts
+    python_files[relative] = facts
+assert "__init__.py" in python_files and "varena/api.py" in python_files
+assert Path(_ext.__file__).samefile(extensions[0])
 assert digest(_ext.__file__) == payload["extension_sha256"]
 uuid = str(torch.cuda.get_device_properties(0).uuid)
 assert uuid_key(uuid) == uuid_key(payload["gpu_uuid"])
@@ -122,6 +147,9 @@ print(
             "original_result": value,
             "core_identities": identities,
             "mapped_libraries": libraries,
+            "distribution_root": str(root),
+            "package_search_paths": list(tensorfs.__path__),
+            "python_file_identity": python_files,
             "source_sha": payload["source_sha"],
             "script_source_sha": payload["script_source_sha"],
             "script_sha256": digest(binaries / script),
