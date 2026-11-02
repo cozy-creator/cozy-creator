@@ -2,17 +2,14 @@
 //! below the machine's where the host delegates one, else a process-tree token. Either
 //! reaches descendants that call `setsid` or double-fork. Lifecycle containment, not a
 //! sandbox: same-UID code can move out of a delegated cgroup or scrub its token.
+#![allow(unsafe_code)]
 use super::{Stuck, TOKEN_ENV};
 use crate::process::{Birth, Exact, State, gone, in_kernel};
-use rustix::{
-    event::{PollFd, PollFlags, Timespec},
-    io::Errno,
-};
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, Write},
-    os::unix::fs::MetadataExt,
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, Instant, SystemTime},
@@ -70,7 +67,11 @@ fn writable_unified() -> bool {
     if !Path::new(ROOT).join("cgroup.controllers").is_file() {
         return false;
     }
-    rustix::fs::statvfs(ROOT).is_ok_and(|stat| !stat.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY))
+    let path = std::ffi::CString::new(ROOT).unwrap();
+    // SAFETY: statvfs is plain old data; all-zero is a valid value.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: valid path and writable statvfs.
+    unsafe { libc::statvfs(path.as_ptr(), &mut stat) == 0 && stat.f_flag & libc::ST_RDONLY == 0 }
 }
 
 impl Scope {
@@ -272,18 +273,27 @@ fn wait_empty(path: &Path, sample: Option<Duration>) -> io::Result<bool> {
         if text.lines().any(|line| line == "populated 0") {
             return Ok(true);
         }
-        let mut poll = [PollFd::new(&events, PollFlags::PRI)];
-        let timeout = sample.map(|sample| Timespec::try_from(sample).map_err(io::Error::other)).transpose()?;
-        // Kernfs wakes it when the file changes.
-        match rustix::event::poll(&mut poll, timeout.as_ref()) {
-            Ok(0) => {
+        let mut poll = libc::pollfd {
+            fd: events.as_raw_fd(),
+            events: libc::POLLPRI,
+            revents: 0,
+        };
+        let timeout = sample.map_or(-1, |sample| sample.as_millis() as i32);
+        // SAFETY: one live descriptor; kernfs wakes it when the file changes.
+        match unsafe { libc::poll(&mut poll, 1, timeout) } {
+            0 => {
                 let births: Vec<Birth> = procs(path)?.into_iter().filter_map(|pid| process_birth(pid).ok()).collect();
                 if all_stuck(&births) {
                     return Ok(false);
                 }
             }
-            Err(Errno::INTR) | Ok(_) => (),
-            Err(error) => return Err(error.into()),
+            ready if ready < 0 => {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+            _ => (),
         }
     }
 }

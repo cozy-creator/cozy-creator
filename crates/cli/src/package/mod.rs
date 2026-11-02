@@ -8,12 +8,13 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::Subcommand;
 use protocol::error::{Error, Kind};
 
-use crate::{Context, run::Placement};
-use protocol::target::Published;
+use crate::{Context, run::{Placement, target::Target}};
 
 mod author;
+mod carried;
 mod catalog;
 pub(crate) mod live;
+pub(crate) mod local;
 mod machine;
 
 #[derive(clap::Args, Debug)]
@@ -106,14 +107,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         },
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
-            Some(path) => {
-                let path = crate::ask::absolute(&path.to_string_lossy())?;
-                machine::install(ctx, path, None, placement.on()?).await
-            }
-            None => {
-                let named = PackageRef::parse(&package)?;
-                machine::install(ctx, named.package(), named.release, placement.on()?).await
-            }
+            Some(path) => machine::install_directory(ctx, &path, placement.on()?).await,
+            None => machine::install(ctx, &PackageRef::parse(&package)?, placement.on()?).await,
         },
         Command::Remove {
             packages,
@@ -142,9 +137,9 @@ impl PackageRef {
     /// package y.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]"));
-        let (package, release) = match Published::parse(text.trim()).map_err(|_| invalid())? {
-            Published { package, function: None, release, .. } => (package, release),
-            Published { owned: Some(owned), release, .. } => (owned, release),
+        let (package, release) = match Target::published(text.trim()).map_err(|_| invalid())? {
+            Target::Published { package, function: None, release, .. } => (package, release),
+            Target::Published { owned: Some(owned), release, .. } => (owned, release),
             _ => return Err(invalid()),
         };
         let (org, name) = package.split_once('/').ok_or_else(invalid)?;
@@ -168,7 +163,7 @@ impl std::fmt::Display for PackageRef {
 /// Local code `text` names (`run::target::local`), from the working directory.
 fn local(ctx: &Context, text: &str) -> Result<Option<PathBuf>, Error> {
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    Ok(protocol::target::local(text, &cwd, &ctx.user_home))
+    Ok(crate::run::target::local(text, &cwd, &ctx.user_home))
 }
 
 /// Names to remove: `[org/]name` (or `local/name`), with no release.
@@ -186,4 +181,30 @@ fn names(texts: &[String]) -> Result<Vec<String>, Error> {
             parsed => Ok(parsed.package()),
         })
         .collect()
+}
+
+/// A Hub timestamp in whole seconds: its nanoseconds are noise in a listing.
+pub(crate) fn stamp(at: &str) -> String {
+    match at.split_once('.') {
+        Some((seconds, fraction)) => {
+            let zone = fraction
+                .find(|c: char| !c.is_ascii_digit())
+                .map_or("", |at| &fraction[at..]);
+            format!("{seconds}{zone}")
+        }
+        None => at.to_owned(),
+    }
+}
+
+/// `items` newest first by TensorFS's one version ordering (`format::newest_by`); those whose
+/// version does not parse last, as given.
+pub(crate) fn newest_first<T>(mut items: Vec<T>, version: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut sorted = Vec::with_capacity(items.len());
+    loop {
+        let versions = items.iter().enumerate().map(|(i, item)| (i, version(item)));
+        let Some((newest, _)) = tensorfs::format::newest_by(versions, |(_, v)| *v) else { break };
+        sorted.push(items.remove(newest));
+    }
+    sorted.extend(items);
+    sorted
 }

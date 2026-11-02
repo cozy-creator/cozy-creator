@@ -4,18 +4,11 @@ use crate::{
     Result,
     process::{Birth, Exact},
 };
-#[cfg(target_os = "macos")]
-use rustix::net::{RecvFlags, recv};
-use rustix::{
-    event::{PollFd, PollFlags, Timespec},
-    net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg},
-};
 use std::{
     fs::File,
-    io::{self, IoSlice},
-    mem::MaybeUninit,
+    io,
     os::{
-        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+        fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::net::UnixStream,
     },
 };
@@ -23,7 +16,8 @@ use std::{
 /// The peer, always this user (another is refused).
 pub fn peer_credentials(stream: &UnixStream) -> Result<Peer> {
     let peer = peer(stream)?;
-    if peer.uid != rustix::process::geteuid().as_raw() {
+    // SAFETY: geteuid has no memory arguments.
+    if peer.uid != unsafe { libc::geteuid() } {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "peer UID differs").into());
     }
     Ok(peer)
@@ -167,26 +161,56 @@ fn pidfd_of_live(pid: i32) -> io::Result<File> {
 }
 
 /// One descriptor and a one-byte marker; the receiver refuses anything else.
-pub fn send_fd(stream: &UnixStream, fd: &impl AsFd) -> Result<()> {
-    let fds = [fd.as_fd()];
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-    let mut control = SendAncillaryBuffer::new(&mut space);
-    if !control.push(SendAncillaryMessage::ScmRights(&fds)) {
-        return Err(io::Error::other("no room for the descriptor").into());
+pub fn send_fd(stream: &UnixStream, fd: &impl AsRawFd) -> Result<()> {
+    Ok(send_rights(stream, &[fd.as_raw_fd()])?)
+}
+
+fn send_rights(stream: &UnixStream, fds: &[RawFd]) -> io::Result<()> {
+    let marker = [0u8];
+    let mut iov = libc::iovec {
+        iov_base: marker.as_ptr() as *mut libc::c_void,
+        iov_len: 1,
+    };
+    let bytes = std::mem::size_of_val(fds) as u32;
+    // SAFETY: CMSG_SPACE computes a size from a byte count.
+    let space = unsafe { libc::CMSG_SPACE(bytes) } as usize;
+    // u64 storage satisfies cmsghdr alignment.
+    let mut control = vec![0u64; space.div_ceil(8)];
+    // SAFETY: zero is a valid initial msghdr.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = space as _;
+    // SAFETY: the control buffer holds one header and `bytes` of data (CMSG_SPACE above).
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(bytes) as _;
+        std::ptr::copy_nonoverlapping(
+            fds.as_ptr(),
+            libc::CMSG_DATA(header).cast::<RawFd>(),
+            fds.len(),
+        );
     }
+    // SAFETY: a live socket and a message whose buffers outlive the call.
     // macOS has no MSG_NOSIGNAL; Rust programs ignore SIGPIPE, so a closed peer is EPIPE there too.
     #[cfg(target_os = "linux")]
-    let flags = SendFlags::NOSIGNAL;
+    let flags = libc::MSG_NOSIGNAL;
     #[cfg(target_os = "macos")]
-    let flags = SendFlags::empty();
-    if sendmsg(stream, &[IoSlice::new(&[0])], &mut control, flags).map_err(io::Error::from)? != 1 {
-        return Err(io::Error::other("descriptor marker truncated").into());
+    let flags = 0;
+    // SAFETY: a live socket and a message whose buffers outlive the call.
+    let sent = unsafe { libc::sendmsg(stream.as_raw_fd(), &message, flags) };
+    if sent < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if sent != 1 {
+        return Err(io::Error::other("descriptor marker truncated"));
     }
     Ok(())
 }
 
-/// Reads the control data itself, not through rustix: macOS reports a truncated header's whole
-/// length, past the buffer, and rustix's parser trusts it.
 pub fn recv_fd(stream: &UnixStream) -> Result<OwnedFd> {
     let mut marker = [255u8];
     // usize storage satisfies cmsghdr alignment; every iteration is bounded by
@@ -264,22 +288,41 @@ pub fn recv_fd(stream: &UnixStream) -> Result<OwnedFd> {
 /// The peer end of a lease is closed: the reader released, or its process is gone.
 #[cfg(target_os = "linux")]
 pub fn hung_up(lease: &UnixStream) -> bool {
-    let mut poll = [PollFd::new(lease, PollFlags::IN | PollFlags::RDHUP)];
-    let ready = rustix::event::poll(&mut poll, Some(&Timespec { tv_sec: 0, tv_nsec: 0 })).is_ok_and(|ready| ready > 0);
-    ready && poll[0].revents().intersects(PollFlags::HUP | PollFlags::RDHUP | PollFlags::ERR)
+    let mut poll = libc::pollfd {
+        fd: lease.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLRDHUP,
+        revents: 0,
+    };
+    // SAFETY: one live descriptor, instantaneous observation.
+    let ready = unsafe { libc::poll(&mut poll, 1, 0) } > 0;
+    ready && poll.revents & (libc::POLLHUP | libc::POLLRDHUP | libc::POLLERR) != 0
 }
 
 /// The peer end of a lease is closed: the reader released, or its process is gone. macOS has no
 /// POLLRDHUP: a readable lease whose peek reads nothing is at its end.
 #[cfg(target_os = "macos")]
 pub fn hung_up(lease: &UnixStream) -> bool {
-    let mut poll = [PollFd::new(lease, PollFlags::IN)];
-    if !rustix::event::poll(&mut poll, Some(&Timespec { tv_sec: 0, tv_nsec: 0 })).is_ok_and(|ready| ready > 0) {
+    let mut poll = libc::pollfd {
+        fd: lease.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one live descriptor, instantaneous observation.
+    if unsafe { libc::poll(&mut poll, 1, 0) } <= 0 {
         return false;
     }
-    if poll[0].revents().intersects(PollFlags::HUP | PollFlags::ERR) {
+    if poll.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
         return true;
     }
-    let mut byte = [0u8];
-    recv(lease, &mut byte, RecvFlags::PEEK | RecvFlags::DONTWAIT).is_ok_and(|(read, _)| read == 0)
+    let mut byte = 0u8;
+    // SAFETY: one writable byte, peeked without waiting.
+    let read = unsafe {
+        libc::recv(
+            lease.as_raw_fd(),
+            (&mut byte as *mut u8).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    read == 0
 }

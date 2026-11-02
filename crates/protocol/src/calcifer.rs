@@ -105,165 +105,11 @@ pub struct StagedInput {
     pub length: u64,
 }
 
-/// `POST /v1/runs` and `POST /v1/run-quotes`: a run as people ask for it, which Calcifer resolves and
-/// binds against its function's interface. Under one `Idempotency-Key` it is one run, whose integer
-/// `seed`, when the request omits one, derives from the key.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RunRequest {
-    /// `[org/]pkg/fn[@release]`, or local code: `./dir[/fn]`, `./script.py[/fn]`.
-    pub target: String,
-    /// `local` (the default), a machine's name, `any`, or `new[:sku]`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
-    /// The Tensorhub origin; empty: Calcifer's.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub hub: String,
-    /// The payload as an object; `terms` override it. A file field holds a path or an uploaded
-    /// file's `sha256:<hex>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<serde_json::Map<String, serde_json::Value>>,
-    /// The payload from a JSON or YAML file on this computer; the files it names are relative to it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_file: Option<PathBuf>,
-    /// `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
-    /// positional value, and input files.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub terms: Vec<String>,
-    /// Attached files, each into a named input, a labelled occurrence of the declared files, or
-    /// those files.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub files: Vec<FileTerm>,
-    /// `label-or-index=auto|low|medium|high`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fidelities: Vec<String>,
-    /// `[slot=]ref[,strength]`, in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub loras: Vec<String>,
-    /// Where relative paths start; absent, a relative path is refused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
-    /// At most this many GPUs; absent: every GPU its slots support.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpus: Option<u32>,
-    /// The main model's lane; absent: the Hub's pick for the machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lane: Option<String>,
-    /// `KERNEL` or `[SLOT/]COMPONENT=KERNEL`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attention_kernel: Option<String>,
-    /// Keep the function at this level instead of running it (`off` takes it out).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warm: Option<crate::machine::WarmLevel>,
-    /// Where outputs land; absent: `~/.cozy/outputs`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub out: Option<PathBuf>,
-    /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub recipes: bool,
-    /// The quote a `new` run's renter agreed to (`POST /v1/run-quotes`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agreed: Option<Agreed>,
-}
-
-/// One attached file: `name` is an input's field path (`image`, `frames.0`) or a label, absent for
-/// one of the declared files; `file` is a path on this computer (a video's may end in
-/// `#t=<start>,<end>`) or an uploaded file's `sha256:<hex>`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileTerm {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub file: String,
-}
-
-impl FileTerm {
-    /// `--file`'s grammar, `[NAME=]FILE`: an explicit path is never split on `=`.
-    pub fn parse(raw: &str) -> Self {
-        let bare = || Self { name: None, file: raw.to_owned() };
-        if crate::target::written_as_path(raw) {
-            return bare();
-        }
-        match raw.split_once('=') {
-            Some((name, file)) => Self { name: Some(name.trim().to_owned()), file: file.trim().to_owned() },
-            None => bare(),
-        }
-    }
-}
-
-/// `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct File {
-    pub digest: Digest,
-    pub length: u64,
-    pub media_type: String,
-}
-
-/// `GET /v1/targets?target=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Target {
-    /// `org/pkg`, or local code's `local/<name>`.
-    pub package: String,
-    /// The function, as the interface spells it; absent: the target names none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub function: Option<String>,
-    /// The release, or local code's source digest.
-    pub release: String,
-    pub release_from: ReleaseFrom,
-    /// What the package does, in a line.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    /// The package's interface document (`cozy.package.interface/1`).
-    pub interface: serde_json::Value,
-}
-
-/// Why a run binds and runs the release it does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReleaseFrom {
-    /// The target named it.
-    Asked,
-    /// The newest release this computer keeps of the package, refreshed from its Hub.
-    Latest,
-    /// Local code: its source as it is now.
-    Local,
-}
-
-impl fmt::Display for ReleaseFrom {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            ReleaseFrom::Asked => "asked",
-            ReleaseFrom::Latest => "the Hub's latest",
-            ReleaseFrom::Local => "local",
-        })
-    }
-}
-
 /// The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Submitted {
     pub run: Run,
     pub replay: bool,
-    /// What resolving and binding the request said, in order (dropped fields, cut clips, a machine
-    /// without a GPU), for its client to show.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<Note>,
-    /// `run` makes the target ready (local code's install): follow it, then send the same request
-    /// under the same key again for the call.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub preparing: bool,
-}
-
-/// Something a request's handling said.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Note {
-    pub level: NoteLevel,
-    pub message: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NoteLevel {
-    Info,
-    Warning,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,10 +157,6 @@ pub struct Run {
     /// Live: the machine's latest progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
-    /// A run waiting for its turn: its place in its machine's line (1 is next: only the work
-    /// running is ahead of it), or among the runs waiting for a machine to be chosen.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_position: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
     /// How its machine served the request other than as sent, once settled.
@@ -334,9 +176,6 @@ pub struct Run {
     /// With `?detail=full`: the run's settled calls, in the order they ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<Call>,
-    /// With `?detail=full`: its measurements and its calls', worked out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<crate::report::Report>,
 }
 
 /// One request field a run's executor served other than as sent (`Outcome.adjustments`).
@@ -449,16 +288,6 @@ pub struct Progress {
     /// When the machine last saw it move (Unix ms; 0: unknown): how long a run has not.
     #[serde(default)]
     pub at_ms: i64,
-    /// How far the run is, as Calcifer reads it: its own fraction, else its stage's, else its
-    /// steps', else its bytes'.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done_fraction: Option<f64>,
-    /// The stage's bytes a second over its last 10 s, once a second of them is seen.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes_per_s: Option<f64>,
-    /// The seconds its bytes still take at that rate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eta_s: Option<i64>,
 }
 
 /// One event of a run's stream.
@@ -720,10 +549,6 @@ pub struct Machine {
     /// public address; this computer's LAN address while it listens for authorized controllers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reach: Option<String>,
-    /// What an ending machine waits for before its end is carried out: its runs' outputs to land
-    /// here. None once its end is under way, or when nothing holds it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ending: Option<String>,
 }
 
 fn yes() -> bool {
@@ -966,60 +791,6 @@ pub struct MachineList {
     /// Hubs this computer holds no login for.
     #[serde(default)]
     pub signed_out: Vec<String>,
-    /// The live rentals listed, summed.
-    pub rentals: LiveRentals,
-}
-
-/// Live rentals summed: how many, what they cost an hour now, and what they accrued so far.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveRentals {
-    pub count: u32,
-    pub usd_micros_per_hour: i64,
-    /// Over the rentals whose Hub said what they cost; none when none did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accrued_usd_micros: Option<i64>,
-    /// The weakest basis among them: `charged`, `unmetered`, or `estimate` (also when a rental's
-    /// Hub said nothing, and the sum is then `accrued_floor`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accrued_basis: Option<String>,
-    /// Some rental's Hub said nothing of its cost: the sum is at least this.
-    #[serde(default)]
-    pub accrued_floor: bool,
-}
-
-impl LiveRentals {
-    /// Sums `rentals`.
-    pub fn of<'a>(rentals: impl IntoIterator<Item = &'a Rental>) -> Self {
-        let mut live = Self::default();
-        let mut known = 0;
-        for r in rentals {
-            live.count += 1;
-            live.usd_micros_per_hour += r.usd_micros_per_hour;
-            if let Some(micros) = r.spend_usd_micros {
-                known += 1;
-                *live.accrued_usd_micros.get_or_insert(0) += micros;
-                let basis = r.spend_basis.clone().unwrap_or_else(|| "estimate".into());
-                live.accrued_basis = Some(weakest(live.accrued_basis.as_deref().unwrap_or(""), &basis, "charged"));
-            }
-        }
-        if live.accrued_usd_micros.is_some() && known < live.count {
-            live.accrued_floor = true;
-            live.accrued_basis = Some("estimate".into());
-        }
-        live
-    }
-}
-
-/// The weaker of two cost bases (`settled` is the known one: `charged`, or `provider_billed`): an
-/// estimate is weaker than anything known, unmetered than charged.
-pub fn weakest(held: &str, next: &str, settled: &str) -> String {
-    let rank = |basis: &str| match basis {
-        "" => 0,
-        b if b == settled => 1,
-        "unmetered" => 2,
-        _ => 3,
-    };
-    if rank(next) > rank(held) { next } else { held }.to_owned()
 }
 
 /// `GET /v1/machines/events`: a machine as `GET /v1/machines` lists it, each time its row changes,
@@ -1165,226 +936,6 @@ pub enum MachineLog {
     Memory,
 }
 
-/// `GET /v1/machines/{name}/logs/{log}` with `Accept: text/event-stream`: each batch of whole lines
-/// as the machine appends it; `after` (also the event's `id:`) resumes the follow after it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum LogEvent {
-    #[serde(rename = "lines")]
-    Lines { after: String, text: String },
-}
-
-/// `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS
-/// and TensorD (its `cozy` binary) in one update run and one restart. Each is a release, or a file
-/// on this computer (a dev build: a wheel, or a `cozy` binary). With none named, each moves to its
-/// Hub's target.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MachineUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<Component>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tensorfs: Option<Component>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tensord: Option<Component>,
-    /// Development only: the most of each GPU's memory the machine uses, in bytes; 0 lifts it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_memory_limit: Option<u64>,
-}
-
-/// One component of a `MachineUpdate`: `{"version": "0.33.1"}` or `{"file": "/abs/path"}`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Component {
-    Version(String),
-    File(PathBuf),
-}
-
-/// The answer to `POST /v1/machines/{name}/update`: `202` with its update run, followed like any
-/// run; `200` with none when the machine runs its Hub's target already. An update run that
-/// completes without the machine running what it asked for fails `update_unapplied`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Updating {
-    pub machine: Machine,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<Run>,
-    /// What it asks for, in words: `runtime 0.33.1 (prerelease), cozy 0.16.2 (installed)`.
-    pub target: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
-}
-
-/// `GET /v1/machines/local/authorized-keys`: the controllers' public keys this computer's machine
-/// admits, and the file that holds them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthorizedKeys {
-    pub file: PathBuf,
-    pub keys: Vec<String>,
-}
-
-/// `PUT` or `DELETE /v1/machines/local/authorized-keys/{key}`: whether the file changed, and
-/// `local` as it then is: once a key is added, where other computers add it (`reach`), unless it
-/// is busy and moves there once idle.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Authorized {
-    pub key: String,
-    pub file: PathBuf,
-    pub changed: bool,
-    pub machine: Machine,
-    /// It runs as a worker image's machine, whose renter names where it is reached.
-    pub image: bool,
-}
-
-/// `GET /v1/rental-skus[?hub=]`: what is for rent now, cheapest first by its fewest GPUs, as the
-/// Hub offers it. A product the Hub cannot sell now, for whatever reason, is not listed.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct RentalSkus {
-    pub rental_skus: Vec<RentalSku>,
-}
-
-/// One product (a GPU card, or the CPU machine) with the widths buyable now.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct RentalSku {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub accelerator_model: String,
-    #[serde(default)]
-    pub base_worker_profile: String,
-    /// major.minor; empty for the CPU product.
-    #[serde(default)]
-    pub compute_capability: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_arch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_class: Option<String>,
-    #[serde(default)]
-    pub vram_gb: i64,
-    #[serde(default, deserialize_with = "null_is_empty")]
-    pub python_provisionable_minors: Vec<String>,
-    #[serde(default, deserialize_with = "null_is_empty")]
-    pub python_interpreters: Vec<RentalPythonInterpreter>,
-    /// The GPU counts buyable now, ascending.
-    #[serde(default, deserialize_with = "null_is_empty")]
-    pub widths: Vec<RentalSkuWidth>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct RentalPythonInterpreter {
-    pub version: String,
-    pub abi: String,
-}
-
-/// One GPU count of a product: what we charge for its GPUs an hour, and its disk and traffic.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RentalSkuWidth {
-    #[serde(default)]
-    pub accelerator_count: i64,
-    #[serde(default)]
-    pub price_usd_micros_per_hour: i64,
-    #[serde(default)]
-    pub storage_usd_micros_per_hour: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bandwidth_usd_micros_per_gb: Option<i64>,
-    #[serde(default)]
-    pub container_disk_gb: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vcpu_count: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_gb: Option<i64>,
-    #[serde(default)]
-    pub expected_price: RentalPriceEstimate,
-}
-
-/// What a rental is expected to cost at its prices, for the expected hours plus its download.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct RentalPriceEstimate {
-    pub hours: f64,
-    pub download_gb: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub download_mbps: Option<i64>,
-    pub download_hours: f64,
-    pub gpu_usd_micros: i64,
-    pub disk_usd_micros: i64,
-    pub download_usd_micros: i64,
-    pub total_usd_micros: i64,
-}
-
-/// A JSON `null` read as the type's empty value.
-pub fn null_is_empty<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(
-    deserializer: D,
-) -> Result<T, D::Error> {
-    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// `GET /v1/rentals[?since_ms=&hub=]`: every rental of this account at the Hub, ended ones too and
-/// rented from any computer, newest first, with what each cost and the sums per UTC day and in
-/// all. Not paged: `since_ms` is the window.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RentalHistory {
-    /// Rentals started at or after this instant; none: every one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub since_ms: Option<i64>,
-    pub rentals: Vec<RentalRow>,
-    /// Newest day first.
-    pub days: Vec<RentalSum>,
-    pub total: RentalSum,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RentalRow {
-    pub rental_id: String,
-    pub name: String,
-    pub sku: String,
-    pub gpus: u32,
-    /// The Hub's word: `ready`, `released`, `failed`, …
-    pub state: String,
-    pub started_at_ms: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ended_at_ms: Option<i64>,
-    /// From its order to its end, or to now while it lives.
-    pub ran_s: i64,
-    /// What it cost its renter, on its basis: `charged`, `unmetered` (priced, not charged) or
-    /// `estimate`.
-    pub spend_usd_micros: i64,
-    pub spend_basis: String,
-    /// What its provider billed Tensorhub, on its basis (`provider_billed` or `estimate`): the
-    /// Hub tells an operator only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_cost_usd_micros: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_cost_basis: Option<String>,
-}
-
-/// Rentals' costs summed, each on its weakest basis.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RentalSum {
-    /// A UTC day, `2026-10-30`; none for the whole total.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub day: Option<String>,
-    pub rentals: u32,
-    pub spend_usd_micros: i64,
-    pub spend_basis: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_cost_usd_micros: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_cost_basis: Option<String>,
-}
-
-impl RentalSum {
-    pub fn add(&mut self, row: &RentalRow) {
-        self.rentals += 1;
-        self.spend_usd_micros += row.spend_usd_micros;
-        self.spend_basis = weakest(&self.spend_basis, &row.spend_basis, "charged");
-        if let (Some(micros), Some(basis)) = (row.provider_cost_usd_micros, &row.provider_cost_basis) {
-            *self.provider_cost_usd_micros.get_or_insert(0) += micros;
-            let held = self.provider_cost_basis.take().unwrap_or_default();
-            self.provider_cost_basis = Some(weakest(&held, basis, "provider_billed"));
-        }
-    }
-}
-
 /// `POST /v1/down`: Calcifer stops; machines keep running what they accepted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Down {
@@ -1466,39 +1017,5 @@ impl fmt::Display for On {
             On::New(None) => f.write_str("new"),
             On::New(Some(sku)) => write!(f, "new:{sku}"),
         }
-    }
-}
-
-/// `gpus`: 1 or more. Where a run uses the CPU is its function's and its machine's to say.
-pub fn gpu_count(text: &str) -> Result<u32, String> {
-    match text.parse::<u32>() {
-        Ok(0) => Err(
-            "a function that needs no GPU runs on the CPU by itself, as does every run on a \
-             machine without one: `--on new:cpu` rents a machine with none"
-                .into(),
-        ),
-        Ok(n) => Ok(n),
-        Err(_) => Err(format!("{text:?} is not a number of GPUs")),
-    }
-}
-
-/// `attention_kernel`, in the grammar the Runtime reads (`KERNEL` or `[SLOT/]COMPONENT=KERNEL`, no
-/// whitespace); the Runtime judges the names.
-pub fn attention_pin(pin: &str) -> Result<String, String> {
-    let formed = match pin.split_once('=') {
-        None => !pin.is_empty(),
-        Some((scope, kernel)) => !scope.is_empty() && !kernel.is_empty() && !kernel.contains('='),
-    };
-    match formed && !pin.contains(char::is_whitespace) {
-        true => Ok(pin.to_owned()),
-        false => Err("use KERNEL or [SLOT/]COMPONENT=KERNEL, with no whitespace".into()),
-    }
-}
-
-/// A file fidelity's form; which file it names is checked as the run binds.
-pub fn fidelity(term: &str) -> Result<String, String> {
-    match term.rsplit_once('=') {
-        Some((asset, "auto" | "low" | "medium" | "high")) if !asset.is_empty() => Ok(term.into()),
-        _ => Err("use LABEL-OR-INDEX=auto|low|medium|high".into()),
     }
 }

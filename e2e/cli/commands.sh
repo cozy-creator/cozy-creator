@@ -165,53 +165,6 @@ echo "homebrew: $(cat "$OUT/brew-version.txt")"
 brew uninstall cozy > /dev/null 2>&1 || check "brew uninstall cozy failed"
 }
 
-# cl-716 B: a run asked unbound, which Calcifer binds: a local function's video clip cut (`#t=`), a picture and a
-# folder; a file uploaded by its digest and named by it; a digest Calcifer does not hold refused; and the release's CLI,
-# which builds its run itself, refused as outdated. Fixtures by ffmpeg (the job's, on this shell's PATH).
-bound_runs() {
-step "a run Calcifer binds: a clip cut, a picture, a folder"
-local dir=$OUT/bound lock=$HOME/.cozy/calcifer/calcifer.lock.holder addr token hex size code before
-mkdir -p "$dir/folder/sub"; echo one > "$dir/folder/a.txt"; echo two > "$dir/folder/sub/b.txt"
-ffmpeg -v error -y -f lavfi -i testsrc2=size=320x240:rate=24:duration=8 -c:v libx264 -pix_fmt yuv420p -g 24 "$dir/clip.mp4"
-ffmpeg -v error -y -f lavfi -i "color=c=teal:size=64x64" -frames:v 1 "$dir/still.png"
-size=$(stat -c %s "$dir/still.png")
-if (cd "$dir" && cell bound "$here/inspect/inspect" --file "clip=./clip.mp4#t=2,6" --file still=./still.png folder=./folder label=bound); then
-  grep -qE '"clip_seconds": *(3\.9|4\.0|4\.1)' "$OUT/bound.ndjson" && grep -qE "\"still_bytes\": *$size" "$OUT/bound.ndjson" \
-    && grep -qE '"folder_files": *\[ *"a.txt", *"sub/b.txt" *\]' "$OUT/bound.ndjson" \
-    || check "bound: not a 4 s clip, the picture and the folder's two files: $(grep -oE '"(clip_seconds|still_bytes|folder_files)": *[^,}]*' "$OUT/bound.ndjson" | head -3 | paste -sd' ')"
-fi
-cozy --json run "$here/inspect/inspect" --describe --on local > "$OUT/bound-describe.json" 2> "$OUT/bound-describe.err" \
-  && grep -q '"clip"' "$OUT/bound-describe.json" && grep -q '"folder"' "$OUT/bound-describe.json" \
-  || check "run inspect --describe: no clip or folder input: $(tail -c 300 "$OUT/bound-describe.err")"
-
-step "a file uploaded by its digest, and one Calcifer does not hold"
-addr=$(jq -r .address "$lock") token=$(jq -r .token "$lock") hex=$(sha256sum "$dir/still.png" | cut -c1-64)
-[ "$(curl -sS -o "$OUT/put.json" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" --data-binary "@$dir/still.png" "http://$addr/v1/files/sha256:$hex")" = 201 ] \
-  || check "PUT /v1/files/sha256:$hex is not 201: $(head -c 300 "$OUT/put.json")"
-[ "$(curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" "http://$addr/v1/files/sha256:$hex")" = 200 ] || check "HEAD of an uploaded file is not 200"
-if (cd "$dir" && cell bound-digest "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$hex" folder=./folder label=digest); then
-  grep -qE "\"still_bytes\": *$size" "$OUT/bound-digest.ndjson" || check "bound-digest: the run was not given the uploaded picture"
-fi
-before=$(cozy --json run ls --limit 0 | jq '.runs | length')
-(cd "$dir" && ALLOW=file_not_held cell bound-unheld "$here/inspect/inspect" --file "clip=./clip.mp4" --file "still=sha256:$(head -c 64 /dev/urandom | sha256sum | cut -c1-64)" folder=./folder) || true
-{ [ -f "$OUT/bound-unheld.refused" ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
-  || check "a digest Calcifer does not hold was not refused file_not_held before any run"
-
-step "the release's CLI against this Calcifer"
-# Only a cozy before 0.16.3 builds its run itself. A release dispatch installs the candidate straight away and keeps no
-# previous cozy, and from 0.16.3 on the previous one asks as this one does: then there is nothing to refuse.
-local previous=$HOME/.cozy/bin/.cozy-previous old=''
-[ -x "$previous" ] && old=$("$previous" --version 2>/dev/null | cut -d' ' -f2) || true
-if [ -z "$old" ] || [ "$(printf '%s\n0.16.3\n' "${old%%+*}" | sort -V | head -1)" = 0.16.3 ]; then
-  echo "skipped: no cozy here that builds its own run (previous: ${old:-none})"
-else
-  code=0; (cd "$here" && "$previous" run ./weightless/reverse text=old --on local) > "$OUT/old-cli.txt" 2>&1 || code=$?
-  cat "$OUT/old-cli.txt"
-  { [ "$code" != 0 ] && grep -q client_outdated "$OUT/old-cli.txt" && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
-    || check "the release's CLI ($old) was not refused client_outdated, or its run was recorded (exit $code)"
-fi
-}
-
 yaml_requests() {
 step "a YAML request, then inline inputs over it"
 text=yaml-$RANDOM back=''
@@ -238,7 +191,7 @@ before=$(cozy --json run ls --limit 0 | jq '.runs | length') || true
 (cd "$here" && cozy --json run ./weightless/reverse --describe) > "$OUT/describe.json" || check "run --describe failed"
 J '.fields | any(.name == "text")' "$OUT/describe.json" || check "run --describe: no text field"
 [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] || check "run --describe started a run"
-note=$OUT/inputs/note.txt; mkdir -p "$OUT/inputs"; echo "an asset" > "$note"
+note=$OUT/inputs/note.txt; echo "an asset" > "$note"
 if (cd "$here" && cell fidelity ./weightless/fidelities --file "notes=$note" --file-fidelity notes=high); then
   grep -q 'notes=high' "$OUT/fidelity.ndjson" || check "--file-fidelity notes=high: the executor saw $(grep -o '"assets":\[[^]]*\]' "$OUT/fidelity.ndjson")"
 fi
@@ -290,19 +243,19 @@ cozy --json run ls --on local > "$OUT/by-machine.json" && J '(.runs | length > 0
 cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$OUT/limit.json" || check "run ls --limit 1: not one run"
 }
 
+# After the first BiRefNet run (run.sh's first_run).
 run_play() {
 step "run play"
 # The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
-# token's expiry is --expires from now. The output: a weightless still (the project cell's renderer).
-(cd "$here" && cell play-still ./project/draw.py/draw "prompt=play $RANDOM") || true
-first=$(cat "$OUT/play-still.number")
-name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
+# token's expiry is --expires from now.
+first=$(cat "$OUT/first.number")
+name=$(jq -r '.output[0].name // empty' "$OUT/first.json") || true
 expiry() {  # the token's expiry (unix s), from the link's fragment (unpadded base64url JSON before its `.`)
   local t; t=$(sed -n 's/.*[#&]c=\([^.&]*\).*/\1/p' <<< "$1" | tr '_-' '/+')
   while (( ${#t} % 4 )); do t+==; done
   base64 -d <<< "$t" 2> /dev/null | jq -r '.e // empty' 2> /dev/null || true
 }
-if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no still to play"; else
+if [ "$first" = none ] || [ -z "$name" ]; then check "run play: no BiRefNet output to play"; else
   for expires in 30s 2h; do
     url=$(cozy --json run play "$first" --output "$name" --expires "$expires" | tee "$OUT/play-$expires.json" | jq -r '.link // empty') || true
     curl -fsS -o /dev/null "${url%%#*}" || check "run play: its player page ${url%%#*} does not answer"

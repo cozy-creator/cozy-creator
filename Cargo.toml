@@ -8,7 +8,6 @@ members = [
     "crates/calcifer",
     "crates/cli",
     "crates/cozy",
-    "crates/executor-protocol",
     "crates/hub-client",
     "crates/platform",
     "crates/protocol",
@@ -16,10 +15,13 @@ members = [
     "crates/tensorfs",
     "crates/tensorfs-py",
     "crates/varena",
+    "crates/varena-client",
+    "release-gate/suites/varena/public-api",
+    "release-gate/suites/varena/native-gpu",
 ]
 
 [workspace.package]
-version = "0.16.5"
+version = "0.16.2"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"
@@ -30,7 +32,6 @@ publish = false
 [workspace.dependencies]
 calcifer = { path = "crates/calcifer" }
 cli = { path = "crates/cli" }
-executor-protocol = { path = "crates/executor-protocol" }
 hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
 protocol = { path = "crates/protocol" }
@@ -60,22 +61,20 @@ http = "1"
 http-body-util = "0.1.5"
 hyper = { version = "1.11", default-features = false }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
-# `url`'s IDNA back end, chosen by this exact version: ASCII hostnames only (non-ASCII is refused, `xn--` works).
-# It keeps ICU4X out, 21 crates (cl-722). `=1.1.0` is full IDNA with unicode-rs, 16 fewer than ICU4X.
-idna_adapter = "=1.0.0"
 indicatif = "0.18"
 infer = { version = "0.22", default-features = false }
 jiff = { version = "0.2.38", default-features = false, features = ["std"] }
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 libc = "0.2"
 libloading = "0.9"
+nix = { version = "0.31.3", default-features = false }
 nvml-wrapper = "0.13"
+nvml-wrapper-sys = "0.10"
 percent-encoding = "2.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13", default-features = false, features = ["form", "http2", "json", "query", "rustls", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
-rustix = { version = "1.1.4", default-features = false, features = ["std"] }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 saphyr = { version = "0.2.2", default-features = false }
 self-replace = "1.5"
@@ -88,7 +87,7 @@ serde_json_canonicalizer = "0.4"
 sha2 = "0.10"
 sigstore-verify = { version = "0.15", default-features = false, features = ["aws-lc-rs"] }
 supports-hyperlinks = "3.2.0"
-tar = { version = "0.4", default-features = false }
+tar = "0.4"
 tempfile = "3"
 thiserror = "2"
 time = { version = "0.3.55", features = ["parsing"] }
@@ -105,7 +104,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 url = { version = "2.5.8", features = ["serde"] }
 webpki-roots = "1"
 windows-sys = "0.61"
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # No LTO, 16 codegen units: half the build time of fat LTO, whose binary measured the same on startup and runs
 # and 3-5% less CPU on a TensorFS download (cl-669).

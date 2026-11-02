@@ -8,7 +8,6 @@ mod convert;
 mod endpoint;
 mod file;
 mod provider;
-#[cfg(feature = "quantize")]
 mod quantize;
 mod remote;
 mod selection;
@@ -17,7 +16,6 @@ mod writer;
 pub use crate::fetch::Landed as Fetched;
 pub use checkpoint::{Checkpoint, Component, Read, ReadInto};
 pub use convert::{ConversionControl, Convert, ConvertProgress};
-#[cfg(feature = "quantize")]
 pub use quantize::{FitDetails, Normalization, NormalizationResult, NormalizeBf16Tensor, Quantization, QuantizationResult, QuantizedTensor, QuantizeFit, QuantizeTensor, quantization_implementation};
 pub use endpoint::Endpoint;
 pub use file::CheckpointFile;

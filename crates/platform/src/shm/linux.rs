@@ -1,22 +1,35 @@
 #![allow(unsafe_code)]
 use super::{FULL_SEALS, Region};
 use crate::Result;
-use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fcntl_get_seals, memfd_create};
 use std::{
+    ffi::CString,
     io,
     os::{
-        fd::{AsRawFd, BorrowedFd, OwnedFd},
+        fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
         unix::fs::MetadataExt,
     },
 };
 
 /// A new sealable memfd, close-on-exec. `name` shows in `/proc/<pid>/fd`.
 pub fn memfd_named(name: &str) -> Result<OwnedFd> {
-    Ok(memfd_create(name, MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).map_err(io::Error::from)?)
+    let name = CString::new(name).map_err(io::Error::other)?;
+    // SAFETY: valid NUL-terminated name, no borrowed output pointers.
+    let fd =
+        unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: memfd_create returned a new descriptor that is now ours.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 pub fn seals(fd: BorrowedFd<'_>) -> Result<i32> {
-    Ok(fcntl_get_seals(fd).map_err(io::Error::from)?.bits() as i32)
+    // SAFETY: live descriptor; fcntl has no pointer argument for this operation.
+    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    if result < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(result)
 }
 
 /// Adds [`FULL_SEALS`].
@@ -25,7 +38,11 @@ pub fn seal(fd: BorrowedFd<'_>) -> Result<()> {
 }
 
 pub fn seal_with(fd: BorrowedFd<'_>, seals: i32) -> Result<()> {
-    Ok(fcntl_add_seals(fd, SealFlags::from_bits_retain(seals as u32)).map_err(io::Error::from)?)
+    // SAFETY: live descriptor, scalar seal bitmask.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 /// Ok(false) when a non-waiting request conflicts with another description's lock.
@@ -96,8 +113,15 @@ fn flock(start: usize, len: usize, region: Region) -> libc::flock {
 /// A new open file description of the file behind `fd`: a dup would share `fd`'s, and with it
 /// its locks.
 pub fn reopen(fd: BorrowedFd<'_>, write: bool) -> Result<OwnedFd> {
-    let path = format!("/proc/self/fd/{}", fd.as_raw_fd());
-    Ok(std::fs::File::options().read(true).write(write).open(path)?.into())
+    let path = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL");
+    let access = if write { libc::O_RDWR } else { libc::O_RDONLY };
+    // SAFETY: plain open of a magic link to a descriptor the caller holds.
+    let own = unsafe { libc::open(path.as_ptr(), access | libc::O_CLOEXEC) };
+    if own < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: fresh descriptor from the kernel.
+    Ok(unsafe { OwnedFd::from_raw_fd(own) })
 }
 
 /// Transparent huge pages for a shared mapping where shmem THP is enabled; advice only.

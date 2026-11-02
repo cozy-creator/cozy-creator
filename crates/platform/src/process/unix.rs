@@ -1,10 +1,5 @@
 //! What Linux and macOS share: process groups, sessions, signals and readiness.
 #![allow(unsafe_code)]
-use rustix::{
-    event::{PollFd, PollFlags, Timespec},
-    io::Errno,
-    process::{Pid, Resource, Signal, getrlimit, kill_process_group, setrlimit},
-};
 use std::{
     ffi::OsString,
     fs::File,
@@ -102,8 +97,10 @@ pub(super) fn detach(program: &Path, args: &[OsString], log: Option<File>) -> io
     unsafe {
         command.pre_exec(|| {
             cloexec_from(3);
-            rustix::process::setsid()?;
-            Ok(())
+            match libc::setsid() {
+                -1 => Err(io::Error::last_os_error()),
+                _ => Ok(()),
+            }
         });
     }
     command.spawn().map(Detached)
@@ -114,53 +111,87 @@ pub(super) fn kill_group(_: &Group, leader: &Child) -> io::Result<()> {
 }
 
 pub(super) fn signal_group(group: u32) -> io::Result<()> {
-    let leader = Pid::from_raw(group as i32).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-    signaled(kill_process_group(leader, Signal::KILL), group)
+    // SAFETY: plain syscall on a scalar.
+    signaled(
+        unsafe { libc::killpg(group as libc::pid_t, libc::SIGKILL) },
+        group,
+    )
 }
 
 /// A signal's result, where a target already gone is done. macOS answers EPERM, not ESRCH, for
 /// a process (or a group led by one) that has exited and is not yet reaped.
-pub(super) fn signaled(result: rustix::io::Result<()>, pid: u32) -> io::Result<()> {
-    match result {
-        Ok(()) | Err(Errno::SRCH) => Ok(()),
-        Err(Errno::PERM) if super::sys::exited(pid) => Ok(()),
-        Err(error) => Err(error.into()),
+pub(super) fn signaled(result: libc::c_int, pid: u32) -> io::Result<()> {
+    if result >= 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(()),
+        Some(libc::EPERM) if super::sys::exited(pid) => Ok(()),
+        _ => Err(error),
     }
 }
 
 /// Whether `fd` turned readable within `period` (`None`: wait for it).
 pub(super) fn readable(fd: BorrowedFd<'_>, period: Option<Duration>) -> io::Result<bool> {
-    let timeout = period.map(|period| Timespec::try_from(period).map_err(io::Error::other)).transpose()?;
-    let mut poll = [PollFd::new(&fd, PollFlags::IN)];
+    let milliseconds = match period {
+        None => -1,
+        Some(period) if period.is_zero() => 0,
+        Some(period) => period.as_millis().clamp(1, i32::MAX as u128) as i32,
+    };
+    let mut poll = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
     loop {
-        match rustix::event::poll(&mut poll, timeout.as_ref()) {
-            Err(Errno::INTR) => continue,
-            Err(error) => return Err(error.into()),
-            Ok(0) => return Ok(false),
-            Ok(_) if !poll[0].revents().contains(PollFlags::IN) => {
-                return Err(io::Error::other("process exit is not observable"));
+        // SAFETY: one live descriptor and its pollfd.
+        let ready = unsafe { libc::poll(&mut poll, 1, milliseconds) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
             }
-            Ok(_) => return Ok(true),
+            return Err(error);
         }
+        if ready > 0 && poll.revents & libc::POLLIN == 0 {
+            return Err(io::Error::other("process exit is not observable"));
+        }
+        return Ok(ready > 0);
     }
 }
 
 pub(super) fn raise_fd_limit() {
-    let mut limit = getrlimit(Resource::Nofile);
+    // SAFETY: plain-old-data in and out.
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    // SAFETY: a writable rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return;
+    }
     // macOS refuses a soft limit above OPEN_MAX (10240) even under an unlimited hard limit.
     let ceiling = if cfg!(target_vendor = "apple") {
-        Some(limit.maximum.map_or(10240, |maximum| maximum.min(10240)))
+        limit.rlim_max.min(10240)
     } else {
-        limit.maximum
+        limit.rlim_max
     };
-    if limit.current.is_some_and(|current| ceiling.is_none_or(|ceiling| current < ceiling)) {
-        limit.current = ceiling;
-        let _ = setrlimit(Resource::Nofile, limit);
+    if limit.rlim_cur < ceiling {
+        limit.rlim_cur = ceiling;
+        // SAFETY: as above.
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
     }
 }
 
 pub(super) fn fd_limit() -> Option<u64> {
-    getrlimit(Resource::Nofile).current
+    // SAFETY: plain-old-data out-param.
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    // SAFETY: a writable rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0
+        || limit.rlim_cur == libc::RLIM_INFINITY
+    {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Some(limit.rlim_cur as u64)
 }
 
 /// [`super::keep_open`] on Unix.
@@ -267,71 +298,6 @@ fn threads() -> io::Result<usize> {
         return Err(io::Error::last_os_error());
     }
     Ok(task.pti_threadnum as usize)
-}
-
-/// What wakes a supervising parent: TERM, INT and CHLD, blocked on its thread and taken one at a
-/// time.
-pub struct SupervisorSignals(libc::sigset_t);
-
-/// What [`SupervisorSignals::wait`] took.
-pub enum Woken {
-    Stop(Signal),
-    Child,
-}
-
-/// A `pthread_sigmask` or `sigwait` answer: the error itself, not -1 and errno.
-fn answered(code: libc::c_int) -> io::Result<()> {
-    match code {
-        0 => Ok(()),
-        code => Err(io::Error::from_raw_os_error(code)),
-    }
-}
-
-impl SupervisorSignals {
-    pub fn new() -> Self {
-        // SAFETY: plain-old-data the calls fill, and valid signal numbers.
-        unsafe {
-            let mut set = std::mem::zeroed();
-            libc::sigemptyset(&mut set);
-            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGCHLD] {
-                libc::sigaddset(&mut set, signal);
-            }
-            Self(set)
-        }
-    }
-
-    /// Blocks them on this thread, so only [`Self::wait`] takes them.
-    pub fn block(&self) -> io::Result<()> {
-        // SAFETY: a set this value holds; the old mask is not asked for.
-        answered(unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &self.0, std::ptr::null_mut()) })
-    }
-
-    pub fn wait(&self) -> io::Result<Woken> {
-        let mut signal = 0;
-        // SAFETY: a set this value holds and a writable signal number.
-        answered(unsafe { libc::sigwait(&self.0, &mut signal) })?;
-        Ok(match signal {
-            libc::SIGTERM => Woken::Stop(Signal::TERM),
-            libc::SIGINT => Woken::Stop(Signal::INT),
-            _ => Woken::Child,
-        })
-    }
-}
-
-impl Default for SupervisorSignals {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// This thread blocks no signal: what a forked service starts from.
-pub fn unblock_signals() -> io::Result<()> {
-    // SAFETY: plain-old-data the call fills, then a set on this stack; the old mask is not asked for.
-    answered(unsafe {
-        let mut none = std::mem::zeroed();
-        libc::sigemptyset(&mut none);
-        libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut())
-    })
 }
 
 /// [`super::keep_sigchld`].

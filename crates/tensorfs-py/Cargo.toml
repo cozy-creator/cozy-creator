@@ -11,10 +11,13 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
-executor-protocol = { workspace = true, features = ["python"] }
+protocol = { workspace = true, features = ["python"] }
+tokio.workspace = true
+platform.workspace = true
 varena.workspace = true
 libc.workspace = true
 tensorfs.workspace = true
@@ -26,8 +29,10 @@ tracing-subscriber.workspace = true
 # Native feature isolation remains available to Rust builds. The published Python
 # distribution always enables store; managed executor authority comes from its owner.
 default = ["store"]
-store = ["tensorfs/quantize"]
+store = ["tensorfs/store"]
 extension-module = ["pyo3/extension-module"]
+kernel-fork-guard = ["varena/kernel-fork-guard"]
+strict-pid-guard = ["varena/strict-pid-guard"]
 
 [lints]
 workspace = true

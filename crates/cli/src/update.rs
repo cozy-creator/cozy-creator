@@ -125,7 +125,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         }
     };
     let machine = match crate::machine::adopt(ctx)? {
-        Adopted::MovesWhenIdle => match crate::machine::activate(ctx, &version).await {
+        Adopted::MovesWhenIdle => match crate::machine::activate(ctx).await {
             Ok(Some(run)) => Adopted::Moves { run },
             Ok(None) => Adopted::MovesWhenIdle,
             Err(e) => {
@@ -197,7 +197,7 @@ fn unpack(release: &Release, archive: File, binary: &Path) -> io::Result<tempfil
         .prefix(".cozy-update-")
         .suffix(std::env::consts::EXE_SUFFIX)
         .tempfile_in(binary.parent().unwrap_or(Path::new(".")))?;
-    release.unpack(archive, &mut file)?;
+    release.unpack_with_libraries(archive, &mut file, binary.parent().unwrap_or(Path::new(".")))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
