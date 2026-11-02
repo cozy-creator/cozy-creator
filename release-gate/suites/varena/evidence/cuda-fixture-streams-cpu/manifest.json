@@ -24,7 +24,7 @@
   },
   "checks": {
     "async_and_raw_examples": "PASS21.86s",
-    "cache_pages": "PASS0.17s final",
+    "cache_pages": "PASS0.30s final",
     "diff_check": "pass",
     "production_changes": "none",
     "public_c_rust_examples": "untouched",
