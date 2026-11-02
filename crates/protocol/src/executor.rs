@@ -141,9 +141,9 @@ pub struct Start {
     /// card of this many bytes, the executor's memory budget, to test constrained VRAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_limit: Option<u64>,
-    /// Only after cooperative-owner capability negotiation, never on an import-only parent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cooperation: Option<Cooperation>,
+    /// One owner intent per sealed GPU, in device order. Empty on an import-only parent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cooperation: Vec<Cooperation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
