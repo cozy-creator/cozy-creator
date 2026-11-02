@@ -9,7 +9,7 @@ import sys
 import time
 
 import torch
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 import tensorfs.varena.torch as vt
 from cozy_runtime._kernels import _execution
 

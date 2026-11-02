@@ -16,7 +16,8 @@ def exercise(payload, ctx):
     import torch
     from cozy_runtime.internal import cooperation
     from cozy_runtime.internal.residency import _REQUEST
-    from tensorfs import _ext, varena
+    from tensorfs import _ext
+    from tensorfs.varena import _runtime as varena
 
     from . import Report
 

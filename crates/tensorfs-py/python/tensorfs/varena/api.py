@@ -23,7 +23,10 @@ class Error(RuntimeError):
 
 
 class Exhausted(Error):
-    pass
+    # Native recovery already exhausted its admitted choices. A consumer may not
+    # replay partially executed application code to turn this into another attempt.
+    sticky = False
+    varena_no_retry = True
 
 
 class Capturing(Error):
@@ -258,8 +261,8 @@ class Gpu(_Owned):
         data = bytes(data)
         return Region(_new("region_from_host", self._handle, data, len(data)), self)
 
-    def use(self, regions: Sequence[Region], stream: int = 0) -> Use:
-        """Side-stream consumers must join stream before this Use closes."""
+    def use(self, regions: Sequence[Region], stream: int) -> Use:
+        """Name the actual consumer stream; every other consumer must join it before close."""
         ids = (_u * len(regions))(*(region._handle for region in regions))
         return Use(
             _new("use", self._handle, ids, len(ids), _uint(stream)),
@@ -268,7 +271,7 @@ class Gpu(_Owned):
             stream,
         )
 
-    def alloc(self, bytes: int, stream: int = 0) -> Allocation:
+    def alloc(self, bytes: int, stream: int) -> Allocation:
         return Allocation(
             _new("alloc", self._handle, _uint(bytes), _uint(stream)), self, stream
         )
@@ -367,7 +370,7 @@ class CacheView:
         _call("cache_info", self._handle, C.byref(value), C.sizeof(value))
         return _fields(value)
 
-    def release(self, offset: int, bytes: int, stream: int = 0) -> None:
+    def release(self, offset: int, bytes: int, stream: int) -> None:
         _call("cache_release", self._handle, _uint(offset), _uint(bytes), _uint(stream))
 
 

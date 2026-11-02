@@ -18,7 +18,8 @@ def emit(value):
 def main():
     import tensorfs
     import torch
-    from tensorfs import _ext, varena
+    from tensorfs import _ext
+    from tensorfs.varena import _runtime as varena
     from tensorfs.varena import torch as vt
 
     def retry(operation):

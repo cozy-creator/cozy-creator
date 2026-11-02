@@ -9,7 +9,7 @@ import tempfile
 import time
 
 import tensorfs
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 import tensorfs.varena.torch as vt
 import torch
 from cozy_runtime._kernels import _execution

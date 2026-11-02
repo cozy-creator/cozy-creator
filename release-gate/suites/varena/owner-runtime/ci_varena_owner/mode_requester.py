@@ -17,7 +17,7 @@ def main():
     import tensorfs
     import torch
     from tensorfs import _ext
-    from tensorfs.varena import Cooperation, CooperationDeferredError
+    from tensorfs.varena._runtime import Cooperation, CooperationDeferredError
     from tensorfs.varena import torch as vt
 
     config = json.loads(sys.argv[1])

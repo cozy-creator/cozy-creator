@@ -9,7 +9,7 @@ from pathlib import Path
 
 import tensorfs.varena.torch as vt
 import torch
-from tensorfs import varena
+from tensorfs.varena import _runtime as varena
 
 spec = importlib.util.spec_from_file_location("varena_retention_helpers", Path(__file__).with_name("probe.py"))
 assert spec is not None and spec.loader is not None

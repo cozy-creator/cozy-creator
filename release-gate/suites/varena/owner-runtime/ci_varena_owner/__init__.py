@@ -76,7 +76,7 @@ def current(payload, ctx):
 
 
 def eventually(operation):
-    from tensorfs.varena import CooperationDeferredError
+    from tensorfs.varena._runtime import CooperationDeferredError
     deadline = time.monotonic() + 15
     while True:
         try:
@@ -155,7 +155,7 @@ def steady_foreign(payload: Probe, ctx: Context) -> Report:
 
 
 def exercise(payload: Probe, ctx: Context) -> Report:
-    from tensorfs import varena
+    from tensorfs.varena import _runtime as varena
 
     torch, vt, _memory, owner, provenance = current(payload, ctx)
     native = owner._peer  # exact existing owner; metadata/config only, never donor service

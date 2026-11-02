@@ -10,7 +10,7 @@ from . import MIB, Requester, current, eventually
 
 
 def exercise(payload, ctx):
-    from tensorfs import varena
+    from tensorfs.varena import _runtime as varena
 
     cases = {'working', 'weight', 'gil', 'stopped', 'renewal', 'writer', 'cap', 'va', 'limited', 'capture', 'replay'}
     assert payload.case in cases

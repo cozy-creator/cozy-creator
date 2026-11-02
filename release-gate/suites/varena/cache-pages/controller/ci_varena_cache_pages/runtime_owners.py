@@ -10,7 +10,8 @@ import weakref
 from pathlib import Path
 
 import torch
-from tensorfs import varena
+from tensorfs import _ext
+from tensorfs.varena import _runtime as varena
 from tensorfs.varena import torch as vt
 
 from . import Report, digest, setup
@@ -94,7 +95,7 @@ def allocator_progress(payload, ctx):
     request, _, provenance = actual(payload, ctx)
     on = torch.device('cuda', ctx.device.index or 0)
     assert request.memory.cooperation is not None and request.memory.cooperation.facts()['active']
-    cache = varena.Cache(0, 256 * MIB)
+    cache = _ext._VarenaCache(0, 256 * MIB)
     cache.commit(0, cache.reserved_bytes)
     raw_cache_value(cache, 97)
     calls = []
@@ -187,7 +188,7 @@ def held_gil(payload, ctx):
                        ctypes.POINTER(ResizeResult)]
     resize.restype = ctypes.c_int
     marker = ctypes.c_int(0)
-    cache = varena.Cache(0, 16 * MIB)
+    cache = _ext._VarenaCache(0, 16 * MIB)
     cache.commit(0, cache.reserved_bytes)
     raw_cache_value(cache, 83)
     storage = torch.UntypedStorage(2 * MIB, device=on)
@@ -263,7 +264,7 @@ def capture_close(payload, ctx):
     on = torch.device('cuda', ctx.device.index or 0)
     settle()
     baseline = vt.stats(0)
-    cache = varena.Cache(0, 2 * MIB)
+    cache = _ext._VarenaCache(0, 2 * MIB)
     cache.commit(0, cache.reserved_bytes)
     raw_cache_value(cache, 109)
     calls = []
@@ -409,7 +410,7 @@ def graph_retirement(payload, ctx, *, explicit_replay=False):
         until(ctx, lambda: active_request.facts()['finished'], 'active target request did not settle')
         alias = b.state[0][::2]  # genuine live captured-output storage, outside the owner
         pool_before = vt.stats(0)['pools_bytes']
-        blocker = varena.Cache(0, 2 * MIB)
+        blocker = _ext._VarenaCache(0, 2 * MIB)
         blocker.commit(0, blocker.reserved_bytes)
         raw_cache_value(blocker, 127)
 

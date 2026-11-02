@@ -9,37 +9,47 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from typing import Any
 
 from .. import _ext
 
+# The native peer module is compiled only on Linux with 64-bit atomics.
+# Supported Linux wheels must provide it; missing names there are a broken cohort,
+# not a signal to silently adopt an older memory policy.
+if sys.platform == "linux":
+    CooperationDeferredError = _ext.CooperationDeferredError
+    CooperationStaleSampleError = _ext.CooperationStaleSampleError
+    _Peer = _ext._VarenaPeer
+    _Owner = _ext._VarenaOwner
+else:
+    class CooperationDeferredError(RuntimeError):
+        """No native cooperation operation can run on this platform."""
 
-class _Deferred(RuntimeError):
-    """Fallback type for platforms/older extensions without automatic owner support."""
+    class CooperationStaleSampleError(CooperationDeferredError):
+        pass
 
-
-CooperationDeferredError = getattr(_ext, "CooperationDeferredError", _Deferred)
-CooperationStaleSampleError = getattr(_ext, "CooperationStaleSampleError", _Deferred)
+    _Peer = _Owner = None
 
 
 class Cooperation:
     @staticmethod
     def capability() -> int:
         """CPU-only owner-protocol capability; initializes no CUDA or participant."""
-        return int(getattr(getattr(_ext, "_VarenaPeer", None), "OWNER_PROTOCOL", 0))
+        return 0 if _Peer is None else int(_Peer.OWNER_PROTOCOL)
 
     @staticmethod
     def initialize() -> None:
         """Install metadata-only fork handling before concurrent fork producers start."""
-        native = getattr(_ext, "_VarenaPeer", None)
+        native = _Peer
         if native is None:
             raise NotImplementedError("GPU cooperation requires the Linux native ledger")
         native.initialize()
 
     def __init__(self, device: int, uuid: str, directory: str | os.PathLike[str], *,
                  shared: bool = True, priority: int = 0) -> None:
-        native = getattr(_ext, "_VarenaPeer", None)
+        native = _Peer
         if native is None:
             raise NotImplementedError("GPU cooperation requires the Linux native ledger")
         self._native = native(device, uuid, os.fspath(directory), shared, priority)
@@ -103,18 +113,18 @@ class CooperationOwner:
 
     @staticmethod
     def capability() -> int:
-        return int(getattr(getattr(_ext, "_VarenaOwner", None), "OWNER_PROTOCOL", 0))
+        return 0 if _Owner is None else int(_Owner.OWNER_PROTOCOL)
 
     @staticmethod
     def pressure_capability() -> int:
         """CPU-only sampled-pressure capability; no CUDA/NVML initialization."""
-        return int(getattr(getattr(_ext, "_VarenaOwner", None), "PRESSURE_PROTOCOL", 0))
+        return 0 if _Owner is None else int(_Owner.PRESSURE_PROTOCOL)
 
     initialize = staticmethod(Cooperation.initialize)
 
     def __init__(self, device: int, uuid: str, directory: str | os.PathLike[str], *,
                  shared: bool = True, priority: int = 0) -> None:
-        native = getattr(_ext, "_VarenaOwner", None)
+        native = _Owner
         if native is None:
             raise NotImplementedError("native automatic GPU cooperation is unavailable")
         self._native = native(device, uuid, os.fspath(directory), shared, priority)

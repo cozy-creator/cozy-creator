@@ -20,7 +20,7 @@ def main():
     import tensorfs
     import torch
     from tensorfs import _ext
-    from tensorfs.varena import Cooperation, CooperationDeferredError
+    from tensorfs.varena._runtime import Cooperation, CooperationDeferredError
     from tensorfs.varena import torch as vt
 
     actual = {'tensorfs_version': version('tensorfs'), 'extension_sha256': digest(_ext.__file__),

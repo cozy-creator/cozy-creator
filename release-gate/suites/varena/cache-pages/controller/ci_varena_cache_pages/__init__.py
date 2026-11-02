@@ -200,17 +200,17 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
 
 def binding(payload, ctx):
     import torch
-    from tensorfs import varena
+    from tensorfs import _ext
     from tensorfs.varena import torch as vt
 
     _, provenance = setup(payload, ctx, cache_required=True)
     before = vt.stats(0)
     cache = None
     try:
-        seed = varena.Cache(0, 1)
+        seed = _ext._VarenaCache(0, 1)
         page = seed.granularity
         seed.close()
-        cache = varena.Cache(0, 3 * page)
+        cache = _ext._VarenaCache(0, 3 * page)
         base = cache.base
         cache.commit(0, 3 * page)
         driver = ctypes.CDLL('libcuda.so.1')

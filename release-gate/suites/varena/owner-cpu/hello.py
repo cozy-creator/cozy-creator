@@ -38,14 +38,15 @@ from cozy_runtime.internal import executor, cooperation
 threads_before_hello = native_threads()
 main = executor.main
 code = main(['--socket', sys.argv[3], '--root', sys.argv[4]])
-from tensorfs import _ext, varena
+from tensorfs import _ext
+from tensorfs.varena import _runtime as varena
 maps = Path('/proc/self/maps').read_text()
 torch = sys.modules.get('torch')
 result = {'exit_code': code, 'torch_imported': torch is not None,
           'cuda_initialized': bool(torch is not None and torch.cuda.is_initialized()),
           'driver_loaded': 'libcuda.so' in maps or 'libnvidia-ml.so' in maps,
           'cooperation_capability': int(cooperation.capable()),
-          'native_service_protocol': getattr(getattr(varena, 'CooperationOwner', None), 'capability', lambda: 0)(),
+          'native_service_protocol': varena.CooperationOwner.capability(),
           'native_threads_before_import': threads_before_import,
           'native_threads_before_hello': threads_before_hello,
           'native_threads_after_hello': native_threads(),
