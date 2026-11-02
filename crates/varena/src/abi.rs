@@ -5,7 +5,7 @@ mod retirement;
 pub(crate) mod source;
 mod host_source;
 mod tensor_export;
-pub use tensor_export::{TensorExport, export_use};
+pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
 pub use source::{Job as SourceJob, Provider as SourceProvider};
 
 use crate::{Arena, Error, Pin, Region, cache_owner, working};
