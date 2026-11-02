@@ -30,6 +30,7 @@ toml.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 url.workspace = true
+idna_adapter.workspace = true
 # The executor wire's Python classes (`python`): tensorfs-py exposes these structs themselves.
 pyo3 = { version = "0.29.2", optional = true }
 

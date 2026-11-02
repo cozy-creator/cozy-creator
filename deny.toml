@@ -1,0 +1,16 @@
+# `cargo deny check advisories` over what we ship (xs-067, cl-722): scripts/memory-safety.sh.
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+
+[advisories]
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste: a proc macro under faer's gemm, in the wheel's SVDQ fit only" },
+]

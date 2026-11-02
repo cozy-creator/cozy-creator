@@ -44,6 +44,7 @@ impl ConversionControl {
         (self.read_bytes.load(Ordering::Acquire), self.written_tensors.load(Ordering::Acquire), self.written_bytes.load(Ordering::Acquire))
     }
 
+    #[cfg(feature = "quantize")]
     pub(crate) async fn cancelled(&self) {
         let notified = self.notify.notified();
         tokio::pin!(notified);

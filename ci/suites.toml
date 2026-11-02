@@ -36,6 +36,8 @@ rules = [
   # Installers and release archives: the cli suite installs them on every OS at release.
   { paths = [".github/workflows/cozy-publish.yaml", ".github/workflows/cozy-attestations.yaml", ".github/workflows/cozy-promote.yaml", "dist-workspace.toml", "scripts/patch-installers.sh"], select = ["cli", "os:macos", "os:windows"] },
   { paths = [".github/**"], select = [] },
+  # build's memory-safety step alone reads these.
+  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
 ]
 
 # TEMPORARY (lead, 11-02, until cozy-creator #2444 lands the macOS/Windows build reuse and restores the rule below):
@@ -71,6 +73,8 @@ rules = [
   { paths = ["scripts/build-benchmark-site.py"], select = [] },
   { paths = [".github/workflows/e2e.yaml"], select = ["cli", "imports", "build:runtime"] },
   { paths = [".github/**"], select = [] },
+  # build's memory-safety step alone reads these.
+  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
   # Device detection and OS-specific code: every suite, and the cli suite on macOS and Windows.
   { paths = ["src/cozy_runtime/internal/accel.py", "**/*mps*", "**/*windows*", "**/*darwin*", "**/*macos*"], select = ["everything", "os:macos", "os:windows", "build:runtime"] },
   # `cozy-runtime describe` and `cozy new`: the author CLI.
@@ -85,6 +89,8 @@ rules = [
   { paths = ["pyproject.toml", "Taskfile.yaml"], select = [] },
   { paths = [".github/workflows/e2e.yaml"], select = ["cli", "imports", "pkg:birefnet", "build:package"] },
   { paths = [".github/**"], select = [] },
+  # build's memory-safety step alone reads these.
+  { paths = ["deny.toml", "unsafe-boundaries.txt", "scripts/memory-safety.sh"], select = [] },
   { paths = ["scripts/h3*"], select = ["gpu", "pkg:minimax-h3"] },
 ]
 

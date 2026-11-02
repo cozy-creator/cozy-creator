@@ -43,8 +43,12 @@ mod session;
 pub use session::{
     bearer, Checkpoint, CheckpointFile, Client, Component, ComponentWriter, Config, Convert,
     ConversionControl, ConvertProgress, Download, Endpoint, Fetched, Format, HeaderMap, Open, Progress,
-    FitDetails, Normalization, NormalizationResult, NormalizeBf16Tensor, Quantization, QuantizationResult, QuantizedTensor, QuantizeFit, QuantizeTensor, Read, quantization_implementation,
-    ReadInto, Ref, Request, Selection, TokenProvider, Writer, WriterOptions,
+    Read, ReadInto, Ref, Request, Selection, TokenProvider, Writer, WriterOptions,
+};
+#[cfg(feature = "quantize")]
+pub use session::{
+    FitDetails, Normalization, NormalizationResult, NormalizeBf16Tensor, Quantization, QuantizationResult,
+    QuantizedTensor, QuantizeFit, QuantizeTensor, quantization_implementation,
 };
 
 /// This TensorFS's release version.
