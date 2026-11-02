@@ -138,13 +138,17 @@ VR_API vr_status vr_v1_cache_release(vr_handle, uint64_t offset, uint64_t bytes,
 VR_API vr_status vr_v1_cache_close(vr_handle);
 
 /* Plan copies descriptors and retains Regions AND Sources. Current core supports
- * one arena on a GPU and one active phase. Repeat/prefetch policy is not in ABI 1.
+ * same-GPU Regions across arenas and one active phase. Repeat/prefetch policy is not in ABI 1.
+ * activate/deactivate expose region intent only: no fill, Pin, execution fingerprint
+ * or successful H observation. Nested clients restore their prior intent explicitly.
  * enter uses an execution key including shape, dtype and kernel identity. Leave with
- * completed=1 only after successful submitted work; aborted passes never train it.
+ * completed=1 only after checked successful completion; aborted passes never train it.
  * close aborts an open phase. This eager API does not manage CUDA graph lifetimes.
  */
 typedef struct { const char *name; const vr_handle *regions; size_t count; } vr_phase_v1;
 VR_API vr_status vr_v1_plan_new(vr_handle gpu, const vr_phase_v1 *, size_t n, vr_handle *out);
+VR_API vr_status vr_v1_plan_activate(vr_handle plan, const char *name);
+VR_API vr_status vr_v1_plan_deactivate(vr_handle plan);
 VR_API vr_status vr_v1_phase_enter(vr_handle plan, const char *name, const char *execution_key);
 VR_API vr_status vr_v1_phase_leave(vr_handle plan, int32_t completed);
 VR_API vr_status vr_v1_plan_close(vr_handle);

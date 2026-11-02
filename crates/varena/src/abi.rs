@@ -911,6 +911,34 @@ pub unsafe extern "C" fn vr_v1_plan_new(
     })
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn vr_v1_plan_activate(id: u64, name: *const c_char) -> i32 {
+    boundary(|| {
+        let p = plan(id)?;
+        let phase = lock(&p.phase)?;
+        if phase.is_some() {
+            return Err(invalid(
+                "intent cannot replace an active execution observation",
+            ));
+        }
+        p.native.activate(&unsafe { text(name)? })?;
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn vr_v1_plan_deactivate(id: u64) -> i32 {
+    boundary(|| {
+        let p = plan(id)?;
+        let phase = lock(&p.phase)?;
+        if phase.is_some() {
+            return Err(invalid(
+                "intent cannot replace an active execution observation",
+            ));
+        }
+        p.native.deactivate()?;
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vr_v1_phase_enter(
     id: u64,
     name: *const c_char,

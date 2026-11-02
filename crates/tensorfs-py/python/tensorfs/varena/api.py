@@ -164,6 +164,8 @@ for _name, _args in {
     "cache_release": [_u, _u, _u, _u],
     "cache_close": [_u],
     "plan_new": [_u, C.POINTER(_Phase), C.c_size_t, _h],
+    "plan_activate": [_u, C.c_char_p],
+    "plan_deactivate": [_u],
     "phase_enter": [_u, C.c_char_p, C.c_char_p],
     "phase_leave": [_u, C.c_int32],
     "plan_close": [_u],
@@ -469,6 +471,14 @@ class Plan(_Owned):
     def __init__(self, handle: int, gpu: Gpu) -> None:
         super().__init__(handle)
         self.gpu = gpu
+
+    def activate(self, name: str) -> None:
+        """Declare Region intent without a compute fingerprint or H observation."""
+        _call("plan_activate", self._handle, _text(name))
+
+    def deactivate(self) -> None:
+        """Retire active intent; no execution completion is inferred."""
+        _call("plan_deactivate", self._handle)
 
     @contextmanager
     def phase(self, name: str, execution_key: str) -> Iterator[None]:

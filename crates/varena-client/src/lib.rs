@@ -418,6 +418,16 @@ pub struct Plan {
     _gpu: Gpu,
 }
 impl Plan {
+    /// Declare copied Region intent, without publishing an execution sample.
+    pub fn activate(&mut self, name: &str) -> Result<()> {
+        let name = string(name)?;
+        check(unsafe { ffi::vr_v1_plan_activate(self.handle, name.as_ptr()) })
+    }
+
+    pub fn deactivate(&mut self) -> Result<()> {
+        check(unsafe { ffi::vr_v1_plan_deactivate(self.handle) })
+    }
+
     pub fn phase(&mut self, name: &str, execution_key: &str) -> Result<Pass<'_>> {
         let name = string(name)?;
         let key = string(execution_key)?;
@@ -555,6 +565,8 @@ mod ffi {
         pub fn vr_v1_cache_release(cache: u64, offset: u64, bytes: u64, stream: u64) -> i32;
         pub fn vr_v1_cache_close(cache: u64) -> i32;
         pub fn vr_v1_plan_new(gpu: u64, phases: *const Phase, n: usize, out: *mut u64) -> i32;
+        pub fn vr_v1_plan_activate(plan: u64, name: *const c_char) -> i32;
+        pub fn vr_v1_plan_deactivate(plan: u64) -> i32;
         pub fn vr_v1_phase_enter(plan: u64, name: *const c_char, key: *const c_char) -> i32;
         pub fn vr_v1_phase_leave(plan: u64, completed: i32) -> i32;
         pub fn vr_v1_stats(gpu: u64, out: *mut Stats, size: usize) -> i32;

@@ -42,6 +42,10 @@ VAE upcast/downcast shape without disabling `force_upcast`. Conversion prepares 
 new versions before rebinding and retains the previous versions on failure. Module
 device placement is fixed after adoption; arbitrary `_apply`, memory-format changes
 and external Source mappings (`source` other than `None`) need explicit adapters.
+As in stock Torch, the four convenience casts convert floating weights/buffers only;
+complex values retain their dtype and imaginary parts. Explicit `.to(dtype=...)`
+converts both floating and complex values. Ordinary writable `out=` destinations
+remain mutable working tensors; managed weights may only be read.
 
 Mutable buffers stay ordinary working tensors. Repeated slots for one buffer remain
 tied; distinct mutable buffer views sharing storage are refused. Buffer state is not
@@ -73,14 +77,33 @@ ordering and consumer tracking for that read.
 
 Unsupported mutation/training/custom operators raise `OffloadError`; public Source
 and native allocation errors propagate unchanged. There is no application OOM retry,
-byte budget, eviction policy or Python prefetch policy. Module boundaries are exposed
-in `owner.facts`; automatic Plan scheduling and successful H training are not supplied
-by this adapter. Native admission and reclamation remain authoritative.
+byte budget, eviction policy or Python prefetch policy. Native admission and
+reclamation remain authoritative.
+
+Inventoried boundaries are registered as native Region sets. Each declared module
+forward activates its native intent; nested forwards restore the enclosing boundary,
+and normal/exceptional exit deactivates the outermost intent. Direct `.forward()` calls
+are covered too. Reused modules execute under their first canonical boundary name;
+all alias paths remain declared. Dtype changes rebuild the declarations using the new
+immutable versions before the next entry. `owner.intent_facts()` reports declarations,
+entry counts, pending refresh and active intent without registering or activating
+anything. Declarations are first registered at forward entry; CPU mode reports
+`native=False`.
+
+The additive C ABI `vr_v1_plan_activate(plan, name)` / `vr_v1_plan_deactivate(plan)`
+delegates to existing native Plan methods. Public Python and Rust Plans expose
+`activate`/`deactivate`. These calls perform no fill/Pin or execution observation, and
+refuse interference with an open execution observation on that Plan. No compute fingerprint or
+successful H sample is fabricated. Program-order prediction and automatic execution
+scheduling remain unfinished.
 
 `owner.close()` disables module entry and conversion; adoption is permanent and does
 not restore the CPU model. Escaped managed aliases still own their Source/device and
 remain readable. Native Region/service destructors use the public deferred retirement
 path; the adapter does not force reference counts or wait for context-wide completion.
+Conversion and close must occur outside active declared forwards. A failed intent
+cleanup retains its exact Plan/Region/Source owners and refuses new module entry;
+explicit close can retry retirement.
 
 ## Supported boundary and runnable clients
 
@@ -100,6 +123,9 @@ Clients live in `release-gate/suites/varena/torch-offload`:
 
 ```sh
 python adapter_cpu.py                    # installed package, Torch CPU + Diffusers
+python review_cpu.py                     # stock out=/complex conversion regressions
+python intent.py                         # actual CPU declaration/nesting/failure flow
+python intent.py --device 0              # coordinator GPU: native phase view observation
 python adapter_gpu.py --device 0         # coordinator GPU, matching native Torch shim
 python sdxl_gpu.py /existing/local/sdxl   # coordinator GPU, no model downloads
 ```
