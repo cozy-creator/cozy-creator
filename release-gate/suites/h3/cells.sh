@@ -100,32 +100,22 @@ span_seams() {
   r=$([ -n "$b" ] && "${FR[@]}" seams "$(video_of "$2")" --at "$b" 2>&1 | tail -1)
   expect "$1" "$(jq -r 'if (.boundaries | length) >= 2 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "boundaries ${b:-unread}: $r"
 }
-# Continued-piece text (se-089, #787): generate must write 0.2.8's piece prompts byte for byte, compared by the sha256
-# each piece's `h3 piece prompt` line logs against 0.2.8's gate runs (seed-independent). The digests were computed offline
-# by each tree's own function up to its piece calls: 0.2.8's reproduces the three runs, and 0.3.0's (xs-139) matches them.
-same_text() {  # same_text <check> <cell> <run it must equal> <its piece digests>
-  [ -f "$2.number" ] || return 0
-  local got
-  got=$("$CLI" run show "$(cat "$2.number")" --once 2>/dev/null | grep -oE 'h3 piece prompt chars=[0-9]+ digest=[0-9a-f]+' \
-    | sed 's/.*digest=//' | paste -sd' ')
-  expect "$1" "$([ "$got" = "$4" ] && echo PASS || echo FAIL)" "pieces ${got:-none}; run $3: $4"
-}
-# Past one piece (se-086): 30 s in three pieces (15/9/6 s), each reading its own window of the clip, 1:1 with the shot,
+# Past one piece (se-086): 30 s in three pieces (blocks at 0/8/19), each reading its own window of the clip, 1:1 with the shot,
 # its carried head included. A plate as long as the shot is followed frame by frame across both edges (a piece reading
 # the clip from its start again scores about 0.5); reference footage's windows are the ones its pieces' spans give.
-B30='[{"at": 0, "prompt": "The pattern runs."}, {"at": 8, "prompt": "The sweep keeps turning."}, {"at": 19, "prompt": "The timecode keeps counting."}]'
+T30=$'At 00:08.000, the sweep keeps turning.\nAt 00:19.000, the timecode keeps counting.'
 PATTERN_REF="{\"name\": \"Pattern\", \"kind\": \"environment\", \"image\": \"$OUT/guide-5s.png\"}"
 if [[ $ONLY == *",guide-30s,"* ]]; then
   pattern guide-30s.mp4 1344x768 24 30
-  cell guide-30s "$SHOT" prompt="$GUIDE_PROMPT" duration_s:=30 beats:="$B30" seed:=$((R + 96)) references:="[$PATTERN_REF]" \
+  cell guide-30s "$SHOT" prompt="$GUIDE_PROMPT$T30" duration_s:=30 seed:=$((R + 96)) references:="[$PATTERN_REF]" \
     plate:="{\"video\": \"$OUT/guide-30s.mp4\"}"
   judge guide-30s guide-30s '.within_1 >= 0.8' guide "$OUT/guide-30s.mp4"
   span_seams guide-30s-seams guide-30s
 fi
 if [[ $ONLY == *",footage-30s,"* ]]; then
   pattern footage-30s.mp4 1280x720 30 30
-  cell footage-30s "$SHOT" duration_s:=30 beats:="$B30" seed:=$((R + 97)) \
-    prompt="<Sweep> gives the motion and timing: a synthetic broadcast test pattern, colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears." \
+  cell footage-30s "$SHOT" duration_s:=30 seed:=$((R + 97)) \
+    prompt="[Shot 1] <Sweep> gives the motion and timing: a synthetic broadcast test pattern, colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."$'\n'"$T30" \
     references:="[$PATTERN_REF, {\"name\": \"Sweep\", \"kind\": \"video\", \"video\": \"$OUT/footage-30s.mp4\"}]"
   if [ -f footage-30s.number ]; then
     s=$("$CLI" run show "$(cat footage-30s.number)" --once 2>/dev/null)
@@ -135,8 +125,6 @@ if [[ $ONLY == *",footage-30s,"* ]]; then
     expect footage-30s-windows "$([ -n "$b" ] && [ "$w" = "$want" ] && echo PASS || echo FAIL)" "clip_windows ${w:-unread}, want $want"
   fi
   span_seams footage-30s-seams footage-30s
-  same_text footage-30s-text footage-30s 25471 \
-    "294da20429a29e84d7faf17e18aeb58d30fbcab632cc37756e4040c3ec3cce9f bf6fec18e39d992c497ac953c82732f580b0020a88a9d33e2b24bb76e1261d0a 7e8123fae5b3de6743b439a89ef02d766777d97190fdb61ee916547973088cc2"
 fi
 # Keyframes: a shot from the pattern's first frame to its last (FL2VA), each end on its keyframe, with no cut onto it.
 nice -n 19 ffmpeg -v error -y -sseof -0.1 -i guide-5s.mp4 -frames:v 1 guide-5s-last.png
@@ -147,19 +135,19 @@ judge keyframes-last keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/gui
 
 # A fine-tune and a LoRA that acts on text-only shots, through generate (`model.base_model` and `--lora` serve every piece), each against a same-seed
 # control on the official base: coherent (not grey: the old converter bug; not falling apart) and visibly different.
-# The 20 s pair is two pieces (past 15 s a shot needs beats): the LoRA must reach both halves, its record must name it on every piece, and no seam.
+# The 20 s pair is two pieces (past 15 s a shot needs timestamps): the LoRA must reach both halves, its record must name it on every piece, and no seam.
 VP="$CHAR $MOTION at golden hour, a slow orbit, ambient sound" LORA=jojocodex/minimax-h3-spatial-physics
 SAVED=$ONLY; [[ $ONLY == *",h3-checkpoint,"* || $ONLY == *",h3-lora,"* ]] && ONLY="$ONLY,h3-base,"
 [[ $ONLY == *",h3-lora-20s,"* ]] && ONLY="$ONLY,h3-base-20s,"
 cell h3-base "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5
-cell h3-base-20s "$SHOT" prompt="$VP" seed:=$((R + 81)) duration_s:=20 beats:="[{\"at\": 0, \"prompt\": \"They walk toward the camera.\"}, {\"at\": 10, \"prompt\": \"They turn and look back over one shoulder.\"}]"
+cell h3-base-20s "$SHOT" prompt="[Shot 1] $VP"$'\nThey walk toward the camera.\nAt 00:10.000, they turn and look back over one shoulder.' seed:=$((R + 81)) duration_s:=20
 ONLY=$SAVED
 cell h3-checkpoint "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 model.base_model=warmbloodaban/minimax-h3-singularity@0.1.1
 judge h3-checkpoint-frames h3-checkpoint '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' \
   variant "$(video_of h3-base)"
 cell h3-lora "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 --lora "$LORA,0.8"
 judge h3-lora-frames h3-lora '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' variant "$(video_of h3-base)"
-cell h3-lora-20s "$SHOT" prompt="$VP" seed:=$((R + 81)) duration_s:=20 beats:="[{\"at\": 0, \"prompt\": \"They walk toward the camera.\"}, {\"at\": 10, \"prompt\": \"They turn and look back over one shoulder.\"}]" --lora "$LORA,0.8"
+cell h3-lora-20s "$SHOT" prompt="[Shot 1] $VP"$'\nThey walk toward the camera.\nAt 00:10.000, they turn and look back over one shoulder.' seed:=$((R + 81)) duration_s:=20 --lora "$LORA,0.8"
 judge h3-lora-20s-frames h3-lora-20s '.contrast >= 0.5 * .control_contrast and .ssim_first < 0.9 and .ssim_second < 0.9' \
   variant "$(video_of h3-base-20s)"
 # The seam is judged at the piece boundary (its record's `boundaries_s`), as h3-shot-40s judges its own: a camera move at
@@ -179,20 +167,19 @@ named() {
 named h3-lora-named h3-lora 1
 named h3-lora-20s-named h3-lora-20s 2
 
-# A shot that moves on from its opening (se-087): one character picture, the opening a place and an activity the beats
-# leave, three pieces. A later piece that restates the opening is pulled back to it with a cut at its edge (0.2.4's
+# A shot that moves on from its opening (se-087): one character picture, the opening a place and an activity its later
+# blocks leave, three pieces. A later piece that restates the opening is pulled back to it with a cut at its edge (0.2.4's
 # h3-base-20s/lora-20s, 24980/24981: back in the food cart the otter had walked away from). Its frames are also looked
 # at for a cut and for people the shot never had (se-089). One seed is one sample: the same request, seed and Runtime
 # render a different take on another machine (se-089: 25229 and 25344 differ from piece 1), so a failure holds the
 # release for a look at more seeds rather than convicting a change on its own.
-BMOVE='[{"at": 0, "prompt": "<Rider> flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "<Rider> hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "<Rider> reaches the end of the pier and looks out at the boats."}]'
 cell h3-shot-moves-on "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
-  prompt="<Rider> cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" duration_s:=30 beats:="$BMOVE" seed:=$((R + 96))
+  prompt=$'[Shot 1] <Rider> flips noodles in a wok at a busy harbour food stall at dusk, steam and lanterns, ambient sound.\nAt 00:09.000, <Rider> hands the bowl over, steps out of the stall and walks along the pier.\nAt 00:19.000, <Rider> reaches the end of the pier and looks out at the boats.' \
+  duration_s:=30 seed:=$((R + 96))
 span_seams h3-shot-moves-on-seams h3-shot-moves-on
-# The same shot with the cook in prose only and no picture: #787 gives it #781's neutral continuation (0.2.8 gate 2).
-BTEXT='[{"at": 0, "prompt": "The cook flips noodles in a wok at a harbour food stall."}, {"at": 9, "prompt": "The cook hands the bowl over, steps out of the stall and walks along the pier."}, {"at": 19, "prompt": "The cook reaches the end of the pier and looks out at the boats."}]'
-cell h3-moves-on-text "$SHOT" prompt="A young cook in a red jacket cooks at a busy harbour food stall at dusk, steam and lanterns, ambient sound" \
-  duration_s:=30 beats:="$BTEXT" seed:=$((R + 130))
+# The same shot with the cook in prose only and no picture (0.2.8 gate 2).
+cell h3-moves-on-text "$SHOT" duration_s:=30 seed:=$((R + 130)) \
+  prompt=$'[Shot 1] A young cook in a red jacket flips noodles in a wok at a busy harbour food stall at dusk, steam and lanterns, ambient sound.\nAt 00:09.000, the cook hands the bowl over, steps out of the stall and walks along the pier.\nAt 00:19.000, the cook reaches the end of the pier and looks out at the boats.'
 span_seams h3-moves-on-text-seams h3-moves-on-text
 # Both are also judged by eye for a cut: one frame a second, 10 to a row.
 for c in h3-shot-moves-on h3-moves-on-text; do
@@ -200,21 +187,16 @@ for c in h3-shot-moves-on h3-moves-on-text; do
   nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=1,scale=224:-2,tile=10x3" -frames:v 1 "$c-sheet.png" && log "$c: judge by eye for a cut: $PWD/$c-sheet.png"
 done
 
-same_text h3-shot-moves-on-text h3-shot-moves-on 25472 \
-  "f36788038ca0754f381b93faf2f69366832820109acb68e8e425a7d83ee0739f 53870fb783957f792da3bf1d4270bc450b8df157f33b9178dc0123c8cbd4e3b6 5115e226a1e731785094cca8e54961bca33cec81d879cbaaad19b86b5f15ab5e"
-same_text h3-moves-on-text-text h3-moves-on-text 25500 \
-  "329dba4600de1b74dbb4d63eb683dfab21ff02b9f48e3c9b1b0f81c12d70fa78 2b8e25fbb70f3e23c47671a12d75abebc5c98651b444678cc4e7d015c79ea2f5 35918e8dd2207b0aaed8ca1f27b0579e3714c9bcf041fd3a271658530fd6d383"
 
-# A prompt in MiniMax's own form is used as written, each cut where it says (minimax-h3 `piece_texts`; it used to become
-# `[Shot 1] [Shot 1] ...` and be told "One continuous shot"). A text-only shot that marks its own cut. Then 20 s with all
-# six sections and cuts in two pieces: the later piece opens on the carried frames with its shot renumbered and timed on
-# its own clock, and drops the summary. Both are also judged by eye.
+# A prompt goes as written, each cut where it says (minimax-h3 `piece_texts`). A text-only shot that marks its own cut. Then
+# 20 s with all six sections and cuts at 5 and 17 s: whole blocks, so three pieces, each later one opening on its cut, its
+# `[Shot N]` renumbered, the summary its task tag alone. Both are also judged by eye.
 own_form() {  # own_form <check> <cell> <what its first piece's text opens with> <cut seconds>...
   [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || return 0
   local check=$1 name=$2 opens=$3 s first v t at r; shift 3
   s=$("$CLI" run show "$(cat "$name.number")" --once 2>/dev/null | grep 'h3 piece prompt')
   first=$(head -1 <<< "$s")
-  expect "$check-text" "$(grep -qF "head=\"$opens" <<< "$first" && ! grep -qE 'One continuous shot|\[Shot 1\] \[Shot 1\]' <<< "$s" && echo PASS || echo FAIL)" "$(cut -c1-260 <<< "$first")"
+  expect "$check-text" "$(grep -qF "head=\"$opens" <<< "$first" && ! grep -qE 'One continuous shot|The same unbroken take|\[Shot 1\] \[Shot 1\]' <<< "$s" && echo PASS || echo FAIL)" "$(cut -c1-260 <<< "$first")"
   v=$(video_of "$name")
   for t in "$@"; do  # a hard change within half a second of the time the text cuts
     at=$(awk -v t="$t" 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), t + i / 8 }')  # seams reads 3 frames per time
@@ -230,6 +212,16 @@ OWN=$'subject_definitions:\n<Coast> is the coastline in <Picture 1>.\n\nsummary:
 cell h3-own-sections "$SHOT" duration_s:=20 seed:=$((R + 141)) prompt="$OWN" \
   references:="[{\"name\": \"Coast\", \"kind\": \"environment\", \"image\": \"$REF\"}]"
 own_form h3-own-sections h3-own-sections "subject_definitions:" 5 17
+
+# Timestamps inside one take (se-096): plain `At` lines at a line's start, no second marker, one segment. It must not cut, and
+# each action is judged by eye against its time: asked 3/5/10 s, 4.5/7/12 s in 26238.
+cell h3-times "$SHOT" duration_s:=13 seed:=$((R + 142)) \
+  prompt=$'[Shot 1] A juggler in a blue coat stands in an empty town square at noon, tossing three red balls in the air, filmed in one continuous shot by a static camera at full body.\nAt 00:03.000, she catches all three balls and holds them still at her chest.\nAt 00:05.000, she spins once on the spot with her arms out.\nAt 00:10.000, she bows deeply to the camera.'
+if [ -f h3-times.number ] && [ "$(run_get "$OUT" h3-times .status)" = completed ]; then
+  v=$(video_of h3-times); r=$("${FR[@]}" seams "$v" --at 3,5,10 2>&1 | tail -1)
+  expect h3-times-no-cut "$(jq -r 'if .flicker == 0 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "$r"
+  nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=4,scale=136:-2,tile=14x4" -frames:v 1 h3-times-sheet.png && log "h3-times: judge by eye: $PWD/h3-times-sheet.png"
+fi
 
 # A reference shot, then a text-only render on the next call: the second must get the GPU, never waiting behind the
 # first's prefetch (TensorD 0.14.6: lily run 22344 then 22363 waited until cancelled; fixed by cozy 0.14.8, #2316): a
@@ -268,12 +260,12 @@ if [ -f h3-switch-text-1.number ]; then
   expect h3-switch "$(grep -q '^0 not completed, [0-9]* host_short-ended transitions, 0 placed' <<< "$r" && echo PASS || echo FAIL)" "$r"
 fi
 
-# The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (beats at 0/13/27), one character picture, Turbo. Its timing
+# The long shot projects depend on (xs-136; it replaces the RC's h3-shot, folding in its length and A/V checks): 40 s in three pieces (blocks at 0/13/27), one character picture, Turbo. Its timing
 # is recorded: per piece, s/step, the whole-shot decode, render seconds per output second (baseline run 22816, 0.2.1 on
 # Runtime 0.36.7: 1406.6 s, 35.2 s per output second). Its seams are judged by span_seams.
-B40='[{"at": 0, "prompt": "<Rider> rolls out of a garage onto a wet street at dawn."}, {"at": 13, "prompt": "<Rider> weaves through a quiet market as stalls open."}, {"at": 27, "prompt": "<Rider> stops on a bridge and looks out over the river."}]'
 cell h3-shot-40s "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
-  prompt="<Rider> rides a bicycle through an old town, one continuous tracking shot, ambient sound" duration_s:=40 beats:="$B40" seed:=$((R + 95))
+  prompt=$'[Shot 1] <Rider> rolls out of a garage onto a wet street at dawn, riding a bicycle through an old town, one continuous tracking shot, ambient sound.\nAt 00:13.000, <Rider> weaves through a quiet market as stalls open.\nAt 00:27.000, <Rider> stops on a bridge and looks out over the river.' \
+  duration_s:=40 seed:=$((R + 95))
 if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then
   av h3-shot-40s 768
   expect h3-shot-40s-length "$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$(video_of h3-shot-40s)" \
@@ -288,8 +280,8 @@ fi
 # Regenerate from a shot's latents (#762): a shot delivers its latents beside its video, and an upscale given both, with
 # no prompt, reads the shot's own text back at strength 0.7 and never encodes the video (no encode_video stage).
 SAVED=$ONLY; [[ $ONLY == *",h3-continue,"* ]] && ONLY="$ONLY,latents-shot,"
-cell latents-shot "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand." \
-  style="soft watercolor, muted greens" beats:='[{"at": 2, "prompt": "He reaches the lamp room and opens the shutters to the sea."}]' \
+cell latents-shot "$SHOT" prompt=$'[Shot 1] A lighthouse keeper in a yellow oilskin climbs the spiral stair of a stone lighthouse, lantern in hand.\nAt 00:02.000, he reaches the lamp room and opens the shutters to the sea.' \
+  style="soft watercolor, muted greens" \
   duration_s:=5 resolution=768p seed:=$((R + 98))
 if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = completed ]; then
   lv=$(video_of latents-shot); lt=$(run_get "$OUT" latents-shot '.output[]? | select(.name == "latents") | .path')
@@ -313,8 +305,8 @@ ONLY=$SAVED
 # (0.3.0 refuses one without, run 25881): the lamp room as latents-shot's last frame shows it, as the place.
 if [ -n "${lt:-}" ] && [ -e "$lt" ]; then
   nice -n 19 ffmpeg -v error -y -sseof -0.1 -i "$lv" -frames:v 1 "$OUT/latents-shot-last.png"
-  cell h3-continue "$SHOT" prompt="A lighthouse keeper in a yellow oilskin climbs the spiral stair of <Lighthouse>, lantern in hand." \
-    style="soft watercolor, muted greens" beats:='[{"at": 5, "prompt": "He lights the great lamp; its beam sweeps out over the dark sea."}]' \
+  cell h3-continue "$SHOT" prompt=$'[Shot 1] In the lamp room of <Lighthouse>, a lighthouse keeper in a yellow oilskin sets down his lantern.\nAt 00:07.000, he lights the great lamp; its beam sweeps out over the dark sea.' \
+    style="soft watercolor, muted greens" \
     references:="[{\"name\": \"Lighthouse\", \"kind\": \"environment\", \"image\": \"$OUT/latents-shot-last.png\"}]" \
     duration_s:=10 seed:=$((R + 94)) continue_from:="{\"video\": \"$lv\", \"latents\": \"$lt\"}"
   if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
