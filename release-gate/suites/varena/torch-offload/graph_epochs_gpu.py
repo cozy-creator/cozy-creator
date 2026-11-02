@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import gc
 import importlib.util
-import inspect
 import json
 import threading
 import time
@@ -39,10 +38,7 @@ if args.mode == "capture_refusal":
 
     run(args.device, args.provider, args.provider_python, args.timeout_s)
     raise SystemExit(0)
-if (
-    not hasattr(api.Use, "wait_ready")
-    or "synchronize" not in inspect.signature(vt.graph).parameters
-):
+if not hasattr(api.Use, "wait_ready"):
     raise NotImplementedError(
         "graph epochs require scoped readiness/capture helper integration"
     )
