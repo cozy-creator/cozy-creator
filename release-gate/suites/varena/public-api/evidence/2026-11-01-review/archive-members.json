@@ -1,0 +1,13 @@
+{
+  "actual_native_binary": "native-engine",
+  "members": [
+    "libstd-private-88358d6fcccbfd81c463b31fa410f2d2.so",
+    "libvarena-private-73b64589686fe980d7014b455e3676f3.so",
+    "native-engine",
+    "native-linkage.json",
+    "varena-native.json"
+  ],
+  "output_inside_staging": true,
+  "excluded_stale_artifact": true,
+  "archive_sha256": "e953c5723d8f89987f1eb8d9440c0574c29329484db69558974237240b7c7bc4"
+}
