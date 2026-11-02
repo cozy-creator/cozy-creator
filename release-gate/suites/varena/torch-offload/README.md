@@ -19,6 +19,11 @@ No client downloads weights. GPU execution belongs to the coordinator.
   It requires the matching native factory and is not qualified by CPU results.
 - `packing_metadata_cpu.py`: inert handles check all-group/Plan failure rollback,
   preservation of published reservations and deduplication of Plan Regions.
+- `plan_retirement_cpu.py`: real CPU conversion/alias/rollback plus actual absent-handle
+  native close refusal. Closed wrappers test Python metadata; no CUDA Plan is created.
+- `plan_retirement_gpu.py --device 0`: prepared actual packed-Plan retirement and
+  escaped native/managed alias controls, existing trim and old/new-version refill.
+  This lane does not execute it or claim physical reclamation from CPU checks.
 - `adapter_gpu.py --device 0`: prepared actual CUDA client for native typed reads,
   default and explicit streams, later consumers, ties, old aliases and tiny VAE.
 - `sdxl_gpu.py /existing/local/model --device 0`: prepared stock SDXL baseline/adopted
