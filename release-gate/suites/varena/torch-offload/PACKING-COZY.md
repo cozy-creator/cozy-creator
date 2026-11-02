@@ -6,7 +6,7 @@ output directory before adaptation:
 ```sh
 python3 release-gate/suites/varena/torch-offload/prepare_packing.py \
   --seed /home/fidika/cozy_v2/outputs/xs138-offload-performance-followup/census-client-d3e8-001 \
-  --source-ref 0af634eff39c1a28ea587e1b69516f9dc326d142 \
+  --source-ref "$packing_source_ref" \
   --output /home/fidika/cozy_v2/outputs/xs138-packing-cozy-20261102/unbound-001
 ```
 
@@ -50,3 +50,33 @@ alignment padding. Exact 256-byte gaps require complete current member coverage.
 
 `packing_census_cpu.py` checks those metadata cases without importing any framework.
 Prepared clients and CPU parsing are not GPU or physical-pressure qualification.
+
+Use the exact composed candidate in `packing_source_ref`; keep the frozen product
+and historical prepared artifacts unchanged. The maintained parts/packing clients
+now contain five/seven actual GPU checks respectively, with no mocked native
+resources. CPU packing checks exercise real Torch Sources/aliases and public
+conversion refusals, not native allocation or injected publication rollback.
+
+Additional public ABI clients can be built against that candidate's exact native
+core and matching Rust runtime library directory (host commands below run no CUDA):
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -I crates/varena/include \
+  release-gate/suites/varena/native-tensor-export/parts_contract.c \
+  -L "$native_lib_dir" -Wl,-rpath,"$native_lib_dir" -lvarena -o "$client_dir/parts-contract"
+LD_LIBRARY_PATH="$native_lib_dir:$rust_lib_dir" "$client_dir/parts-contract" host
+VARENA_LIB_DIR="$native_lib_dir" cargo build --locked -p varena-client --example parts -j 1
+```
+
+The coordinator can run `parts-contract gpu 0` and the built Rust `parts` example
+as native child payloads inside its ordinary Cozy gate. They are prepared, not run
+here. The C GPU mode checks real constructor failures/unchanged outputs and valid
+construction afterward; accepted close is explicitly not a final service-teardown
+certificate. The Rust client keeps full byte/gap readback, immutable caller snapshots,
+safe empty-input refusals, same-VA refill and final retirement checks. The maintained
+Cozy `parts` entry exercises the corresponding actual C ABI negative cases plus
+typed aliases, trailing empty stream ownership, graph/refill and native retirement.
+
+Agent1's separate #2482 Plan-retirement fixture owns actual old-Plan refusal and
+dtype publication rollback. Compose it and run its clients separately; the removed
+mock checks and their preserved historical receipts do not qualify that path.
