@@ -147,3 +147,9 @@ value is not silently assumed to be the stream-ordered pool's granularity.
 without silently rounding up. Both pool modes report actual reserved/used bytes
 after allocation completion and after free completion. A granularity/cap refusal
 is preserved as such; VMM granularity is not substituted for pool evidence.
+
+Leg17 26105 qualified the4MiB HOST VMM direct sample: actual granularity2MiB,
+full-byte transfer, entire target retirement before the CPU gate release.26104
+refused pool reserved backing greater than maxSize after allocation. The next
+probe reports those counters before that unchanged assertion and adds
+modern_host_vmm_small for the exact2MiB host-Source size. No product fix yet.

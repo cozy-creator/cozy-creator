@@ -57,8 +57,8 @@ static int unsupported(const char *mode,const char *stage_name,int rc,int host_p
     return 0;
 }
 int main(int argc,char **argv) {
-    REQUIRE(argc==3||argc==4,"expected pool|pool_small|vmm actual-UUID [device]");
-    int small=!strcmp(argv[1],"pool_small");int pooled=small||!strcmp(argv[1],"pool");REQUIRE(pooled||!strcmp(argv[1],"vmm"),"mode");
+    REQUIRE(argc==3||argc==4,"expected pool|pool_small|vmm|vmm_small actual-UUID [device]");
+    int small=!strcmp(argv[1],"pool_small")||!strcmp(argv[1],"vmm_small");int pooled=!strcmp(argv[1],"pool_small")||!strcmp(argv[1],"pool");REQUIRE(pooled||!strcmp(argv[1],"vmm")||!strcmp(argv[1],"vmm_small"),"mode");
     int device=argc==4?atoi(argv[3]):0;
     void *lib=dlopen("libcuda.so.1",RTLD_NOW|RTLD_LOCAL);REQUIRE(lib!=NULL,"libcuda");
     LOAD(init,"cuInit");LOAD(retain,"cuDevicePrimaryCtxRetain");LOAD(push,"cuCtxPushCurrent_v2");LOAD(pop,"cuCtxPopCurrent_v2");LOAD(release,"cuDevicePrimaryCtxRelease_v2");
@@ -102,6 +102,7 @@ int main(int argc,char **argv) {
         OK("allocation event",api.record(event,stream));completed(event,"allocation completion before CPU access");
         OK("pool reserved after alloc",modern.cuMemPoolGetAttribute(t.pool,CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT,&t.reserved_after_alloc));
         OK("pool used after alloc",modern.cuMemPoolGetAttribute(t.pool,CU_MEMPOOL_ATTR_USED_MEM_CURRENT,&t.used_after_alloc));
+        fprintf(stderr,"{\"event\":\"pool_after_allocation\",\"maximum_bytes\":%zu,\"allocation_bytes\":%zu,\"reserved_bytes\":%llu,\"used_bytes\":%llu}\n",maximum,bytes,(unsigned long long)t.reserved_after_alloc,(unsigned long long)t.used_after_alloc);fflush(stderr);
         REQUIRE(t.reserved_after_alloc<=maximum,"pool actual backing exceeds maxSize");
     } else {
         stage("before_vmm_create");OK("HOST VMM create",modern.cuMemCreate(&t.handle,bytes,&prop,0));stage("after_vmm_create");
