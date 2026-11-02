@@ -463,15 +463,14 @@ impl Block {
     fn reusable_from(&self, origin: Option<u64>) -> bool {
         (self.life == Life::Ready
             || (self.life == Life::Captured && origin.is_some())
-            || (self.deferred_default() && origin == Some(0)))
+            || self.deferred_ordered())
             && self.reusable_on == origin
     }
 
-    fn deferred_default(&self) -> bool {
+    fn deferred_ordered(&self) -> bool {
         self.life == Life::Deferred
-            && self.reusable_on == Some(0)
             && self.streams.len() == 1
-            && self.streams.contains(&0)
+            && self.reusable_on.is_some_and(|stream| self.streams.contains(&stream))
     }
 }
 
@@ -1112,7 +1111,7 @@ impl Working {
                 let ready = block.life == Life::Ready && block.reusable_on.is_none();
                 let ordered = block.reusable_on == Some(stream)
                     && (matches!(block.life, Life::Ready | Life::Captured)
-                        || block.deferred_default());
+                        || block.deferred_ordered());
                 if !ready && !ordered {
                     consider(start, length, *base, complete);
                     length = 0;
@@ -1616,13 +1615,22 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         } else if capturing {
             block.life = Life::Deferred;
             block.reusable_on = None;
+        } else if pool.is_none()
+            && block.streams.len() == 1
+            && block.streams.first().is_some_and(|stream| *stream > 2)
+        {
+            // Eager reuse stays ordered on the sole live consumer stream. Before any
+            // cross-stream reuse or physical release, poll seals its actual tail.
+            // Destroyable stream owners must drain and retire_stream before destruction.
+            block.life = Life::Deferred;
+            block.reusable_on = block.streams.first().copied();
         } else {
             let _context = owner.driver.enter()?;
             owner.record_free(block)?;
         }
         let reusable = block.life == Life::Ready
             || (block.life == Life::Captured && block.reusable_on.is_some())
-            || block.deferred_default();
+            || block.deferred_ordered();
         Ok((
             requested,
             pool,
