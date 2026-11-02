@@ -15,6 +15,9 @@ members = [
     "crates/tensorfs",
     "crates/tensorfs-py",
     "crates/varena",
+    "crates/varena-client",
+    "release-gate/suites/varena/public-api",
+    "release-gate/suites/varena/native-gpu",
 ]
 
 [workspace.package]
