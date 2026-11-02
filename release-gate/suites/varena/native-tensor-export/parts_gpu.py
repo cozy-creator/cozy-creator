@@ -39,7 +39,28 @@ def run(device: int):
         return region.tensor(dtype=source.dtype, shape=source.shape, strides=source.strides,
                              byte_offset=offset + source.byte_offset, stream=stream.cuda_stream)
 
+    def refused_parts(descriptors):
+        offsets = (api._u * max(1, len(descriptors)))(*([123] * max(1, len(descriptors))))
+        handle = api._u(456)
+        status = api._lib.vr_v1_region_from_host_parts(
+            gpu._handle, descriptors, len(descriptors), offsets, C.byref(handle))
+        assert status == 5, status
+        assert tuple(offsets) == (123,) * len(offsets) and handle.value == 456
+
     try:
+        # These call the actual public constructor on a real Gpu. Invalid sizes
+        # must be rejected from descriptors before reading the deliberately
+        # unreadable payload pointer. No partial native Region may be published.
+        for members in (
+            (), ((None, 0),), ((None, 1),),
+            ((1, C.c_size_t(-1).value),),
+            ((1, 2 ** (8 * C.sizeof(C.c_ssize_t) - 1) - 1), (1, 1)),
+        ):
+            descriptors = (api._HostPart * len(members))(
+                *(api._HostPart(C.c_void_p(pointer), size) for pointer, size in members))
+            refused_parts(descriptors)
+        checks.append("real host-parts descriptor failures preserve outputs before payload copy")
+
         # A trailing empty member is at the logical endpoint, inside reservation
         # padding. Its storage must retain the same Pin and a valid DataPtr for
         # record_stream, including after the Region and other exports are closed.
