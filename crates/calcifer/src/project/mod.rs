@@ -459,12 +459,13 @@ fn listed(made: &Made) -> BTreeMap<String, Listing> {
 }
 
 /// The nodes project.lock keeps versions of that project.yaml no longer names, each with the one new
-/// node of its kind with no versions, if there is exactly one: what a rename in project.yaml left.
+/// node of its kind with no versions and no file attached, if there is exactly one: what a rename in
+/// project.yaml left.
 fn orphans(video: &Video, lock: &Lock) -> Vec<Orphan> {
     let named: Vec<String> = video.graph.nodes.iter().map(|node| name_key(&node.id)).collect();
     let empty = |kind: &str| -> Vec<&str> {
         (video.graph.nodes.iter())
-            .filter(|node| node.kind == kind && lock.node(&node.id).is_none_or(|n| n.versions.is_empty()))
+            .filter(|node| node.kind == kind && node.file.is_none() && lock.node(&node.id).is_none_or(|n| n.versions.is_empty()))
             .map(|node| node.id.as_str())
             .collect()
     };
