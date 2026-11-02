@@ -15,6 +15,8 @@ pub mod handles;
 pub mod ipc;
 pub mod lock;
 pub mod memory;
+#[cfg(unix)]
+pub mod net;
 pub mod paths;
 pub mod process;
 #[cfg(feature = "fetch")]

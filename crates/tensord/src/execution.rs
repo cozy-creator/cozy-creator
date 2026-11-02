@@ -1299,24 +1299,24 @@ pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
     }
     #[cfg(unix)]
     {
-        use nix::{fcntl::OFlag, sys::stat::Mode};
+        use rustix::fs::{openat, Mode, OFlags};
         let mut directory = File::open(root)?;
         for (index, name) in parts.iter().enumerate() {
             let final_component = index + 1 == parts.len();
             // O_PATH inspects the final inode without opening devices or blocking on FIFOs; where
             // there is none, O_NONBLOCK keeps a FIFO from blocking and only a regular file is kept.
             #[cfg(target_os = "linux")]
-            let last = OFlag::O_PATH;
+            let last = OFlags::PATH;
             #[cfg(not(target_os = "linux"))]
-            let last = OFlag::O_RDONLY | OFlag::O_NONBLOCK;
-            let flags = OFlag::O_CLOEXEC
-                | OFlag::O_NOFOLLOW
+            let last = OFlags::RDONLY | OFlags::NONBLOCK;
+            let flags = OFlags::CLOEXEC
+                | OFlags::NOFOLLOW
                 | if final_component {
                     last
                 } else {
-                    OFlag::O_RDONLY | OFlag::O_DIRECTORY
+                    OFlags::RDONLY | OFlags::DIRECTORY
                 };
-            let file = File::from(nix::fcntl::openat(&directory, *name, flags, Mode::empty())?);
+            let file = File::from(openat(&directory, *name, flags, Mode::empty())?);
             if final_component {
                 if !file.metadata()?.is_file() {
                     return Err(io::Error::new(

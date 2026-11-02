@@ -2,8 +2,6 @@
 # one, or a listed file no longer has any: an addition is reviewed as a new FFI boundary.
 crates/platform/src/contain/host_memory_macos.rs
 crates/platform/src/contain/host_memory_windows.rs
-crates/platform/src/contain/host_pressure_linux.rs
-crates/platform/src/contain/scope.rs
 crates/platform/src/contain/scope_windows.rs
 crates/platform/src/durable.rs
 crates/platform/src/durable/disk.rs
@@ -20,16 +18,15 @@ crates/platform/src/memory/macos.rs
 crates/platform/src/memory/mod.rs
 crates/platform/src/memory/unix.rs
 crates/platform/src/memory/windows.rs
+crates/platform/src/net.rs
 crates/platform/src/paths.rs
 crates/platform/src/process/linux.rs
 crates/platform/src/process/macos.rs
 crates/platform/src/process/unix.rs
 crates/platform/src/process/windows.rs
-crates/platform/src/service/launchd.rs
 crates/platform/src/service/windows.rs
 crates/platform/src/shm/linux.rs
 crates/platform/src/shm/mod.rs
-crates/platform/src/watch/linux.rs
 crates/platform/src/watch/macos.rs
 crates/platform/src/watch/windows.rs
 crates/tensorfs-py/src/cleanup.rs

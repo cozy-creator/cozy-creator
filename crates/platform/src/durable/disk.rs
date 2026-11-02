@@ -52,16 +52,8 @@ pub struct Filesystem {
 
 #[cfg(target_os = "linux")]
 pub fn filesystem(path: &Path) -> Filesystem {
-    use std::os::unix::ffi::OsStrExt;
-    let magic = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .ok()
-        .and_then(|c| {
-            // SAFETY: plain-old-data the call fills, and a NUL-terminated path.
-            let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-            #[allow(clippy::unnecessary_cast)] // f_type's width differs by target
-            // SAFETY: as above.
-            (unsafe { libc::statfs(c.as_ptr(), &mut stat) } == 0).then_some(stat.f_type as u64)
-        });
+    #[allow(clippy::unnecessary_cast)] // f_type's width differs by target
+    let magic = rustix::fs::statfs(path).ok().map(|stat| stat.f_type as u64);
     match magic {
         Some(magic) => classify(magic & 0xffff_ffff),
         None => Filesystem {
@@ -116,17 +108,9 @@ fn classify(magic: u64) -> Filesystem {
 pub fn open_direct(file: &File) -> crate::Result<Option<File>> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::{AsRawFd, FromRawFd};
-        let path = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
-        // SAFETY: plain open of a magic link to our own descriptor.
-        let fd = unsafe {
-            libc::open(
-                path.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECT | libc::O_CLOEXEC,
-            )
-        };
-        // SAFETY: a fresh descriptor from the kernel.
-        Ok((fd >= 0).then(|| unsafe { File::from_raw_fd(fd) }))
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+        let path = format!("/proc/self/fd/{}", file.as_raw_fd());
+        Ok(File::options().read(true).custom_flags(libc::O_DIRECT).open(path).ok())
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -181,9 +165,8 @@ pub fn cached_runs(file: &File) -> Vec<(u64, u64)> {
 pub fn will_need(file: &File, off: u64, len: u64) {
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::AsRawFd;
-        // SAFETY: advice on our own open descriptor; it reads nothing into this process.
-        unsafe { libc::posix_fadvise(file.as_raw_fd(), off as libc::off_t, len as libc::off_t, libc::POSIX_FADV_WILLNEED) };
+        // Advice: it reads nothing into this process.
+        let _ = rustix::fs::fadvise(file, off, std::num::NonZeroU64::new(len), rustix::fs::Advice::WillNeed);
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -228,8 +211,7 @@ mod linux {
     }
 
     pub(super) fn page_size() -> u64 {
-        // SAFETY: sysconf reads a constant.
-        (unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64).max(4096)
+        (rustix::param::page_size() as u64).max(4096)
     }
 
     pub(super) fn cached_runs(file: &File) -> Vec<(u64, u64)> {
@@ -266,13 +248,8 @@ mod linux {
 
     fn overlay(file: &File) -> bool {
         const OVERLAYFS_SUPER_MAGIC: i64 = 0x794c7630;
-        // SAFETY: out-param of the right type on our own descriptor.
-        let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
         #[allow(clippy::unnecessary_cast)] // f_type is not an i64 on every target
-        // SAFETY: as above.
-        let magic =
-            unsafe { libc::fstatfs(file.as_raw_fd(), &mut fs) == 0 }.then_some(fs.f_type as i64);
-        magic == Some(OVERLAYFS_SUPER_MAGIC)
+        rustix::fs::fstatfs(file).is_ok_and(|fs| fs.f_type as i64 == OVERLAYFS_SUPER_MAGIC)
     }
 
     /// Every page of `[off, off+len)` is in core, by `mincore(2)` over a mapping (never faults).

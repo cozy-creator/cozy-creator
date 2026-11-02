@@ -1,6 +1,7 @@
 //! macOS: births from `proc_pidinfo`, exact handles as a kqueue watching the process's exit.
 #![allow(unsafe_code)]
 use super::{Birth, State, unix};
+use rustix::process::{Pid, Signal, kill_process};
 use std::{
     io, mem,
     os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
@@ -83,11 +84,8 @@ pub(super) fn kill(_: &Handle, birth: &Birth) -> io::Result<()> {
         Err(error) if gone(&error) => return Ok(()),
         Err(error) => return Err(error),
     };
-    // SAFETY: plain syscall on scalars.
-    unix::signaled(
-        unsafe { libc::kill(birth.pid as libc::pid_t, libc::SIGKILL) },
-        birth.pid,
-    )?;
+    let pid = Pid::from_raw(birth.pid as i32).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    unix::signaled(kill_process(pid, Signal::KILL), birth.pid)?;
     if info.pbi_pgid == birth.pid {
         unix::signal_group(birth.pid)?;
     }
