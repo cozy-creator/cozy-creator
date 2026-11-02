@@ -1,0 +1,71 @@
+{
+  "boundary": "source review, native build and host checks only; all five GPU cells unrun",
+  "reviewed_correction": "22586041aa1dfee93edd76d3ff3717f6e32409c7",
+  "adopted_correction": "9b01959a50bbec24edbd08e4f7d4aecf59d52ca4",
+  "review": {
+    "standards_findings": 0,
+    "spec_findings": 0,
+    "final_fixture_source_findings": 0
+  },
+  "commands": [
+    {
+      "command": "cargo check -p tensorfs-py --no-default-features -j 1",
+      "exit": 0
+    },
+    {
+      "command": "cargo build -p tensorfs-py -j 1",
+      "exit": 0
+    },
+    {
+      "command": "cc -std=c11 -Wall -Wextra -Werror -fPIC -shared source_provider.c (see provider-build.log)",
+      "exit": 0
+    },
+    {
+      "command": "native_host.py --extension target/debug/lib_ext.so",
+      "exit": 0
+    },
+    {
+      "command": "actual test helper te_host_contract, same-core identity and no libcuda mappings",
+      "exit": 0
+    },
+    {
+      "command": "actual controller/author/schema import, legacy defaults and typed payload roundtrip",
+      "exit": 0
+    },
+    {
+      "command": "ruff check, new-client format checks, AST parsing and git diff --check",
+      "exit": 0
+    }
+  ],
+  "gpu_cells": {
+    "ordering": "prepared, not executed",
+    "partial": "prepared, not executed",
+    "prepare_error": "prepared, not executed",
+    "capture_refusal": "prepared, not executed",
+    "failed_tail": "prepared, not executed"
+  },
+  "host_staging": "untouched; current owner retains cuda.rs/abi/host_source.rs/async host fixture",
+  "gpu_artifacts": "unchanged",
+  "portable_preparation": "not qualified by this host build; coordinator uses existing ELF/GLIBC/source/core gates",
+  "host_built_artifacts": {
+    ".task/libtyped_source_provider.so": "705b1f46b2ec83fbff5d4e8406e64768d5ea0f17569cfcd2f6c0919bdd0162d3",
+    "target/debug/lib_ext.so": "dc24a346e65f905feb2331087d56ec09b1a38e2eb0564b41d12c648d14f20d6e",
+    "target/debug/deps/libvarena.so": "b912f5415a8a2a84296b48a13800e3c5ddb4654025d3b3f60e323081981d15cd"
+  },
+  "source_sha256": {
+    "crates/varena/src/abi.rs": "a07365394ef5e3adbfa062261abedc2a067ad6085a9ca67c3c3f3793f01f3071",
+    "crates/varena/src/abi/tensor_export.rs": "06d7fef8aeccc5d4e870a67bbec6275d4368cc084c83db7a67a954f70da5c0e5",
+    "crates/varena/src/abi/retirement.rs": "73442d9ae5e7c235f6f2c1f4bdb1f09b247e3d46ef3e236165e22c7c604a93c7",
+    "crates/varena/src/tensor_consumers.rs": "e4a94fcc32bb9c5b6bbb38e094cf9ca62641636c67a6ca889aa51d2ab1029f82",
+    "crates/varena/src/lib.rs": "ddca78590a6024736ee8be4672025aa6164447a9fac04eb6d1e0b19f482c3e14",
+    "crates/tensorfs-py/src/varena/tensor_export.rs": "90687eff4dfb65fd3ac199e05f680334f377a18f2b9779f8433aabf0ff34d9e4",
+    "release-gate/suites/varena/native-tensor-export/source_provider.c": "10f9df288c8cf78cf940368671c45b42bfe05dd63f2fa709cb1d6d779fe42826",
+    "release-gate/suites/varena/public-source/source.c": "da77fb2e76d7fe3bc2e462756a78b6163d01723a3ab02dd1172a7ded3132a341",
+    "crates/varena/include/varena.h": "060dac3c4e80cb864b021d9e81ac83802c8fbb69564e54b6377d33eb437af4ae",
+    "release-gate/suites/varena/native-tensor-export/provider.py": "5866fc4f26ed254f3a458b8f8e28a9caf76e4b7671c3d93663e475f7db3d4c39",
+    "release-gate/suites/varena/native-tensor-export/deterministic_gpu.py": "d111c6037d7507f355988dc3b278bfafb0a7687fa55548a5bcb9453b768e1349",
+    "release-gate/suites/varena/native-tensor-export/native_host.py": "8fe80ded62abf35d6032523919d0242762678553fe9a73cd4f4b64b40fb91746",
+    "release-gate/suites/varena/cache-pages/prepare.py": "9cf72f41d079a0dbe0ab830b07d013e10e93db6613c5038134347be479ece457",
+    "release-gate/suites/varena/cache-pages/controller/ci_varena_cache_pages/__init__.py": "0409c04bed7b5e061cbfdd59bf75dc77e9fadd0b3dd300c17575c69b88db4262"
+  }
+}

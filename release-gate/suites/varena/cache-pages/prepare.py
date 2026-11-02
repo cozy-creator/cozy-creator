@@ -22,6 +22,8 @@ def main():
     parser.add_argument('--raw-source-binary', type=Path, required=True)
     parser.add_argument('--public-source-binary', type=Path, required=True)
     parser.add_argument('--rust-source-binary', type=Path, required=True)
+    parser.add_argument('--tensor-export-provider', type=Path,
+                        help='optional test-only typed-export C provider shared library')
     parser.add_argument('--native-libraries', type=Path, required=True,
                         help='exact bundled libvarena.so and matching Rust std from the TensorFS wheel')
     parser.add_argument('--native-extension-sha256', required=True)
@@ -95,9 +97,12 @@ def main():
     (target / 'varena-cache-pages.json').write_text(json.dumps(manifest, indent=2) + '\n')
     (target / 'varena-async-fill.json').write_text(json.dumps(async_manifest, indent=2) + '\n')
     extra_manifests = {}
-    for name, binary in [('varena-raw-source', args.raw_source_binary),
+    extra_binaries = [('varena-raw-source', args.raw_source_binary),
                          ('varena-public-source', args.public_source_binary),
-                         ('varena-rust-source', args.rust_source_binary)]:
+                         ('varena-rust-source', args.rust_source_binary)]
+    if args.tensor_export_provider:
+        extra_binaries.append(('varena-tensor-export-provider.so', args.tensor_export_provider))
+    for name, binary in extra_binaries:
         copied = target / name
         shutil.copy2(binary, copied)
         copied.chmod(0o755)
@@ -115,6 +120,16 @@ def main():
         extra = {**manifest, 'binary_sha256': sha(copied),
                  'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': extra_needed,
                          'glibc_versions': extra_glibc, 'glibc_max': extra_glibc[-1]}}
+        if name == 'varena-tensor-export-provider.so':
+            scripts = target / 'typed-export'
+            scripts.mkdir()
+            hashes = {}
+            for script in ('deterministic_gpu.py', 'provider.py'):
+                relative = 'release-gate/suites/varena/native-tensor-export/' + script
+                assert sha(tree / relative) == source['files'][relative], relative
+                shutil.copy2(tree / relative, scripts / script)
+                hashes['typed-export/' + script] = sha(scripts / script)
+            extra['typed_scripts'] = hashes
         extra_manifests[name] = extra
         (target / (name + '.json')).write_text(json.dumps(extra, indent=2) + '\n')
     payload = {'source_sha': source['source_sha'], 'helper_sha256': manifest['binary_sha256'],
@@ -162,6 +177,8 @@ def main():
     extra_inputs = {}
     for name, extra in extra_manifests.items():
         extra_inputs[name] = {**payload, 'helper_sha256': extra['binary_sha256']}
+        if 'typed_scripts' in extra:
+            extra_inputs[name]['typed_scripts'] = extra['typed_scripts']
         (args.output / (name + '-input-template.json')).write_text(json.dumps(extra_inputs[name], indent=2) + '\n')
     files = {str(path.relative_to(project)): sha(path) for path in sorted(project.rglob('*')) if path.is_file()}
     receipt = {'manifest': manifest, 'project': str(project), 'files': files, 'input': payload,

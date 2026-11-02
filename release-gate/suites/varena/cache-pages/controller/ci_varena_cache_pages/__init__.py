@@ -10,6 +10,7 @@ import select
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -33,6 +34,7 @@ class Probe(msgspec.Struct, forbid_unknown_fields=True):
     runtime_version: str = ''
     runtime_modules: dict[str, str] = msgspec.field(default_factory=dict)
     gil_gate_sha256: str = ''
+    typed_scripts: dict[str, str] = msgspec.field(default_factory=dict)
 
 
 class Report(msgspec.Struct):
@@ -91,7 +93,7 @@ def setup(payload, ctx, *, cache_required=False, helper="varena-cache-pages"):
                     'driver_before': dict(zip(('free', 'total'), torch.cuda.mem_get_info(0), strict=True))}
 
 
-def native(payload, ctx, mode, *, helper="varena-cache-pages"):
+def native(payload, ctx, mode, *, helper="varena-cache-pages", script: str | None = None):
     result = {'passed': False, 'mode': mode}
     child = pidfd = directory = None
     stdout = stderr = ''
@@ -100,7 +102,23 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
         result['provenance'] = provenance
         directory = tempfile.mkdtemp(prefix='varena-cache-pages-', dir='/dev/shm')
         os.chmod(directory, 0o700)
-        if helper in ('varena-async-fill', 'varena-public-source'):
+        if script is not None:
+            assert helper == 'varena-tensor-export-provider.so'
+            from tensorfs import _ext
+            assert hasattr(_ext, '_varena_public_use_dlpack')
+            assert hasattr(_ext, '_varena_public_gpu_event_counts'), 'typed export observer cohort required'
+            scripts = {'typed-export/deterministic_gpu.py', 'typed-export/provider.py'}
+            assert set(payload.typed_scripts) == scripts
+            assert provenance['manifest']['typed_scripts'] == payload.typed_scripts
+            for name, expected in payload.typed_scripts.items():
+                assert digest(binary.parent / name) == expected, name
+            assert script in scripts and script.endswith('deterministic_gpu.py')
+            interpreter_sha256 = digest(sys.executable)
+            result['python_interpreter'] = {'path': sys.executable, 'sha256': interpreter_sha256}
+            command = [sys.executable, str(binary.parent / script), '--provider', str(binary),
+                       '--mode', mode, '--device', '0', '--gpu-uuid', payload.gpu_uuid,
+                       '--timeout-s', str(payload.timeout_s)]
+        elif helper in ('varena-async-fill', 'varena-public-source'):
             command = [str(binary), mode, payload.gpu_uuid, '0']
         elif helper == 'varena-rust-source':
             command = [str(binary), payload.gpu_uuid, '0']
@@ -120,7 +138,8 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
         started = birth(child.pid)
         result.update(pid=child.pid, start_ticks=started)
         pidfd = os.pidfd_open(child.pid)
-        assert digest(f'/proc/{child.pid}/exe') == payload.helper_sha256
+        assert digest(f'/proc/{child.pid}/exe') == (
+            interpreter_sha256 if script is not None else payload.helper_sha256)
         deadline = time.monotonic() + payload.timeout_s
         while True:
             ctx.raise_if_cancelled()
@@ -138,7 +157,7 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
             report = reports[0]
             normalize = lambda value: value.removeprefix('GPU-').replace('-', '').lower()
             assert report['passed'] and child.returncode == 0, result
-            if helper in ('varena-async-fill', 'varena-raw-source'):
+            if script is not None or helper in ('varena-async-fill', 'varena-raw-source'):
                 assert report['pid'] == child.pid
             if helper != 'varena-rust-source':
                 assert report['mode'] == mode
@@ -493,3 +512,34 @@ def source_host_bytes(payload: Probe, ctx: Context) -> Report:
 def rust_source(payload: Probe, ctx: Context) -> Report:
     assert payload.expected_devices == 1
     return native(payload, ctx, "source", helper="varena-rust-source")
+
+
+def typed_export(payload, ctx, mode):
+    assert payload.expected_devices == 1
+    return native(payload, ctx, mode, helper='varena-tensor-export-provider.so',
+                  script='typed-export/deterministic_gpu.py')
+
+
+@app.entrypoint(accelerator=True)
+def tensor_export_ordering(payload: Probe, ctx: Context) -> Report:
+    return typed_export(payload, ctx, 'ordering')
+
+
+@app.entrypoint(accelerator=True)
+def tensor_export_partial(payload: Probe, ctx: Context) -> Report:
+    return typed_export(payload, ctx, 'partial')
+
+
+@app.entrypoint(accelerator=True)
+def tensor_export_prepare_error(payload: Probe, ctx: Context) -> Report:
+    return typed_export(payload, ctx, 'prepare_error')
+
+
+@app.entrypoint(accelerator=True)
+def tensor_export_capture_refusal(payload: Probe, ctx: Context) -> Report:
+    return typed_export(payload, ctx, 'capture_refusal')
+
+
+@app.entrypoint(accelerator=True)
+def tensor_export_failed_tail(payload: Probe, ctx: Context) -> Report:
+    return typed_export(payload, ctx, 'failed_tail')
