@@ -2,7 +2,7 @@
   "product_parent": "08a0d955e899e781e50842214fa97e99e3c72b31",
   "native_product_diff": [],
   "source_files": {
-    "release-gate/suites/varena/public-consumer/README.md": "2d8a0e5e364456b7287ed1eef41e38cd3cb131425b51f1a9ffdc230823fa1312",
+    "release-gate/suites/varena/public-consumer/README.md": "0126afaca58924d33f33e725134d0ba0cccb5557a8ab4f76d49c2953df0da87f",
     "release-gate/suites/varena/public-consumer/controller/ci_varena_public/__init__.py": "ce3178c13d443c7048ca1761b365f74c70472c4f47ab1c9ca30ebf473a94804d",
     "release-gate/suites/varena/public-consumer/controller/ci_varena_public/child.py": "06f541008d157be38ff09dd9ef98145b2be3278275a05ecb3d8e659481775e4b",
     "release-gate/suites/varena/public-consumer/controller/ci_varena_public/driver.py": "be87ac66b55c533c8b6f091fbfa94c31f6ed30d0eff83e95d2877c380a4e5908",
