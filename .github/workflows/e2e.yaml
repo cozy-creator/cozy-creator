@@ -37,7 +37,7 @@ on:
         type: string
         default: ''
       select:
-        description: Tokens instead of ci/affected's selection (ci/suites.toml)
+        description: "Tokens instead of ci/affected's selection (ci/suites.toml); `affected`: ci/affected from base to ref, as the merge queue selects"
         type: string
         default: ''
       creator_ref:
@@ -231,7 +231,7 @@ jobs:
           for c in "$ref" "$creator" "$stack" "$runtime" "$packages"; do [[ $c =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unresolved ref: '$c'"; exit 1; }; done
           printf 'ref=%s\ncreator=%s\nstack=%s\nruntime=%s\npackages=%s\n' "$ref" "$creator" "$stack" "$runtime" "$packages" | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
-        if: inputs.select == ''
+        if: inputs.select == '' || inputs.select == 'affected'
         with:
           repository: ${{ steps.what.outputs.github }}
           ref: ${{ steps.pin.outputs.ref }}
@@ -245,7 +245,7 @@ jobs:
           REF: ${{ steps.pin.outputs.ref }}
           BASE: ${{ steps.what.outputs.base }}
         run: |
-          if [ -n "$TOKENS" ]; then s=$(.creator/ci/affected --tokens "$TOKENS" --json)
+          if [ -n "$TOKENS" ] && [ "$TOKENS" != affected ]; then s=$(.creator/ci/affected --tokens "$TOKENS" --json)
           else s=$(cd src && ../.creator/ci/affected "$REPO" "$BASE" "$REF" --json); fi
           echo "selection=$s" >> "$GITHUB_OUTPUT"
           # A Linux suite takes the candidate jobs' set.
