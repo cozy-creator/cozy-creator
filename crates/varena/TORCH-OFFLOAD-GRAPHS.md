@@ -38,8 +38,10 @@ request execution. A shortfall is returned after proper capture cleanup, with no
 automatic retry. Do not repeatedly resample a process-wide peak for every segment.
 
 Inputs/kwargs have a fixed pytree, ordinary Tensor metadata and immutable scalar
-configuration. Working static inputs and outputs belong to the graph pool. Inputs are
-copied into their static storage before launch. Returned results are independent
+configuration. Static inputs retain their ordinary Working storage; captured outputs
+and temporaries belong to the graph pool. Both count under their existing owners,
+without counting static inputs again as captured footprint. Inputs are copied into
+their static storage before launch. Returned results are independent
 working copies scheduled after the replay on its actual stream, so the next call
 cannot overwrite a retained result. Gradient/training/stateful module capture and
 unmanaged/custom pointer escapes need a separate explicit contract.
@@ -98,6 +100,8 @@ For each call, under the segment's submission lock:
    its deduplicated Regions; native Source preparation orders producers on this stream.
 3. Copy inputs, enter existing replay exclusion if required by Agent 2, and call
    `vt.replay(graph, stream=stream)`. Reuse native pool retain/record/release ownership.
+   Exit replay exclusion before output-copy allocation and before Use close/fencing;
+   its eager ownership validation must not be invoked inside that guard.
 4. Enqueue independent output copies, record the actual consumers, and close Use only
    after submission. Native last-consumer fences retain residency while work is pending.
    A `record_stream` lifetime declaration never substitutes for a producer dependency.
