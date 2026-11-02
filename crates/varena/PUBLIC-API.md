@@ -94,6 +94,11 @@ until actual Arena completion or quarantine. Closing that lease uses nonwaiting 
 polling. Process allocator keepalive is a separate integration gate: closing a public
 Gpu must not silently remove accounting for still-owned global Working/Torch storage.
 
+Use success orders only its supplied consumer stream behind source production; it does
+not assert host-visible GPU completion. Other readers need their own Use on that stream,
+or a CUDA dependency behind the ordered stream before reading. Join every additional
+consumer into the retained stream before done so its final fence covers all reads.
+
 Streams must belong to the GPU's primary context and remain live through every retained
 Use/allocation. Public operations refuse default-stream sentinels0/1/2 before submission;
 pass the actual explicit CUDA stream handle. The Torch allocator adapter still honors

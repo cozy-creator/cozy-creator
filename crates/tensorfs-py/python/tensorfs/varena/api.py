@@ -332,6 +332,12 @@ class Region(_Owned):
 
 
 class Use(_Owned):
+    """Retain weights and order their producers on the supplied consumer stream.
+
+    Success can precede GPU completion. Other reader streams need their own Use or
+    a CUDA dependency behind this stream before reading, then must join it before done.
+    """
+
     _close = "done"
 
     def __init__(
