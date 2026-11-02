@@ -8,8 +8,10 @@ use super::{Encoder, Input, OwnedPart};
 use crate::format::decode::{self, PartBytes};
 use crate::format::{Error, Result};
 
+#[cfg(feature = "quantize")]
 #[path = "svdq_fit.rs"]
 mod fit;
+#[cfg(feature = "quantize")]
 pub use fit::{
     SVDQ_FIT_STRATEGY, SVDQ_NUMERICAL_IDENTITY, SvdqFitted, svdq_fit, svdq_fit_workspace,
 };
