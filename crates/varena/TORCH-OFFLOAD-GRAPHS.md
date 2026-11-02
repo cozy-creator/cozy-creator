@@ -212,6 +212,15 @@ Agent 2 delivered the agreed readiness feature in draft #2486:
 Host/native checks do not qualify valid-Use GPU waiting or graph behavior. No further
 native ownership class or unchecked tensor export is required. Frozen #2449 is preserved.
 
+Preferred integration is now audited draft #2489: native feature commits
+`549f4915534c6f6d6840465b905d69038b07bbe7` and
+`12425d44ff3de33b791f79937a2645c827529b51`, audited proof head
+`b40f91f736a8a713229465c631e3b475428c6fb5`. Root selects the audited parent
+`14e8f95dab4fff76f52b02616bdb453b62f94c8c` plus fetched master `7626bc995`.
+These supersede the old-context #2486 mapping for composition; no context/preservation
+prefix or old native snapshot is adopted by this adapter. Historical host receipts
+remain valid only for their named cohorts. All valid-Use GPU/graph proof stays pending.
+
 `vt.replay_scope(device)` is exactly the agreed thin wrapper: construct existing
 `_ext._VarenaAllocatorCapture(device, replay=True)`, yield, close in finally. It adds
 no driver call, changes to `vt.replay` or native exclusion semantics. It is host launch
