@@ -70,8 +70,17 @@ pub fn keep(launch: &Path, release: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Puts `staged` at the launch path, which this process runs from.
-pub fn swap(staged: &Path) -> io::Result<()> {
+/// Puts `staged` at the launch path. Not `self_replace` on Linux: it finds its target through
+/// `current_exe`, which names `<path> (deleted)` once something replaced the launch path.
+#[cfg(target_os = "linux")]
+pub fn swap(launch: &Path, staged: &Path) -> io::Result<()> {
+    let temp = launch.with_file_name(".cozy-swap");
+    std::fs::copy(staged, &temp)?;
+    std::fs::rename(&temp, launch).inspect_err(|_| drop(std::fs::remove_file(&temp)))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn swap(_launch: &Path, staged: &Path) -> io::Result<()> {
     self_replace::self_replace(staged)
 }
 

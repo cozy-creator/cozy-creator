@@ -911,8 +911,8 @@ impl Updates {
         };
         let publication = (|| {
             write_json(&self.paths.update("pending.json"), &pending)?;
-            if let Some(staged) = staged {
-                super::binary::swap(staged)?;
+            if let (Some(b), Some(staged)) = (&binary, staged) {
+                super::binary::swap(&b.launch, staged)?;
             }
             if let Some(candidate) = &candidate {
                 relink(&self.paths.current_sdk_link(), Some(candidate))?;
