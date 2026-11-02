@@ -53,9 +53,7 @@ already holds it is not sent it again:
 
 ```yaml
 references:
-  - name: Video 1
-    kind: video
-    video: "videos/match.m4v#t=3:19,3:32"
+  - {name: Video 1, kind: video, video: "videos/match.m4v#t=3:19,3:32"}
 ```
 
 ```sh
@@ -78,146 +76,55 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A video project is a folder:
-- `project.yaml`: yours. cozy writes it only at `new`.
-- `project.lock`: cozy's record of each node's takes or versions, what made each, which is approved, and the
-  files `project.yaml` names.
-- `assets/`: every file the project uses, kept by content as `assets/<sha256>.<ext>`. What cozy makes is kept
-  there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is taken in
-  on first use: a copy-on-write clone where the filesystem has them (no space used), else a link to where you
-  keep it.
-- `edit.mp4`: the film, cut on this computer as shots land, and beside it `edit.otio`, the same edit as an
-  OpenTimelineIO timeline for an editing app, each clip referencing its take in `assets/`.
-
-Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
-file you named and what reads it goes out of date; move a linked one and `status` says to relink it (fix its
-path).
-Rename a node in `project.yaml` (and its `<mentions>`), then `cozy project rename <old> <new>` keeps its
-versions; `status` suggests it.
-
-A shot's alternatives (and its upscale's) are takes; every other node's are versions. Each one is a set
-of assets, numbered from 1 and never renumbered: a shot's take is its video and latents. `cozy project new garden`
-makes the folder with a `project.yaml` holding a short film that renders as it stands; change it, or write your own:
+A video project is a folder: `project.yaml` (yours; cozy never writes it after `new`), `project.lock`
+(cozy's: each node's versions, what made each, and which is approved), `files/` (every version, by
+content) and `edit.mp4`, cut on this computer as shots land. `cozy project new --project garden` writes a
+commented `project.yaml`; fill it in:
 
 ```yaml
-style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
-aspect_ratio: "16:9"
-fps: 24
-
-entities:
-  - name: kyogre
-    kind: character
-    description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
-
-  - name: groudon
-    kind: character
-    description: Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
-
-  - name: coast
-    kind: environment
-    description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
-    setups:
-      - name: wide
-        camera: The camera stands high and far back, with the sea on the left, the cliffs on the right, and the crater city small at the center.
-
-shots:
-  - name: clash
-    setup: coast.wide
-    duration_s: 38
-    description: |
-      summary:
-      The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
-
-      detailed_description:
-      [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
-      At 00:14.000, <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
-      At 00:28.000, <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
-
-      overall_soundscape:
-      Crashing surf, roaring fire, bursts of steam, and deep impacts.
-
-      non_diegetic_music:
-      N/A
-```
-
-What else a project can set:
-
-```yaml
+type: video
+style: soft watercolor
 resolution: 1440p
 soundscape: gulls, surf, wind
-
-defaults:
-  shot:
-    with: minimax-h3/generate
-    options:
-      turbo: true
-
-references:
-  - name: kata
-    video: ~/footage/kata.mp4
-
+defaults: {shot: {with: minimax-h3/generate, options: {turbo: true}}}
+entities:
+  - {name: theo, kind: character, description: "A tall man in a green raincoat."}
+  - {name: juno, kind: character, description: "<theo>'s sister, in a red coat.", render: {with: flux-2/generate}}
+  - {name: dock, kind: environment, description: "a foggy harbour at dawn",
+     setups: [{name: a, camera: "wide: the red hut near on the left, the crates far on the right"}]}
 world_states:
-  - name: shore
-    init: <coast> after the fight.
-    blocking: <groudon> on the rocks.
-
+  - {name: stage, init: "<juno> and <theo> face off on <dock>.", blocking: "juno by the crates."}
 shots:
-  - name: clash
-    writes:
-      - state: shore
-        at: 30
-
-edit:
-  - shot: clash
-    start: 24
-    end: 192
+  - {name: fight, setup: dock.a, prompt: "<theo> and <juno> spar.", duration_s: 20, writes: [{state: stage, at: 12}],
+     references: [{name: kata, kind: video, video: refs/kata.mp4}],
+     beats: [{at: 0, prompt: "They circle."}, {at: 10, prompt: "<juno> sweeps his legs."}]}
+  - {name: reaction, prompt: "Close on <theo>, wincing, after <stage>.", duration_s: 4}
+edit: [{shot: fight, end: 8}, {shot: reaction}, {shot: fight, start: 10}]
 ```
 
 ```sh
-cd garden
-cozy project render all --on <machine>     # everything missing or out of date, then the edit
-cozy project render clash -n 3 --on <machine>
-                                           # three more takes of clash
-cozy project approve clash 2               # approve take 2: what is made from it goes out of date
-cozy project render kyogre --approve --on <machine>
-                                           # a new version of kyogre, approved when it lands
-cozy project status                        # what is missing, out of date and why, and the cuts
-cozy project ls                            # every project this computer has opened
+cozy render all --project garden --on <machine>   # everything missing or out of date, then the edit
+cozy render theo --project garden --on <machine>  # another take of theo
+cozy project approve theo 2 --project garden      # approve it: what is made from theo goes out of date
+cozy project status --project garden              # what is missing, out of date and why, and the edit
 ```
 
-The project is the folder holding `project.yaml`, found from where you are or above it; `-p <path>` names
-another, as `git -C` does. Each take or version is sent as soon as what it reads is made, so independent
-ones render at once and the machine's scheduler places them. `--on a,b` spreads them over machines (the
-least busy, one that holds the models first), and a render asked while another goes joins it.
-
-A shot's `description` is its whole text, sent to its function as `prompt`. cozy reads only its `<mentions>` and adds
-nothing, so you write the function's own format, on the lines under `description: |`. For `minimax-h3` that is
-`summary:`, `detailed_description:`, `overall_soundscape:` and `non_diegetic_music:`. In the details, `[Shot 1]` opens a
-shot, a line starting `At 00:14.000, …` moves it on within the take, and `[Shot 2] At 00:20.000, the shot cuts to …` is
-a real cut; it plans its pieces from those. A writer who wants one take says so (`One continuous shot with no cuts.`),
-because cozy no longer adds it. Nothing you write is refused: an empty description gets a warning and renders anyway.
-
-A take can be shorter than `duration_s`: `minimax-h3` renders 15 s of a longer shot with no timestamps. The edit cuts
-the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
+Each version is sent as soon as what it reads is made, so independent ones render at once and the
+machine's scheduler places them; `--on a,b` spreads them over machines (the least busy, one that holds
+the models first), and a `cozy render` asked while another goes joins it.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
 screen terms (what is near or far, left or right). A shot reads a world state it
-names and changes the ones it `writes` (each a `state`, and `at`, by default its end). A shot that mentions a state it
-writes partway renders as consecutive calls split there (`continue_from`), the later one reading its own frame. A
-renderer that cannot continue, or a call under its shortest piece, renders on through: the shot reads the state as it
-stood before, and `status` says so. A clip or sound mentioned by anything but a shot, or a mention that would make
-something from itself, stays plain text, also said.
-
-A file that is no entity goes under `references:` with a name and one `video:`, `audio:` or `image:` (sent as a
-prop). A shot that mentions it gets it, exactly as with an entity: any other field, such as `use_audio:
-true`, goes to its function, and editing the file puts only those shots out of date. Names are shared with entities,
-in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
-shot. What a function does not take is left out and said.
-
-Character and prop pictures are cleaned on this computer before
+names and changes the ones it `writes` (`{state, at}`, at its end by default); a beat that mentions a state
+reads it as it stands then, so a shot that writes one and reads it later renders as consecutive calls
+(`continue_from`). A shot's `references:` (`{name, kind: character|prop|environment|video|audio, …}`),
+`plate:` (the video it edits), `first_frame:` and `last_frame:` go to its function after the references the
+project compiles from what it reads; what that function does not take is left out and said. Character and prop pictures are cleaned on this computer before
 use. Only a changed upstream file puts something out of date, never a text edit or a render block:
-`cozy project render <name>` when you want a new take. A node renders by its `render:` block: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
-project's folder, which Calcifer makes ready on each `--on` machine), `models` and `lora` as `cozy run --input` takes them, and
+`cozy render <name>` when you want a new take. A node renders by its `render: {with, models, lora,
+options}`: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
+project's folder, which `cozy render` makes ready on each `--on` machine), `models: {base_model: {ref:
+org/checkpoint}}` and `lora: [{ref: org/lora, strength: 0.8}]` as `cozy run --input` takes them, and
 `options`, the function's own fields. A block that
 names no function adjusts its kind's `defaults:` (entity, setup, world_state, shot, upscale, clean).
 `cozy project status` shows what made each approved version. A file you attach (`image:`, or a shot's
@@ -226,16 +133,9 @@ names no function adjusts its kind's `defaults:` (entity, setup, world_state, sh
 `resolution: 1440p` and `aspect_ratio: 16:9` (the default; `9:16` and `2.39:1` work alike) fix the
 project's canvas: pictures of places are made at its aspect, and every shot fills it, center-cropped,
 never letterboxed or stretched. A shot whose approved version is below the resolution is upscaled
-(`upscale` under `defaults:`, or a `render:` under a shot's own `upscale:`, which can change the function, models,
+(`defaults: {upscale: …}`, or a shot's own `upscale: {render: …}`, which can change the function, models,
 LoRAs and options but never the canvas). `render all` makes the upscales and cuts `edit.mp4` at the
 canvas; `preview.mp4`, the native cut, is redone as shots land, and `render all --preview` stops there.
-
-`fps:` (24 by default) is the edit's frame rate, fixed per project. `edit:` lists shots, each with an optional `start` and `end` in
-frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`, or its take's end if sooner), so every cut lands on an
-exact frame; a shot's `duration_s` and `writes` stay in seconds. A take at another rate is retimed to
-the project's (each frame its nearest in time), and `status` names it. Each cut writes `edit.otio` (and
-`preview.otio`) with it: the project's rate, a video and an audio track, one clip per `edit:` entry with its
-frames, referencing that take's asset.
 
 ## Remove cozy
 

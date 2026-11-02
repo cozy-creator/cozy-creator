@@ -71,18 +71,15 @@ pub struct PartData<'a> {
     pub data: Source<'a>,
 }
 
-#[cfg(feature = "quantize")]
 pub(crate) struct Scratch {
     file: Option<File>,
     path: PathBuf,
 }
-#[cfg(feature = "quantize")]
 impl Scratch {
     pub(crate) fn file(&mut self) -> &mut File {
         self.file.as_mut().expect("live temporary part")
     }
 }
-#[cfg(feature = "quantize")]
 impl Drop for Scratch {
     fn drop(&mut self) {
         drop(self.file.take()); // Windows must close the file before unlinking it.
@@ -170,9 +167,7 @@ enum At {
     Reused(Vec<ObjectRef>),
 }
 
-/// A conversion bound to a writer: its identity, and the tensors it selected. A journal without
-/// `quantize` still replays its lines.
-#[cfg_attr(not(feature = "quantize"), allow(dead_code))]
+/// A conversion bound to a writer: its identity, and the tensors it selected.
 struct Conversion {
     identity: String,
     normalization: bool,
@@ -426,19 +421,16 @@ impl Writer {
 
     /// A conversion's immutable selection owns its part of the resume journal: entries without
     /// its binding are never mistaken for its completed work.
-    #[cfg(feature = "quantize")]
     pub(crate) fn bind_quantization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
         self.bind_conversion(identity, selected, false)
     }
 
-    #[cfg(feature = "quantize")]
     pub(crate) fn bind_normalization(&mut self, identity: &str, selected: &[(String, String)]) -> Result<()> {
         self.bind_conversion(identity, selected, true)
     }
 
     /// Several conversions may share one writer (a recipe encodes each component in its own call):
     /// each owns the tensors it selected, and a resumed one adopts only its own.
-    #[cfg(feature = "quantize")]
     fn bind_conversion(&mut self, identity: &str, selected: &[(String, String)], normalization: bool) -> Result<()> {
         if self.conversions.iter().any(|c| c.identity == identity && c.normalization == normalization) {
             return Ok(());
@@ -455,7 +447,6 @@ impl Writer {
 
     /// A temporary part belongs to this fenced writer's work directory. A crash
     /// leaves it to the existing writer sweep; ordinary cleanup removes it below.
-    #[cfg(feature = "quantize")]
     pub(crate) fn scratch(&self) -> Result<Scratch> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {

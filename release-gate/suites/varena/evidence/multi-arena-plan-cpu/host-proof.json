@@ -1,0 +1,59 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "run",
+    "--offline",
+    "--manifest-path",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-multi-arena-plan/host-001/native/Cargo.toml",
+    "--target-dir",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-ledger/target",
+    "--example",
+    "lifetime_inventory",
+    "-j",
+    "1"
+  ],
+  "exit_code": 0,
+  "seconds": 11.19095334596932,
+  "sources": {
+    "crates/varena/src/plan.rs": "c486e8d7f2012fdb5d63031f59ec121a35a5d07092d0ba20783e05be2c145484",
+    "crates/varena/src/fork_guard.rs": "afe1de00865b3162e02e0fcce77af165b0c009dfd0652722ff2e03ebb3e9a6bb",
+    "crates/varena/src/lib.rs": "3a81d509f3d4ab71272d031ec0555fb4de5c03eb8d23ec9a74f35af29b0124c0",
+    "crates/varena/src/ledger.rs": "ba0842330b872cab63a18a16e24686ab7d8542082e9203dd674dd7fb7cae95dd",
+    "crates/varena/src/cache_owner.rs": "930f9f6aff80d12c45b4ad0ad30d1c43685243e9d5a68a8bc1e12fef0d4dcc1f",
+    "crates/varena/src/working.rs": "79b507153e597d5bafad5c105299ecc91d6f029d903571044ef70649c46b01ad",
+    "crates/varena/src/abi.rs": "16d053d8b5dfe41f2aa18733f409d9bd9961f325a645766b2be7dd02e89ea94a",
+    "crates/varena/src/cuda.rs": "1aa955d05d94d1dc61c1d845e00a8bbb7139984e9a3c7592f2ded4276dc61b6c",
+    "crates/varena/src/cooperative.rs": "91c898e43b82217d19c860fcdec177ef8041473756b025fd9f57b88808089b2d",
+    "crates/varena/src/ledger/upgrade.rs": "051e57e4e7e7e5a0f12ec3bc38ffbe8658f6a50a63e3fe1cec3a21e7025953c6",
+    "crates/varena/src/ledger/os.rs": "3f3a613a25902988ed84af32c922de9afacf9bde65f5a92b0a84401f9bed0daf",
+    "crates/varena/src/cooperative/owner.rs": "8f652d1f5d7dd829aa08a43c2bfac9c2ce7a1a8baffcc119caa1c9f98239b249",
+    "crates/varena/src/cooperative/pressure.rs": "d8d661892f4b5beef909a12c25a32652642700fa179634c79d9bf1bf5c8ba39e",
+    "crates/varena/src/working/cache.rs": "8571d1b4d22669fd2d2eb19875e5d3b0b18c3191de1b9306ecfe2a0f11188b7e",
+    "crates/varena/src/working/peer.rs": "d26fc04c7b42b9e115efbf35d78bad830d43340d262de0f80706a621070e123a",
+    "crates/varena/src/working/execution.rs": "211279a13e3256975349316a10b273e5f5f9a19c0a7a84048a9bcbe16967c88f",
+    "crates/varena/src/working/split.rs": "37b2806e12b0d1ce9e51444527c27e5cc0109febf3075cbf6e0d1bf258354cf1"
+  },
+  "harnesses": {
+    "identity.rs": "b603b221f3340f03ed06deb01003ccc867bccb60b50d1693f9f0a8ddf870a9b9",
+    "inventory.rs": "490471b07cc6f2aace36da95ac1aa22641201851c326a9137b6423db0ff0a87b"
+  },
+  "scope": "real host atomic/registry/fork checks, no actual GPU or fabricated CUDA owners",
+  "linkage": "output-only host executable; not a shipping shared-core/ABI cohort proof",
+  "result": {
+    "passed": true,
+    "concurrent_identities": 8192,
+    "identity_exhaustion_refused_without_wrap": true,
+    "inactive_inventory_invalidated": true,
+    "device_epochs_isolated": true,
+    "concurrent_inventory_transitions": 512,
+    "ignored_retirement_overflow_latched": true,
+    "intent_overflow_latched": true,
+    "inherited_registry_rejected": true,
+    "cuda_loaded": false,
+    "nvml_loaded": false,
+    "gpu_qualified": false
+  }
+}

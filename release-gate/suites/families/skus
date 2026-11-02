@@ -1,5 +1,0 @@
-# The card families whose selected attention kernels serve no mask (Runtime `attention.DENSE`): wgmma at every level,
-# tcgen05 at 8 bits. mma.sync's are the `runtime` suite's rtx-4090 and rtx-5090. B300 has no int8 cores, so it attends
-# qwen-image-2 at 16 bits on `cudnn`, which serves masks, and shows nothing here.
-h100-sxm5-80gb
-b200

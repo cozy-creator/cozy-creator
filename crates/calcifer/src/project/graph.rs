@@ -36,8 +36,6 @@ pub struct Node {
     /// Unique by `name_key`.
     pub id: String,
     pub kind: &'static str,
-    /// What its alternatives are called: `take` (a shot's) or `version`.
-    pub noun: &'static str,
     /// Whether `<id>` in a text names it.
     pub mentionable: bool,
     /// A state: its own version is revision 0; each ordered node that writes it makes the next.
@@ -48,22 +46,19 @@ pub struct Node {
     pub texts: Vec<String>,
     /// Edges the type declares, by id.
     pub needs: Vec<String>,
-    /// Edges a mention implies, by id: like a mention's, one that closes a cycle is left out.
-    pub implied: Vec<String>,
     /// States it writes, by name.
     pub writes: Vec<String>,
-    /// Files it reads that are no node's (a shot's plate, a character's voice), by a key and
+    /// Files it reads that are no node's (a shot's references, a character's voice), by a key and
     /// their digest: a version made from another file is out of date.
     pub inputs: Vec<(String, String)>,
-    /// The file it reads as now (relative to the project) and its digest: the approved version's
-    /// primary asset, else the file attached in project.yaml (or that file's clean); None before the
-    /// first version.
+    /// The file it reads as now (relative to the project) and its digest: the approved version, else
+    /// the file attached in project.yaml (or that file's clean); None before the first version.
     pub file: Option<(String, String)>,
-    /// Its versions' primary assets, in the order they were made.
+    /// Its versions' files, in the order they were made.
     pub versions: Vec<String>,
 }
 
-/// What a node reads from another: its current file, or the frame one of its versions wrote for a state.
+/// What a node reads from another: its current file, or a file one of its versions wrote for a state.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Edge {
     pub node: usize,
@@ -78,8 +73,6 @@ pub struct Graph {
     pub order: Vec<usize>,
     /// Mentions of no node: the node, and the mention as written.
     pub unknown: Vec<(usize, String)>,
-    /// Mentions that would close a cycle, left out: the node, and the node it mentions.
-    pub closing: Vec<(usize, usize)>,
 }
 
 /// Whether a node's current file still follows from what it reads.
@@ -93,9 +86,8 @@ pub enum Status {
 }
 
 impl Graph {
-    /// Resolves the nodes' edges and orders them; a duplicate name, an unknown need or a cycle of
-    /// what the type declares is refused, naming it. A mention that closes a cycle is left out, the
-    /// text staying as written (`closing`).
+    /// Resolves the nodes' edges and orders them; a duplicate name, an unknown need or a cycle is
+    /// refused, naming it.
     pub fn new(nodes: Vec<Node>) -> Result<Self, Error> {
         let mut index = HashMap::new();
         for (i, node) in nodes.iter().enumerate() {
@@ -105,18 +97,11 @@ impl Graph {
             }
         }
         let find = |name: &str| index.get(&name_key(name)).copied();
-        let (mut upstream, mut declared) = (vec![], vec![]);
+        let mut upstream = vec![];
         let mut unknown = vec![];
         for (i, node) in nodes.iter().enumerate() {
             let mut edges: Vec<Edge> = vec![];
             for need in &node.needs {
-                let j = find(need).ok_or_else(|| {
-                    invalid("node_unknown", format!("{} names {need}, which is no node", node.id))
-                })?;
-                edges.push(Edge { node: j, state: None });
-            }
-            declared.push(edges.clone());
-            for need in &node.implied {
                 let j = find(need).ok_or_else(|| {
                     invalid("node_unknown", format!("{} names {need}, which is no node", node.id))
                 })?;
@@ -148,28 +133,8 @@ impl Graph {
             });
             upstream.push(edges);
         }
-        let mut closing = vec![];
-        let order = loop {
-            let cycle = match topological(&nodes, &upstream) {
-                Ok(order) => break order,
-                Err(cycle) => cycle,
-            };
-            // The step that closes it first, among those made only of mentions.
-            let steps = (0..cycle.len()).rev().map(|n| (cycle[n], cycle[(n + 1) % cycle.len()]));
-            let mentioned = |&(reader, read): &(usize, usize)| {
-                upstream[reader].iter().all(|edge: &Edge| edge.node != read || !declared[reader].contains(edge))
-            };
-            let Some((reader, read)) = steps.into_iter().find(mentioned) else {
-                // Each reads the next, so reversed it runs the way the files flow.
-                let mut names: Vec<&str> = cycle.iter().rev().map(|&i| nodes[i].id.as_str()).collect();
-                names.push(&nodes[*cycle.last().expect("a cycle")].id);
-                return Err(invalid("cycle", format!("a cycle: {} (each is made from the one before it)", names.join(" → ")))
-                    .remedy("remove the `setup:` or `frame:` that closes it"));
-            };
-            upstream[reader].retain(|edge| edge.node != read);
-            closing.push((reader, read));
-        };
-        Ok(Self { nodes, upstream, order, unknown, closing })
+        let order = topological(&nodes, &upstream)?;
+        Ok(Self { nodes, upstream, order, unknown })
     }
 
     pub fn find(&self, name: &str) -> Option<usize> {
@@ -177,15 +142,12 @@ impl Graph {
         self.nodes.iter().position(|node| name_key(&node.id) == key)
     }
 
-    /// What `edge` reads now, its path and sha256, if it has been made.
-    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<(String, String)> {
-        let (path, digest) = self.nodes[edge.node].file.as_ref()?;
+    /// The digest of what `edge` reads now, if it has been made.
+    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<String> {
+        let (_, digest) = self.nodes[edge.node].file.as_ref()?;
         match &edge.state {
-            None => Some((path.clone(), digest.clone())),
-            Some(state) => {
-                let frame = lock.made(&self.nodes[edge.node].id, path)?.writes.get(state)?;
-                Some((frame.path.clone(), frame.sha256.clone()))
-            }
+            None => Some(digest.clone()),
+            Some(state) => lock.made(&self.nodes[edge.node].id, digest)?.outputs.get(state).cloned(),
         }
     }
 
@@ -196,31 +158,31 @@ impl Graph {
         let mut status = vec![Status::Empty; self.nodes.len()];
         for &i in &self.order {
             let node = &self.nodes[i];
-            let Some((path, _)) = &node.file else {
+            let Some((_, digest)) = &node.file else {
                 continue;
             };
-            let Some(upstream) = lock.made(&node.id, path).and_then(|made| made.upstream.as_ref()) else {
+            let Some(upstream) = lock.made(&node.id, digest).and_then(|made| made.upstream.as_ref()) else {
                 status[i] = Status::Current;
                 continue;
             };
             let mut cause = None;
             for edge in &self.upstream[i] {
-                let (up, noun) = (&self.nodes[edge.node].id, self.nodes[edge.node].noun);
+                let up = &self.nodes[edge.node].id;
                 let read = self.read(lock, edge);
                 cause = cause.or(match &status[edge.node] {
-                    Status::Empty => Some(format!("{up} has no {noun}")),
+                    Status::Empty => Some(format!("{up} has no version")),
                     Status::Stale(_) => Some(format!("{up} is out of date")),
                     Status::Current if read.is_none() => {
                         Some(format!("{up} wrote no {}", edge.state.as_deref().unwrap_or("file")))
                     }
                     Status::Current => (!upstream.iter().any(|u| {
-                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.asset) == read.as_ref().map(|(_, sha)| sha)
+                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.file) == read.as_ref()
                     }))
                     .then(|| format!("{up} changed")),
                 });
             }
             for (key, digest) in &node.inputs {
-                let read = upstream.iter().any(|u| u.state.is_none() && &u.node == key && &u.asset == digest);
+                let read = upstream.iter().any(|u| u.state.is_none() && &u.node == key && &u.file == digest);
                 cause = cause.or_else(|| (!read).then(|| format!("{key} changed")));
             }
             status[i] = cause.map_or(Status::Current, Status::Stale);
@@ -251,8 +213,8 @@ fn revision(nodes: &[Node], find: &impl Fn(&str) -> Option<usize>, reader: &Node
 }
 
 /// Each node after what it reads, else in the order the type listed it; what is left over holds a
-/// cycle, returned as its nodes, each reading the next and the last the first.
-fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Vec<usize>> {
+/// cycle, which is refused naming it.
+fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Error> {
     let mut placed = vec![false; nodes.len()];
     let mut order = vec![];
     while let Some(i) = (0..nodes.len()).find(|&i| !placed[i] && upstream[i].iter().all(|edge| placed[edge.node]))
@@ -269,7 +231,14 @@ fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Vec
         let up =
             upstream[at].iter().map(|edge| edge.node).find(|&j| !placed[j]).expect("a node left over reads one");
         if let Some(from) = path.iter().position(|&i| i == up) {
-            return Err(path[from..].to_vec());
+            // Each step of `path` reads the next, so reversed it runs the way the files flow.
+            let mut cycle: Vec<&str> = path[from..].iter().rev().map(|&i| nodes[i].id.as_str()).collect();
+            cycle.push(&nodes[at].id);
+            return Err(invalid(
+                "cycle",
+                format!("a cycle: {} (each is made from the one before it)", cycle.join(" → ")),
+            )
+            .remedy("remove one <mention>, `setup:` or `frame:` that closes it"));
         }
         path.push(up);
     }

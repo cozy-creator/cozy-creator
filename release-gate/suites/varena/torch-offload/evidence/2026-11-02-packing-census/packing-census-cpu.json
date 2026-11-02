@@ -1,0 +1,1 @@
+{"passed": true, "scope": "offline metadata only", "checks": ["two storage versions share one counted native Region", "complete pack reports exact 256-byte alignment gaps", "partial casts preserve unknown old-member-or-gap residual", "historical singleton and absent native entry remain explicit"]}

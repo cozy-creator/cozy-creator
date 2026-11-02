@@ -238,11 +238,15 @@ fn live(stream: &tokio::net::TcpStream) {
 
 #[cfg(unix)]
 fn keepalive(stream: &tokio::net::TcpStream) {
-    use rustix::net::sockopt::{set_socket_keepalive, set_tcp_keepcnt, set_tcp_keepidle, set_tcp_keepintvl};
-    let _ = set_socket_keepalive(stream, true);
-    let _ = set_tcp_keepidle(stream, LIVENESS);
-    let _ = set_tcp_keepintvl(stream, LIVENESS);
-    let _ = set_tcp_keepcnt(stream, 3);
+    use nix::sys::socket::{setsockopt, sockopt};
+    let seconds = LIVENESS.as_secs() as u32;
+    let _ = setsockopt(stream, sockopt::KeepAlive, &true);
+    #[cfg(target_os = "linux")]
+    let _ = setsockopt(stream, sockopt::TcpKeepIdle, &seconds);
+    #[cfg(target_os = "macos")]
+    let _ = setsockopt(stream, sockopt::TcpKeepAlive, &seconds);
+    let _ = setsockopt(stream, sockopt::TcpKeepInterval, &seconds);
+    let _ = setsockopt(stream, sockopt::TcpKeepCount, &3);
 }
 
 struct MeasuredIdentity {

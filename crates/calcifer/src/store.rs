@@ -510,14 +510,6 @@ impl Store {
         self.read(|conn| ask_in(conn, key))
     }
 
-    /// Replaces a pending ask's body: what it is to do, changed by its asker while it waits.
-    pub fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("UPDATE asks SET body = ?2 WHERE key = ?1 AND state = 'pending'", params![key, body])?;
-            Ok(())
-        })
-    }
-
     /// Asks not yet answered: what a starting Calcifer asks again.
     pub fn pending_asks(&self) -> Result<Vec<Ask>> {
         self.read(|conn| {
@@ -564,40 +556,6 @@ impl Store {
         self.read(|db| {
             let id = db.query_row("SELECT id FROM runs WHERE idempotency_key = ?1", [key], |r| r.get::<_, String>(0));
             id.optional()?.map_or(Ok(None), |id| run_in(db, &id))
-        })
-    }
-
-    /// How many runs wait ahead of run `number` for `machine` (none: for any machine to be chosen):
-    /// in the outbox, or in that machine's line.
-    pub fn queued_ahead(&self, machine: Option<&str>, number: u64) -> Result<u32> {
-        self.read(|db| {
-            Ok(db.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine IS ?1 AND number < ?2
-                     AND (state = 'queued' OR (state = 'accepted' AND machine_state = 'queued'))",
-                params![machine, number as i64],
-                |r| r.get(0),
-            )?)
-        })
-    }
-
-    /// The run recorded under `key`, and the digest of what it asked.
-    pub fn recorded(&self, key: &str) -> Result<Option<(RunRow, String)>> {
-        self.read(|db| {
-            let found = db
-                .query_row("SELECT id, digest FROM runs WHERE idempotency_key = ?1", [key], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })
-                .optional()?;
-            let Some((id, digest)) = found else { return Ok(None) };
-            Ok(run_in(db, &id)?.map(|row| (row, digest)))
-        })
-    }
-
-    /// The idempotency key run `id` was submitted under.
-    pub fn key(&self, id: &str) -> Result<Option<String>> {
-        self.read(|db| {
-            let key = db.query_row("SELECT idempotency_key FROM runs WHERE id = ?1", [id], |r| r.get(0));
-            Ok(key.optional()?)
         })
     }
 
@@ -1571,7 +1529,6 @@ impl From<&MachineRow> for Machine {
             unverified: false,
             controller_key: None,
             reach: None,
-            ending: None,
         }
     }
 }
@@ -1795,7 +1752,6 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         },
         cancel_requested: row.cancel_requested,
         machine_state: row.machine_state.clone(),
-        queue_position: None,
         // The machine's own reason, with its traceback, when it is the run's.
         reason: row.reason.clone().map(|reason| {
             (row.outcome.as_ref().and_then(|o| o.reason.clone()))
@@ -1809,7 +1765,6 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         settled_at_ms: row.settled_at_ms,
         waiting: None,
         progress: None,
-        report: None,
         warnings: row.warnings.clone(),
         adjustments: row
             .outcome

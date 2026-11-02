@@ -1,0 +1,13 @@
+{
+  "files": {
+    "README.md": "0670466ad8219e2e0744ecf27048dff6a9364f04a10ec646251cca78f7bc1fd9",
+    "cache-choice-green-d3-25403.json": "777a2585865b81c7c5471162287969995d5bf63cfb3ff95fa9d423ca842f0112",
+    "cache-choice-green-d3-invocation.json": "9ad4176dcc6f0bf2ea68280a476f81bd18d62701f3b86a4f0fc379aecd9fd704",
+    "cache-choice-green-d3-result.json": "2051159772dae38a59954713cee6955b26e320674e7eabf7179a651b7a564da3",
+    "cache-choice-red-e545-25401.json": "fe2bd6b028d9570d9899bf13d932a35f65dea5fa4d92a49040ab49b5cefc3ec7",
+    "cache-choice-red-e545-invocation.json": "729d41ed9f52192fb2b90b758abd5324a707c240afed2caada7d4d4fa4b39398",
+    "cache-choice-red-e545-result.json": "58a9dbb799690afa996b59e1cbab5131c49678d2821a1ddc18ae9a22db29f36b",
+    "independent-review.json": "158034aba467ab22d7065ac237e588d10cac7920ebac7161bb8270d0d7851c04"
+  },
+  "scope": "2026-11-01-hitoshiki-choice"
+}

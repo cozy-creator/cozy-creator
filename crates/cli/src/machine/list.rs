@@ -2,7 +2,7 @@
 use std::process::ExitCode;
 
 use protocol::{
-    calcifer::{LiveRentals, LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
+    calcifer::{LiveRun, Machine, MachineKind, MachineList, MachineState, MachineStatus, Rental},
     error::Error,
 };
 
@@ -41,13 +41,14 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
             .iter()
             .filter(|m| m.state != MachineState::Ended)
     };
-    let rentals = &list.rentals;
-    if rentals.count > 0 {
+    let rentals: Vec<&Rental> = live().filter_map(|m| m.rental.as_ref()).collect();
+    if !rentals.is_empty() {
+        let burn: i64 = rentals.iter().map(|r| r.usd_micros_per_hour).sum();
         println!(
             "Rentals running: {} · {}/hour now{}",
-            rentals.count,
-            usd(rentals.usd_micros_per_hour),
-            accrued(rentals)
+            rentals.len(),
+            usd(burn),
+            accrued(&rentals)
         );
     }
     for problem in &list.unanswered {
@@ -78,7 +79,7 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
             println!("{}: `cozy machine end {}` ends it", m.name, m.name);
         }
     }
-    if rentals.count > 0 {
+    if !rentals.is_empty() {
         println!("{IDLE_RULE}");
     }
     Ok(code)
@@ -459,17 +460,29 @@ fn spent(r: &Rental) -> String {
     }
 }
 
-/// The rentals' accrued total, on its weakest basis; one whose Hub said nothing makes it a floor.
-fn accrued(rentals: &LiveRentals) -> String {
-    let Some(total) = rentals.accrued_usd_micros else {
+/// The rentals' accrued total, on its weakest basis; a rental whose Hub said nothing makes it a floor.
+fn accrued(rentals: &[&Rental]) -> String {
+    let known: Vec<&&Rental> = rentals
+        .iter()
+        .filter(|r| r.spend_usd_micros.is_some())
+        .collect();
+    if known.is_empty() {
         return String::new();
+    }
+    let total: i64 = known.iter().filter_map(|r| r.spend_usd_micros).sum();
+    let basis = |b: &str| known.iter().any(|r| r.spend_basis.as_deref() == Some(b));
+    let suffix = if known.len() < rentals.len() || basis("estimate") {
+        " est."
+    } else if basis("unmetered") {
+        " unmetered"
+    } else {
+        ""
     };
-    let suffix = match rentals.accrued_basis.as_deref() {
-        Some("charged") => "",
-        Some("unmetered") => " unmetered",
-        _ => " est.",
+    let floor = if known.len() < rentals.len() {
+        "at least "
+    } else {
+        ""
     };
-    let floor = if rentals.accrued_floor { "at least " } else { "" };
     format!(" · accrued {floor}{}{suffix}", usd(total))
 }
 

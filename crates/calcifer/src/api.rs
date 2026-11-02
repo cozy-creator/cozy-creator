@@ -1,12 +1,12 @@
-//! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, an allowed `Host`, no
-//! foreign `Origin`, then (on the routes Calcifer serves) the bearer, from the `Authorization`
-//! header or the `cozy_session` cookie `POST /v1/session` sets, and the admission gate a stopping
-//! Calcifer closes. Refusals are `protocol::error::Envelope`s. No CORS header is ever sent.
+//! Calcifer's loopback API (design §3.2): HTTP/1.1, JSON and SSE for the CLI. Every request
+//! passes the guard chain in order: a loopback peer, an allowed `Host`, no foreign `Origin`, then
+//! (on the routes Calcifer serves) the bearer and the admission gate a stopping Calcifer closes.
+//! Refusals are `protocol::error::Envelope`s. No CORS header is ever sent and no cookie is read.
 use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{
         ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
@@ -17,10 +17,10 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, Sse},
     },
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use protocol::{
-    calcifer::{Down, Event, Run, RunList, RunsEvent, Status},
+    calcifer::{Down, Event, Run, RunList, RunsEvent, Status, SubmitRun, Submitted},
     error::{Envelope, Error, Kind},
     ids::RunId,
 };
@@ -36,15 +36,6 @@ use crate::{
     store::{RunFilter, RunRow, State as RunState, StoreError},
 };
 
-// The request fields this request carried that this Calcifer does not read (`parse`), answered as
-// `Cozy-Ignored-Fields`: a client newer than Calcifer learns what it lacks.
-tokio::task_local! {
-    static IGNORED: Arc<std::sync::Mutex<Vec<String>>>;
-}
-
-/// The header a client reads to learn which of its request's fields this Calcifer did not read.
-pub const IGNORED_FIELDS: &str = "cozy-ignored-fields";
-
 /// A submission's bound: files ride as staged paths, never in the body.
 const MAX_BODY: usize = 8 << 20;
 
@@ -53,10 +44,6 @@ pub struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
     pub projects: crate::project::Projects,
-    /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
-    pub(crate) codes: crate::hub::Codes,
-    /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
-    pub(crate) works: crate::hub::Works,
     /// The three spellings of this server's own `host:port`.
     hosts: [String; 3],
     bearer: [u8; 32],
@@ -77,8 +64,6 @@ impl Api {
             calcifer,
             machines,
             projects: Default::default(),
-            codes: Default::default(),
-            works: Default::default(),
             hosts: [
                 format!("127.0.0.1:{port}"),
                 format!("localhost:{port}"),
@@ -132,7 +117,7 @@ impl Api {
 
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
-        .route("/v1/runs", post(crate::runs::submit).get(list))
+        .route("/v1/runs", post(submit).get(list))
         .route("/v1/runs/events", get(runs_events))
         .route("/v1/runs/{id}", get(show))
         .route("/v1/runs/{id}/cancel", post(cancel))
@@ -148,26 +133,9 @@ pub fn router(api: Arc<Api>) -> Router {
         )
         .route("/v1/machines/{name}/keepalive", post(machines::keepalive))
         .route("/v1/machines/{name}/logs/{log}", get(machines::logs))
-        .route("/v1/machines/{name}/update", post(crate::update::update))
-        .route("/v1/machines/{name}/authorized-keys", get(crate::authorized::list))
-        .route(
-            "/v1/machines/{name}/authorized-keys/{key}",
-            put(crate::authorized::add).delete(crate::authorized::remove),
-        )
-        .route("/v1/rental-skus", get(machines::rental_skus))
-        .route("/v1/rentals", get(machines::rentals))
         .route("/v1/rental-quotes", post(machines::quote))
-        .route("/v1/run-quotes", post(crate::runs::quote))
-        .route("/v1/targets", get(crate::runs::describe))
-        .route(
-            "/v1/files/{name}",
-            axum::routing::put(crate::runs::files::put)
-                .head(crate::runs::files::head)
-                .layer(DefaultBodyLimit::disable()),
-        )
-        .route("/v1/session", post(session).delete(end_session))
+        .route("/v1/run-quotes", post(machines::run_quote))
         .merge(crate::project::routes())
-        .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .fallback(unknown_route)
@@ -212,16 +180,15 @@ impl From<StoreError> for Refusal {
     }
 }
 
-/// A key that already names another ask.
-pub(crate) fn conflict(key: &str) -> Error {
-    Error::new(Kind::Conflict, "idempotency_conflict", format!("idempotency key {key:?} already names another run"))
-        .remedy("submit a different run under a new key")
-}
-
 impl From<crate::Error> for Refusal {
     fn from(e: crate::Error) -> Self {
         Refusal(match e {
-            crate::Error::Store(StoreError::Conflict(key)) => conflict(&key),
+            crate::Error::Store(StoreError::Conflict(key)) => Error::new(
+                Kind::Conflict,
+                "idempotency_conflict",
+                format!("idempotency key {key:?} already names another run"),
+            )
+            .remedy("submit a different run under a new key"),
             crate::Error::Store(StoreError::UnknownMachine(name)) => Error::new(
                 Kind::NotFound,
                 "machine_not_found",
@@ -269,15 +236,7 @@ async fn guard(
             );
             refusal.into_response()
         }
-        None => {
-            let ignored = Arc::new(std::sync::Mutex::new(vec![]));
-            let mut response = IGNORED.scope(ignored.clone(), next.run(request)).await;
-            let ignored = ignored.lock().expect("ignored fields").join(",");
-            if let (false, Ok(value)) = (ignored.is_empty(), HeaderValue::from_str(&ignored)) {
-                response.headers_mut().insert(IGNORED_FIELDS, value);
-            }
-            response
-        }
+        None => next.run(request).await,
     };
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -327,50 +286,19 @@ fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
     }
 }
 
-/// The browser session's cookie: the bearer itself, for what cannot send a header (`<video>`,
-/// `EventSource`). Scoped to the API, never readable by a page's script.
-const SESSION: &str = "cozy_session";
-
-/// The bearer, from `Authorization` or the session cookie, then the admission gate for every
-/// mutation but `down`, held while it runs. The cookie rides along on any request a browser makes,
-/// so a cookie-borne request must also prove it is Calcifer's own page: an unsafe method carries
-/// Calcifer's own `Origin` (the guard already refused a foreign one), and a read is never
-/// `Sec-Fetch-Site: cross-site`.
+/// The bearer, then the admission gate for every mutation but `down`, held while it runs.
 async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
-    let headers = request.headers();
-    let bearer = headers
+    let presented = request
+        .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let cookie = (headers.get_all(header::COOKIE).iter())
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(SESSION)?.strip_prefix('='));
-    let admitted = match (bearer, cookie) {
-        (Some(token), _) => api.admits(token),
-        (None, Some(token)) if api.admits(token) => {
-            let safe = matches!(*request.method(), Method::GET | Method::HEAD);
-            let origin = headers.get(header::ORIGIN).is_some();
-            let cross = headers.get("sec-fetch-site").is_some_and(|site| site == "cross-site");
-            if cross || (!safe && !origin) {
-                return refuse(
-                    Kind::Forbidden,
-                    "session_cross_site",
-                    "the session cookie serves Calcifer's own pages only",
-                )
-                .into_response();
-            }
-            true
-        }
-        _ => false,
-    };
-    if !admitted {
+    if !presented.is_some_and(|token| api.admits(token)) {
         return refuse(
             Kind::Credential,
             "unauthenticated",
             "Calcifer's API needs the bearer from its lock record",
         )
-        .remedy("a browser page posts it once to /v1/session")
         .into_response();
     }
     if request.method() == Method::GET || request.uri().path() == "/v1/down" {
@@ -427,7 +355,6 @@ pub fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
             ?ignored,
             "a request carried fields this Calcifer does not read"
         );
-        let _ = IGNORED.try_with(|seen| seen.lock().expect("ignored fields").extend(ignored));
     }
     Ok(value)
 }
@@ -448,6 +375,21 @@ pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
                 .next("cozy run ls"),
         )
     })
+}
+
+async fn submit(
+    State(api): State<Arc<Api>>,
+    IdempotencyKey(key): IdempotencyKey,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<Submitted>), Refusal> {
+    let submit: SubmitRun = parse(&body?)?;
+    let submitted = api.calcifer.submit(&key, submit).await?;
+    let status = if submitted.replay {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((status, Json(submitted)))
 }
 
 #[derive(Deserialize)]
@@ -518,9 +460,13 @@ async fn show(
         return Ok(Json(api.calcifer.record(&row)?));
     }
     let mut run = api.calcifer.store().detail(&row)?;
-    let record = api.calcifer.record(&row)?;
-    (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
-    run.report = crate::runs::report::of(&run);
+    for live in api.calcifer.live(&row.id) {
+        match live {
+            Event::Waiting { reason } => run.waiting = Some(reason),
+            Event::Progress { progress } => run.progress = Some(progress),
+            _ => {}
+        }
+    }
     Ok(Json(run))
 }
 
@@ -549,24 +495,6 @@ async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
     })
 }
 
-/// `POST /v1/session`: the bearer a page presented in `Authorization` (from its URL's fragment,
-/// which no server or log sees), as the session cookie; `admit` already checked it. It lasts while
-/// this Calcifer runs: the next one mints another bearer.
-async fn session(headers: axum::http::HeaderMap) -> Result<Response, Refusal> {
-    let bearer = (headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()))
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| refuse(Kind::Credential, "session_needs_bearer", "a session starts from the bearer itself"))?;
-    let cookie = format!("{SESSION}={bearer}; HttpOnly; SameSite=Strict; Path=/v1");
-    let value = HeaderValue::from_str(&cookie).map_err(|_| refuse(Kind::Usage, "bearer_invalid", "not a bearer"))?;
-    Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, value)]).into_response())
-}
-
-/// `DELETE /v1/session`: the cookie gone from this browser.
-async fn end_session() -> Response {
-    let gone = format!("{SESSION}=; HttpOnly; SameSite=Strict; Path=/v1; Max-Age=0");
-    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, HeaderValue::from_str(&gone).expect("a cookie"))]).into_response()
-}
-
 async fn unknown_route(method: Method, uri: Uri) -> Refusal {
     refuse(
         Kind::NotFound,
@@ -584,16 +512,13 @@ struct Resume {
 /// The run's events from `starting_after`: what the store holds after it, the latest live
 /// events, then the broadcast as it happens. The stream ends after the run's terminal event once
 /// each of its outputs has landed or carries an `export_error`; Calcifer stopping ends it without
-/// one (reconnect from the last `id:`, as `Last-Event-ID` or `?starting_after=`).
+/// one (reconnect from the last `id:`).
 async fn events(
     State(api): State<Arc<Api>>,
     Path(key): Path<String>,
-    headers: axum::http::HeaderMap,
     query: Result<Query<Resume>, QueryRejection>,
 ) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, Refusal> {
     let Query(Resume { starting_after }) = query?;
-    let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
-    let starting_after = starting_after.max(last.unwrap_or(0));
     // Subscribed first: whatever happens after the store is read is in the tail.
     let tail = api.calcifer.subscribe();
     let row = find(&api, &key)?;

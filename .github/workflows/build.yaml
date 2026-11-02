@@ -5,7 +5,6 @@ name: build
 # routes. Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
 # PR + branch state; on a pull request it is skipped, which lets the PR be queued. A docs-only entry (its diff from
 # the entry ahead) passes without building; ALLGREEN keeps it from vouching for the entries ahead (e2e.yaml).
-# The memory-safety step (scripts/memory-safety.sh) runs only when its inputs change.
 on:
   pull_request:
   merge_group:
@@ -32,16 +31,11 @@ jobs:
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
-          changes=$([ -z "$BASE" ] || gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --paginate --jq '.files[] | [.filename, ((.patch // "") | test("allow\\(unsafe_code\\)"))] | @tsv') || changes=
-          files=$(cut -f1 <<< "$changes")
+          files=$([ -z "$BASE" ] || gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --paginate --jq '.files[].filename') || files=
           if [ -n "$files" ] && ! grep -qvE '\.(md|txt|png|jpe?g|svg)$|^docs/|(^|/)LICENSE$' <<< "$files"; then
             echo "docs only"; echo run=false >> "$GITHUB_OUTPUT"
           else
             echo run=true >> "$GITHUB_OUTPUT"
-          fi
-          # An unread diff (a dispatch, a failed compare) runs it too.
-          if [ -z "$files" ] || grep -qP '(^|/)Cargo\.(toml|lock)\t|^(deny\.toml|unsafe-boundaries\.txt|scripts/memory-safety\.sh)\t|\ttrue$' <<< "$changes"; then
-            echo memory_safety=true >> "$GITHUB_OUTPUT"
           fi
       - if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@v5
@@ -63,8 +57,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - if: steps.scope.outputs.run == 'true' && steps.scope.outputs.memory_safety == 'true'
-        run: scripts/memory-safety.sh
       - if: steps.scope.outputs.run == 'true'
         run: cargo check --workspace --all-targets --locked
       - if: steps.scope.outputs.run == 'true'

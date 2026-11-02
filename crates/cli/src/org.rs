@@ -1,13 +1,11 @@
 //! `cozy org claim`: an author takes the org Tensorhub parked under their name; `cozy org edit`: a
-//! platform admin sets an org's name, links and claim handles (xs-131). Through Calcifer
-//! (CALCIFER-API.md "Orgs").
+//! platform admin sets an org's name, links and claim handles (xs-131).
 use std::process::ExitCode;
 
 use protocol::error::Error;
-use protocol::hub::{At, Org, OrgClaim, OrgEdit};
 
 use crate::Context;
-use crate::calcifer_client::path;
+use crate::context::hub_answer;
 use crate::output::{self, Record};
 
 #[derive(clap::Args, Debug)]
@@ -55,13 +53,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 }
 
 async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
-    let ask = OrgEdit {
-        hub: Some(ctx.hub().to_string()),
-        name: args.name,
-        links: (!args.links.is_empty()).then_some(args.links),
-        handles: (!args.handles.is_empty()).then_some(args.handles),
-    };
-    let org: Org = ctx.calcifer().await?.patch(&path(&["v1", "orgs", &args.org]), &ask).await?;
+    let links = (!args.links.is_empty()).then_some(args.links.as_slice());
+    let handles = (!args.handles.is_empty()).then_some(args.handles.as_slice());
+    let client = ctx.hub_signed_in(ctx.hub())?;
+    let org = hub_answer(client.edit_org(&args.org, args.name.as_deref(), links, handles).await)?;
     if ctx.json {
         output::json(&org);
         return Ok(ExitCode::SUCCESS);
@@ -78,10 +73,12 @@ async fn edit(ctx: &Context, args: Edit) -> Result<ExitCode, Error> {
 }
 
 async fn claim(ctx: &Context, args: Claim) -> Result<ExitCode, Error> {
-    let at = At { hub: Some(ctx.hub().to_string()) };
-    let answer: OrgClaim = ctx.calcifer().await?.post(&path(&["v1", "orgs", &args.org, "claim"]), &at, None).await?;
+    let answer = hub_answer(ctx.hub_signed_in(ctx.hub())?.claim_org(&args.org).await)?;
     if ctx.json {
-        output::json(&answer);
+        output::json(&serde_json::json!({
+            "org": answer.org, "claimed": answer.claimed, "code": answer.code,
+            "proofs": answer.proofs, "proven_by": answer.proven_by,
+        }));
         return Ok(ExitCode::SUCCESS);
     }
     if answer.claimed {

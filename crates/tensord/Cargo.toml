@@ -10,12 +10,12 @@ clap.workspace = true
 platform = { workspace = true, features = ["fetch"] }
 getrandom.workspace = true
 protocol.workspace = true
-executor-protocol.workspace = true
 str0m = { version = "0.24", default-features = false, features = ["aws-lc-rs"] }
 hub-client.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
 tensorfs = { workspace = true, features = ["store"] }
+varena.workspace = true
 tempfile.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -27,6 +27,7 @@ libc.workspace = true
 self-replace.workspace = true
 rusqlite = { workspace = true, features = ["fallible_uint"] }
 uuid = { version = "1", features = ["v4"] }
+nix = { workspace = true, features = ["event", "fs", "socket", "uio", "user", "signal", "process", "net"] }
 tokio.workspace = true
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-rustls.workspace = true
@@ -42,6 +43,8 @@ rcgen.workspace = true
 base64.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+tar.workspace = true
+flate2.workspace = true
 rustls.workspace = true
 aws-lc-rs.workspace = true
 time.workspace = true
@@ -49,9 +52,6 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
-
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "net", "process"] }
 
 [lints]
 workspace = true

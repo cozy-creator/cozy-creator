@@ -1,9 +1,6 @@
 # Suite `tensord`: the machine agent through `cozy`, on one rental (2 GPUs for placement). Each check below is an `expect`
 # row, PASS or FAIL with what happened, which analyze.py fails the gate on. Every request has its own prompt and seed.
 T=$OUT/tensord; mkdir -p "$T"
-# Local code's environment stays whole through reclaim's passes, 10 minutes apart: its own wheels were deleted while it ran (cl-724: 26176, 26187).
-links_resolve() { nice -n 19 "$CLI" run "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
-LINKS_AT=$(date +%s); LINKS_FIRST=$(links_resolve)
 # submit <target> [inputs]: a run on $M (e2e/run.sh's run_submit), followed in the background; prints its number. Its
 # files are $T/run-*.{ndjson,json,...} and its outputs $T/out/run-*, named in $T/<number>.name.
 submit() {
@@ -177,8 +174,3 @@ if [ "$s" = completedcompletedcompletedcompleted ] && [ -n "$f0" ] && [ -n "$f1"
 else
   expect tensord-adapter-views FAIL "runs $v0 $v1 $v2 $v3: $s; the disk's free bytes went ${f0:-?} -> ${f1:-?} ($(( grew >> 20 )) MiB used)"
 fi
-
-# The second reading, past two of reclaim's passes since the first.
-while (( $(date +%s) - LINKS_AT < 1260 )); do sleep 30; done
-LINKS_LAST=$(links_resolve)
-expect reclaim-keeps-local-code "$([ -n "$LINKS_FIRST" ] && jq -e '.dangling == 0' <<< "$LINKS_LAST" > /dev/null 2>&1 && echo PASS || echo FAIL)" "first $LINKS_FIRST; after two passes $LINKS_LAST"

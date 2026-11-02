@@ -1,5 +1,6 @@
 //! A launchd LaunchAgent in the user's GUI domain. `KeepAlive{SuccessfulExit=false}` restarts it
 //! only after a failure, so a stop is a `bootout` (a signalled exit counts as a failure).
+#![allow(unsafe_code)]
 use super::{ServiceSpec, run};
 use crate::{Error, Result, durable, paths::Home};
 use std::{
@@ -91,7 +92,8 @@ fn launchctl(args: &[&str]) -> Command {
 }
 
 fn domain() -> String {
-    format!("gui/{}", rustix::process::getuid().as_raw())
+    // SAFETY: getuid cannot fail.
+    format!("gui/{}", unsafe { libc::getuid() })
 }
 
 fn label(name: &str) -> String {
