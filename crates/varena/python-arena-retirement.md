@@ -53,4 +53,34 @@ or native quarantine and the original reason; no CUDA mock or Arc-count polling 
 used to authorize cleanup.
 
 No current-format/compatibility changes, public P4 API changes, GPU action or release
-claim belongs to this delta. Source and staged-fixture checks are pending.
+claim belongs to this delta.
+
+## Source checks and unrun GPU cell
+
+The native/core and full TensorFS binding check passed with Rust 1.99.1, offline,
+locked, one Cargo job and nice 19 (27.29 seconds; final formatted source 2.25 seconds).
+The new fixture passes Ruff and Python AST parsing. The existing entrypoint module
+retains two older BLE001 findings; comparing full Ruff output against the base
+confirms no new findings. The new handler documents its failure-preservation scope explicitly.
+
+`release-gate/suites/varena/owner-runtime/ci_varena_owner/pyarena_retirement.py`
+is an ordinary `pyarena_retirement` GPU entrypoint, not executed by these checks.
+Bind exact paired wheels and an actually owned GPU with the existing
+`owner-runtime/make-payload.py`, then run only through ordinary `cozy run` with
+`--gpus=1`. The fixture verifies the real Runtime Request, current artifact hashes,
+GPU UUID, shared native client and registered Cache owner. Its temporary Dedicated
+setting is explicit fixture intent and is restored; it is not machine-mode proof.
+
+The destructor-only arm does not call close/request before deleting the Arena.
+It keeps escaped Region/Use/tensor owners and full-byte readback, then requires
+actual physical weight accounting to return to baseline after the final declared
+consumer event. The separate close arm preserves a genuine Plan owner, observes
+a pending ticket during real nonblocking-stream capture with zero native CUDA-call
+delta, rejects new root reservations, and requires exact completion after owners
+are gone. It never authorizes disposal by Arc count or a timeout.
+
+Existing `Use.commit()` is used only for fill preparation; this is not a proof
+that all preparation avoids context joins or that asynchronous Source adoption is
+qualified. A real same-process handoff-fault/quarantine and GIL-starvation case
+remain unrun. The source preserves custody on those failure paths; no fake CUDA
+or manufactured poisoned Arena is used to label them qualified.

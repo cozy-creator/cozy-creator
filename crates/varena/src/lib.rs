@@ -793,6 +793,12 @@ impl Arena {
         arena_retirement::request(self)
     }
 
+    /// Drop-custody handoff. Current-process failures remain in native quarantine
+    /// with a Failed ticket. Inherited rejection returns this Arc before any lock.
+    pub fn defer_retirement(self:Arc<Self>) -> std::result::Result<ArenaRetirement,(Arc<Self>,Error)> {
+        arena_retirement::defer(self)
+    }
+
     pub fn device(&self) -> i32 {
         self.device
     }
