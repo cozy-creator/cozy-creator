@@ -30,7 +30,7 @@ impl PyPlan {
         arena: PyRef<'_, PyArena>,
         phases: Vec<(String, Vec<Py<PyRegion>>)>,
     ) -> PyResult<Self> {
-        let arena = arena.arena.clone();
+        let arena = arena.owner()?;
         let phases = phases
             .into_iter()
             .map(|(name, regions)| {

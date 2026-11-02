@@ -219,6 +219,46 @@ pub(crate) fn request(
     }
 }
 
+/// Destructor adapter: current-process handoff failures keep the exact Arena in
+/// the existing native quarantine and return its failed, host-only ticket. A fork
+/// rejection precedes every inherited mutex and returns ownership to the caller.
+pub(crate) fn defer(
+    arena: Arc<Arena>,
+) -> std::result::Result<ArenaRetirement, (Arc<Arena>, Error)> {
+    if arena.pid != std::process::id() {
+        return Err((
+            arena,
+            Error::Invalid("arena retirement inherited after fork"),
+        ));
+    }
+    match request(arena) {
+        Ok(ticket) => Ok(ticket),
+        Err((arena, error)) => {
+            let metadata = arena.metadata.clone();
+            let control = {
+                // Recover poisoned metadata only to preserve owned resources, not to
+                // grant further work or reinterpret the failed operation as successful.
+                let mut held = metadata.observers.lock().unwrap_or_else(|e| e.into_inner());
+                held.closing = true;
+                metadata.control(&mut held)
+            };
+            let ticket = ArenaRetirement {
+                control: control.clone(),
+            };
+            let device = arena.device();
+            retirement::quarantine(
+                device,
+                retirement::Job::Arena(Payload::Detach {
+                    arena: Some(arena),
+                    control,
+                }),
+                &error,
+            );
+            Ok(ticket)
+        }
+    }
+}
+
 pub(crate) enum Payload {
     Detach {
         arena: Option<Arc<Arena>>,

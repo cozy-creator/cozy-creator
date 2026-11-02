@@ -130,10 +130,42 @@ def request_cache_shrink(device: int, bytes: int) -> _ext._VarenaCacheRequest | 
     return _ext._varena_cache_request(device, bytes)
 
 
+class ArenaRetirement:
+    """Host-only retirement result. Pending never means released GPU capacity."""
+
+    def __init__(self, native: _ext._VarenaArenaRetirement) -> None:
+        self._native = native
+
+    def facts(self) -> dict[str, Any]:
+        return self._native.facts()
+
+    def try_complete(self) -> bool:
+        """Observe completion without GPU work; failure keeps native custody."""
+        return self._native.try_complete()
+
+
 class Arena:
     def __init__(self, device: int) -> None:
         self._native = _ext._VarenaArena(device)
         self.device = device
+
+    @property
+    def id(self) -> int:
+        """Never-reused native lifetime identity, not a device address."""
+        return self._native.id
+
+    @property
+    def closed(self) -> bool:
+        return self._native.closed
+
+    def close(self) -> ArenaRetirement:
+        """Transfer this root to native retirement; existing Region/Pin/Plan owners survive.
+
+        Returns the same native host ticket on repeated calls. A refused handoff
+        leaves this root usable/retryable. This never waits for GPU completion.
+        Final Python object disposal requests the same native custody automatically.
+        """
+        return ArenaRetirement(self._native.close())
 
     @property
     def granularity(self) -> int:

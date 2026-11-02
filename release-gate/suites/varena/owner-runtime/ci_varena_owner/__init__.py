@@ -293,3 +293,13 @@ def shared_python_clients(payload: Probe, ctx: Context) -> Report:
     except Exception as error:
         return Report(False, json.dumps({'passed': False, 'error': f'{type(error).__name__}: {error}',
                                         'traceback': traceback.format_exc()}, sort_keys=True))
+
+
+@app.entrypoint(accelerator=True)
+def pyarena_retirement(payload: Probe, ctx: Context) -> Report:
+    from .pyarena_retirement import exercise as exercise_pyarena_retirement
+    try:
+        return exercise_pyarena_retirement(payload, ctx)
+    except Exception as error:  # noqa: BLE001 - Preserve real fixture failure without retry.
+        return Report(False, json.dumps({'passed': False, 'error': f'{type(error).__name__}: {error}',
+                                        'traceback': traceback.format_exc()}, sort_keys=True))
