@@ -13,10 +13,6 @@ crates/platform/src/handles/windows.rs
 crates/platform/src/ipc/unix.rs
 crates/platform/src/ipc/windows.rs
 crates/platform/src/lock.rs
-crates/platform/src/memory/linux.rs
-crates/platform/src/memory/macos.rs
-crates/platform/src/memory/mod.rs
-crates/platform/src/memory/unix.rs
 crates/platform/src/memory/windows.rs
 crates/platform/src/net.rs
 crates/platform/src/paths.rs
@@ -25,8 +21,6 @@ crates/platform/src/process/macos.rs
 crates/platform/src/process/unix.rs
 crates/platform/src/process/windows.rs
 crates/platform/src/service/windows.rs
-crates/platform/src/shm/linux.rs
-crates/platform/src/shm/mod.rs
 crates/platform/src/watch/macos.rs
 crates/platform/src/watch/windows.rs
 crates/tensorfs-py/src/cleanup.rs
