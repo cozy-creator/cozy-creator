@@ -626,8 +626,13 @@ impl Binder<'_> {
                 .remedy(describe::usage_line(self.target, self.callable))
             })?;
             let (source, range) = clip::fragment(&spec.source, &field)?;
-            let path = match self.terms.upload(&source.to_string_lossy()) {
+            let named = source.to_string_lossy();
+            let path = match self.terms.upload(&named) {
                 Some(path) => path,
+                None if named.starts_with("sha256:") => {
+                    return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no file {named}"))
+                        .remedy(format!("PUT its bytes to /v1/files/{named} first, or name the file by its path")));
+                }
                 None => self.resolve(&source)?,
             };
             let sniffed = sniff(&path)?;
