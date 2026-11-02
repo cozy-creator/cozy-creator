@@ -2570,6 +2570,7 @@ dependencies = [
  "sha2",
  "sigstore-verify",
  "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "windows-sys 0.61.2",
@@ -3956,6 +3957,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "varena",
  "webpki-roots",
  "zip",
 ]
@@ -3993,6 +3995,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+ "varena",
  "webpki-roots",
 ]
 
@@ -4435,8 +4438,40 @@ dependencies = [
 name = "varena"
 version = "0.17.16"
 dependencies = [
+ "libc",
  "libloading 0.9.0",
+ "nvml-wrapper",
+ "nvml-wrapper-sys",
+ "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "varena-client"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.9.0",
+]
+
+[[package]]
+name = "varena-mixed-client"
+version = "0.0.0"
+dependencies = [
+ "platform",
+ "varena",
+ "varena-client",
+]
+
+[[package]]
+name = "varena-native-gpu-proof"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "libloading 0.9.0",
+ "serde_json",
+ "tensorfs",
+ "tokio",
+ "varena",
 ]
 
 [[package]]

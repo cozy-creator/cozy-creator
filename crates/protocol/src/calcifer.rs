@@ -1189,6 +1189,9 @@ pub struct MachineUpdate {
     /// Development only: the most of each GPU's memory the machine uses, in bytes; 0 lifts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_limit: Option<u64>,
+    /// Shared/Dedicated category, applied after the ordinary drain and restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::config::MachineMode>,
 }
 
 /// One component of a `MachineUpdate`: `{"version": "0.33.1"}` or `{"file": "/abs/path"}`.

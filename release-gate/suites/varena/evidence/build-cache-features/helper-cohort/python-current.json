@@ -1,0 +1,118 @@
+{
+  "passed": true,
+  "python": [
+    3,
+    12
+  ],
+  "cases": [
+    {
+      "name": "default",
+      "package_nodes": 234,
+      "features": [
+        "tensorfs-py/default",
+        "tensorfs-py/extension-module",
+        "tensorfs-py/store",
+        "pyo3/abi3-py311"
+      ],
+      "native_tensorfs": {
+        "tensorfs v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-native-build-cache/crates/tensorfs)": [
+          "store"
+        ]
+      },
+      "graphs_equal": true,
+      "helpers_common_graph_equal": true,
+      "helper_only_nodes": [
+        "varena-client v0.1.0 (<repo>/crates/varena-client)",
+        "varena-mixed-client v0.0.0 (<repo>/release-gate/suites/varena/public-api)",
+        "varena-native-gpu-proof v0.0.0 (<repo>/release-gate/suites/varena/native-gpu)"
+      ],
+      "common_feature_graph_sha256": "7ecf170b413e498298c93129261947ed6e37ccb88c832502d9fd6cfebd7e7872",
+      "interpreter": "/usr/bin/python3"
+    },
+    {
+      "name": "unqualified",
+      "package_nodes": 234,
+      "features": [
+        "tensorfs-py/default",
+        "tensorfs-py/extension-module",
+        "tensorfs-py/store",
+        "pyo3/abi3-py311",
+        "tensorfs-py/strict-pid-guard"
+      ],
+      "native_tensorfs": {
+        "tensorfs v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-native-build-cache/crates/tensorfs)": [
+          "store"
+        ]
+      },
+      "graphs_equal": true,
+      "helpers_common_graph_equal": true,
+      "helper_only_nodes": [
+        "varena-client v0.1.0 (<repo>/crates/varena-client)",
+        "varena-mixed-client v0.0.0 (<repo>/release-gate/suites/varena/public-api)",
+        "varena-native-gpu-proof v0.0.0 (<repo>/release-gate/suites/varena/native-gpu)"
+      ],
+      "common_feature_graph_sha256": "559a96113b65ee9869a866f36b5e2b23063f18a41ec309bafeb2619bee5e5927",
+      "interpreter": "/usr/bin/python3"
+    },
+    {
+      "name": "qualified",
+      "package_nodes": 234,
+      "features": [
+        "tensorfs-py/default",
+        "tensorfs-py/extension-module",
+        "tensorfs-py/store",
+        "pyo3/abi3-py311",
+        "varena/strict-pid-guard"
+      ],
+      "native_tensorfs": {
+        "tensorfs v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-native-build-cache/crates/tensorfs)": [
+          "store"
+        ]
+      },
+      "graphs_equal": true,
+      "helpers_common_graph_equal": true,
+      "helper_only_nodes": [
+        "varena-client v0.1.0 (<repo>/crates/varena-client)",
+        "varena-mixed-client v0.0.0 (<repo>/release-gate/suites/varena/public-api)",
+        "varena-native-gpu-proof v0.0.0 (<repo>/release-gate/suites/varena/native-gpu)"
+      ],
+      "common_feature_graph_sha256": "003e422831435c551c8eee812bceb95094fa371edf81d56583b0b9574364fc14",
+      "interpreter": "/usr/bin/python3"
+    },
+    {
+      "name": "all_python_features",
+      "package_nodes": 234,
+      "features": [
+        "tensorfs-py/default",
+        "tensorfs-py/extension-module",
+        "tensorfs-py/store",
+        "pyo3/abi3-py311",
+        "tensorfs-py/kernel-fork-guard",
+        "tensorfs-py/strict-pid-guard"
+      ],
+      "native_tensorfs": {
+        "tensorfs v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-native-build-cache/crates/tensorfs)": [
+          "store"
+        ]
+      },
+      "graphs_equal": true,
+      "helpers_common_graph_equal": true,
+      "helper_only_nodes": [
+        "varena-client v0.1.0 (<repo>/crates/varena-client)",
+        "varena-mixed-client v0.0.0 (<repo>/release-gate/suites/varena/public-api)",
+        "varena-native-gpu-proof v0.0.0 (<repo>/release-gate/suites/varena/native-gpu)"
+      ],
+      "common_feature_graph_sha256": "92481adf38ccca6ff389dec8ebf6f0d4444b857a54ce837c490d399fd0073a5d",
+      "interpreter": "/usr/bin/python3"
+    }
+  ],
+  "old_native_defaults_reproduced": {
+    "tensorfs v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-native-build-cache/crates/tensorfs)": [
+      "default",
+      "store"
+    ]
+  },
+  "option_forwarding": true,
+  "full_wheel_refusals": true,
+  "scope": "real Cargo tree graphs only; no build/cache-speed/GPU claim"
+}
