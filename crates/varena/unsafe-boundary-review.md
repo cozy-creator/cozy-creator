@@ -166,4 +166,4 @@ Child inherits deliberately locked owner control and must fail before access; on
 
 Exported symbols must be unique and preserve exact C signatures. Borrowed fixture stream remains alive across checked free/done retry; RETRY holds all Gpu/Region/Use/Allocation owners. C entrypoints must not unwind through caller. Apply the documented crate-root deny/boundary discipline to this new FFI fixture crate as well.
 
-The zero-span export correction and packing/source-unit-test cleanup are separately owned follow-ups; frozen GPU receipts remain attached to their original hashes. The landed platform cleanup is preserved, including deleted shared-memory/dead memory APIs; consumers use only Signal, wait_any and Waitable.
+The zero-span export correction and packing/source-unit-test cleanup are now source-integrated from draft #2481. Their host receipts remain tied to that lane, and GPU execution is still pending; frozen baseline receipts remain attached to their original hashes. The landed platform cleanup is preserved, including deleted shared-memory/dead memory APIs; consumers use only Signal, wait_any and Waitable.
