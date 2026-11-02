@@ -100,7 +100,7 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
         result['provenance'] = provenance
         directory = tempfile.mkdtemp(prefix='varena-cache-pages-', dir='/dev/shm')
         os.chmod(directory, 0o700)
-        if helper in ('varena-async-fill', 'varena-public-source'):
+        if helper in ('varena-async-fill', 'varena-public-source', 'varena-pinned-host'):
             command = [str(binary), mode, payload.gpu_uuid, '0']
         elif helper == 'varena-rust-source':
             command = [str(binary), payload.gpu_uuid, '0']
@@ -493,3 +493,15 @@ def source_host_bytes(payload: Probe, ctx: Context) -> Report:
 def rust_source(payload: Probe, ctx: Context) -> Report:
     assert payload.expected_devices == 1
     return native(payload, ctx, "source", helper="varena-rust-source")
+
+
+@app.entrypoint(accelerator=True)
+def pinned_host_alloc(payload: Probe, ctx: Context) -> Report:
+    """Bounded Driver API diagnostic with CPU-mapped gate release; no policy verdict."""
+    return native(payload, ctx, 'alloc', helper='varena-pinned-host')
+
+
+@app.entrypoint(accelerator=True)
+def pinned_host_free(payload: Probe, ctx: Context) -> Report:
+    """Bounded Driver API diagnostic with CPU-mapped gate release; no policy verdict."""
+    return native(payload, ctx, 'free', helper='varena-pinned-host')

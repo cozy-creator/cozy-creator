@@ -223,10 +223,15 @@ fn run() -> Result<Value> {
     ledger::initialize()?;
     let device = args[4].parse::<i32>()?;
     let mut cuda = Cuda::open(device)?;
+    let counter_directory = if args[1] == "owner_try_close" {
+        let path = std::path::Path::new(&args[2]).join("cuda-counter");
+        std::fs::create_dir(&path)?;
+        Some(path)
+    } else { None };
     let peer = cooperative::Peer::open(
         device,
         ledger::Device::parse(&args[3])?,
-        std::path::Path::new(&args[2]),
+        counter_directory.as_deref().unwrap_or_else(|| std::path::Path::new(&args[2])),
         ledger::Sharing::Shared,
         0,
     )?;

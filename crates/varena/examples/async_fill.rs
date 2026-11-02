@@ -185,6 +185,7 @@ impl Resources {
 }
 impl Resources {
     fn retire_checked(&self) -> varena::Result<()> {
+        eprintln!("{}", json!({"diagnostic":"resources.retire_enter","host":self.host}));
         let mut state = self
             .state
             .lock()
@@ -209,35 +210,44 @@ impl Resources {
         // SAFETY: this wrapper retains every exact native handle. Varena calls this only
         // after all producers complete under retirement exclusion; setup failure has no work.
         unsafe {
+            eprintln!("{}", json!({"diagnostic":"resources.before_context_push","host":self.host}));
             status(
                 "fixture cuCtxPushCurrent",
                 (self.cuda.push)(self.cuda.context as Obj),
             )?;
+            eprintln!("{}", json!({"diagnostic":"resources.after_context_push","host":self.host}));
             let released: varena::Result<()> = (|| {
                 while state.streams_released < self.streams.len() {
+                    eprintln!("{}", json!({"diagnostic":"resources.before_stream_destroy","index":state.streams_released,"host":self.host}));
                     status(
                         "fixture cuStreamDestroy",
                         (self.cuda.stream_destroy)(self.streams[state.streams_released] as Obj),
                     )?;
                     state.streams_released += 1;
+                    eprintln!("{}", json!({"diagnostic":"resources.after_stream_destroy","released":state.streams_released,"host":self.host}));
                 }
                 if !state.host_released {
+                    eprintln!("{}", json!({"diagnostic":"resources.before_host_free","host":self.host}));
                     status(
                         "fixture cuMemFreeHost",
                         (self.cuda.host_free)(self.host as Obj),
                     )?;
                     state.host_released = true;
+                    eprintln!("{}", json!({"diagnostic":"resources.after_host_free","host":self.host}));
                 }
                 Ok(())
             })();
             let mut old = std::ptr::null_mut();
+            eprintln!("{}", json!({"diagnostic":"resources.before_context_pop","host":self.host}));
             let popped = status("fixture cuCtxPopCurrent", (self.cuda.pop)(&mut old));
+            eprintln!("{}", json!({"diagnostic":"resources.after_context_pop","host":self.host}));
             released?;
             popped?;
         }
         state.retired = true;
         state.failed = false;
         self.dropped.fetch_add(1, Ordering::SeqCst);
+        eprintln!("{}", json!({"diagnostic":"resources.retired","host":self.host}));
         Ok(())
     }
 }
@@ -279,6 +289,13 @@ fn until(mut condition: impl FnMut() -> Result<bool>) -> Result<()> {
         )?;
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+fn until_observed(label: &str, condition: impl FnMut() -> Result<bool>, observe: impl FnOnce() -> Result<Value>) -> Result<()> {
+    eprintln!("{}", json!({"diagnostic":"predicate.begin","label":label}));
+    let result = until(condition); // Original deadline, interval and predicate unchanged.
+    let detail = observe().unwrap_or_else(|error| json!({"observation_error":error.to_string()}));
+    eprintln!("{}", json!({"diagnostic":"predicate.end","label":label,"met":result.is_ok(),"detail":detail}));
+    result
 }
 fn fill(region: &Arc<varena::Region>) -> Result<varena::Fill> {
     match region.prepare()? {
@@ -717,11 +734,11 @@ fn retirement_pending(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     let ticket = unsafe { session.publish()? };
     drop(session);
     drop(resources);
-    until(|| {
+    until_observed("retirement_pending.later_resource", || {
         Ok(ticket.facts()?.completed
             && dropped.load(Ordering::SeqCst) == 1
             && ticket.facts()?.resources_remaining == 1)
-    })?;
+    }, || Ok(json!({"fill":facts(ticket.facts()?),"dropped":dropped.load(Ordering::SeqCst),"errors":errors.load(Ordering::SeqCst)})))?;
     let pending_facts = ticket.facts()?;
     require(
         !pending_facts.retirement_finished && pending_facts.retirement_failure.is_none(),
@@ -736,7 +753,7 @@ fn retirement_pending(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
         "pending resource lost capture exclusion",
     )?;
     release_gate(&cuda, gate, control)?;
-    until(|| Ok(ticket.facts()?.retirement_finished))?;
+    until_observed("retirement_pending.after_gate", || Ok(ticket.facts()?.retirement_finished), || Ok(facts(ticket.facts()?)))?;
     require(
         errors.load(Ordering::SeqCst) == 0,
         "checked source retirement failed",

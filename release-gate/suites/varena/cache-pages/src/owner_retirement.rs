@@ -69,6 +69,8 @@ pub(super) fn poll(
 ) -> Result<Value> {
     let descriptor = ledger::Device::parse(uuid)?;
     let directory = std::path::Path::new(directory);
+    // Registration-free actual service table; observer Peer is a counter in its separate table.
+    let table = ledger::Ledger::open_nonblocking(directory, descriptor)?;
     let owner = Owner::get_or_open(
         device,
         descriptor,
@@ -102,7 +104,7 @@ pub(super) fn poll(
             "pending owner falsely reported retired",
         )?;
         require(
-            observer
+            table
                 .snapshot()?
                 .rows
                 .iter()
@@ -127,7 +129,7 @@ pub(super) fn poll(
         "completion ticket missing retired state",
     )?;
     require(
-        !observer
+        !table
             .snapshot()?
             .rows
             .iter()
@@ -151,7 +153,7 @@ pub(super) fn poll(
     let next_row = next.id();
     complete(&next)?;
     require(
-        !observer
+        !table
             .snapshot()?
             .rows
             .iter()

@@ -82,7 +82,7 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
         )?;
     }
     let ticket = request_retirement(retiring)?;
-    until(|| Ok(ticket.facts()?.observers_detached))?;
+    until_observed("arena_retirement.observers_detached", || Ok(ticket.facts()?.observers_detached), || Ok(json!({"arena":arena_facts(&ticket)?,"fill":facts(fill_ticket.facts()?)})))?;
     require(
         !ticket.try_complete()?,
         "retirement discarded a live Fill/consumer owner",
@@ -99,7 +99,7 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     useful_work(&cuda, &live_region, independent, independent_output)?;
 
     release_gate(&cuda, producer_gate, control)?;
-    until(|| Ok(fill_ticket.facts()?.retirement_finished))?;
+    until_observed("arena_retirement.producer_resources", || Ok(fill_ticket.facts()?.retirement_finished), || Ok(json!({"arena":arena_facts(&ticket)?,"fill":facts(fill_ticket.facts()?),"dropped":dropped.load(Ordering::SeqCst),"errors":errors.load(Ordering::SeqCst)})))?;
     require(
         dropped.load(Ordering::SeqCst) == 1 && errors.load(Ordering::SeqCst) == 0,
         "checked Fill resources did not retire exactly once",
@@ -121,7 +121,7 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     drop(region);
     // Observation only: native retirement makes the decision; this fixture never forces
     // Arc ownership or uses its count to authorize physical teardown.
-    until(|| Ok(weak.strong_count() == 0))?;
+    until_observed("arena_retirement.final_handoff", || Ok(weak.strong_count() == 0), || Ok(json!({"arena":arena_facts(&ticket)?,"strong_owners":weak.strong_count()})))?;
     require(
         !ticket.try_complete()? && ticket.facts()?.remaining_physical_bytes == physical,
         "final Arena handoff treated a pending consumer fence as complete",
@@ -136,7 +136,7 @@ pub(super) fn run(cuda: Arc<Cuda>, device: i32) -> Result<Value> {
     release_gate(&cuda, consumer_gate, control)?;
     cuda.sync(consumer)?;
     cuda.verify(output)?;
-    until(|| ticket.try_complete().map_err(Into::into))?;
+    until_observed("arena_retirement.consumer_complete", || ticket.try_complete().map_err(Into::into), || arena_facts(&ticket))?;
     require(
         ticket.facts()?.remaining_physical_bytes == 0,
         "completed Arena still has physical bytes",

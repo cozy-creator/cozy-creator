@@ -142,6 +142,7 @@ static int host_contract(void) {
     return 0;
 }
 static int host_bytes(int device,const char *uuid) {
+    fprintf(stderr,"{\"diagnostic\":\"host_bytes.enter\"}\n");fflush(stderr);
     CU control=NULL,consumer=NULL,blocked=NULL;
     OK(cuda.stream_create(&control,1));OK(cuda.stream_create(&consumer,1));OK(cuda.stream_create(&blocked,1));
     void *host_gate=NULL;uint64_t gate=0;OK(cuda.host_allocate(&host_gate,4,3));OK(cuda.host_device(&gate,host_gate,0));
@@ -151,16 +152,16 @@ static int host_bytes(int device,const char *uuid) {
     const size_t bytes=(5u<<20)+31; /* More than two reuse boundaries and a short tail. */
     unsigned char *source=malloc(bytes);REQUIRE(source!=NULL);
     for(size_t i=0;i<bytes;++i) source[i]=(unsigned char)((i*17+9)%251);
-    OK(vr_v1_gpu_open(device,&gpu));
-    OK(vr_v1_region_from_host(gpu,source,bytes,&region));memset(source,0,bytes);free(source);
-    OK(vr_v1_alloc(gpu,bytes,(uint64_t)(uintptr_t)consumer,&allocation));OK(vr_v1_allocation_ptr(allocation,&out));
+    fprintf(stderr,"{\"diagnostic\":\"host_bytes.before_gpu_open\"}\n");fflush(stderr);OK(vr_v1_gpu_open(device,&gpu));fprintf(stderr,"{\"diagnostic\":\"host_bytes.after_gpu_open\"}\n");fflush(stderr);
+    fprintf(stderr,"{\"diagnostic\":\"host_bytes.before_region_from_host\"}\n");fflush(stderr);OK(vr_v1_region_from_host(gpu,source,bytes,&region));fprintf(stderr,"{\"diagnostic\":\"host_bytes.after_region_from_host\"}\n");fflush(stderr);memset(source,0,bytes);free(source);
+    fprintf(stderr,"{\"diagnostic\":\"host_bytes.before_working_alloc\"}\n");fflush(stderr);OK(vr_v1_alloc(gpu,bytes,(uint64_t)(uintptr_t)consumer,&allocation));fprintf(stderr,"{\"diagnostic\":\"host_bytes.after_working_alloc\"}\n");fflush(stderr);OK(vr_v1_allocation_ptr(allocation,&out));
     /* A context-wide source join would block here behind the independent gate. */
-    OK(vr_v1_use(gpu,&region,1,(uint64_t)(uintptr_t)consumer,&used));OK(vr_v1_use_ptr(used,0,&pointer));
+    fprintf(stderr,"{\"diagnostic\":\"host_bytes.before_use\"}\n");fflush(stderr);OK(vr_v1_use(gpu,&region,1,(uint64_t)(uintptr_t)consumer,&used));fprintf(stderr,"{\"diagnostic\":\"host_bytes.after_use\"}\n");fflush(stderr);OK(vr_v1_use_ptr(used,0,&pointer));
     OK(cuda.copy(out,pointer,bytes,consumer));OK(cuda.stream_sync(consumer));
     REQUIRE(cuda.stream_query(blocked)==600);
     unsigned char *read=malloc(bytes);REQUIRE(read!=NULL);OK(cuda.read(read,out,bytes));
     for(size_t i=0;i<bytes;++i) {REQUIRE(read[i]==(unsigned char)((i*17+9)%251));}free(read);
-    OK(vr_v1_done(used));OK(vr_v1_region_close(region));
+    fprintf(stderr,"{\"diagnostic\":\"host_bytes.before_done\"}\n");fflush(stderr);OK(vr_v1_done(used));fprintf(stderr,"{\"diagnostic\":\"host_bytes.after_done\"}\n");fflush(stderr);fprintf(stderr,"{\"diagnostic\":\"host_bytes.before_region_close\"}\n");fflush(stderr);OK(vr_v1_region_close(region));fprintf(stderr,"{\"diagnostic\":\"host_bytes.after_region_close\"}\n");fflush(stderr);
     OK(cuda.write(control,gate,1,0));OK(cuda.stream_sync(control));OK(cuda.stream_sync(blocked));
     OK(vr_v1_free(allocation));OK(cuda.stream_sync(consumer));uint64_t released=0;OK(vr_v1_trim(gpu,&released));
     OK(vr_v1_gpu_close(gpu));
