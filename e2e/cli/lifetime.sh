@@ -56,13 +56,17 @@ update_done() {
 
 lifetime() {
 step "a silent run is never judged, and shows how long it has not moved"
-if launch silent silent seconds:=150; then
-  sleep 75
-  cozy run show "$n" --once > "$OUT/silent.still.txt" 2>&1 || true
+if launch silent silent seconds:=70; then
+  # Past the old 30 s floor, and past the minute after which run show says how long the run has not moved.
+  for _ in $(seq 70); do
+    cozy run show "$n" --once > "$OUT/silent.still.txt" 2>&1 || true
+    grep -q 'no progress for 1m' "$OUT/silent.still.txt" && break
+    sleep 1
+  done
   grep -q 'no progress for 1m' "$OUT/silent.still.txt" || check "silent: run show $n does not say how long it has made no progress: $(grep -i progress "$OUT/silent.still.txt")"
-  settled silent 240
+  settled silent 120
   J '.status == "completed"' "$OUT/silent.show.json" || check "silent: run $n is $(jq -c '[.status, .reason]' "$OUT/silent.show.json"), not completed"
-  echo "silent: run $n completed after 150 s without a word; at 75 s: $(grep -o 'no progress for [0-9a-z]*' "$OUT/silent.still.txt")"
+  echo "silent: run $n completed after 70 s without a word; while it went: $(grep -o 'no progress for [0-9a-z]*' "$OUT/silent.still.txt")"
 fi
 
 step "a cancel ends a silent run at once"

@@ -2,32 +2,28 @@
 # e2e/candidates/build.sh <cozy|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
 # its file. cozy (TensorD, the dev cozy <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
 # checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
-#   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it (candidate-<what>-<sha>)
-#                for <src>'s commit, or for an older one on its first-parent line with the same build inputs
-# With $GITHUB_OUTPUT, `name` is the artifact's: candidate-<what>-<commit>. A release candidate is no build: e2e takes
-# its exact version through `cozy machine update` (candidates/action.yml), which fetches and verifies it.
+#   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
+#                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
+# With $GITHUB_OUTPUT, `name` is the artifact's: candidate-<what>-<inputs>, <inputs> the build inputs' tree hash (the
+# Runtime's: its commit). A release candidate is no build: e2e takes its exact version through `cozy machine update`
+# (candidates/action.yml), which fetches and verifies it.
 set -euo pipefail
 what=$1 src=$2 out=$3
 exe=''
 [ "${RUNNER_OS:-}" != Windows ] || exe=.exe
 mkdir -p "$out"
 
-# reuse: the candidate an earlier cozy-creator e2e run built from these sources, walking back from <src>'s commit to
-# the last one that touched a build input. Only a merge group's or a dispatch's run counts: a pull request's runs the
-# PR's own workflow.
+# reuse: the candidate an earlier cozy-creator e2e run built from the same build inputs. Only a merge group's or a
+# dispatch's run counts: a pull request's runs the PR's own workflow.
 reuse() {
-  local last sha run
-  last=$(git -C "$src" rev-list -n1 HEAD -- crates Cargo.toml Cargo.lock rust-toolchain.toml e2e/candidates)
-  for sha in $(git -C "$src" rev-list --first-parent -n 30 HEAD); do
-    for run in $(gh api "repos/cozy-creator/cozy-creator/actions/artifacts?name=candidate-$what-$sha" \
-      --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
-      gh api "repos/cozy-creator/cozy-creator/actions/runs/$run" --jq '.event + " " + .path' \
-        | grep -qxE '(merge_group|workflow_dispatch) \.github/workflows/e2e\.yaml' || continue
-      gh run download "$run" -R cozy-creator/cozy-creator -n "candidate-$what-$sha" -D "$out" > /dev/null || continue
-      echo "$what: reused candidate-$what-$sha of https://github.com/cozy-creator/cozy-creator/actions/runs/$run" >&2
-      return 0
-    done
-    [ "$sha" != "$last" ] || break
+  local run
+  for run in $(gh api "repos/cozy-creator/cozy-creator/actions/artifacts?name=$name" \
+    --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
+    gh api "repos/cozy-creator/cozy-creator/actions/runs/$run" --jq '.event + " " + .path' \
+      | grep -qxE '(merge_group|workflow_dispatch) \.github/workflows/e2e\.yaml' || continue
+    gh run download "$run" -R cozy-creator/cozy-creator -n "$name" -D "$out" > /dev/null || continue
+    echo "$what: reused $name of https://github.com/cozy-creator/cozy-creator/actions/runs/$run" >&2
+    return 0
   done
   return 1
 }
@@ -38,10 +34,13 @@ case $what in
   *) echo "build.sh: no candidate $what" >&2; exit 2 ;;
 esac
 sha=$(git -C "$src" rev-parse HEAD)
-name=candidate-$what-$sha
+inputs=$sha
+[ "$repo" != cozy-creator ] || inputs=$(git -C "$src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock \
+  HEAD:rust-toolchain.toml HEAD:e2e/candidates | sha256sum | cut -c1-40)
+name=candidate-$what-$inputs
 if [ -n "${REUSE:-}" ]; then
   # REUSE=1 only reuses: nothing is written, and no name, when no run has these sources' candidate.
-  reuse || { echo "$what: no e2e run of cozy-creator holds a build of ${sha:0:12}'s sources" >&2; exit 0; }
+  reuse || { echo "$what: no e2e run of cozy-creator holds a build of ${sha:0:12}'s build inputs ($inputs)" >&2; exit 0; }
 elif [ "$what" = cozy ]; then
   # The dev build `cozy machine update --tensord` takes, dev-build.yaml's stamp.
   (cd "$src"

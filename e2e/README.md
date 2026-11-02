@@ -23,11 +23,32 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
   a release, a delete, rentals, another account's repository, an altered or expired capability and, with `--rental`, once the
   rental ends. It speaks the Hub's API, runs nothing; the release suite runs it on its throwaway upload.
 - `.github/workflows/e2e.yaml` runs the selected suites on PRs here and for cozy-runtime, packages and the release gate. On Linux
-  each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier cozy-creator run that built the same
-  sources, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over every shard.
+  each candidate is one `candidate` job (`candidates/build.sh`), reused from an earlier merge-group or dispatched run that built
+  the same build inputs, and `cli` and `imports` run in shards (`--shard`) on their own runners; `e2e` checks coverage over
+  every shard.
 
-Run one suite on a fresh computer: `e2e/cli/run.sh --out /tmp/e2e [--tensord ./cozy] [--runtime <wheel or version>] [--tensorfs <wheel or version>]`.
+Run one suite on a fresh computer: `e2e/cli/run.sh --out /tmp/e2e [--shard S] [--tensord ./cozy] [--runtime <wheel or version>] [--tensorfs <wheel or version>]`.
 Against chosen versions: `gh workflow run e2e.yaml -f repo=cozy-runtime -f ref=<sha> -f stack_ref=<cozy-creator sha> -f select="cli imports build:runtime"`.
+
+## A PR's proof is a cell
+
+A behaviour a PR adds or fixes gets a cell here instead of a proof run by hand on a laptop: the merge queue runs it on
+the PR's final state, on a fresh runner, through the real CLI and Calcifer. A cell is one part of the cli suite: a
+function in `cli/<area>.sh` (`projects` in `cli/project.sh`, `lifetime` in `cli/lifetime.sh`), listed in a shard in
+`cli/run.sh`. It uses lib.sh's `cozy` (each call logged for coverage), `check` (a failure recorded, the suite goes on)
+and `cell` (one `cozy run` followed to its end), makes its fixtures at run time, and waits on events, never a fixed
+sleep. A new verb or flag also needs its line in `coverage.toml`.
+
+- **Earn its place.** It covers a real user path or a bug that escaped, and no other cell covers the same path; one that
+  shares another's setup joins it. When you add one, look for one to remove.
+- **Budget.** A typical cli/calcifer PR's `e2e` is at most 7 min and 11 jobs. Put a cell in the shard with room (its
+  step times are in the run's log); a new shard needs a job the budget gives back elsewhere.
+- **Prove it before the queue:** dispatch e2e on the PR's head,
+  `gh workflow run e2e.yaml -R cozy-creator/cozy-creator --ref <branch> -f ref=<head sha> -f select=cli`. That run's
+  candidate is reused by the PR's queue entry when the PR is up to date. Its PR's `## Proof` links that run.
+- **On your own computer:** `e2e/cli/run.sh --out DIR --shard commands --tensord <dev cozy>` installs cozy as a person does
+  into this computer's default home and puts the candidate on, so run it on a computer that is yours to replace (a VM,
+  a runner); never on a shared one.
 
 ## Merging (Paul, 2026-10-24)
 
