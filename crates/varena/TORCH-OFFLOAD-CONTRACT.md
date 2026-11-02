@@ -67,6 +67,13 @@ extensions are refused. No application-code retry follows allocation failure.
   to the core; add no Python byte caps, victim selection, working reserve or prefetch
   sizing policy. Mutable buffers stay ordinary working state, not reconstructible weights.
 
+The adapter's declared forwards now register Region sets and call the existing native
+Plan activation/deactivation through additive C/Python/Rust intent-only entry points.
+Nested calls restore parent intent; exceptions retire the active interval, and dtype
+versions refresh the declarations before entry. This does not supply a compute key,
+checked completion or successful H training. CPU intent flow is exercised with actual
+models; native phase observation has a separate coordinator-owned GPU fixture.
+
 ## Proof and integration boundary
 
 Local work can qualify real Torch CPU metadata, alias/identity, mutation rejection and

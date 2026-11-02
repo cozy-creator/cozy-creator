@@ -7,6 +7,11 @@ No client downloads weights. GPU execution belongs to the coordinator.
 - `inventory_cpu.py`, `diffusers_inventory_cpu.py`: non-mutating discovery clients.
 - `adapter_cpu.py`: public `vt.offload`, actual tied/direct/alias reads, immutable dtype
   versions, mutation refusals and real tiny VAE encode/decode on CPU Sources.
+- `review_cpu.py`: real stock comparisons for ordinary writable outputs, all four
+  floating-only convenience casts, and explicit complex dtype conversion.
+- `intent.py`: real CPU forwards through repeated/declared nested boundaries,
+  exception cleanup and dtype refresh. `--device 0` additionally observes the actual
+  native phase view on the coordinator GPU; that mode remains unrun in this lane.
 - `adapter_gpu.py --device 0`: prepared actual CUDA client for native typed reads,
   default and explicit streams, later consumers, ties, old aliases and tiny VAE.
 - `sdxl_gpu.py /existing/local/model --device 0`: prepared stock SDXL baseline/adopted
