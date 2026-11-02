@@ -92,14 +92,14 @@ def main():
         assert observed["row"] is not None and observed["row"]["pid"] == os.getpid()
         row_id = observed["owner"]
         result["observer_after_closed_lease"] = observed
-        initial = _ext._varena_working_stats(0)
+        initial = helper.working_stats()
         assert initial["allocated_bytes"] == initial["mapped_bytes"] == 0, initial
         count = 8 << 20
         gate = helper.allocate(4, control)
         output = helper.allocate(count, work)
         control.write_gate(gate, 0)
         control.finish()
-        baseline = _ext._varena_working_stats(0)
+        baseline = helper.working_stats()
         assert baseline["allocated_bytes"] == count + 4, baseline
         data = first.alloc(count, work.handle)
         allocations.append(data)
@@ -138,7 +138,7 @@ def main():
             passive_pending, label="passive-only service with gated Working"
         )
         assert pending["activity"] == pending["row"]["activity"] == "Unknown", pending
-        pending_stats = _ext._varena_working_stats(0)
+        pending_stats = helper.working_stats()
         assert pending_stats["allocated_bytes"] == baseline["allocated_bytes"]
         assert work.pending()
         result["pending"] = {
@@ -182,7 +182,7 @@ def main():
             )
 
         ready = until(passive_ready, label="actual pending-to-ready publication")
-        result["ready"] = {"facts": ready, "working": _ext._varena_working_stats(0)}
+        result["ready"] = {"facts": ready, "working": helper.working_stats()}
         third = varena.open(0)
         public.append(third)
         before_reuse = third.stats()
@@ -253,7 +253,7 @@ def main():
             if control is not None:
                 control.close()
             if helper is not None:
-                final = _ext._varena_working_stats(0)
+                final = helper.working_stats()
                 result["final_working"] = final
                 assert all(
                     final[name] == 0

@@ -45,6 +45,10 @@ class Probe:
         self.lib.probe_core_identity.restype = C.c_uint64
         self.lib.probe_last_error.restype = C.c_char_p
         self.lib.probe_observer_facts.restype = C.c_char_p
+        self.lib.probe_working_stats.argtypes = [C.c_int]
+        self.lib.probe_working_stats.restype = C.c_char_p
+        self.lib.probe_table_snapshot.argtypes = [C.c_char_p, C.c_char_p]
+        self.lib.probe_table_snapshot.restype = C.c_char_p
 
     def call(self, name, *args):
         result = getattr(self.lib, "probe_" + name)(*args)
@@ -62,6 +66,12 @@ class Probe:
         value = C.c_uint64()
         self.call("alloc", device, bytes, stream.handle, C.byref(value))
         return value.value
+
+    def working_stats(self, device=0):
+        value = json.loads(self.lib.probe_working_stats(device))
+        if "error" in value:
+            raise RuntimeError(value["error"])
+        return value
 
     def facts(self):
         value = json.loads(self.lib.probe_observer_facts())

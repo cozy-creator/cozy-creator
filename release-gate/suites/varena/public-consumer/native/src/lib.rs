@@ -163,3 +163,64 @@ pub extern "C" fn probe_observer_facts() -> *const c_char {
         Err(error) => json!({"error":error}).to_string(),
     })
 }
+
+/// Registration-free metadata observation of an explicitly named existing ledger domain.
+/// This opens no Owner/Peer and performs no CUDA initialization or device observation.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn probe_table_snapshot(
+    uuid: *const c_char,
+    directory: *const c_char,
+) -> *const c_char {
+    let result = (|| -> Result<Value> {
+        let uuid = unsafe { string(uuid)? };
+        let directory = unsafe { string(directory)? };
+        let device = ledger::Device::parse(&uuid).map_err(error)?;
+        let table = match ledger::Ledger::open_nonblocking(std::path::Path::new(&directory), device)
+        {
+            Ok(table) => table,
+            Err(ledger::Error::Busy) => return Ok(json!({"deferred":true})),
+            Err(value) => return Err(error(value)),
+        };
+        let snapshot = match table.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(ledger::Error::Busy) => return Ok(json!({"deferred":true})),
+            Err(value) => return Err(error(value)),
+        };
+        let rows = snapshot.rows.iter().map(|row| json!({
+            "id":{"slot":row.id.slot,"incarnation":row.id.incarnation},
+            "pid":row.pid,"start_ticks":row.start_ticks,"sharing":format!("{:?}",row.sharing),
+            "priority":row.priority,"activity":format!("{:?}",row.activity),
+            "requestable":row.requestable,"last_use":row.last_use,"want":row.want,
+            "physical":{"weights":bytes(row.physical.weights),"working":bytes(row.physical.working),
+                "graph_pools":bytes(row.physical.graph_pools),"caches":bytes(row.physical.caches)},
+            "reclaimable":row.reclaimable,
+        })).collect::<Vec<_>>();
+        Ok(
+            json!({"protocol_version":snapshot.protocol_version,"generation":snapshot.generation,
+            "capacity_epoch":snapshot.capacity_epoch,"backing_device":snapshot.backing_device,
+            "backing_inode":snapshot.backing_inode,"rows":rows}),
+        )
+    })();
+    text(match result {
+        Ok(value) => value.to_string(),
+        Err(error) => json!({"error":error}).to_string(),
+    })
+}
+
+/// Actual metadata-only Working counters, independent of any Torch binding.
+#[unsafe(no_mangle)]
+pub extern "C" fn probe_working_stats(device: i32) -> *const c_char {
+    let result = varena::working::stats(device).map(|s| json!({
+        "allocated_bytes":s.allocated_bytes,"allocated_capacity":s.allocated_capacity,
+        "mapped_bytes":s.mapped_bytes,"pending_bytes":s.pending_bytes,"free_bytes":s.free_bytes,
+        "reclaimable_bytes":s.reclaimable_bytes,"unassigned_bytes":s.unassigned_bytes,
+        "pools_bytes":s.pools_bytes,"allocations":s.allocations,"frees":s.frees,
+        "driver_memory_calls":s.driver_memory_calls,"driver_physical_ooms":s.driver_physical_ooms,
+        "cache_mapped_bytes":s.cache_mapped_bytes,"cache_live_bytes":s.cache_live_bytes,
+        "cache_pending_bytes":s.cache_pending_bytes,"cache_ready_bytes":s.cache_ready_bytes,
+    }));
+    text(match result {
+        Ok(value) => value.to_string(),
+        Err(error) => json!({"error":error.to_string()}).to_string(),
+    })
+}
