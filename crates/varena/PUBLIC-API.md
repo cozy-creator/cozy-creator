@@ -14,11 +14,11 @@ The draft in design Appendix A was not a previously shipped ABI.
 
 | Concept | Implemented interface | Current boundary |
 | --- | --- | --- |
-| GPU | open/close, stats, trim; repeated opens share a public arena and the process working allocator | Linux shared-library packaging; primary CUDA context only |
+| GPU | open/close, stats, trim; each open owns an Arena/client lease, sharing the process allocator/service | Linux shared-library packaging; primary CUDA context only |
 | weight Region | copied immutable host bytes or C Source callback, stable VA, retained Uses | Full-region fills; current core joins completion before publishing; no asynchronous fill claim |
 | working allocation | alloc, pointer, record_stream, free | Eager inference; allocation stream retained; side streams must be recorded |
 | rebuildable Cache | reserve, exact page commit/release, poll/info, asynchronous owner shrink, close | Owner selects disposable pages; live KV is never reclaimed merely because it is a Cache |
-| execution Plan | copied phase descriptors retaining Regions and Sources, scoped measured eager passes | One arena per GPU, one active phase; no automatic repeat/prefetch scheduling |
+| execution Plan | copied phase descriptors retaining Regions and Sources, scoped measured eager passes | Same-device multi-arena Regions, one active phase; no automatic repeat/prefetch scheduling |
 
 The Rust frontend is `crates/varena-client` (use dependency alias `varena` if desired).
 It links only the C ABI; it does not embed a Rust allocator. `Gpu`, `Region`, `Use`,
@@ -59,6 +59,13 @@ nonblocking streams and prove their own completion with events.
 
 ## Ownership, streams and errors
 
+Ordinary open inherits a ready service's verified cooperation domain and configuration.
+If none exists, native code discovers the authoritative CUDA/NVML identity and creates
+the one private default domain with Shared mode and priority0. Creation defaults never
+reconfigure a surviving service. Generic clients remain Unknown until actual lifecycle
+reporting exists; opening a Gpu does not fabricate idle state or an H measurement.
+
+
 Closing a GPU releases its handle; children retain device ownership. A Region pointer
 is only a reserved address. A Use pins its backing and Source until `done`; closing the
 Region first does not invalidate the Use. Plans retain Sources as well as reservations.
@@ -80,18 +87,21 @@ abandoned live Cache bytes. These job counts are not physical-reclamation credit
 An abandoned Rust Pass whose abort is refused transfers its entire Plan for retirement.
 Use an explicit complete/abort retry if the caller needs to retain that Plan.
 
-Final Arena teardown keeps retirement exclusion through destruction, without holding
-the capture mutex across context synchronization. The complete Arena stays owned on
-failure. Persistent observer references held by Peer and the callback worker still
-require the coordinator's pending native retirement interface; P4 neither forces
-reference counts nor stops a surviving shared service to bypass that requirement.
+Final Arena teardown uses the native per-device retirement queue. Persistent Peer
+and callback-worker observer roots detach there; genuine Region/Pin/Fill/Plan owners
+survive. The API worker observes only a host ticket and keeps its service client lease
+until actual Arena completion or quarantine. Closing that lease uses nonwaiting native
+polling. Process allocator keepalive is a separate integration gate: closing a public
+Gpu must not silently remove accounting for still-owned global Working/Torch storage.
 
 Streams must belong to the GPU's primary context and remain live through every retained
-Use/allocation. Stream 0 means the legacy default stream, not an arbitrary current Torch
-stream. Public operations reject observed capture/replay; direct raw CUDA capture outside
-Varena's registered graph integration is unsupported. No raw pointer or escaped tensor
-may outlive its owning Use/allocation/cache pages. GPU mutation of immutable weights,
-training, arbitrary escaped storage aliases, reset, fork and private contexts are unsupported.
+Use/allocation. Public operations refuse default-stream sentinels0/1/2 before submission;
+pass the actual explicit CUDA stream handle. The Torch allocator adapter still honors
+real framework stream identities, including an explicitly used framework default queue;
+it never reinterprets already submitted work. Public operations reject observed capture/
+replay; direct raw CUDA capture outside Varena's registered graph integration is unsupported.
+No raw pointer or escaped tensor may outlive its owning Use/allocation/cache pages.
+GPU mutation of immutable weights, training, reset, fork and private contexts are unsupported.
 Borrowed streams must survive deferred retirement too. Use checked close/retry or wait
 for retirement to drain before destroying a foreign stream. This is part of the unsafe
 Rust stream-import and raw C/Python stream contracts.

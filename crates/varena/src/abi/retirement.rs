@@ -6,19 +6,23 @@ use std::time::Duration;
 
 enum Job {
     Handle(u64),
-    Arena(Arc<Arena>),
-    ArenaTicket(crate::ArenaRetirement),
+    Arena(Arc<Arena>, ServiceLease),
+    ArenaTicket(RetiringArena),
     Source(super::source::Ticket),
     Fill(crate::FillTicket),
+}
+struct RetiringArena {
+    ticket: crate::ArenaRetirement,
+    service: ServiceLease,
 }
 #[derive(Default)]
 struct State {
     jobs: VecDeque<Job>,
     processing: u64,
-    arena_tickets: Vec<crate::ArenaRetirement>,
+    arena_tickets: Vec<RetiringArena>,
+    refused_arenas: Vec<(Arc<Arena>, ServiceLease)>,
     source_tickets: Vec<super::source::Ticket>,
     fill_tickets: Vec<crate::FillTicket>,
-    refused_arenas: Vec<Arc<Arena>>,
     retired: u64,
     quarantined: u64,
     abandoned_bytes: u64,
@@ -51,7 +55,7 @@ pub(super) fn start() -> Result<&'static Arc<Queue>> {
     }
 }
 
-pub(super) fn arena(arena: Arc<Arena>) {
+pub(super) fn arena(arena: Arc<Arena>, service: ServiceLease) {
     // Every public Gpu is constructed only after start succeeds. The queue and worker
     // live for the process; no CUDA/source destructor runs while publishing this job.
     let queue = QUEUE
@@ -63,7 +67,7 @@ pub(super) fn arena(arena: Arc<Arena>) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .jobs
-        .push_back(Job::Arena(arena));
+        .push_back(Job::Arena(arena, service));
     queue.changed.notify_one();
 }
 
@@ -155,16 +159,16 @@ fn handle(id: u64, queue: &Queue) -> Outcome {
     }
 }
 
-fn retire_arena(arena: Arc<Arena>, queue: &Queue) -> Outcome {
+fn retire_arena(arena: Arc<Arena>, service: ServiceLease, queue: &Queue) -> Outcome {
     // The native job detaches persistent observer roots and preserves genuine owners.
     // The ABI worker never polls Arc counts, waits for GPU work or owns final GPU State.
     // Current-process handoff failure is retained in the native quarantine, not dropped.
     match arena.defer_retirement() {
-        Ok(ticket) => observe_arena(ticket, queue),
+        Ok(ticket) => observe_arena(RetiringArena { ticket, service }, queue),
         Err((arena, error)) => {
             let error = Failure::from(error);
             if matches!(error.0, CAPTURING | BUSY) {
-                return Outcome::Retry(Job::Arena(arena));
+                return Outcome::Retry(Job::Arena(arena, service));
             }
             if error.0 == FAULT {
                 ABI_FAULT.store(true, Ordering::Release);
@@ -174,18 +178,33 @@ fn retire_arena(arena: Arc<Arena>, queue: &Queue) -> Outcome {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .refused_arenas
-                .push(arena);
+                .push((arena, service));
             Outcome::Quarantined
         }
     }
 }
 
-fn observe_arena(ticket: crate::ArenaRetirement, queue: &Queue) -> Outcome {
-    match ticket.try_complete() {
+fn observe_arena(retiring: RetiringArena, queue: &Queue) -> Outcome {
+    // Preserve service accounting until physical Arena completion. Closing the client
+    // then polls only its original host Control; this worker never waits on a service.
+    let result = retiring
+        .ticket
+        .try_complete()
+        .map_err(Failure::from)
+        .and_then(|done| {
+            if done {
+                retiring.service.try_close()
+            } else {
+                Ok(false)
+            }
+        });
+    match result {
         Ok(true) => Outcome::Done,
-        Ok(false) => Outcome::Retry(Job::ArenaTicket(ticket)),
+        Ok(false) | Err(Failure(CAPTURING | BUSY, _, _)) => {
+            Outcome::Retry(Job::ArenaTicket(retiring))
+        }
         Err(error) => {
-            if Failure::from(error).0 == FAULT {
+            if error.0 == FAULT {
                 ABI_FAULT.store(true, Ordering::Release);
             }
             // The native queue already retains the exact GPU owners. Keep the host
@@ -195,7 +214,7 @@ fn observe_arena(ticket: crate::ArenaRetirement, queue: &Queue) -> Outcome {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .arena_tickets
-                .push(ticket);
+                .push(retiring);
             Outcome::Quarantined
         }
     }
@@ -244,7 +263,7 @@ fn run(queue: Arc<Queue>) {
         for job in jobs {
             let outcome = match job {
                 Job::Handle(id) => handle(id, &queue),
-                Job::Arena(arena) => retire_arena(arena, &queue),
+                Job::Arena(arena, service) => retire_arena(arena, service, &queue),
                 Job::ArenaTicket(ticket) => observe_arena(ticket, &queue),
                 Job::Source(ticket) => observe_source(ticket, &queue),
                 Job::Fill(ticket) => observe_fill(ticket, &queue),
