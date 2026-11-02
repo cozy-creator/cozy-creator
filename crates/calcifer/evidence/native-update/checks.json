@@ -1,0 +1,17 @@
+{
+  "command": "CARGO_TARGET_DIR=<root-lent xs138-multi-gpu-start/.task/target> CARGO_BUILD_JOBS=1 nice -n19 cargo check --locked --offline -p calcifer -p cli -p protocol --all-targets -j1",
+  "results": {
+    "check-001.log": {
+      "sha256": "c362aa8e426a89ec47a94b3f6ef5fac4c21069cd927f6fc73237736f2f315588",
+      "passed": true
+    },
+    "check-002.log": {
+      "sha256": "6e60541a93cb1233e09148a2e705a8dad6a8f4431beb93b65f9997216e7d9a93",
+      "passed": true
+    }
+  },
+  "incremental_seconds": 25.75,
+  "warnings": "existing vendor/faer warnings; no added error",
+  "windows_lief_source_configured": true,
+  "windows_execution": false
+}

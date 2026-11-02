@@ -22,3 +22,17 @@ real CAS files and a real isolated SQLite journal. It tests bundle/version custo
 concurrent idempotency and cancellation while the real staging lock is held. The
 proof's machine has no endpoint and no live machine is changed. Source/build/host
 proof does not qualify a live restart or GPU propagation.
+
+## Local result
+
+All four real host proofs passed (313.90s), including canceled-caller custody and
+two same-key submissions through the actual journal. The exact private-linked
+cozy input reports 0.15.7 before and after debug-only stripping and archive staging;
+its sidecar libraries remain unchanged. The complete calcifer/CLI/protocol
+all-target check passed, then the final incremental check passed in 25.75s.
+Receipts and compressed original logs are under `evidence/native-update`.
+
+Activation and rollback source matches 0fbbc114f byte-for-byte; its earlier native
+rollback receipt is preserved and **was not rerun** by this task. No live machine,
+release or GPU was changed. Windows now requests the bundler's required `lief`
+dependency; actual Windows packaging execution remains untested.

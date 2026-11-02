@@ -291,6 +291,7 @@ fn build(dir: &Path, distribution: &str) -> Result<PathBuf, Error> {
         let mut command = std::process::Command::new("uv");
         command.args(["run", "--no-project"]);
         if cfg!(target_os = "linux") { command.args(["--with", "patchelf"]); }
+        if cfg!(windows) { command.args(["--with", "lief"]); }
         let output = command.arg("python").arg(&script)
             .arg("--binary").arg(&binary).arg("--target").arg(&profile)
             .arg("--out").arg(&bundled).current_dir(dir)

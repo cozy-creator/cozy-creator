@@ -19,6 +19,16 @@ fn submit(input: StagedInput, version: String) -> SubmitRun {
         }, inputs:vec![input], out:None, warnings:vec![],
     }
 }
+fn isolated(home: &Path, outputs: &Path) -> Arc<crate::Calcifer> {
+    let calcifer = crate::Calcifer::open(home, outputs).unwrap();
+    calcifer.put_machine(&crate::store::MachineRow {
+        name:"isolated-unconnected-proof".into(), kind:MachineKind::Added, hub:String::new(),
+        rental_id:None, endpoint:None, key:home.join("unused-key"),
+        state:wire::MachineState::Booting, served:false, reason:Some("host proof has no endpoint".into()),
+    }).unwrap();
+    calcifer
+}
+
 async fn until(mut done: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !done() { tokio::time::sleep(Duration::from_millis(5)).await; }
@@ -66,7 +76,7 @@ fn real_binary_measurement_keeps_version_and_complete_bundle() {
 async fn canceled_caller_keeps_bundle_through_actual_journal_custody() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("calcifer");fs::create_dir_all(&home).unwrap();
-    let calcifer = crate::Calcifer::open(&home, &root.path().join("outputs")).unwrap();
+    let calcifer = isolated(&home, &root.path().join("outputs"));
     let source = binary();
     let measured = measured(&source, "").unwrap();
     let temp_path = measured.bundle.as_ref().unwrap().path().to_path_buf();
@@ -96,7 +106,7 @@ async fn canceled_caller_keeps_bundle_through_actual_journal_custody() {
 async fn same_key_generated_bundles_keep_content_identity_through_journal_race() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("calcifer");fs::create_dir_all(&home).unwrap();
-    let calcifer = crate::Calcifer::open(&home, &root.path().join("outputs")).unwrap();
+    let calcifer = isolated(&home, &root.path().join("outputs"));
     let source = binary();
     let first = measured(&source, "").unwrap();let second = measured(&source, "").unwrap();
     assert_ne!(first.input.path, second.input.path);
