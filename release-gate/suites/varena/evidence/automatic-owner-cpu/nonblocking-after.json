@@ -1,0 +1,113 @@
+{
+  "passed": true,
+  "cuda_initialized": false,
+  "scope": "real native metadata/OFD/process proof only; no driver capacity measurement",
+  "binary_sha256": "222aa7c2296a23a49fe007ed4f75315176311c22442e4063f29397b7df8a65bd",
+  "stopped_holder": 10,
+  "startup_and_operations_deferred": true,
+  "close_returned_with_live_pid_and_free_row_lock": {
+    "participant": false,
+    "pid": 8
+  },
+  "resume_reap_fresh_sample": {
+    "before": {
+      "capacity_epoch": 4,
+      "device": 219,
+      "generation": 6,
+      "inode": 3,
+      "round": {
+        "aborted": false,
+        "completed": 0,
+        "donors": [
+          {
+            "answer": "Waiting",
+            "completed": 0,
+            "incarnation": 1,
+            "pending": 0,
+            "requested": 64,
+            "slot": 0
+          }
+        ],
+        "finished": false,
+        "id": 6,
+        "requested": 64,
+        "sample": 5
+      },
+      "rows": [
+        {
+          "idle": 64,
+          "incarnation": 1,
+          "live": 0,
+          "pending": 0,
+          "pid": 8,
+          "priority": 0,
+          "reclaimable": 64,
+          "slot": 0,
+          "start_ticks": 53186114
+        },
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 9,
+          "priority": 0,
+          "reclaimable": 0,
+          "slot": 1,
+          "start_ticks": 53186114
+        }
+      ],
+      "sample": {
+        "capacity_epoch": 4,
+        "id": 5,
+        "total": 10000,
+        "used": 1000
+      }
+    },
+    "after": {
+      "capacity_epoch": 5,
+      "device": 219,
+      "generation": 8,
+      "inode": 3,
+      "round": {
+        "aborted": false,
+        "completed": 0,
+        "donors": [
+          {
+            "answer": "OwnerGone",
+            "completed": 0,
+            "incarnation": 1,
+            "pending": 0,
+            "requested": 64,
+            "slot": 0
+          }
+        ],
+        "finished": true,
+        "id": 6,
+        "requested": 64,
+        "sample": 5
+      },
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 9,
+          "priority": 0,
+          "reclaimable": 0,
+          "slot": 1,
+          "start_ticks": 53186114
+        }
+      ],
+      "sample": {
+        "capacity_epoch": 5,
+        "id": 8,
+        "total": 10000,
+        "used": 1000
+      }
+    },
+    "departed_pid_still_alive": true,
+    "row_disappearance_credited_zero": true
+  }
+}
