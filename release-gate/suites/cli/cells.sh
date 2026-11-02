@@ -107,7 +107,7 @@ YAML
     cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
   fi
   ( cd "$P/notes" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from notes/: $(tail -c 400 project-render.log)"
-  "$CLI" --json project -p "$P" status > project-status.json 2>&1
+  "$CLI" --json project -p "$P" status 2> /dev/null > project-status.json
   ok=$(jq -r '[.nodes[] | select(.kind != "upscale" and .status != "current")] | length' project-status.json 2>/dev/null)
   [ "$ok" = 0 ] || cli_fail "after render all, $ok nodes are not current: $(tail -c 400 project-status.json)"
   [ -s "$P/edit.mp4" ] || cli_fail "render all cut no edit.mp4"
@@ -121,7 +121,7 @@ YAML
   grep -q "out of date now: one, start, two$" project-approve.log \
     || cli_fail "approving lead put out of date other than one, start, two: $(tail -c 300 project-approve.log)"
   "$CLI" project -p "$P" render place --approve --on "$M" > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
-  "$CLI" --json project -p "$P" status > project-status-2.json 2>&1
+  "$CLI" --json project -p "$P" status 2> /dev/null > project-status-2.json
   jq -e '.nodes[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
     || cli_fail "render place --approve did not approve version 2: $(jq -c '.nodes[] | select(.name == "place")' project-status-2.json)"
   # place renamed yard in project.yaml (and its mentions): status suggests the rename, which keeps its versions.
@@ -130,7 +130,7 @@ YAML
   grep -q "cozy project rename place yard" project-orphan.log || cli_fail "status did not suggest the rename: $(tail -c 300 project-orphan.log)"
   "$CLI" project -p "$P" rename place yard > project-rename.log 2>&1 || cli_fail "project rename: $(tail -c 300 project-rename.log)"
   "$CLI" project -p "$P" rename place.a yard.a >> project-rename.log 2>&1 || cli_fail "project rename of the setup: $(tail -c 300 project-rename.log)"
-  "$CLI" --json project -p "$P" status > project-renamed.json 2>&1
+  "$CLI" --json project -p "$P" status 2> /dev/null > project-renamed.json
   jq -e '(.orphans // []) == [] and (.nodes[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
     || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.orphans, (.nodes[] | select(.name == "yard"))]' project-renamed.json)"
   # A person's save while a run is in flight stands: cozy writes only project.lock.
