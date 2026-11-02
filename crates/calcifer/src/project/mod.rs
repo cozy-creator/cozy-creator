@@ -600,7 +600,7 @@ async fn runs(
             Ok(beatless) if !beatless.is_empty() => {
                 return Err(Refusal(
                     Error::new(Kind::Validation, "beats_needed", beatless[0].clone())
-                        .remedy("give it beats: [{at, prompt}, …]; nothing was rendered"),
+                        .remedy("give it beats:, each with at: and prompt:; nothing was rendered"),
                 ));
             }
             Ok(_) => {}
@@ -611,7 +611,11 @@ async fn runs(
         }
     }
     for name in asked.names.iter().filter(|_| !all) {
-        let node = video.graph.nodes[find(&video, name).map_err(Refusal)?].id.clone();
+        let i = find(&video, name).map_err(Refusal)?;
+        let node = video.graph.nodes[i].id.clone();
+        if video.is_reference(i) {
+            return Err(Refusal(video::reference_made(&node)));
+        }
         let take = || Take { key: new_key(), node: node.clone(), target: target.clone(), approve: asked.approve };
         takes.extend((0..asked.n.max(1)).map(|_| take()));
     }
