@@ -1,0 +1,172 @@
+[
+  {
+    "name": "concurrent-different",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--mode",
+      "concurrent",
+      "--loader-source",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs"
+    ],
+    "exit": 0,
+    "stdout": "{\"mode\": \"concurrent\", \"results\": [{\"package\": \"second\", \"accepted\": false, \"error\": \"private Rust dependency mismatch: TensorFS needs elf-ea3805f57ab33259be409f540dc35cef360f42e9, loaded Varena is elf-17f7bb472cee3d60f5e95a30d42ca287e8af0667; use matching native artifacts in a fresh process (public C ABI compatibility is separate)\"}, {\"package\": \"first\", \"accepted\": true, \"extension_import\": true, \"identity\": 129263233017320}], \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "concurrent-matching",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/agent-private-final/matching-copy/tensorfs",
+      "--mode",
+      "concurrent",
+      "--loader-source",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs"
+    ],
+    "exit": 0,
+    "stdout": "{\"mode\": \"concurrent\", \"results\": [{\"package\": \"first\", \"accepted\": true, \"extension_import\": true, \"identity\": 134361321448936}, {\"package\": \"second\", \"accepted\": true, \"extension_import\": true, \"identity\": 134361321448936}], \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "native-race",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--mode",
+      "native-race",
+      "--loader-source",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs"
+    ],
+    "exit": 0,
+    "stdout": "{\"mode\": \"native-race\", \"results\": [{\"package\": \"first\", \"accepted\": false, \"error\": \"private Rust dependency mismatch: TensorFS needs elf-17f7bb472cee3d60f5e95a30d42ca287e8af0667, loaded Varena is elf-ea3805f57ab33259be409f540dc35cef360f42e9; use matching native artifacts in a fresh process (public C ABI compatibility is separate)\"}, {\"package\": \"retry_after_native_close\", \"accepted\": true, \"extension_import\": true, \"identity\": 126104376845800}], \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "existing-mismatch",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--mode",
+      "existing",
+      "--loader-source",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs"
+    ],
+    "exit": 0,
+    "stdout": "{\"mode\": \"existing\", \"results\": [{\"package\": \"first\", \"accepted\": false, \"error\": \"private Rust dependency mismatch: TensorFS needs elf-17f7bb472cee3d60f5e95a30d42ca287e8af0667, loaded Varena is elf-ea3805f57ab33259be409f540dc35cef360f42e9; use matching native artifacts in a fresh process (public C ABI compatibility is separate)\"}, {\"package\": \"retry_after_native_close\", \"accepted\": true, \"extension_import\": true, \"identity\": 127366312895976}], \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "matching-retention",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--mode",
+      "matching",
+      "--loader-source",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "--c-client",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/mixed-c.so"
+    ],
+    "exit": 0,
+    "stdout": "{\"mode\": \"matching\", \"results\": [{\"accepted\": true, \"native_owner_closed\": true, \"extension_import\": true, \"identity\": 132110284629480, \"old_c_client\": true}], \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "fork-lock",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--mode",
+      "fork",
+      "--loader-source",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs"
+    ],
+    "exit": 0,
+    "stdout": "{\"mode\": \"fork\", \"results\": [{\"accepted\": true, \"fork_lock_reinitialized\": true, \"cuda_fork_qualification\": false}], \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/loader_race.py:209: DeprecationWarning: This process (pid=3504689) is multi-threaded, use of fork() may lead to deadlocks in the child.\n  pid = os.fork()\n"
+  },
+  {
+    "name": "sequential-native-first",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "-I",
+      "-c",
+      "import runpy,sys,pathlib; sys.path.insert(0,sys.argv[1]); path=sys.argv[2]; sys.argv=sys.argv[2:]; runpy.run_path(path,run_name=\"__main__\"); assert \"/libcuda.so\" not in pathlib.Path(\"/proc/self/maps\").read_text()",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/private_dependency.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--order",
+      "native-first"
+    ],
+    "exit": 0,
+    "stdout": "{\"order\": \"native-first\", \"private_mismatch_rejected\": true, \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs/.native/libvarena.so\"], \"message\": \"private Rust dependency mismatch: TensorFS needs elf-17f7bb472cee3d60f5e95a30d42ca287e8af0667, loaded Varena is elf-ea3805f57ab33259be409f540dc35cef360f42e9; use matching native artifacts in a fresh process (public C ABI compatibility is separate)\", \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "sequential-python-first",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "-I",
+      "-c",
+      "import runpy,sys,pathlib; sys.path.insert(0,sys.argv[1]); path=sys.argv[2]; sys.argv=sys.argv[2:]; runpy.run_path(path,run_name=\"__main__\"); assert \"/libcuda.so\" not in pathlib.Path(\"/proc/self/maps\").read_text()",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/release-gate/suites/varena/public-api/private_dependency.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/sdk/python/tensorfs",
+      "--order",
+      "python-first"
+    ],
+    "exit": 0,
+    "stdout": "{\"order\": \"python-first\", \"private_mismatch_rejected\": true, \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"message\": \"private Rust dependency mismatch: TensorFS needs elf-ea3805f57ab33259be409f540dc35cef360f42e9, loaded Varena is elf-17f7bb472cee3d60f5e95a30d42ca287e8af0667; use matching native artifacts in a fresh process (public C ABI compatibility is separate)\", \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "old-c-native-first",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "-I",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/agent-private-final/stable_c.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/mixed-c.so",
+      "native-first"
+    ],
+    "exit": 0,
+    "stdout": "{\"order\": \"native-first\", \"old_c_client_unchanged\": true, \"shared_identity\": 126431171847656, \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  },
+  {
+    "name": "old-c-python-first",
+    "argv": [
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/direct-env-3/bin/python",
+      "-B",
+      "-I",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/agent-private-final/stable_c.py",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs",
+      "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/final-host-bf5637/mixed-c.so",
+      "python-first"
+    ],
+    "exit": 0,
+    "stdout": "{\"order\": \"python-first\", \"old_c_client_unchanged\": true, \"shared_identity\": 138537132762600, \"mapped_cores\": [\"/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-public-api/.task/review-fixes/final-host-6ab/sdk/python/tensorfs/.native/libvarena.so\"], \"gpu\": false}\n",
+    "stderr": ""
+  }
+]

@@ -51,6 +51,40 @@ pub enum Error {
     Read(#[from] super::Error),
 }
 pub type Result<T> = std::result::Result<T, Error>;
+
+mod raw;
+pub use raw::{RawFill, RawRead, RawReadFacts};
+
+// The plan owns every file/inline source that a borrowed engine copy refers to.
+// It is shared by joined reads and the owned raw submission path.
+enum OwnedSource {
+    Zero,
+    File(Arc<File>, u64),
+    Inline(Arc<[u8]>),
+}
+struct OwnedCopy {
+    src: OwnedSource,
+    dst: Dst,
+}
+impl OwnedCopy {
+    fn borrowed(&self) -> Copy<'_> {
+        Copy {
+            src: match &self.src {
+                OwnedSource::Zero => Src::Zero,
+                OwnedSource::File(file, offset) => Src::File(file, *offset),
+                OwnedSource::Inline(bytes) => Src::Host(bytes.as_ptr()),
+            },
+            dst: self.dst,
+        }
+    }
+}
+struct ReadPlan {
+    copies: Vec<OwnedCopy>,
+    placement: Vec<usize>,
+    inline: u64,
+    bytes: u64,
+}
+
 fn invalid(detail: impl Into<String>) -> Error {
     Failure {
         kind: Kind::Invalid,
@@ -62,6 +96,8 @@ fn invalid(detail: impl Into<String>) -> Error {
 pub struct Source {
     #[cfg(feature = "store")]
     view: Option<super::view::View>,
+    #[cfg(feature = "store")]
+    _checkpoint: Option<crate::Checkpoint>,
     files: Mutex<HashMap<String, Arc<File>>>,
     direct_io: bool,
 }
@@ -71,6 +107,8 @@ impl Source {
         Source {
             #[cfg(feature = "store")]
             view: None,
+            #[cfg(feature = "store")]
+            _checkpoint: None,
             files: Mutex::new(
                 files
                     .into_iter()
@@ -83,9 +121,10 @@ impl Source {
 
     /// Retain metadata and the source context. No chunk opens or downloads until a read.
     #[cfg(feature = "store")]
-    pub(crate) fn checkpoint(view: &super::view::View, direct_io: bool) -> Source {
+    pub(crate) fn checkpoint(view: &super::view::View, direct_io: bool, checkpoint: crate::Checkpoint) -> Source {
         let mut source = Self::files(Vec::new(), direct_io, 0);
         source.view = Some(view.clone());
+        source._checkpoint = Some(checkpoint);
         source
     }
 
@@ -242,15 +281,7 @@ impl Source {
         unsafe { self.read_controlled(placements, threads, mode, tally, issued, Some(cancel)) }
     }
 
-    unsafe fn read_controlled(
-        &self,
-        placements: &[Placement],
-        threads: usize,
-        mode: Mode,
-        tally: &IoTally,
-        issued: Option<Issued>,
-        cancel: Option<&ReadControl>,
-    ) -> Result<ReadStats> {
+    fn plan_placements(&self, placements: &[Placement<'_>]) -> Result<ReadPlan> {
         #[cfg(feature = "store")]
         {
             let wanted = placements
@@ -282,7 +313,7 @@ impl Source {
         for (p, &Placement { items, origin, dst }) in placements.iter().enumerate() {
             // Each placement's copies in destination order, gaps included, so contiguous runs
             // merge (`coalesce`).
-            let mut ordered: Vec<(u64, Copy)> = Vec::with_capacity(items.len() + 1);
+            let mut ordered: Vec<(u64, OwnedCopy)> = Vec::with_capacity(items.len() + 1);
             let mut intervals = Vec::with_capacity(items.len());
             for item in items {
                 if let ItemSource::Object(range) = &item.source {
@@ -307,16 +338,16 @@ impl Source {
                 }
                 intervals.push((start, end));
                 let src = match &item.source {
-                    ItemSource::Object(range) => Src::File(&files[&range.obj.sha256], range.off),
+                    ItemSource::Object(range) => OwnedSource::File(Arc::clone(&files[&range.obj.sha256]), range.off),
                     ItemSource::Inline(bytes) => {
                         if bytes.len() as u64 != item.len {
                             return Err(invalid("inline length differs from item"));
                         }
                         inline += item.len;
-                        Src::Host(bytes.as_ptr())
+                        OwnedSource::Inline(Arc::clone(bytes))
                     }
                 };
-                ordered.push((start, Copy {
+                ordered.push((start, OwnedCopy {
                     src,
                     dst: dst.slice(start as usize, item.len as usize),
                 }));
@@ -331,16 +362,16 @@ impl Source {
                     return Err(invalid("placement items overlap"));
                 }
                 if start > cursor {
-                    ordered.push((cursor, Copy {
-                        src: Src::Zero,
+                    ordered.push((cursor, OwnedCopy {
+                        src: OwnedSource::Zero,
                         dst: dst.slice(cursor as usize, (start - cursor) as usize),
                     }));
                 }
                 cursor = end;
             }
             if cursor < dst.len() as u64 {
-                ordered.push((cursor, Copy {
-                    src: Src::Zero,
+                ordered.push((cursor, OwnedCopy {
+                    src: OwnedSource::Zero,
                     dst: dst.slice(cursor as usize, dst.len() - cursor as usize),
                 }));
             }
@@ -348,6 +379,26 @@ impl Source {
             of.resize(of.len() + ordered.len(), p);
             copies.extend(ordered.into_iter().map(|(_, c)| c));
         }
+        Ok(ReadPlan {
+            copies,
+            placement: of,
+            inline,
+            bytes: placements.iter().flat_map(|p| p.items).map(|item| item.len).sum(),
+        })
+    }
+
+    unsafe fn read_controlled(
+        &self,
+        placements: &[Placement],
+        threads: usize,
+        mode: Mode,
+        tally: &IoTally,
+        issued: Option<Issued>,
+        cancel: Option<&ReadControl>,
+    ) -> Result<ReadStats> {
+        let plan = self.plan_placements(placements)?;
+        let copies = plan.copies.iter().map(OwnedCopy::borrowed).collect();
+        let of = &plan.placement;
         let (copies, firsts) = super::coalesce(copies);
         // Each run's placements, and the runs each placement waits for.
         let runs: Vec<Vec<usize>> = (0..firsts.len())
@@ -378,13 +429,9 @@ impl Source {
             // SAFETY: as above; ordinary reads keep their existing issue observer.
             None => unsafe { super::read_staged(&copies, &opts, issued.map(|_| &run_issued as Issued)) }?,
         };
-        stats.bytes = placements
-            .iter()
-            .flat_map(|p| p.items)
-            .map(|item| item.len)
-            .sum();
+        stats.bytes = plan.bytes;
         tally.direct_bytes.fetch_add(stats.direct, Relaxed);
-        tally.inline_bytes.fetch_add(inline, Relaxed);
+        tally.inline_bytes.fetch_add(plan.inline, Relaxed);
         if mode == Mode::Buffered {
             tally.buffered_bytes.fetch_add(stats.cached, Relaxed);
         } else {

@@ -161,6 +161,19 @@ impl Release {
         };
         crate::tools::unpack(archive, &member, out)
     }
+
+    /// Stage immutable private dependencies before running or replacing the binary.
+    pub fn unpack_with_libraries(
+        &self,
+        mut archive: impl io::Read + io::Seek,
+        out: &mut impl io::Write,
+        directory: &std::path::Path,
+    ) -> io::Result<u64> {
+        let prefix = self.archive.strip_suffix(".tar.gz").map_or(String::new(), |stem| format!("{stem}/"));
+        crate::native_bundle::libraries(&mut archive, &prefix, directory)?;
+        archive.rewind()?;
+        self.unpack(archive, out)
+    }
 }
 
 /// The signer, when the certificate is this repository's (by id) and the signer is its own release workflow.
