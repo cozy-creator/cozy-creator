@@ -1,0 +1,115 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling syn v2.0.119
+   Compiling strsim v0.11.1
+   Compiling fnv v1.0.7
+   Compiling ident_case v1.0.1
+   Compiling darling_core v0.20.11
+   Compiling cfg-if v1.0.5
+   Compiling darling_macro v0.20.11
+   Compiling thiserror v1.0.69
+   Compiling darling v0.20.11
+   Compiling libloading v0.8.9
+   Compiling thiserror-impl v1.0.69
+   Compiling syn v3.0.9
+   Compiling libc v0.2.190
+   Compiling thiserror v2.0.21
+   Compiling thiserror-impl v2.0.21
+   Compiling nvml-wrapper-sys v0.10.0
+   Compiling wrapcenum-derive v0.4.1
+   Compiling static_assertions v1.1.0
+   Compiling bitflags v2.13.2
+   Compiling nvml-wrapper v0.13.0
+   Compiling libloading v0.9.0
+   Compiling varena v0.17.16 (/home/fidika/cozy_v2/outputs/xs138-p4-arena-retirement/host-queue-001/native)
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/abi.rs:143:10
+    |
+143 |         .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
+    |          ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/working.rs:110:14
+    |
+110 |             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    |              ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+  --> src/cache_owner.rs:29:10
+   |
+29 |         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+   |          ^^^^^^^^^^
+   |
+   = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:295:14
+    |
+295 |             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| value
+    |              ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:491:19
+    |
+491 |     NEXT_IDENTITY.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+    |                   ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:636:10
+    |
+636 |         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    |          ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:653:33
+    |
+653 |     activity.external_callbacks.try_update(Ordering::AcqRel, Ordering::Acquire,
+    |                                 ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:668:10
+    |
+668 |         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    |          ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:690:26
+    |
+690 |     activity.retirements.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+    |                          ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+   --> src/lib.rs:724:10
+    |
+724 |         .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+    |          ^^^^^^^^^^
+    |
+    = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+error[E0658]: use of unstable library feature `atomic_try_update`
+    --> src/lib.rs:1843:14
+     |
+1843 |             .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+     |              ^^^^^^^^^^
+     |
+     = note: see issue #135894 <https://github.com/rust-lang/rust/issues/135894> for more information
+
+For more information about this error, try `rustc --explain E0658`.
+error: could not compile `varena` (lib) due to 11 previous errors

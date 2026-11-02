@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "source_sha": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+    "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "native_source": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+    "mixed_sources": null,
+    "native_tree": "5d96df72e5259e0e81a8a40d034d07b70ba6cf18",
+    "binary_sha256": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+    "archive_sha256": "2f59e406385dc3e19edc166cc321ea5322bd87cf3b1906dbb11ef91451c132e0",
+    "source_receipt_sha256": "e123c5c1f5a0244fbcc5796b5fe0aaa1adb56d42758f2856b3a4aff15f4be3dc",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          12
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "scope": "native Cache owner queue, finite allocator hook, strict ready-only collection, registry concurrency and actual native_owners/arena_concurrency fixture; no Python/Runtime graph callback adoption in this checkpoint; GPU pending"
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/9b98c10b9/controller-sorata/project",
+  "files": {
+    "ci_varena_cache_pages/__init__.py": "41f0ab3a3478c598ef07b951469ec039239a389ae42d0d167c984a8cca37689b",
+    "ci_varena_cache_pages/bin/provenance.json": "0b5110179fae6d221c0aedf97b5430edede4c281c5baecc7814869a581f91f68",
+    "ci_varena_cache_pages/bin/varena-cache-pages": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+    "pyproject.toml": "b7ed2af66a12cd5d1ff21283219f6c1d3dea5b37840abcb80917860c48878cd2",
+    "uv.lock": "d8ff437c54f8215e4d07c9e5047d40d52c8a55d125648dd6f2969a37e0663370"
+  },
+  "input": {
+    "source_sha": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+    "helper_sha256": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+    "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+    "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748"
+  },
+  "gpu_uuid_bound": true,
+  "gpu_executed": false
+}

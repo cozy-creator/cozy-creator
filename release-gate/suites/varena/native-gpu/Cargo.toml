@@ -1,0 +1,25 @@
+[package]
+name = "varena-native-gpu-proof"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+# Build these genuine native fixtures in the extension's dependency cohort. Building
+# varena as a separate primary crate can select a different private Rust linkage mode.
+[[bin]]
+name = "varena-async-fill"
+path = "../../../../crates/varena/examples/async_fill.rs"
+
+[[bin]]
+name = "varena-cache-pages"
+path = "../cache-pages/src/main.rs"
+
+[[bin]]
+name = "varena-ledger-peer"
+path = "../../../../crates/varena/examples/ledger_peer.rs"
+
+[dependencies]
+varena.workspace = true
+libloading.workspace = true
+libc.workspace = true
+serde_json.workspace = true
