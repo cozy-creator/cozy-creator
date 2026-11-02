@@ -29,6 +29,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `disk` | a 100 GB machine past a full disk (tfs-140, cl-709, tatara): three packages installed and updated, `machine show`'s disk by kind; a CPU SDXL call never evicted while H3 int8 and Qwen land; H3, Qwen, SDXL and H3 again all land, each eviction logged | cpu (`--disk 100`) | ~$0.3 · ~45 min | a TensorFS store, reclaim or install change |
 | `project` | `cozy project render` on fixture projects (the walk in this computer's Calcifer): a shot that reads its own write in two calls (`continue_from`), its upscale from latents and the 1080p edit, a plate, a voice, stills at 16:9 and 9:16, a node rendered with local code (`with: ./still.py/draw`), and refusals before any run | rtx-4090 | ~$0.7 · ~30 min | a project, Calcifer or shot-function change |
 | `consumer` | a real 12 GB card under its own memory pressure: SDXL 1024 int8 cold, then four warm calls, all complete (cozy-runtime #1956) | rtx-3060 | ~$0.1 · ~15 min | a Runtime, varena or TensorD change |
+| `families` | the packages that send attention masks (qwen-image-2 at its prefill, ideogram-4 on every call) on the families whose kernels serve none: each completes, a refused call runs on SDPA and the record counts it (runs 26242-26244) | h100-sxm5-80gb, b200 | ~$5–8 · 30–40 min | a Runtime change to attention, kernels or selection |
 | `cli` | (building) | | | a CLI change |
 
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
