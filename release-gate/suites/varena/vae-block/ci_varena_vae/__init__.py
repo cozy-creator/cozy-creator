@@ -17,6 +17,8 @@ MODULES = (
     '_kernels/_dense.abi3.so', '_kernels/__init__.py', 'internal/dense_linear.py',
     'internal/execution/phase.py', 'internal/residency.py', 'fusion/__init__.py',
     'fusion/_kernels.py', 'graphs/domain.py', 'internal/accel.py',
+    'internal/int8_linear.py', 'internal/kernel_ready.py', 'internal/prebuilt.py',
+    '_kernels/_gemm.abi3.so',
 )
 
 
@@ -70,6 +72,17 @@ def actual(payload, ctx):
     return request, vt, {**msgspec.to_builtins(payload), 'pid': os.getpid(),
                          'request_id': ctx.request_id, 'gpu_uuid': uuid,
                          'diffusers_version': version('diffusers')}
+
+
+def readiness(vt, device):
+    from cozy_runtime.internal import int8_linear, prebuilt
+
+    before = vt.stats(device)
+    assert int8_linear.native(torch, device) is not None
+    after = vt.stats(device)
+    return {'boundary': 'actual int8_linear.native completed before every lifecycle baseline',
+            'before': before, 'after': after, 'artifact': prebuilt.artifact('_gemm'),
+            'native_ready': True}
 
 
 def settle(vt, device):

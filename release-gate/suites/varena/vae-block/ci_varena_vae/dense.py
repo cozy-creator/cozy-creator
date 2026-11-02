@@ -17,7 +17,7 @@ from diffusers.models.autoencoders.autoencoder_kl_minimax_h3 import (
 )
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from . import Probe, Report, actual, app, settle
+from . import Probe, Report, actual, app, readiness, settle
 
 PATHS = ('attn.to_q', 'attn.to_k', 'attn.to_v', 'attn.to_out.0', 'ff.net.0.proj', 'ff.net.2')
 
@@ -337,6 +337,7 @@ def dense(payload: Probe, ctx: Context) -> Report:
     request, vt, provenance = actual(payload, ctx)
     assert callable(accel.nonblocking_stream) and callable(accel.destroy_stream)
     device = ctx.device.index or 0
+    startup = readiness(vt, device)
     parent = torch.cuda.current_stream(device)
     # A caller event orders the new non-blocking stream explicitly. No framework
     # submission is secretly redirected: all proof work enters a public stream scope.
@@ -346,7 +347,8 @@ def dense(payload: Probe, ctx: Context) -> Report:
     vt.trim(device)
     before = vt.stats(device)
     domain = Domain(torch, request.memory)
-    result = {'passed': False, 'provenance': provenance, 'pre_domain': before}
+    result = {'passed': False, 'provenance': provenance, 'pre_domain': before,
+              'startup_readiness': startup}
     try:
         domain.initialize()
         assert domain.stream.cuda_stream != 0 and domain.control.cuda_stream != 0
@@ -358,7 +360,7 @@ def dense(payload: Probe, ctx: Context) -> Report:
         with torch.cuda.stream(domain.stream), domain.using():
             answer = _dense(payload, ctx)
             result = json.loads(answer.detail)
-            result.update(pre_domain=before, streams=streams)
+            result.update(pre_domain=before, streams=streams, startup_readiness=startup)
     except Exception:  # noqa: BLE001 -- preserve both execution and owner teardown evidence.
         result['passed'] = False
         result['error'] = traceback.format_exc()

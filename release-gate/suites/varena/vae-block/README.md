@@ -53,3 +53,10 @@ retains the vendor's documented teardown behavior after its borrowers have drain
 The FP16 matrix arm now matches H3's actual checkpoint convention: decoder matrices
 are FP16 while biases remain FP32. The FP32 matrix arm also retains FP32 biases.
 Norms/gates are not cast. These are source corrections, not new GPU qualification.
+
+
+The readiness successor preserves517 and awaits the actual `int8_linear.native`
+producer before the outermost baseline, recording counters/artifact and pinning the
+readiness/prebuilt sources. This is the concrete protocol25544/812 cold-start boundary;
+an event on the parent stream does not order future work from a background producer.
+No allocation declaration was inflated to hide that initialization.
