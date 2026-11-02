@@ -73,6 +73,10 @@ def main():
         assert 'GLIBC_ABI_' not in info and 'GLIBC_PRIVATE' not in info
         rpath = subprocess.check_output(['patchelf', '--print-rpath', str(library)], text=True).strip()
         # The pinned Rust std uses $ORIGIN/../lib, which resolves to this helper's bin/lib.
+        if rpath == '$ORIGIN/../lib':
+            assert library.name.startswith('libstd-')
+            assert sha(library) == 'a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c'
+            assert (target / 'lib' / '..' / 'lib').resolve() == (target / 'lib').resolve()
         assert rpath == '$ORIGIN' if library.name == 'libvarena.so' else rpath in ('', '$ORIGIN', '$ORIGIN/../lib')
         shutil.copy2(library, target / 'lib' / library.name)
     manifest['libraries'] = {p.name: sha(p) for p in libraries}
