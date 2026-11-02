@@ -15,49 +15,28 @@ use crate::{
 };
 
 const EXAMPLES: &str = "Examples:
-  cozy project new garden                    a folder with a project.yaml to fill in
+  cozy project new garden
   cd garden && cozy project render all --on kiyui
-                                             everything missing or out of date, then the edit
-  cozy project status                        what is missing, out of date and why, and the cuts
-  cozy project render fight -n 3 --on kiyui  three takes of the shot fight
-  cozy project approve fight 2               its take 2 approved: what is made from it goes out of date
-  cozy project -p ~/films/garden status      a project elsewhere, as git -C
-  cozy project ls                            the projects this computer knows
-  cozy project rename theo mara              after renaming theo to mara in project.yaml: keep its versions
+  cozy project render fight -n 3 --on kiyui    three takes of fight
+  cozy project approve fight 2
+  cozy project rename theo mara                after renaming it in project.yaml
 
-The project is the folder holding project.yaml, found from the folder you are in or above it.
-project.yaml lists entities (characters, props, environments with camera setups), world states
-and shots; people write it and cozy never does. A shot's alternatives, and its upscale's, are
-takes; every other node's are versions, numbered from 1 and never renumbered. Each is a set of
-assets, kept by content in assets/<sha256>.<ext>; project.lock records them, what made each and
-which is approved, and `status` prints each node's file. A file project.yaml names (relative to
-the folder, or absolute) is linked into assets/ on first use: edit it and what reads it goes out
-of date; move it and status says to relink. A file you attach (image:, or a shot's video:) is
-used until you approve one cozy made. A node's
-render: {with, models, lora, options} (or defaults: per kind) says how it is made. Names match
-in any case. The edit is edit.mp4, cut on this computer.";
+project.yaml's comments and the README explain the rest.";
 
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy project render all --on kiyui          everything missing or out of date, then the edit
-  cozy project render all --on kiyui,jitae    the same, spread over two machines
-  cozy project render theo dock.b --on kiyui  a new version of each (a first one is approved)
-  cozy project render fight -n 3 --on kiyui   three takes of fight
+  cozy project render all --on kiyui         everything missing or out of date, then the edit
+  cozy project render all --on kiyui,jitae   spread over two machines
+  cozy project render fight -n 3 --on kiyui  three takes of fight
   cozy project render fight --approve --on kiyui
-                                              a new take of fight, approved when it lands
-  cozy project render all --preview --on kiyui
-                                              everything but upscales, and the native preview.mp4
 
-Each is sent as soon as what it reads is made, so independent ones run at once; with several
-machines each goes to the least busy, one that holds its models first. A render asked while
-others go joins them. Character and prop pictures are cleaned on this computer, and the edit is
-cut here. Ctrl-C stops following, never the runs: `cozy project status` shows them.";
+Ctrl-C stops following, never the runs.";
 
 /// A video project: a folder of nodes (characters, props, environments and their camera setups,
 /// world states, shots) whose takes and versions `cozy project render` makes.
 #[derive(clap::Args, Debug)]
 #[command(after_help = EXAMPLES)]
 pub struct Args {
-    /// The project's folder, or a folder inside it, instead of the one you are in (as git -C).
+    /// The project's folder, if not the one you are in.
     #[arg(short = 'p', value_name = "PATH", global = true)]
     path: Option<PathBuf>,
     #[command(subcommand)]
@@ -66,18 +45,17 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
-    /// Make a project: a folder with a project.yaml to fill in (it shows each kind of entity).
+    /// Make a project folder.
     #[command(after_help = "Example:\n  cozy project new garden && $EDITOR garden/project.yaml")]
     New {
         /// The folder to make it in.
         path: PathBuf,
     },
-    /// The projects this computer knows, last used first; a folder that moved shows as missing.
+    /// List your projects.
     #[command(after_help = "Example:\n  cozy project ls")]
     Ls,
     Render(Render),
-    /// Approve a node's take (a shot's) or version, numbered from 1 as `status` counts them: what is
-    /// made from it goes out of date.
+    /// Approve a take or version.
     #[command(after_help = "Example:\n  cozy project approve fight 2")]
     Approve {
         /// The node: `theo`, `dock.b` (a setup), `fight`, `fight.upscale`, …
@@ -85,11 +63,10 @@ enum Verb {
         /// Its take or version, 1 first.
         version: u32,
     },
-    /// What is missing, what is out of date and why, each node's file, and where the cuts are.
+    /// What is missing or out of date, and each node's file.
     #[command(after_help = "Example:\n  cozy project status")]
     Status,
-    /// Keep a node's versions under its new name, after renaming it (and its <mentions>) in
-    /// project.yaml. Nothing on disk moves.
+    /// Keep a node's versions after renaming it in project.yaml.
     #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
     Rename {
         /// Its name in project.lock.
@@ -99,8 +76,7 @@ enum Verb {
     },
 }
 
-/// New takes and versions of a project's nodes, made on a machine; `all` brings everything up to
-/// date.
+/// Make new takes and versions; `all` brings everything up to date.
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
 struct Render {

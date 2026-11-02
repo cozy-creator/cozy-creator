@@ -55,7 +55,7 @@ enum Command {
     Package(package::Args),
     /// Find, download, upload and publish models.
     Model(model::Args),
-    /// Video projects: make one, render and approve its takes and versions, see what is missing or out of date.
+    /// Video projects.
     Project(project::Args),
     /// Claim an organization parked under your name.
     Org(org::Args),
