@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "binary": "cozy",
+  "libraries": [
+    {
+      "name": "libvarena-private-49876bf3f92f3a6af178b2788b317ab0.so",
+      "sha256": "49876bf3f92f3a6af178b2788b317ab0b04072746b8e11f2efe92de00c4b19ee"
+    },
+    {
+      "name": "libstd-private-a6542f0e553640385e5dbe14978e8254.so",
+      "sha256": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c"
+    }
+  ]
+}
