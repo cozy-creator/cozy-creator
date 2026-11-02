@@ -1,0 +1,12 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task/torch-cpu/bin/python",
+    "release-gate/suites/varena/torch-offload/inventory_cpu.py"
+  ],
+  "head": "118d668f0d7ec05348ff011bb8502488f210f27e",
+  "exit": 0,
+  "seconds": 4.563
+}

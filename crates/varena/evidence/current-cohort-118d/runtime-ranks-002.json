@@ -1,0 +1,21 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "/home/fidika/cozy_v2/cozy-runtime/.venv/bin/python",
+    "-I",
+    "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-v2-current-core/research/varena-multi-gpu-start/cpu.py",
+    "--tensorfs-python",
+    "/home/fidika/cozy_v2/outputs/xs138-native-tensor-client/path-proof-001/site",
+    "--torch-site",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task/torch-cpu/lib/python3.12/site-packages",
+    "--sender-frames",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-v2-current-core/.task/sender-frames-002.json",
+    "--out",
+    "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-v2-current-core/.task/current-cohort-cpu-002"
+  ],
+  "head": "118d668f0d7ec05348ff011bb8502488f210f27e",
+  "exit": 0,
+  "seconds": 17.291
+}

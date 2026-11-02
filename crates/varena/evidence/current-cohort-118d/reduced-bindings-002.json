@@ -1,0 +1,22 @@
+{
+  "command": [
+    "nice",
+    "-n",
+    "19",
+    "cargo",
+    "check",
+    "--offline",
+    "--locked",
+    "-j",
+    "1",
+    "-p",
+    "tensorfs",
+    "-p",
+    "tensorfs-py",
+    "--no-default-features"
+  ],
+  "target_dir": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-multi-gpu-start/.task/target",
+  "head": "118d668f0d7ec05348ff011bb8502488f210f27e",
+  "exit": 0,
+  "seconds": 50.787
+}
