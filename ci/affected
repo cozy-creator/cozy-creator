@@ -10,7 +10,7 @@ the release gate the last release tag and the candidate. Rules: ci/suites.toml, 
 
 Prints one token per line: suites (cli, imports, mps, gpu, gpu-datacenter, varena), os:<name>, build:<artifact>,
 pkg:<name> (pkg:* = every package). Nothing printed = nothing to run. --json prints
-{"suites", "os", "build", "cells", "why"}; "os" always holds linux; "why" names a path behind each token.
+{"suites", "os", "build", "packages", "why"}; "os" always holds linux; "why" names a path behind each token.
 --tokens takes a selection already made (the release gate's, a dispatch's) and prints it the same way.
 """
 
@@ -86,9 +86,31 @@ def dependents(name: str, deps: dict[str, set[str]]) -> set[str]:
     return found
 
 
+def locked(revs: list[str], members: set[str]) -> set[str]:
+    """The workspace crates whose locked dependencies differ between the two Cargo.lock revisions: a member whose
+    entry changed, or that reaches (through the lock) a package added, removed or changed."""
+    entries = []
+    for rev in revs:
+        text = show(rev, "Cargo.lock")
+        packages = tomllib.loads(text).get("package", []) if text else []
+        entries.append({p["name"]: (p.get("version"), tuple(sorted(p.get("dependencies", [])))) for p in packages})
+    head, base = entries
+    changed = {n for n in head.keys() | base.keys() if head.get(n) != base.get(n)}
+    uses = {n: {d.split()[0] for d in deps} for n, (_, deps) in head.items()}
+    reach, frontier = set(changed), list(changed)
+    while frontier:
+        current = frontier.pop()
+        for other, needs in uses.items():
+            if current in needs and other not in reach:
+                reach.add(other)
+                frontier.append(other)
+    return reach & members
+
+
 def select(repo: str, base: str, head: str) -> dict[str, list[str]]:
     conf = RULES[repo]
     rules = [([glob(p) for p in r["paths"]], r["select"]) for r in conf.get("rules", [])]
+    also = [([glob(p) for p in r["paths"]], r["select"]) for r in conf.get("also", [])]
     paths = [p for p in git("diff", "--name-only", "--no-renames", f"{base}...{head}").splitlines() if p]
     dirs, deps = crates([head, base]) if "crates" in conf else ({}, {})
     package = conf.get("package")
@@ -101,8 +123,16 @@ def select(repo: str, base: str, head: str) -> dict[str, list[str]]:
 
     for path in paths:
         hit = next((tokens for patterns, tokens in rules if any(p.match(path) for p in patterns)), None)
+        if hit != []:
+            for patterns, tokens in also:
+                if any(p.match(path) for p in patterns):
+                    take(tokens, path)
         if hit is not None:
             take(hit, path)
+            continue
+        if path == "Cargo.lock" and dirs:
+            for crate in locked([head, base], set(dirs.values())):
+                take(conf["crates"].get(crate, ["everything"]), path)
             continue
         member = next((d for d in dirs if path.startswith(d + "/")), None)
         if member is not None:
@@ -127,7 +157,7 @@ def grouped(why: dict[str, str]) -> dict[str, list[str]]:
         "suites": [t for t in tokens if ":" not in t],
         "os": ["linux", *group("os:")],
         "build": group("build:"),
-        "cells": group("pkg:"),
+        "packages": group("pkg:"),
         "why": {t: why[t] for t in tokens},
     }
 

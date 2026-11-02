@@ -35,6 +35,7 @@ class Command:
     runnable: bool = True  # a group whose usage reads `[COMMAND]` runs on its own too (`cozy run`)
     flags: dict[str, bool] = field(default_factory=dict)  # long flag -> takes a value
     shorts: dict[str, str] = field(default_factory=dict)  # -f -> --follow
+    short_values: set[str] = field(default_factory=set)  # short-only flags that take a value (`-p <PATH>`): no id
     children: dict[str, "Command"] = field(default_factory=dict)
 
 
@@ -45,8 +46,8 @@ def _help(cozy: str, path: tuple[str, ...]) -> str:
     return p.stdout
 
 
-def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], bool]:
-    commands, flags, shorts, section, runnable = [], {}, {}, "", True
+def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], set[str], bool]:
+    commands, flags, shorts, short_values, section, runnable = [], {}, {}, set(), "", True
     for line in text.splitlines():
         if line.startswith("Usage:"):
             runnable = "<COMMAND>" not in line
@@ -63,18 +64,20 @@ def _parse(text: str) -> tuple[list[str], dict[str, bool], dict[str, str], bool]
             short = words[0].rstrip(",") if not words[0].startswith("--") else ""
             long = next((w for w in words if w.startswith("--")), "")
             if not long:
+                if len(words) > 1 and words[1].startswith("<"):
+                    short_values.add(short)
                 continue
             after = words[words.index(long) + 1] if words.index(long) + 1 < len(words) else ""
             flags[long] = after.startswith("<")
             if short:
                 shorts[short] = long
-    return commands, flags, shorts, runnable
+    return commands, flags, shorts, short_values, runnable
 
 
 def tree(cozy: str) -> Command:
     def walk(path: tuple[str, ...]) -> Command:
-        commands, flags, shorts, runnable = _parse(_help(cozy, path))
-        node = Command(path, runnable, flags, shorts)
+        commands, flags, shorts, short_values, runnable = _parse(_help(cozy, path))
+        node = Command(path, runnable, flags, shorts, short_values)
         for name in commands:
             node.children[name] = walk((*path, name))
         return node
@@ -114,7 +117,7 @@ def exercised(root: Command, words: list[str]) -> set[str]:
         if word.startswith("-") and word != "-":
             flag, _, inline = word.partition("=")
             flag = node.shorts.get(flag, root.shorts.get(flag, flag))
-            takes = node.flags.get(flag, root.flags.get(flag))
+            takes = node.flags.get(flag, root.flags.get(flag)) or flag in node.short_values
             if flag in root.flags and flag not in WALKED:
                 out.add(f"cozy {flag}")
             elif flag in node.flags and flag not in WALKED:
