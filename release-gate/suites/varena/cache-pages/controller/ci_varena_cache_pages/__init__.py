@@ -100,7 +100,7 @@ def native(payload, ctx, mode, *, helper="varena-cache-pages"):
         result['provenance'] = provenance
         directory = tempfile.mkdtemp(prefix='varena-cache-pages-', dir='/dev/shm')
         os.chmod(directory, 0o700)
-        if helper in ('varena-async-fill', 'varena-public-source', 'varena-pinned-host'):
+        if helper in ('varena-async-fill', 'varena-public-source', 'varena-pinned-host', 'varena-modern-host'):
             command = [str(binary), mode, payload.gpu_uuid, '0']
         elif helper == 'varena-rust-source':
             command = [str(binary), payload.gpu_uuid, '0']
