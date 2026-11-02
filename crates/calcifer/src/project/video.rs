@@ -40,29 +40,41 @@ pub fn skeleton() -> String {
     r#"# A short film, ready to render: cozy project render all --on <machine>
 # Change anything. More kinds and options (props, world states, references, plates, LoRAs, upscales,
 # the edit's frames) are in the README.
-style: "bright hand-painted anime, soft golden light, an adventure film"
+style: bright hand-painted anime, soft golden light, an adventure film
 aspect_ratio: "16:9"
 fps: 24
+
 entities:
-  - {name: mika, kind: character, description: "A cheerful ten-year-old girl in a red cap, a blue jacket and a yellow backpack."}
-  - {name: sparkit, kind: character, description: "A small round yellow fox-like creature with lightning-bolt ears and a glowing tail."}
+  - name: mika
+    kind: character
+    description: A cheerful ten-year-old girl in a red cap, a blue jacket and a yellow backpack.
+
+  - name: sparkit
+    kind: character
+    description: A small round yellow fox-like creature with lightning-bolt ears and a glowing tail.
+
   - name: meadow
     kind: environment
-    description: "a windy hillside meadow of tall grass above a seaside town, at golden hour"
+    description: a windy hillside meadow of tall grass above a seaside town, at golden hour
     setups:
-      - {name: wide, camera: "wide: a lone oak near on the left, the town and the sea far on the right"}
+      - name: wide
+        camera: "wide: a lone oak near on the left, the town and the sea far on the right"
+
 shots:
   - name: rustle
     setup: meadow.wide
-    prompt: "<mika> walks through the tall grass of <meadow> and stops as something rustles near her feet."
+    prompt: <mika> walks through the tall grass of <meadow> and stops as something rustles near her feet.
     duration_s: 6
+
   - name: friends
     setup: meadow.wide
-    prompt: "<sparkit> bursts out of the grass in front of <mika>, its tail crackling with sparks."
+    prompt: <sparkit> bursts out of the grass in front of <mika>, its tail crackling with sparks.
     duration_s: 8
     beats:
-      - {at: 0, prompt: "<mika> jumps back, startled, then laughs."}
-      - {at: 4, prompt: "<mika> kneels and holds out her hand, and <sparkit> hops up onto her shoulder."}
+      - at: 0
+        prompt: <mika> jumps back, startled, then laughs.
+      - at: 4
+        prompt: <mika> kneels and holds out her hand, and <sparkit> hops up onto her shoulder.
 "#
     .into()
 }
