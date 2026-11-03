@@ -532,20 +532,23 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                 Provider::Civitai,
                 &format!("{base}/api/v1/model-versions/{version}"),
             )?;
-            let chosen: Vec<&CivitaiFile> = doc
-                .files
-                .iter()
-                .filter(|f| match file {
-                    Some(id) => f.id == *id,
-                    None => f.primary && f.name.to_ascii_lowercase().ends_with(".safetensors"),
-                })
-                .collect();
-            let [f] = chosen.as_slice() else {
+            let safetensors = |f: &&CivitaiFile| f.name.to_ascii_lowercase().ends_with(".safetensors");
+            let weights: Vec<&CivitaiFile> = doc.files.iter().filter(safetensors).collect();
+            let primary: Vec<&&CivitaiFile> = weights.iter().filter(|f| f.primary).collect();
+            // The file it names; else its only safetensors, flagged or not; else its primary one.
+            let chosen = match (file, weights.as_slice(), primary.as_slice()) {
+                (Some(id), ..) => doc.files.iter().find(|f| f.id == *id),
+                (None, [one], _) => Some(*one),
+                (None, _, [one]) => Some(**one),
+                _ => None,
+            };
+            let Some(f) = chosen else {
+                let has: Vec<String> = doc.files.iter().map(|f| format!("{} ({})", f.id, f.name)).collect();
                 return refuse(
                     Code::MISSING_TENSOR,
                     format!(
-                        "civitai://{version}: no single {} safetensors file",
-                        if file.is_some() { "named" } else { "primary" }
+                        "civitai://{version}: no single safetensors file to take: name one, civitai://{version}/<file id>; it holds {}",
+                        has.join(", ")
                     ),
                 );
             };
@@ -741,6 +744,19 @@ fn variant(path: &str) -> Option<Option<&str>> {
         .then_some(variant)
 }
 
+/// A GGUF file's precision by its name (`…-Q8_0.gguf`, `…-F16.gguf`), as the lane rule ranks it:
+/// 16-bit, then the most bits of a quantization; F32 only when nothing else is there.
+fn gguf_bits(path: &str) -> u32 {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_uppercase();
+    let stem = name.strip_suffix(".GGUF").unwrap_or(&name);
+    let last = stem.rsplit(['-', '.']).find(|part| part.starts_with('Q') || part.ends_with("F16") || part == &"F32");
+    match last {
+        Some("F16" | "BF16") => 16,
+        Some(part) => part.strip_prefix('Q').and_then(|q| q.chars().next()?.to_digit(10)).unwrap_or(1),
+        None => 1,
+    }
+}
+
 /// Keeps one weights variant per folder: `variant` if the folder has it, else the plain one,
 /// else the folder's only variant.
 fn one_variant(members: Vec<Member>, want: Option<&str>) -> Vec<Member> {
@@ -873,20 +889,10 @@ pub fn select(
             Files::Configs => config(&m.path) && keep(&m.path),
         })
         .collect();
-    // A GGUF is the model only where no safetensors are, and then it must be the only one: a
-    // GGUF repository holds one file per quantization.
+    // A GGUF is the model only where no safetensors are, and then one of them: a GGUF repository
+    // holds one file per quantization, and this takes the one the lane rule would.
     if !members.iter().any(|m| m.path.ends_with(".safetensors")) {
-        match ggufs.as_slice() {
-            [] => {}
-            [one] => members.push(one.clone()),
-            many => {
-                let names: Vec<&str> = many.iter().map(|m| m.path.as_str()).collect();
-                return refuse(
-                    Code::AMBIGUOUS_CLASSIFICATION,
-                    format!("{} GGUF files; name one: {}", many.len(), names.join(", ")),
-                );
-            }
-        }
+        members.extend(ggufs.into_iter().max_by_key(|m| (gguf_bits(&m.path), m.length)));
     }
     Ok(one_variant(members, variant))
 }
