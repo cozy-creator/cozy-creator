@@ -1,0 +1,18 @@
+{
+  "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+  "files": {
+    "README.md": "ee6ea02619a2361e4c95dedd0f5d93c30bc7def342e27333ad9ba9db1f55c274",
+    "cache-abandoned-e545-25360.json": "72984dabe0d4cfb9a7957312e6dcd68819c3153dcd6cc3c52e8cf7548aa4d02b",
+    "cache-abandoned-e545-invocation.json": "5407051cadc0250cd6a96dabfe9bdd64d15d8e814ea2466862fdbc610053534f",
+    "cache-abandoned-e545-result.json": "beaf45c4dbac5126f2178b8a8e7b2792bcd018b294803d1746ca5b733eafa479",
+    "cache-pages-e545-25358.json": "2b84d4dcfac98152b2eaa66f69a0d6a10770cda06923b3e0b51411e84fe31893",
+    "cache-pages-e545-invocation.json": "5ed06c8df3b99990d10f005e3a715547a960ea44d14cf956ddaf9f6a4086738a",
+    "cache-pages-e545-result.json": "b89b5e222d90f8db400596cff9e5597316a957c0cae0685a3c914fd8b2107556",
+    "cache-rollback-e545-25359.json": "4fee56385dc25b2a1d80ccf77fa30e07be5e2d4a8a16be97b1e217dffdad8603",
+    "cache-rollback-e545-invocation.json": "bcf248559c0a0f2deb44f9467553cb77c04ac26ea49ff45fae67b7ea3acfae08",
+    "cache-rollback-e545-result.json": "0d5cde4dd42715528d8030592b901b21278d140a91a30b2b6b6c6136e54505d5",
+    "independent-review.json": "5522959b09f81c8fae83150659651f4458fff2e3830695dc57ae4970404995dc",
+    "prepared-controller.json": "e7bffbf1ddaae5a65ff1aa7379f194c32e5745e9484d77e97431231285e517a6"
+  },
+  "scope": "primitive-only real native GPU qualification"
+}

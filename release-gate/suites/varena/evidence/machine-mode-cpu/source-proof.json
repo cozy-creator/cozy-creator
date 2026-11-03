@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "gpu_qualified": false,
+  "cli_binary_contract_qualified": false,
+  "control_merge": "ac059c89add85771756e582491d81f4f38985e5d",
+  "checks": [
+    "cargo check --offline -p cli -p tensord (final2.88s)",
+    "fixture AST and generated app/manifest parse"
+  ],
+  "products": {
+    "crates/cli/src/machine/mod.rs": "8ae8cd747e4802453e1291ab282c66354bfd8368d23ba0861cc56fd178f889c1",
+    "crates/cli/src/machine/end.rs": "2cfbf7b7e269153f3b65d315109377b8bbc25632e5caba8e91ceea72bd7d5612",
+    "crates/tensord/src/api/machine_update.rs": "0f16e633b77d32b1fbd6108f8a0f77bbc472e3ebbded1a2ad38a9f227cb44986",
+    "crates/tensord/src/machine/update.rs": "eafd7e2d30e6e339b230e89dfad5d84e74ad3668440020f3ff396de2ba122c7f",
+    "crates/tensord/src/published/environment.rs": "e326958a1e97f19bc5c139183bcdb8ebef8fbe82ba44d95a53119a9e1a102abc"
+  },
+  "fixtures": {
+    "release-gate/suites/varena/idle-lifecycle/app.py": "f152d0bd244dd6d3f5a4dd935fa87a87a183c122927b3eb3b9d0dcb0c52189a2",
+    "release-gate/suites/varena/machine-mode/prove.py": "67c20ed72e134367cd2e29524c448768afd40ed0050ada7d9cd36519ffbedf23"
+  },
+  "remaining": [
+    "actual candidate CLI parser/help",
+    "ordinary remote mode update/restart",
+    "live mode and GPU Start/native row proof",
+    "priority propagation remains hard-coded0"
+  ]
+}

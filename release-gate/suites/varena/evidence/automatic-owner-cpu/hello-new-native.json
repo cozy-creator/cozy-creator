@@ -1,0 +1,52 @@
+{
+  "passed": true,
+  "scope": "actual CPU-only executor Hello/Shutdown socket, no Start or GPU work",
+  "command": [
+    "/home/fidika/cozy_v2/cozy-runtime/.venv/bin/python",
+    "-I",
+    "-B",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-owner/hello-freeze-new/child.py",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-owner/hello-final-compiled/overlay",
+    "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p3-owner/src",
+    "/dev/shm/vr-hello-omqrti20/executor.sock",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-owner/hello-freeze-new/owner-hello-9dm3ociu",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-owner/hello-freeze-new/child-result.json"
+  ],
+  "hello": {
+    "cooperative_owner": true,
+    "memory_backend": "rust-local",
+    "memory_protocol": 0,
+    "ok": true,
+    "pgid": 970524,
+    "pid": 970536,
+    "ppid": 970535,
+    "rank": 0,
+    "reply": "hello",
+    "request_lookahead": true,
+    "room": true,
+    "runtime_version": "0.36.18",
+    "sealed": {},
+    "tensorfs_version": "0.17.16",
+    "world": 1
+  },
+  "shutdown": {
+    "ok": true,
+    "reply": "shutdown"
+  },
+  "child": {
+    "exit_code": 0,
+    "torch_imported": false,
+    "cuda_initialized": false,
+    "driver_loaded": false,
+    "cooperation_capability": 1,
+    "extension": "/home/fidika/cozy_v2/outputs/xs138-p3-owner/hello-final-compiled/overlay/tensorfs/_ext.abi3.so",
+    "native_version": "0.17.16",
+    "runtime_executor_source": "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p3-owner/src/cozy_runtime/internal/executor.py",
+    "runtime_executor_sha256": "25eb59e5315af27cc8a1581d0865fe4065ef29973e0a6204f87bcc51eead13aa",
+    "runtime_owner_sha256": "b0862bc40e6282aa33031e883b0a01c2d418b7f924d0e80940862205286add1f",
+    "threads": [
+      "MainThread"
+    ]
+  },
+  "extension_sha256": "079b497e7f78b3d643cca11a0e16fec65aa743757d8948272e2524162976ab9f"
+}

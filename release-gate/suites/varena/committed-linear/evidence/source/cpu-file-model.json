@@ -1,0 +1,41 @@
+{
+  "identity": [
+    "sha256:aa7813ec2c14fedd251f91de2b308be8f1c7638450aad91805e3311c1dac29bd/int8",
+    "stored",
+    ""
+  ],
+  "metadata": [
+    [
+      [
+        1024,
+        4096
+      ],
+      [
+        4096,
+        1
+      ],
+      "torch.int8",
+      "cpu"
+    ],
+    [
+      [
+        1024
+      ],
+      [
+        1
+      ],
+      "torch.float32",
+      "cpu"
+    ],
+    null
+  ],
+  "leaf_hooks": [
+    1,
+    1
+  ],
+  "actual_read_bytes": 4198400,
+  "closed_source_error": "InvalidError: invalid: the checkpoint is closed",
+  "passed": true,
+  "cuda_initialized": false,
+  "scope": "real CPU file-backed leaf/source lifecycle and metadata operations; native CUDA inventory/consumer remain pending"
+}

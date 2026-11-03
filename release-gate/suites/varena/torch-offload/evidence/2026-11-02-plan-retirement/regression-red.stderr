@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-plan-retirement/release-gate/suites/varena/torch-offload/plan_retirement_cpu.py", line 188, in <module>
+    assert all(row["pass"] for row in results)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

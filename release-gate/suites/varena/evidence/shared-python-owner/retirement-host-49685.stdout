@@ -1,0 +1,1 @@
+{"passed":true,"concurrent_preparations":16,"per_device_endpoints":3,"actual_idle_workers":3,"startup_avoided_capture_mutex":true,"fork_rejected_before_inherited_queue_mutex":true,"gpu_owners_constructed":0,"cuda_loaded":false,"nvml_loaded":false,"gpu_retirement_qualified":false}
