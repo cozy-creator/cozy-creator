@@ -203,6 +203,7 @@ pub(super) async fn release(
         version: release.version,
         created_at: release.created_at,
         lanes: release.lanes.into_iter().map(|(lane, l)| (lane, l.commit)).collect(),
+        warnings: release.warnings,
     }))
 }
 

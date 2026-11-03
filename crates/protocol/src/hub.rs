@@ -307,6 +307,9 @@ pub struct ModelReleased {
     pub created_at: String,
     /// Each lane's commit.
     pub lanes: Vec<(String, String)>,
+    /// What the Hub tells its publisher; the release stands regardless.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// `DELETE /v1/models/{org}/{name}[/releases/{version}|/commits/{commit}]`.

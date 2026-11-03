@@ -77,6 +77,9 @@ pub struct RunQuote {
     pub why: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<Alternative>,
+    /// What the Hub's placement wants its asker to know.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Another machine a run could rent, against the pick: its time as a multiple of the pick's, and
@@ -1083,6 +1086,9 @@ pub struct Quote {
     pub expected_hours: f64,
     pub expected_download_gb: u32,
     pub expected_total_usd_micros: i64,
+    /// What the Hub changed of the ask to quote it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl Quote {

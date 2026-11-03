@@ -92,6 +92,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         quote,
         why: None,
         alternatives: vec![],
+        warnings: vec![],
     };
     if !agree(ctx, &quoted)? {
         output::say(ctx, "nothing was rented");
@@ -259,6 +260,7 @@ fn placed(q: &RunQuote) -> String {
 /// Hub accepts the order, `cozy machine rent` prints `{"type":"rental.accepted", rental_id, name}`
 /// at once, and the machine's document when it is ready.
 pub(crate) fn agree(ctx: &Context, quoted: &RunQuote) -> Result<bool, Error> {
+    quoted.quote.warnings.iter().chain(&quoted.warnings).for_each(|warning| output::warn(warning));
     if ctx.json {
         output::ndjson(&serde_json::json!({"quote": {
             "sku": quoted.sku,

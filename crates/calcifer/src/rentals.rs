@@ -781,6 +781,7 @@ impl Machines {
                     _ => format!("{sku} as asked, though {}", e.message),
                 },
                 alternatives: vec![],
+                warnings: vec![],
             }),
             (Err(e), None) => Err(e),
         }
@@ -857,6 +858,7 @@ impl Machines {
             fallbacks,
             why,
             alternatives: alternatives(&placement.machines),
+            warnings: placement.warnings.clone(),
         })
     }
 
@@ -872,7 +874,7 @@ impl Machines {
         };
         let placed = match (&sku, gpus) {
             (Some(sku), Some(_)) => {
-                Placed { sku: sku.clone(), gpus, disk_gb: None, fallbacks: vec![], why: String::new(), alternatives: vec![] }
+                Placed { sku: sku.clone(), gpus, disk_gb: None, fallbacks: vec![], why: String::new(), alternatives: vec![], warnings: vec![] }
             }
             (sku, _) => self.place(&submit.hub, &submit.spec, sku.as_deref()).await?,
         };
@@ -889,6 +891,7 @@ impl Machines {
             quote,
             why: Some(placed.why).filter(|w| !w.is_empty()),
             alternatives: placed.alternatives,
+            warnings: placed.warnings,
         })
     }
 
@@ -1370,6 +1373,8 @@ struct Placed {
     fallbacks: Vec<types::RentalFallback>,
     why: String,
     alternatives: Vec<Alternative>,
+    /// What the Hub's placement said.
+    warnings: Vec<String>,
 }
 
 /// Two machines beside the pick, against it: the cheapest per run and the fastest, each when it
@@ -1462,6 +1467,7 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
         expected_hours: expected.hours,
         expected_download_gb: u32::try_from(expected.download_gb).unwrap_or_default(),
         expected_total_usd_micros: expected.total_usd_micros,
+        warnings: quote.warnings.clone(),
     }
 }
 

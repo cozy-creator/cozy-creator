@@ -21,6 +21,7 @@ pub(crate) async fn publish(ctx: &Context, args: Publish) -> Result<ExitCode, Er
     let ask = ModelReleaseAsk { hub: Some(ctx.hub().to_string()), version: args.version, commits: args.commits };
     let at = path(&["v1", "models", &repo.org, &repo.name, "releases"]);
     let view: ModelReleased = ctx.calcifer().await?.post(&at, &ask, None).await?;
+    view.warnings.iter().for_each(|warning| output::warn(warning));
     if ctx.json {
         output::json(&view);
         return Ok(ExitCode::SUCCESS);

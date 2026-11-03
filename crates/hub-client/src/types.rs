@@ -260,6 +260,9 @@ pub struct ModelRelease {
     pub by_admin: bool,
     #[serde(deserialize_with = "null_is_empty")]
     pub lanes: BTreeMap<String, ModelReleaseLane>,
+    /// What publishing it should tell its publisher; it stands regardless.
+    #[serde(deserialize_with = "null_is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -493,6 +496,9 @@ pub struct RentalPlacement {
     pub machines: Vec<RentalPlacementMachine>,
     #[serde(deserialize_with = "null_is_empty")]
     pub excluded: Vec<RentalPlacementExclusion>,
+    /// What the Hub changed of the ask, or wants its asker to know.
+    #[serde(deserialize_with = "null_is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -570,6 +576,9 @@ pub struct RentalQuote {
     #[serde(default)]
     pub container_disk_gb: i64,
     pub expected_price: RentalPriceEstimate,
+    /// What reading the quoted request changed: a disk clamped, a fallback bought, a name fixed.
+    #[serde(default, deserialize_with = "null_is_empty", skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// The catalog: Calcifer answers it as the Hub does.
