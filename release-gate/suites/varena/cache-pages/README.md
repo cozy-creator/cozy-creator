@@ -216,8 +216,16 @@ uv run --no-project python release-gate/suites/varena/cache-pages/freeze.py \
 
 The build operator records the candidate and fixture commit, complete source hash,
 helper/core/std/extension hashes, compiler/toolkit and exact preparation command.
-For the parent control, apply the fixture-only commit to isolated prerequisite
-`2a3ff202a` and build that unchanged Working implementation; record both identities.
+For the parent control, apply only the fixture paths from commit `3db68e7fe` to an
+isolated prerequisite `2a3ff202a` checkout and build its unchanged Working implementation;
+record both identities. The candidate's contract-document update is not needed there:
+
+```sh
+git show --format= --binary 3db68e7fe -- Cargo.lock unsafe-boundaries.txt \
+  release-gate/suites/varena/cache-pages \
+  release-gate/suites/varena/native-gpu/Cargo.toml | git apply --index
+```
+
 Keep the expected failing parent receipt. The baseline and candidate are separate
 from metadata-rebind, Graph-adapter and component-stream changes.
 
