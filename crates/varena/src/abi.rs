@@ -620,6 +620,7 @@ fn acquire_use(weights: &[Arc<Weight>], stream: u64,
             pins.push(pin);
             if let Some(admission) = &mut admission { admission.acquired(weight); }
         }
+        if let Some(admission) = &admission { admission.finish_acquisition()?; }
         Ok(())
     })();
     if let Err(error) = acquired {

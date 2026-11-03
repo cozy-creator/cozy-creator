@@ -135,8 +135,19 @@ impl Admission {
         );
     }
 
+    pub(super) fn finish_acquisition(&self) -> Result<()> {
+        for weight in &self.weights {
+            self.check_region(weight)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn completed<T>(&mut self, result: &super::Result<T>) {
         self.refused_bytes = result.as_ref().err().map_or(0, |error| error.2);
+        if result.is_err() && self.request_generation == 0 {
+            // Diagnostics must not replace the original acquisition error.
+            let _ = self.report_regions("after_acquisition_cleanup");
+        }
         if self.request.is_some() || self.native_released != 0 || result.is_err() {
             self.report(
                 if result.is_ok() {
@@ -178,9 +189,8 @@ impl Admission {
             if entry.uses.state() == crate::Contents::Retired {
                 return Err(Error::Invalid("prepared Use Region is retired"));
             }
-            if entry.uses.state() == crate::Contents::Loading {
-                return Err(Error::Busy);
-            }
+            // Mapped pending producer backing is already charged. Actual acquisition
+            // retains prepare_on's Published ordering / Loading refusal semantics.
             if entry.handle.is_none() {
                 missing = missing
                     .checked_add(entry.bytes)
@@ -240,6 +250,9 @@ impl Admission {
         if current.deficit() == 0 {
             return Ok(());
         }
+        self.request_generation = cache_owner::next_generation()?;
+        self.report("pressure", "observed");
+        self.report_regions("before_service")?;
         self.native_released = self.collect(current.deficit())?;
         current = self.read_snapshot()?;
         self.snapshot = Some(current);
@@ -247,7 +260,6 @@ impl Admission {
             return Ok(());
         }
         let wanted = current.deficit();
-        self.request_generation = cache_owner::next_generation()?;
         self.request = cache_owner::request_shrink(
             self.gpu.device(),
             cache_owner::RequestKey {
@@ -259,12 +271,13 @@ impl Admission {
         if let Some(request) = &self.request {
             self.facts = request.facts()?;
         }
-        self.report("requested", "pending");
         let Some(request) = self.request.clone() else {
+            self.report("request_unavailable", "capacity");
             return Err(Error::OutOfMemory {
                 requested_bytes: current.missing,
             });
         };
+        self.report("requested", "pending");
         let (mut epoch, mut serviced) = (0, 0usize);
         loop {
             self.facts = request.wait_admission_action(epoch)?;
@@ -287,7 +300,62 @@ impl Admission {
         }
     }
 
-    // At most request + one record per accepted owner action + terminal outcome.
+    // One pressure-only row per exact requested identity; never a global census.
+    // Gather scalar metadata under native guards, then release them before writing.
+    fn report_regions(&self, sample: &str) -> Result<()> {
+        let rows = {
+            let _captures = crate::capture_counts()?;
+            self.lease.validate_use(&self.ids)?;
+            let mut rows = Vec::with_capacity(self.ids.len());
+            let mut seen = BTreeSet::new();
+            for weight in &self.weights {
+                let region = &weight.region;
+                if !seen.insert(region.id()) {
+                    continue;
+                }
+                let state = region.arena.lock()?;
+                let entry = state
+                    .entries
+                    .get(&region.id())
+                    .ok_or(Error::Invalid("prepared Use census Region left its Arena"))?;
+                let contents = match entry.uses.state() {
+                    crate::Contents::Cold => "cold",
+                    crate::Contents::Loading => "loading",
+                    crate::Contents::Published => "published",
+                    crate::Contents::Ready => "ready",
+                    crate::Contents::Retired => "retired",
+                };
+                rows.push((
+                    region.arena_id(),
+                    region.id(),
+                    entry.requested_bytes,
+                    entry.bytes,
+                    if entry.handle.is_some() {
+                        entry.bytes
+                    } else {
+                        0
+                    },
+                    entry.uses.pins(),
+                    contents,
+                    entry.uses.generation.load(Ordering::Acquire),
+                    entry.uses.unjoined.load(Ordering::Acquire),
+                ));
+            }
+            rows
+        };
+        for (arena, region, logical, rounded, mapped, pins, contents, generation, unjoined) in rows
+        {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "VARENA_USE_ADMISSION_V1 {{\"event\":\"selected_region\",\"sample\":\"{sample}\",\"device\":{},\"request_generation\":{},\"arena\":{arena},\"region\":{region},\"logical\":{logical},\"rounded\":{rounded},\"mapped\":{mapped},\"pins\":{pins},\"contents\":\"{contents}\",\"fill_generation\":{generation},\"unjoined\":{unjoined}}}",
+                self.gpu.device(),
+                self.request_generation
+            );
+        }
+        Ok(())
+    }
+
+    // Pressure + selected identities + request + one row per owner action + terminal.
     // Global releases are explicitly an observation, never this operation's service credit.
     fn report(&self, event: &str, outcome: &str) {
         let s = self.snapshot.unwrap_or_default();

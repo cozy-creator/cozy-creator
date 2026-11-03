@@ -141,8 +141,11 @@ request, observed owner actions and terminal result. Native demand/headroom, req
 service and global release observations remain separate; callback returns are never
 physical capacity. Demand/headroom describe the last admission readback, not an atomic
 snapshot of a later allocation failure; `current_region` and `refused_bytes` identify
-that later actual acquisition refusal. Source qualification alone does not establish
-GPU success.
+that later actual acquisition refusal. A pressure-only selected-Region census includes
+each exact native ID, rounded/mapped bytes, Pins and content/fill generation before
+service. Mapped pending Sources contribute no missing backing; actual acquisition keeps
+the existing producer ordering and refusal rules. Source qualification alone does not
+establish GPU success.
 
 Statuses preserve `Exhausted` (requested bytes available), `Capturing`, `SourceError`,
 `Fault`, `Invalid`, `Unsupported` and `Busy`. Python has matching exception classes;
