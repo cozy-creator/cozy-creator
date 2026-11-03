@@ -366,7 +366,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
 async fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<String> {
     let host = Host::new(api);
     let (mut said, mut known) = (vec![], HashMap::new());
-    for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()) {
+    for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none() && doc.assets[i].pin.is_none()) {
         let with = doc.target(i);
         if protocol::target::written_as_path(&with) || with.ends_with(".py") {
             continue;
@@ -1537,7 +1537,7 @@ impl Walk {
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})
     }
 
-    /// A revision its function didn't write, cut from its landed video.
+    /// A scene its function didn't write, cut from its landed video.
     async fn cut_write(&self, name: &str, version: &Version, write: &Written) -> Result<String, Error> {
         let lock = self.folder().lock()?;
         let video = version.files.get("video").and_then(|sha256| lock.files.get(sha256)).map(|file| self.folder().path(&file.path));

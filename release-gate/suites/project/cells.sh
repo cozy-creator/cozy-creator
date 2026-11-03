@@ -78,7 +78,7 @@ assets:
         description: |
           <hero> rolls bright orange paint across the wall in big letters that read OPEN.
         writes:
-          - state: wall.1
+          - scene: wall.1
             at: 5
       - duration: 4
         description: |

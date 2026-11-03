@@ -120,7 +120,7 @@ assets:
         description: |
           <kyogre> surges forward and a storm breaks.
         writes:
-          - state: coast.1
+          - scene: coast.1
             at: 12
       - duration: 10
         description: |
@@ -177,10 +177,11 @@ Any prefix of the hash will do; one that fits two is said. `--character` and `--
 A URL is downloaded here, up to 64 MiB, from a public address. A path or URL in a file field is never read: it warns with the import
 command. A made version is a file too: `status` prints each one's 12 characters.
 
-**World state** is a named series of assets, `coast`, `coast.1`, `coast.2`, each its own asset. A beat's `writes` is a screenshot of it, `at`
-seconds into that beat (its end if left out, clamped with a warning past it), re-used as a reference in a later generation. `<coast.2>`
-is that revision, and `<coast>` the newest written above this asset in the file, else `coast` itself. A write the shot reads after its beat goes
-to its function, inside its key, as one take; any other is a free frame, cut here, and moving it re-renders nothing.
+**Scenes.** A `scene` asset holds a place as it stands, and a beat can write one: `writes: [{scene: coast.1, at: 12}]` is a screenshot `at` seconds
+into that beat (its end if left out, clamped with a warning past it), its picture re-used as a reference in a later generation. A scene may be
+declared on its own with a `description`; the write only fills in its picture. A mention names exactly that asset: `<coast.1>` is `coast.1`, and
+`<coast>` is `coast`. A write the shot reads after its beat goes to its function, inside its key, as one take; any other is a free frame, cut here,
+and moving it re-renders nothing.
 
 **Cuts.** `with: cozy`, `kind: edit`, as many as you like, each writing `<name>.mp4` and `<name>.otio` at the root. `pieces` holds `<name>`,
 the whole take, or `{video: <name>, start: 12, end: 132}`, in frames at its `fps` (24 by default), every in and out point exact. `aspect_ratio` and

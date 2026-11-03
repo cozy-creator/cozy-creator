@@ -104,16 +104,16 @@ code=0; cozy project -p "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
 memo() {
 step "a project: render makes what has no state, and nothing else"
 local T=$OUT/memo first was reads
-mkdir -p "$T"; cp "$here/project/draw.py" "$here/project/clean.py" "$T/"
-cat > "$T/project.yaml" <<'YAML'
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
 version: 2
 defaults:
   all:
     style: Plain.
   environment:
-    with: ./draw.py
+    with: $here/project/draw.py
   picture:
-    with: ./draw.py
+    with: $here/project/draw.py
 assets:
   card:
     kind: environment
@@ -122,7 +122,7 @@ assets:
     kind: picture
     description: <card> as a poster.
   cleaned:
-    with: ./clean.py
+    with: $here/project/clean.py
     kind: clean
     image: <card>
 YAML
@@ -161,7 +161,7 @@ step "a project: defaults and options are inputs; a release in with is not"
 sed -i 's/style: Plain\./style: Bold./' "$T/project.yaml"
 J '([.stale[]?.name] | index("card")) and ([.missing[]?] | index("poster"))' <<< "$(status "$T")" || check "memo: a defaults edit did not put card out of date, and poster waiting on it: $(status "$T" | jq -c '{stale, missing}')"
 sed -i 's/style: Bold\./style: Plain./' "$T/project.yaml"
-cat >> "$T/project.yaml" <<'YAML'
+cat >> "$T/project.yaml" <<YAML
   keyed:
     with: _/birefnet@9.9.9
     kind: clean
@@ -170,7 +170,9 @@ YAML
 was=$(row "$T" keyed .inputs)
 sed -i 's#_/birefnet@9.9.9#birefnet#' "$T/project.yaml"
 [ "$(row "$T" keyed .inputs)" = "$was" ] || check "memo: a release or _/ in with moved the key"
-sed -i 's#with: birefnet#with: other#' "$T/project.yaml"
+sed -i 's#with: birefnet#with: ~/a/checkout/of/birefnet#' "$T/project.yaml"
+[ "$(row "$T" keyed .inputs)" = "$was" ] || check "memo: a local checkout of the package moved the key"
+sed -i 's#with: ~/a/checkout/of/birefnet#with: other#' "$T/project.yaml"
 [ "$(row "$T" keyed .inputs)" != "$was" ] || check "memo: another package did not move the key"
 sed -i 's#with: other#with: birefnet\n    options: {steps: 2}#' "$T/project.yaml"
 [ "$(row "$T" keyed .inputs)" != "$was" ] || check "memo: options did not move the key"
@@ -198,25 +200,25 @@ code=0; cozy project -p "$T" render card -n 2 --approve --on local > "$OUT/rende
 pins() {
 step "a project: approve writes one line, comments and all"
 local T=$OUT/pinned before after version file changed
-mkdir -p "$T"; cp "$here/project/draw.py" "$here/project/clean.py" "$T/"
-cat > "$T/project.yaml" <<'YAML'
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
 # Paul's note at the top.
 version: 2
 assets:
   # the hero
   card:   # never change this one
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: A test card.    # a note on it
     aspect_ratio: "16:9"
 
-  flat: {with: ./draw.py, kind: picture, description: A flat one.}
+  flat: {with: $here/project/draw.py, kind: picture, description: A flat one.}
   cleaned:
-    with: ./clean.py
+    with: $here/project/clean.py
     kind: clean
     image: <card>
   poster:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: <card> as a poster.
 # the end
@@ -260,7 +262,7 @@ grep -Eq '^    image: [0-9a-f"]+  # was <card>$' "$T/project.yaml" || check "pin
 cozy project -p "$T" unpin cleaned > "$OUT/unpin.txt" 2>&1 || check "pins: unpin cleaned: $(tail -c 300 "$OUT/unpin.txt")"
 diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin cleaned did not give back the file: $(cat "$OUT/unpin.diff")"
 cozy project -p "$T" approve flat 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve an asset on one line: $(tail -c 300 "$OUT/approve.txt")"
-grep -Eq '^  flat: \{image: [0-9a-f"]+, with: \./draw\.py, kind: picture, description: A flat one\.\}$' "$T/project.yaml" || check "pins: flat is $(grep -n 'flat:' "$T/project.yaml")"
+grep -Eq '^  flat: \{image: [0-9a-f"]+, with: .*/draw\.py, kind: picture, description: A flat one\.\}$' "$T/project.yaml" || check "pins: flat is $(grep -n 'flat:' "$T/project.yaml")"
 cozy project -p "$T" unpin flat > "$OUT/unpin.txt" 2>&1 || check "pins: unpin flat: $(tail -c 300 "$OUT/unpin.txt")"
 diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin flat did not give back the file: $(cat "$OUT/unpin.diff")"
 
@@ -276,7 +278,7 @@ render "$T" cleaned || check "pins: render cleaned on 1 again: $(tail -c 300 "$O
 [ "$(made "$T" cleaned)" = "$cleans" ] || check "pins: re-approving art ran its clean: $(made "$T" cleaned), not $cleans"
 
 step "a project: a hash of a file, a constant, a hash of nothing"
-local C=$OUT/constants pic; mkdir -p "$C"; cp "$here/project/draw.py" "$C/"; still "$C/teal.png" teal
+local C=$OUT/constants pic; mkdir -p "$C"; still "$C/teal.png" teal
 printf 'version: 2\nassets: {}\n' > "$C/project.yaml"
 pic=$(prefix "$C" "$C/teal.png")
 cat > "$C/project.yaml" <<YAML
@@ -285,7 +287,7 @@ assets:
   teal:
     image: $pic
   wrong:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     image: cafe0000
     description: It renders without that.
@@ -295,10 +297,10 @@ assets:
     kind: picture
     description: Nothing makes me.
   no kind:
-    with: ./draw.py
+    with: $here/project/draw.py
     description: An image, then.
   no adapter:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: unheard
     description: Nor me either.
 YAML
@@ -314,7 +316,7 @@ render "$C" wrong || check "pins: wrong's bad pin stopped it: $(tail -c 300 "$OU
 step "a project: an asset with no package, no kind, or no adapter says so, and the rest goes on"
 J '.warnings | any(contains("no package has no `with`, and no `defaults.picture.with`"))' <<< "$(status "$C")" || check "pins: an asset with nothing to make is not said: $(status "$C" | jq -c .warnings)"
 J '.assets[] | select(.name == "no kind") | .kind == "image"' <<< "$(status "$C")" || check "pins: an operation with no kind is not an image: $(row "$C" 'no kind' .)"
-sed -i 's/^    image: cafe0000$/    description: Rendered again./' "$C/project.yaml"
+sed -i 's/It renders without that\./Rendered again./' "$C/project.yaml"
 render "$C" all || check "pins: render all with what can't be made: $(tail -c 400 "$OUT/render.txt")"
 says pins "no adapter: "
 says pins "has no adapter for kind unheard: it can't be made"
@@ -325,16 +327,16 @@ says pins "has no adapter for kind unheard: it can't be made"
 orphans() {
 step "a project: a renamed asset keeps its versions with rename"
 local T=$OUT/orphaned code shared gone_file
-mkdir -p "$T"; cp "$here/project/draw.py" "$here/project/shots.py" "$T/"
-cat > "$T/project.yaml" <<'YAML'
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
 version: 2
 assets:
   old:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: The old one.
   reader:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: <old> on a shelf.
 YAML
@@ -351,13 +353,13 @@ step "a project: reclaim lists, and --yes deletes what nothing else names"
 render "$T" all || check "orphans: render all renamed"
 shared=$(jq -r '.assets.new.versions[0].files.image' "$T/project.lock")
 # Another asset's version names the same file: it stays. The rest of the orphan goes.
-cat >> "$T/project.yaml" <<'YAML'
+cat >> "$T/project.yaml" <<YAML
   doomed:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: Going.
   kept:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: Stays.
 YAML
@@ -365,9 +367,9 @@ render "$T" all || check "orphans: render all with doomed"
 gone_file=$(jq -r '.assets.doomed.versions[0].files.image' "$T/project.lock")
 jq --arg s "$gone_file" '.assets.kept.versions[0].writes = {"a frame": {"image": $s}}' "$T/project.lock" > "$T/l" && mv "$T/l" "$T/project.lock"
 sed -i '/^  doomed:$/,/^    description: Going\.$/d' "$T/project.yaml"
-cat >> "$T/project.yaml" <<'YAML'
+cat >> "$T/project.yaml" <<YAML
   second:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: Second.
 YAML
@@ -385,9 +387,9 @@ J '(.assets | has("doomed") or has("second")) | not' "$T/project.lock" || check 
 [ -f "$T/files/${shared#sha256:}.png" ] || check "orphans: a kept asset's file was deleted"
 
 step "a project: reclaim refuses while the project renders"
-cat >> "$T/project.yaml" <<'YAML'
+cat >> "$T/project.yaml" <<YAML
   waiting:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: slow
     seconds: 15
 YAML
@@ -403,7 +405,7 @@ wait "$going" || check "orphans: the slow render: $(tail -c 300 "$OUT/slow.txt")
 keeps() {
 step "a project: --take and --in reach the adapter as op.keep"
 local T=$OUT/keeps code look
-mkdir -p "$T"; cp "$here/project/shots.py" "$T/"; plate "$T/look.mp4" testsrc2 440 800
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
@@ -412,7 +414,7 @@ assets:
   look:
     video: $look
   clash:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
     summary: Two lights meet on <look>.
 YAML
@@ -431,12 +433,12 @@ render "$T" all --in 2 || check "keeps: all --in: $(tail -c 300 "$OUT/render.txt
 says keeps "--take and --in keep the start of one asset"
 }
 
-# A world state: a named series. A beat writes it: a screenshot at `at` into the beat. What the shot reads after that beat goes to its
-# function, in its key; what it doesn't is a free frame, outside its key.
+# A scene a beat writes: a screenshot at `at` into the beat. What the shot reads after that beat goes to its function, in its key; what
+# it doesn't is a free frame, outside its key. A mention names exactly the asset it names.
 world_states() {
-step "a project: a world state, a named series written by beats"
+step "a project: scenes written by beats"
 local T=$OUT/series look take frames
-mkdir -p "$T"; cp "$here/project/shots.py" "$here/project/draw.py" "$T/"; plate "$T/look.mp4" testsrc2 440 800 8
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 8
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
@@ -445,51 +447,50 @@ assets:
   look:
     video: $look
   coast:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: environment
     description: A coast.
   first:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
     summary: Dusk on <look> and <coast>.
   long take:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
     summary: Walking on <look>.
     beats:
       - duration: 4
         description: She runs on <coast>.
         writes:
-          - state: coast.1
+          - scene: coast.1
             at: 1
-          - state: coast.2
+          - scene: coast.2
             at: 3
       - duration: 4
         description: She stands on <coast.2>.
         writes:
-          - state: harbor.1
+          - scene: harbor.1
             at: 1
   next:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
-    summary: Dawn on <look> and <coast>, by <harbor.1>.
+    summary: Dawn on <look> and <coast.2>, by <harbor.1>.
   poster:
-    with: ./draw.py
+    with: $here/project/draw.py
     kind: picture
     description: <coast.1> as a poster.
 YAML
-J '[.assets[] | select(.name == "coast.1" or .name == "coast.2") | .kind] == ["world_state", "world_state"]' <<< "$(status "$T")" || check "series: revisions are not assets: $(status "$T" | jq -c '[.assets[].name]')"
+J '[.assets[] | select(.name == "coast.1" or .name == "coast.2") | .kind] == ["scene", "scene"]' <<< "$(status "$T")" || check "series: revisions are not assets: $(status "$T" | jq -c '[.assets[].name]')"
 render "$T" all || check "series: render all: $(tail -c 400 "$OUT/render.txt")"
 given() { cat "$T/$(jq -r --arg s "$1" '.files[.assets[$s].versions[-1].files.given].path' "$T/project.lock")"; }
 J '.writes == ["coast.1", "coast.2"] and .at == [1, 3]' <<< "$(given 'long take')" || check "series: long take's writes are not its beats', on the shot's clock: $(given 'long take')"
-J '.prompt | contains("coast=") and contains("look=")' <<< "$(given next)" || check "series: next does not read <coast>: $(given next)"
+J '.prompt | contains("coast.2=") and contains("look=")' <<< "$(given next)" || check "series: next does not read <coast.2>: $(given next)"
 take=$(jq -c '.assets["long take"].versions[-1].writes | keys' "$T/project.lock")
 [ "$take" = '["coast.1","coast.2"]' ] || check "series: long take's take holds $take"
 [ "$(made "$T" coast.1)" = null ] || [ "$(made "$T" coast.1)" = 0 ] || check "series: a sent revision has versions of its own"
 [ "$(row "$T" coast.1 .status)" = '"written by long take 1"' ] || check "series: coast.1 is $(row "$T" coast.1 .status)"
-J '.assets["next"].versions[-1].reads | map(.name) | index("coast")' "$T/project.lock" || check "series: next's reads: $(jq -c '.assets["next"].versions[-1].reads | map(.name)' "$T/project.lock")"
-J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.2"].image' "$T/project.lock")" '.assets["next"].versions[-1].reads[] | select(.name == "coast") | .files.image == $want' "$T/project.lock" \
-  || check "series: next's <coast> is not coast.2, the newest above it"
+J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.2"].image' "$T/project.lock")" '.assets["next"].versions[-1].reads[] | select(.name == "coast.2") | .files.image == $want' "$T/project.lock" \
+  || check "series: next's <coast.2> is not what long take wrote: $(jq -c '.assets["next"].versions[-1].reads' "$T/project.lock")"
 J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.1"].image' "$T/project.lock")" '.assets.poster.versions[-1].reads[] | select(.name == "coast.1") | .files.image == $want' "$T/project.lock" \
   || check "series: poster's <coast.1> is not that revision"
 J '.assets["first"].versions[-1].reads | map(.name) | index("coast")' "$T/project.lock" || check "series: first does not read coast"
@@ -499,7 +500,7 @@ step "a project: a free frame, moved, re-renders nothing"
 J '.assets["harbor.1"].versions[-1] | .made_by.with == "cozy/frame" and (.files.image != null)' "$T/project.lock" || check "series: harbor.1 is not a free frame: $(jq -c '.assets["harbor.1"].versions[-1].made_by' "$T/project.lock")"
 frames=$(runs "$T")
 local was=$(row "$T" 'long take' .inputs)
-sed -i '/state: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
+sed -i '/scene: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
 [ "$(row "$T" 'long take' .inputs)" = "$was" ] || check "series: moving a free write moved its shot's key"
 render "$T" 'harbor.1' || check "series: render a free frame: $(tail -c 300 "$OUT/render.txt")"
 says series "made here, free"
@@ -507,21 +508,21 @@ J '.assets["harbor.1"].versions | length == 1' "$T/project.lock" || check "serie
 J '.assets["harbor.1"].versions[-1].digests.at != null' "$T/project.lock" || check "series: a frame's key does not hold its time"
 [ "$(runs "$T")" = "$frames" ] || check "series: moving a free frame ran something"
 
-step "a project: pinning a sent write puts its shot out of date; a number backward, and a write past its beat, warn"
+step "a project: pinning a sent write puts its shot out of date; a write past its beat warns"
 local pic; still "$T/pic.png" navy; pic=$(prefix "$T" "$T/pic.png")
 sed -i "/^  poster:\$/i\\  coast.2:\\n    image: $pic" "$T/project.yaml"
 case "$(row "$T" 'long take' .status)" in *'out of date'*) ;; *) check "series: a pinned sent write did not put its shot out of date: $(row "$T" 'long take' .status)" ;; esac
 J '.assets[] | select(.name == "coast.2") | .pinned' <<< "$(status "$T")" || check "series: coast.2 is not pinned"
 sed -i '/^  coast.2:$/,+1d' "$T/project.yaml"
-sed -i 's/state: coast\.1/state: coast.x/; s/state: coast\.2/state: coast.1/; s/state: coast\.x/state: coast.2/' "$T/project.yaml"
-J '.warnings | any(contains("position decides"))' <<< "$(status "$T")" || check "series: a number going backward did not warn: $(status "$T" | jq -c .warnings)"
 sed -i '0,/at: 1$/s//at: 40/' "$T/project.yaml"
 J '.warnings | any(contains("at 40 s into a beat 4 s long"))' <<< "$(status "$T")" || check "series: a write past its beat did not warn: $(status "$T" | jq -c .warnings)"
+sed -i '0,/scene: harbor.1/s//&\n            description: Not a field of a write./' "$T/project.yaml"
+J '.warnings | any(contains("write of harbor.1: cozy reads no field description"))' <<< "$(status "$T")" || check "series: another field on a write did not warn: $(status "$T" | jq -c .warnings)"
 sed -i 's/^    summary: Walking on <look>\.$/    writes: {coast.9: 1}\n&/' "$T/project.yaml"
 J '.warnings | any(contains("go on the beat"))' <<< "$(status "$T")" || check "series: writes on an asset did not warn: $(status "$T" | jq -c .warnings)"
 
 step "a project: a package that takes no writes: frames from the landed video"
-local B=$OUT/bare; mkdir -p "$B"; cp "$here/project/shots.py" "$B/"; plate "$B/look.mp4" testsrc2 440 800
+local B=$OUT/bare; mkdir -p "$B"; plate "$B/look.mp4" testsrc2 440 800
 printf 'version: 2\nassets: {}\n' > "$B/project.yaml"
 look=$(prefix "$B" "$B/look.mp4")
 cat > "$B/project.yaml" <<YAML
@@ -529,21 +530,19 @@ version: 2
 assets:
   look:
     video: $look
-  wall:
-    video: $look
   moves:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: bare
     plate: <look>
-    summary: It walks by <wall>.
+    summary: It walks.
     beats:
       - duration: 4
         description: The wall turns.
         writes:
-          - state: wall.1
+          - scene: wall.1
             at: 3
       - duration: 2
-        description: It stands by <wall>.
+        description: It stands by <wall.1>.
 YAML
 render "$B" moves || check "bare: render: $(tail -c 400 "$OUT/render.txt")"
 says bare "takes no writes"
@@ -554,7 +553,7 @@ J '.assets.moves.versions[-1].writes["wall.1"].image != null' "$B/project.lock" 
 adapters() {
 step "a project: an adapter that answers no run, a typed one, and one with two calls"
 local T=$OUT/adapters look
-mkdir -p "$T"; cp "$here/project/shots.py" "$T/"; plate "$T/look.mp4" testsrc2 440 800
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
@@ -563,17 +562,17 @@ assets:
   look:
     video: $look
   same:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
     no_run: true
     summary: Already <look>.
   checked:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: typed
     summary: Some words.
     no_such_field: Nothing reads this.
   both:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: two calls
     summary: One then the other.
 YAML
@@ -594,7 +593,7 @@ J '.assets.both.versions | length == 1 and (.[0] | (.runs | length == 2) and (.i
 failures() {
 step "a project: a failed run is no version, and its seed is kept for the next try"
 local T=$OUT/failing look seed
-mkdir -p "$T"; cp "$here/project/shots.py" "$T/"; plate "$T/look.mp4" testsrc2 440 800
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
@@ -603,12 +602,12 @@ assets:
   look:
     video: $look
   no:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
     refuse: Not this one.
     summary: <look>.
   reader:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: shot
     summary: <no> and <look>.
 YAML
@@ -690,7 +689,7 @@ render "$T" all || check "cuts: b back: $(tail -c 300 "$OUT/render.txt")"
 [ "$(sha "$T/edit.mp4")" = "$first" ] || check "cuts: the first edit again is another file"
 
 step "a project: approve recuts here, and a tool reads a newest out of date, and says so"
-local S=$OUT/recut; mkdir -p "$S"; cp "$here/project/shots.py" "$S/"; plate "$S/look.mp4" testsrc2 440 800 3
+local S=$OUT/recut; mkdir -p "$S"; plate "$S/look.mp4" testsrc2 440 800 3
 printf 'version: 2\nassets: {}\n' > "$S/project.yaml"
 A=$(prefix "$S" "$S/look.mp4")
 cat > "$S/project.yaml" <<YAML
@@ -699,7 +698,7 @@ assets:
   look:
     video: $A
   shot:
-    with: ./shots.py
+    with: $here/project/shots.py
     kind: bare
     plate: <look>
     summary: One.

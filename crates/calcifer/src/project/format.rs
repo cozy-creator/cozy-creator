@@ -169,8 +169,6 @@ pub struct Doc {
     pub order: Vec<usize>,
     pub warnings: Vec<String>,
     index: HashMap<String, usize>,
-    /// Each series' revisions: which asset writes it, when, and which asset it is. By the series' key.
-    revisions: HashMap<String, Vec<(usize, f64, usize)>>,
     /// How many the file declares, in order; those after them are revisions only a beat names.
     declared: usize,
 }
@@ -261,7 +259,7 @@ impl Doc {
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), revisions: HashMap::new(), declared: 0 };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
             doc.declare(text, &name, written, defaults, folder, &lock);
@@ -269,13 +267,13 @@ impl Doc {
         doc.declared = doc.assets.len();
         for i in 0..doc.declared {
             if doc.assets[i].body.contains_key("writes") {
-                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `state` with an `at` into that beat: these are ignored", doc.assets[i].name));
+                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `scene` with an `at` into that beat: these are ignored", doc.assets[i].name));
             }
             let mut said = vec![];
             let writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
             doc.warnings.append(&mut said);
-            for (beat, state, at, fields) in writes {
-                doc.write(i, beat, &state, at, fields);
+            for (beat, scene, at) in writes {
+                doc.write(i, beat, &scene, at);
             }
         }
         for i in 0..doc.assets.len() {
@@ -284,7 +282,6 @@ impl Doc {
                 doc.warnings.push(said);
             }
         }
-        doc.backward();
         doc.resolve();
         Ok(doc)
     }
@@ -360,20 +357,19 @@ impl Doc {
         self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None });
     }
 
-    /// `state`, a revision beat `beat` of asset `i` writes `at` seconds into its shot. If the shot reads it after that beat, in a
-    /// later beat or in text every segment holds, its function takes the screenshot, in its one take; otherwise it is a free
-    /// frame, outside its key. A pinned revision is read, never written.
-    fn write(&mut self, i: usize, beat: usize, state: &str, at: f64, said: Map<String, Value>) {
-        let key = name_key(state);
-        let base = series_of(&key);
+    /// `scene`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
+    /// after that beat, in a later beat or in text every segment holds, its function takes it, in its one take; otherwise it is a
+    /// free frame, outside its key. A pinned scene is read, never written. Two assets writing one name: the first stands.
+    fn write(&mut self, i: usize, beat: usize, scene: &str, at: f64) {
+        let key = name_key(scene);
         let writer_name = self.assets[i].name.clone();
         let revision = match self.index.get(&key).copied() {
             Some(revision) => revision,
             None => {
                 self.index.insert(key.clone(), self.assets.len());
                 self.assets.push(Asset {
-                    name: state.to_owned(),
-                    kind: "world_state".into(),
+                    name: scene.to_owned(),
+                    kind: "scene".into(),
                     body: Map::new(),
                     fields: Map::new(),
                     own: BTreeSet::new(),
@@ -387,22 +383,12 @@ impl Doc {
                 self.assets.len() - 1
             }
         };
-        let series = self.revisions.entry(base.clone()).or_default();
-        if series.iter().any(|(_, _, written)| *written == revision) {
-            self.warnings.push(format!("{writer_name} writes {state}, which is written above: the first stands"));
+        let own = &mut self.assets[revision];
+        if own.writer.is_some() || own.frame {
+            self.warnings.push(format!("{writer_name} writes {scene}, which is written above: the first stands"));
             return;
         }
-        series.push((i, at, revision));
-        let own = &mut self.assets[revision];
-        if own.kind.is_empty() {
-            own.kind = "world_state".into();
-        }
         own.hollow = false;
-        // What the write says of the state (`description`, ...) is the revision's, as its own lines are.
-        for (field, value) in said {
-            own.body.entry(field.clone()).or_insert_with(|| value.clone());
-            own.fields.entry(field).or_insert(value);
-        }
         if own.pin.is_some() {
             return;
         }
@@ -410,8 +396,8 @@ impl Doc {
         if let Some(Value::Array(beats)) = read_after.get_mut("beats") {
             beats.drain(..(beat + 1).min(beats.len()));
         }
-        let named: BTreeSet<String> = mentions_in(&Value::Object(read_after)).iter().map(|mention| name_key(mention)).collect();
-        if named.contains(&key) || named.contains(&base) {
+        let read = mentions_in(&Value::Object(read_after)).iter().any(|mention| name_key(mention) == key);
+        if read {
             let (fields, name) = (self.assets[revision].fields.clone(), self.assets[revision].name.clone());
             self.assets[revision].writer = Some(i);
             self.assets[i].writes.push(Write { key, name, at_s: at, fields });
@@ -423,33 +409,6 @@ impl Doc {
             own.body.insert("at".into(), json!(at));
             own.fields = fields_of(&own.body);
         }
-    }
-
-    /// A number going backward warns, and position decides.
-    fn backward(&mut self) {
-        let mut said = vec![];
-        for series in self.revisions.values_mut() {
-            series.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("no NaN from YAML"));
-            let mut highest: Option<(u64, usize)> = None;
-            for (_, _, revision) in series.iter() {
-                let Some(number) = self.assets[*revision].name.rsplit_once('.').and_then(|(_, n)| n.parse::<u64>().ok()) else { continue };
-                if let Some((was, at)) = highest.filter(|(was, _)| *was > number) {
-                    said.push(format!("{} comes after {} in the file though its number is lower ({number} after {was}): position decides", self.assets[*revision].name, self.assets[at].name));
-                }
-                highest = Some(highest.map_or((number, *revision), |(was, at)| if was > number { (was, at) } else { (number, *revision) }));
-            }
-        }
-        said.sort();
-        self.warnings.extend(said);
-    }
-
-    /// `<coast.2>` is that one. `<coast>` is the newest revision written above this asset, else `coast` itself.
-    fn resolved(&self, mention: &str, reader: usize) -> Option<usize> {
-        let key = name_key(mention);
-        let place = if reader < self.declared { reader } else { usize::MAX };
-        let above = self.revisions.get(&key).into_iter().flatten().filter(|(writer, ..)| *writer < place);
-        let newest = above.max_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).expect("no NaN from YAML"));
-        newest.map(|(.., revision)| *revision).or_else(|| self.index.get(&key).copied())
     }
 
     /// Each asset's reads, and the order. A mention of nothing stays text; one that closes a cycle too.
@@ -466,7 +425,7 @@ impl Doc {
             }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
-                let Some(j) = self.resolved(&mention, i) else {
+                let Some(j) = self.find(&mention) else {
                     said.push(format!("{} mentions <{mention}>, which is nothing in the project: it reaches its function as written", asset.name));
                     continue;
                 };
@@ -597,9 +556,8 @@ impl Doc {
     fn reading(&self, i: usize, lock: &Lock, done: &[Standing]) -> Option<Vec<ReadNow>> {
         let tool = self.tool(i).is_some();
         let mut reads = vec![];
-        for (mention, j) in &self.assets[i].reads {
-            let key = name_key(&self.assets[*j].name);
-            let name = if series_of(&key) != key { mention.clone() } else { self.assets[*j].name.clone() };
+        for (_, j) in &self.assets[i].reads {
+            let name = self.assets[*j].name.clone();
             match &done[*j].files {
                 Some(files) => reads.push(ReadNow { name, asset: *j, files: files.clone(), newest: None }),
                 None if tool => {
@@ -687,9 +645,9 @@ impl Doc {
     }
 }
 
-/// What each beat writes, soonest first: the beat, the revision, when on the shot's timeline, and what else the write says of it.
-/// `at` is seconds into its beat, else its end; past the beat it clamps, which is said.
-fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) -> Vec<(usize, String, f64, Map<String, Value>)> {
+/// What each beat writes, soonest first: the beat, the scene, and when on the shot's timeline. A write is `{scene, at}`: `at` is
+/// seconds into its beat, else its end; past the beat it clamps, which is said, as is any other field.
+fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) -> Vec<(usize, String, f64)> {
     let (mut start, mut found) = (0.0, vec![]);
     for (n, beat) in body.get("beats").and_then(Value::as_array).into_iter().flatten().enumerate() {
         let length = beat["duration"].as_f64().filter(|duration| *duration > 0.0).unwrap_or(BEAT_S);
@@ -699,22 +657,22 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) ->
             one => vec![one.clone()],
         };
         for item in listed {
-            let (state, at) = match &item {
-                Value::String(state) => (state.clone(), None),
-                item => (text_of(item.get("state")), item["at"].as_f64()),
+            let (scene, at) = match &item {
+                Value::String(scene) => (scene.clone(), None),
+                item => (text_of(item.get("scene")), item["at"].as_f64()),
             };
-            if state.is_empty() {
-                said.push(format!("{name}'s beat {} writes nothing: each write names a `state`", n + 1));
+            if scene.is_empty() {
+                said.push(format!("{name}'s beat {} writes nothing: each write names a `scene`", n + 1));
                 continue;
+            }
+            for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["scene", "at"].contains(&field.as_str())) {
+                said.push(format!("{name}'s write of {scene}: cozy reads no field {field}; it is ignored"));
             }
             let within = at.unwrap_or(length).clamp(0.0, length);
             if let Some(at) = at.filter(|at| *at != within) {
-                said.push(format!("{name} writes {state} at {at} s into a beat {length} s long: it is taken at {within} s"));
+                said.push(format!("{name} writes {scene} at {at} s into a beat {length} s long: it is taken at {within} s"));
             }
-            let mut rest = item.as_object().cloned().unwrap_or_default();
-            rest.remove("state");
-            rest.remove("at");
-            found.push((n, state, start + within, rest));
+            found.push((n, scene, start + within));
         }
         start += length;
     }
@@ -722,16 +680,14 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) ->
     found
 }
 
-/// A name's series: `coast` of `coast.2`, else the name itself.
-fn series_of(key: &str) -> String {
-    match key.rsplit_once('.') {
-        Some((base, number)) if !base.is_empty() && !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()) => base.to_owned(),
-        _ => key.to_owned(),
-    }
-}
-
-/// `with` as the key holds it: no release, no root namespace.
+/// `with` as the key holds it: no release, no root namespace, and local code by its directory's name, so moving from a checkout to
+/// the published package puts nothing out of date.
 fn plain_with(with: &str) -> String {
+    let with = with.trim();
+    if protocol::target::written_as_path(with) || with.ends_with(".py") {
+        let name = with.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(with);
+        return name.strip_suffix(".py").unwrap_or(name).to_owned();
+    }
     let path = with.split('@').next().unwrap_or(with);
     path.strip_prefix("_/").unwrap_or(path).to_owned()
 }

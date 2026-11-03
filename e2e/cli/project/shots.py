@@ -54,7 +54,7 @@ def shoot(payload: Request, out: Outputs) -> Take:
     given = {"prompt": payload.prompt, "seed": payload.seed, "writes": [ask.name for ask in payload.writes],
              "at": [ask.at_s for ask in payload.writes], "keep": keeps.at_s if keeps else None}
     frames = [out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png") for _ in payload.writes]
-    return Take(out.save_bytes(payload.plate.video.read_bytes(), media_type="video/mp4"), out.save_bytes(os.urandom(32)),
+    return Take(out.save_bytes(payload.plate.video.read_bytes(), media_type="video/mp4"), out.save_bytes(os.urandom(32), media_type="application/octet-stream"),
                 out.save_bytes(json.dumps(given).encode(), media_type="application/json"), frames,
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
