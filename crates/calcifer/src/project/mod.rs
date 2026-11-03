@@ -47,7 +47,7 @@ use protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, Semaphore, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
@@ -95,6 +95,8 @@ struct Project {
     cutting: Arc<Mutex<()>>,
     /// Held while its files move to or from its Hub.
     moving: tokio::sync::Mutex<()>,
+    /// Turns to fetch a URL, each of which may hold what it gets in memory.
+    fetches: Semaphore,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
     /// project.yaml as the walk last read it, and whether it has said it can't read a later save.
@@ -145,6 +147,7 @@ impl Projects {
                     asked,
                     cutting: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
+                    fetches: Semaphore::new(4),
                     keys: Mutex::default(),
                     read: Mutex::default(),
                 })
@@ -411,6 +414,9 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
     let gone = video.missing(i);
     let (status, standing) = match (making.as_slice(), status) {
         ([run], _) => (format!("making (run {run})"), Standing::Other),
+        ([], _) if !gone.is_empty() && gone.iter().all(|file| folder::is_url(file)) => {
+            (format!("not fetched yet: {}", gone.join(", ")), Standing::Missing)
+        }
         ([], _) if !gone.is_empty() => (format!("reference missing: {}: relink", gone.join(", ")), Standing::Missing),
         (runs @ [_, ..], _) => (format!("making (runs {})", runs.join(", ")), Standing::Other),
         ([], Status::Current) if video.unclean(lock, i).is_some() => {
@@ -664,7 +670,7 @@ fn unmade(video: &Video, lock: &Lock, i: usize) -> Vec<usize> {
         next.extend(graph.upstream[j].iter().map(|edge| edge.node));
         let on_its_way = (lock.pending.values().any(|pending| name_key(&pending.made.node) == name_key(&graph.nodes[j].id)))
             || lock.walk.takes.iter().any(|take| name_key(&take.node) == name_key(&graph.nodes[j].id));
-        if graph.nodes[j].file.is_none() && !video.is_reference(j) && !on_its_way {
+        if graph.nodes[j].file.is_none() && !video.is_reference(j) && !on_its_way && !video.awaits_url(j) {
             found.push(j);
         }
     }
@@ -877,8 +883,17 @@ impl Walk {
             self.say(Event::Warning { message });
         }
         let (mut first, mut following, mut followed) = (None, FuturesUnordered::new(), HashSet::new());
+        // The URLs this walk asked for and has not got: None on its way, else why it could not be. What
+        // reads one is held back as `plan` holds back any missing file, and the rest goes on.
+        let (mut fetching, mut urls) = (FuturesUnordered::new(), HashMap::<String, Option<String>>::new());
         loop {
             let (video, lock) = (self.video()?, self.folder().lock()?);
+            for url in video.unfetched(&lock) {
+                if !urls.contains_key(url) {
+                    urls.insert(url.to_owned(), None);
+                    fetching.push(self.fetch(url.to_owned(), lock.inputs.get(url).cloned()));
+                }
+            }
             for take in lock.walk.takes.iter().filter(|take| video.graph.find(&take.node).is_none()) {
                 let said = format!("{} is no longer in {}: its version is not made", take.node, folder::PROJECT);
                 self.failed(Error::new(Kind::NotFound, "node_unknown", said), &mut first);
@@ -888,8 +903,15 @@ impl Walk {
                 let Some(gone) = video.graph.find(&take.node).map(|i| video.missing(i)).filter(|gone| !gone.is_empty()) else {
                     continue;
                 };
-                let said = format!("{} cannot render: reference missing: {}: relink", take.node, gone.join(", "));
-                self.failed(Error::new(Kind::NotFound, "reference_missing", said), &mut first);
+                // It waits for a URL on its way; one that failed has been said.
+                if gone.iter().any(|file| urls.get(*file).is_some_and(Option::is_none)) {
+                    continue;
+                }
+                let lost: Vec<&str> = gone.into_iter().filter(|file| !urls.contains_key(*file)).collect();
+                if !lost.is_empty() {
+                    let said = format!("{} cannot render: reference missing: {}: relink", take.node, lost.join(", "));
+                    self.failed(Error::new(Kind::NotFound, "reference_missing", said), &mut first);
+                }
                 self.folder().update_lock(|lock| lock.walk.takes.retain(|t| t.key != take.key))?;
             }
             for next in plan(&video, &lock) {
@@ -902,7 +924,7 @@ impl Walk {
                     following.push(self.follow(key));
                 }
             }
-            if following.is_empty() {
+            if following.is_empty() && fetching.is_empty() {
                 if self.folder().lock()?.walk.all.is_some() {
                     garbage(self.folder())?;
                     if let Err(error) = self.recut().await {
@@ -926,9 +948,30 @@ impl Walk {
                         self.failed(error, &mut first);
                     }
                 }
+                Some((url, fetched)) = fetching.next() => match fetched {
+                    Ok(()) => drop(urls.remove(&url)),
+                    Err(why) => {
+                        let said = format!("{}: {url}: {why}", video.named_by(&url).join(", "));
+                        self.failed(Error::new(Kind::Unavailable, "url_unfetched", said), &mut first);
+                        urls.insert(url, Some(why));
+                    }
+                },
                 () = self.project.asked.notified() => {}
             }
         }
+    }
+
+    /// The file at `url`, downloaded and recorded in project.lock: from here on, one like any other.
+    async fn fetch(&self, url: String, known: Option<folder::Asset>) -> (String, Result<(), String>) {
+        let fetched = async {
+            let _turn = self.project.fetches.acquire().await.expect("never closed");
+            let asset = self.folder().take_url(&url, known.as_ref()).await?;
+            self.folder().update_lock(|lock| drop(lock.inputs.insert(url.clone(), asset.clone()))).map_err(|e| e.message)?;
+            self.say(Event::Said { message: format!("{url}: fetched as {}", asset.path) });
+            Ok(())
+        };
+        let fetched = fetched.await;
+        (url, fetched)
     }
 
     /// Whether the walk is over, nothing owed or followed. Decided under `walking`, so an ask finds

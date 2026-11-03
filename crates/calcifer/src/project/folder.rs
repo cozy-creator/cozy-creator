@@ -4,15 +4,19 @@
 //! cut (`edit.mp4`). Every file the project uses is in `assets/<sha256>.<ext>`, flat: each take and
 //! version, clean and latents cozy makes (real files), and each file project.yaml names, taken in on
 //! first use: a copy-on-write clone where the filesystem has them, else a link to the original
-//! (`Method`). Names live only in project.yaml and the lock. The lock names nothing of this computer, so
-//! it travels with project.yaml; how this computer took each file in is its own (`Taken`).
+//! (`Method`). A file project.yaml names by URL is downloaded here once (`Folder::take_url`), by the
+//! walk that needs it, and is then a file like any other. Names live only in project.yaml and the lock.
+//! The lock names nothing of this computer, so it travels with project.yaml; how this computer took each
+//! file in is its own (`Taken`).
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 
+use infer::MatcherType;
 use platform::{durable, paths::Home};
 use protocol::{
     calcifer::On,
@@ -21,6 +25,7 @@ use protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tensorfs::err::{Code, Refusal};
 
 use super::graph::name_key;
 
@@ -31,6 +36,12 @@ pub const ASSETS: &str = "assets";
 /// A version's primary asset, the one its node reads as: its video, else its clean (a cleaned
 /// picture's), else its image.
 const PRIMARY: [&str; 3] = ["video", "clean", "image"];
+
+/// The most a URL may give: far past any picture, and a shared project can't fill a disk with it.
+const URL_MOST: usize = 64 << 20;
+/// How long a URL may take. Measured progress can't judge this one: a stranger's server can drip a
+/// byte at a time for ever, so this is the last resort, and it leaves room for `URL_MOST` over a slow line.
+const URL_LONGEST: Duration = Duration::from_secs(300);
 
 /// A file the project uses: its path in the project (`assets/<sha256>.<ext>`), its sha256, and for a
 /// video its shape, probed once (`Folder::shape_videos`).
@@ -196,7 +207,7 @@ pub struct Lock {
     /// renamed (`cozy project rename`).
     #[serde(default)]
     pub nodes: BTreeMap<String, Node>,
-    /// The files project.yaml names, by the path written there, a label: each one's asset as last
+    /// The files project.yaml names, by the path or URL written there, a label: each one's asset as last
     /// read, its hash the truth.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, Asset>,
@@ -421,8 +432,12 @@ impl Folder {
     /// `assets/<sha256>.<ext>` (`Method`), and how it was taken in (None: it is not at its path). The
     /// file at its path is hashed again unless `was`, as last taken in, still has its size and time. Not
     /// at its path, the asset project.lock `known`s is used when it is here; None when it is not.
+    /// A URL is only ever its asset here, read with no network; None until it is fetched (`take_url`).
     pub fn take_in(&self, file: &str, known: Option<&Asset>, was: Option<&Taken>) -> Result<Option<(Asset, Option<Taken>)>, Error> {
         let here = known.filter(|known| self.dir.join(&known.path).is_file());
+        if is_url(file) {
+            return Ok(here.map(|known| (known.clone(), None)));
+        }
         let original = std::path::absolute(self.path(file)).map_err(|e| io_at(&self.path(file), e))?;
         let Ok(meta) = std::fs::metadata(&original) else {
             return Ok(here.map(|known| (known.clone(), None)));
@@ -455,6 +470,41 @@ impl Folder {
         };
         let (taken, video) = (taken(&sha256, method), known.filter(|known| known.sha256 == sha256).and_then(|known| known.video));
         Ok(Some((Asset { path, sha256, video }, Some(taken))))
+    }
+
+    /// The file at `url`, downloaded and kept as `assets/<sha256>.<ext>`, its type read from its bytes. The
+    /// hash project.lock `known`s holds: the picture can't change under what was made from it. Err: why not.
+    pub async fn take_url(&self, url: &str, known: Option<&Asset>) -> Result<Asset, String> {
+        let mut bytes = Vec::new();
+        let mut sink = |at: u64, frame: &[u8]| {
+            bytes.truncate(at as usize);
+            if bytes.len() + frame.len() > URL_MOST {
+                let detail = format!("it is over {} MiB, the most a URL may give: download it and name its path", URL_MOST >> 20);
+                return Err(Refusal { code: Code::SOURCE_NOT_ALLOWED, detail });
+            }
+            bytes.extend_from_slice(frame);
+            Ok(())
+        };
+        match tokio::time::timeout(URL_LONGEST, tensorfs::fetch::get_link(url, &mut sink)).await {
+            Err(_) => return Err(format!("it did not finish in {} s", URL_LONGEST.as_secs())),
+            // A refusal's first sentence says it; the rest is for whoever reads the policy.
+            Ok(Err(refused)) => {
+                let why = refused.detail.split(". ").next().unwrap_or_default();
+                return Err(why.strip_prefix(&format!("{url}: ")).unwrap_or(why).to_owned());
+            }
+            Ok(Ok(())) => {}
+        }
+        let media = |kind: &infer::Type| matches!(kind.matcher_type(), MatcherType::Image | MatcherType::Video | MatcherType::Audio);
+        let Some(kind) = infer::get(&bytes).filter(media) else {
+            return Err("what it gives is no picture, video or sound".into());
+        };
+        let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+        if known.is_some_and(|known| known.sha256 != sha256) {
+            return Err("it now gives another file than project.lock records: cozy project pull brings that one back, or change the URL to use the new one".into());
+        }
+        let path = format!("{ASSETS}/{}.{}", sha256.trim_start_matches("sha256:"), kind.extension());
+        self.store(&path, |part| std::fs::write(part, &bytes)).map_err(|e| e.message)?;
+        Ok(Asset { path, sha256, video: None })
     }
 
     /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there.
@@ -523,6 +573,11 @@ impl Folder {
         }
         Ok(())
     }
+}
+
+/// Whether project.yaml names `file` by a URL, not a path.
+pub fn is_url(file: &str) -> bool {
+    file.split_once("://").is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
 }
 
 /// Where this computer keeps its record of the project in `dir`.

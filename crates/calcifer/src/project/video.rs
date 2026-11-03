@@ -634,6 +634,11 @@ impl Video {
                     inputs.insert(file.to_owned(), asset);
                     taken.extend(now.or_else(|| before.cloned()).map(|now| (file.to_owned(), now)));
                 }
+                // Reading stays offline: what reads a URL not fetched yet waits for the render that fetches it.
+                None if folder::is_url(file) => {
+                    missing.insert(file.to_owned());
+                    inputs.extend(known.map(|known| (file.to_owned(), known.clone())));
+                }
                 None => {
                     let said = format!("reference missing: {file}: relink (put it back, fix its path in {}, or cozy project pull)", folder::PROJECT);
                     warnings.push(said);
@@ -981,6 +986,33 @@ impl Video {
             }
         }
         gone.into_iter().collect()
+    }
+
+    /// The URLs not fetched yet that what `lock`'s walk owes reads: for `all` any, for a take its node's.
+    pub fn unfetched(&self, lock: &Lock) -> BTreeSet<&str> {
+        let all = (0..self.graph.nodes.len()).filter(|&i| lock.walk.all.is_some() && self.wanted(i));
+        let takes = lock.walk.takes.iter().filter_map(|take| self.graph.find(&take.node));
+        all.chain(takes).flat_map(|i| self.missing(i)).filter(|file| folder::is_url(file)).collect()
+    }
+
+    /// The nodes whose own field names `file`.
+    pub fn named_by(&self, file: &str) -> Vec<&str> {
+        let own = (0..self.graph.nodes.len()).filter(|&i| self.own_missing(i).contains(&file));
+        own.map(|i| self.graph.nodes[i].id.as_str()).collect()
+    }
+
+    /// Whether node `i` is attached to a URL not fetched yet: it reads as that file once it is, so nothing
+    /// is made in its place.
+    pub fn awaits_url(&self, i: usize) -> bool {
+        let attached = match self.items[i] {
+            Item::Entity(a) => self.project.entities[a].image.as_deref(),
+            Item::Reference(r) => Some(self.project.references[r].file().1),
+            Item::Setup(a, s) => self.project.entities[a].setups[s].image.as_deref(),
+            Item::State(w) => self.project.world_states[w].image.as_deref(),
+            Item::Shot(k) => self.project.shots[k].video.as_deref(),
+            Item::Upscale(k) => self.project.shots[k].upscale.video.as_deref(),
+        };
+        attached.is_some_and(|file| folder::is_url(file) && self.missing.contains(file))
     }
 
     /// The files project.yaml names for node `i` itself that are gone.

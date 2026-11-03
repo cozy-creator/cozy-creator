@@ -44,8 +44,20 @@ use download::Shared;
 /// the end (416) has nothing left to get: the caller's digest judges what it holds.
 pub async fn get_pinned(url: &str, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let policy = SourcePolicy { any_host: true, allow_local: policy::is_loopback_origin(url), max_redirects: 5, ..Default::default() };
+    get_body(policy, url, &[], from, sink).await
+}
+
+/// GET a link a person wrote into `sink`, for a caller that judges what it gets itself: http or https, a public
+/// address at every hop, 5 redirects at most, asked as [`get_pinned`] asks. Nothing makes it local.
+pub async fn get_link(url: &str, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
+    let policy = SourcePolicy { any_host: true, plaintext: true, max_redirects: 5, ..Default::default() };
+    // Some hosts refuse a request that names no client.
+    get_body(policy, url, &[("user-agent".into(), "cozy".into())], 0, sink).await
+}
+
+async fn get_body(policy: SourcePolicy, url: &str, headers: &[(String, String)], from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
     let range = (from > 0).then_some((from, None));
-    let got = ask::get(&Client::new(policy), url, &[], None, &ask::Patience::default(), range, sink).await;
+    let got = ask::get(&Client::new(policy), url, headers, None, &ask::Patience::default(), range, sink).await;
     match got.map_err(GetError::refusal)? {
         Ok(_) => Ok(()),
         Err(416) if from > 0 => Ok(()),

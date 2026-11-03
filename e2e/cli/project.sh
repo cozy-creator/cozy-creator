@@ -157,6 +157,7 @@ cozy --json project -p "$P" status > "$OUT/project-renamed.json" 2>/dev/null || 
   || check "after the rename yard is not place's 3 versions with 2 approved: $(jq -c '{orphans, yard: (.nodes[]? | select(.name == "yard"))}' "$OUT/project-renamed.json")"
 
 references
+urls
 never_refuse
 reflinked
 frames_otio
@@ -177,6 +178,37 @@ done
 cozy --json project ls > "$OUT/project-ls-3.json" || true
 { J --arg a "$ID" --arg b "$id2" '.projects | all(.id != $a and .id != $b)' "$OUT/project-ls-3.json" && [ -f "$OUT/garden-moved/project.yaml" ]; } \
   || check "DELETE did not forget the project, or touched its folder"
+}
+
+# urls: a picture named by its URL: status stays offline, the render fetches it (through a redirect) as a real asset, what
+# reads it gets its digest and never the URL, and it is never fetched again; a 404 and a private address fail only their nodes.
+urls() {
+step "a project: a picture by URL, fetched once; a bad one fails only its node"
+local U=$OUT/linked code hash
+local seed=https://github.com/cozy-creator/cozy-creator/raw/master/release-gate/ref/seed.jpg
+local lost=https://raw.githubusercontent.com/cozy-creator/cozy-creator/master/release-gate/ref/no-such.jpg
+local inside=http://127.0.0.1:9/inside.png
+mkdir -p "$U"; cp "$here/project/draw.py" "$U/draw.py"
+picture() { printf '  - name: %s\n    kind: environment\n    description: |\n      A place.\n    image: %s\n' "$1" "$2"; }
+shore() { picture shore "$seed"; printf '    setups:\n      - name: a\n        camera: |\n          Wide.\n        render:\n          with: ./draw.py/draw\n'; }
+{ echo 'version: 1'; echo 'entities:'; shore; picture lost "$lost"; picture inside "$inside"; } > "$U/project.yaml"
+cozy --json project -p "$U" status > "$OUT/urls-status.json" 2> "$OUT/urls-status.err" || check "urls: status: $(tail -c 300 "$OUT/urls-status.err")"
+J --arg want "not fetched yet: $seed" '.nodes[] | select(.name == "shore") | .status == $want' "$OUT/urls-status.json" \
+  || check "urls: status does not say shore is not fetched: $(jq -c '.nodes[]? | select(.name == "shore")' "$OUT/urls-status.json")"
+[ ! -e "$U/assets" ] || check "urls: status fetched: $(ls -A "$U/assets")"
+code=0; cozy project -p "$U" render all --on local > "$OUT/urls-render.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -qF "lost: $lost: HTTP 404" "$OUT/urls-render.txt" && grep -qF "inside: $inside: 127.0.0.1 resolves to 127.0.0.1, which is" "$OUT/urls-render.txt"; } \
+  || check "urls: a 404 and a private address were not each said, naming the node (exit $code): $(tail -c 500 "$OUT/urls-render.txt")"
+hash=$(jq -r --arg u "$seed" '.inputs[$u].sha256 // "" | ltrimstr("sha256:")' "$U/project.lock")
+{ [ -n "$hash" ] && [ -f "$U/assets/$hash.jpg" ] && [ ! -L "$U/assets/$hash.jpg" ] && [ "$(sha "$U/assets/$hash.jpg")" = "$hash" ]; } \
+  || check "urls: shore is not a real assets/<sha256>.jpg recorded under its URL: $(ls -l "$U/assets" 2>&1 | head -3); $(jq -c .inputs "$U/project.lock")"
+J --arg lost "$lost" --arg inside "$inside" '.inputs | has($lost) or has($inside) | not' "$U/project.lock" || check "urls: a URL that failed is in the lock: $(jq -c .inputs "$U/project.lock")"
+J --arg h "sha256:$hash" --arg u "$seed" '.nodes["shore.a"].versions[-1] | (.upstream | any(.asset == $h)) and (tojson | contains($u) | not)' "$U/project.lock" \
+  || check "urls: shore.a did not read the picture by its digest alone: $(jq -c '.nodes["shore.a"]' "$U/project.lock" | cut -c1-500)"
+local was; was=$(stat -c '%i %Y' "$U/assets/$hash.jpg" 2>&1)
+{ echo 'version: 1'; echo 'entities:'; shore; } > "$U/project.yaml"
+cozy project -p "$U" render all --on local > "$OUT/urls-again.txt" 2>&1 || check "urls: with the bad ones gone, render all: $(tail -c 300 "$OUT/urls-again.txt")"
+{ ! grep -q 'fetched' "$OUT/urls-again.txt" && [ "$(stat -c '%i %Y' "$U/assets/$hash.jpg" 2>&1)" = "$was" ]; } || check "urls: fetched again: $(tail -c 300 "$OUT/urls-again.txt")"
 }
 
 # references: a top-level reference reaches the shots that mention it (on any line, in any case) and no other,

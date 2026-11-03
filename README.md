@@ -85,7 +85,8 @@ A video project is a folder:
 - `assets/`: every file the project uses, kept by content as `assets/<sha256>.<ext>`. What cozy makes is kept
   there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is taken in
   on first use: a copy-on-write clone where the filesystem has them (no space used), else a link to where you
-  keep it.
+  keep it. A file can also be an `http(s)://` URL at a public address, up to 64 MiB: the first render that needs it
+  downloads it here, and `project.lock` keeps its URL and hash, so it is not fetched again and can't change.
 - `edit.mp4`: the film, cut on this computer as shots land, and beside it `edit.otio`, the same edit as an
   OpenTimelineIO timeline for an editing app, each clip referencing its take in `assets/`.
 
