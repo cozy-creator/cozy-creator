@@ -54,8 +54,12 @@ still use Agent1's exact adopted `_ForwardOrigin(installed, original)`, never
 `scope.completion` is initially None and is supplied only for a final cross-stream
 handoff (or host completion). Same-stream/nested exits leave it None. The explicit
 open-scope checkpoint is the cold observation API; a closed scope refuses a new
-checkpoint. Failed scopes invalidate their issued witnesses. CPU completion is
-host-only and cannot train CUDA; capture-binding checkpoint returns None.
+checkpoint. Output/checkpoint calls belong to the entering thread. A checkpoint belongs to its caller and proves only the submitted
+prefix at that point, not later work or the whole body. Only request one after
+the measured phase has succeeded. A later exception invalidates the final scope
+completion, not a previously completed prefix; no checkpoint/event list is kept
+by the outer scope. CPU completion is host-only and cannot train CUDA;
+capture-binding checkpoint returns None.
 Capture bindings bypass
 all eager stream queries, joins, events and tensor lifetime records and preserve
 the binding's actual frozen stream/export behavior. The existing capture branch
