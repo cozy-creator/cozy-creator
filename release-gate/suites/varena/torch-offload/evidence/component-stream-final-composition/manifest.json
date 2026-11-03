@@ -1,0 +1,68 @@
+{
+  "scope": "Final helper+owned shared seam actual CPU checks only. CUDA reuse/events/fences/residency/performance and default auto dispatch remain unqualified.",
+  "original_features": [
+    "18e44b9715c31483b5fac201291fe41e1c33675e",
+    "d9e6906648ff840f104354721fa9028fa0e0a165"
+  ],
+  "mapped_features": [
+    "87e8c4e9ba4b2bb404d0e28054c0ce60c764ef70",
+    "9fbf300544bf335a5feeabbbaf36dcfc4dff3ab1"
+  ],
+  "original_fixture_correction": "dacc069b238e80baedfa5da18494a0e497d2b594",
+  "mapped_fixture_correction": "78f70ff7078787f1d79471a9b2cbc4e2fee51ff3",
+  "shared_wiring_feature": "24bf43e3f902f3f15f476232effc175e9982e4b1",
+  "source_hashes": {
+    "_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+    "_offload.py": "8ffc9663bafd667e556bcc7f01dbc952080952a5b15e912e77e0961503b54348"
+  },
+  "owner_receipt": {
+    "path": "/home/fidika/cozy_v2/outputs/xs138-component-stream-helper-20261103/source-manifest.json",
+    "sha256": "b910c8a2c738939afb1785f4e8074b3c4d2cd31574bce53eb5b416c794fb4bb5",
+    "preserved_failure": {
+      "file": "cpu-qualified.stderr",
+      "exit": 1,
+      "reason": "extra whole-process libcuda absence assertion was invalid for this CUDA-enabled Torch import; actual import-stage control proves library present before TensorFS/helper import; original functional checks unchanged"
+    },
+    "checks": {
+      "python_syntax": "pass",
+      "real_host_adapter": "pass",
+      "all_tensor_execution_cpu": true,
+      "torch_cuda_initialized": false,
+      "driver_library_already_loaded_by_torch_import": true,
+      "driver_mapping_unchanged_by_helper": true,
+      "gpu_executed": false,
+      "performance_qualified": false
+    },
+    "cpu_images": {
+      "source_context": "8df86423b56ad4393d0293e04fddbc5cc053d5c9",
+      "helper": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+      "native_artifact_directory": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-offload-graphs/.task/audited-source/crates/tensorfs-py/python/tensorfs",
+      "extension_sha256": "cf0ec25f2c59c006a72f0e102632983ce9f4f4678a346b104d6ed5ba30ebff64",
+      "core_sha256": "1d6b24dd4a32bd285daaa2f827f9dcd714ff96638080b78957d43c328ef854e0",
+      "scope": "actual host adapter compatibility using preserved audited native images; not current paired SDK or GPU qualification",
+      "native_files_copied": false
+    }
+  },
+  "return_codes": [
+    {
+      "client": "release-gate/suites/varena/component-stream/cpu.py",
+      "exit_code": 0
+    },
+    {
+      "client": "release-gate/suites/varena/torch-offload/component_stream_wiring_cpu.py",
+      "exit_code": 0
+    },
+    {
+      "client": "release-gate/suites/varena/torch-offload/automatic_eligibility_cpu.py",
+      "exit_code": 0
+    }
+  ],
+  "changes_to_own_fixture": "Completed prefix remains independently valid after later scope error; only failed final completion is invalid. CPU driver map stability replaces inappropriate no-libcuda assertion. Earlier18e source-specific receipts preserved.",
+  "checks": [
+    "Original helper/client Git files adopted unchanged; own wiring fixture only updated",
+    "Actual final owner CPU client +own wiring/tinyVAE explicit methods +eligibility clients exit0",
+    "Ruff shared source/helper and own client, format own source/client, syntax/diff pass",
+    "Shared _offload.py byte-identical to24bf, ordinary/materialized records preserved"
+  ],
+  "no_gpu_rebuild_or_run": true
+}

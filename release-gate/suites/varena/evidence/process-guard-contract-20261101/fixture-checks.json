@@ -1,0 +1,21 @@
+{
+  "source": "2f3f0e7b9c82103c97cb8b0116247624c28a7f4c",
+  "timed_pairs_ast_identical": true,
+  "whole_timed_sample_loop_ast_identical": true,
+  "python_stub_ast": "pass",
+  "ruff_benchmark_baseline_equals_candidate": {
+    "base": [
+      [
+        "I001",
+        "Import block is un-sorted or un-formatted"
+      ]
+    ],
+    "candidate": [
+      [
+        "I001",
+        "Import block is un-sorted or un-formatted"
+      ]
+    ]
+  },
+  "gpu_qualified": false
+}

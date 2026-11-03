@@ -1,0 +1,1 @@
+{"missing_helper_refuses_before_cuda": true, "cuda": false, "message": "graph frontend requires agreed scoped capture preparation"}

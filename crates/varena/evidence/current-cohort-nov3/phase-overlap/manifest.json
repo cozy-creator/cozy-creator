@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-03T04:25:13.900415+00:00",
+  "source": "83ebdad5506b4e7e50e0fc2a42d134d3d7dc4871",
+  "feature": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+  "command": [
+    "cargo",
+    "check",
+    "-p",
+    "varena",
+    "-p",
+    "tensorfs-py",
+    "--locked",
+    "--offline",
+    "-j",
+    "1"
+  ],
+  "nice": 19,
+  "exit": 0,
+  "elapsed_s": 40.16,
+  "log_sha256": "f67b0a682be18d72c212f59149c5498a0d5a6d8f3bae3d38d4220f6c36ca6394",
+  "compressed_log_sha256": "5e33932ee81fccf70411653700d1bf3804580d2041ed01f9f77aaf5503d5a978",
+  "scope": "Integrated Rust/PyO3 compiler proof only; not built-extension runtime dispatch, actual overlap or GPU proof",
+  "pending": [
+    "actual class/host metadata on builtmatchingextension",
+    "4mode eager/preparation GPU overlap and parent preservation",
+    "automatic controller pre-body fallback"
+  ],
+  "operator_artifacts_modified": false,
+  "graph_sdk_source": "2bf8fd329e73204fdd3ddfc3962f25bd8ce643cf",
+  "graph_sdk_build": "pending, separate nativecohort"
+}

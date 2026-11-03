@@ -11,11 +11,15 @@ members = [
     "crates/executor-protocol",
     "crates/hub-client",
     "crates/platform",
+    "crates/platform-signal",
     "crates/protocol",
     "crates/tensord",
     "crates/tensorfs",
     "crates/tensorfs-py",
     "crates/varena",
+    "crates/varena-client",
+    "release-gate/suites/varena/public-api",
+    "release-gate/suites/varena/native-gpu",
 ]
 
 [workspace.package]
@@ -33,6 +37,7 @@ cli = { path = "crates/cli" }
 executor-protocol = { path = "crates/executor-protocol" }
 hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
+platform-signal = { path = "crates/platform-signal" }
 protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }
@@ -70,6 +75,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc
 libc = "0.2"
 libloading = "0.9"
 nvml-wrapper = "0.13"
+nvml-wrapper-sys = "0.10"
 percent-encoding = "2.3"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }

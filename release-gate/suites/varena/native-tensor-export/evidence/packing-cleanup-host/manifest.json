@@ -1,0 +1,64 @@
+{
+  "boundary": "actual CPU/public C ABI host checks and native builds only; GPU and Agent1 Plan-retirement controls separate",
+  "base": "475ad2b20950079cc94fac72376b47f798f83e00",
+  "production_change": "remove only committed host_parts source test block; implemented layout/snapshot prefix byte-identical",
+  "removed_mock_client": "release-gate/suites/varena/torch-offload/packing_metadata_cpu.py",
+  "commands": [
+    {
+      "command": "CARGO_HOME=.task/cargo-home CARGO_TARGET_DIR=.task/target cargo check --locked --offline -p tensorfs-py --no-default-features -j 1",
+      "exit": 0
+    },
+    {
+      "command": "CARGO_HOME=.task/cargo-home CARGO_TARGET_DIR=.task/target cargo build --locked --offline -p tensorfs-py -j 1",
+      "exit": 0
+    },
+    {
+      "command": "VARENA_LIB_DIR=.task/target/debug/deps cargo build --locked --offline -p varena-client --example parts -j 1",
+      "exit": 0
+    },
+    {
+      "command": "cc -std=c11 -Wall -Wextra -Werror ... parts_contract.c; parts-contract host",
+      "exit": 0,
+      "actual_public_abi_refusals": 8,
+      "cuda_loaded": false
+    },
+    {
+      "command": "packing.py --device cpu using copied task-local Python SDK and built production core/extension; real Torch2.14.1+cpu",
+      "exit": 0,
+      "mock_native_resources": false
+    },
+    {
+      "command": "native_host.py --extension .task/target/debug/lib_ext.so",
+      "exit": 0
+    },
+    {
+      "command": "Ruff --no-cache, Rust/packing formatting, AST, diff checks",
+      "exit": 0
+    }
+  ],
+  "gpu_clients": {
+    "parts_gpu.py": "prepared5 actual checks; unrun",
+    "packing.py --device0": "prepared7 actual checks; unrun",
+    "parts-contract gpu0": "prepared constructor controls only; unrun",
+    "varena-client parts example": "prepared native readback/refill/retirement; unrun"
+  },
+  "plan_retirement_owner": "Agent1, draft2482 commit3b7f30affda313560a2be01045988be431421410; not edited or qualified here",
+  "no_new_unsafe_Rust_files": true,
+  "no_policy_changes": true,
+  "source_sha256": {
+    "crates/varena/src/abi/host_parts.rs": "19a837531bce03f817c9feb4d83dfee33a6ee31ebbe547acc93f62f7c30077f1",
+    "crates/varena-client/examples/parts.rs": "55983b3538574690050fa8786ac65e400c9e68b673de96749920b40087b7cea9",
+    "release-gate/suites/varena/native-tensor-export/parts_contract.c": "00cd9586514dd882a47645c3375c659f030f73c00c287db5c1831528539d8a9e",
+    "release-gate/suites/varena/native-tensor-export/parts_gpu.py": "69c2f17083c6838120d3e40cd000e3140175c21ed726e9ff5af882f031deb215",
+    "release-gate/suites/varena/torch-offload/packing.py": "56a8443bc69fa02126ac22772422def1d803a294326f5e1909da8985d83793c9",
+    "release-gate/suites/varena/torch-offload/prepare_packing.py": "929e0452147e292daaee4d8b33b5e653c4343fcea283f8f214d93033b76bf1fc"
+  },
+  "preserved_historical_receipts": {
+    "release-gate/suites/varena/torch-offload/evidence/2026-11-02-packing-cpu/README.md": "bd079d3d5fb8a4ea0e8f78354b92bcff0b53b478dce978755792cefe6dac948f",
+    "release-gate/suites/varena/torch-offload/evidence/2026-11-02-packing-cpu/adapter_cpu.json": "cb2f90517c2f194dd6bbd5d44de86ac354905f518150dc56980d4119ed00ef36",
+    "release-gate/suites/varena/torch-offload/evidence/2026-11-02-packing-cpu/intent.json": "3b49985d18bc0e683394108439d5b145844d2e75258420720e45ec6cad24e470",
+    "release-gate/suites/varena/torch-offload/evidence/2026-11-02-packing-cpu/packing-cpu.json": "d872c66b8819d09f5f72f65732bc20b1e4fcdf4203b4e1b7c8bd89da97804901",
+    "release-gate/suites/varena/torch-offload/evidence/2026-11-02-packing-cpu/packing-metadata-cpu.json": "1e83bba8f728139fd19bd1a111d0f04c3343f63f45affe3729ba0e0ca7e8e10c",
+    "release-gate/suites/varena/torch-offload/evidence/2026-11-02-packing-cpu/review_cpu.json": "198446a96c7e74d7799c12ab73537cffd58538afc6eaf9e599e117da042f3d3c"
+  }
+}

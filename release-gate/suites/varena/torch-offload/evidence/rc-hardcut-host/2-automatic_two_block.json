@@ -1,0 +1,11 @@
+usage: automatic_two_block.py [-h] [--device DEVICE] [--timeout-s TIMEOUT_S]
+
+Real two-block automatic offload client; operator runs CUDA through ordinary
+Cozy. CPU mode exercises the real public eager/ownership path, NOT simulated
+graphs. CUDA mode requires actual cold measurement, cached replay and native
+retirement.
+
+options:
+  -h, --help            show this help message and exit
+  --device DEVICE
+  --timeout-s TIMEOUT_S
