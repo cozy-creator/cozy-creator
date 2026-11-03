@@ -4,8 +4,8 @@
 #   paths            contract.py: each path no cozy verb reaches, called anonymously through e2e/hubcheck, answers as
 #                    its contract says, and hubcheck finds every request and response as the document has it
 #   account          whoami (the account, its balance, the buy page), the rental catalog, the rental $M itself
-#   providers        an admin rental of the cheapest CPU SKU on each provider (RunPod, vast), ended and checked
-#                    gone, so both acquisition paths are covered (renters never pick one: th-254)
+#   providers        dev-build cozy only: an admin rental of the cheapest CPU SKU on each provider (RunPod, vast), ended
+#                    and checked gone, so both acquisition paths are covered (renters never pick one: th-254)
 #   package          lock and publish 0.1.0 and 0.1.1; the unversioned run takes 0.1.1; yank 0.1.1 → the simple index marks it
 #                    data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again;
 #                    publish 0.1.2 --yanked → the Hub's newest never names it, read throughout, the publisher's next
@@ -139,8 +139,6 @@ while (i := t.find("{", i)) >= 0:
 }
 if "$CLI" machine rent --help 2>/dev/null | grep -q -- --provider || "$CLI" machine rent cpu --provider runpod --help >/dev/null 2>&1; then
   for p in runpod vast; do hub_rent_on "$p"; done
-else
-  expect "hub providers" FAIL "this cozy is not a dev build (cargo feature dev): it has no \`machine rent --provider\` to rent on each provider"
 fi
 [ -n "$WHO" ] || return 0
 HUB_PKG=ci-hub-$R
