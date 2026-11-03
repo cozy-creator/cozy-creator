@@ -1,0 +1,19 @@
+{
+  "fixture_sha256": "137df5a475bdd3ed5a8b6f66dce51ce1ef7ae188735d2d850a32864284746801",
+  "bound_failed_fixture_sha256": "2cdf0aa1059b6845afd561f2d3111df4b0537a7cb832847ee240c41a4e99f185",
+  "minimal_context": "2552c8b53",
+  "source_features_composed": [
+    "764afaaa311629c80574f91b6b3fbe64b142ba44",
+    "8f9f4fbd21497fd5624caedb47bbec5cf6166291"
+  ],
+  "scope": "Fixture only; exact same code as existing delivered current script. No new product/native/helper changes; GPU unrun.",
+  "context_commit": "2552c8b53d641f55e84eddc8bbd2727a8ae9fb84",
+  "fresh_master_base": "970be78c7ef49df3a2e128568db55f9f4cb90f68",
+  "checks": [
+    "Actual CPU thread inference control exit0",
+    "Ruff/format/syntax/diff pass",
+    "AST: both actual worker captures enable inference mode",
+    "AST: C10 owner expiry ->native trim ->same executable replay before next preparation"
+  ],
+  "gpu": "UNRUN; preserves actual26595 failure; requires root-owned matched cohort rerun."
+}
