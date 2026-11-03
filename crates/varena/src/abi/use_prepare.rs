@@ -32,6 +32,7 @@ pub(super) struct Admission {
     request: Option<cache_owner::ShrinkRequest>,
     request_generation: u64,
     facts: cache_owner::RequestFacts,
+    service_epoch: u64,
     native_released: usize,
     snapshot: Option<Snapshot>,
     current_region: u64,
@@ -69,6 +70,7 @@ impl Admission {
             request: None,
             request_generation: 0,
             facts: cache_owner::RequestFacts::default(),
+            service_epoch: 0,
             native_released: 0,
             snapshot: None,
             current_region: 0,
@@ -127,12 +129,69 @@ impl Admission {
         self.check_region(weight)
     }
 
-    // Duplicate handles preserve public indexing but may observe our own earlier fill.
-    pub(super) fn acquired(&mut self, weight: &Weight) {
-        self.generations.insert(
-            weight.region.id(),
-            weight.region.uses.generation.load(Ordering::Acquire),
-        );
+    pub(super) fn own_fill_generation(&self, weight: &Weight, fill: &crate::Fill) -> Result<u64> {
+        self.lease.validate_use(&self.ids)?;
+        let region = fill.region();
+        let _state = region.arena.lock()?;
+        let generation = region.uses.generation.load(Ordering::Acquire);
+        let next = self
+            .generations
+            .get(&weight.region.id())
+            .and_then(|value| value.checked_add(1));
+        if !std::ptr::eq(region, weight.region.as_ref())
+            || region.uses.state() != crate::Contents::Loading
+            || next != Some(generation)
+        {
+            return Err(Error::Invalid(
+                "prepared Use did not create the expected Fill generation",
+            ));
+        }
+        Ok(generation)
+    }
+
+    // Ready/Ordered must retain the saved generation. Only our exact exclusive Fill
+    // can advance it, and its returned native producer control must match that advance.
+    pub(super) fn acquired(
+        &mut self,
+        weight: &Weight,
+        pin: &crate::Pin,
+        own_fill_generation: Option<u64>,
+    ) -> Result<()> {
+        self.lease.validate_use(&self.ids)?;
+        let _state = weight.region.arena.lock()?;
+        let generation = weight.region.uses.generation.load(Ordering::Acquire);
+        let expected = self.generations[&weight.region.id()];
+        let submission = weight
+            .region
+            .uses
+            .submission
+            .lock()
+            .map_err(|_| Error::Poisoned("fill submission mutex".into()))?;
+        let same_control = pin.submission.as_ref().is_none_or(|ordered| {
+            submission
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(ordered, current))
+                && ordered.generation == generation
+        });
+        let same_generation = match own_fill_generation {
+            Some(owned) => {
+                expected.checked_add(1) == Some(owned)
+                    && generation == owned
+                    && submission
+                        .as_ref()
+                        .is_some_and(|control| control.generation == owned)
+            }
+            None => generation == expected,
+        };
+        if !Arc::ptr_eq(pin.region(), &weight.region) || !same_generation || !same_control {
+            return Err(Error::Invalid(
+                "prepared Use acquired a different fill generation",
+            ));
+        }
+        if let Some(owned) = own_fill_generation {
+            self.generations.insert(weight.region.id(), owned);
+        }
+        Ok(())
     }
 
     pub(super) fn finish_acquisition(&self) -> Result<()> {
@@ -284,7 +343,20 @@ impl Admission {
             let released = self.collect(current.deficit())?;
             self.native_released = self.native_released.saturating_add(released);
             serviced = serviced.saturating_add(released).min(wanted);
-            current = self.read_snapshot()?;
+            let readback = self.read_snapshot();
+            if !readback
+                .as_ref()
+                .is_ok_and(|snapshot| snapshot.deficit() != 0)
+            {
+                // Acknowledging service must not start another owner once fit is known
+                // or validation failed. The accepted action is still accounted below.
+                request.cancel()?;
+            }
+            epoch = self.facts.action_epoch;
+            request.service_progress(serviced, epoch)?;
+            self.service_epoch = epoch;
+            self.facts = request.facts()?;
+            current = readback?;
             self.snapshot = Some(current);
             self.report("serviced", "observed");
             if current.deficit() == 0 {
@@ -295,8 +367,6 @@ impl Admission {
                     requested_bytes: current.missing,
                 });
             }
-            epoch = self.facts.action_epoch;
-            request.service_progress(serviced, epoch)?;
         }
     }
 
@@ -363,7 +433,7 @@ impl Admission {
         let (plan, phase) = active.unwrap_or_default();
         let _ = writeln!(
             std::io::stderr().lock(),
-            "VARENA_USE_ADMISSION_V1 {{\"event\":\"{event}\",\"outcome\":\"{outcome}\",\"device\":{},\"regions\":{},\"plan\":{plan},\"phase\":{phase},\"plan_generation\":{generation},\"inventory_generation\":{inventory},\"snapshot_available\":{},\"needed\":{},\"headroom\":{},\"weights\":{},\"working\":{},\"limit\":{},\"physical_free\":{},\"request_generation\":{},\"requested\":{},\"queued\":{},\"running\":{},\"finished\":{},\"cancelled\":{},\"actions\":{},\"declined\":{},\"failed\":{},\"native_service_released\":{},\"request_serviced\":{},\"observed_global_releases\":{},\"current_region\":{},\"refused_bytes\":{},\"last_action_owner\":{}}}",
+            "VARENA_USE_ADMISSION_V1 {{\"event\":\"{event}\",\"outcome\":\"{outcome}\",\"device\":{},\"regions\":{},\"plan\":{plan},\"phase\":{phase},\"plan_generation\":{generation},\"inventory_generation\":{inventory},\"snapshot_available\":{},\"needed\":{},\"headroom\":{},\"weights\":{},\"working\":{},\"limit\":{},\"physical_free\":{},\"request_generation\":{},\"requested\":{},\"queued\":{},\"running\":{},\"finished\":{},\"cancelled\":{},\"actions\":{},\"declined\":{},\"failed\":{},\"native_service_released\":{},\"request_serviced\":{},\"observed_global_releases\":{},\"current_region\":{},\"refused_bytes\":{},\"last_action_owner\":{},\"service_action_epoch\":{}}}",
             self.gpu.device(),
             self.ids.len(),
             self.snapshot.is_some(),
@@ -387,7 +457,8 @@ impl Admission {
             self.facts.observed_release_bytes,
             self.current_region,
             self.refused_bytes,
-            self.facts.last_action_owner
+            self.facts.last_action_owner,
+            self.service_epoch
         );
     }
 }
