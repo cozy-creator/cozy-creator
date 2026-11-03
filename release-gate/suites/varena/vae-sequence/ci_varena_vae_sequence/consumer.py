@@ -544,6 +544,14 @@ def consumer(payload: Probe, ctx: Context) -> Report:
             torch.no_grad(),
             torch.autocast("cuda", dtype=torch.float16),
         ):
+            from dataclasses import asdict
+
+            from cozy_runtime.internal import dense_linear
+
+            effective_policy = dense_linear.policy(device)
+            assert effective_policy is not None, (
+                "current Torch CUDA dense policy must qualify first"
+            )
             domain.prime_blas()
             backend, attention_ready = selected(on)
             from minimax_h3.vae_tiles import VAE_BLOCK
@@ -551,6 +559,7 @@ def consumer(payload: Probe, ctx: Context) -> Report:
             triton_kernels.load(VAE_BLOCK.kernels, device=on)
             settle(vt, device)
             result = cases(payload, request, vt, on, backend)
+            result["effective_dense_policy"] = asdict(effective_policy)
             result["attention_artifact"] = attention_ready.artifact
     except Exception:  # noqa: BLE001 - preserve the real fixture failure in its receipt
         result["error"] = traceback.format_exc()
