@@ -1,0 +1,29 @@
+{
+  "source_commit": "53f70053aed0888ed9491bcbd63e88cf75285af8",
+  "scope": "fixture-only completion gating; actual CPU native replay scopes; no GPU qualification",
+  "native_source": "257980545a08e372964e336012b176728e16205d",
+  "python_source": "2bd2a5149e13524656ea65ab5b2f7899f7bd1b50",
+  "runtime_target_not_loaded": "79214b8755e01d63d6e06b7c335b764c411d120c",
+  "original_bundle_preserved": "ada740fba674f4cbe722cecdbdd4940cad5bc8e668973f326351f2721c71b81a",
+  "build_parent": "ef52cd1dcf7132bd1df2e908b7108b9dab44eff4d4797f371d34fba959e0134e",
+  "source_files": {
+    "capture_pressure_evidence.py": "7653cb76fe29e96f7a6d8d6ef81bf4030aa57623136ef41ebaf007f816964cfb",
+    "capture_pressure_evidence_host.py": "53e4808d284b55f9d6ec9fc627e3414d86f6bc9010b864d699725ea62f63b59f",
+    "capture_pressure_evidence.patch": "bfccdac50bed12eaa612ab42cbcf94bf713466e59768bab2fdcf0185cadd8a85",
+    "CAPTURE-PRESSURE-EVIDENCE.md": "93e5b93bdc4c11f5ebfc6649f7eb454c8105cc0bb13d1fe20e0d1167eb6803f4"
+  },
+  "receipts": {
+    "command.json": "13de67fa5ff48868fa1a303b7c1665d1c3c18138837367e7e956b3d76ebd7e00",
+    "host.json": "98235b29c0070746c7af530da8b178c546620e380abf7429016980b3f49bf172",
+    "sdk-copy.json": "01bbc0a2658203ee07ca964e343ac26173f8710b87a3d7520de9866b8364212c",
+    "source-checks.json": "d435f4ec32e447f82f5feb7dc4e694cd63e78a2c0369bb7ff84a6b71bbdaf176",
+    "stderr.txt": "65cdbaf4c2a2f847283a75d3755927fd9d0ad72177f5002376f47ac6a93016d9"
+  },
+  "actual_CUDA_capture_end_success_or_failure": "UNRUN",
+  "ordinary_26862_clean_unwind_retention": "source reviewed, GPU UNRUN",
+  "new_driver_queries_leases_or_product_wrappers": false,
+  "same_lock_native_report": "already implemented separately, not added here",
+  "cross_thread_atomic_admission_capability": false,
+  "native_build": false,
+  "hardware_actions": false
+}
