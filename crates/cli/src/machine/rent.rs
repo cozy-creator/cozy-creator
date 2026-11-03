@@ -337,7 +337,7 @@ pub(crate) async fn follow(
         }
         Err(e) => return Ok(unfollowed(ctx, &machine, Some(e))),
     };
-    let mut said = String::new();
+    let (mut said, mut said_at) = (String::new(), std::time::Instant::now());
     loop {
         for note in notices.fresh(&machine) {
             output::say(ctx, note);
@@ -348,9 +348,12 @@ pub(crate) async fn follow(
             // Ending lives until its Hub affirms the end; Unknown is a newer Calcifer's word.
             MachineState::Booting | MachineState::Ending | MachineState::Unknown => {
                 let line = format!("{}: {}", machine.name, state_cell(&machine));
-                if line != said {
+                // A pull's numbers move at each read: a line for them every 10 s is enough.
+                let words = |text: &str| text.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
+                let same = words(&line) == words(&said);
+                if line != said && (!same || said_at.elapsed().as_secs() >= 10) {
                     output::say(ctx, &line);
-                    said = line;
+                    (said, said_at) = (line, std::time::Instant::now());
                 }
             }
         }

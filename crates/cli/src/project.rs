@@ -7,12 +7,12 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Event, Open, Opened, Projects, Rename, Renamed, Runs, State, Transferred},
+    project::{Approve, Approved, Clean, Event, Import, Imported, Open, Opened, Projects, Rename, Renamed, Runs, State, Transferred},
 };
 
 use crate::{
     Context, output,
-    run::{follow, mint_key, settled},
+    run::{mint_key, settled, watched},
 };
 
 /// A push or pull that moved all it could and left out a file.
@@ -20,7 +20,8 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
-  cd garden && cozy project render all --on kiyui
+  cd garden && cozy project import ./kyogre.png --character   prints the line to paste into project.yaml
+  cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three takes of fight
   cozy project approve fight 2
   cozy project rename theo mara                after renaming it in project.yaml
@@ -60,6 +61,7 @@ enum Verb {
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
+    Import(ImportFile),
     Render(Render),
     /// Approve a take or version.
     #[command(after_help = "Example:\n  cozy project approve fight 2")]
@@ -86,6 +88,27 @@ enum Verb {
     /// Fetch every file project.lock names that assets/ lacks, as real files.
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
+}
+
+/// Bring a picture, video or sound into the project, and print the line that names it in project.yaml.
+#[derive(clap::Args, Debug)]
+#[command(after_help = "Examples:
+  cozy project import ./kyogre.png --character
+  cozy project import https://example.com/groudon.png --character
+  cozy project import ./coast.jpg
+  cozy project import ./sword.png --prop
+
+A URL is downloaded here, up to 64 MiB, from a public address.")]
+struct ImportFile {
+    /// A path, or an http(s) URL.
+    source: String,
+    /// The picture is a character's: its background is removed, here if this computer runs models, else on
+    /// the first machine that renders something reading it.
+    #[arg(long, conflicts_with = "prop")]
+    character: bool,
+    /// The picture is a prop's: its background is removed, as with --character.
+    #[arg(long)]
+    prop: bool,
 }
 
 /// Make new takes and versions; `all` brings everything up to date.
@@ -139,6 +162,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
         }
+        Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
@@ -217,7 +241,7 @@ fn rest(done: &Transferred) -> u64 {
 /// A warning for each file a transfer left out, and its exit: `PARTIAL` when it left out any.
 fn skipped(done: &Transferred) -> ExitCode {
     for file in &done.skipped {
-        output::warn(&format!("skipped {}: {}", file.original.as_deref().unwrap_or(&file.path), file.why));
+        output::warn(&format!("skipped {}: {}", file.path, file.why));
     }
     if done.skipped.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(PARTIAL) }
 }
@@ -247,6 +271,57 @@ async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) 
     Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.path.display())))
 }
 
+/// `POST /v1/projects/{id}/imports`, a clean sent with it followed to its end, and the line to paste.
+async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at, false).await?;
+    let calcifer = ctx.calcifer().await?;
+    let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
+    let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    let source = match args.source.contains("://") {
+        true => args.source,
+        false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
+    };
+    let ask = Import { source, clean: args.character || args.prop, hub: ctx.hub().to_string() };
+    let mut imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &ask, None).await?;
+    imported.warnings.iter().for_each(|warning| output::warn(warning));
+    if let Clean::Removing { run } = &imported.clean {
+        let followed = watched(ctx, calcifer.run(run).await?).await?;
+        imported.clean = match settled(&followed) {
+            false => imported.clean,
+            true => {
+                let mut landed = Clean::Later;
+                while let Some(event) = events.next().await {
+                    match event {
+                        Event::Cleaned { sha256, error } if sha256 == imported.sha256 => {
+                            match error {
+                                Some(error) => output::warn(&error),
+                                None => landed = Clean::Removed,
+                            }
+                            break;
+                        }
+                        Event::Ended { .. } => break,
+                        _ => {}
+                    }
+                }
+                landed
+            }
+        };
+    }
+    if ctx.json {
+        output::json(&imported);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let said = match imported.clean {
+        Clean::Untouched => "",
+        Clean::Removed => " (background removed)",
+        Clean::Removing { .. } => " (its background is being removed)",
+        Clean::Later => " (its background is removed when a machine first renders something that reads it)",
+    };
+    anstream::println!("imported {}{said}", imported.prefix);
+    anstream::println!("{}", imported.line);
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
@@ -264,10 +339,11 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let path = format!("/v1/projects/{}/runs", opened.id);
     let _: Opened = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     let status = format!("cozy project -p {} status", opened.path.display());
+    let mut failed = std::collections::HashSet::new();
     while let Some(event) = events.next().await {
         match event {
             Event::Started { run, .. } => {
-                if !settled(&follow(ctx, calcifer.run(&run).await?).await?) {
+                if !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
                     output::say(ctx, "the project's runs go on in Calcifer");
                     output::next(ctx, &[&status]);
                     return Ok(ExitCode::SUCCESS);
@@ -279,10 +355,17 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             }
             Event::Said { message } => output::say(ctx, &message),
             Event::Warning { message } => output::warn(&message),
-            Event::Moved { .. } | Event::Transferred { .. } => {}
+            Event::Failed { error } => {
+                output::failure(ctx, &error.message, &error.next);
+                failed.insert(error.message);
+            }
+            Event::Moved { .. } | Event::Transferred { .. } | Event::Cleaned { .. } => {}
             Event::Cut { cut, frames, fps, retimed, took_s } => {
                 let path = output::link(ctx, &opened.path.join(&cut));
                 output::say(ctx, &format!("cut {path}: {}{} in {took_s:.1} s", length(frames, fps), retimes(&retimed, fps)));
+            }
+            Event::Ended { error: Some(error) } if !ctx.json && failed.contains(&error.message) => {
+                return Ok(ExitCode::from(error.exit_code() as u8));
             }
             Event::Ended { error: Some(error) } => return Err(error),
             Event::Ended { error: None } => return Ok(ExitCode::SUCCESS),
@@ -293,6 +376,10 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
 
 /// Under the table: what is missing, what is out of date and why, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
+    for node in state.nodes.iter().filter(|node| !node.prefixes.is_empty()) {
+        let made: Vec<String> = node.prefixes.iter().map(|made| format!("{} {} {}", node.noun, made.number, made.prefix)).collect();
+        output::say(ctx, &format!("{}: {}", node.name, made.join(", ")));
+    }
     if !state.missing.is_empty() {
         output::say(ctx, &format!("missing: {}", state.missing.join(", ")));
     }

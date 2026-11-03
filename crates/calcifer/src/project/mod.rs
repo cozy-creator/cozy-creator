@@ -33,15 +33,15 @@ use axum::{
 };
 use futures_util::{Stream, StreamExt as _, stream::FuturesUnordered};
 use protocol::{
-    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning, local_usable},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
     project::{
-        Approve, Approved, Asset as Listing, Cut, Event, Known, Node as Row, NodeVersions, Open, Opened, Orphan,
-        Projects as Listed, Rename, Renamed, Runs, Stale, State as ProjectState, Version,
+        Approve, Approved, Asset as Listing, Clean, Cut, Event, Import, Imported, Known, Node as Row, NodeVersions, Open, Opened,
+        Orphan, Projects as Listed, Rename, Renamed, Runs, Stale, State as ProjectState, Version, VersionPrefix,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,7 @@ pub fn routes() -> Router<Arc<Api>> {
     Router::new()
         .route("/v1/projects", post(open).get(list))
         .route("/v1/projects/{id}", get(state).delete(forget))
+        .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/runs", post(runs))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/rename", post(rename))
@@ -319,10 +320,7 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     open.remove(&id);
     drop(open);
     match indexed(&api, true, |index| index.projects.remove(&id)) {
-        Some(entry) => {
-            let _ = std::fs::remove_file(folder::taken_at(api.machines.hubs.home(), &entry.path));
-            Ok(StatusCode::NO_CONTENT)
-        }
+        Some(_) => Ok(StatusCode::NO_CONTENT),
         None => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
 }
@@ -396,26 +394,21 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
         .map(|p| p.run.to_string())
         .collect();
     let made = node.file.as_ref().and_then(|(path, _)| lock.made(&node.id, path));
-    // The version project.lock approves; a file attached by hand (or its clean) is none.
+    // The version project.lock approves; a file attached by hand is none.
     let approved = (lock.node(&node.id).and_then(|n| n.approved.as_ref()))
         .and_then(|path| lock.made(&node.id, path))
         .map(|made| made.number);
     let assets = match (made, &node.file) {
         (Some(made), _) => listed(made),
-        (None, Some((path, sha256))) => {
-            let original = lock.inputs.iter().find(|(_, input)| input.path == *path).map(|(file, _)| file.clone());
-            BTreeMap::from([(video.field(i).to_owned(), Listing { path: path.clone(), sha256: sha256.clone(), original })])
-        }
+        (None, Some((path, sha256))) => BTreeMap::from([(video.field(i).to_owned(), Listing { path: path.clone(), sha256: sha256.clone() })]),
         (None, None) => BTreeMap::new(),
     };
     let gone = video.missing(i);
     let (status, standing) = match (making.as_slice(), status) {
         ([run], _) => (format!("making (run {run})"), Standing::Other),
-        ([], _) if !gone.is_empty() => (format!("reference missing: {}: relink", gone.join(", ")), Standing::Missing),
+        ([], _) if !gone.is_empty() => (format!("not on this computer: {}: cozy project pull", gone.join(", ")), Standing::Missing),
         (runs @ [_, ..], _) => (format!("making (runs {})", runs.join(", ")), Standing::Other),
-        ([], Status::Current) if video.unclean(lock, i).is_some() => {
-            ("picture not cleaned yet".into(), Standing::Missing)
-        }
+        ([], Status::Current) if video.own_unclean(i) => ("picture not cleaned yet".into(), Standing::Missing),
         ([], Status::Empty) if !video.wanted(i) => {
             ("not needed: no resolution, or its shot meets it".into(), Standing::Other)
         }
@@ -428,6 +421,9 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
         kind: node.kind.into(),
         noun: node.noun.into(),
         versions: node.versions.len() as u32,
+        prefixes: (lock.node(&node.id).into_iter().flat_map(|n| &n.versions))
+            .filter_map(|made| Some(VersionPrefix { number: made.number, prefix: folder::prefix_of(&made.primary()?.sha256).to_owned() }))
+            .collect(),
         approved,
         assets,
         path: node.file.as_ref().map(|(path, _)| path.clone()),
@@ -473,7 +469,7 @@ async fn node(
 /// A version's assets as the API lists them: by output name, each one's path and sha256.
 fn listed(made: &Made) -> BTreeMap<String, Listing> {
     (made.assets.iter())
-        .map(|(name, asset)| (name.clone(), Listing { path: asset.path.clone(), sha256: asset.sha256.clone(), original: None }))
+        .map(|(name, asset)| (name.clone(), Listing { path: asset.path.clone(), sha256: asset.sha256.clone() }))
         .collect()
 }
 
@@ -653,6 +649,55 @@ async fn runs(
     Ok((StatusCode::ACCEPTED, Json(Opened { id, path: project.folder.dir.clone() })))
 }
 
+/// Keeps the file at `source` as an asset of the project, in project.lock with its mark (`Folder::import`).
+/// A marked picture with no clean is cleaned now if this computer
+/// runs models: the walk follows that run. Otherwise, or if it can't be sent, the first machine to render
+/// something that reads it cleans it, as the mark travels with the lock.
+async fn import(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Imported>, Refusal> {
+    let asked: Import = parse(&body?)?;
+    Origin::parse(&asked.hub).map_err(Refusal)?;
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let (asset, field) = folder.import(&asked.source, asked.clean).await.map_err(|why| {
+        let said = format!("{}: {why}", asked.source);
+        Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
+    })?;
+    let mark = asked.clean && field == "image";
+    let mut warnings = vec![];
+    if asked.clean && !mark {
+        warnings.push(format!("a{} {field} has no background to remove: it is imported as it is", if field == "audio" { "n" } else { "" }));
+    }
+    let lock = folder.lock().map_err(Refusal)?;
+    let cleaned = lock.imports.get(&asset.sha256).is_some_and(|import| import.clean.is_some());
+    let clean = match (mark, cleaned, lock.cleaning(&asset.sha256)) {
+        (false, ..) => Clean::Untouched,
+        (true, true, _) => Clean::Removed,
+        (true, false, Some(run)) if run > 0 => Clean::Removing { run: run.to_string() },
+        _ if local_usable("local").is_err() => Clean::Later,
+        _ => {
+            let sender = Walk { host: Host::new(&api), project: project.clone() };
+            let target = Target { on: vec![On::Machine("local".into())], hub: asked.hub.clone() };
+            match sender.clean_import(&asset.sha256, &target).await {
+                Ok(run) => {
+                    walk(&api, &project);
+                    Clean::Removing { run: run.id.to_string() }
+                }
+                Err(error) => {
+                    warnings.push(format!("its background is not removed yet: {}", error.message));
+                    Clean::Later
+                }
+            }
+        }
+    };
+    let prefix = folder::prefix_of(&asset.sha256).to_owned();
+    let line = format!("{field}: {}", video::yaml_scalar(&prefix));
+    Ok(Json(Imported { path: asset.path, sha256: asset.sha256, prefix, line, clean, warnings }))
+}
+
 /// What node `i` reads, near or far, with no version yet and none on its way.
 fn unmade(video: &Video, lock: &Lock, i: usize) -> Vec<usize> {
     let graph = &video.graph;
@@ -790,12 +835,13 @@ fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refu
 /// What landing a run left to do.
 enum Landed {
     Done,
-    /// A picture to clean before it is listed, its record, and the Hub its clean goes to.
+    /// A picture to clean before it is listed, its record, and the Hub and machines its clean goes to.
     Clean {
         made: Box<Made>,
         picture: PathBuf,
         approve: bool,
         hub: String,
+        on: Vec<On>,
     },
     /// One of a shot's calls, its assets kept: its write frames to cut, then its next call or the
     /// shot's take.
@@ -868,8 +914,8 @@ impl Walk {
         let _ = self.project.events.send(event);
     }
 
-    /// Sends whatever is ready, follows every pending run (what it sent, a picture's clean, what an
-    /// earlier walker sent), and plans again as each lands or something is asked, until nothing is
+    /// Cleans the marked pictures what it owes reads, sends whatever is ready, follows every pending run
+    /// (what it sent, a picture's clean, what an earlier walker sent), and plans again as each lands or something is asked, until nothing is
     /// owed: then the first thing that failed, if one did. What `all` asked ends with the edit, cut
     /// once nothing more of it can be made.
     async fn go(&self) -> Result<Option<Error>, Error> {
@@ -877,19 +923,37 @@ impl Walk {
             self.say(Event::Warning { message });
         }
         let (mut first, mut following, mut followed) = (None, FuturesUnordered::new(), HashSet::new());
+        // The marked pictures this walk has sent to be cleaned, each once: what reads one that failed is
+        // not made, and the next walk tries again.
+        let mut cleaning = HashSet::new();
         loop {
             let (video, lock) = (self.video()?, self.folder().lock()?);
+            for (sha256, target) in video.to_clean(&lock) {
+                if cleaning.insert(sha256.clone())
+                    && lock.cleaning(&sha256).is_none()
+                    && let Err(error) = self.clean_import(&sha256, &target).await
+                {
+                    self.failed(error, &mut first);
+                }
+            }
+            let lock = self.folder().lock()?;
             for take in lock.walk.takes.iter().filter(|take| video.graph.find(&take.node).is_none()) {
                 let said = format!("{} is no longer in {}: its version is not made", take.node, folder::PROJECT);
                 self.failed(Error::new(Kind::NotFound, "node_unknown", said), &mut first);
                 self.folder().update_lock(|lock| lock.walk.takes.retain(|t| t.key != take.key))?;
             }
             for take in &lock.walk.takes {
-                let Some(gone) = video.graph.find(&take.node).map(|i| video.missing(i)).filter(|gone| !gone.is_empty()) else {
+                let Some(i) = video.graph.find(&take.node) else { continue };
+                let (gone, unclean) = (video.missing(i), video.unclean(i));
+                // It waits for a clean on its way.
+                if gone.is_empty() && (unclean.is_empty() || unclean.iter().any(|sha256| lock.cleaning(sha256).is_some())) {
                     continue;
+                }
+                let why = match gone.is_empty() {
+                    true => "its picture's background could not be removed".to_owned(),
+                    false => format!("{} not on this computer: cozy project pull", gone.join(", ")),
                 };
-                let said = format!("{} cannot render: reference missing: {}: relink", take.node, gone.join(", "));
-                self.failed(Error::new(Kind::NotFound, "reference_missing", said), &mut first);
+                self.failed(Error::new(Kind::NotFound, "file_missing", format!("{} cannot render: {why}", take.node)), &mut first);
                 self.folder().update_lock(|lock| lock.walk.takes.retain(|t| t.key != take.key))?;
             }
             for next in plan(&video, &lock) {
@@ -941,14 +1005,13 @@ impl Walk {
 
     /// A version that failed: said now, never sent again this walk; what does not read it goes on.
     fn failed(&self, error: Error, first: &mut Option<Error>) {
-        self.say(Event::Warning { message: error.message.clone() });
+        self.say(Event::Failed { error: error.clone() });
         first.get_or_insert(error);
     }
 
     /// Sends `next` under its key: a new version made `on` its target's machines (chosen for
     /// `all`, or when the entity has none; a picture its renderer can't draw transparent is cleaned
-    /// before it is listed), else its
-    /// chosen picture's clean. Recorded as pending together with what it settles of the walk, before
+    /// before it is listed). Recorded as pending together with what it settles of the walk, before
     /// the run is sent; one that fails is settled all the same.
     async fn send(&self, video: &Video, lock: &Lock, next: Next) -> Result<(), Error> {
         let i = next.i;
@@ -961,20 +1024,14 @@ impl Walk {
             Some(_) => lock.walk.takes.retain(|take| take.key != key),
         };
         let status = &video.graph.status(lock)[i];
-        let (target, remake, approve) = match &next.take {
-            None => (lock.walk.all.clone().expect("all is owed"), *status != Status::Current, true),
-            Some(take) => (take.target.clone(), video.unclean(lock, i).is_none(), take.approve),
+        let (target, approve) = match &next.take {
+            None => (lock.walk.all.clone().expect("all is owed"), true),
+            Some(take) => (take.target.clone(), take.approve),
         };
         if next.take.is_none() {
-            let said = if remake { shown(status, video.graph.nodes[i].noun) } else { "cleaning its picture".into() };
-            self.say(Event::Said { message: format!("{id}: {said}") });
+            self.say(Event::Said { message: format!("{id}: {}", shown(status, video.graph.nodes[i].noun)) });
         }
         let sent = async {
-            if let (false, Some((file, digest))) = (remake, video.unclean(lock, i)) {
-                let made = Made { node: id.clone(), clean_of: Some(digest.clone()), ..Default::default() };
-                let picture = (self.folder().path(&file), digest);
-                return self.clean(&key, &target.hub, &video.clean_render(), picture, made, Then::Attached, &settle).await;
-            }
             let renderer = (self.host)
                 .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on)
                 .await?;
@@ -1060,17 +1117,17 @@ impl Walk {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
             let run = self.host.wait(&run.id).await?;
             let node = self.folder().lock()?.pending.get(&key).map(|pending| pending.made.node.clone());
-            let (made, picture, approve, hub) = match self.land(&key, &run).await? {
+            let (made, picture, approve, hub, on) = match self.land(&key, &run).await? {
                 Landed::Done => return Ok(node),
                 Landed::Call { made, call, approve, hub, on } => {
                     return self.called(&key, *made, call, approve, &hub, &on).await;
                 }
-                Landed::Clean { made, picture, approve, hub } => (made, picture, approve, hub),
+                Landed::Clean { made, picture, approve, hub, on } => (made, picture, approve, hub, on),
             };
             let cleaner = self.video()?.clean_render();
             let picture = (picture.clone(), folder::hash(&picture)?);
             let settle = |lock: &mut Lock| drop(lock.pending.remove(&key));
-            self.clean(&new_key(), &hub, &cleaner, picture, *made, Then::List { approve }, &settle).await?;
+            self.clean(&new_key(), &hub, &cleaner, picture, *made, Then::List { approve }, &on, &settle).await?;
             Ok(None)
         };
         let landed = landed.await;
@@ -1149,8 +1206,21 @@ impl Walk {
         Ok(Some(node))
     }
 
+    /// The clean of the imported picture `sha256`, on one of `target`'s machines: the run, which the walk follows.
+    async fn clean_import(&self, sha256: &str, target: &Target) -> Result<Run, Error> {
+        let (video, lock, key) = (self.video()?, self.folder().lock()?, new_key());
+        let path = (lock.imports.get(sha256).map(|import| self.folder().path(&import.asset.path)))
+            .ok_or_else(|| Error::new(Kind::NotFound, "import_unknown", format!("project.lock names no import {sha256}")))?;
+        let node = folder::prefix_of(sha256).to_owned();
+        let made = Made { node, clean_of: Some(sha256.to_owned()), ..Default::default() };
+        let picture = (path, sha256.to_owned());
+        self.clean(&key, &target.hub, &video.clean_render(), picture, made, Then::Imported, &target.on, &|_: &mut Lock| {}).await?;
+        let sent = self.host.sent(&key)?;
+        sent.ok_or_else(|| Error::new(Kind::Internal, "clean_unsent", format!("the clean of {sha256} was not sent")))
+    }
+
     /// The clean of a picture (its path and digest), keeping the record `made` of what it was made
-    /// from: one run under `key` on this computer's machine, landed as `then` says and marked as a
+    /// from: one run under `key` on one of `on`'s machines, landed as `then` says and marked as a
     /// clean.
     #[allow(clippy::too_many_arguments)]
     async fn clean(
@@ -1161,13 +1231,14 @@ impl Walk {
         picture: (PathBuf, String),
         made: Made,
         then: Then,
+        on: &[On],
         settle: &impl Fn(&mut Lock),
     ) -> Result<(), Error> {
         let made = Made { cleaned: true, writes: Default::default(), ..made };
         let pending = Pending { made, run: 0, hub: hub.into(), field: "image".into(), on: vec![], call: None, then };
         let payload = serde_json::json!({ "image": picture.1 });
         let files = vec![("image".into(), picture.0, picture.1)];
-        self.submit(key, &payload, files, cleaner, &[On::Machine("local".into())], pending, settle).await
+        self.submit(key, &payload, files, cleaner, on, pending, settle).await
     }
 
     /// Sends `payload` (its `files` as field, path and digest) to `render`'s function on one of `on`'s
@@ -1359,26 +1430,21 @@ impl Walk {
     async fn land(&self, key: &str, run: &Run) -> Result<Landed, Error> {
         let folder = self.folder();
         let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(Landed::Done) };
+        if let (Then::Imported, Some(of)) = (pending.then, pending.made.clean_of.as_deref()) {
+            return self.land_clean(key, run, of);
+        }
         let node = pending.made.node.clone();
         if run.status != RunStatus::Completed {
-            let why =
-                run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
-            let said = format!("{node}'s run {} did not complete: {why}; it is not run again", run.number);
+            let status = format!("{:?}", run.status).to_lowercase();
+            let said = match &run.reason {
+                Some(reason) => format!("{node}: {status}: {}", reason.message),
+                None => format!("{node}: {status}"),
+            };
             return Err(
                 Error::new(Kind::Unavailable, "version_failed", said).next(format!("cozy run show {}", run.number))
             );
         }
-        // A single output is index 0; a list's items count from 1.
-        let saved = |name: &str, index: usize| {
-            (run.output.iter())
-                .find(|o| o.name == name && o.index as usize == index)
-                .and_then(|o| o.path.clone())
-                .ok_or_else(|| {
-                    Error::new(Kind::Unavailable, "version_unsaved", format!("run {} saved no {name}", run.number))
-                        .next(format!("cozy run show {}", run.number))
-                })
-        };
-        let picture = saved(&pending.field, 0)?;
+        let picture = saved(run, &pending.field)?;
         let video = self.video()?;
         let Some(i) = video.graph.find(&node) else {
             folder.update_lock(|lock| drop(lock.pending.remove(key)))?;
@@ -1423,7 +1489,7 @@ impl Walk {
             let approve = *approve;
             // Listed once cleaned, made by both runs: the render as its `image`, and its `clean`.
             made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
-            return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub });
+            return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub, on: pending.on });
         }
         if made.cleaned {
             made.assets.insert("clean".into(), folder.keep(&picture)?);
@@ -1450,9 +1516,41 @@ impl Walk {
         }
         let approve = match pending.then {
             Then::List { approve } | Then::Clean { approve } => approve || video.graph.nodes[i].file.is_none(),
-            Then::Attached => false,
+            Then::Imported => false,
         };
         self.record(Some(key), &made, approve, video.graph.nodes[i].kind, noun)?;
+        Ok(Landed::Done)
+    }
+
+    /// The run cleaning the imported picture `of`, once it ended: its clean kept, and from now on what the
+    /// hash resolves to. One that did not complete leaves the mark, and the next render that reads it tries again.
+    fn land_clean(&self, key: &str, run: &Run, of: &str) -> Result<Landed, Error> {
+        let folder = self.folder();
+        let kept = match run.status {
+            RunStatus::Completed => saved(run, "image").and_then(|picture| folder.keep(&picture)),
+            _ => {
+                let why = run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
+                Err(Error::new(Kind::Unavailable, "clean_failed", why).next(format!("cozy run show {}", run.number)))
+            }
+        };
+        let (sha256, name) = (of.to_owned(), folder::prefix_of(of));
+        let asset = match kept {
+            Ok(asset) => asset,
+            Err(error) => {
+                folder.update_lock(|lock| drop(lock.pending.remove(key)))?;
+                let message = format!("{name}: its background was not removed: {}; the next render that reads it tries again", error.message);
+                self.say(Event::Cleaned { sha256, error: Some(message.clone()) });
+                return Err(Error { message, ..error });
+            }
+        };
+        folder.update_lock(|lock| {
+            lock.pending.remove(key);
+            if let Some(import) = lock.imports.get_mut(of) {
+                import.clean = Some(asset.clone());
+            }
+        })?;
+        self.say(Event::Said { message: format!("{name}: background removed ({})", asset.path) });
+        self.say(Event::Cleaned { sha256, error: None });
         Ok(Landed::Done)
     }
 
@@ -1514,22 +1612,20 @@ impl Walk {
     }
 }
 
-/// What can be sent now, in project order. What `all` owes (a version out of date or missing, or
-/// a picture's clean) once everything it reads is made, cleaned and settled: nothing upstream,
-/// however far, still owed or being made into its chosen file (a take that will not be chosen
-/// holds nothing up). A take once nothing upstream is unsettled; the take of a picture not cleaned
-/// yet is its clean, one at a time.
+/// What can be sent now, in project order. What `all` owes (a version out of date or missing) once
+/// everything it reads is made, cleaned and settled: nothing upstream, however far, still owed or being
+/// made into its chosen file (a take that will not be chosen holds nothing up). A take once nothing
+/// upstream is unsettled.
 fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
     let (graph, walk) = (&video.graph, &lock.walk);
     let status = graph.status(lock);
-    let clean = |i: usize| video.unclean(lock, i).is_none();
     let mut unsettled = vec![false; graph.nodes.len()];
     let mut next = vec![];
     for &i in &graph.order {
         let id = name_key(&graph.nodes[i].id);
         let busy = lock.pending.values().any(|pending| {
             let chosen = match pending.then {
-                Then::Attached => true,
+                Then::Imported => false,
                 Then::List { approve } | Then::Clean { approve } => approve,
             };
             name_key(&pending.made.node) == id && (chosen || graph.nodes[i].file.is_none())
@@ -1537,24 +1633,22 @@ fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
         let owed = walk.all.is_some()
             && video.wanted(i)
             && !(walk.preview && video.is_upscale(i))
-            && (status[i] != Status::Current || !clean(i))
+            && status[i] != Status::Current
             && !walk.sent.contains(&id);
         let up = graph.upstream[i].iter().any(|edge| unsettled[edge.node]);
-        // A node reading a reference that is gone is not made, and nor is what reads it.
-        let gone = !video.missing(i).is_empty();
+        // A node reading a file not here, or a picture waiting for its clean, is not made yet, nor is what reads it.
+        let gone = !video.missing(i).is_empty() || !video.unclean(i).is_empty();
         // A take of a node with no version yet: what reads it waits for it.
         let taken = graph.nodes[i].file.is_none() && walk.takes.iter().any(|take| name_key(&take.node) == id);
         unsettled[i] = busy || owed || up || gone || taken;
         if up || gone {
             continue;
         }
-        let made = graph.upstream[i].iter().all(|edge| status[edge.node] == Status::Current && clean(edge.node));
+        let made = graph.upstream[i].iter().all(|edge| status[edge.node] == Status::Current);
         if owed && !busy && made {
             next.push(Next { i, take: None });
         }
-        let takes = walk.takes.iter().filter(|take| name_key(&take.node) == id);
-        let room = if clean(i) { usize::MAX } else { usize::from(!busy && !owed) };
-        next.extend(takes.take(room).map(|take| Next { i, take: Some(take.clone()) }));
+        next.extend(walk.takes.iter().filter(|take| name_key(&take.node) == id).map(|take| Next { i, take: Some(take.clone()) }));
     }
     next
 }
@@ -1564,6 +1658,14 @@ fn new_key() -> String {
     let mut key = [0u8; 16];
     getrandom::fill(&mut key).expect("the OS has randomness");
     format!("project-{}", hex::encode(key))
+}
+
+/// The file a run saved as its output `name` (a single output is index 0).
+fn saved(run: &Run, name: &str) -> Result<PathBuf, Error> {
+    (run.output.iter()).find(|o| o.name == name && o.index == 0).and_then(|o| o.path.clone()).ok_or_else(|| {
+        Error::new(Kind::Unavailable, "version_unsaved", format!("run {} saved no {name}", run.number))
+            .next(format!("cozy run show {}", run.number))
+    })
 }
 
 /// What a run's function said of its result (its `warnings`), and its machine's.

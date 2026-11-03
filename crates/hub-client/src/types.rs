@@ -664,6 +664,24 @@ pub struct RentalBoot {
     pub last_progress_at: Option<String>,
     pub observed_at: String,
     pub replanned_from: Option<ReplannedBoot>,
+    pub pull: Option<RentalPull>,
+}
+
+/// The image pull as the provider's boot log measured it: the layers in flight, not the image.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RentalPull {
+    pub observable: bool,
+    pub layers_observed: i64,
+    pub layers_complete: i64,
+    pub download_bytes: i64,
+    pub download_total_bytes: i64,
+    pub download_bytes_per_second: Option<f64>,
+    pub extract_bytes: i64,
+    pub extract_total_bytes: i64,
+    pub extract_bytes_per_second: Option<f64>,
+    /// A lower bound for the layers it has seen, never when the rental is ready.
+    pub remaining_seconds: Option<f64>,
 }
 
 /// The failed attempt a rental's current one replaced.

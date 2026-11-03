@@ -81,21 +81,38 @@ restarts a Calcifer that is stuck or runs an older cozy.
 A video project is a folder:
 - `project.yaml`: yours. cozy writes it only at `new`.
 - `project.lock`: cozy's record of each node's takes or versions, what made each, which is approved, and the
-  files `project.yaml` names.
-- `assets/`: every file the project uses, kept by content as `assets/<sha256>.<ext>`. What cozy makes is kept
-  there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is taken in
-  on first use: a copy-on-write clone where the filesystem has them (no space used), else a link to where you
-  keep it.
+  files imported.
+- `assets/`: every file the project uses, a real file kept by content as `assets/<sha256>.<ext>`: what cozy makes,
+  and what you import.
 - `edit.mp4`: the film, cut on this computer as shots land, and beside it `edit.otio`, the same edit as an
   OpenTimelineIO timeline for an editing app, each clip referencing its take in `assets/`.
 
-Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
-file you named and what reads it goes out of date; move a linked one and `status` says to relink it (fix its
-path).
+Files enter a project one way, and `project.yaml` names them only by hash:
+
+```sh
+cozy project import ./kyogre.png --character
+cozy project import https://example.com/groudon.png --character
+cozy project import ./coast.jpg
+cozy project import ./sword.png --prop
+```
+
+```
+imported ab12cd34ef56 (background removed)
+image: ab12cd34ef56
+```
+
+Paste that line under the node. It works for pictures, video and sound in every file field: an entity's `image` and
+`voice`, a setup's or world state's `image`, `references:`, and a shot's `plate`, `first_frame` and `last_frame`. Any
+prefix of the hash will do; one that fits two assets is said, and asks for a longer one. A URL is downloaded here, up to
+64 MiB, from a public address. A made version is an asset too: `cozy project status` prints each one's 12 characters.
+`--character` and `--prop` have its background removed: at once if this computer runs models, else by the first machine
+that renders something reading it. That clean is an asset like any other, and it is what the hash means from then on.
+A path or URL in a file field is never read: it warns with the import command, and that node renders without it.
+An asset never changes, so only a different hash, or something upstream, puts what reads it out of date.
 
 On another computer: commit `project.yaml` and `project.lock`, keep `assets/` out of git, and `cozy project push`
 sends the files to your Tensorhub account, private to you. `cozy project pull` next to a clone fetches them as real
-files; the paths in `project.yaml` need not exist there, as the hash in `project.lock` is what counts. Both send only
+files, and a picture not cleaned yet is cleaned there when something reads it. Both send only
 what is missing and go on after an interruption. What you pushed stays until you `cozy model delete
 <account>/project-assets`, the private model that holds it. A file over 5 GiB is skipped with a warning: everything
 else goes, and the command exits 3. Pulling such a project does the same for what is not there.
@@ -131,19 +148,17 @@ entities:
 
 shots:
   - name: clash
-    setup: coast.wide
-    duration_s: 38
     summary: |
-      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
+      <kyogre> and <groudon> fight on <coast.wide> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
-      - at: 0
+      - duration: 14
         description: |
           A wide shot shows <kyogre> in the surf on the left and <groudon> on the rocks on the right. <kyogre> fires a thick column of water across the frame.
-      - at: 14
+      - duration: 14
         description: |
           <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf. <kyogre> dives beneath the flames.
-      - at: 28
+      - duration: 10
         description: |
           <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves.
 ```
@@ -162,7 +177,7 @@ defaults:
 
 references:
   - name: kata
-    video: ~/footage/kata.mp4
+    video: 7c9e2d41a0b3
 
 world_states:
   - name: shore
@@ -211,11 +226,16 @@ description, with a warning. Adapter and package updates never put anything out 
 `version: 1` names the format of `project.yaml`. A file with none reads as 1, with a warning. Nothing you write is refused: a
 shot with no text gets a warning and renders anyway.
 
-A take can be shorter than `duration_s`: `minimax-h3` renders 15 s of a longer shot with one beat. The edit cuts
+A beat has its own `duration:` in seconds and starts where the one before it ended, and a shot is as long as its beats. A
+beat with none lasts 5 s, with a warning; a shot with no beats is as long as its attached `video:`, else 15 s.
+
+A take can be shorter than its shot: `minimax-h3` renders 15 s of a longer shot with one beat. The edit cuts
 the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
-screen terms (what is near or far, left or right). A shot reads a world state it
+screen terms (what is near or far, left or right). A shot reads only what its text names: a mention in its `summary` reaches
+every segment, and one in a beat only the segment holding that beat. `<coast.wide>` names a setup; `<coast>` alone is the
+setup of it the shot names, else its first. A shot reads a world state it
 names and changes the ones it `writes` (each a `state`, and `at`, by default its end). A shot that mentions a state it
 writes partway renders as consecutive calls split there (`continue_from`), the later one reading its own frame. A
 renderer that cannot continue, or a call under its shortest piece, renders on through: the shot reads the state as it
@@ -224,13 +244,13 @@ something from itself, stays plain text, also said.
 
 A file that is no entity goes under `references:` with a name and one `video:`, `audio:` or `image:` (sent as a
 prop). A shot that mentions it gets it, exactly as with an entity: any other field, such as `use_audio:
-true`, goes to its function, and editing the file puts only those shots out of date. Names are shared with entities,
+true`, goes to its function, and importing another file for it puts only those shots out of date. Names are shared with entities,
 in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
 shot. What a function does not take is left out and said.
 
 `qwen-image-2` draws a character as a 16:9 sheet (front, back, three close-ups) and a prop as a 3:2 sheet (front, back), both
-transparent. Any character or prop picture that comes back without a real share of transparent pixels, and a picture you
-attach, is cleaned on this computer before use. Only a changed upstream file puts something out of date, never a text edit or a render block:
+transparent. Any character or prop picture that comes back without a real share of transparent pixels is cleaned before
+use. A picture you import is used as it is unless you marked it. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy project render <name>` when you want a new take. A node renders by its `render:` block: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
 project's folder, which Calcifer makes ready on each `--on` machine), `models` and `lora` as `cozy run --input` takes them, and
 `options`, the function's own fields. A block that
@@ -248,8 +268,8 @@ With no `resolution:`, the edit is its first take's own size when that is the as
 (H3's 1344x768 at 16:9), so takes of that size join with no encode.
 
 `fps:` (24 by default) is the edit's frame rate, fixed per project. `edit:` lists shots, each with an optional `start` and `end` in
-frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`, or its take's end if sooner), so every cut lands on an
-exact frame; a shot's `duration_s` and `writes` stay in seconds. A take at another rate is retimed to
+frames at it (`end` exclusive; by default the shot's first frame and its length, or its take's end if sooner), so every cut lands on an
+exact frame; a beat's `duration` and a shot's `writes` stay in seconds. A take at another rate is retimed to
 the project's (each frame its nearest in time), and `status` names it. Each cut writes `edit.otio` (and
 `preview.otio`) with it: the project's rate, a video and an audio track, one clip per `edit:` entry with its
 frames, referencing that take's asset.

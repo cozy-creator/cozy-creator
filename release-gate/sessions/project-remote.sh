@@ -1,5 +1,5 @@
 # project-remote (xs-143): a project on a second computer, through `cozy project push` and `pull` at tensorhub.com. No rental.
-#   First computer: this runner. A project with a local image, two plates at a model's 1344x768 and bulk references. A
+#   First computer: this runner. A project with an imported image, two plates at a model's 1344x768 and bulk references. A
 #     push whose Calcifer is killed mid-way sends only the rest, and another moves nothing.
 #   Second computer: a second user here (its own home and Calcifer, none of the first's paths), holding only project.yaml
 #     and project.lock. Signed out it is refused, and the Hub shows anonymous callers nothing. Signed in with the runner's
@@ -30,33 +30,37 @@ plate() {
 plate "$P/plates/a.mp4" testsrc2 440 || fail "plate"
 plate "$P/plates/b.mp4" testsrc 550 || fail "plate"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=832x480" -frames:v 1 -metadata comment="$RANDOM$RANDOM" "$F/coast.png" || fail "image"
+# hash_of <file>: the file imported, and the prefix that names it.
+hash_of() { cozy --json project -p "$P" import "$1" | jq -r .prefix | sed 's/.*/"&"/'; }
 {
-  cat <<'YAML'
+  cat <<YAML
 entities:
   - name: coast
     kind: environment
     description: |
       A grey coast.
-    image: ~/art/coast.png
+    image: $(hash_of "$F/coast.png")
 references:
 YAML
   # Bulk that moves for seconds, so a kill lands mid-way; never seen before, so it moves at all.
   for i in $(seq 1 12); do
-    head -c 32M /dev/urandom > "$P/refs/r$i.wav"
-    printf '  - name: r%s\n    audio: refs/r%s.wav\n' "$i" "$i"
+    { printf 'RIFF\0\0\0\0WAVE'; head -c 32M /dev/urandom; } > "$P/refs/r$i.wav"
+    printf '  - name: r%s\n    audio: %s\n' "$i" "$(hash_of "$P/refs/r$i.wav")"
   done
-  cat <<'YAML'
+  cat <<YAML
 shots:
   - name: a
     summary: |
       Test pattern a.
-    duration_s: 6
-    video: plates/a.mp4
+    beats:
+      - duration: 6
+    video: $(hash_of "$P/plates/a.mp4")
   - name: b
     summary: |
       Test pattern b.
-    duration_s: 6
-    video: plates/b.mp4
+    beats:
+      - duration: 6
+    video: $(hash_of "$P/plates/b.mp4")
 edit:
   - {shot: a, start: 0, end: 120}
   - {shot: b, start: 24, end: 120}
@@ -151,35 +155,29 @@ rm -f "$OUT/edges-second.mp4"
 second --json project -p "$C" push > "$OUT/push-second.json" 2> "$OUT/push-second.err" || fail "push from the second computer: $(tail -3 "$OUT/push-second.err")"
 J '.files == 15 and .moved == 0' "$OUT/push-second.json" || fail "the second computer's push moved something: $(jq -c . "$OUT/push-second.json")"
 
-say "a file at its path, not what the lock names, goes out of date as ever"
-sudo -u "$U" mkdir -p "$H/art" && ffmpeg -v error -y -f lavfi -i "color=c=maroon:size=832x480" -frames:v 1 "$OUT/other.png" && sudo install -o "$U" "$OUT/other.png" "$H/art/coast.png" || fail "no other file"
-second --json project -p "$C" status > "$OUT/status-other.json" 2> "$OUT/status-other.err" || fail "status: $(tail -3 "$OUT/status-other.err")"
-J '.nodes[] | select(.name == "coast") | .path | test("^assets/")' "$OUT/status-other.json" || fail "no coast: $(head -c 300 "$OUT/status-other.json")"
-[ "$(jq -r '.nodes[] | select(.name == "coast") | .assets.image.sha256' "$OUT/status-other.json")" = "sha256:$(sha "$OUT/other.png")" ] \
-  || fail "coast does not read the file now at its path: $(jq -c '.nodes[] | select(.name == "coast")' "$OUT/status-other.json")"
-
 say "a sparse file over the Hub's limit, and a new file beside it"
-truncate -s 5368709121 "$P/refs/huge.wav" && head -c 1M /dev/urandom > "$P/refs/fresh.wav" || fail "no sparse file"
-sed -i '/^shots:/i\  - name: huge\n    audio: refs/huge.wav\n  - name: fresh\n    audio: refs/fresh.wav' "$P/project.yaml"
+printf 'RIFF\0\0\0\0WAVE' > "$P/refs/huge.wav" && truncate -s 5368709121 "$P/refs/huge.wav" || fail "no sparse file"
+{ printf 'RIFF\0\0\0\0WAVE'; head -c 1048564 /dev/urandom; } > "$P/refs/fresh.wav" || fail "no fresh file"
+HUGE=$(hash_of "$P/refs/huge.wav") FRESH=$(hash_of "$P/refs/fresh.wav")
+sed -i "/^shots:/i\  - name: huge\n    audio: $HUGE\n  - name: fresh\n    audio: $FRESH" "$P/project.yaml"
 code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
 PARTIAL=$(jq -r '.commit // empty' "$OUT/push-huge.json"); say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/push-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a push that skipped a file exited $code, not 3"
-J '.files == 17 and .moved == 1 and .bytes == 1048576 and (.skipped | length == 1) and .skipped[0].original == "refs/huge.wav" and (.skipped[0].why | test("5 GiB"))' "$OUT/push-huge.json" \
+J '.files == 17 and .moved == 1 and .bytes == 1048576 and (.skipped | length == 1) and (.skipped[0].path | test("^assets/")) and (.skipped[0].why | test("5 GiB"))' "$OUT/push-huge.json" \
   || fail "the push did not send everything else and name the file"
-grep -q 'warning: skipped refs/huge.wav' "$OUT/push-huge.err" || fail "no warning names refs/huge.wav: $(tail -3 "$OUT/push-huge.err")"
+grep -q 'warning: skipped assets/' "$OUT/push-huge.err" || fail "no warning names the file: $(tail -3 "$OUT/push-huge.err")"
 cozy project -p "$P" push > "$OUT/push-huge-2.txt" 2>&1; code=$?
 [ "$code" = 3 ] && grep -q ': 0 sent' "$OUT/push-huge-2.txt" || fail "pushed again, exit $code: $(tail -3 "$OUT/push-huge-2.txt")"
 tail -2 "$OUT/push-huge-2.txt" | cut -c1-200 | tee -a "$R"
 C2=/home/$U/film-partial
-sudo rm -f "$H/art/coast.png"
 sudo install -d -o "$U" -m 700 "$C2" && sudo install -o "$U" -m 644 "$P/project.yaml" "$P/project.lock" "$C2/" || fail "no second copy"
 code=0; second --json project -p "$C2" pull > "$OUT/pull-huge.json" 2> "$OUT/pull-huge.err" || code=$?
 say "pull: exit $code, $(jq -c . "$OUT/pull-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/pull-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a pull that skipped a file exited $code, not 3"
-J '.files == 17 and .moved == 16 and (.skipped | length == 1) and .skipped[0].original == "refs/huge.wav"' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+J '.files == 17 and .moved == 16 and (.skipped | length == 1) and (.skipped[0].path | test("^assets/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
 second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-huge.err" || fail "status: $(tail -3 "$OUT/status-huge.err")"
 J '.absent == 1' "$OUT/status-huge.json" || fail "status does not count the one file: $(jq -c '{absent, missing}' "$OUT/status-huge.json")"
 second --json project -p "$C2" push > "$OUT/push-partial-copy.json" 2> "$OUT/push-partial-copy.err"; code=$?
-{ [ "$code" = 3 ] && J '.moved == 0 and .skipped[0].original == "refs/huge.wav"' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
+{ [ "$code" = 3 ] && J '.moved == 0 and (.skipped[0].path | test("^assets/"))' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
 
 say "PROVEN"

@@ -1620,7 +1620,29 @@ fn boot_phase(rental: &types::Rental) -> Option<String> {
         .map(|ms| ms / 60_000)
         .filter(|minutes| *minutes > 0)
         .map(|minutes| format!(" (no progress {minutes} min)"));
-    (!words.is_empty()).then(|| words.join(": ") + &still.unwrap_or_default())
+    let pull = boot.and_then(|b| b.pull.as_ref()).and_then(pull_words);
+    (!words.is_empty()).then(|| words.join(": ") + &pull.unwrap_or_default() + &still.unwrap_or_default())
+}
+
+/// The image pull as its Hub measured it, where its provider's log lets it: the bytes of the layers
+/// in flight (not the image's), and a lower bound on what those have left of the pull alone.
+fn pull_words(pull: &types::RentalPull) -> Option<String> {
+    if !pull.observable {
+        return None;
+    }
+    let (doing, done, total, rate) = match pull.download_total_bytes > 0 {
+        true => ("", pull.download_bytes, pull.download_total_bytes, pull.download_bytes_per_second),
+        false => ("extracting ", pull.extract_bytes, pull.extract_total_bytes, pull.extract_bytes_per_second),
+    };
+    let mut text = format!(" {doing}{}/{}", crate::bytes(done as f64), crate::bytes(total as f64));
+    if let Some(rate) = rate.filter(|rate| *rate > 0.0) {
+        text += &format!(", {}/s", crate::bytes(rate));
+    }
+    if let Some(left) = pull.remaining_seconds.filter(|left| left.is_finite()) {
+        text += &format!(", at least {left:.0} s left to pull");
+    }
+    text += &format!(", {}/{} layers done", pull.layers_complete, pull.layers_observed);
+    Some(text)
 }
 
 /// The attempt a booting rental is on, and the one it replaced.

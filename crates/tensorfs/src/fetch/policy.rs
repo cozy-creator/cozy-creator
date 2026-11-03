@@ -180,6 +180,9 @@ pub struct SourcePolicy {
     /// Loopback/private addresses and plaintext http, for a deployment that DECLARED it
     /// is local (a loopback dev hub, a test origin). Never inferred here.
     pub allow_local: bool,
+    /// Plaintext http to a public address, for bytes the caller judges itself. It reaches no
+    /// address `allow_local` would not: that stays a separate statement.
+    pub plaintext: bool,
     /// Redirect hop budget. 0 refuses every redirect — a presigned GET has no business
     /// redirecting; a provider handler (tfs-052) that needs hops declares them.
     pub max_redirects: u32,
@@ -263,7 +266,7 @@ impl SourcePolicy {
     pub fn admit(&self, url: &str) -> Result<(bool, String, Option<u16>, String)> {
         let (scheme, host, port, target) = split_url(url)?;
         let https = scheme == "https";
-        if !https && !self.allow_local {
+        if !https && !self.allow_local && !self.plaintext {
             return refuse(
                 Code::SOURCE_NOT_ALLOWED,
                 format!(

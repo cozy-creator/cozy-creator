@@ -1,0 +1,2 @@
+# The release agent passes the cheapest listed 2-GPU card: -f suites=multi-gpu -f skus=<card> -f gpus=2. This is the fallback.
+rtx-pro-6000 200 2

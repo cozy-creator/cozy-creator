@@ -84,6 +84,17 @@ pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
     ExitCode::from(error.exit_code() as u8)
 }
 
+/// A failure in one line and where to read more; `--json` has the record.
+pub fn failure(ctx: &Context, message: &str, next: &[String]) {
+    if ctx.json {
+        return;
+    }
+    anstream::println!("{}", shown(message));
+    for next in next {
+        anstream::println!("  {DIM}next:{DIM:#} {}", shown(next));
+    }
+}
+
 /// What the command is doing, for a person on stderr; silent with `--json`.
 pub fn say(ctx: &Context, message: &str) {
     if !ctx.json {

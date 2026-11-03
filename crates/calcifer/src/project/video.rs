@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::{self, Asset, Call, Folder, Lock, Made, Shape, Upstream},
+    folder::{self, Asset, Call, Folder, Lock, Made, Shape, Target, Upstream},
     graph::{Edge, Graph, Node, mentions, name_key},
     host::{Accepts, Renderer},
 };
@@ -33,6 +33,10 @@ const RENDERERS: [(&str, &str); 6] = [
     // on white, so a shot renderer never paints their backgrounds into the set.
     ("clean", "birefnet/remove_background"),
 ];
+
+/// How long a beat with no `duration` lasts, and a shot with no beats and no video of its own.
+const BEAT_S: f64 = 5.0;
+const SHOT_S: f64 = 15.0;
 
 /// A new project's project.yaml: a short film that renders as it stands. Cozy never writes it again:
 /// each node's versions, and which is approved, are in project.lock.
@@ -67,41 +71,35 @@ entities:
 
 shots:
   - name: awaken
-    setup: coast.sea
-    duration_s: 6
     summary: |
-      <kyogre> bursts out of the stormy sea of <coast>.
+      <kyogre> bursts out of the stormy sea of <coast.sea>.
     soundscape: Howling wind, crashing waves, and rolling thunder.
     beats:
-      - at: 0
+      - duration: 6
         description: |
           A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
 
   - name: erupt
-    setup: coast.cliffs
-    duration_s: 6
     summary: |
-      <groudon> claws its way out of the lava cliffs of <coast> and roars.
+      <groudon> claws its way out of the lava cliffs of <coast.cliffs> and roars.
     soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
     beats:
-      - at: 0
+      - duration: 6
         description: |
           A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   - name: clash
-    setup: coast.wide
-    duration_s: 38
     summary: |
-      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts, with storm clouds and heavy rain on the left and hard sunlight on the right.
+      <kyogre> and <groudon> fight on <coast.wide> in one continuous shot with no cuts, with storm clouds and heavy rain on the left and hard sunlight on the right.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
-      - at: 0
+      - duration: 14
         description: |
           A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
-      - at: 14
+      - duration: 14
         description: |
           <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
-      - at: 28
+      - duration: 10
         description: |
           <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
 "#
@@ -168,9 +166,9 @@ struct Entity {
     description: String,
     #[serde(default)]
     setups: Vec<Setup>,
-    /// A picture attached by hand: its version until one cozy made is approved.
+    /// A picture attached by hand, as a hash prefix: its version until one cozy made is approved.
     image: Option<String>,
-    /// A character's voice, a sound file attached by hand.
+    /// A character's voice, a sound attached by hand, as a hash prefix.
     voice: Option<String>,
     render: Option<Render>,
 }
@@ -193,8 +191,8 @@ impl EntityKind {
     }
 }
 
-/// A file that is no entity, which each shot mentioning its `name` is given: one `video` (a motion
-/// guide), `audio`, or `image` (a `prop` to its renderer). Any other field is its function's
+/// A file that is no entity, by hash prefix, which each shot mentioning its `name` is given: one `video`
+/// (a motion guide), `audio`, or `image` (a `prop` to its renderer). Any other field is its function's
 /// (`use_audio`, `description`, `follow`).
 #[derive(Deserialize)]
 struct Reference {
@@ -254,18 +252,18 @@ struct WorldState {
 #[derive(Deserialize)]
 struct Shot {
     name: String,
-    /// `Environment.Setup`.
-    setup: Option<String>,
-    /// The scene, the same in every segment: opaque here but for its `<mentions>`.
+    /// The scene, the same in every segment: opaque here but for its `<mentions>`, which are all it reads.
     #[serde(default, deserialize_with = "or_default")]
     summary: String,
-    /// Its moments, on its own timeline. A cut is a new shot.
+    /// Its moments, one after the other: it is as long as they are. A cut is a new shot.
     #[serde(default, deserialize_with = "or_default")]
     beats: Vec<Beat>,
     /// Its sound bed (else the project's), and its music.
     soundscape: Option<String>,
     music: Option<String>,
-    duration_s: f64,
+    /// How long it is, in seconds: its beats', worked out on reading (`Video::read`).
+    #[serde(skip)]
+    length_s: f64,
     /// World states its frame at `at` seconds (default: its end) becomes the next revision of.
     #[serde(default)]
     writes: Vec<Write>,
@@ -279,11 +277,11 @@ struct Shot {
     upscale: Upscale,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 struct Beat {
-    /// Seconds from the shot's start.
+    /// How long it lasts, in seconds; it starts where the one before it ended.
     #[serde(default)]
-    at: f64,
+    duration: f64,
     #[serde(default, deserialize_with = "or_default")]
     description: String,
 }
@@ -300,27 +298,33 @@ impl Shot {
         std::iter::once(self.summary.clone()).chain(self.beats.iter().map(|beat| beat.description.clone())).collect()
     }
 
-    /// Its beats inside its length, as a record has them.
+    /// Its beats in order, each with where it starts: where the one before it ended.
+    fn timed(&self) -> Vec<(f64, &Beat)> {
+        let mut end = 0.0;
+        (self.beats.iter())
+            .map(|beat| {
+                let start = end;
+                end += beat.duration;
+                (start, beat)
+            })
+            .collect()
+    }
+
+    /// Its beats as a record has them: each one's start and text.
     fn beat_records(&self) -> Vec<Value> {
-        self.beats_to(self.duration_s).iter().map(|beat| json!({"at": beat.at, "description": beat.description})).collect()
+        self.timed().into_iter().map(|(at, beat)| json!({"at": at, "description": beat.description})).collect()
     }
 
-    /// Its beats before `end`, in order.
-    fn beats_to(&self, end: f64) -> Vec<Beat> {
-        let mut beats: Vec<Beat> = self.beats.iter().filter(|beat| beat.at < end).cloned().collect();
-        beats.sort_by(|a, b| a.at.total_cmp(&b.at));
-        beats
-    }
-
-    /// Its text up to `end` as one text, for a function with no adapter: the summary, then each beat's description in order.
+    /// Its text up to `end` as one text, for a function with no adapter: the summary, then the description of each beat begun by then.
     fn flat(&self, end: f64) -> String {
-        let told: Vec<String> = self.beats_to(end).iter().map(|beat| beat.description.trim().to_owned()).collect();
+        let begun = self.timed().into_iter().filter(|(at, _)| *at < end);
+        let told: Vec<String> = begun.map(|(_, beat)| beat.description.trim().to_owned()).collect();
         [self.summary.trim().to_owned(), told.join("\n")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n\n")
     }
 
     /// The state each of its writes is of, and where, inside its length.
     fn written(&self) -> impl Iterator<Item = (&str, f64)> {
-        (self.writes.iter()).map(|write| (write.state.as_str(), write.at.unwrap_or(self.duration_s).min(self.duration_s).max(0.0)))
+        (self.writes.iter()).map(|write| (write.state.as_str(), write.at.unwrap_or(self.length_s).min(self.length_s).max(0.0)))
     }
 }
 
@@ -332,7 +336,7 @@ struct Upscale {
 }
 
 /// A piece of a shot in the edit: from frame `start` (default its first) to frame `end` (exclusive;
-/// default its `duration_s`), counted at the project's `fps`.
+/// default its length), counted at the project's `fps`.
 #[derive(Deserialize)]
 struct Cut {
     shot: String,
@@ -437,10 +441,13 @@ pub fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
 
 pub struct Video {
     project: Project,
-    /// Each file project.yaml names, by the path written there, as taken in.
+    /// Each hash prefix project.yaml names, as the asset it resolves to.
     inputs: BTreeMap<String, Asset>,
-    /// The files it names that are gone: what reads one cannot render.
+    /// Those not on this computer: what reads one cannot render here until they are pulled.
     missing: BTreeSet<String>,
+    /// Those marked for a clean with none made yet, each with the hash its clean is of: what reads one
+    /// waits for it.
+    unclean: BTreeMap<String, String>,
     items: Vec<Item>,
     pub graph: Graph,
     pub warnings: Vec<String>,
@@ -613,67 +620,27 @@ impl Video {
                 .map(|kind| format!("{}: defaults.{kind} is no node kind; it is ignored", folder::PROJECT)),
         );
         let mut lock = folder.lock()?;
-        // Every file it names, linked as an asset on first use (and again when it changed), and
-        // recorded in project.lock with the path written. One not at its path whose asset is here is
-        // that asset; one gone keeps its record: what reads it cannot render until it is back.
-        let (was, mut taken) = (folder.taken(), BTreeMap::new());
-        let (mut inputs, mut missing) = (BTreeMap::new(), BTreeSet::new());
-        for file in named(&project) {
-            let (known, before) = (lock.inputs.get(file), was.get(file));
-            match folder.take_in(file, known, before)? {
-                Some((asset, now)) => {
-                    // A link is the original: it changing changes the project. A clone or copy is taken in again.
-                    let changed = known.is_some_and(|known| known.sha256 != asset.sha256);
-                    if changed && before.is_some_and(|before| before.method.linked()) {
-                        warnings.push(format!("reference changed: {file}; what reads it is out of date"));
-                    }
-                    let copied = now.as_ref().is_some_and(|now| now.method == folder::Method::Copy);
-                    if copied && before.is_none_or(|before| before.method != folder::Method::Copy) {
-                        warnings.push(format!("{file}: copied into {}/, as this computer allows it no link", folder::ASSETS));
-                    }
-                    inputs.insert(file.to_owned(), asset);
-                    taken.extend(now.or_else(|| before.cloned()).map(|now| (file.to_owned(), now)));
-                }
-                None => {
-                    let said = format!("reference missing: {file}: relink (put it back, fix its path in {}, or cozy project pull)", folder::PROJECT);
-                    warnings.push(said);
-                    missing.insert(file.to_owned());
-                    inputs.extend(known.map(|known| (file.to_owned(), known.clone())));
-                    taken.extend(before.map(|before| (file.to_owned(), before.clone())));
-                }
-            }
-        }
-        if inputs != lock.inputs {
-            folder.update_lock(|lock| lock.inputs = inputs.clone())?;
-            lock.inputs = inputs;
-        }
-        if taken != was {
-            folder.keep_taken(&taken)?;
-        }
         folder.shape_videos(&mut lock)?;
-        let inputs = lock.inputs.clone();
-        // A shot with no length: its video's when it has one attached, else one segment's, or past its last beat.
-        for shot in project.shots.iter_mut().filter(|shot| shot.duration_s <= 0.0) {
-            let attached = shot.video.as_deref().and_then(|file| inputs.get(file)).and_then(|asset| asset.video);
-            let last = shot.beats.iter().map(|beat| beat.at).fold(0.0, f64::max);
-            shot.duration_s = match attached {
-                Some(shape) => shape.frames as f64 / shape.fps,
-                None => (last + 5.0).max(15.0),
-            };
-            if attached.is_none() {
-                warnings.push(format!("{} has no duration_s: it renders {} s", shot.name, shot.duration_s));
+        let (inputs, missing, unclean) = attach(folder, &mut project, &lock, &mut warnings);
+        // A shot is as long as its beats; with none, its video's when it has one attached, else one segment's.
+        for shot in &mut project.shots {
+            shot.length_s = shot.beats.iter().map(|beat| beat.duration).sum();
+            if shot.beats.is_empty() {
+                let attached = shot.video.as_deref().and_then(|file| inputs.get(file)).and_then(|asset| asset.video);
+                shot.length_s = attached.map_or(SHOT_S, |shape| shape.frames as f64 / shape.fps);
+                if attached.is_none() {
+                    warnings.push(format!("{} has no beats: it renders {SHOT_S} s", shot.name));
+                }
             }
         }
         let input_file = |id: &str, field: &str, path: &str| input_file(&inputs, id, field, path);
-        // Its current file and its versions' files: the approved version, else the file attached by
-        // hand (there, or the node is named with the fix), or that picture's clean.
-        let versions = |id: &str, attached: &Option<String>, cleans: bool| current(&inputs, &lock, id, attached, cleans);
+        // Its current file and its versions' files: the approved version, else the asset attached by hand.
+        let versions = |id: &str, attached: &Option<String>| current(&inputs, &lock, id, attached);
         let mut nodes = vec![];
         let mut items = vec![];
         for (a, entity) in project.entities.iter().enumerate() {
             let kind = entity.kind.name();
-            let cleans = entity.kind != EntityKind::Environment;
-            let (file, made) = versions(&entity.name, &entity.image, cleans)?;
+            let (file, made) = versions(&entity.name, &entity.image)?;
             let mut reads = vec![];
             if let Some(voice) = &entity.voice {
                 reads.push(input_file(&entity.name, "voice", voice)?);
@@ -696,12 +663,12 @@ impl Video {
             items.push(Item::Entity(a));
             for (s, setup) in entity.setups.iter().enumerate() {
                 let id = format!("{}.{}", entity.name, setup.name);
-                let (file, made) = versions(&id, &setup.image, false)?;
+                let (file, made) = versions(&id, &setup.image)?;
                 nodes.push(Node {
                     id,
                     kind: "setup",
                     noun: "version",
-                    mentionable: false,
+                    mentionable: true,
                     state: false,
                     order: None,
                     texts: vec![setup.camera.clone()],
@@ -716,7 +683,7 @@ impl Video {
             }
         }
         for (r, reference) in project.references.iter().enumerate() {
-            let (file, made) = versions(&reference.name, &Some(reference.file().1.to_owned()), false)?;
+            let (file, made) = versions(&reference.name, &Some(reference.file().1.to_owned()))?;
             nodes.push(Node {
                 id: reference.name.clone(),
                 kind: "reference",
@@ -739,16 +706,16 @@ impl Video {
                 let id = format!("{}.{}", entity.name, setup.name);
                 let shot = project.shots.iter().find(|shot| name_key(&shot.name) == name_key(&frame.shot));
                 let Some(shot) = shot else { continue };
-                if !(0.0..shot.duration_s).contains(&frame.at) {
+                if !(0.0..shot.length_s).contains(&frame.at) {
                     warnings.push(format!(
                         "{id}'s frame is at {} s, outside {}'s 0–{} s: the nearest frame stands in",
-                        frame.at, shot.name, shot.duration_s
+                        frame.at, shot.name, shot.length_s
                     ));
                 }
             }
         }
         for (w, state) in project.world_states.iter().enumerate() {
-            let (file, made) = versions(&state.name, &state.image, false)?;
+            let (file, made) = versions(&state.name, &state.image)?;
             nodes.push(Node {
                 id: state.name.clone(),
                 kind: "world_state",
@@ -768,20 +735,22 @@ impl Video {
         }
         for (k, shot) in project.shots.iter().enumerate() {
             let texts = shot.texts();
-            let (mut needs, mut implied) = (vec![], vec![]);
-            needs.extend(shot.setup.clone());
+            let mut implied = vec![];
             // An environment named with no setup of it is shot from its first setup.
-            let framed = shot.setup.as_deref().and_then(|s| s.rsplit_once('.')).map(|(env, _)| name_key(env));
+            let framed: BTreeSet<String> = (texts.iter().flat_map(|text| mentions(text)))
+                .filter_map(|mention| setup_named(&project.entities, mention))
+                .map(|(env, _)| name_key(&env.name))
+                .collect();
             for mention in texts.iter().flat_map(|text| mentions(text)) {
                 let env = (project.entities.iter())
                     .find(|e| e.kind == EntityKind::Environment && name_key(&e.name) == name_key(mention));
-                if let Some(env) = env.filter(|env| framed.as_deref() != Some(&name_key(&env.name)))
+                if let Some(env) = env.filter(|env| !framed.contains(&name_key(&env.name)))
                     && let Some(first) = env.setups.first()
                 {
                     implied.push(format!("{}.{}", env.name, first.name));
                 }
             }
-            let (file, made) = versions(&shot.name, &shot.video, false)?;
+            let (file, made) = versions(&shot.name, &shot.video)?;
             nodes.push(Node {
                 id: shot.name.clone(),
                 kind: "shot",
@@ -790,7 +759,7 @@ impl Video {
                 state: false,
                 order: Some(k),
                 texts,
-                needs,
+                needs: vec![],
                 implied,
                 writes: shot.writes.iter().map(|write| write.state.clone()).collect(),
                 inputs: shot_inputs(&input_file, shot)?,
@@ -799,7 +768,7 @@ impl Video {
             });
             items.push(Item::Shot(k));
             let id = format!("{}.upscale", shot.name);
-            let (file, made) = versions(&id, &shot.upscale.video, false)?;
+            let (file, made) = versions(&id, &shot.upscale.video)?;
             nodes.push(Node {
                 id,
                 kind: "upscale",
@@ -836,11 +805,11 @@ impl Video {
                 warnings.push(format!("{} has no summary and no beats: its renderer is given no text", shot.name));
             }
             for write in &shot.writes {
-                let at = write.at.unwrap_or(shot.duration_s);
-                if !(at > 0.0 && at <= shot.duration_s) {
+                let at = write.at.unwrap_or(shot.length_s);
+                if !(at > 0.0 && at <= shot.length_s) {
                     warnings.push(format!(
                         "{} writes {} at {at} s, outside its 0–{} s: the nearest frame stands in",
-                        shot.name, write.state, shot.duration_s
+                        shot.name, write.state, shot.length_s
                     ));
                 }
             }
@@ -857,6 +826,9 @@ impl Video {
                 field == "image"
             });
         }
+        for shot in &mut project.shots {
+            spoken(shot, &project.entities);
+        }
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref(), project.fps)?;
         // An `edit:` entry that cuts nothing is left out: every other piece still makes the edit.
         if let Some(edit) = &mut project.edit {
@@ -866,7 +838,7 @@ impl Video {
                 let why = match shot {
                     None => Some("which is no shot".to_owned()),
                     Some(shot) => {
-                        let (start, end) = (cut.start.unwrap_or(0), cut.end.unwrap_or((shot.duration_s * canvas.fps).round() as u64));
+                        let (start, end) = (cut.start.unwrap_or(0), cut.end.unwrap_or((shot.length_s * canvas.fps).round() as u64));
                         (start >= end).then(|| format!("from frame {start} to {end}: nothing"))
                     }
                 };
@@ -884,7 +856,7 @@ impl Video {
                 made.or_else(attached)?.video
             })
             .collect();
-        Ok(Self { project, inputs, missing, items, graph, warnings, canvas, shapes })
+        Ok(Self { project, inputs, missing, unclean, items, graph, warnings, canvas, shapes })
     }
 
     /// Node `i`'s render block (`resolve`).
@@ -954,54 +926,80 @@ impl Video {
         self.shapes[shot].is_none_or(|shape| shape.width.min(shape.height) < short)
     }
 
-    /// Whether node `i`'s pictures are cleaned before use: a character's or a prop's.
+    /// Whether the pictures cozy makes of node `i` are cleaned before use: a character's or a prop's.
     pub fn cleans(&self, i: usize) -> bool {
         matches!(self.graph.nodes[i].kind, "character" | "prop")
     }
 
-    /// Node `i`'s current picture and its digest when it still needs its clean: a character's or
-    /// prop's attached by hand, with no clean in project.lock yet (every version cozy makes of one
-    /// is its clean).
-    pub fn unclean(&self, lock: &Lock, i: usize) -> Option<(String, String)> {
-        let node = &self.graph.nodes[i];
-        let file = node.file.as_ref().filter(|_| self.cleans(i))?;
-        lock.made(&node.id, &file.0).is_none().then(|| file.clone())
+    /// The files not on this computer that node `i` reads, its own or through what it reads.
+    pub fn missing(&self, i: usize) -> Vec<&str> {
+        self.reads(i).into_iter().filter(|file| self.missing.contains(*file)).collect()
     }
 
-    /// The files gone that node `i` reads, its own or through what it reads: it cannot render until
-    /// they are linked again.
-    pub fn missing(&self, i: usize) -> Vec<&str> {
-        let mut gone: BTreeSet<&str> = self.own_missing(i).into_iter().collect();
+    /// The hashes of the marked pictures with no clean yet that node `i` reads, its own or through what it reads.
+    pub fn unclean(&self, i: usize) -> Vec<&str> {
+        self.reads(i).into_iter().filter_map(|file| self.unclean.get(file)).map(String::as_str).collect()
+    }
+
+    /// Whether a picture node `i` itself names waits for its clean.
+    pub fn own_unclean(&self, i: usize) -> bool {
+        self.own_files(i).iter().any(|file| self.unclean.contains_key(*file))
+    }
+
+    /// The marked pictures with no clean yet that what `lock`'s walk owes reads, by hash, each with the
+    /// machines that asks for it: the first machine to render one of its readers cleans it.
+    pub fn to_clean(&self, lock: &Lock) -> BTreeMap<String, Target> {
+        let takes = lock.walk.takes.iter().filter_map(|take| Some((self.graph.find(&take.node)?, &take.target)));
+        let all = (0..self.graph.nodes.len())
+            .filter(|&i| self.wanted(i))
+            .flat_map(|i| lock.walk.all.as_ref().map(|target| (i, target)));
+        let mut found = BTreeMap::new();
+        for (i, target) in takes.chain(all) {
+            for sha256 in self.unclean(i) {
+                found.entry(sha256.to_owned()).or_insert_with(|| target.clone());
+            }
+        }
+        found
+    }
+
+    /// The files node `i` reads, as project.yaml writes them: its own, and those of what it reads.
+    fn reads(&self, i: usize) -> BTreeSet<&str> {
+        let mut files: BTreeSet<&str> = self.own_files(i).into_iter().collect();
         let mut seen = vec![false; self.graph.nodes.len()];
         let mut next: Vec<usize> = self.graph.upstream[i].iter().map(|edge| edge.node).collect();
         while let Some(j) = next.pop() {
             if !std::mem::replace(&mut seen[j], true) {
-                gone.extend(self.own_missing(j));
+                files.extend(self.own_files(j));
                 next.extend(self.graph.upstream[j].iter().map(|edge| edge.node));
             }
         }
-        gone.into_iter().collect()
+        files
     }
 
-    /// The files project.yaml names for node `i` itself that are gone.
-    fn own_missing(&self, i: usize) -> Vec<&str> {
+    /// The files project.yaml names for node `i` itself. The one attached counts until a version cozy
+    /// made is approved, which it then reads instead.
+    fn own_files(&self, i: usize) -> Vec<&str> {
+        let node = &self.graph.nodes[i];
+        let approved = node.file.as_ref().is_some_and(|(path, _)| node.versions.contains(path));
         let mut files: Vec<&str> = vec![];
-        match self.items[i] {
+        let attached = match self.items[i] {
             Item::Entity(a) => {
-                let entity = &self.project.entities[a];
-                files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
+                files.extend(self.project.entities[a].voice.as_deref());
+                self.project.entities[a].image.as_deref()
             }
-            Item::Reference(r) => files.push(self.project.references[r].file().1),
-            Item::Setup(a, s) => files.extend(self.project.entities[a].setups[s].image.as_deref()),
-            Item::State(w) => files.extend(self.project.world_states[w].image.as_deref()),
+            Item::Reference(r) => Some(self.project.references[r].file().1),
+            Item::Setup(a, s) => self.project.entities[a].setups[s].image.as_deref(),
+            Item::State(w) => self.project.world_states[w].image.as_deref(),
             Item::Shot(k) => {
                 let shot = &self.project.shots[k];
-                files.extend([&shot.video, &shot.first_frame, &shot.last_frame].into_iter().filter_map(Option::as_deref));
+                files.extend([&shot.first_frame, &shot.last_frame].into_iter().filter_map(Option::as_deref));
                 files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
+                shot.video.as_deref()
             }
-            Item::Upscale(k) => files.extend(self.project.shots[k].upscale.video.as_deref()),
-        }
-        files.into_iter().filter(|file| self.missing.contains(*file)).collect()
+            Item::Upscale(k) => self.project.shots[k].upscale.video.as_deref(),
+        };
+        files.extend(attached.filter(|_| !approved));
+        files
     }
 
     /// The request that makes a version of node `i`, from what it reads now, as its function
@@ -1130,7 +1128,7 @@ impl Video {
                 // upscaler gets the details of the original): its description, the descriptions of
                 // what it reads, and the style.
                 let shot = &self.project.shots[k];
-                let mut text = shot.flat(shot.duration_s);
+                let mut text = shot.flat(shot.length_s);
                 let mut read_by = vec![];
                 let read = self.graph.find(&shot.name).map(|s| &self.graph.upstream[s]).into_iter().flatten();
                 for edge in read {
@@ -1176,7 +1174,7 @@ impl Video {
         }
         let adapter = renderer.adapter(kind, version);
         if adapter.is_none() && call.as_ref().is_none_or(|call| call.index == 0) {
-            let times = if matches!(self.items[i], Item::Shot(k) if self.project.shots[k].beats.iter().any(|beat| beat.at > 0.0)) { ", and its beat times are not honoured" } else { "" };
+            let times = if matches!(self.items[i], Item::Shot(k) if self.project.shots[k].beats.len() > 1) { ", and its beat times are not honoured" } else { "" };
             warnings.push(format!("{} has no project adapter for `{kind}`: it gets one flat prompt{times}", self.render(i).target()));
         }
         let warnings = if adapter.is_some() { vec![] } else { warnings };
@@ -1193,7 +1191,7 @@ impl Video {
         let texts = shot.texts();
         let read: Vec<&str> = texts.iter().flat_map(|text| mentions(text)).collect();
         let mut splits: Vec<(&str, f64)> = (shot.written())
-            .filter(|&(state, at)| at > 0.0 && at < shot.duration_s && read.iter().any(|m| name_key(m) == name_key(state)))
+            .filter(|&(state, at)| at > 0.0 && at < shot.length_s && read.iter().any(|m| name_key(m) == name_key(state)))
             .collect();
         splits.sort_by(|a, b| a.1.total_cmp(&b.1));
         let (mut ends, mut from) = (vec![], 0.0);
@@ -1214,13 +1212,13 @@ impl Video {
                 }
             }
         }
-        ends.push(shot.duration_s);
+        ends.push(shot.length_s);
         ends
     }
 
     /// Shot `k`'s call `call`, on the shot's one timeline, both ways:
     /// - as the project says it, for its function's adapter: its summary and beats, its style, sound and music, each
-    ///   reference it reads by name, kind, description and digest, its plate, its first frame (first call), its last
+    ///   reference this call's text names (its summary, and the beats it overlaps) by name, kind, description and digest, its plate, its first frame (first call), its last
     ///   frame (last call) and the call before it. A world state's picture is the version current at the call's start:
     ///   the shot's own frame once it wrote it, `own`.
     /// - as one flat request for a function with no adapter: the summary and each beat's description as `prompt`, with
@@ -1260,6 +1258,13 @@ impl Video {
             let input = self.inputs.get(path).ok_or_else(|| invalid("file_missing", format!("{}: {path} is not there", shot.name)))?;
             Ok((folder.path(&input.path), input.sha256.clone()))
         };
+        let named = |texts: &mut dyn Iterator<Item = &String>| -> BTreeSet<String> {
+            texts.flat_map(|text| mentions(text)).map(name_key).collect()
+        };
+        let timed = shot.timed();
+        let told_ever = named(&mut std::iter::once(&shot.summary).chain(timed.iter().map(|(_, beat)| &beat.description)));
+        let here = timed.iter().filter(|(at, beat)| *at < end && at + beat.duration > start).map(|(_, beat)| &beat.description);
+        let told_here = named(&mut std::iter::once(&shot.summary).chain(here));
         // Each reference as the project knows it.
         let mut references: Vec<Value> = vec![];
         for read in reads {
@@ -1274,9 +1279,12 @@ impl Video {
                     }
                     references.push(entry);
                 }
-                (Item::Setup(a, _), _) => {
+                (Item::Setup(a, s), _) => {
                     let env = &self.project.entities[a];
-                    references.push(json!({"name": env.name, "kind": "environment", "description": env.description, "image": picture(files)}));
+                    // Under the name the text calls it: `<coast.wide>`'s (`spoken`), else `<coast>`'s.
+                    let own = setup_name(env, &env.setups[s]);
+                    let name = if told_ever.contains(&name_key(&own)) { own } else { env.name.clone() };
+                    references.push(json!({"name": name, "kind": "environment", "description": env.description, "image": picture(files)}));
                 }
                 (Item::State(_), _) | (Item::Shot(_), Some(_)) => {
                     let name = read.edge.state.clone().unwrap_or_else(|| self.graph.nodes[read.edge.node].id.clone());
@@ -1303,12 +1311,13 @@ impl Video {
             entry["fields"] = Value::Object(fields);
             references.push(entry);
         }
+        references.retain(|entry| told_here.contains(&name_key(entry["name"].as_str().unwrap_or_default())));
         let sound = shot.soundscape.as_deref().unwrap_or(&self.project.soundscape).trim();
         let music = shot.music.as_deref().unwrap_or_default().trim();
         let style = self.project.style.trim();
         let mut node = json!({"version": self.version(), "name": shot.name, "function": renderer.function, "summary": shot.summary,
             "beats": shot.beat_records(), "soundscape": sound, "music": music, "style": style, "aspect_ratio": self.canvas.aspect,
-            "duration_s": shot.duration_s, "start_s": start, "end_s": end, "references": references});
+            "duration_s": shot.length_s, "start_s": start, "end_s": end, "references": references});
         if let Some(plate) = &shot.plate {
             let mut plate = plate.clone();
             if let Some(path) = plate.get("video").and_then(Value::as_str) {
@@ -1403,7 +1412,7 @@ impl Video {
     }
 
     /// The pieces of the edit (`preview`: of its native cut): each cut's shot file and frames, by
-    /// default the shot's `duration_s` (a renderer may run past it). The edit takes each shot's
+    /// default the shot's length (a renderer may run past it). The edit takes each shot's
     /// upscale where it has one to make (`wanted`), else the shot; the preview takes the shot. And
     /// the nodes it would cut that have no file yet, skipped.
     pub fn cuts(&self, folder: &Folder, preview: bool) -> Result<(Vec<Piece>, Vec<String>), Error> {
@@ -1423,7 +1432,7 @@ impl Video {
                 false => self.graph.find(&shot.name).expect("a shot is a node"),
             };
             let node = &self.graph.nodes[i];
-            let (start, end) = (start.unwrap_or(0), end.unwrap_or((shot.duration_s * self.canvas.fps).round() as u64));
+            let (start, end) = (start.unwrap_or(0), end.unwrap_or((shot.length_s * self.canvas.fps).round() as u64));
             match &node.file {
                 Some((file, digest)) => {
                     let (node, path, asset, shape) = (node.id.clone(), folder.path(file), file.clone(), self.shapes[i]);
@@ -1826,8 +1835,7 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
     }
 }
 
-/// A file a node reads that is no node's, as its key (`<node>.<field>`) and sha256 (`inputs`: the
-/// files project.yaml names, as taken in; one gone and never taken in reads as none).
+/// A file a node reads that is no node's, as its key (`<node>.<field>`) and sha256.
 fn input_file(inputs: &BTreeMap<String, Asset>, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
     let sha256 = inputs.get(path).map(|input| input.sha256.clone()).unwrap_or_default();
     Ok((format!("{id}.{field}"), sha256))
@@ -1850,47 +1858,143 @@ fn shot_inputs(input_file: &impl Fn(&str, &str, &str) -> Result<(String, String)
 /// A node's current file (path and digest) and its versions' files.
 type Versions = (Option<(String, String)>, Vec<String>);
 
+/// The setup `mention` names, `<environment.setup>`, with its environment.
+fn setup_named<'a>(entities: &'a [Entity], mention: &str) -> Option<(&'a Entity, &'a Setup)> {
+    let key = name_key(mention);
+    (entities.iter().filter(|entity| entity.kind == EntityKind::Environment))
+        .flat_map(|env| env.setups.iter().map(move |setup| (env, setup)))
+        .find(|(env, setup)| name_key(&format!("{}.{}", env.name, setup.name)) == key)
+}
+
+/// The name a renderer reads a setup a shot's text names by: words, with no `.`.
+fn setup_name(env: &Entity, setup: &Setup) -> String {
+    format!("{} {}", env.name, setup.name)
+}
+
+/// `shot`'s text as its renderer reads it: `<coast.wide>` as `<coast wide>`, and `<coast>`, when the shot names a setup of
+/// it, as the first of those.
+fn spoken(shot: &mut Shot, entities: &[Entity]) {
+    let texts = shot.texts();
+    let said: Vec<&str> = texts.iter().flat_map(|text| mentions(text)).collect();
+    let (mut renamed, mut first) = (vec![], BTreeMap::new());
+    for mention in &said {
+        if let Some((env, setup)) = setup_named(entities, mention) {
+            let name = setup_name(env, setup);
+            first.entry(name_key(&env.name)).or_insert_with(|| name.clone());
+            renamed.push((*mention, name));
+        }
+    }
+    renamed.extend(said.iter().filter_map(|mention| Some((*mention, first.get(&name_key(mention))?.clone()))));
+    let say = |text: &mut String| {
+        for (from, to) in &renamed {
+            *text = text.replace(&format!("<{from}>"), &format!("<{to}>"));
+        }
+    };
+    say(&mut shot.summary);
+    shot.beats.iter_mut().for_each(|beat| say(&mut beat.description));
+}
+
 /// A node's current file and its versions' files (`Node::file`, `Node::versions`): the version
-/// project.lock approves; else the file attached in project.yaml (its asset; none when it is gone and
-/// was never taken in), or that picture's clean when the node `cleans`.
-fn current(
-    inputs: &BTreeMap<String, Asset>,
-    lock: &Lock,
-    id: &str,
-    attached: &Option<String>,
-    cleans: bool,
-) -> Result<Versions, Error> {
+/// project.lock approves; else the asset attached in project.yaml.
+fn current(inputs: &BTreeMap<String, Asset>, lock: &Lock, id: &str, attached: &Option<String>) -> Result<Versions, Error> {
     let node = lock.node(id);
     let versions: Vec<String> =
         (node.into_iter().flat_map(|node| &node.versions)).filter_map(|made| Some(made.primary()?.path.clone())).collect();
     let approved = node.and_then(|node| node.approved.as_ref()).and_then(|path| lock.made(id, path)?.primary());
-    if let Some(approved) = approved {
-        return Ok((Some((approved.path.clone(), approved.sha256.clone())), versions));
-    }
-    let Some(file) = attached else { return Ok((None, versions)) };
-    let Some(asset) = inputs.get(file) else { return Ok((None, versions)) };
-    let clean = (node.into_iter().flat_map(|node| &node.versions))
-        .find(|made| cleans && made.clean_of.as_deref() == Some(asset.sha256.as_str()));
-    let clean = clean.and_then(Made::primary).unwrap_or(asset);
-    Ok((Some((clean.path.clone(), clean.sha256.clone())), versions))
+    let file = approved.or_else(|| inputs.get(attached.as_ref()?));
+    Ok((file.map(|file| (file.path.clone(), file.sha256.clone())), versions))
 }
 
-/// Every file project.yaml names: attached pictures and videos, voices, references, plates and
-/// frames.
-fn named(project: &Project) -> Vec<&str> {
-    let mut files: Vec<&str> = vec![];
-    for entity in &project.entities {
-        files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
-        files.extend(entity.setups.iter().filter_map(|setup| setup.image.as_deref()));
+/// Each file field of `project` read as the asset its value names, the fields whose value names none
+/// emptied and said: a path or URL, with the command that imports it (`--character` or `--prop` for that
+/// entity's picture), a hash of no asset, or one that fits several. So what reads it renders without it.
+/// Answers each value's asset, what is not on this computer, and what waits for its clean.
+fn attach(folder: &Folder, project: &mut Project, lock: &Lock, said: &mut Vec<String>) -> (BTreeMap<String, Asset>, BTreeSet<String>, BTreeMap<String, String>) {
+    let (mut inputs, mut missing, mut unclean) = (BTreeMap::new(), BTreeSet::new(), BTreeMap::new());
+    let mut read = |node: &str, field: &str, flag: &str, value: &mut Option<String>| {
+        let Some(written) = value.clone() else { return };
+        let matching = lock.matching(&written.to_ascii_lowercase());
+        let found = match matching.as_slice() {
+            _ if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) => Err(format!(
+                "{node}'s {field} is not a hash: {written} is not read: `cozy project import {}{flag}` prints what to write",
+                quoted(&written)
+            )),
+            [asset] => Ok(*asset),
+            [] => Err(format!("{node}'s {field}: no asset's hash starts with {written}: `cozy project import <file>{flag}` prints what to write")),
+            several => Err(format!("{node}'s {field}: {written} fits {} assets: write more of its hash", several.len())),
+        };
+        let asset = match found {
+            Ok(asset) => asset,
+            Err(why) => {
+                said.push(format!("{why}. {node} renders without it"));
+                *value = None;
+                return;
+            }
+        };
+        let import = lock.imports.get(&asset.sha256).filter(|import| import.mark);
+        let reads = import.and_then(|import| import.clean.as_ref()).unwrap_or(asset);
+        if !folder.path(&reads.path).is_file() {
+            said.push(format!("{node}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&reads.sha256)));
+            missing.insert(written.clone());
+        } else if import.is_some_and(|import| import.clean.is_none()) {
+            unclean.insert(written.clone(), asset.sha256.clone());
+        }
+        inputs.insert(written, reads.clone());
+    };
+    for entity in &mut project.entities {
+        let flag = match entity.kind {
+            EntityKind::Character => " --character",
+            EntityKind::Prop => " --prop",
+            EntityKind::Environment => "",
+        };
+        read(&entity.name, "image", flag, &mut entity.image);
+        read(&entity.name, "voice", "", &mut entity.voice);
+        for setup in &mut entity.setups {
+            read(&format!("{}.{}", entity.name, setup.name), "image", "", &mut setup.image);
+        }
     }
-    files.extend(project.references.iter().map(|reference| reference.file().1));
-    files.extend(project.world_states.iter().filter_map(|state| state.image.as_deref()));
-    for shot in &project.shots {
-        let own = [&shot.video, &shot.upscale.video, &shot.first_frame, &shot.last_frame];
-        files.extend(own.into_iter().filter_map(Option::as_deref));
-        files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
+    project.references.retain_mut(|reference| {
+        let name = reference.name.clone();
+        read(&name, "video", "", &mut reference.video);
+        read(&name, "audio", "", &mut reference.audio);
+        read(&name, "image", "", &mut reference.image);
+        !reference.files().is_empty()
+    });
+    for state in &mut project.world_states {
+        read(&state.name, "image", "", &mut state.image);
     }
-    files
+    for shot in &mut project.shots {
+        let name = shot.name.clone();
+        read(&name, "video", "", &mut shot.video);
+        read(&format!("{name}.upscale"), "video", "", &mut shot.upscale.video);
+        read(&name, "first_frame", "", &mut shot.first_frame);
+        read(&name, "last_frame", "", &mut shot.last_frame);
+        if let Some(plate) = &mut shot.plate {
+            let mut video = plate.get("video").and_then(Value::as_str).map(str::to_owned);
+            let named = video.is_some();
+            read(&name, "plate", "", &mut video);
+            if named && video.is_none() {
+                shot.plate = None;
+            }
+        }
+    }
+    (inputs, missing, unclean)
+}
+
+/// `text` as one word on a command line.
+fn quoted(text: &str) -> String {
+    match text.bytes().any(|byte| byte.is_ascii_whitespace() || b"'\"$&;|<>()*?#`".contains(&byte)) {
+        true => format!("'{}'", text.replace('\'', r"'\''")),
+        false => text.to_owned(),
+    }
+}
+
+/// `value` as a file field writes it: quoted when YAML would read it as a number.
+pub fn yaml_scalar(value: &str) -> String {
+    match value.parse::<f64>() {
+        Ok(_) => format!("\"{value}\""),
+        Err(_) => value.to_owned(),
+    }
 }
 
 /// What a person wrote, as the reader takes it: an empty `key:` is no key, a bare number is text where
@@ -1900,9 +2004,10 @@ fn spell(value: &mut Value, said: &mut Vec<String>) {
     let Value::Object(top) = value else { return };
     tidy(top);
     canvas_spelled(top, said);
-    for (list, name) in [("references", "name"), ("edit", "shot")] {
-        items(top, list, name, said);
+    for reference in items(top, "references", "name", said) {
+        as_text(reference, &["video", "audio", "image"]);
     }
+    items(top, "edit", "shot", said);
     for entity in items(top, "entities", "name", said) {
         let setups = entity.contains_key("setups");
         let written = entity.get("kind").and_then(Value::as_str).map(|kind| kind.trim().to_ascii_lowercase());
@@ -1916,19 +2021,32 @@ fn spell(value: &mut Value, said: &mut Vec<String>) {
             }
         };
         entity.insert("kind".into(), Value::String(kind));
-        items(entity, "setups", "name", said);
+        as_text(entity, &["image", "voice"]);
+        for setup in items(entity, "setups", "name", said) {
+            as_text(setup, &["image"]);
+        }
     }
-    items(top, "world_states", "name", said);
+    for state in items(top, "world_states", "name", said) {
+        as_text(state, &["image"]);
+    }
     for shot in items(top, "shots", "name", said) {
-        as_number(shot, "duration_s");
+        as_text(shot, &["video", "first_frame", "last_frame"]);
+        for nested in ["plate", "upscale"] {
+            if let Some(Value::Object(nested)) = shot.get_mut(nested) {
+                as_text(nested, &["video"]);
+            }
+        }
         items(shot, "writes", "state", said);
-        for beat in items(shot, "beats", "at", said) {
-            as_number(beat, "at");
+        for beat in items(shot, "beats", "", said) {
+            as_number(beat, "duration");
+            if !beat.get("duration").is_some_and(Value::is_number) {
+                beat.remove("duration");
+            }
         }
     }
 }
 
-/// The objects in `map`'s list `key`, each tidied and `name` read as text; an item with no `name` is said and left out.
+/// The objects in `map`'s list `key`, each tidied and `name` (if any) read as text; an item with no `name` is said and left out.
 fn items<'a>(map: &'a mut Map<String, Value>, key: &str, name: &str, said: &mut Vec<String>) -> Vec<&'a mut Map<String, Value>> {
     if map.get(key).is_some_and(|value| !value.is_array()) {
         said.push(format!("{}: {key} is not a list: it is ignored", folder::PROJECT));
@@ -1941,14 +2059,15 @@ fn items<'a>(map: &'a mut Map<String, Value>, key: &str, name: &str, said: &mut 
     list.retain_mut(|item| {
         at += 1;
         let Value::Object(item) = item else {
-            said.push(format!("{}: {key}[{}] is ignored: it names no {name}", folder::PROJECT, at - 1));
+            let why = if name.is_empty() { "it is no mapping".to_owned() } else { format!("it names no {name}") };
+            said.push(format!("{}: {key}[{}] is ignored: {why}", folder::PROJECT, at - 1));
             return false;
         };
         tidy(item);
-        if let Some(text) = item.get(name).filter(|value| name != "at" && (value.is_number() || value.is_boolean())).map(Value::to_string) {
+        if let Some(text) = item.get(name).filter(|value| value.is_number() || value.is_boolean()).map(Value::to_string) {
             item.insert(name.into(), Value::String(text));
         }
-        let named = item.contains_key(name);
+        let named = name.is_empty() || item.contains_key(name);
         if !named {
             said.push(format!("{}: {key}[{}] is ignored: it names no {name}", folder::PROJECT, at - 1));
         }
@@ -1960,6 +2079,15 @@ fn items<'a>(map: &'a mut Map<String, Value>, key: &str, name: &str, said: &mut 
 /// `map` with no empty keys: `key:` alone is as if it were not written.
 fn tidy(map: &mut Map<String, Value>) {
     map.retain(|_, value| !value.is_null());
+}
+
+/// `map`'s `keys` as text when written as numbers: a hash of digits alone reads as one.
+fn as_text(map: &mut Map<String, Value>, keys: &[&str]) {
+    for key in keys {
+        if let Some(value) = map.get_mut(*key).filter(|value| value.is_number()) {
+            *value = Value::String(value.to_string());
+        }
+    }
 }
 
 /// `map`'s `key` as a number when it was written as text (`"6"`, `6s`); left out when it is neither.
@@ -2056,20 +2184,11 @@ fn settle(project: &mut Project, said: &mut Vec<String>) {
         }
     }
     let states: Vec<String> = project.world_states.iter().map(|state| name_key(&state.name)).collect();
-    let setups: Vec<(String, String, String)> = (project.entities.iter())
-        .flat_map(|entity| entity.setups.iter().map(|setup| (entity.name.clone(), setup.name.clone(), format!("{}.{}", entity.name, setup.name))))
-        .collect();
     for shot in &mut project.shots {
-        if let Some(written) = shot.setup.take() {
-            let key = name_key(&written);
-            // `coast.sea`; `coast`, its first setup, as a mention of it reads; `sea`, when one environment has it.
-            let exact = setups.iter().find(|(.., id)| name_key(id) == key);
-            let of_place = setups.iter().find(|(place, ..)| name_key(place) == key);
-            let mut named = setups.iter().filter(|(_, setup, _)| name_key(setup) == key);
-            let bare = named.next().filter(|_| named.next().is_none());
-            match exact.or(of_place).or(bare) {
-                Some((.., id)) => shot.setup = Some(id.clone()),
-                None => said.push(format!("{}'s setup {written} is no setup (write Environment.Setup): it renders without one", shot.name)),
+        for (n, beat) in shot.beats.iter_mut().enumerate() {
+            if beat.duration <= 0.0 {
+                said.push(format!("{}'s beat {} has no duration: it lasts {BEAT_S} s", shot.name, n + 1));
+                beat.duration = BEAT_S;
             }
         }
         let mut written = BTreeSet::new();

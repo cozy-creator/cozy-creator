@@ -30,8 +30,7 @@ say "fault run $F: $st ($code): $(jq -r '.reason.message // empty' "$OUT/fault.j
 jq -r '.reason.detail // empty' "$OUT/fault.json" > "$OUT/fault-detail.txt"
 grep -q "$MARK" "$OUT/fault-detail.txt" || fail "the failure's detail lacks the executor's stderr ($MARK): $(head -c 400 "$OUT/fault-detail.txt")"
 grep -qiE 'device-side assert|index out of bounds' "$OUT/fault-detail.txt" || fail "the detail lacks the CUDA assert: $(tail -c 400 "$OUT/fault-detail.txt")"
-grep -q 'last 50 lines of its stderr' "$OUT/fault-detail.txt" || fail "the detail is not the fault section: $(head -c 300 "$OUT/fault-detail.txt")"
-grep -qiE 'signal|xid' "$OUT/fault-detail.txt" || fail "the detail does not name how the process died: $(head -c 300 "$OUT/fault-detail.txt")"
+jq -r '.reason.message // empty' "$OUT/fault.json" | grep -qiE 'signal|xid' || fail "the reason does not name how the process died"
 fpid=$(grep -oE "$MARK: pid [0-9]+" "$OUT/fault-detail.txt" | head -1 | awk '{print $3}')
 cozy machine logs "$NAME" tensord -n 5000 > "$OUT/tensord.log" 2>&1
 grep -q "$MARK" "$OUT/tensord.log" || fail "the machine log does not carry the executor's stderr ($MARK)"

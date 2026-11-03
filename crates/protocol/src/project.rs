@@ -99,14 +99,54 @@ pub struct Orphan {
 }
 
 /// A file the project uses: its path in the project (`assets/<sha256>.<ext>`, `GET
-/// /v1/projects/{id}/assets/{sha256}.{ext}`), its sha256, and for a file project.yaml names, the path
-/// written there (its asset is a link to it).
+/// /v1/projects/{id}/assets/{sha256}.{ext}`) and its sha256.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Asset {
     pub path: String,
     pub sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original: Option<String>,
+}
+
+/// `POST /v1/projects/{id}/imports`: the file at `source` (an absolute path, or an `http(s)` URL) kept as
+/// an asset. With `clean` (`--character`, `--prop`) it needs its background removed; that function is
+/// read from `hub`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Import {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clean: bool,
+    pub hub: String,
+}
+
+/// What an import kept: its asset, the hash prefix and line to paste into project.yaml, and its clean.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Imported {
+    pub path: String,
+    pub sha256: String,
+    pub prefix: String,
+    /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is.
+    pub line: String,
+    pub clean: Clean,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// An imported picture's background: not to be removed; removed; being removed by run `run` (which
+/// `GET /v1/runs/{id}/events` follows; `cleaned` on the project's events says it landed); or to be removed
+/// by the first machine that renders something that reads it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Clean {
+    Untouched,
+    Removed,
+    Removing { run: String },
+    Later,
+}
+
+/// A version's number and the hash prefix project.yaml can name its primary asset by.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VersionPrefix {
+    pub number: u32,
+    pub prefix: String,
 }
 
 /// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`; its timeline beside it,
@@ -137,6 +177,9 @@ pub struct Node {
     pub noun: String,
     /// How many it has.
     pub versions: u32,
+    /// Each one's hash prefix, to name it in project.yaml.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefixes: Vec<VersionPrefix>,
     /// The approved one's number (1 first, never reused); None when it reads a file attached by
     /// hand, or has none yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,13 +303,10 @@ pub struct Transferred {
     pub commit: Option<String>,
 }
 
-/// A file a push or pull left out: its path in the project, the path project.yaml writes for it if it
-/// names it, and why.
+/// A file a push or pull left out: its path in the project, and why.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Skipped {
     pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original: Option<String>,
     pub why: String,
 }
 
@@ -294,6 +334,11 @@ pub enum Event {
     Warning {
         message: String,
     },
+    /// Something asked could not be made, said as it happens; the walk goes on with what does not
+    /// read it.
+    Failed {
+        error: Error,
+    },
     /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
     Moved {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,6 +352,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,
     },
+    /// The run cleaning imported picture `sha256` ended: its clean is what the hash resolves to now, or
+    /// `error` says why not, and the next render that reads it tries again.
+    Cleaned {
+        sha256: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// A cut (`edit.mp4`, `preview.mp4`, and its `.otio`) was made again here, in `took_s`: `frames`
     /// long at `fps`, the takes in `retimed` retimed to it.
     Cut {
@@ -318,7 +370,7 @@ pub enum Event {
         took_s: f64,
     },
     /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
-    /// that failed.
+    /// that failed (`Failed` said it already, unless the walk itself stopped).
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,

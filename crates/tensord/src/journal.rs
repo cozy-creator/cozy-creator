@@ -1134,20 +1134,32 @@ impl Journal {
         })
     }
 
-    /// A restarted machine holds no preparation: a preparing run it kept the spec of prepares
-    /// again (`interrupted`); any other ends FAILED (nothing of it was started).
+    /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares
+    /// again (`interrupted`). One sent with tokens kept none, since they stay off its disk: nothing
+    /// of it ran, so it is forgotten, and its controller, which holds them, finds it gone
+    /// (`run_not_found`) and sends it again. A child's parent ended with this restart, and it
+    /// ends FAILED with its parent.
     pub(crate) fn interrupt_preparations(&mut self) -> io::Result<()> {
-        let preparing: Vec<String> = {
+        let preparing: Vec<(i64, bool)> = {
             let mut statement = self
                 .connection
-                .prepare("SELECT id FROM executions WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1 AND id NOT IN (SELECT execution FROM run_specs)")
+                .prepare("SELECT id, COALESCE(json_extract(record,'$.invocation.parent'),'')<>'' FROM executions WHERE state='queued' AND json_extract(record,'$.waiting_reason')=?1 AND id NOT IN (SELECT execution FROM run_specs)")
                 .map_err(db_error)?;
             let rows = statement
-                .query_map([PREPARING], |row| Ok(row.get::<_, i64>(0)?.to_string()))
+                .query_map([PREPARING], |row| Ok((row.get(0)?, row.get(1)?)))
                 .map_err(db_error)?;
             rows.collect::<Result<_, _>>().map_err(db_error)?
         };
-        for id in preparing {
+        for (id, child) in preparing {
+            if !child {
+                let tx = self.connection.transaction().map_err(db_error)?;
+                for table in EXECUTION_ROWS {
+                    tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
+                }
+                tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
+                tx.commit().map_err(db_error)?;
+                continue;
+            }
             let failure = Failure {
                 status: 3,
                 cause: 7,
@@ -1155,7 +1167,7 @@ impl Journal {
                 code: "preparation_interrupted".into(),
                 message: "the machine restarted while this run was preparing; run it again".into(),
             };
-            self.end_preparation(&id, Outcome::Failed(failure))?;
+            self.end_preparation(&id.to_string(), Outcome::Failed(failure))?;
         }
         Ok(())
     }
@@ -1234,6 +1246,12 @@ fn reference_objects(
 
 /// The waiting reason of a run accepted before its preparation completes.
 pub const PREPARING: &str = "preparing";
+
+/// The tables holding rows of one execution.
+const EXECUTION_ROWS: [&str; 10] = [
+    "public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied",
+    "run_calls", "triage", "run_objects", "derived_output_bindings", "run_specs",
+];
 
 fn insert(
     tx: &rusqlite::Transaction<'_>,

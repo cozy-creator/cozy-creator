@@ -380,11 +380,7 @@ pub struct EndedBeforeStart {
 }
 impl std::fmt::Display for EndedBeforeStart {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "executor exited before connecting ({}): {}",
-            self.status, self.stderr_tail
-        )
+        write!(formatter, "executor exited before connecting ({})", self.status)
     }
 }
 impl std::error::Error for EndedBeforeStart {}

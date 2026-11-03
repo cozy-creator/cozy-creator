@@ -927,6 +927,18 @@ impl Calcifer {
                         let spec = self.sent_spec(run).await?;
                         (self.send_run(run, machine, link, spec).await?, None)
                     }
+                    // A restart forgets a run still preparing that was sent with tokens, which stay
+                    // off its disk: nothing of it ran, so it goes on as it is sent again.
+                    Err(LinkError::NoRun) if unstarted(run) => {
+                        tracing::info!(run = %run.id, machine, "its machine restarted before it began: sent again");
+                        self.write_inputs(link, run, machine).await?;
+                        let _turn = sending.lock().await;
+                        self.known_warm(run, machine, link).await?;
+                        let spec = self.sent_spec(run).await?;
+                        let state = self.send_run(run, machine, link, spec).await?;
+                        self.store.sent_again(id, &state)?;
+                        (state, None)
+                    }
                     attached => {
                         let (state, events) = attached?;
                         (state, Some(events))
@@ -1334,6 +1346,13 @@ impl Calcifer {
 }
 
 /// Waiting for its turn: in the outbox, or in its machine's line.
+/// Whether nothing of an accepted run began, as far as its machine ever said.
+fn unstarted(run: &RunRow) -> bool {
+    run.state == State::Accepted
+        && run.started_at_ms.is_none()
+        && matches!(run.machine_state.as_deref(), None | Some("preparing" | "queued"))
+}
+
 fn queued(run: &Run) -> bool {
     run.status == RunStatus::Queued
         || (run.status == RunStatus::InProgress && run.machine_state.as_deref() == Some("queued"))

@@ -102,6 +102,11 @@ pub(crate) async fn follow_until(
     }
 }
 
+/// The live view alone, until Ctrl-C, which never cancels the run.
+pub(crate) async fn watched(ctx: &Context, run: Run) -> Result<Run, Error> {
+    Ok(watch(ctx, run, ctx.json, interrupt()).await?.0)
+}
+
 /// Ctrl-C in a shell.
 async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;
@@ -281,6 +286,10 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         output::json(run);
         return;
     }
+    if let (Status::Failed | Status::Canceled, Some(reason)) = (run.status, &run.reason) {
+        let line = format!("{}: {}: {}", run.target, status_word(run.status), reason.message);
+        return output::failure(ctx, &line, &[format!("cozy run show {}", run.number)]);
+    }
     fields(ctx, run).print(ctx);
     next(ctx, run);
 }
@@ -331,6 +340,9 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         record = record.field("reason", format!("{} ({})", reason.message, reason.code));
         if !reason.detail.is_empty() {
             record = record.field("traceback", &reason.detail);
+        }
+        if let Some(machine) = run.machine.as_deref().filter(|_| run.status == Status::Failed) {
+            record = record.field("full log", format!("cozy machine logs {machine} -n 0"));
         }
     }
     for item in &run.output {
@@ -531,15 +543,13 @@ impl View {
             Event::Log { level, text, .. } if !matches!(level.as_str(), "info" | "debug" | "stage") => {
                 self.line(&format!("  {level}: {text}"));
             }
-            Event::Call { call, .. } => {
+            // A call that failed is told by its run's reason, or by `cozy run show` when its run went on.
+            Event::Call { call, .. } if call.reason.is_none() => {
                 let mut line = format!("  call {}", call.function);
                 if !call.label.is_empty() {
                     let _ = write!(line, " ({})", call.label);
                 }
                 let _ = write!(line, ": {}", call.status);
-                if let Some(reason) = &call.reason {
-                    let _ = write!(line, ", {}", reason.message);
-                }
                 self.line(&line);
             }
             _ => {}
