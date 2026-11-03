@@ -332,7 +332,6 @@ impl Default for Adapter {
 /// A package's fixed use on an internal GPU call. Runtime alone chooses a representation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-#[serde(deny_unknown_fields)]
 pub struct PreparedUse {
     pub target: String,
     pub tensors: Vec<String>,
@@ -349,7 +348,6 @@ impl PreparedUse {
             || !matches!(self.compute_dtype.as_str(), "BF16" | "F16" | "F32")
             || self.max_resident_bytes > i64::MAX as u64
             || self.workspace_bytes > i64::MAX as u64
-            || self.tensors.len() > 4096
             || self.tensors.iter().any(|key| key.is_empty() || key.len() > 1024 || !key.contains('.')) {
             return Err("invalid fixed prepared use");
         }

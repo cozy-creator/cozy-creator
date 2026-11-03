@@ -58,7 +58,7 @@ value domains, arithmetic bounds and reference closure.
 
 - A reader MUST refuse a document whose kind differs or whose major is not `1`.
 - A reader MUST ignore what a later writer adds (§8): unknown fields of a JSON document, at every level, and
-  trailing elements of the header's records (§4).
+  trailing elements of the header's records (§4), whatever they hold: the rules below bind what it reads.
 - Values are booleans, integers in [−2^63, 2^64), strings, lists and maps with string keys. There are no null values
   and no floating-point numbers anywhere in a document, except inside a header's configs (§4). A map MUST NOT repeat
   a key.

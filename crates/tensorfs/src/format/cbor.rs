@@ -333,13 +333,42 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Passes over `n` well-formed items of any allowed kind.
+    /// Passes over `n` well-formed items a newer writer may have added: this reader reads none of
+    /// them, so a null, float or tag among them means nothing here.
     fn skip(&mut self, n: u64, depth: usize) -> Result<()> {
         if depth > DEPTH {
             return invalid("items nested too deep");
         }
         for _ in 0..n {
             let at = self.at;
+            let Some(&first) = self.b.get(at) else {
+                return invalid(format!("truncated at byte {at}"));
+            };
+            let width = match first {
+                0xf6 | 0xf7 => Some(1),
+                0xf9 => Some(3),
+                0xfa => Some(5),
+                0xfb => Some(9),
+                _ => None,
+            };
+            if let Some(width) = width {
+                self.take(width)?;
+                continue;
+            }
+            if first >> 5 == 6 {
+                // A tag and the one item it tags: its head alone is what `head` refuses.
+                let extra = match first & 31 {
+                    0..=23 => 0,
+                    24 => 1,
+                    25 => 2,
+                    26 => 4,
+                    27 => 8,
+                    _ => return invalid(format!("reserved head {first:#x} at byte {at}")),
+                };
+                self.take(1 + extra)?;
+                self.skip(1, depth + 1)?;
+                continue;
+            }
             match self.head()? {
                 (BYTES, n) => drop(self.take(len(n)?)?),
                 (TEXT, _) => {

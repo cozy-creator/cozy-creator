@@ -1,7 +1,7 @@
 //! Strict reads and deterministic writes, for the manifest and the repo (JSON documents).
 //!
-//! Read: one JSON object, no null or duplicate keys, integers only (fitting i64 or u64); the typed
-//! layer then ignores unknown fields. Write: sorted keys (byte order), no whitespace, integers
+//! Read: one JSON object with no duplicate keys; the typed layer then takes what it reads and ignores
+//! unknown fields, whatever they hold (a newer writer's null or float). Write: sorted keys (byte order), no whitespace, integers
 //! only, serde_json's string escaping (the same as Python's `json.dumps(ensure_ascii=False)`).
 
 use std::collections::HashSet;
@@ -96,7 +96,7 @@ impl<'de> Visitor<'de> for Root {
     }
 }
 
-/// Walks a value refusing null, duplicate keys and non-integer numbers, anywhere.
+/// Walks a value refusing duplicate keys, anywhere.
 struct Strict;
 
 impl<'de> DeserializeSeed<'de> for Strict {
@@ -121,16 +121,14 @@ impl<'de> Visitor<'de> for Strict {
     fn visit_u64<E>(self, _: u64) -> std::result::Result<(), E> {
         Ok(())
     }
-    fn visit_f64<E: serde::de::Error>(self, v: f64) -> std::result::Result<(), E> {
-        Err(E::custom(format!(
-            "{v} is not an integer in the i64/u64 range"
-        )))
+    fn visit_f64<E>(self, _: f64) -> std::result::Result<(), E> {
+        Ok(())
     }
     fn visit_str<E>(self, _: &str) -> std::result::Result<(), E> {
         Ok(())
     }
-    fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<(), E> {
-        Err(E::custom("null is not allowed in a tree or repo"))
+    fn visit_unit<E>(self) -> std::result::Result<(), E> {
+        Ok(())
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<(), A::Error> {
         while seq.next_element_seed(Strict)?.is_some() {}

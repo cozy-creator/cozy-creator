@@ -134,8 +134,15 @@ impl TryFrom<RepoWire> for Repo {
     type Error = Error;
     fn try_from(w: RepoWire) -> Result<Self> {
         check_format(&w.format, REPO_FORMAT)?;
-        let repo = Repo { name: w.name, releases: w.releases, commits: w.commits };
-        repo.check()?;
+        let (releases, odd): (Vec<Release>, Vec<Release>) = w.releases.into_iter()
+            .partition(|r| label(&r.version) && r.lanes.keys().all(|lane| label(lane)));
+        for release in &odd {
+            tracing::warn!("{}: release {:?} or one of its lanes is not a label: skipped", w.name, release.version);
+        }
+        let repo = Repo { name: w.name, releases, commits: w.commits };
+        if !repo_name(&repo.name) {
+            return invalid(format!("repo name {:?} is not <org>/<name>", repo.name));
+        }
         Ok(repo)
     }
 }
