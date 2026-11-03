@@ -3,6 +3,8 @@ use executor_protocol::Command;
 use serde_json::{Value, json};
 
 fn main() {
+    assert!(!Command::NAMES.contains(&"room"));
+    assert!(Command::decode(br#"{"cmd":"room","device":0,"target":1,"held":0}"#).is_err());
     let mut frames = Vec::new();
     for degree in [1, 2, 4] {
         let intents: Vec<_> = (0..degree)
@@ -43,6 +45,6 @@ fn main() {
     }
     println!(
         "{}",
-        json!({"passed": true, "gpu_qualified": false, "frames": frames})
+        json!({"passed": true, "gpu_qualified": false, "room_refused": true, "frames": frames})
     );
 }
