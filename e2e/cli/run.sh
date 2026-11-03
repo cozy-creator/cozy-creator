@@ -96,7 +96,8 @@ kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
 image_ratio() {
 step "image ratios"
 ratio=$(cd "$(dirname "$0")/script" && pwd)/ratio.py
-for r in 16:1 1:16 32000:2000; do
+# Past 16:1 a ratio holds there with a warning (xs-149).
+for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
   name=ratio-${r/:/-}
   if cell "$name" "$ratio" "prompt=ratio $RANDOM" "aspect_ratio=$r"; then
     w=$(grep -o '"width": *[0-9]*' "$OUT/$name.ndjson" | tail -1 | grep -o '[0-9]*$')
@@ -104,11 +105,6 @@ for r in 16:1 1:16 32000:2000; do
     { [ -n "$w" ] && [ -n "$h" ] && [ "$w" -le $((16 * h)) ] && [ "$h" -le $((16 * w)) ]; } || check "$name: canvas ${w:-?}x${h:-?} is not within 16:1"
     echo "$name: canvas ${w}x${h}"
   fi
-done
-for r in 17:1 1:17 32768:32; do
-  name=ratio-${r/:/-}
-  ALLOW='is outside 1:16 through 16:1' cell "$name" "$ratio" "prompt=ratio $RANDOM" "aspect_ratio=$r" || true
-  [ -f "$OUT/$name.refused" ] || check "$name: aspect_ratio $r was not refused"
 done
 }
 
