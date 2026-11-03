@@ -81,8 +81,8 @@ the existing mean. Tuple returns remain tuples; unsupported slicing/tiling,
 Accelerate hooks or method overrides require another entry adapter. These
 explicit entry scopes were exercised by the first client. The subsequent
 COMPONENT-ENTRIES.md delta wires reviewed UNet/text outer scopes and explicit
-VAE encode/decode method scopes by default, independently of the still-unwired
-automatic graph controller. Host scope counts are not graph-selection evidence.
+VAE encode/decode method scopes by default, independently of the separately
+implemented automatic graph controller. Host scope counts are not graph-selection evidence.
 The current follow-up now connects the reviewed invocation predicates to that
 controller; it does not change alias/RNG/ownership or native byte policy.
 
