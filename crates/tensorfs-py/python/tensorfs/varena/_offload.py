@@ -257,6 +257,11 @@ class _Weight(torch.Tensor):
                 raise OffloadError(f"immutable managed argument: {func}/{arg.name}")
             if arg.name in ("training", "train") and value is True:
                 raise OffloadError(f"training operator is unsupported: {func}")
+        if func is torch.ops.aten._has_compatible_shallow_copy_type.default:
+            # Native TensorImpl compatibility inspects existing keys, not bytes.
+            # Preserve its layout/device refusals without materializing either side.
+            with torch._C._DisableTorchDispatch():
+                return func(*args, **kwargs)
         owner = weights[0]._version_owner.owner
         if any(w._version_owner.owner is not owner for w in weights):
             raise OffloadError(
