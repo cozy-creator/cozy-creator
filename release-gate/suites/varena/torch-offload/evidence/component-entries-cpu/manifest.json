@@ -1,0 +1,75 @@
+{
+  "scope": "Actual CPU adopted component entry wiring with final unchanged stream helper; no GPU stream/tail/performance or automatic graph dispatch qualification",
+  "parent": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+  "source_hashes": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload.py": "d7763b064fc589991b920ae5cf695dcd99c77bb6fa8e3b00d4ea6f3de418f4f6",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_sdxl.py": "81a27733a6c25b6aa18bc5f688be72e9e94d61d13de7d7d7fccf18b6ff15db8c",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py": "a060a9e63cf25f07ab2b78d50ee098dcebc1e11cfec63fb5d1f673202279043a",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_auto.py": "6f66dd5174b486e6322231ab6a57699d281e86199fe56d1d6f9098b32167d42f",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_review.py": "ee05de5b79a3f5e1d8ccdb9162be70dc293ddb2a4f9f2fb5640c72fd742c878e",
+    "release-gate/suites/varena/torch-offload/sdxl_components.py": "7cf81e0cbef6255207dce7a84fd687a5166e1bda8e136f1c68990a4e7f298b0d"
+  },
+  "source_invariants": [
+    "AST bodies byte-equivalent to parent: _Device.execution, _Version.tensor, Offload._intent, Offload._refresh_intent, Offload._convert, Offload.close",
+    "helper file unchanged SHA4634606b; capture bindings bypass eager records/witnesses",
+    "existing native images reused, no native sources/build/cache changes"
+  ],
+  "cpu_images": {
+    "core_sha256": "1d6b24dd4a32bd285daaa2f827f9dcd714ff96638080b78957d43c328ef854e0",
+    "extension_sha256": "cf0ec25f2c59c006a72f0e102632983ce9f4f4678a346b104d6ed5ba30ebff64",
+    "scope": "preserved audited host images, not current paired GPU SDK"
+  },
+  "python": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task/torch-cpu/bin/python",
+  "environment": {
+    "PYTHONPATH": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-auto-graphs/.task/metadata-overlay",
+    "CUDA_VISIBLE_DEVICES": "",
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "HF_HUB_OFFLINE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "TOKENIZERS_PARALLELISM": "false",
+    "nice": 19,
+    "max_parallel_clients": 1
+  },
+  "checks": [
+    {
+      "client": "sdxl_components.py --device cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "component_stream_wiring_cpu.py",
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_keys_cpu.py",
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_eligibility_cpu.py",
+      "exit_code": 0
+    }
+  ],
+  "source_checks": [
+    "Ruff check/format",
+    "git diff --check",
+    "overlay sources == final shared source",
+    "actual39 candidate input keys checked with no native reservations on CPU"
+  ],
+  "gpu_client_correction": "vt.install before ALL baseline CUDA allocations; previous prepared source never GPU-executed",
+  "remaining": [
+    "root/entry actual CUDA dependencies/records/stream changes/capture tails",
+    "default automatic graph controller and measured private preparation",
+    "structured native phase-overlap refusal from separately owned native lane",
+    "stock repeated-denoise automatic reuse/performance and failure gates"
+  ],
+  "receipts": {
+    "actual-component-bindings.json": "fa971ffe60dd3b417845ed8d7ba0b4f3d4dc9a1f5b6ad3365565723e9a0a67a3",
+    "actual-eligibility.json": "d8b27cb689dd4622b695737fe27be1b07778013c49da86e540fa6d1f8051c736",
+    "actual-keys.json": "9af4b934860aba9a4ad3a7530c6ada9eff6dd023573c9485195b9f09c87e0c88",
+    "actual-sdxl-components.json": "a5bdf46e3b1cfbea9084823fd9b38d41a6d77a597863c25372457c1fd06250f3",
+    "actual-sdxl-components.stderr": "d5215ea0f332bfe891721d239eefbc181858202cc62889c28beabcc0fa5af7e7",
+    "sdxl-symbol-review.json": "2833e5e18a385f76b796452111bda083a0b8f442d06ae3162008443fcc957376"
+  },
+  "no_gpu_native_rebuild_rental_machine_merge_release": true
+}

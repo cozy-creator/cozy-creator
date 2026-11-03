@@ -8,9 +8,9 @@ use crate::{
 };
 pub use executor_protocol::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
+    Command, Construction, Cooperation, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke,
     Kind, Level, Load, LoadFacts, Map, MemoSettings, Metrics, ModelLoad, ModelPrefetch, Outcome,
-    Output, PrepareRequest, Probe, Publish, PublishPart, Request, Residency, ResultRef, Room, SavedFile,
+    Output, PrepareRequest, Probe, Publish, PublishPart, Request, Residency, ResultRef, SavedFile,
     StageMemoStore, Start, Unload, RESULT_DOCUMENT,
 };
 use serde::{Deserialize, Serialize};

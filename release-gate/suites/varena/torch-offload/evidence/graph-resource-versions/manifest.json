@@ -1,0 +1,25 @@
+{
+  "scope": "Minimal reviewer-guided lifetime refinement; retain exact Versions via safe _Device leaf, keeping Offload/control out of retained payload",
+  "parent": "b52168cb2ce90413ba8d3928a6bf6918f5c9923e",
+  "product_delta": "Two added lines: Versions field and exact tuple from execution Definition",
+  "check": {
+    "client": "graph_resources_cpu.py",
+    "exit_code": 0,
+    "real_cpu_owner_collected_while_resources_live": true,
+    "exact_versions_device_sources_working_retained_until_holder_release": true,
+    "no_fake_CUDAGraph_or_native_resources": true,
+    "torch_cuda_initialized": false
+  },
+  "source_hashes": {
+    "_offload_graph.py": "ea8722290259dda68b7dbac9adfed6aadcdb07af743de3b9a2ad2b65643c734e",
+    "graph_resources_cpu.py": "0b7453250def6312e0f193ba9ad353ffc9d76a47dcd029cdf5706723bf0276ac"
+  },
+  "checks": [
+    "Ruff check/format",
+    "git diff --check"
+  ],
+  "gpu_gate": "UNRUN; operator must qualify corrected exact source within guarded existing rental",
+  "sdxl_activation_changed": false,
+  "native_class_or_policy_changed": false,
+  "no_native_gpu_rental_machine_merge_release": true
+}
