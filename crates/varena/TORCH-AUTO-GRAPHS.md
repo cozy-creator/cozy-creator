@@ -34,6 +34,10 @@ and buffer metadata, supported scalar/immutable-tuple module configuration (incl
 Conv fields), forward identity, input pytree/shape/stride/dtype/device/static scalars,
 inference mode and relevant library/workspace configuration. No data pointers from
 transient inputs become key ownership. Static Working owners belong to the definition.
+Freeze only ordinary tuple/list/dict input structure and immutable scalar mapping keys;
+do not retain TreeSpec custom contexts or Tensor mapping keys as hidden input owners.
+Use non-reused owner generations in opaque native measurement keys, not a recycled
+Python owner address. Version/Region handles and pack offsets remain exact descriptors.
 
 Inputs must satisfy the existing GraphSegment ordinary/nonoverlap/immutable-scalar
 contract. Training, gradients, custom Tensor/operator/hook access without an adapter,
