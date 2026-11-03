@@ -59,12 +59,17 @@ def configure(ring, cohort):
         (_offload_graph, _offload_graph.GraphSegment.__init__, 'capture'),
         (_offload_graph, _offload_graph.GraphSegment.__call__, 'graph'),
         (_offload_graph, _offload_graph.GraphSegment._finish_epoch, 'tails'),
+        (_offload_graph, _offload_graph.GraphSegment._static_input, 'static_input'),
         (_offload_graph, _offload_graph.GraphSegment._close_definition, 'definition_close'),
+        (_offload_graph, _offload_graph._Epoch.select_intent, 'select'),
         (_offload_graph, _offload_graph._Epoch.acquire, 'acquire'),
+        (_offload_graph, _offload_graph._CaptureBindings.scope.__wrapped__, 'binding_scope'),
+        (_offload_graph, _offload_graph.GraphSegment._weight_entries, 'weight_entries'),
         (_offload_graph, _offload_graph._Epoch.release, 'release'),
         (_offload_graph, _offload_graph._Epoch.restore_intent, 'restore'),
         (api, api.Gpu.prepare_use, 'prepare_use'),
         (api, api.Use.wait_ready, 'wait_ready'),
+        (vt, vt._bind_allocator, 'allocator_bind'),
         (vt, vt.replay, 'replay'),
         (vt, vt.phase_enter, 'phase'),
         (vt, vt.capture_complete, 'capture_complete'),
@@ -74,10 +79,14 @@ def configure(ring, cohort):
     )
     for module, function, kind in targets:
         bind(ring, checked[module.__name__], function, kind)
+    import types
+    for code in _offload_graph.GraphSegment.__call__.__code__.co_consts:
+        if isinstance(code, types.CodeType) and 'clone' in code.co_names:
+            ring.bind(code, 'clone_lambda')
     ring.metadata = dict(cohort=cohort, product_revision=selected['revision'],
                          source_files=selected['files'],
-                         scope='one inference thread plus the fixture-attached native callback bodies',
-                         callback_proxy=True, product_bodies_replaced=False,
-                         native_reads_added=False, synchronization_added=False,
+                         scope='sealed-code interpreter monitoring, including fresh foreign C threads',
+                         callback_proxy=False, interpreter_monitoring=True, product_bodies_replaced=False,
+                         native_reads_added='one-shot scalar/address bindings at confirmed exits; existing census returns copied', synchronization_added=False,
                          torch_version=torch.__version__, torch_git=torch.version.git_version)
     return _offload_auto._GraphCacheEntry

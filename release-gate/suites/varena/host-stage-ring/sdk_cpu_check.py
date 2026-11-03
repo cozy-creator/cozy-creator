@@ -13,7 +13,7 @@ from tensorfs.varena import torch as vt
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from host_stage_ring import Ring, callback_proxy
+from host_stage_ring import Ring
 from host_stage_seal import configure
 
 
@@ -45,9 +45,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     assert not torch.cuda.is_initialized()
     ring = Ring(proof=True)
-    cache_class = configure(ring, args.cohort)
+    configure(ring, args.cohort)
     ring.install()
-    restore = callback_proxy(cache_class, ring)
     try:
         application = CPUApplication()
         model = application.unet
@@ -67,7 +66,6 @@ def main():
         assert owner_ref() is None and module_ref() is None
     finally:
         ring.stop()
-        restore()
     assert ring.available and ring.size > 0 and not ring.calls
     assert not torch.cuda.is_initialized()
     assert ring.window_done

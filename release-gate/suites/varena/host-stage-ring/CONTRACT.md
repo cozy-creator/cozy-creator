@@ -1,3 +1,5 @@
+> Archived standalone-v1 contract. Current agreement and implementation: MARKERS.md and README.md. Previous PR2544/e432 remains frozen.
+
 # Bounded frontend host-stage ring for 27056
 
 Status: implemented diagnostic for review, with bounded host/source controls. Product/kernel/GPU behavior is not qualified by this document.

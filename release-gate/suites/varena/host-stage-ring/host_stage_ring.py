@@ -1,12 +1,12 @@
-"""Bounded host IDs only. No allocator queries, completion probes or product retries."""
+"""Bounded host scalars. No allocation decisions, completion probes or retries."""
 from __future__ import annotations
 
 import array
-import dis
 import json
 import os
 import sys
 import threading
+import weakref
 import time
 from types import CodeType
 
@@ -15,7 +15,7 @@ FIELDS = (
     'dispatch_attempt', 'segment_call', 'segment_id', 'graph_object_id',
     'plan_handle', 'parent_plan_handle', 'pool_a', 'pool_b', 'stream',
     'use_handle', 'cache_entry_id', 'native_cache_owner_id', 'tail_event_id',
-    'status', 'bytecode_offset',
+    'status', 'bytecode_offset', 'native_marker', 'native_ordinal',
 )
 EVENTS = {name: i + 1 for i, name in enumerate((
     'dispatch_enter', 'dispatch_exit', 'capture_enter', 'capture_exit',
@@ -25,7 +25,8 @@ EVENTS = {name: i + 1 for i, name in enumerate((
     'restore_enter', 'restore_exit', 'callback_enter', 'callback_exit',
     'definition_close_enter', 'definition_close_exit', 'phase_enter',
     'phase_exit', 'component_exit_enter', 'component_exit_exit', 'host_probe',
-    'acquire_enter', 'acquire_exit',
+    'acquire_enter', 'acquire_exit', 'select_enter', 'select_exit',
+    'input_copy_enter', 'input_copy_exit', 'output_clone_enter', 'output_clone_exit',
 ))}
 STATUS = {'call': 1, 'normal': 2, 'unwind': 3, 'yield': 4, 'declined': 5}
 UNAVAILABLE = b'VARENA_HOST_STAGE_UNAVAILABLE {"available":false,"scope":"host_profile_lifecycle"}\n'
@@ -37,8 +38,8 @@ def _handle(obj):
 
 
 class Ring:
-    """State is code objects, strings and integers; never live execution objects."""
-    def __init__(self, *, capacity=8192, proof=False, armed=False):
+    """Primitive data and code identities; graph registry keys are weak only."""
+    def __init__(self, *, capacity=8192, proof=False, armed=False, native=None):
         if type(capacity) is not int or capacity <= 0:
             raise ValueError('positive integer ring capacity required')
         self.capacity = capacity
@@ -47,11 +48,11 @@ class Ring:
         self.size = 0
         self.lost = 0
         self.codes = {}
-        self.returns = {}
-        self.yields = {}
         self.names = {}
         self.modules = {}
         self.controllers = set()
+        self.devices = {}
+        self.identity_unavailable = {}
         self.attempts = {}
         self.entries = {}
         self.native_ids = {}
@@ -68,16 +69,16 @@ class Ring:
         self.armed = armed
         self.window_done = False
         self.proof = proof
-        self.callback_active = 0
         self.main_thread = threading.get_ident()
-        self.callback = self.profile
         self.metadata = {}
+        self.native = native
+        self.hook = None
+        self.graph_tokens = weakref.WeakKeyDictionary()
+        self.next_graph = 1
+        self.bindings = {}
 
     def bind(self, code: CodeType, kind: str):
         self.codes[code] = kind
-        ops = tuple(dis.get_instructions(code))
-        self.returns[code] = frozenset(i.offset for i in ops if i.opname in ('RETURN_VALUE', 'RETURN_CONST'))
-        self.yields[code] = frozenset(i.offset for i in ops if i.opname == 'YIELD_VALUE')
 
     def register(self, controller_id, module_id, name):
         if type(name) is not str or type(controller_id) is not int or type(module_id) is not int:
@@ -90,31 +91,28 @@ class Ring:
         return boundary
 
     def install(self):
-        if sys.getprofile() is not None or threading.getprofile() is not None:
-            raise RuntimeError('diagnostic profile slot already owned')
-        if threading.get_ident() != self.main_thread:
-            raise RuntimeError('ring installation changed thread')
-        sys.setprofile(self.callback)
+        from monitoring_hook import InterpreterHook
+        self.hook = InterpreterHook(self)
+        self.hook.install()
         self.running = True
 
     def stop(self):
-        if sys.getprofile() is self.callback:
-            sys.setprofile(None)
+        if self.hook is None or not self.hook.owned():
+            self.uncertain = True
         else:
+            self.hook.stop()
+        if self.calls or any(self.contexts.values()):
             self.uncertain = True
-        if self.callback_active or self.calls or any(self.contexts.values()) or threading.getprofile() is not None:
-            self.uncertain = True
-        self.stopped = not (self.uncertain or self.captures or self.replays or self.lost)
+        self.stopped = not (self.uncertain or self.captures or self.replays)
         self.running = False
 
-    def _status(self, frame, event, result):
-        if event == 'call':
-            return STATUS['call']
-        if frame.f_lasti in self.yields[frame.f_code]:
-            return STATUS['yield']
-        if frame.f_lasti not in self.returns[frame.f_code]:
-            return STATUS['unwind']
-        return STATUS['declined'] if result is False else STATUS['normal']
+    def graph_identity(self, segment):
+        token = self.graph_tokens.get(segment)
+        if token is None:
+            token = self.next_graph
+            self.next_graph += 1
+            self.graph_tokens[segment] = token
+        return token
 
     def _emit(self, name, context, status, offset):
         if not self.armed or self.window_done:
@@ -136,10 +134,30 @@ class Ring:
                 context.get('use_handle', 0), context.get('cache_entry_id', 0),
                 self.native_ids.get(context.get('cache_entry_id', 0), 0),
                 context.get('tail_event_id', 0), status, max(0, offset),
+                0, 0,
             )
             if any(type(v) is not int or not 0 <= v < 2**64 for v in values):
                 self.lost += 1
                 return
+            if self.native is not None:
+                marker = native_marker(name, status, self.names.get(context.get('boundary_id')), context.get('dispatch_attempt', 0))
+                if marker:
+                    missing = {}
+                    if not context.get('segment_id'):
+                        missing['graph_identity'] = 'no bound definition at this stage'
+                    if not context.get('plan_handle'):
+                        missing['plan_handle'] = 'no ABI Plan handle at this stage'
+                    if not (context.get('pool_a') or context.get('pool_b')):
+                        missing['pool'] = 'pool not established at this stage'
+                    if context.get('device', -1) < 0:
+                        missing['device'] = 'device unavailable in context'
+                    if missing:
+                        self.identity_unavailable[self.size + 1] = missing
+                    ordinal = self.native.marker(marker, context)
+                    if not ordinal:
+                        self.lost += 1
+                        return
+                    values = values[:-2] + (marker, ordinal)
             start = self.size * len(FIELDS)
             for i in range(1, len(FIELDS)):
                 self.data[start + i] = values[i]
@@ -159,9 +177,14 @@ class Ring:
                 return
             p = caller.f_locals['pool']
             self.captures.add((caller.f_locals['device'], p[0], p[1]))
+        elif kind == 'capture_begin' and event == 'return' and status == STATUS['normal']:
+            if self.native is not None and self._target():
+                self.native.stage(3)
         elif kind == 'capture_complete' and event == 'return' and status == STATUS['normal']:
             p = loc['pool']
             self.captures.discard((loc['index'], p[0], p[1]))
+            if self.native is not None and self._target():
+                self.native.stage(4)
         elif kind == 'graph_scope' and event == 'return' and status != STATUS['yield']:
             if self.captures:
                 self.uncertain = True
@@ -173,6 +196,10 @@ class Ring:
                 if status != STATUS['normal']:
                     self.uncertain = True
 
+    def _target(self):
+        context = self._current()
+        return self.names.get(context.get('boundary_id')) == 'unet.up_blocks.0' and context.get('dispatch_attempt') in (2, 3)
+
     def _current(self):
         stack = self.contexts.get(threading.get_ident(), ())
         return dict(stack[-1][1]) if stack else dict(self.last_context.get(threading.get_ident(), {}))
@@ -181,9 +208,11 @@ class Ring:
         if definition is None:
             return context
         p = definition.pool
+        index = definition.owner._owner.device.index if definition.owner is not None else None
+        context['device'] = index if type(index) is int else -1
         context.update(plan_handle=_handle(definition.plan), pool_a=p[0], pool_b=p[1])
         if segment is not None:
-            context['segment_id'] = id(segment)
+            context['segment_id'] = self.graph_identity(segment)
             graph = getattr(segment, '_graph', None)
             tail = getattr(segment, '_tail', None)
             context['graph_object_id'] = id(graph) if graph is not None else 0
@@ -196,16 +225,24 @@ class Ring:
                 context['stream'] = epoch.stream.cuda_stream
         return context
 
-    def profile(self, frame, event, result):
+    def observe(self, frame, event, result, status):
         if event not in ('call', 'return'):
             return
         kind = self.codes.get(frame.f_code)
         if kind is None:
             return
         try:
-            status = self._status(frame, event, result)
+            if event == 'return' and status == STATUS['normal'] and result is False:
+                status = STATUS['declined']
             self._control(frame, event, status, kind)
             if kind in ('capture_begin', 'capture_complete', 'graph_scope', 'replay_scope'):
+                return
+            if kind == 'binding_scope':
+                if self.native is not None and self._target():
+                    if event == 'call':
+                        self.native.stage(3 if self.captures else 2)
+                    elif event == 'return' and status != STATUS['yield'] and not self.captures:
+                        self.native.stage(4)
                 return
             # Only cached scalar context can be observed while exclusion is active.
             if self.captures or self.replays or self.uncertain:
@@ -216,10 +253,29 @@ class Ring:
                 return
             loc = frame.f_locals
             fid = id(frame)
+            if kind == 'allocator_bind':
+                if self.native is not None and event == 'return' and status == STATUS['normal'] and not self.native.install_after_allocator():
+                    self.lost += 1
+                return
+            if kind == 'weight_entries':
+                if event == 'return' and status == STATUS['normal']:
+                    from safe_bindings import primitives
+                    token = self.graph_identity(loc['self'])
+                    try:
+                        self.bindings.setdefault(token, {})['weights'] = {
+                            'region_handles': primitives(loc['snapshot']['region_handles']),
+                            'selected_entries': primitives(result),
+                            'scope': 'existing product census return, sampled/not atomic'}
+                    except BaseException as error:
+                        self.bindings.setdefault(token, {})['weights'] = {'available': False, 'reason': type(error).__name__}
+                return
             if kind == 'controller_init':
                 if event == 'return' and status == STATUS['normal']:
                     obj = loc['self']
                     self.controllers.add(id(obj))
+                    owner = obj._owner_ref()
+                    index = owner._owner.device.index if owner is not None else None
+                    self.devices[id(obj)] = index if type(index) is int else -1
                     for state in obj._states.values():
                         self.register(id(obj), id(state.boundary.module), state.boundary.name)
                 return
@@ -248,19 +304,29 @@ class Ring:
                     self.attempts[boundary] = attempt
                     state = obj._states[id(module)]
                     context = {'boundary_id': boundary, 'dispatch_attempt': attempt,
+                               'device': self.devices.get(id(obj), -1),
                                'cache_entry_id': id(state.cache) if state.cache is not None else 0}
+                    scope = loc.get('scope')
+                    if scope is not None and scope.stream is not None:
+                        context['stream'] = scope.stream.cuda_stream
                     if self.following_returned and self.names[boundary] == 'unet.up_blocks.2' and attempt == 3:
                         self._emit('dispatch_enter', context, status, frame.f_lasti)
                         self.window_done = True
+                        if self.native is not None:
+                            self.native.close_window()
                         return
                     self.contexts.setdefault(threading.get_ident(), []).append((fid, context))
                     self.calls[fid] = ('dispatch', context)
                     if self.names[boundary] == 'unet.up_blocks.0' and attempt == 2:
                         self.armed = True
+                        if self.native is not None:
+                            self.native.open_window(context)
                     self._emit('dispatch_enter', context, status, frame.f_lasti)
                 elif fid in self.calls:
                     _, context = self.calls.pop(fid)
                     self._emit('dispatch_exit', context, status, frame.f_lasti)
+                    if self.native is not None and self.names.get(context.get('boundary_id')) == 'unet.up_blocks.0':
+                        self.native.stage(0)
                     self.contexts[threading.get_ident()].pop()
                     self.last_context[threading.get_ident()] = dict(context)
                     if self.names.get(context['boundary_id']) == 'unet.up_blocks.1' and context['dispatch_attempt'] == 3 and status == STATUS['normal']:
@@ -272,14 +338,15 @@ class Ring:
                 if kind in ('capture', 'graph'):
                     if kind == 'graph':
                         context = self._definition(context, obj._definition, segment=obj)
-                        count = self.segment_calls.get(id(obj), 0) + 1
-                        self.segment_calls[id(obj)] = count
+                        token = context['segment_id']
+                        count = self.segment_calls.get(token, 0) + 1
+                        self.segment_calls[token] = count
                         context['segment_call'] = count
                     else:
-                        context['segment_id'] = id(obj)
+                        context['segment_id'] = self.graph_identity(obj)
                     if loc.get('stream') is not None:
                         context['stream'] = loc['stream'].cuda_stream
-                elif kind in ('acquire', 'release', 'restore'):
+                elif kind in ('acquire', 'release', 'select', 'restore'):
                     context = self._definition(context, obj.definition, epoch=obj)
                 elif kind in ('tails', 'definition_close'):
                     context = self._definition(context, obj._definition, segment=obj)
@@ -301,6 +368,13 @@ class Ring:
                 if item is None:
                     return
                 _, context = item
+                if kind == 'capture' and status == STATUS['normal']:
+                    from safe_bindings import definition_binding
+                    token = self.graph_identity(loc['self'])
+                    try:
+                        self.bindings.setdefault(token, {})['definition'] = definition_binding(loc['self'])
+                    except BaseException as error:
+                        self.bindings.setdefault(token, {})['definition'] = {'available': False, 'reason': type(error).__name__}
                 if status != STATUS['yield']:
                     self.calls.pop(fid, None)
                 if kind == 'acquire':
@@ -317,7 +391,7 @@ class Ring:
                     stack[-1][1].update(context)
             names = {'capture': 'capture', 'graph': 'graph', 'prepare_use': 'prepare_use',
                      'wait_ready': 'wait_ready', 'acquire': 'acquire', 'release': 'release',
-                     'restore': 'restore', 'tails': 'tails', 'callback': 'callback',
+                     'select': 'select', 'restore': 'restore', 'tails': 'tails', 'callback': 'callback',
                      'definition_close': 'definition_close', 'phase': 'phase',
                      'component_exit': 'component_exit', 'probe': 'host_probe'}
             name = names.get(kind)
@@ -332,8 +406,12 @@ class Ring:
 
     @property
     def available(self):
-        owned = sys.getprofile() is self.callback if self.running else self.stopped
-        return owned and threading.getprofile() is None and not (self.uncertain or self.captures or self.replays or self.lost or self.callback_active)
+        owned = self.hook is not None and self.hook.owned() if self.running else self.stopped
+        return owned and not (self.uncertain or self.captures or self.replays or self.lost)
+
+    @property
+    def safe_to_read(self):
+        return self.stopped and not (self.uncertain or self.captures or self.replays)
 
     def write(self, path):
         if not self.available:
@@ -345,12 +423,14 @@ class Ring:
         # No product or native reads here. The buffer contains scalars only.
         values = self.data[:self.size * len(FIELDS)].tolist()
         rows = [values[n:n + len(FIELDS)] for n in range(0, len(values), len(FIELDS))]
-        payload = dict(format='varena-host-stage-v1', available=True,
+        payload = dict(format='varena-host-stage-v2', available=True,
                        host_control_only=self.proof,
                        normal_return_is_gpu_completion=False, fields=FIELDS,
                        events=EVENTS, statuses=STATUS, rows=rows, lost=self.lost,
                        names=self.names, native_cache_ids=self.native_ids,
-                       metadata=self.metadata, window_done=self.window_done)
+                       metadata=self.metadata, window_done=self.window_done, bindings=self.bindings,
+                       identity_unavailable=self.identity_unavailable,
+                       graph_identity_kind='weak-key diagnostic GraphSegment token, not CUDA handle')
         try:
             with open(path, 'x', encoding='utf8') as output:
                 json.dump(payload, output, separators=(',', ':'))
@@ -365,39 +445,20 @@ class Ring:
         return True
 
 
-def callback_attachment(ring, original):
-    """Scope a foreign thread's profile; preserve the original callable once."""
-    def observed(*args, **kwargs):
-        if not ring.running:
-            return original(*args, **kwargs)
-        previous = sys.getprofile()
-        owned = previous is None
-        if threading.getprofile() is not None or (previous is not None and previous is not ring.callback):
-            ring.uncertain = True
-            return original(*args, **kwargs)
-        ring.callback_active += 1
-        if owned:
-            sys.setprofile(ring.callback)
-        try:
-            return original(*args, **kwargs)
-        finally:
-            if owned:
-                if sys.getprofile() is ring.callback:
-                    sys.setprofile(None)
-                else:
-                    ring.uncertain = True
-            ring.callback_active -= 1
-    return observed
 
-
-def callback_proxy(cache_class, ring):
-    """Install before adoption; never replace the original product body."""
-    original = cache_class._shrink
-    observed = callback_attachment(ring, original)
-    cache_class._shrink = observed
-    def restore():
-        if cache_class._shrink is observed:
-            cache_class._shrink = original
-        else:
-            ring.uncertain = True
-    return restore
+def native_marker(event, status, boundary, invocation):
+    """Agreed namespace; no marker is inferred from bytes or pointer proximity."""
+    if event.startswith('callback_'):
+        if status == STATUS['declined']:
+            return 203
+        return 200 + (0 if status == STATUS['call'] else 2 if status == STATUS['unwind'] else 1)
+    if boundary == 'unet.up_blocks.1' and invocation == 3 and event.startswith('dispatch_'):
+        return 170 + (0 if status == STATUS['call'] else 2 if status == STATUS['unwind'] else 1)
+    if boundary != 'unet.up_blocks.0' or invocation not in (2, 3):
+        return 0
+    bases = {'dispatch': 100, 'prepare_use': 110, 'wait_ready': 120,
+             'input_copy': 130, 'replay': 140, 'output_clone': 150,
+             'release': 160, 'select': 180, 'restore': 190}
+    stem = event.removesuffix('_enter').removesuffix('_exit')
+    base = bases.get(stem)
+    return 0 if base is None else base + (0 if status == STATUS['call'] else 2 if status == STATUS['unwind'] else 1)

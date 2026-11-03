@@ -26,7 +26,7 @@ def saved_gap(directory):
 def analyze(path):
     raw = path.read_bytes()
     data = json.loads(raw)
-    if data['format'] != 'varena-host-stage-v1' or data['fields'] != list(FIELDS):
+    if data['format'] != 'varena-host-stage-v2' or data['fields'] != list(FIELDS):
         raise ValueError('host-stage format identity mismatch')
     if data['events'] != EVENTS or data['statuses'] != STATUS:
         raise ValueError('host-stage event/status dictionary mismatch')
@@ -63,14 +63,52 @@ def analyze(path):
             'rows': result}, 0 if complete else 1
 
 
+
+def join_native(host, path):
+    native = json.loads(path.read_text())
+    if native['format_version'] != 3 or native['ordinal_base'] != 1:
+        raise ValueError('shared native schema/ordinal mismatch')
+    fields = native['row_fields']
+    positions = {name: i for i, name in enumerate(fields)}
+    joined = []
+    for row in host['rows']:
+        ordinal = row['native_ordinal']
+        if not ordinal:
+            continue
+        if not 1 <= ordinal <= len(native['rows']):
+            raise ValueError('native marker ordinal absent')
+        actual = native['rows'][ordinal - 1]
+        expected = {'kind': 17, 'marker': row['native_marker'],
+                    'invocation': row['dispatch_attempt'], 'stream': row['stream'],
+                    'graph_identity': row['segment_id'], 'plan_handle': row['plan_handle'],
+                    'pool_a': row['pool_a'], 'pool_b': row['pool_b']}
+        if any(actual[positions[name]] != value for name, value in expected.items()):
+            raise ValueError('shared native marker binding mismatch')
+        joined.append({'host_seq': row['seq'], 'native_ordinal': ordinal,
+                       'native_thread': actual[positions['thread']],
+                       'native_monotonic_ns': actual[positions['monotonic_ns']]})
+    host['common_ordinal_bindings'] = joined
+    host['native_loss'] = native['lost']
+    host['native_schema_preserved'] = True
+    host['physical_release_inferred'] = False
+    host['admission_join_scope'] = 'selected observed spans only; native owner correlates request-generation/nativePlanID and rejects ambiguous overlap'
+    return host
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--ring', type=pathlib.Path)
     group.add_argument('--saved-27056', type=pathlib.Path)
+    parser.add_argument('--native', type=pathlib.Path)
     parser.add_argument('--output', type=pathlib.Path, required=True)
     args = parser.parse_args()
     result, code = saved_gap(args.saved_27056) if args.saved_27056 else analyze(args.ring)
+    if args.native is not None:
+        if args.ring is None:
+            raise ValueError('native join requires host ring')
+        result = join_native(result, args.native)
+        if result['native_loss']:
+            code = 1
     with args.output.open('x') as output:
         json.dump(result, output, indent=2)
         output.write('\n')
