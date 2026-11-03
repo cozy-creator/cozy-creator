@@ -325,7 +325,8 @@ pub(crate) fn functions_of(
     from: Option<&str>,
     interface: &Interface,
 ) {
-    let public = interface.public();
+    // A project adapter is for `cozy project`, not a function to run by hand.
+    let public: Vec<_> = interface.public().into_iter().filter(|name| !name.starts_with("project-adapter-")).collect();
     let description = |name: &str| {
         (interface.callables.iter().find(|c| c.name == name)).map_or("", |c| c.description.as_str())
     };

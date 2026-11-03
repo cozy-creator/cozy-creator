@@ -40,6 +40,7 @@ pub fn skeleton() -> String {
     r#"# A short film, ready to render: cozy project render all --on <machine>
 # Change anything. More kinds and options (props, world states, references, plates, LoRAs, upscales,
 # the edit's frames) are in the README.
+version: 1
 style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
 aspect_ratio: "16:9"
 fps: 24
@@ -68,58 +69,49 @@ shots:
   - name: awaken
     setup: coast.sea
     duration_s: 6
-    description: |
-      summary:
-      The target video shows <kyogre> bursting out of the stormy sea of <coast>.
-
-      detailed_description:
-      [Shot 1] A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
-
-      overall_soundscape:
-      Howling wind, crashing waves, and rolling thunder.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <kyogre> bursts out of the stormy sea of <coast>.
+    soundscape: Howling wind, crashing waves, and rolling thunder.
+    beats:
+      - at: 0
+        description: |
+          A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
 
   - name: erupt
     setup: coast.cliffs
     duration_s: 6
-    description: |
-      summary:
-      The target video shows <groudon> clawing its way out of the lava cliffs of <coast> and roaring.
-
-      detailed_description:
-      [Shot 1] A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
-
-      overall_soundscape:
-      Cracking rock, hissing lava, heavy footfalls, and a deep roar.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <groudon> claws its way out of the lava cliffs of <coast> and roars.
+    soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
+    beats:
+      - at: 0
+        description: |
+          A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   - name: clash
     setup: coast.wide
     duration_s: 38
-    description: |
-      summary:
-      The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
-
-      detailed_description:
-      [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
-      At 00:14.000, <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
-      At 00:28.000, <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
-
-      overall_soundscape:
-      Crashing surf, roaring fire, bursts of steam, and deep impacts.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts, with storm clouds and heavy rain on the left and hard sunlight on the right.
+    soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
+    beats:
+      - at: 0
+        description: |
+          A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
+      - at: 14
+        description: |
+          <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
+      - at: 28
+        description: |
+          <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
 "#
     .into()
 }
 
 #[derive(Deserialize)]
 struct Project {
+    /// The project format; a file with none reads as 1.
+    version: Option<u64>,
     /// Each node kind's render block, by `RENDERERS`' kinds.
     #[serde(default)]
     defaults: BTreeMap<String, Render>,
@@ -225,16 +217,6 @@ impl Reference {
     fn file(&self) -> (&'static str, &str) {
         self.files()[0]
     }
-
-    /// As its renderer's `references` takes it, its file left for `add` to fill in.
-    fn entry(&self) -> Map<String, Value> {
-        let field = self.file().0;
-        let mut entry = self.fields.clone();
-        entry.insert("name".into(), json!(self.name));
-        entry.insert("kind".into(), json!(if field == "image" { "prop" } else { field }));
-        entry.insert(field.into(), Value::Null);
-        entry
-    }
 }
 
 /// A camera setup on its environment; its versions are setup plates.
@@ -273,10 +255,15 @@ struct Shot {
     name: String,
     /// `Environment.Setup`.
     setup: Option<String>,
-    /// Its whole text, sent as its function's `prompt`: opaque here but for its `<mentions>`. A
-    /// person writes the function's own conventions in it, and cozy adds none.
+    /// The scene, the same in every segment: opaque here but for its `<mentions>`.
     #[serde(default, deserialize_with = "or_default")]
-    description: String,
+    summary: String,
+    /// Its moments, on its own timeline. A cut is a new shot.
+    #[serde(default)]
+    beats: Vec<Beat>,
+    /// Its sound bed (else the project's), and its music.
+    soundscape: Option<String>,
+    music: Option<String>,
     duration_s: f64,
     /// World states its frame at `at` seconds (default: its end) becomes the next revision of.
     #[serde(default)]
@@ -292,12 +279,43 @@ struct Shot {
 }
 
 #[derive(Clone, Deserialize)]
+struct Beat {
+    /// Seconds from the shot's start.
+    at: f64,
+    #[serde(default, deserialize_with = "or_default")]
+    description: String,
+}
+
+#[derive(Clone, Deserialize)]
 struct Write {
     state: String,
     at: Option<f64>,
 }
 
 impl Shot {
+    /// Everything it says, where its `<mentions>` are.
+    fn texts(&self) -> Vec<String> {
+        std::iter::once(self.summary.clone()).chain(self.beats.iter().map(|beat| beat.description.clone())).collect()
+    }
+
+    /// Its beats inside its length, as a record has them.
+    fn beat_records(&self) -> Vec<Value> {
+        self.beats_to(self.duration_s).iter().map(|beat| json!({"at": beat.at, "description": beat.description})).collect()
+    }
+
+    /// Its beats before `end`, in order.
+    fn beats_to(&self, end: f64) -> Vec<Beat> {
+        let mut beats: Vec<Beat> = self.beats.iter().filter(|beat| beat.at < end).cloned().collect();
+        beats.sort_by(|a, b| a.at.total_cmp(&b.at));
+        beats
+    }
+
+    /// Its text up to `end` as one text, for a function with no adapter: the summary, then each beat's description in order.
+    fn flat(&self, end: f64) -> String {
+        let told: Vec<String> = self.beats_to(end).iter().map(|beat| beat.description.trim().to_owned()).collect();
+        [self.summary.trim().to_owned(), told.join("\n")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n\n")
+    }
+
     /// The state each of its writes is of, and where, inside its length.
     fn written(&self) -> impl Iterator<Item = (&str, f64)> {
         (self.writes.iter()).map(|write| (write.state.as_str(), write.at.unwrap_or(self.duration_s).min(self.duration_s).max(0.0)))
@@ -488,8 +506,11 @@ impl Canvas {
 
 /// A version's request, and what to record of it.
 pub struct Request {
-    /// Each file in it as its digest; `files` say where each one is here.
+    /// The flat request, for a function with no adapter. Each file in it as its digest; `files` say where each one is here.
     pub payload: Value,
+    /// The node as the project says it, for its package's adapter (`adapter`, the function to run on it).
+    pub node: Value,
+    pub adapter: Option<String>,
     pub made: Made,
     /// The result field holding the version.
     pub field: &'static str,
@@ -502,8 +523,9 @@ pub struct Request {
     pub warnings: Vec<String>,
 }
 
-/// A file a request reads: its payload field (`assets.0.image`), its path here, and its digest; or
-/// with `at`, that video's frame at `at` seconds, which the walk takes out before it sends.
+/// A file a request may read: its path here and its digest. With `at`, that video's frame at `at`
+/// seconds, which the walk takes out before it sends, and `field` is where its digest goes in the
+/// request and the node.
 pub struct Input {
     pub field: String,
     pub path: PathBuf,
@@ -535,7 +557,7 @@ impl Video {
         let value = protocol::yaml::to_json(&folder.text()?)
             .map_err(|why| {
                 invalid("project_yaml", format!("{}: {why}", folder::PROJECT))
-                    .remedy("text that starts with `[`, such as `[Shot 1]`, goes on the lines under `description: |`")
+                    .remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`")
             })?;
         let mut ignored: Vec<String> = vec![];
         let mut note = |path: serde_ignored::Path<'_>| ignored.push(path.to_string().replace("?.", ""));
@@ -555,6 +577,9 @@ impl Video {
             .iter()
             .map(|path| format!("{}: cozy reads no field {path}; it is ignored", folder::PROJECT))
             .collect();
+        if project.version.is_none() {
+            warnings.push(format!("{} has no `version:`, so it reads as version 1: add `version: 1`", folder::PROJECT));
+        }
         for reference in &project.references {
             let n = reference.files().len();
             if n != 1 {
@@ -726,7 +751,7 @@ impl Video {
             items.push(Item::State(w));
         }
         for (k, shot) in project.shots.iter().enumerate() {
-            let texts = vec![shot.description.clone()];
+            let texts = shot.texts();
             let (mut needs, mut implied) = (vec![], vec![]);
             if let Some(setup) = &shot.setup {
                 if !nodes.iter().any(|n| n.kind == "setup" && name_key(&n.id) == name_key(setup)) {
@@ -800,8 +825,8 @@ impl Video {
             format!("{reader} mentions {read}, which is made from it: that mention stays plain text")
         }));
         for shot in &project.shots {
-            if shot.video.is_none() && shot.description.trim().is_empty() {
-                warnings.push(format!("{} has no description: its renderer is given no text", shot.name));
+            if shot.video.is_none() && shot.texts().iter().all(|text| text.trim().is_empty()) {
+                warnings.push(format!("{} has no summary and no beats: its renderer is given no text", shot.name));
             }
             let mut written = BTreeSet::new();
             for write in &shot.writes {
@@ -877,6 +902,11 @@ impl Video {
             render.with = RENDERERS.iter().find(|(k, _)| *k == kind).map(|(_, target)| (*target).to_owned());
         }
         render
+    }
+
+    /// The project format it is written in.
+    pub fn version(&self) -> u64 {
+        self.project.version.unwrap_or(1)
     }
 
     /// The field that holds the node's file.
@@ -1024,46 +1054,29 @@ impl Video {
                 .collect()
         };
         let mut warnings = vec![];
-        let (mut payload, call) = match self.items[i] {
+        let (version, function, style) = (self.version(), renderer.function.as_str(), self.project.style.trim());
+        let kind = match self.items[i] {
+            Item::Entity(_) => "entity",
+            Item::Setup(..) => "setup",
+            Item::State(_) => "world_state",
+            Item::Shot(_) => "shot",
+            Item::Upscale(_) => "upscale",
+            Item::Reference(_) => "reference",
+        };
+        let (mut payload, record, call) = match self.items[i] {
             Item::Entity(a) => {
                 let entity = &self.project.entities[a];
-                let (name, description) = (&entity.name, entity.description.trim());
-                let transparent = renderer.draws_transparent();
-                let ground = if transparent { "" } else { " on a plain white background" };
-                let (shown, ratio) = match entity.kind {
-                    EntityKind::Character => (
-                        format!("The image is a wide character sheet of {name}{ground}, in five separate views with no text.\n\n{description}\n\nOn the left, the whole body is seen from the front and turned slightly, with nothing added to the body described and no ground under it. Beside it, the whole body is seen from behind and turned slightly, at the same size. On the right, three close-ups of the head are stacked one above the other: neutral with the mouth closed, joyful with the mouth wide open, and angry with the brow lowered and teeth bared."),
-                        "16:9",
-                    ),
-                    EntityKind::Prop => (
-                        format!("The image is a wide prop sheet of {name}{ground}, in three separate views with no text.\n\n{description}\n\nOn the left, the whole object is seen from the front and turned slightly. In the center, the whole object is seen from behind and turned slightly. On the right, a close-up fills the view with one small part of it."),
-                        "16:9",
-                    ),
-                    EntityKind::Environment => (format!("{description}\n\nAn establishing view of the empty set, no people."), self.canvas.aspect.as_str()),
-                };
-                let prompt = match transparent && entity.kind != EntityKind::Environment {
-                    true => format!("This is an RGBA image with transparency. {}\n\nThe image has alpha channel and the background is transparent.", styled(shown)),
-                    false => styled(shown),
-                };
-                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": ratio}), None)
+                let shown = pictures(&mut files);
+                let node = json!({"version": version, "name": entity.name, "function": function, "kind": entity.kind.name(),
+                    "description": entity.description, "style": style, "aspect_ratio": self.canvas.aspect, "pictures": shown});
+                (json!({"prompt": styled(entity.description.trim().to_owned()), "pictures": shown, "aspect_ratio": self.canvas.aspect}), node, None)
             }
             Item::Reference(_) => return Err(reference_made(&node.id)),
             Item::Setup(a, s) => {
-                // The environment's picture (or a shot's frame) first, and the camera in screen terms
-                // as written (environment-angles REPORT.md): bare camera words return a mirror.
+                // The environment's picture (or a shot's frame) first.
                 let (env, setup) = (&self.project.entities[a], &self.project.entities[a].setups[s]);
-                let camera = setup.camera.trim().trim_end_matches('.');
-                let prompt = match setup.frame {
-                    None => format!(
-                        "Show this exact <{}> from another camera position: {camera}. Keep every object, material, the light and the weather exactly as in the image; add nothing new, no people.",
-                        env.name
-                    ),
-                    Some(_) => format!(
-                        "Show the place in this picture, <{}>, with nobody in it, from another camera position: {camera}. Keep every object, material, the light and the weather exactly as in the picture; add nothing new, no people.",
-                        env.name
-                    ),
-                };
-                let pictures: Vec<Value> = (reads.iter().enumerate())
+                let camera = setup.camera.trim();
+                let shown: Vec<Value> = (reads.iter().enumerate())
                     .map(|(n, read)| {
                         let up = &graph.nodes[read.edge.node];
                         let (name, at) = match n {
@@ -1073,25 +1086,31 @@ impl Video {
                         json!({"name": name, "image": read.input(&mut files, format!("pictures.{n}.image"), at)})
                     })
                     .collect();
-                (json!({"prompt": prompt, "pictures": pictures, "aspect_ratio": self.canvas.aspect}), None)
+                let node = json!({"version": version, "name": node.id, "function": function, "environment": env.name,
+                    "description": env.description, "camera": camera, "from_frame": setup.frame.is_some(), "style": style,
+                    "aspect_ratio": self.canvas.aspect, "pictures": shown});
+                (json!({"prompt": styled(format!("<{}>. {camera}", env.name)), "pictures": shown, "aspect_ratio": self.canvas.aspect}), node, None)
             }
             Item::State(w) => {
                 let state = &self.project.world_states[w];
+                let shown = pictures(&mut files);
+                let node = json!({"version": version, "name": state.name, "function": function, "init": state.init,
+                    "blocking": state.blocking, "style": style, "aspect_ratio": self.canvas.aspect, "pictures": shown});
                 let prompt = styled([state.init.trim(), state.blocking.trim()].join("\n\n").trim().to_owned());
-                (json!({"prompt": prompt, "pictures": pictures(&mut files), "aspect_ratio": self.canvas.aspect}), None)
+                (json!({"prompt": prompt, "pictures": shown, "aspect_ratio": self.canvas.aspect}), node, None)
             }
             Item::Shot(k) => {
                 let call = call.expect("a shot is made in calls");
-                let (payload, call) =
-                    self.shot(folder, k, &reads, &mut files, call, own, &renderer.accepts, &mut warnings)?;
-                (payload, Some(call))
+                let (payload, node, call) = self.shot(folder, k, &reads, &mut files, call, own, renderer, &mut warnings)?;
+                (payload, node, Some(call))
             }
             Item::Upscale(k) => {
                 // The text the shot was made from, for an upscaler that re-renders it (Paul, 10-31: the
                 // upscaler gets the details of the original): its description, the descriptions of
                 // what it reads, and the style.
                 let shot = &self.project.shots[k];
-                let mut text = shot.description.trim().to_owned();
+                let mut text = shot.flat(shot.duration_s);
+                let mut read_by = vec![];
                 let read = self.graph.find(&shot.name).map(|s| &self.graph.upstream[s]).into_iter().flatten();
                 for edge in read {
                     let (name, description) = match (self.items[edge.node], &edge.state) {
@@ -1102,11 +1121,16 @@ impl Video {
                     };
                     if !description.trim().is_empty() {
                         let _ = write!(text, "\n{name}: {}", description.trim());
+                        read_by.push(json!({"name": name, "kind": "environment", "description": description.trim()}));
                     }
                 }
-                let mut payload = json!({"video": reads[0].input(&mut files, "video".into(), None), "prompt": styled(text.replace(['<', '>'], ""))});
+                let video = reads[0].input(&mut files, "video".into(), None);
+                let mut payload = json!({"video": video, "prompt": styled(text.replace(['<', '>'], ""))});
+                let mut node = json!({"version": version, "name": node.id, "function": function, "video": video, "summary": shot.summary,
+                    "beats": shot.beat_records(), "style": style, "references": read_by});
                 if let Some(resolution) = &self.project.resolution {
                     payload["resolution"] = Value::String(resolution.clone());
+                    node["resolution"] = Value::String(resolution.clone());
                 }
                 // The shot's latents, for an upscaler of its package (one that reads its format).
                 let made = lock.made(&shot.name, &reads[0].file);
@@ -1114,33 +1138,39 @@ impl Video {
                     .is_some_and(|by| by.with.starts_with(&format!("{}/", renderer.package)));
                 if let Some(latents) = made.and_then(|made| made.assets.get("latents")).filter(|_| same) {
                     let digest = latents.sha256.clone();
-                    files.push(Input { field: "latents".into(), path: folder.path(&latents.path), digest: digest.clone(), at: None });
-                    payload["latents"] = Value::String(digest);
+                    files.push(Input { field: String::new(), path: folder.path(&latents.path), digest: digest.clone(), at: None });
+                    payload["latents"] = Value::String(digest.clone());
+                    node["latents"] = Value::String(digest);
                 }
-                (payload, None)
+                (payload, node, None)
             }
         };
-        // What the function does not take is left out, said, and so are its files.
+        // What the function does not take is left out, and said.
         let accepts = &renderer.accepts;
         let fields = payload.as_object_mut().expect("a request is an object");
         let left: Vec<String> = fields.keys().filter(|key| !accepts.fields.contains(*key)).cloned().collect();
         for key in &left {
             fields.remove(key);
-            files.retain(|input| input.field.split('.').next() != Some(key.as_str()));
             warnings.push(format!("{} takes no {key}: {}'s is left out", self.render(i).target(), node.id));
         }
+        let adapter = renderer.adapter(kind, version);
+        if adapter.is_none() && call.as_ref().is_none_or(|call| call.index == 0) {
+            let times = if matches!(self.items[i], Item::Shot(k) if self.project.shots[k].beats.iter().any(|beat| beat.at > 0.0)) { ", and its beat times are not honoured" } else { "" };
+            warnings.push(format!("{} has no project adapter for `{kind}`: it gets one flat prompt{times}", self.render(i).target()));
+        }
+        let warnings = if adapter.is_some() { vec![] } else { warnings };
         let made = Made { warnings: warnings.clone(), ..made };
-        Ok(Request { payload, made, field: self.field(i), call, files, render: self.render(i), warnings })
+        Ok(Request { payload, node: record, adapter, made, field: self.field(i), call, files, render: self.render(i), warnings })
     }
 
     /// Where shot `k`'s consecutive calls end: at each time it writes a state its text mentions (a
-    /// read of its own write, so the call after it reads the frame), and at its end. Its text stays
-    /// opaque: times in it are its function's. A renderer that cannot continue a video, or whose
+    /// read of its own write, so the call after it reads the frame), and at its end. A renderer that cannot continue a video, or whose
     /// shortest piece the split would go under, renders on through: the state reads as it stood
     /// before, and it is said.
     fn ends(&self, k: usize, accepts: &Accepts, said: &mut Vec<String>) -> Vec<f64> {
         let shot = &self.project.shots[k];
-        let read = mentions(&shot.description);
+        let texts = shot.texts();
+        let read: Vec<&str> = texts.iter().flat_map(|text| mentions(text)).collect();
         let mut splits: Vec<(&str, f64)> = (shot.written())
             .filter(|&(state, at)| at > 0.0 && at < shot.duration_s && read.iter().any(|m| name_key(m) == name_key(state)))
             .collect();
@@ -1167,19 +1197,13 @@ impl Video {
         ends
     }
 
-    /// Shot `k`'s call `call` as its function takes it (`accepts`), on the shot's one timeline:
-    /// - its whole text, each call: `description` as `prompt` (times before the call's start are its
-    ///   function's history, on the shot's one timeline, and those past its end a later call's: a call
-    ///   that ends before the shot gives the shot's length, `shot_duration_s`), the project's style,
-    ///   soundscape and aspect ratio;
-    /// - `references`: each entity it reads (its description, a character's voice), its setup's
-    ///   picture as its environment's, each world state as a loose environment picture with its
-    ///   blocking (the version current at the call's start: the shot's own frame once it wrote it,
-    ///   `own`), then each file of `references:` it mentions;
-    /// - its plate, its first frame (first call), its last frame (last call), and the call before
-    ///   it as `continue_from`.
-    ///
-    /// What the function does not take is left out and said (`said`).
+    /// Shot `k`'s call `call`, on the shot's one timeline, both ways:
+    /// - as the project says it, for its function's adapter: its summary and beats, its style, sound and music, each
+    ///   reference it reads by name, kind, description and digest, its plate, its first frame (first call), its last
+    ///   frame (last call) and the call before it. A world state's picture is the version current at the call's start:
+    ///   the shot's own frame once it wrote it, `own`.
+    /// - as one flat request for a function with no adapter: the summary and each beat's description as `prompt`, with
+    ///   what its schema takes (`Accepts`). What it does not take is left out and said (`said`).
     #[allow(clippy::too_many_arguments)]
     fn shot(
         &self,
@@ -1189,9 +1213,10 @@ impl Video {
         files: &mut Vec<Input>,
         mut call: Call,
         own: &BTreeMap<String, Asset>,
-        accepts: &Accepts,
+        renderer: &Renderer,
         said: &mut Vec<String>,
-    ) -> Result<(Value, Call), Error> {
+    ) -> Result<(Value, Value, Call), Error> {
+        let accepts = &renderer.accepts;
         let shot = &self.project.shots[k];
         let (index, last) = (call.index, call.index + 1 == call.ends.len());
         let (start, end) = (if index == 0 { 0.0 } else { call.ends[index - 1] }, call.ends[index]);
@@ -1206,64 +1231,40 @@ impl Video {
             let state = self.project.world_states.iter().find(|s| name_key(&s.name) == name_key(name));
             state.map(|s| s.blocking.clone()).unwrap_or_default()
         };
-        // Each reference the function takes, its fields cut to its kind's; its files listed.
-        let mut references: Vec<Value> = vec![];
-        let mut add = |mut entry: Map<String, Value>, sources: Vec<(&str, PathBuf, String)>, files: &mut Vec<Input>| {
-            let kind = entry.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let name = entry.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-            let Some(fields) = accepts.kinds.get(&kind) else {
-                said.push(format!("{}'s renderer takes no {kind} reference: {name} is left out", shot.name));
-                return;
-            };
-            let dropped: Vec<String> = entry.keys().filter(|key| *key != "kind" && !fields.contains(*key)).cloned().collect();
-            for key in dropped {
-                entry.remove(&key);
-                said.push(format!("{}'s renderer takes no {key} on a {kind} reference: {name}'s is left out", shot.name));
-            }
-            let n = references.len();
-            let kept: Vec<_> = sources.into_iter().filter(|(field, ..)| entry.contains_key(*field)).collect();
-            for (field, path, digest) in kept {
-                files.push(Input { field: format!("references.{n}.{field}"), path, digest: digest.clone(), at: None });
-                entry.insert(field.into(), Value::String(digest));
-            }
-            references.push(Value::Object(entry));
+        let keep = |path: PathBuf, digest: &str, files: &mut Vec<Input>| {
+            files.push(Input { field: String::new(), path, digest: digest.to_owned(), at: None });
+            Value::String(digest.to_owned())
         };
         let file = |path: &str| -> Result<(PathBuf, String), Error> {
             let input = self.inputs.get(path).ok_or_else(|| invalid("file_missing", format!("{}: {path} is not there", shot.name)))?;
             Ok((folder.path(&input.path), input.sha256.clone()))
         };
+        // Each reference as the project knows it.
+        let mut references: Vec<Value> = vec![];
         for read in reads {
-            let source = |field: &'static str| vec![(field, read.path.clone(), read.digest.clone())];
+            let picture = |files: &mut Vec<Input>| keep(read.path.clone(), &read.digest, files);
             match (self.items[read.edge.node], &read.edge.state) {
                 (Item::Entity(a), _) if !framed.contains(&a) => {
                     let entity = &self.project.entities[a];
-                    let mut entry = Map::new();
-                    entry.insert("name".into(), json!(entity.name));
-                    entry.insert("kind".into(), json!(entity.kind.name()));
-                    entry.insert("image".into(), Value::Null);
-                    entry.insert("description".into(), json!(entity.description));
-                    let mut sources = source("image");
+                    let mut entry = json!({"name": entity.name, "kind": entity.kind.name(), "description": entity.description, "image": picture(files)});
                     if let Some(voice) = &entity.voice {
                         let (path, digest) = file(voice)?;
-                        entry.insert("voice".into(), Value::Null);
-                        sources.push(("voice", path, digest));
+                        entry["voice"] = keep(path, &digest, files);
                     }
-                    add(entry, sources, files);
+                    references.push(entry);
                 }
                 (Item::Setup(a, _), _) => {
                     let env = &self.project.entities[a];
-                    let entry = json!({"name": env.name, "kind": "environment", "image": null, "description": env.description});
-                    add(entry.as_object().expect("an object").clone(), source("image"), files);
+                    references.push(json!({"name": env.name, "kind": "environment", "description": env.description, "image": picture(files)}));
                 }
                 (Item::State(_), _) | (Item::Shot(_), Some(_)) => {
                     let name = read.edge.state.clone().unwrap_or_else(|| self.graph.nodes[read.edge.node].id.clone());
-                    let entry = json!({"name": name, "kind": "environment", "follow": "loose", "image": null, "description": blocking(&name)});
                     // Once this shot wrote it, its own frame.
-                    let sources = match own.iter().find(|(state, _)| name_key(state) == name_key(&name)) {
-                        Some((_, frame)) => vec![("image", folder.path(&frame.path), frame.sha256.clone())],
-                        None => source("image"),
+                    let image = match own.iter().find(|(state, _)| name_key(state) == name_key(&name)) {
+                        Some((_, frame)) => keep(folder.path(&frame.path), &frame.sha256, files),
+                        None => picture(files),
                     };
-                    add(entry.as_object().expect("an object").clone(), sources, files);
+                    references.push(json!({"name": name, "kind": "world_state", "description": blocking(&name), "image": image}));
                 }
                 _ => {}
             }
@@ -1271,72 +1272,113 @@ impl Video {
         for read in reads {
             let Item::Reference(r) = self.items[read.edge.node] else { continue };
             let reference = &self.project.references[r];
-            add(reference.entry(), vec![(reference.file().0, read.path.clone(), read.digest.clone())], files);
+            let field = reference.file().0;
+            let mut fields = reference.fields.clone();
+            let mut entry = json!({"name": reference.name, "kind": if field == "image" { "prop" } else { field }});
+            entry[field] = keep(read.path.clone(), &read.digest, files);
+            if let Some(description) = fields.remove("description") {
+                entry["description"] = description;
+            }
+            entry["fields"] = Value::Object(fields);
+            references.push(entry);
         }
-        let mut payload = Map::new();
-        let mut text = shot.description.clone();
+        let sound = shot.soundscape.as_deref().unwrap_or(&self.project.soundscape).trim();
+        let music = shot.music.as_deref().unwrap_or_default().trim();
         let style = self.project.style.trim();
+        let mut node = json!({"version": self.version(), "name": shot.name, "function": renderer.function, "summary": shot.summary,
+            "beats": shot.beat_records(), "soundscape": sound, "music": music, "style": style, "aspect_ratio": self.canvas.aspect,
+            "duration_s": shot.duration_s, "start_s": start, "end_s": end, "references": references});
+        if let Some(plate) = &shot.plate {
+            let mut plate = plate.clone();
+            if let Some(path) = plate.get("video").and_then(Value::as_str) {
+                let (path, digest) = file(path)?;
+                plate.insert("video".into(), keep(path, &digest, files));
+            }
+            node["plate"] = Value::Object(plate);
+        }
+        for (field, path, here) in [("first_frame", &shot.first_frame, index == 0), ("last_frame", &shot.last_frame, last)] {
+            let Some(path) = path.as_ref().filter(|_| here) else { continue };
+            let (path, digest) = file(path)?;
+            node[field] = keep(path, &digest, files);
+        }
+        if let Some((video, latents)) = call.from.as_ref().filter(|_| index > 0) {
+            let mut from = Map::new();
+            for (field, file) in std::iter::once(("video", Some(video))).chain([("latents", latents.as_ref())]) {
+                let Some(file) = file else { continue };
+                from.insert(field.into(), keep(folder.path(&file.path), &file.sha256, files));
+            }
+            node["continues"] = Value::Object(from);
+        }
+        // The flat request, with what its schema takes.
+        let mut payload = Map::new();
+        let mut text = shot.flat(end);
         match (takes("style"), style.is_empty()) {
             (true, false) => drop(payload.insert("style".into(), json!(style))),
             (false, false) => text = format!("{text}\n\nStyle: {style}."),
             _ => {}
         }
-        if !self.project.soundscape.trim().is_empty() {
-            match takes("soundscape") {
-                true => drop(payload.insert("soundscape".into(), json!(self.project.soundscape.trim()))),
-                false => said.push(format!("{}'s renderer takes no soundscape: it is left out", shot.name)),
+        for (field, value) in [("soundscape", sound), ("music", music)] {
+            match (takes(field), value.is_empty()) {
+                (true, false) => drop(payload.insert(field.into(), json!(value))),
+                (false, false) => said.push(format!("{}'s renderer takes no {field}: it is left out", shot.name)),
+                _ => {}
             }
         }
         if takes("references") {
-            payload.insert("references".into(), Value::Array(references));
+            let mut flat = vec![];
+            for record in node["references"].as_array().expect("a list") {
+                let mut entry = record.as_object().expect("an object").clone();
+                if let Some(Value::Object(fields)) = entry.remove("fields") {
+                    entry.extend(fields);
+                }
+                if entry["kind"] == "world_state" {
+                    entry.insert("kind".into(), json!("environment"));
+                    entry.insert("follow".into(), json!("loose"));
+                }
+                let kind = entry["kind"].as_str().unwrap_or_default().to_owned();
+                let name = entry["name"].as_str().unwrap_or_default().to_owned();
+                let Some(fields) = accepts.kinds.get(&kind) else {
+                    said.push(format!("{}'s renderer takes no {kind} reference: {name} is left out", shot.name));
+                    continue;
+                };
+                let dropped: Vec<String> = entry.keys().filter(|key| *key != "kind" && !fields.contains(*key)).cloned().collect();
+                for key in dropped {
+                    entry.remove(&key);
+                    said.push(format!("{}'s renderer takes no {key} on a {kind} reference: {name}'s is left out", shot.name));
+                }
+                flat.push(Value::Object(entry));
+            }
+            payload.insert("references".into(), Value::Array(flat));
         } else {
             // With no references, a mention is the name itself.
             text = text.replace(['<', '>'], "");
         }
         payload.insert("prompt".into(), json!(text));
         payload.insert("duration_s".into(), json!(end));
-        if takes("shot_duration_s") && !last {
-            payload.insert("shot_duration_s".into(), json!(shot.duration_s));
-        }
         if takes("aspect_ratio") {
             payload.insert("aspect_ratio".into(), json!(self.canvas.aspect));
         }
-        if shot.plate.is_some() && !takes("plate") {
-            said.push(format!("{}'s renderer takes no plate: it renders without it", shot.name));
-        } else if let Some(plate) = &shot.plate {
-            let mut plate = plate.clone();
-            if let Some(path) = plate.get("video").and_then(Value::as_str) {
-                let (path, digest) = file(path)?;
-                files.push(Input { field: "plate.video".into(), path, digest: digest.clone(), at: None });
-                plate.insert("video".into(), Value::String(digest));
+        if let Some(plate) = node.get("plate") {
+            match takes("plate") {
+                true => drop(payload.insert("plate".into(), plate.clone())),
+                false => said.push(format!("{}'s renderer takes no plate: it renders without it", shot.name)),
             }
-            payload.insert("plate".into(), Value::Object(plate));
         }
-        for (field, path, here) in [("first_frame", &shot.first_frame, index == 0), ("last_frame", &shot.last_frame, last)] {
-            let Some(path) = path.as_ref().filter(|_| here) else { continue };
-            if !takes(field) {
-                said.push(format!("{}'s renderer takes no {field}: it is left out", shot.name));
-                continue;
+        for field in ["first_frame", "last_frame"] {
+            let Some(value) = node.get(field) else { continue };
+            match takes(field) {
+                true => drop(payload.insert(field.into(), value.clone())),
+                false => said.push(format!("{}'s renderer takes no {field}: it is left out", shot.name)),
             }
-            let (path, digest) = file(path)?;
-            files.push(Input { field: field.into(), path, digest: digest.clone(), at: None });
-            payload.insert(field.into(), Value::String(digest));
         }
-        if let Some((video, latents)) = call.from.as_ref().filter(|_| index > 0) {
-            let mut from = Map::new();
-            for (field, file) in std::iter::once(("video", Some(video))).chain([("latents", latents.as_ref())]) {
-                let Some(file) = file else { continue };
-                let digest = file.sha256.clone();
-                files.push(Input { field: format!("continue_from.{field}"), path: folder.path(&file.path), digest: digest.clone(), at: None });
-                from.insert(field.into(), Value::String(digest));
-            }
-            payload.insert("continue_from".into(), Value::Object(from));
+        if let Some(from) = node.get("continues") {
+            payload.insert("continue_from".into(), from.clone());
         }
         call.writes = (shot.written())
             .filter(|(_, at)| *at >= start && (*at < end || last))
             .map(|(state, at)| (state.to_owned(), at))
             .collect();
-        Ok((Value::Object(payload), call))
+        Ok((Value::Object(payload), node, call))
     }
 
     /// The pieces of the edit (`preview`: of its native cut): each cut's shot file and frames, by
@@ -1855,4 +1897,39 @@ pub fn reference_made(name: &str) -> Error {
 
 fn failed(message: String) -> Error {
     Error::new(Kind::Unavailable, "edit_failed", message)
+}
+
+/// Where each of `files` is in `value`, a request by its digests: its field, path and digest.
+pub fn files_in(value: &Value, files: &[Input]) -> Vec<(String, PathBuf, String)> {
+    fn walk(value: &Value, at: String, files: &[Input], found: &mut Vec<(String, PathBuf, String)>) {
+        let under = |key: String| if at.is_empty() { key } else { format!("{at}.{key}") };
+        match value {
+            Value::Object(fields) => fields.iter().for_each(|(key, value)| walk(value, under(key.clone()), files, found)),
+            Value::Array(items) => items.iter().enumerate().for_each(|(n, value)| walk(value, under(n.to_string()), files, found)),
+            Value::String(text) => {
+                if let Some(input) = files.iter().find(|input| input.digest == *text) {
+                    found.push((at, input.path.clone(), input.digest.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = vec![];
+    walk(value, String::new(), files, &mut found);
+    found
+}
+
+/// The share of `picture`'s pixels that are fully transparent; none if it can't be read.
+pub fn transparent_share(ffmpeg: &Path, picture: &Path) -> f64 {
+    let read = std::process::Command::new(ffmpeg)
+        .args(["-v", "error", "-i"])
+        .arg(picture)
+        .args(["-frames:v", "1", "-vf", "format=rgba,alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .output();
+    match read {
+        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+            out.stdout.iter().filter(|alpha| **alpha == 0).count() as f64 / out.stdout.len() as f64
+        }
+        _ => 0.0,
+    }
 }

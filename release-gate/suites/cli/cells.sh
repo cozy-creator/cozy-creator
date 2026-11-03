@@ -77,8 +77,8 @@ entities:
 world_states:
   - {name: start, init: "<lead> stands in <place>.", blocking: "lead in the middle, facing the camera."}
 shots:
-  - {name: one, setup: place.a, description: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
-  - {name: two, description: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
+  - {name: one, setup: place.a, summary: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
+  - {name: two, summary: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
 edit: [{shot: one, end: 96}, {shot: two, start: 24}]
 YAML
   # Two entities that mention each other: the mention that closes the cycle stays plain text, said, and both render.

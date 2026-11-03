@@ -194,7 +194,7 @@ done
 own_form() {  # own_form <check> <cell> <what its first piece's text opens with> <cut seconds>...
   [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || return 0
   local check=$1 name=$2 opens=$3 s first v t at r; shift 3
-  s=$("$CLI" run show "$(cat "$name.number")" --once 2>/dev/null | grep 'h3 piece prompt')
+  s=$("$CLI" run show "$(cat "$name.number")" --once 2>/dev/null | grep -E 'h3 (piece|segment) prompt')
   first=$(head -1 <<< "$s")
   expect "$check-text" "$(grep -qF "head=\"$opens" <<< "$first" && ! grep -qE 'One continuous shot|The same unbroken take|\[Shot 1\] \[Shot 1\]' <<< "$s" && echo PASS || echo FAIL)" "$(cut -c1-260 <<< "$first")"
   v=$(video_of "$name")
@@ -293,7 +293,7 @@ cell h3-shot-40s "$SHOT" references:="[{\"name\": \"Rider\", \"kind\": \"charact
 # so every gate checks it: three pieces, none told to carry on, and a sheet to judge by eye (its seams are judged below).
 if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then
   s=$("$CLI" run show "$(cat h3-shot-40s.number)" --once 2>/dev/null)
-  expect h3-take-no-continuation "$(grep -q 'h3 shot pieces .*pieces=3' <<< "$s" && ! grep -qE 'The same unbroken take|For its first two seconds|One continuous shot with no cuts' <<< "$s" && echo PASS || echo FAIL)" "$(grep -m1 'h3 shot pieces' <<< "$s" | cut -c1-200)"
+  expect h3-take-no-continuation "$(grep -qE 'h3 shot (pieces .*pieces|segments .*segments)=3' <<< "$s" && ! grep -qE 'The same unbroken take|For its first two seconds|One continuous shot with no cuts' <<< "$s" && echo PASS || echo FAIL)" "$(grep -m1 'h3 shot pieces' <<< "$s" | cut -c1-200)"
   nice -n 19 ffmpeg -v error -y -i "$(video_of h3-shot-40s)" -vf "fps=1,scale=224:-2,tile=10x5" -frames:v 1 h3-shot-40s-sheet.png && log "h3-shot-40s: judge by eye for a cut at each join: $PWD/h3-shot-40s-sheet.png"
 fi
 if [ -f h3-shot-40s.number ] && [ "$(run_get "$OUT" h3-shot-40s .status)" = completed ]; then

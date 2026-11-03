@@ -49,7 +49,7 @@ pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     let mut table = output::Table::new(ctx, HEADERS);
-    for row in rows(&list.runs) {
+    for row in list.runs.iter().filter(|run| shown(run)).map(row) {
         table = table.row(row);
     }
     if list.older > 0 {
@@ -95,6 +95,9 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
 
 /// Whether `run` is one `query` lists: its state, package and machine.
 pub(crate) fn matches(query: &Query, run: &Run) -> bool {
+    if !shown(run) {
+        return false;
+    }
     let status = serde_json::to_value(run.status).ok();
     let state = query
         .status
@@ -135,6 +138,11 @@ fn clip_target(target: String) -> String {
 /// run's reason in one line; `cozy run show` has it whole. TIME is its own, never its queue's.
 pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
     runs.iter().map(row).collect()
+}
+
+/// Whether the list people read shows it: a project adapter's run is `cozy project`'s own (`run show` and `--json` have it).
+pub(crate) fn shown(run: &Run) -> bool {
+    !run.target.contains("/project-adapter-")
 }
 
 fn row(run: &Run) -> Vec<String> {

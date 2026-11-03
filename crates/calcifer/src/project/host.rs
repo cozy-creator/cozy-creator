@@ -38,10 +38,15 @@ pub struct Renderer {
     pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
     pub accepts: Accepts,
+    /// Its package's project adapters: by node kind, the format versions each reads.
+    pub adapters: BTreeMap<String, Vec<u64>>,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
     pub calls: Vec<Slot>,
 }
+
+/// A project adapter's function is named this and its node kind (`App.project_adapter`).
+pub const ADAPTER: &str = "project-adapter-";
 
 /// What a function's request takes, as its schema says: a project sends only these fields, and a
 /// shot's references only of these kinds, with these fields each.
@@ -64,8 +69,10 @@ impl Accepts {
         let kinds = (union.as_array().into_iter().flatten())
             .filter_map(|member| Some((member["tag"].as_str()?.to_owned(), named(member))))
             .collect();
+        // A list with no room for anything is not taken.
+        let taken = fields(request).iter().filter(|f| f["constraints"]["max_length"].as_u64() != Some(0)).filter_map(|f| f["name"].as_str().map(str::to_owned)).collect();
         Self {
-            fields: named(request),
+            fields: taken,
             kinds,
             min_piece_s: extra("min_piece_s"),
         }
@@ -73,10 +80,10 @@ impl Accepts {
 }
 
 impl Renderer {
-    /// Whether its model draws a transparent background when asked in its model card's words. Such a
-    /// picture needs no clean.
-    pub fn draws_transparent(&self) -> bool {
-        self.package.rsplit('/').next() == Some("qwen-image-2")
+    /// The function of its package that turns a project node of `kind` into a call, if it reads this format's `version`.
+    pub fn adapter(&self, kind: &str, version: u64) -> Option<String> {
+        let reads = self.adapters.get(kind)?.contains(&version);
+        reads.then(|| format!("{ADAPTER}{kind}"))
     }
 
     /// `function` of the package interface `document`.
@@ -97,6 +104,15 @@ impl Renderer {
             release,
             local,
             accepts: Accepts::read(&entry["request"]),
+            adapters: interface::entrypoints(document)
+                .filter_map(|entry| {
+                    let kind = interface::name(entry)?.strip_prefix(ADAPTER)?;
+                    let fields = entry["request"]["fields"].as_array()?;
+                    let version = fields.iter().find(|field| field["name"] == "version")?;
+                    let reads = version["type"]["literal"].as_array()?.iter().filter_map(Value::as_u64).collect();
+                    Some((kind.to_owned(), reads))
+                })
+                .collect(),
             slots: read(interface::models(entry).iter().collect()),
             calls: read(interface::call_slots(document, entry)),
         })

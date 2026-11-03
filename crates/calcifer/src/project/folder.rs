@@ -79,6 +79,9 @@ pub struct Made {
     /// The runs that made it, in order: one per call of a shot made in consecutive calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<u64>,
+    /// What each of those runs was asked: a function and its exact input. Never read to say what is out of date.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invocations: Vec<Value>,
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,

@@ -108,6 +108,7 @@ of assets, numbered from 1 and never renumbered: a shot's take is its video and 
 makes the folder with a `project.yaml` holding a short film that renders as it stands; change it, or write your own:
 
 ```yaml
+version: 1
 style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
 aspect_ratio: "16:9"
 fps: 24
@@ -132,20 +133,19 @@ shots:
   - name: clash
     setup: coast.wide
     duration_s: 38
-    description: |
-      summary:
-      The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
-
-      detailed_description:
-      [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
-      At 00:14.000, <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
-      At 00:28.000, <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
-
-      overall_soundscape:
-      Crashing surf, roaring fire, bursts of steam, and deep impacts.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
+    soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
+    beats:
+      - at: 0
+        description: |
+          A wide shot shows <kyogre> in the surf on the left and <groudon> on the rocks on the right. <kyogre> fires a thick column of water across the frame.
+      - at: 14
+        description: |
+          <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf. <kyogre> dives beneath the flames.
+      - at: 28
+        description: |
+          <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves.
 ```
 
 What else a project can set:
@@ -198,14 +198,20 @@ another, as `git -C` does. Each take or version is sent as soon as what it reads
 ones render at once and the machine's scheduler places them. `--on a,b` spreads them over machines (the
 least busy, one that holds the models first), and a render asked while another goes joins it.
 
-A shot's `description` is its whole text, sent to its function as `prompt`. cozy reads only its `<mentions>` and adds
-nothing, so you write the function's own format, on the lines under `description: |`. For `minimax-h3` that is
-`summary:`, `detailed_description:`, `overall_soundscape:` and `non_diegetic_music:`. In the details, `[Shot 1]` opens a
-shot, a line starting `At 00:14.000, …` moves it on within the take, and `[Shot 2] At 00:20.000, the shot cuts to …` is
-a real cut; it plans its pieces from those. A writer who wants one take says so (`One continuous shot with no cuts.`),
-because cozy no longer adds it. Nothing you write is refused: an empty description gets a warning and renders anyway.
+A shot is a `summary`, the scene, sent with every part of it, and `beats`, each from `at` seconds. A cut is a new shot, and a
+one-action shot is one beat. Say the scene in the summary, not the sequence: a part can act on what it reads, and a camera move there runs again in every part, so camera moves go in beats. `soundscape:`
+and `music:` go with every part, and a sound of one moment goes in its beat's `description`. An `at` is approximate: H3 lands
+an action about 2 s late even when a part opens on it.
 
-A take can be shorter than `duration_s`: `minimax-h3` renders 15 s of a longer shot with no timestamps. The edit cuts
+Each package turns a node into its own call with a project adapter (`@app.project_adapter("shot")`), so `defaults:` can name
+another model and cozy needs no change. It runs on the render machine and only reads text, names and digests. Its call is
+recorded on the take in `project.lock`. A function with no adapter gets one flat `prompt`, the summary then each beat's
+description, with a warning. Adapter and package updates never put anything out of date.
+
+`version: 1` names the format of `project.yaml`. A file with none reads as 1, with a warning. Nothing you write is refused: a
+shot with no text gets a warning and renders anyway.
+
+A take can be shorter than `duration_s`: `minimax-h3` renders 15 s of a longer shot with one beat. The edit cuts
 the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
@@ -222,9 +228,9 @@ true`, goes to its function, and editing the file puts only those shots out of d
 in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
 shot. What a function does not take is left out and said.
 
-A character's picture is a 16:9 sheet (front, back, three close-ups) and a prop's a 16:9 sheet (front, back, a close-up),
-transparent on `qwen-image-2`. On any other renderer they're on white and, like a picture you attach, cleaned on this
-computer before use. Only a changed upstream file puts something out of date, never a text edit or a render block:
+`qwen-image-2` draws a character as a 16:9 sheet (front, back, three close-ups) and a prop as a 3:2 sheet (front, back), both
+transparent. Any character or prop picture that comes back without a real share of transparent pixels, and a picture you
+attach, is cleaned on this computer before use. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy project render <name>` when you want a new take. A node renders by its `render:` block: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
 project's folder, which Calcifer makes ready on each `--on` machine), `models` and `lora` as `cozy run --input` takes them, and
 `options`, the function's own fields. A block that

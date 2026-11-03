@@ -53,8 +53,11 @@ use tracing::warn;
 use crate::api::{Api, Refusal, parse};
 use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
-use host::Host;
-use video::{ALL, Canvas, Render, Video};
+use host::{Host, Renderer};
+use video::{ALL, Canvas, Render, Request, Video};
+
+/// A picture with at least this share of fully transparent pixels needs no clean (cl-726's sheets are 59-73%).
+const TRANSPARENT: f64 = 0.05;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
 /// project), and its index of every folder it opened, kept in `projects.json`.
@@ -894,28 +897,25 @@ impl Walk {
             let renderer = (self.host)
                 .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on)
                 .await?;
-            let request = video.request(self.folder(), lock, i, &renderer)?;
+            let mut request = video.request(self.folder(), lock, i, &renderer)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
-            let then = match video.cleans(i) && !renderer.draws_transparent() {
+            let then = match video.cleans(i) {
                 true => Then::Clean { approve },
                 false => Then::List { approve },
             };
-            let (mut payload, mut files, mut frames, mut said) = (request.payload, vec![], vec![], vec![]);
-            for input in request.files {
+            let (mut frames, mut said) = (vec![], vec![]);
+            for input in &mut request.files {
                 // A frame of a video, taken out here: held until the run has been sent.
-                let (path, digest) = match input.at {
-                    None => (input.path, input.digest),
-                    Some(at) => {
-                        let (frame, past) = self.frame(&id, &input.path, at).await?;
-                        said.extend(past);
-                        let digest = folder::hash(frame.path())?;
-                        set(&mut payload, &input.field, Value::String(digest.clone()));
-                        frames.push(frame);
-                        (frames.last().expect("a frame").path().to_owned(), digest)
-                    }
-                };
-                files.push((input.field, path, digest));
+                let Some(at) = input.at else { continue };
+                let (frame, past) = self.frame(&id, &input.path, at).await?;
+                said.extend(past);
+                input.digest = folder::hash(frame.path())?;
+                input.path = frame.path().to_owned();
+                set(&mut request.payload, &input.field, Value::String(input.digest.clone()));
+                set(&mut request.node, &input.field, Value::String(input.digest.clone()));
+                frames.push(frame);
             }
+            let (payload, files) = self.invocation(&mut request, &renderer, &target.hub, &target.on).await?;
             let (mut made, field, call, hub) =
                 (request.made.clone(), request.field.into(), request.call.clone(), target.hub.clone());
             made.warnings.extend(said);
@@ -1043,23 +1043,24 @@ impl Walk {
             };
             let lock = folder.lock()?;
             let renderer = self.host.renderer(hub, video.render(i).target(), &folder.dir, on).await?;
-            let request = video.next_call(folder, &lock, i, &renderer, next, &made.writes)?;
+            let mut request = video.next_call(folder, &lock, i, &renderer, next, &made.writes)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
+            let (payload, files) = self.invocation(&mut request, &renderer, hub, on).await?;
             let carried = Made {
                 node: node.clone(),
                 number: made.number,
                 upstream: made.upstream.clone(),
                 writes: made.writes.clone(),
                 runs: made.runs.clone(),
+                invocations: made.invocations.iter().chain(&request.made.invocations).cloned().collect(),
                 warnings: made.warnings.clone(),
                 ..Default::default()
             };
             let then = Then::List { approve };
             let field = "video".into();
             let pending = Pending { made: carried, run: 0, hub: hub.into(), field, on: vec![], call: request.call, then };
-            let files = request.files.into_iter().map(|input| (input.field, input.path, input.digest)).collect();
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
-            self.submit(&new_key(), &request.payload, files, &request.render, on, pending, &settle).await?;
+            self.submit(&new_key(), &payload, files, &request.render, on, pending, &settle).await?;
             return Ok(None);
         }
         let approve = approve || video.graph.nodes[i].file.is_none();
@@ -1095,6 +1096,62 @@ impl Walk {
     /// may not set a field the project compiles. The version records them, and the release, as what
     /// made it.
     #[allow(clippy::too_many_arguments)]
+    /// The call `request` makes: its package's adapter's, or its flat request. The take records it; its files are found
+    /// in it by digest.
+    async fn invocation(
+        &self,
+        request: &mut Request,
+        renderer: &Renderer,
+        hub: &str,
+        on: &[On],
+    ) -> Result<(Value, Vec<(String, PathBuf, String)>), Error> {
+        let (function, payload) = match request.adapter.clone() {
+            None => (renderer.function.clone(), request.payload.clone()),
+            Some(adapter) => self.adapt(renderer, &adapter, &request.node, hub, on).await?,
+        };
+        if function != renderer.function {
+            let target = request.render.target();
+            let (path, release) = target.split_once('@').map_or((target, None), |(path, release)| (path, Some(release)));
+            let package = path.rsplit_once('/').map_or(path, |(package, _)| package);
+            let with = release.map_or_else(|| format!("{package}/{function}"), |release| format!("{package}/{function}@{release}"));
+            request.render.with = Some(with);
+        }
+        request.made.invocations.push(serde_json::json!({"function": function, "input": payload}));
+        let files = video::files_in(&payload, &request.files);
+        Ok((payload, files))
+    }
+
+    /// A package's project adapter on `node`, an ordinary run on the machine the render goes to: the function and input it
+    /// answers. It holds no files: a file is its digest.
+    async fn adapt(&self, renderer: &Renderer, adapter: &str, node: &Value, hub: &str, on: &[On]) -> Result<(String, Value), Error> {
+        let failed = |why: String| Error::new(Kind::Unavailable, "project_adapter", format!("{}'s {adapter}: {why}", renderer.package));
+        let placed = self.host.place(on, renderer);
+        let (source, inputs) = match &renderer.local {
+            None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
+            Some(path) => {
+                let prepared = self.host.ready(path, &placed, hub).await?;
+                (v1::Source::Local(prepared.source), prepared.files)
+            }
+        };
+        let spec = v1::RunSpec {
+            kind: v1::RunKind::Call,
+            source: Some(source),
+            entrypoint: adapter.to_owned(),
+            payload: Some(v1::Json::parse(node.to_string()).expect("a node is JSON")),
+            ..Default::default()
+        };
+        let asked = Renderer { function: adapter.to_owned(), ..renderer.clone() };
+        let submit = SubmitRun { on: placed, hub: hub.to_owned(), kind: RunKind::Call, target: asked.target(), spec, inputs, out: None, warnings: vec![], agreed: None };
+        let run = self.host.submit(&new_key(), submit).await?;
+        let run = self.host.wait(&run.id).await?;
+        if run.status != RunStatus::Completed {
+            return Err(failed(run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone())));
+        }
+        let result = run.result.as_ref().ok_or_else(|| failed("it returned nothing".into()))?;
+        let function = result["function"].as_str().ok_or_else(|| failed("it named no function".into()))?;
+        Ok((function.to_owned(), result["input"].clone()))
+    }
+
     async fn submit(
         &self,
         key: &str,
@@ -1275,7 +1332,16 @@ impl Walk {
                 made.warnings.push(message);
             }
         }
-        if let Then::Clean { approve } = pending.then {
+        // A picture that came back with a real share of fully transparent pixels needs no clean.
+        let opaque = match (&pending.then, self.host.ffmpeg().await) {
+            (Then::Clean { .. }, Ok((ffmpeg, _))) => {
+                let path = picture.clone();
+                tokio::task::spawn_blocking(move || video::transparent_share(&ffmpeg, &path) < TRANSPARENT).await.unwrap_or(true)
+            }
+            _ => true,
+        };
+        if let (Then::Clean { approve }, true) = (&pending.then, opaque) {
+            let approve = *approve;
             // Listed once cleaned, made by both runs: the render as its `image`, and its `clean`.
             made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
             return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub });

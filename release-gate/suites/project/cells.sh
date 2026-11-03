@@ -1,6 +1,6 @@
 # Suite `project` (xs-139, cl-716): `cozy project render` on fixture projects, the walk in this computer's Calcifer (the
 # candidate cozy), the runs on $M. Each cell is a project folder under $OUT, judged from its project.lock and assets:
-# - project-split: a 10 s shot whose text reads a state it writes at 5 s: two calls, the second continuing the first
+# - project-split: a 10 s shot whose beats read a state it writes at 5 s: two calls, the second continuing the first
 #   (`continue_from`, the first's latents), the written frame kept, the join smooth; project-upscale: its upscale from
 #   those latents, at 1080p and the shot's aspect, and edit.mp4 at the 1920x1080 canvas.
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
@@ -45,9 +45,15 @@ world_states:
   - {name: wall, init: "<yard>'s long wall, bare.", blocking: "a stepladder against the wall", image: place.png}
 shots:
   - name: mural
-    description: |
-      [Shot 1] <hero> paints a sign on the long wall of <yard>, rolling bright orange paint across it in big letters that read OPEN.
-      At 00:06.000, <hero> steps back from <wall>, where the orange letters read OPEN, and says "Done."
+    summary: |
+      <hero> paints a sign on the long wall of <yard>.
+    beats:
+      - at: 0
+        description: |
+          <hero> rolls bright orange paint across the wall in big letters that read OPEN.
+      - at: 6
+        description: |
+          <hero> steps back from <wall>, where the orange letters read OPEN, and says "Done."
     duration_s: 10
     render: {options: {seed: $((R + 300))}}
     writes: [{state: wall, at: 5}]
@@ -64,10 +70,8 @@ YAML
     # The first call delivers 124 frames (H3's 17n+5 grid), so the join is at 5.17 s; a window at 5 s misses it.
     r=$("${FR[@]}" seams "$P/$f" --at 5.17 2>&1 | tail -1)
     expect project-split-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at 5.17 s: $r"
-    # The first call leaves the text at 6 s to the second, and says nothing of it (se-100), with a function that takes shot_duration_s.
-    if "$CLI" run "$H3GEN" --describe 2>/dev/null | grep -q shot_duration_s; then
-      expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
-    fi
+    # The first call leaves the beat at 6 s to the second, and says nothing of it (se-100).
+    expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
   fi
   if want project-upscale && [ -n "$f" ]; then
     render project-upscale "$P" mural.upscale || expect project-upscale FAIL "render mural.upscale: $(tail -c 300 project-upscale.log)"
@@ -93,7 +97,7 @@ defaults: {shot: {with: $H3GEN}}
 entities:
   - {name: pattern, kind: environment, description: "a synthetic broadcast test pattern", image: plate.png}
 shots:
-  - {name: follow, description: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears.",
+  - {name: follow, summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears.",
      duration_s: 5, plate: {video: plate.mp4}, render: {options: {seed: $((R + 301))}}}
 YAML
 )
@@ -114,7 +118,7 @@ entities:
   - {name: host, kind: character, description: "$CHAR", image: hero.png, voice: voice.wav}
   - {name: yard, kind: environment, description: "$SCENE", image: place.png}
 shots:
-  - {name: hello, description: "<host> stands in <yard>, looks into the camera and says \"Welcome to the yard.\"", duration_s: 5,
+  - {name: hello, summary: "<host> stands in <yard>, looks into the camera and says \"Welcome to the yard.\"", duration_s: 5,
      render: {options: {seed: $((R + 302))}}}
 YAML
 )
@@ -180,7 +184,7 @@ aspect_ratio: "16:9"
 entities:
   - {name: yard, kind: environment, description: "$SCENE", image: place.png}
 shots:
-  - {name: square, description: "<yard>.", duration_s: 5, render: {with: $SDXL, options: {aspect_ratio: "1:1"}}}
+  - {name: square, summary: "<yard>.", duration_s: 5, render: {with: $SDXL, options: {aspect_ratio: "1:1"}}}
 YAML
 )
   for c in "square:set by the project"; do

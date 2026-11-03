@@ -27,7 +27,7 @@ impl Runs {
                 ..query
             },
             limit,
-            runs: list.runs,
+            runs: list.runs.into_iter().filter(list::shown).collect(),
             watch,
         })
     }

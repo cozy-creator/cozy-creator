@@ -48,12 +48,12 @@ YAML
   cat <<'YAML'
 shots:
   - name: a
-    description: |
+    summary: |
       Test pattern a.
     duration_s: 6
     video: plates/a.mp4
   - name: b
-    description: |
+    summary: |
       Test pattern b.
     duration_s: 6
     video: plates/b.mp4

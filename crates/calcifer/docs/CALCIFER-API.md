@@ -335,17 +335,21 @@ is said (`reference changed`). A file neither at its path nor in `assets/` is `r
 it not rendering. Names live only in project.yaml and project.lock. Calcifer deletes from `assets/` only what
 project.lock no longer names.
 
-A shot's `description` is opaque text but for its `<mentions>`, sent as its function's `prompt`. Calcifer adds nothing:
-a person writes the function's own conventions in it.
+A shot's `summary` and `beats` are opaque text but for their `<mentions>`. Calcifer sends a node to its package's project
+adapter (`project-adapter-<kind>`, on the render machine), and runs the function and input it answers, recording them on the
+take as `invocations`; a file in them is its digest. A function with no adapter gets one flat `prompt`, with a warning.
 
 ```yaml
+version: 1
 shots:
   - name: fight
     duration_s: 20
-    description: |
-      [Shot 1] <theo> and <juno> on <dock>. They circle.
-      At 00:05.000, <juno> lunges.
-      [Shot 2] At 00:10.000, the shot cuts to <juno> sweeping his legs.
+    summary: <theo> and <juno> circle each other on <dock>.
+    beats:
+      - at: 0
+        description: They circle.
+      - at: 5
+        description: <juno> lunges.
 ```
 
 A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
