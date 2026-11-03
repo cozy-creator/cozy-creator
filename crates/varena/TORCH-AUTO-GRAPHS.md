@@ -86,7 +86,8 @@ The separate eager component-stream helper is now root-local
 `/root/p3_trim_qualification_nov3`-owned (superseding the inactive external Agent2
 assignment); this lane does not
 duplicate or edit its new file. Helper feature18e44b971 is now composed unchanged
-as87e8c4e9b. Use its committed API outside automatic
+as87e8c4e9b and final bounded-prefix featured9e690664 as9fbf30054 (diagnostic
+client correctiondacc069b2 as78f70ff70). Use its committed API outside automatic
 dispatch: component input/output scope -> measured eager/graph dispatcher on the
 actual selected stream -> one outer output handoff. Reuse that selected stream and
 the helper's checked join/completion information. If actual caller-stream changes
@@ -131,7 +132,11 @@ the actual owner device/capture state before fast reuse. Both helper/wired sourc
 hashes must ship together; explicit scopes are usable, but automatic root-forward/VAE
 wrappers and default graph dispatch are not claimed by this stage. Actual host/binding/
 tiny-VAE explicit-method CPU checks pass; CUDA fast-path/events/performance are unrun.
-The helper owner delivers final clients/receipts separately; no WIP file was imported.
+The helper owner's final committed clients/diagnostic are now composed; no WIP file was
+imported. Prefix witnesses are independently owned completed-prefix proofs, not stored
+on the outer scope or revoked by later work. A later failure invalidates final whole-
+scope completion only. CPU is host-only; driver-library mapping at Torch import does
+not turn CPU tensors into GPU proof.
 
 The state machine is cold -> measured -> prepared/cached; a changed key retires the old
 selection. No invocation executes eager as a retry after capture/replay has begun.

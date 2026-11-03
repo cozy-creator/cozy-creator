@@ -19,6 +19,19 @@ from tensorfs.varena._offload_stream import component_scope, reuse
 
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
+
+
+def driver_paths():
+    return sorted(
+        {
+            line.split()[-1]
+            for line in Path("/proc/self/maps").read_text().splitlines()
+            if "libcuda.so" in line
+        }
+    )
+
+
+driver_before = driver_paths()
 torch.manual_seed(37)
 model = torch.nn.Sequential(
     torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2)
@@ -62,13 +75,14 @@ except ValueError as error:
 else:
     raise AssertionError("component helper swallowed an authored exception")
 assert not reuse(device, None)
-for witness in (proof, failed.completion):
-    try:
-        witness.query()
-    except adapter.OffloadError:
-        pass
-    else:
-        raise AssertionError("failed scope witness claimed successful completion")
+assert proof.checked and proof.query(), "completed prefix was revoked by later work"
+assert not proof.can_train  # Actual CPU prefix, never a CUDA training proof.
+try:
+    failed.completion.query()
+except adapter.OffloadError:
+    pass
+else:
+    raise AssertionError("failed final scope witness claimed successful completion")
 try:
     outer.checkpoint()
 except adapter.OffloadError:
@@ -102,6 +116,14 @@ with torch.inference_mode():
             component_scope(device, (inputs,), capture_bindings=binding) as capture,
         ):
             assert capture.capture and not reuse(device, None)
+            try:
+                checkpoint.query()
+            except adapter.OffloadError:
+                pass
+            else:
+                raise AssertionError(
+                    "eager prefix witness queried inside capture bindings"
+                )
             actual = capture.output(model(inputs))
             assert capture.checkpoint() is None
     finally:
@@ -166,18 +188,21 @@ torch.testing.assert_close(decoded.sample, expected_image, rtol=0, atol=0)
 assert vae.forward_calls == 0
 vae_handle.close()
 assert not torch.cuda.is_initialized()
-assert "libcuda.so" not in Path("/proc/self/maps").read_text()
+assert driver_paths() == driver_before
 print(
     json.dumps(
         {
             "torch": torch.__version__,
             "cuda": False,
             "actual_host_model_nested_scope_and_output_identity": True,
-            "open_checkpoint_host_only_failed_proofs_refused": True,
+            "independent_checked_prefix_survives_later_failure": True,
+            "failed_final_scope_and_capture_binding_witness_refused": True,
             "capture_bindings_bypass_eager_witness_and_materialization": True,
             "direct_weight_read_preserved": True,
             "tiny_vae_encode_decode_exact_explicit_scopes": True,
             "vae_root_forward_calls": vae.forward_calls,
+            "driver_paths_before_execution": driver_before,
+            "driver_mapping_unchanged_across_cpu_execution": True,
             "gpu_reuse_records_events_or_automatic_root_wrappers": "not exercised",
         }
     )
