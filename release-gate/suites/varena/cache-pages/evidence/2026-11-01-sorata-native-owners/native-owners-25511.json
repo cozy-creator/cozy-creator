@@ -1,0 +1,263 @@
+{
+  "id": "run-bef68da771f7557e22ea409d",
+  "number": 25511,
+  "kind": "call",
+  "target": "local/ci-varena-cache-pages/native_owners",
+  "hub": "https://tensorhub.com",
+  "machine": "sorata",
+  "status": "completed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "output": [],
+  "created_at_ms": 1793563972599,
+  "accepted_at_ms": 1793563972715,
+  "started_at_ms": 1793563976456,
+  "settled_at_ms": 1793563978393,
+  "result": {
+    "detail": "{\"child_exited\": true, \"command\": [\"/var/lib/cozy/tensord/editable/08b1dea709d6d408/ci-varena-cache-pages/source-4af87fc27cebe21b5ebd3832b7c5901f8d3f828d358b30a0627a124cc100da56/tree/ci_varena_cache_pages/bin/varena-cache-pages\", \"owners\", \"/dev/shm/varena-cache-pages-w5k4gnpa\", \"GPU-846689c6-daf3-15b1-580e-f2a78bdf6748\", \"0\"], \"driver_after_child\": {\"free\": 24668602368, \"total\": 25252724736}, \"mode\": \"owners\", \"passed\": true, \"pid\": 118973, \"pidfd_exit_observed\": true, \"provenance\": {\"controller_pid\": 118956, \"driver_before\": {\"free\": 24729419776, \"total\": 25252724736}, \"input\": {\"gpu_uuid\": \"GPU-846689c6-daf3-15b1-580e-f2a78bdf6748\", \"helper_sha256\": \"d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518\", \"native_extension_sha256\": \"070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6\", \"source_sha\": \"9b98c10b958cb705b257d87cee26cec9fa11bf11\", \"timeout_s\": 60.0}, \"manifest\": {\"archive_sha256\": \"2f59e406385dc3e19edc166cc321ea5322bd87cf3b1906dbb11ef91451c132e0\", \"binary_sha256\": \"d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518\", \"elf\": {\"class\": \"ELF64\", \"glibc_max\": [2, 28], \"glibc_versions\": [[2, 2], [2, 3], [2, 10], [2, 12], [2, 14], [2, 16], [2, 17], [2, 18], [2, 28]], \"machine\": \"x86_64\", \"needed\": [\"libdl.so.2\", \"libgcc_s.so.1\", \"libpthread.so.0\", \"libc.so.6\", \"ld-linux-x86-64.so.2\"]}, \"mixed_sources\": null, \"native_base\": \"c3bf579ae82b42b254aa30fe54c609fc8e89afcb\", \"native_source\": \"9b98c10b958cb705b257d87cee26cec9fa11bf11\", \"native_tree\": \"5d96df72e5259e0e81a8a40d034d07b70ba6cf18\", \"scope\": \"native Cache owner queue, finite allocator hook, strict ready-only collection, registry concurrency and actual native_owners/arena_concurrency fixture; no Python/Runtime graph callback adoption in this checkpoint; GPU pending\", \"source_receipt_sha256\": \"e123c5c1f5a0244fbcc5796b5fe0aaa1adb56d42758f2856b3a4aff15f4be3dc\", \"source_sha\": \"9b98c10b958cb705b257d87cee26cec9fa11bf11\"}, \"native_extension\": \"/var/lib/cozy/tensord/generations/00ca8fa47d96f4e021128cee3a1b1d7f/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so\", \"parent_cache_binding_available\": true, \"request_id\": \"29\", \"versions\": {\"cozy-runtime\": \"0.36.22+dev.g7adc1e82\", \"tensorfs\": \"0.17.16+dev.ga96c7c3e\", \"torch\": \"2.14.0\"}}, \"report\": {\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"detail\": {\"accounting\": {\"cache_idle\": 0, \"cache_live\": 2097152, \"cache_pending\": 0, \"pending_release\": 2097152, \"physical\": 8388608, \"reclaimable\": 0, \"refreshed\": true, \"weight_idle\": 0, \"weight_live\": 0, \"weight_pending\": 6291456}, \"after\": {\"cache_live\": 2097152, \"cache_mapped\": 2097152, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 4194304, \"caches\": 2, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 9, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"before\": {\"cache_live\": 4194304, \"cache_mapped\": 4194304, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 4194304, \"caches\": 2, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 7, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"both_callback_owners_retired\": true, \"first\": {\"callbacks\": 1, \"declined\": 1}, \"first_full_readback\": true, \"page\": 2097152, \"real_owner_lock_held\": true, \"request\": {\"declined\": 1, \"failed\": 0, \"observed_physical_release\": 2097152, \"returned\": 2}, \"request_generation\": 1, \"scope\": \"actual native owner requests and physical release; allocator trigger and Python/GIL integration are separate\", \"second\": {\"callbacks\": 1, \"returned\": 1}, \"weights\": {\"context_joins_after\": 0, \"context_joins_before\": 0, \"event_waits_after\": 0, \"event_waits_before\": 0, \"pending_and_unjoined_full_readback\": true, \"resident_after\": 6291456, \"resident_before\": 6291456}}, \"driver\": {\"free\": 24283447296, \"total\": 25252724736}, \"event\": \"result\", \"final\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 11, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"final_accounting\": {\"cache_idle\": 0, \"cache_live\": 0, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 0, \"reclaimable\": 0, \"refreshed\": true, \"weight_idle\": 0, \"weight_live\": 0, \"weight_pending\": 0}, \"gpu_uuid\": \"GPU-846689c6-daf3-15b1-580e-f2a78bdf6748\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"owners\", \"passed\": true, \"pid\": 118973}, \"returncode\": 0, \"start_ticks\": 111154214, \"stderr\": \"\", \"stdout\": [{\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"driver\": {\"free\": 24287641600, \"total\": 25252724736}, \"event\": \"ready\", \"gpu_uuid\": \"GPU-846689c6-daf3-15b1-580e-f2a78bdf6748\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"owners\", \"pid\": 118973, \"start_ticks\": 111154214}, {\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"detail\": {\"accounting\": {\"cache_idle\": 0, \"cache_live\": 2097152, \"cache_pending\": 0, \"pending_release\": 2097152, \"physical\": 8388608, \"reclaimable\": 0, \"refreshed\": true, \"weight_idle\": 0, \"weight_live\": 0, \"weight_pending\": 6291456}, \"after\": {\"cache_live\": 2097152, \"cache_mapped\": 2097152, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 4194304, \"caches\": 2, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 9, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"before\": {\"cache_live\": 4194304, \"cache_mapped\": 4194304, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 4194304, \"caches\": 2, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 7, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"both_callback_owners_retired\": true, \"first\": {\"callbacks\": 1, \"declined\": 1}, \"first_full_readback\": true, \"page\": 2097152, \"real_owner_lock_held\": true, \"request\": {\"declined\": 1, \"failed\": 0, \"observed_physical_release\": 2097152, \"returned\": 2}, \"request_generation\": 1, \"scope\": \"actual native owner requests and physical release; allocator trigger and Python/GIL integration are separate\", \"second\": {\"callbacks\": 1, \"returned\": 1}, \"weights\": {\"context_joins_after\": 0, \"context_joins_before\": 0, \"event_waits_after\": 0, \"event_waits_before\": 0, \"pending_and_unjoined_full_readback\": true, \"resident_after\": 6291456, \"resident_before\": 6291456}}, \"driver\": {\"free\": 24283447296, \"total\": 25252724736}, \"event\": \"result\", \"final\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 11, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"final_accounting\": {\"cache_idle\": 0, \"cache_live\": 0, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 0, \"reclaimable\": 0, \"refreshed\": true, \"weight_idle\": 0, \"weight_live\": 0, \"weight_pending\": 0}, \"gpu_uuid\": \"GPU-846689c6-daf3-15b1-580e-f2a78bdf6748\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"owners\", \"passed\": true, \"pid\": 118973}]}",
+    "passed": true
+  },
+  "execution_ms": 1893,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.01,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 1453.2,
+          "package_import": 8.4,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 1461.6,
+        "started_unix_ms": 1793563976510
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793563978312686,
+          "gpu": 0,
+          "pid": 118956,
+          "start_us": 1793563978031934,
+          "uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793563978337.4,
+      "reply_sent_unix_ms": 1793563978338.6,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 3932160,
+          "gpu": 0,
+          "peak_bytes": 979763200,
+          "power_max_w": 63,
+          "sm_mhz_limit": 3105,
+          "sm_mhz_low": 2520,
+          "sm_mhz_mean": 2520,
+          "temperature_max_c": 46,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 30994784,
+      "peak_reserved_bytes": 75497472,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 7.128696641235672,
+              "h2d_gbps": 25.74674457960659
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 21099521,
+              "allocator": {
+                "allocations": 172,
+                "context_joins": 0,
+                "driver_memory_calls": 63,
+                "event_queries": 51,
+                "event_records": 48,
+                "event_waits": 0,
+                "frees": 164,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 135035004928,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "cooperation": {
+                "active": true,
+                "active_recoveries": 0,
+                "deferred": 0,
+                "demand_clear_pending": false,
+                "failed": null,
+                "last_donation": null,
+                "last_recovery": null,
+                "last_withdrawn_round": null,
+                "pending_withdrawals": 0,
+                "physical_bytes": 14680064,
+                "published": 5,
+                "recoveries": 0,
+                "retired": false,
+                "serviced": 5,
+                "stopping": false,
+                "withdrawn_rounds": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 30994784,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "29",
+              "reserved": 75497472,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "driver_physical_ooms": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 20945921,
+                "allocated_capacity": 26873344,
+                "allocated_peak": 30994784,
+                "allocations": 192,
+                "cache_live_bytes": 0,
+                "cache_mapped_bytes": 0,
+                "cache_pending_bytes": 0,
+                "cache_ready_bytes": 0,
+                "cache_reserved_bytes": 0,
+                "caches": 0,
+                "context_joins": 0,
+                "driver_memory_calls": 73,
+                "driver_physical_ooms": 0,
+                "event_handles": 37,
+                "event_queries": 56,
+                "event_records": 53,
+                "event_waits": 0,
+                "free_bytes": 44080128,
+                "frees": 182,
+                "mapped_bytes": 75497472,
+                "mapped_peak": 75497472,
+                "ooms": 0,
+                "pending_bytes": 2688000,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 33554432,
+                "unassigned_bytes": 1856000
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 30994784
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.22+dev.g7adc1e82",
+      "tensord": "0.15.7+dev.g616cf254",
+      "tensord_commit": "616cf254b032e7b6522d3205657a41485db33579",
+      "tensorfs": "0.17.16+dev.ga96c7c3e"
+    }
+  }
+}
