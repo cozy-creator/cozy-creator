@@ -441,10 +441,10 @@ impl Machines {
                 Err(e) => {
                     warn!(ask = ask.key, "asking {} again: {e}", ask.hub);
                     let key = &ask.key;
+                    pause = e.wait_or((pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60)));
                     tell(&Err(e.remedy(format!(
                         "it is asked again under the key {key:?}; the same key answers its outcome"
                     ))));
-                    pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60));
                     tokio::time::sleep(pause).await;
                 }
                 Ok(rental) => {
@@ -818,7 +818,7 @@ impl Machines {
                 }
                 Err(e) => {
                     warn!(machine = row.name, "reading its boot: {e}");
-                    pause = (pause * 2).min(Duration::from_secs(60));
+                    pause = e.wait_or((pause * 2).min(Duration::from_secs(60)));
                 }
             }
             tokio::time::sleep(pause).await;
@@ -1093,6 +1093,7 @@ impl Machines {
         }
         let mut released = false;
         loop {
+            pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             let client = match self.hubs.client(&ask.hub) {
                 Ok(client) => client,
                 Err(e) => return settle(Err(e.message)),
@@ -1109,7 +1110,8 @@ impl Machines {
                     }
                     Err(e) if e.kind == Kind::Credential => return settle(Err(said(&e))),
                     Err(e) if e.kind == Kind::Unavailable => {
-                        warn!(rental = id, "releasing it: {e}")
+                        warn!(rental = id, "releasing it: {e}");
+                        pause = e.wait_or(pause);
                     }
                     Err(_) => released = true,
                 }
@@ -1128,11 +1130,13 @@ impl Machines {
                     }
                     Err(e) => match hub_refusal(&ask.hub, e) {
                         e if e.kind == Kind::Credential => return settle(Err(said(&e))),
-                        e => warn!(rental = id, "reading its end: {e}"),
+                        e => {
+                            warn!(rental = id, "reading its end: {e}");
+                            pause = e.wait_or(pause);
+                        }
                     },
                 }
             }
-            pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             tokio::time::sleep(pause).await;
         }
     }

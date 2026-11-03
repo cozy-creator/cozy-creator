@@ -373,30 +373,43 @@ impl Lifecycle {
     }
 }
 
-/// Keeps the Hub's authorized keys: asked again at half the lease it names. While the Hub is
-/// unreachable or not yet ready the keys stay as they were, and it is asked again after 1 s,
-/// doubling to 5 s (the Hub reads a pod's readiness every 5 s).
+/// Keeps the Hub's authorized keys: asked again at half the lease it names. A rental not yet ready
+/// is asked again after 1 s, doubling to 5 s (the Hub reads a pod's readiness every 5 s). While the
+/// Hub cannot answer the keys stay as they were, and it is asked again when it said, else after
+/// 1 s, doubling to a minute; so while it denies this attempt. A rental the Hub says has ended is
+/// asked no more: nothing it says will change that, and it holds no key.
 pub async fn keep_authority(hub: Arc<Hub>, keys: Keys) {
-    const UNANSWERED: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(5));
-    let mut unanswered = UNANSWERED.0;
+    const FIRST: Duration = Duration::from_secs(1);
+    const NOT_READY: Duration = Duration::from_secs(5);
+    const MOST: Duration = Duration::from_secs(60);
+    let mut unanswered = FIRST;
     loop {
         let delay = match hub.authorized_keys().await {
             Ok((current, lease)) => {
                 keys.renew(current);
-                unanswered = UNANSWERED.0;
+                unanswered = FIRST;
                 lease / 2
+            }
+            Err(Refusal::Ended) => {
+                tracing::error!("the Hub says this rental has ended; no new control is admitted, and its keys are asked for no more");
+                keys.revoke();
+                return;
             }
             Err(Refusal::Denied) => {
                 tracing::error!(
                     "the Hub denied rental authority; no new control is admitted"
                 );
                 keys.revoke();
-                Duration::from_secs(1)
+                unanswered = (unanswered * 2).min(MOST);
+                unanswered
             }
-            Err(Refusal::Transport(_)) => {
-                let delay = unanswered;
-                unanswered = (unanswered * 2).min(UNANSWERED.1);
-                delay
+            Err(Refusal::NotReady) => {
+                unanswered = (unanswered * 2).min(NOT_READY);
+                unanswered
+            }
+            Err(Refusal::Transport(_, wait)) => {
+                unanswered = (unanswered * 2).min(MOST);
+                wait.unwrap_or(unanswered)
             }
         };
         tokio::time::sleep(delay).await;
@@ -413,7 +426,7 @@ pub async fn release_when_idle(
     provider: Option<super::provider::ProviderSelf>,
     jobs: impl Fn(i64) -> io::Result<Jobs>,
 ) {
-    let mut next_ask = 0;
+    let (mut next_ask, mut unanswered) = (0, 2_500);
     loop {
         let epoch = lifecycle.epoch();
         match jobs(lifecycle.ended_ms()) {
@@ -432,11 +445,22 @@ pub async fn release_when_idle(
                         tracing::info!("15 minutes without a job; Tensorhub accepted the release");
                         return;
                     }
+                    // Its rental is over at the Hub, yet the pod is here: only it can end itself.
+                    Err(Refusal::Ended) => {
+                        tracing::warn!("idle, and the Hub says this rental has ended; ending this pod itself");
+                        end_itself(provider.as_ref()).await;
+                        return;
+                    }
                     Err(error) => {
                         tracing::warn!("idle release not accepted; retrying without extending the deadline: {error}");
-                        next_ask = now + 5_000;
+                        unanswered = (unanswered * 2).min(60_000);
+                        next_ask = now + match &error {
+                            Refusal::Transport(_, Some(wait)) => wait.as_millis() as i64,
+                            _ => unanswered,
+                        };
                         if unheard(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace) {
-                            end_without_hub(provider.as_ref()).await;
+                            tracing::warn!("idle past the deadline with no answer from Tensorhub through the whole idle window; ending this rental itself");
+                            end_itself(provider.as_ref()).await;
                             return;
                         }
                     }
@@ -528,8 +552,7 @@ fn unheard(contact_ms: i64, deadline_ms: i64, grace: i64) -> bool {
     contact_ms < deadline_ms - grace
 }
 
-async fn end_without_hub(provider: Option<&super::provider::ProviderSelf>) {
-    tracing::warn!("idle past the deadline with no answer from Tensorhub through the whole idle window; ending this rental itself");
+async fn end_itself(provider: Option<&super::provider::ProviderSelf>) {
     match provider {
         Some(provider) => match provider.end().await {
             Ok(()) => tracing::info!("the provider accepted this pod's end"),

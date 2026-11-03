@@ -1656,7 +1656,7 @@ fn absent(refusal: hub_client::Error, code: &'static str, read: &str, named: imp
     let failed = if refusal.retry() { UNREACHABLE } else { "catalog_read_failed" };
     let why = match refusal {
         hub_client::Error::Hub { status: 404, code: hub, .. } if !hub.starts_with("http_") => return (code, named()),
-        hub_client::Error::Hub { status, code, message, remedy } => match remedy.is_empty() {
+        hub_client::Error::Hub { status, code, message, remedy, .. } => match remedy.is_empty() {
             true => format!("the Hub answered {status} {code}: {message}"),
             false => format!("the Hub answered {status} {code}: {message} ({remedy})"),
         },
