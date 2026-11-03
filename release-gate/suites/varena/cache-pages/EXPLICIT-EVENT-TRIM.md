@@ -31,7 +31,8 @@ Final physical/event counters must return exactly to baseline.
 
 Build the helper against the exact new core/std cohort, never a second static
 core or a historical binary. The helper lock records its already-required direct
-nvml-wrapper-sys dependency. The unrelated owner-close observer patch from the
+nvml-wrapper-sys and current platform dependencies. The unrelated owner-close
+observer patch from the
 original 2e commit is excluded; owner_retirement.rs remains byte-identical to873.
 
 CPU/source checks do not qualify GPU behavior. If the original LM count still
