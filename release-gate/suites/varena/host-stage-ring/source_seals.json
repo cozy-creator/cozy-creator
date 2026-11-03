@@ -1,0 +1,28 @@
+{
+  "9d": {
+    "revision": "9d959e31d6fc58a2d4c1f7371bc3a2b6b658c6de",
+    "files": {
+      "varena/_offload.py": "b555ff809cca883b3acbbe5ad44a64e9ba7897a9d0d6d7ed3731bdcead5f3570",
+      "varena/_offload_auto.py": "831608fe961047c75103a10f8c3514f4157c20d3f25df9555ed148a4490d21be",
+      "varena/_offload_graph.py": "2fc6fd464505d57ba3441b694586b2b648539b7dc63b97a938ba2b90c61eb27e",
+      "varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+      "varena/api.py": "2ab2348c5059a616ffc29201cffbe9028f5c20a0c380df70d3b451ae0330d78e",
+      "varena/torch.py": "9fc6130efbf0a6341bd0e77e8133bcdf9873438e3662d89930ffaa9fbe321777"
+    },
+    "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+    "torch_graphs_sha256": "5a7fce9de0314377e41a6229d34545e8f3d192b9cc69ed651a60b531473e0bd1"
+  },
+  "627": {
+    "revision": "627f6978f3469332312a53918fe5a68a48f7e0ec",
+    "files": {
+      "varena/_offload.py": "b555ff809cca883b3acbbe5ad44a64e9ba7897a9d0d6d7ed3731bdcead5f3570",
+      "varena/_offload_auto.py": "96620493ae1cca90d165b10a74a7dc14a9d4fd1b3c5db8d56e2d8cca57961e35",
+      "varena/_offload_graph.py": "c3a3f749dfd8af33ede0bcd495f8970b9d204a83ffe2fc729261b27691e3ba63",
+      "varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+      "varena/api.py": "2ab2348c5059a616ffc29201cffbe9028f5c20a0c380df70d3b451ae0330d78e",
+      "varena/torch.py": "fdd633cc587a04139f8421eef8104b4078cfc6780191a62e721dac406ec81284"
+    },
+    "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+    "torch_graphs_sha256": "5a7fce9de0314377e41a6229d34545e8f3d192b9cc69ed651a60b531473e0bd1"
+  }
+}
