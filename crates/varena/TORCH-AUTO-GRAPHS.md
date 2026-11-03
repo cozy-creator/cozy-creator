@@ -85,7 +85,8 @@ it is never caught after execution to silently retry/fallback.
 The separate eager component-stream helper is now root-local
 `/root/p3_trim_qualification_nov3`-owned (superseding the inactive external Agent2
 assignment); this lane does not
-duplicate or edit its new file. Compose its eventual exact API outside automatic
+duplicate or edit its new file. Helper feature18e44b971 is now composed unchanged
+as87e8c4e9b. Use its committed API outside automatic
 dispatch: component input/output scope -> measured eager/graph dispatcher on the
 actual selected stream -> one outer output handoff. Reuse that selected stream and
 the helper's checked join/completion information. If actual caller-stream changes
@@ -95,8 +96,8 @@ recording alone is not an ordering/completion witness. Never redirect an explici
 stream change back to an assumed owner stream. Capture bindings bypass eager helper
 joins/records; their frozen exports/stream ownership remain authoritative. VAE
 decode/encode entry coverage is separate from a root.forward-only wrapper. Exact
-minimal shared wiring will be composed by this lane after that local owner provides
-its helper interface; inactive Agent2 review is not a blocker. No second stream helper
+minimal `_Device.execution` reuse wiring24bf43e3f is composed in this lane; automatic
+dispatch/method wrappers remain unwired. Inactive Agent2 review is not a blocker. No second stream helper
 or speculative per-op fence removal is introduced. Adoption provenance must record
 the final composed owned wrapper and its actual original implementation, not infer
 approval from user-supplied __wrapped__ annotations.
@@ -105,7 +106,8 @@ Required component-helper corrections before shared wiring:
 
 - An after-exit witness alone is insufficient for cold measurements at nested declared
   boundaries sharing a still-open outer component scope: a device-wide native phase
-  must finish before its sibling starts. Provide a checkpoint witness over actual
+  must finish before its sibling starts. Committed helper18e provides scope.checkpoint()
+  as a witness over actual
   currently tracked stream tails while the outer scope remains open, without closing
   it or handing outputs to the original caller. Auto can wait that cold-only checkpoint;
   ordinary steady eager execution does not add checkpoints. This remains a scoped
@@ -123,8 +125,13 @@ Required component-helper corrections before shared wiring:
   records exclude managed _Weight wrappers, whose record_stream dispatch could force
   materialization. Capture bindings provide no eager witness/joins/records.
 
-These exact corrections were routed to the local new-file helper owner through root;
-no helper file, native interface or shared _offload.py wiring was changed here.
+The committed helper implements these corrections without edits from this lane.
+Owned shared reuse wiring24bf43e3f retains ordinary/materialized records and validates
+the actual owner device/capture state before fast reuse. Both helper/wired source
+hashes must ship together; explicit scopes are usable, but automatic root-forward/VAE
+wrappers and default graph dispatch are not claimed by this stage. Actual host/binding/
+tiny-VAE explicit-method CPU checks pass; CUDA fast-path/events/performance are unrun.
+The helper owner delivers final clients/receipts separately; no WIP file was imported.
 
 The state machine is cold -> measured -> prepared/cached; a changed key retires the old
 selection. No invocation executes eager as a retry after capture/replay has begun.
