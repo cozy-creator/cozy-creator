@@ -5,13 +5,13 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{Machine, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
+    calcifer::{Ended, Machine, MachineState, NewMachine, Quote, RentalSkus, Rented, RunQuote},
     config::Origin,
     error::{Error, Kind},
 };
 
 use super::{Following, list::state_cell, usd};
-use crate::{Context, output};
+use crate::{Context, calcifer_client::Client, output};
 
 #[derive(clap::Args, Debug)]
 pub struct Rent {
@@ -306,8 +306,9 @@ const UNFOLLOWED: u8 = 3;
 /// Follows an order over Calcifer's machine events until it ends: its machine ready, or the order
 /// ended, which its Hub says only once nothing of it bills. Everything between is progress, said on
 /// stderr as it changes (an attempt that found no capacity, the order placed again elsewhere, its
-/// rename) and never a verdict: the exit code and the last line are. Ctrl-C or SIGTERM stops
-/// following only, and says the order goes on.
+/// rename) and never a verdict: the exit code and the last line are. Ctrl-C or SIGTERM ends an order
+/// with no pod and nothing queued on it, whose renter was all that kept it waiting; otherwise it
+/// stops following only, and says the order goes on.
 pub(crate) async fn follow(
     ctx: &Context,
     booting: Machine,
@@ -323,7 +324,7 @@ pub(crate) async fn follow(
     };
     let opened = tokio::select! {
         opened = Following::open(&calcifer, &id) => opened,
-        _ = &mut stop => return Ok(unfollowed(ctx, &machine, None)),
+        _ = &mut stop => return stopped_waiting(ctx, &calcifer, &machine).await,
     };
     let mut following = match opened {
         Ok((following, now)) => {
@@ -351,7 +352,7 @@ pub(crate) async fn follow(
         }
         let next = tokio::select! {
             next = following.next(&calcifer) => next,
-            _ = &mut stop => return Ok(unfollowed(ctx, &machine, None)),
+            _ = &mut stop => return stopped_waiting(ctx, &calcifer, &machine).await,
         };
         machine = match next {
             Ok(Some(next)) => next,
@@ -365,7 +366,28 @@ pub(crate) async fn follow(
     }
 }
 
-/// Ctrl-C, or SIGTERM from a supervisor (`timeout`): either stops the follower, never the order.
+/// The renter stopped waiting. An order the Hub has found no pod for, with no run queued on it, ends
+/// here: nothing else would ever end it, and it bills nothing. One with a pod or a queued run goes on.
+async fn stopped_waiting(ctx: &Context, calcifer: &Client, machine: &Machine) -> Result<Followed, Error> {
+    // An order sent back to replan still shows the attempt that failed, and it has no pod either.
+    let placed = machine.attempt.as_ref().is_some_and(|attempt| {
+        !matches!(attempt.state.as_str(), "replanable_failed" | "not_created" | "failed" | "released")
+    });
+    if placed || machine.queued > 0 || machine.running > 0 {
+        return Ok(unfollowed(ctx, machine, None));
+    }
+    let id = machine.rental_id.as_deref().unwrap_or(&machine.name);
+    match calcifer.delete::<Ended>(&super::route(id)?).await {
+        Ok(_) => Err(Error::new(
+            Kind::Unavailable,
+            "rental_ended",
+            format!("{}: ended while waiting for a machine, nothing bills", machine.name),
+        )),
+        Err(e) => Ok(unfollowed(ctx, machine, Some(e))),
+    }
+}
+
+/// Ctrl-C, or SIGTERM from a supervisor (`timeout`).
 async fn stopped() {
     #[cfg(unix)]
     match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
