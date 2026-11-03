@@ -75,7 +75,7 @@ cozy project -p "$P" status > "$OUT/project-status.txt" 2>&1 || check "project s
 
 step "a project: inputs taken into assets/, by symlink on ext4"
 [ "$(readlink "$P/assets/$A.mp4")" = "$P/plates/a.mp4" ] || check "assets/$A.mp4 is not a symlink to plates/a.mp4: $(ls -l "$P/assets/" | head -5)"
-J '.inputs["plates/a.mp4"].method == "symlink"' "$P/project.lock" || check "project.lock: plates/a.mp4 not taken by symlink: $(jq -c '.inputs["plates/a.mp4"]' "$P/project.lock")"
+J '.inputs["plates/a.mp4"] | has("original") or has("method") | not' "$P/project.lock" || check "project.lock says how this computer took plates/a.mp4: $(jq -c '.inputs["plates/a.mp4"]' "$P/project.lock")"
 J --arg a "assets/$A.mp4" '.nodes[] | select(.name == "a") | .path == $a and .assets.video.original == "plates/a.mp4"' "$OUT/project-status.json" \
   || check "status: shot a is not assets/$A.mp4 from plates/a.mp4: $(jq -c '.nodes[]? | select(.name == "a")' "$OUT/project-status.json")"
 
@@ -132,6 +132,18 @@ code=0; cozy project -p "$P" render stage.a --on local > "$OUT/project-missing-r
 { grep -q 'reference missing: .*stage.png: relink' "$OUT/project-missing.txt" && [ "$code" != 0 ] && grep -q 'reference missing' "$OUT/project-missing-render.txt"; } \
   || check "a moved reference: status does not say relink, or stage.a rendered (exit $code): $(tail -c 300 "$OUT/project-missing.txt")"
 mv "$E/stage-moved.png" "$E/stage.png"
+
+step "a project: a copy of its yaml, lock and real assets, its paths gone, needs nothing"
+local copy=$OUT/garden-copy
+mkdir -p "$copy"; cp "$P/project.yaml" "$P/project.lock" "$copy/"; cp -rL "$P/assets" "$copy/assets" || true
+mv "$E" "$E-away"
+cozy --json project -p "$copy" status > "$OUT/project-copy.json" 2> "$OUT/project-copy.err" || check "status of a copy failed: $(tail -c 300 "$OUT/project-copy.err")"
+J '((.warnings // []) | map(select(test("missing"))) | length == 0) and ((.missing // []) | length == 0) and .absent == 0' "$OUT/project-copy.json" \
+  || check "a copy with its assets, its paths gone: $(jq -c '{warnings, missing, absent}' "$OUT/project-copy.json")"
+rm -rf "$copy/assets"
+cozy project -p "$copy" status > "$OUT/project-copy-bare.txt" 2>&1 || true
+grep -q 'next: cozy project pull' "$OUT/project-copy-bare.txt" || check "a copy without its assets: status does not say to pull: $(tail -c 300 "$OUT/project-copy-bare.txt")"
+mv "$E-away" "$E"
 
 step "a project: a node renamed"
 local approved; approved=$(jq -r .nodes.place.approved "$P/project.lock")
@@ -223,8 +235,8 @@ ONE=$(given mentions) TWO=$(given again) THREE=$(given plain)
 [ "$THREE" = '[]' ] || check "references: a shot that mentions none was given $THREE"
 J '.nodes.mentions.versions[-1].upstream | any(.node == "clip" and .asset == "sha256:'"$CLIP"'")' "$R/project.lock" \
   || check "references: the take does not record what it read: $(jq -c '.nodes.mentions.versions[-1].upstream' "$R/project.lock")"
-{ [ "$(readlink "$R/assets/$CLIP.mp4")" = "$R/clip.mp4" ] && J '.inputs["clip.mp4"].method == "symlink"' "$R/project.lock"; } \
-  || check "references: clip.mp4 not taken in by symlink: $(jq -c '.inputs["clip.mp4"]' "$R/project.lock")"
+[ "$(readlink "$R/assets/$CLIP.mp4")" = "$R/clip.mp4" ] \
+  || check "references: clip.mp4 not taken in by symlink: $(ls -l "$R/assets/$CLIP.mp4")"
 cozy --json project -p "$R" status > "$OUT/refs-status.json" 2> /dev/null || check "references: status failed"
 J '(.stale | length == 0) and (.warnings | length == 0) and (.nodes[] | select(.name == "clip") | .kind == "reference" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
   || check "references: after render all: $(jq -c '{stale, warnings, clip: (.nodes[]? | select(.name == "clip"))}' "$OUT/refs-status.json")"
@@ -462,8 +474,8 @@ entities:
 YAML
 cozy project -p "$P" render stage.a --on local > "$OUT/xfs-render.txt" 2>&1 || check "render stage.a on XFS failed: $(tail -c 300 "$OUT/xfs-render.txt")"
 local S; S=$(sha "$P/refs/stage.png")
-{ J '.inputs["refs/stage.png"].method == "reflink"' "$P/project.lock" && [ -f "$P/assets/$S.png" ] && [ ! -L "$P/assets/$S.png" ]; } \
-  || check "XFS: refs/stage.png not reflinked: $(jq -c '.inputs["refs/stage.png"]' "$P/project.lock")"
+{ [ -f "$P/assets/$S.png" ] && [ ! -L "$P/assets/$S.png" ]; } \
+  || check "XFS: refs/stage.png not reflinked: $(ls -l "$P/assets/" | head -5)"
 mv "$P/refs/stage.png" "$P/refs/stage-moved.png"
 cozy project -p "$P" status > "$OUT/xfs-moved.txt" 2>&1 || true
 { ! grep -q 'reference missing' "$OUT/xfs-moved.txt" && grep -q 'stage.a .*current' "$OUT/xfs-moved.txt"; } \

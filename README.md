@@ -92,6 +92,13 @@ A video project is a folder:
 Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
 file you named and what reads it goes out of date; move a linked one and `status` says to relink it (fix its
 path).
+
+On another computer: commit `project.yaml` and `project.lock`, keep `assets/` out of git, and `cozy project push`
+sends the files to your Tensorhub account, private to you. `cozy project pull` next to a clone fetches them as real
+files; the paths in `project.yaml` need not exist there, as the hash in `project.lock` is what counts. Both send only
+what is missing and go on after an interruption. What you pushed stays until you `cozy model delete
+<account>/project-assets`, the private model that holds it. One file can be at most 5 GiB.
+
 Rename a node in `project.yaml` (and its `<mentions>`), then `cozy project rename <old> <new>` keeps its
 versions; `status` suggests it.
 

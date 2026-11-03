@@ -193,3 +193,9 @@ test = "pr: projects: version 2 approved, only in project.lock"
 
 ["project rename"]
 test = "pr: projects: place renamed yard, its versions and approval kept"
+
+["project push"]
+test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
+
+["project pull"]
+test = "manual: release-gate/sessions/project-remote.sh: a clone of yaml and lock, signed in as a second home: the same edit.mp4"

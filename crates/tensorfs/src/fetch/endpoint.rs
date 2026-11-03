@@ -300,6 +300,26 @@ impl Endpoint {
         }
     }
 
+    /// `object` from byte `from` into `sink`, for a caller that holds it to its digest: each body frame
+    /// with the byte it starts at (0 again when a server restarts the body), asked again from the byte
+    /// reached.
+    pub async fn read(&self, object: &ObjectRef, from: u64, sink: &mut (dyn FnMut(u64, &[u8]) -> Result<()> + Send + '_)) -> Result<()> {
+        let At::Http(base) = &self.at else { return refuse(Code::SOURCE_NOT_ALLOWED, format!("{}: not an HTTP endpoint", self.url)) };
+        let url = format!("{base}/{}", object.key());
+        let range = (from > 0).then_some((from, None));
+        let got = ask::get(&self.client, &url, &[], self.token.as_deref(), &self.patience, range, sink).await;
+        match got.map_err(GetError::refusal)? {
+            Ok(_) => Ok(()),
+            Err(status @ (404 | 410)) => refuse(Code::OBJECT_ABSENT, format!("GET {url}: {status}")),
+            Err(status) => refuse(Code::HUB_REFUSED, format!("GET {url}: {status}")),
+        }
+    }
+
+    /// The bytes of file bodies sent, ever.
+    pub fn sent(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed)
+    }
+
     /// Whether the endpoint holds `object`.
     pub async fn has(&self, object: &ObjectRef) -> Result<bool> {
         match &self.at {

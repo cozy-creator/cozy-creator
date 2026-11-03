@@ -68,13 +68,13 @@ pub fn routes() -> Router<Arc<Api>> {
 }
 
 /// The Hub `named` names, else this computer's configured one.
-fn origin(api: &Api, named: Option<&str>) -> Result<Origin, Refusal> {
+pub(crate) fn origin(api: &Api, named: Option<&str>) -> Result<Origin, Refusal> {
     let named = named.map(str::trim).filter(|hub| !hub.is_empty());
     Origin::parse(named.unwrap_or(&api.machines.hubs.default_origin())).map_err(Refusal)
 }
 
 /// A failed Hub call: its own code as the cause, and `cozy login` next on a refused credential.
-fn refusal(hub: &Origin, error: hub_client::Error) -> Refusal {
+pub(crate) fn refusal(hub: &Origin, error: hub_client::Error) -> Refusal {
     Refusal(error.refusal(|| crate::rentals::login(hub)))
 }
 
@@ -97,7 +97,7 @@ fn key(client: &Client) -> &DeviceKey {
 }
 
 /// A body that may be empty (an action that needs nothing but its Hub).
-fn body<T: DeserializeOwned + Default>(body: Result<Bytes, BytesRejection>) -> Result<T, Refusal> {
+pub(crate) fn body<T: DeserializeOwned + Default>(body: Result<Bytes, BytesRejection>) -> Result<T, Refusal> {
     let body = body?;
     match body.iter().all(u8::is_ascii_whitespace) {
         true => Ok(T::default()),

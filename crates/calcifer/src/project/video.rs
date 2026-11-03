@@ -416,7 +416,7 @@ pub fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
 pub struct Video {
     project: Project,
     /// Each file project.yaml names, by the path written there, as taken in.
-    inputs: BTreeMap<String, folder::Input>,
+    inputs: BTreeMap<String, Asset>,
     /// The files it names that are gone: what reads one cannot render.
     missing: BTreeSet<String>,
     items: Vec<Item>,
@@ -582,33 +582,41 @@ impl Video {
         );
         let mut lock = folder.lock()?;
         // Every file it names, linked as an asset on first use (and again when it changed), and
-        // recorded in project.lock with the path written. One that is gone keeps its record: what
-        // reads it cannot render until it is linked again.
+        // recorded in project.lock with the path written. One not at its path whose asset is here is
+        // that asset; one gone keeps its record: what reads it cannot render until it is back.
+        let (was, mut taken) = (folder.taken(), BTreeMap::new());
         let (mut inputs, mut missing) = (BTreeMap::new(), BTreeSet::new());
         for file in named(&project) {
-            let known = lock.inputs.get(file);
-            match folder.take_in(file, known)? {
-                Some(input) => {
+            let (known, before) = (lock.inputs.get(file), was.get(file));
+            match folder.take_in(file, known, before)? {
+                Some((asset, now)) => {
                     // A link is the original: it changing changes the project. A clone or copy is taken in again.
-                    let changed = known.is_some_and(|known| known.asset.sha256 != input.asset.sha256);
-                    if changed && known.is_some_and(|known| known.method.linked()) {
+                    let changed = known.is_some_and(|known| known.sha256 != asset.sha256);
+                    if changed && before.is_some_and(|before| before.method.linked()) {
                         warnings.push(format!("reference changed: {file}; what reads it is out of date"));
                     }
-                    if input.method == folder::Method::Copy && known.is_none_or(|known| known.method != folder::Method::Copy) {
+                    let copied = now.as_ref().is_some_and(|now| now.method == folder::Method::Copy);
+                    if copied && before.is_none_or(|before| before.method != folder::Method::Copy) {
                         warnings.push(format!("{file}: copied into {}/, as this computer allows it no link", folder::ASSETS));
                     }
-                    inputs.insert(file.to_owned(), input);
+                    inputs.insert(file.to_owned(), asset);
+                    taken.extend(now.or_else(|| before.cloned()).map(|now| (file.to_owned(), now)));
                 }
                 None => {
-                    warnings.push(format!("reference missing: {file}: relink (put it back, or fix its path in {})", folder::PROJECT));
+                    let said = format!("reference missing: {file}: relink (put it back, fix its path in {}, or cozy project pull)", folder::PROJECT);
+                    warnings.push(said);
                     missing.insert(file.to_owned());
                     inputs.extend(known.map(|known| (file.to_owned(), known.clone())));
+                    taken.extend(before.map(|before| (file.to_owned(), before.clone())));
                 }
             }
         }
         if inputs != lock.inputs {
             folder.update_lock(|lock| lock.inputs = inputs.clone())?;
             lock.inputs = inputs;
+        }
+        if taken != was {
+            folder.keep_taken(&taken)?;
         }
         folder.shape_videos(&mut lock)?;
         let inputs = lock.inputs.clone();
@@ -839,7 +847,7 @@ impl Video {
             .map(|node| {
                 let (path, _) = node.file.as_ref()?;
                 let made = lock.made(&node.id, path).and_then(Made::primary);
-                let attached = || inputs.values().map(|input| &input.asset).find(|asset| asset.path == *path);
+                let attached = || inputs.values().find(|asset| asset.path == *path);
                 made.or_else(attached)?.video
             })
             .collect();
@@ -1234,7 +1242,7 @@ impl Video {
         };
         let file = |path: &str| -> Result<(PathBuf, String), Error> {
             let input = self.inputs.get(path).ok_or_else(|| invalid("file_missing", format!("{}: {path} is not there", shot.name)))?;
-            Ok((folder.path(&input.asset.path), input.asset.sha256.clone()))
+            Ok((folder.path(&input.path), input.sha256.clone()))
         };
         for read in reads {
             let source = |field: &'static str| vec![(field, read.path.clone(), read.digest.clone())];
@@ -1409,6 +1417,9 @@ pub fn cut(
     name: &str,
     cache: &Path,
 ) -> Result<Cutted, Error> {
+    if let Some(piece) = pieces.iter().find(|piece| !piece.path.is_file()) {
+        return Err(failed(format!("{}: {} is not on this computer", piece.node, piece.path.display())).next("cozy project pull"));
+    }
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
     let (width, height) = canvas.edit_size(probes[0].size);
@@ -1771,8 +1782,8 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
 
 /// A file a node reads that is no node's, as its key (`<node>.<field>`) and sha256 (`inputs`: the
 /// files project.yaml names, as taken in; one gone and never taken in reads as none).
-fn input_file(inputs: &BTreeMap<String, folder::Input>, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
-    let sha256 = inputs.get(path).map(|input| input.asset.sha256.clone()).unwrap_or_default();
+fn input_file(inputs: &BTreeMap<String, Asset>, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
+    let sha256 = inputs.get(path).map(|input| input.sha256.clone()).unwrap_or_default();
     Ok((format!("{id}.{field}"), sha256))
 }
 
@@ -1797,7 +1808,7 @@ type Versions = (Option<(String, String)>, Vec<String>);
 /// project.lock approves; else the file attached in project.yaml (its asset; none when it is gone and
 /// was never taken in), or that picture's clean when the node `cleans`.
 fn current(
-    inputs: &BTreeMap<String, folder::Input>,
+    inputs: &BTreeMap<String, Asset>,
     lock: &Lock,
     id: &str,
     attached: &Option<String>,
@@ -1811,8 +1822,7 @@ fn current(
         return Ok((Some((approved.path.clone(), approved.sha256.clone())), versions));
     }
     let Some(file) = attached else { return Ok((None, versions)) };
-    let Some(input) = inputs.get(file) else { return Ok((None, versions)) };
-    let asset = &input.asset;
+    let Some(asset) = inputs.get(file) else { return Ok((None, versions)) };
     let clean = (node.into_iter().flat_map(|node| &node.versions))
         .find(|made| cleans && made.clean_of.as_deref() == Some(asset.sha256.as_str()));
     let clean = clean.and_then(Made::primary).unwrap_or(asset);
