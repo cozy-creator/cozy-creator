@@ -72,10 +72,6 @@ shots:
       summary:
       The target video shows <kyogre> bursting out of the stormy sea of <coast>.
 
-      retention_analysis:
-      <coast>: keep the look shown in the reference.
-      <kyogre>: keep the look shown in the reference.
-
       detailed_description:
       [Shot 1] A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
 
@@ -92,10 +88,6 @@ shots:
       summary:
       The target video shows <groudon> clawing its way out of the lava cliffs of <coast> and roaring.
 
-      retention_analysis:
-      <coast>: keep the look shown in the reference.
-      <groudon>: keep the look shown in the reference.
-
       detailed_description:
       [Shot 1] A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
@@ -111,11 +103,6 @@ shots:
     description: |
       summary:
       The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
-
-      retention_analysis:
-      <coast>: keep the look shown in the reference.
-      <kyogre>: keep the look shown in the reference.
-      <groudon>: keep the look shown in the reference.
 
       detailed_description:
       [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
