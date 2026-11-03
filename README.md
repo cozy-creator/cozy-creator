@@ -149,18 +149,17 @@ entities:
 shots:
   - name: clash
     setup: coast.wide
-    duration_s: 38
     summary: |
       <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
-      - at: 0
+      - duration: 14
         description: |
           A wide shot shows <kyogre> in the surf on the left and <groudon> on the rocks on the right. <kyogre> fires a thick column of water across the frame.
-      - at: 14
+      - duration: 14
         description: |
           <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf. <kyogre> dives beneath the flames.
-      - at: 28
+      - duration: 10
         description: |
           <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves.
 ```
@@ -228,7 +227,10 @@ description, with a warning. Adapter and package updates never put anything out 
 `version: 1` names the format of `project.yaml`. A file with none reads as 1, with a warning. Nothing you write is refused: a
 shot with no text gets a warning and renders anyway.
 
-A take can be shorter than `duration_s`: `minimax-h3` renders 15 s of a longer shot with one beat. The edit cuts
+A beat has its own `duration:` in seconds and starts where the one before it ended, and a shot is as long as its beats. A
+beat with none lasts 5 s, with a warning; a shot with no beats is as long as its attached `video:`, else 15 s.
+
+A take can be shorter than its shot: `minimax-h3` renders 15 s of a longer shot with one beat. The edit cuts
 the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
@@ -265,8 +267,8 @@ With no `resolution:`, the edit is its first take's own size when that is the as
 (H3's 1344x768 at 16:9), so takes of that size join with no encode.
 
 `fps:` (24 by default) is the edit's frame rate, fixed per project. `edit:` lists shots, each with an optional `start` and `end` in
-frames at it (`end` exclusive; by default the shot's first frame and its `duration_s`, or its take's end if sooner), so every cut lands on an
-exact frame; a shot's `duration_s` and `writes` stay in seconds. A take at another rate is retimed to
+frames at it (`end` exclusive; by default the shot's first frame and its length, or its take's end if sooner), so every cut lands on an
+exact frame; a beat's `duration` and a shot's `writes` stay in seconds. A take at another rate is retimed to
 the project's (each frame its nearest in time), and `status` names it. Each cut writes `edit.otio` (and
 `preview.otio`) with it: the project's rate, a video and an audio track, one clip per `edit:` entry with its
 frames, referencing that take's asset.

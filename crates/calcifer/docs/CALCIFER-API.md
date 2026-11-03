@@ -348,14 +348,16 @@ take as `invocations`; a file in them is its digest. A function with no adapter 
 version: 1
 shots:
   - name: fight
-    duration_s: 20
     summary: <theo> and <juno> circle each other on <dock>.
     beats:
-      - at: 0
+      - duration: 5
         description: They circle.
-      - at: 5
+      - duration: 15
         description: <juno> lunges.
 ```
+
+A shot is as long as its beats. An adapter's record gives it as `duration_s`, and each beat's start, the sum of the
+durations before it, as `at`.
 
 A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
 field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reused) and is a set of assets

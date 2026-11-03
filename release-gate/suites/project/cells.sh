@@ -56,13 +56,12 @@ shots:
     summary: |
       <hero> paints a sign on the long wall of <yard>.
     beats:
-      - at: 0
+      - duration: 6
         description: |
           <hero> rolls bright orange paint across the wall in big letters that read OPEN.
-      - at: 6
+      - duration: 4
         description: |
           <hero> steps back from <wall>, where the orange letters read OPEN, and says "Done."
-    duration_s: 10
     render: {options: {seed: $((R + 300))}}
     writes: [{state: wall, at: 5}]
 YAML
@@ -107,7 +106,7 @@ entities:
   - {name: pattern, kind: environment, description: "a synthetic broadcast test pattern", image: plate.png}
 shots:
   - {name: follow, summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears.",
-     duration_s: 5, plate: {video: plate.mp4}, render: {options: {seed: $((R + 301))}}}
+     beats: [{duration: 5}], plate: {video: plate.mp4}, render: {options: {seed: $((R + 301))}}}
 YAML
 )
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
@@ -128,7 +127,7 @@ entities:
   - {name: host, kind: character, description: "$CHAR", image: hero.png, voice: voice.wav}
   - {name: yard, kind: environment, description: "$SCENE", image: place.png}
 shots:
-  - {name: hello, summary: "<host> stands in <yard>, looks into the camera and says \"Welcome to the yard.\"", duration_s: 5,
+  - {name: hello, summary: "<host> stands in <yard>, looks into the camera and says \"Welcome to the yard.\"", beats: [{duration: 5}],
      render: {options: {seed: $((R + 302))}}}
 YAML
 )

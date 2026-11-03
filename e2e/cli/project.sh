@@ -68,8 +68,8 @@ references:
   - name: look
     video: $E/look.mp4
 shots:
-  - {name: a, summary: "test pattern a, moving like <look>", duration_s: 6, video: plates/a.mp4}
-  - {name: b, summary: "test pattern b", duration_s: 6, video: plates/b.mp4}
+  - {name: a, summary: "test pattern a, moving like <look>", beats: [{duration: 6}], video: plates/a.mp4}
+  - {name: b, summary: "test pattern b", beats: [{duration: 6}], video: plates/b.mp4}
 edit: [{shot: a, start: 12, end: 132}, {shot: b, start: 12, end: 132}]
 YAML
 imported "$P" plates/a.mp4 plates/b.mp4 plates/c.mp4 "$E/look.mp4" "$E/stage.png"
@@ -347,20 +347,21 @@ references:
 shots:
   - name: mentions
     summary: <clip> again, <narrator> over it, in <look>.
-    duration_s: 6
+    beats:
+      - duration: 6
     plate:
       video: one.mp4
   - name: again
     summary: A plain opening.
     beats:
-      - at: 3
+      - duration: 6
         description: Then as in <CLIP>.
-    duration_s: 6
     plate:
       video: two.mp4
   - name: plain
     summary: Nothing named here.
-    duration_s: 6
+    beats:
+      - duration: 6
     plate:
       video: three.mp4
 YAML
@@ -437,7 +438,7 @@ J '.warnings | any(test("cozy reads no field shots\\.2\\.references; it is ignor
 J '[.nodes[].name] | index("old") == null' "$OUT/refs-old.json" || check "references: a shot's references: was read: $(jq -c '[.nodes[].name]' "$OUT/refs-old.json")"
 }
 
-# never_refuse: nothing a shot says is refused. A take shorter than duration_s is cut at its real length, a write or a
+# never_refuse: nothing a shot says is refused. A take shorter than its shot is cut at its real length, a write or a
 # setup's frame past its end takes its last frame, a plate its function does not take is left out, and status says so
 # and what its function said. No text renders, and a function with no adapter gets one flat prompt: the summary, then
 # each beat's description. A shot mentioning a state it writes splits there and reads its own frame, or, where it cannot, renders on
@@ -492,24 +493,23 @@ world_states:
 shots:
   - name: long
     summary: A long shot.
-    duration_s: 20
+    beats:
+      - duration: 20
     plate:
       video: plate.mp4
     writes:
       - state: closing
         at: 12
   - name: silent
-    duration_s: 6
     plate:
       video: plate.mp4
   - name: timed
     summary: A plain room.
     beats:
-      - at: 3
+      - duration: 3
         description: The rest, after <marked>.
-      - at: 4
+      - duration: 3
         description: A wall.
-    duration_s: 6
     plate:
       video: plate.mp4
     writes:
@@ -518,27 +518,28 @@ shots:
   - name: adapted
     summary: The scene.
     beats:
-      - at: 0
+      - duration: 3
         description: One.
-      - at: 3
+      - duration: 3
         description: Two.
     soundscape: Rain.
     music: Drums.
-    duration_s: 6
     render:
       with: ./adapted.py/shoot
     plate:
       video: plate.mp4
   - name: plated
     summary: As in <clip>.
-    duration_s: 6
+    beats:
+      - duration: 6
     render:
       with: ./shoot.py/bare
     plate:
       video: plate.mp4
   - name: short
     summary: One call, its renderer's shortest piece over the write, after <too-short>.
-    duration_s: 6
+    beats:
+      - duration: 6
     render:
       with: ./shoot.py/pieces
     plate:
@@ -548,7 +549,8 @@ shots:
         at: 2
   - name: whole
     summary: One call, its renderer cannot continue, as in <clip>, after <uncontinued>.
-    duration_s: 6
+    beats:
+      - duration: 6
     render:
       with: ./shoot.py/bare
     writes:
@@ -563,6 +565,8 @@ said() { J --arg t "$1" '.warnings | any(contains($t))' "$OUT/never-status.json"
 said 'long: rendered 6 s of 20 s'
 said 'long: its video ends before 11.98 s: its last frame stands in'
 said 'silent has no summary and no beats'
+said 'silent has no beats: it renders 15 s'
+said 'rendered 6 s of 15 s'
 said 'and its beat times are not honoured'
 said 'has no `version:`, so it reads as version 1'
 said "place.a's frame is at 30 s, outside long's 0–20 s: the nearest frame stands in"
@@ -578,7 +582,7 @@ J '.nodes.adapted.versions[-1].invocations[0] | .function == "shoot" and (.input
   || check "never_refuse: the take did not record its Invocation: $(jq -c '.nodes.adapted.versions[-1].invocations' "$N/project.lock")"
 seen silent '.prompt == ""'
 seen plated '[.references[].name] == ["clip"]'
-seen timed '.continues and .prompt == "A plain room.\n\nThe rest, after <marked>.\nA wall." and ([.references[].name] == ["marked"])'
+seen timed '.continues and .duration_s == 6 and .prompt == "A plain room.\n\nThe rest, after <marked>.\nA wall." and ([.references[].name] == ["marked"])'
 seen short '(.continues | not) and .duration_s == 6'
 seen whole '.duration_s == 6'
 J '(.nodes.timed.versions[-1] | (.runs | length) == 2 and .writes.marked != null) and (.nodes.short.versions[-1].runs | length) == 1 and (.nodes.whole.versions[-1].runs | length) == 1' "$N/project.lock" \
@@ -603,13 +607,15 @@ cozy project -p "$N" render all --on local > "$OUT/never-past.txt" 2>&1 || check
 grep -q "the edit cuts long from frame 200, past its take's end: that cut is left out" "$OUT/never-past.txt" || check "never_refuse: render all did not say the cut is left out: $(tail -c 300 "$OUT/never-past.txt")"
 [ "$(frames "$N/edit.mp4")" = 144 ] || check "never_refuse: edit.mp4 is not silent's 144 frames: $(frames "$N/edit.mp4")"
 cp "$N/project.yaml" "$OUT/never-ok.yaml"
-sed -i 's|^  - name: silent$|  - name: silent\n    prompt: Stale.\n    description: Stale.|' "$N/project.yaml"
+sed -i 's|^  - name: silent$|  - name: silent\n    prompt: Stale.\n    description: Stale.\n    duration_s: 6|; s|^      - duration: 3$|      - at: 3|' "$N/project.yaml"
 cozy --json project -p "$N" status > "$OUT/never-stale.json" 2> /dev/null || check "never_refuse: status with stale fields failed"
-J '[.warnings[] | select(test("cozy reads no field shots\\.1\\.(prompt|description); it is ignored"))] | length == 2' "$OUT/never-stale.json" \
-  || check "never_refuse: stale prompt: and description: did not warn: $(jq -c .warnings "$OUT/never-stale.json")"
+J '[.warnings[] | select(test("cozy reads no field shots\\.1\\.(prompt|description|duration_s); it is ignored"))] | length == 3' "$OUT/never-stale.json" \
+  || check "never_refuse: stale prompt:, description: and duration_s: did not warn: $(jq -c .warnings "$OUT/never-stale.json")"
+J '(.warnings | any(test("cozy reads no field shots\\.2\\.beats\\.0\\.at; it is ignored"))) and (.warnings | any(contains("timed'"'"'s beat 1 has no duration: it lasts 5 s")))' "$OUT/never-stale.json" \
+  || check "never_refuse: a beat with at: and no duration did not warn: $(jq -c .warnings "$OUT/never-stale.json")"
 cp "$OUT/never-ok.yaml" "$N/project.yaml"
 # A cycle of what the file declares, with no mention in it, is a malformed project.
-sed -i 's|^          shot: long$|          shot: long-way|; s|^  - name: silent$|  - name: long-way\n    setup: place.a\n    duration_s: 6\n  - name: silent|' "$N/project.yaml"
+sed -i 's|^          shot: long$|          shot: long-way|; s|^  - name: silent$|  - name: long-way\n    setup: place.a\n    beats: [{duration: 6}]\n  - name: silent|' "$N/project.yaml"
 code=0; cozy project -p "$N" status > "$OUT/never-cycle.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'a cycle: ' "$OUT/never-cycle.txt"; } || check "never_refuse: a cycle of setup: and frame: was not refused (exit $code): $(tail -c 300 "$OUT/never-cycle.txt")"
 cp "$OUT/never-ok.yaml" "$N/project.yaml"
@@ -638,8 +644,8 @@ SA=$(sha "$P/plates/a.mp4") SB=$(sha "$P/plates/b.mp4") SR=$(sha "$P/plates/r.mp
 cat > "$P/project.yaml" <<'YAML'
 fps: 24
 shots:
-  - {name: a, summary: "test pattern a", duration_s: 8, video: plates/a.mp4}
-  - {name: b, summary: "test pattern b", duration_s: 8, video: plates/b.mp4}
+  - {name: a, summary: "test pattern a", beats: [{duration: 8}], video: plates/a.mp4}
+  - {name: b, summary: "test pattern b", beats: [{duration: 8}], video: plates/b.mp4}
 edit: [{shot: a, start: 7, end: 151}, {shot: b, start: 13, end: 140}, {shot: a, start: 48, end: 96}, {shot: b, start: 150, end: 161}]
 YAML
 imported "$P" plates/a.mp4 plates/b.mp4 plates/r.mp4
@@ -707,12 +713,14 @@ shots:
   - name: a
     summary: |
       Test pattern a.
-    duration_s: 3
+    beats:
+      - duration: 3
     video: plates/a.mp4
   - name: b
     summary: |
       Test pattern b.
-    duration_s: 3
+    beats:
+      - duration: 3
     video: plates/b.mp4
 edit:
   - {shot: a, start: 0, end: 48}

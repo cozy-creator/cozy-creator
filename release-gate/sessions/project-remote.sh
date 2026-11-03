@@ -52,12 +52,14 @@ shots:
   - name: a
     summary: |
       Test pattern a.
-    duration_s: 6
+    beats:
+      - duration: 6
     video: $(hash_of "$P/plates/a.mp4")
   - name: b
     summary: |
       Test pattern b.
-    duration_s: 6
+    beats:
+      - duration: 6
     video: $(hash_of "$P/plates/b.mp4")
 edit:
   - {shot: a, start: 0, end: 120}
