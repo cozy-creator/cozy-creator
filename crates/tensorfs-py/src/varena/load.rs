@@ -166,7 +166,7 @@ impl LoadSlot {
     fn input_count(&self) -> usize {
         self.inputs
     }
-    fn capture_inputs(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+    fn capture_inputs(&self, py: Python<'_>, stream: u64) -> PyResult<Vec<Py<PyAny>>> {
         self.valid()?;
         let pins = py
             .detach(|| {
@@ -189,7 +189,7 @@ impl LoadSlot {
             })
             .map_err(|error| error.raise(py))?;
         pins.into_iter()
-            .map(|pin| capsule(py, pin).map(Bound::unbind))
+            .map(|pin| capsule(py, pin, stream).map(Bound::unbind))
             .collect()
     }
     #[getter]
@@ -219,7 +219,9 @@ impl LoadSlot {
             ));
         }
         // Initialization joined the engine's explicit streams before exposing this capture-only view.
-        let _ = (stream, max_version);
+        let _ = max_version;
+        let stream = stream.ok_or_else(|| PyValueError::new_err("capture storage requires its CUDA consumer stream"))?;
+        let stream = u64::try_from(stream).map_err(|_| PyValueError::new_err("CUDA consumer stream must be nonnegative"))?;
         if copy == Some(true) || dl_device.is_some_and(|d| d != (2, self.region.device())) {
             return Err(PyValueError::new_err(
                 "load slot exports its original capture storage only",
@@ -242,7 +244,7 @@ impl LoadSlot {
                     .capture_pin()
             })
             .map_err(|e| e.raise(py))?;
-        capsule(py, pin)
+        capsule(py, pin, stream)
     }
     fn seal(&self) -> PyResult<()> {
         self.valid()?;

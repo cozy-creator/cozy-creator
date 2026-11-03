@@ -23,6 +23,22 @@ pub mod census;
 pub use arena_retirement::{ArenaRetirement, ArenaRetirementFacts, ArenaRetirementState};
 pub mod working;
 pub(crate) mod tensor_consumers;
+mod consumer_streams;
+pub use consumer_streams::StreamUses;
+pub use tensor_consumers::Consumers as TensorConsumers;
+/// Preserve an unproven private storage Pin in the existing device retirement queue.
+/// This performs no driver call, wait, retry, or reclamation credit.
+#[doc(hidden)]
+pub fn retain_unproven_pin(pin: Pin, failure: Error) {
+    if pin.region().arena.pid != std::process::id() {
+        std::mem::forget(pin);
+        return;
+    }
+    let device = pin.device();
+    retirement::quarantine(device, retirement::Job::UnprovenPin {
+        _pin: pin, failure: failure.clone(),
+    }, &failure);
+}
 pub mod cache_owner;
 pub use cache_owner::CacheOwner;
 pub use working::{Cache, CacheStats};

@@ -9,6 +9,7 @@ pub(crate) enum Job {
     Arena(crate::arena_retirement::Payload),
     FillResources(crate::async_fill::Payload),
     Source(crate::abi::source::Retirement),
+    UnprovenPin { _pin: crate::Pin, failure: Error },
 }
 
 impl Job {
@@ -17,6 +18,7 @@ impl Job {
             Self::Arena(job) => job.poll(),
             Self::FillResources(job) => job.retire(),
             Self::Source(job) => job.poll(),
+            Self::UnprovenPin { failure, .. } => Err(failure.clone()),
         }
     }
     fn failed(&mut self, error: &Error) {
@@ -24,6 +26,7 @@ impl Job {
             Self::Arena(job) => job.failed(error),
             Self::FillResources(job) => job.retirement_failed(error),
             Self::Source(job) => job.failed(error),
+            Self::UnprovenPin { failure, .. } => *failure = error.clone(),
         }
     }
 }

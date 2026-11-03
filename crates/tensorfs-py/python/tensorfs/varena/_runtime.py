@@ -544,7 +544,9 @@ class LoadSlot:
 
             self._tensors = (
                 (self.tensor,) if self._decoded is not None
-                else tuple(torch.from_dlpack(pin) for pin in self._native.capture_inputs())
+                else tuple(torch.from_dlpack(pin) for pin in self._native.capture_inputs(
+                    torch.cuda.current_stream(self.device).cuda_stream
+                ))
             )
         return self._tensors
 

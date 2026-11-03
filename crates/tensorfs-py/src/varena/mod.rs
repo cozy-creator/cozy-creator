@@ -71,25 +71,88 @@ fn release_region(region: Arc<varena::Region>) {
 }
 
 /// Streams declared for one Use family: the Use and every DLPack export taken from it.
-#[derive(Clone, Default)]
-struct Consumers(Arc<Mutex<Vec<u64>>>);
+#[derive(Clone)]
+struct Consumers(varena::StreamUses);
 impl Consumers {
-    fn declare(&self, stream: u64) {
-        let mut streams = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if !streams.contains(&stream) {
-            streams.push(stream);
+    fn new(device: i32) -> Self { Self(varena::StreamUses::new(device)) }
+    fn declare(&self, stream: u64) -> varena::Result<()> { self.0.declare(stream) }
+    /// The Use's original lease. Every published storage has its own tracked Pin.
+    fn release(&self, pin: varena::Pin) {
+        let declared = match self.0.declared() {
+            Ok(declared) => declared,
+            Err(error) => { varena::retain_unproven_pin(pin, error); return; }
+        };
+        if !declared {
+            // Preserve the existing unannotated raw-Use contract. No foreign storage
+            // is exported without a declaration; raw-pointer users still require a
+            // checked context join before native reclamation.
+            release_region(pin.into_unpinned_region());
+            return;
+        }
+        // SAFETY: consume_on declares users of this lease before its final release.
+        finish_pin(unsafe { self.0.release_pin(pin) });
+    }
+}
+
+fn finish_pin(result: std::result::Result<Arc<varena::Region>, (varena::Pin, varena::Error)>) {
+    match result {
+        Ok(region) => release_region(region),
+        Err((pin, error)) => varena::retain_unproven_pin(pin, error),
+    }
+}
+
+/// One physical use, structurally shared by the private Use and every storage
+/// exported from it. Temporary views never independently retire cloned Pins.
+struct SharedPin {
+    pin: Option<varena::Pin>,
+    consumers: Consumers,
+    family: Mutex<Option<varena::TensorConsumers>>,
+    pid: u32,
+}
+impl SharedPin {
+    fn new(pin: varena::Pin, consumers: Consumers) -> Arc<Self> {
+        Arc::new(Self { pin: Some(pin), consumers, family: Mutex::new(None), pid: std::process::id() })
+    }
+    fn pin(&self) -> &varena::Pin { self.pin.as_ref().expect("owned shared Pin") }
+    fn register(&self) -> varena::Result<()> {
+        let mut family = self.family.lock().map_err(|_| varena::Error::Poisoned("private storage family".into()))?;
+        if family.is_none() {
+            *family = Some(varena::TensorConsumers::from_streams(self.pin(), self.consumers.0.clone())?);
+        }
+        Ok(())
+    }
+}
+impl Drop for SharedPin {
+    fn drop(&mut self) {
+        let Some(pin) = self.pin.take() else { return; };
+        if self.pid != std::process::id() { std::mem::forget(pin); return; }
+        let family = match self.family.get_mut() {
+            Ok(family) => family.take(),
+            Err(_) => {
+                varena::retain_unproven_pin(pin, varena::Error::Poisoned("private storage family".into()));
+                return;
+            }
+        };
+        if let Some(family) = family {
+            // SAFETY: this is the final shared owner: both the Use and every
+            // independent exported Storage have gone. No sibling-count inference.
+            finish_pin(unsafe { family.release(pin) });
+        } else {
+            self.consumers.release(pin);
         }
     }
-    /// Records events on the declared streams, or falls back to the context-joined release.
-    /// Never attaches Python or waits.
-    fn release(&self, pin: varena::Pin) {
-        let region = {
-            let streams = self.0.lock().unwrap_or_else(|e| e.into_inner());
-            // SAFETY: consume_on's contract declares every stream used through this family,
-            // and this pin's final alias is gone, so nothing submits through it later.
-            unsafe { pin.into_fenced_region(&streams) }
-        };
-        release_region(region);
+}
+
+enum UsePreparation {
+    Resident(Arc<SharedPin>),
+    Fill { fill: varena::Fill, exported: Option<Arc<SharedPin>> },
+}
+impl UsePreparation {
+    fn new(value: varena::Preparation, consumers: Consumers) -> Self {
+        match value {
+            varena::Preparation::Resident(pin) => Self::Resident(SharedPin::new(pin, consumers)),
+            varena::Preparation::Fill(fill) => Self::Fill { fill, exported: None },
+        }
     }
 }
 
@@ -480,31 +543,32 @@ impl PyRegion {
             })
             .map_err(|e| raise(py, e))?;
         let needs_fill = matches!(preparation, varena::Preparation::Fill(_));
+        let consumers = Consumers::new(self.region.device());
         Ok(PyUse {
-            preparation: Mutex::new(Some(preparation)),
+            preparation: Mutex::new(Some(UsePreparation::new(preparation, consumers.clone()))),
             needs_fill,
             device: self.region.device(),
             pid: std::process::id(),
-            consumers: Consumers::default(),
+            consumers,
         })
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py
             .detach(|| self.region.try_pin())
             .map_err(|e| raise(py, e))?;
-        Ok(pin.map(|pin| PyUse {
-            preparation: Mutex::new(Some(varena::Preparation::Resident(pin))),
-            needs_fill: false,
-            device: self.region.device(),
-            pid: std::process::id(),
-            consumers: Consumers::default(),
+        Ok(pin.map(|pin| {
+            let consumers = Consumers::new(self.region.device());
+            PyUse {
+                preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+                needs_fill: false, device: self.region.device(), pid: std::process::id(), consumers,
+            }
         }))
     }
 }
 
 #[pyclass(name = "_VarenaUse", module = "tensorfs._ext", frozen)]
 struct PyUse {
-    preparation: Mutex<Option<varena::Preparation>>,
+    preparation: Mutex<Option<UsePreparation>>,
     needs_fill: bool,
     device: i32,
     pid: u32,
@@ -534,10 +598,20 @@ impl PyUse {
                     "fill is committing or already failed",
                 ))?;
             let ready = match current {
-                varena::Preparation::Resident(pin) => varena::Preparation::Resident(pin),
-                varena::Preparation::Fill(fill) => {
+                UsePreparation::Resident(owner) => UsePreparation::Resident(owner),
+                UsePreparation::Fill { fill, exported } => {
                     // SAFETY: Use requires every logical byte initialized; this joins all writers.
-                    varena::Preparation::Resident(unsafe { fill.commit_external() }?)
+                    let pin = unsafe { fill.commit_external() }?;
+                    let owner = if let Some(owner) = exported {
+                        // The exported owner already holds this exact Fill's Region.
+                        // SAFETY: this is the producer's now-completed, unexported Pin;
+                        // all consumer custody remains in the retained shared owner.
+                        release_region(unsafe { pin.into_completed_region() });
+                        owner
+                    } else {
+                        SharedPin::new(pin, self.consumers.clone())
+                    };
+                    UsePreparation::Resident(owner)
                 }
             };
             *self
@@ -550,14 +624,13 @@ impl PyUse {
     }
     /// Declare a CUDA stream handle that uses this storage. Releases of this Use and its
     /// exports then record Varena events there instead of requiring a context join.
-    fn consume_on(&self, stream: u64) -> PyResult<()> {
+    fn consume_on(&self, py: Python<'_>, stream: u64) -> PyResult<()> {
         if self.pid != std::process::id() {
             return Err(PyRuntimeError::new_err(
                 "CUDA storage cannot be used after fork",
             ));
         }
-        self.consumers.declare(stream);
-        Ok(())
+        self.consumers.declare(stream).map_err(|error| raise(py, error))
     }
     fn __dlpack_device__(&self) -> (i32, i32) {
         (2, self.device)
@@ -571,7 +644,7 @@ impl PyUse {
         dl_device: Option<(i32, i32)>,
         copy: Option<bool>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let _ = (stream, max_version); // Ready fills are context-synchronized; empty fills have no producer.
+        let _ = max_version; // Ready fills are context-synchronized; empty fills have no producer.
         if copy == Some(true) || dl_device.is_some_and(|d| d != (2, self.device)) {
             return Err(PyValueError::new_err(
                 "Varena exports its original CUDA storage only",
@@ -582,22 +655,34 @@ impl PyUse {
                 "CUDA storage cannot be used after fork",
             ));
         }
-        let pin = py
+        if let Some(stream) = stream {
+            let stream = u64::try_from(stream).map_err(|_| PyValueError::new_err("CUDA consumer stream must be nonnegative"))?;
+            self.consumers.declare(stream).map_err(|error| raise(py, error))?;
+        }
+        if !self.consumers.0.declared().map_err(|error| raise(py, error))? {
+            return Err(PyValueError::new_err("declare a CUDA consumer with consume_on or the DLPack stream argument"));
+        }
+        let owner = py
             .detach(|| {
-                let preparation = self
+                let mut preparation = self
                     .preparation
                     .lock()
                     .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))?;
                 match preparation
-                    .as_ref()
+                    .as_mut()
                     .ok_or(varena::Error::Invalid("fill failed"))?
                 {
-                    varena::Preparation::Resident(pin) => pin.try_clone(),
-                    varena::Preparation::Fill(fill) => fill.pin(),
+                    UsePreparation::Resident(owner) => Ok(Arc::clone(owner)),
+                    UsePreparation::Fill { fill, exported } => {
+                        if exported.is_none() {
+                            *exported = Some(SharedPin::new(fill.pin()?, self.consumers.clone()));
+                        }
+                        Ok(Arc::clone(exported.as_ref().expect("exported Fill owner")))
+                    }
                 }
             })
             .map_err(|e| raise(py, e))?;
-        export(py, pin, self.consumers.clone())
+        export(py, owner)
     }
 }
 impl Drop for PyUse {
@@ -614,8 +699,11 @@ impl Drop for PyUse {
         {
             // Pin count/fill abort becomes visible now, before any later allocation recovery.
             match preparation {
-                varena::Preparation::Resident(pin) => self.consumers.release(pin),
-                fill => release_region(fill.into_unpinned_region()),
+                UsePreparation::Resident(owner) => drop(owner),
+                UsePreparation::Fill { fill, exported } => {
+                    release_region(fill.into_unpinned_region());
+                    drop(exported);
+                }
             }
         }
     }
@@ -649,10 +737,9 @@ struct Managed {
     deleter: Option<unsafe extern "C" fn(*mut Managed)>,
 }
 struct Held {
-    pin: varena::Pin,
+    _owner: Arc<SharedPin>,
     length: i64,
     pid: u32,
-    consumers: Consumers,
 }
 
 unsafe extern "C" fn delete(tensor: *mut Managed) {
@@ -665,11 +752,8 @@ unsafe extern "C" fn delete(tensor: *mut Managed) {
     let held = unsafe { Box::from_raw(tensor.context as *mut Held) };
     if held.pid != std::process::id() {
         std::mem::forget(held);
-    } else {
-        let Held { pin, consumers, .. } = *held;
-        // This deleter may run with or without a Python thread state. Never attach or wait.
-        consumers.release(pin);
     }
+    // Its Arc drops without attaching Python. Only the last actual owner retires the Pin.
 }
 unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
     // SAFETY: Python calls this on a live capsule. Consumed capsules have a different name.
@@ -679,23 +763,28 @@ unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
         }
     }
 }
-fn capsule(py: Python<'_>, pin: varena::Pin) -> PyResult<Bound<'_, PyAny>> {
-    export(py, pin, Consumers::default())
+fn capsule(py: Python<'_>, pin: varena::Pin, stream: u64) -> PyResult<Bound<'_, PyAny>> {
+    let consumers = Consumers::new(pin.device());
+    if let Err(error) = consumers.declare(stream) {
+        varena::retain_unproven_pin(pin, error.clone());
+        return Err(raise(py, error));
+    }
+    export(py, SharedPin::new(pin, consumers))
 }
-fn export(py: Python<'_>, pin: varena::Pin, consumers: Consumers) -> PyResult<Bound<'_, PyAny>> {
+fn export(py: Python<'_>, owner: Arc<SharedPin>) -> PyResult<Bound<'_, PyAny>> {
+    let pin = owner.pin();
     let length = match i64::try_from(pin.len()) {
         Ok(length) => length,
         Err(_) => {
-            release_region(pin.into_unpinned_region());
             return Err(PyValueError::new_err("tensor length exceeds DLPack i64"));
         }
     };
     let (pointer, device) = (pin.ptr(), pin.device());
+    owner.register().map_err(|error| raise(py, error))?;
     let held = Box::into_raw(Box::new(Held {
-        pin,
+        _owner: owner,
         length,
         pid: std::process::id(),
-        consumers,
     }));
     let tensor = Box::into_raw(Box::new(Managed {
         tensor: Tensor {
