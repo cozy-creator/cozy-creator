@@ -139,6 +139,11 @@ a spec.
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
 - `GET /v1/runs/{id}/outputs/{name}`, `GET /v1/runs/{id}/play`: an output's bytes; a link that plays it.
 
+### A run that stopped moving
+
+A running run with no progress for 10 minutes carries `stalled {since_ms, machine, usd_micros_per_hour?}` until it
+moves, and its record gets one `no_progress` warning naming the machine and its price. Nothing ends it: only its owner does.
+
 ### Machines and rentals
 <!-- cl-716 C -->
 A machine is this computer's (`local`, started when used), a rental, or another computer's added by address.

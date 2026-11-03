@@ -150,9 +150,25 @@ impl Machines {
         me.resume_asks();
         me.spawn(me.clone().local_tasks());
         me.spawn(me.clone().place_runs());
+        me.spawn(me.clone().notice_stalled());
         let lister = me.clone();
         me.spawn(async move { lister.list_hubs().await });
         me
+    }
+
+    /// Each minute, says once of each run that stopped moving that it has.
+    async fn notice_stalled(self: Arc<Self>) {
+        let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            every.tick().await;
+            self.calcifer.notice_stalled();
+        }
+    }
+
+    /// What `name` costs an hour, as its Hub last said.
+    pub(crate) fn hourly(&self, name: &str) -> Option<i64> {
+        self.hubs.hourly(&self.store().machine(name).ok()??)
     }
 
     /// The machine's latest Status, once one has arrived.

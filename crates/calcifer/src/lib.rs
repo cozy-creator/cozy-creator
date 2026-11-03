@@ -40,7 +40,7 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{Event, On, Progress, Reason, Run, StagedInput, Status as RunStatus, SubmitRun, Submitted},
+    calcifer::{Event, On, Progress, Reason, Run, Stalled, StagedInput, Status as RunStatus, SubmitRun, Submitted, Warning},
     config::Origin,
     ids::{Digest, RunId},
     machine as v1,
@@ -93,6 +93,8 @@ pub struct Calcifer {
     granting: OnceLock<Weak<machines::Machines>>,
     /// What asks do once their run's machine completes it, by the ask's key (`hub::after`).
     after: PathBuf,
+    /// When this Calcifer opened its store (Unix ms).
+    opened_ms: i64,
 }
 
 /// A turn to write one object to one machine, and the number of the run whose turn it is.
@@ -117,6 +119,8 @@ struct Machine {
 
 /// How often a wait for a machine's answer says again how long it has lasted.
 const RESAID: Duration = Duration::from_secs(5);
+/// How long a run goes without moving before its record says so, with what that costs.
+const STALLED_MS: i64 = 10 * 60 * 1000;
 
 /// Why a driver's step stopped short of its run's end.
 enum Stop {
@@ -182,6 +186,7 @@ impl Calcifer {
             warm: Mutex::default(),
             granting: OnceLock::new(),
             after: home.join("after"),
+            opened_ms: store::now_ms(),
         });
         calcifer.sweep_inputs()?;
         Ok(calcifer)
@@ -379,7 +384,53 @@ impl Calcifer {
                 None => Some(self.store.queued_ahead(run.machine.as_deref(), run.number)? + 1),
             };
         }
+        run.stalled = self.stalled(&run);
         Ok(run)
+    }
+
+    /// Whether `run`, as it stands with what it is doing now, has stopped moving. Its machine's
+    /// word for its last move, else when it began; a Calcifer that just started has not heard
+    /// from it yet. One that waits in a line (its machine's, or for GPUs another run holds) has
+    /// only that line's progress.
+    fn stalled(&self, run: &Run) -> Option<Stalled> {
+        if run.status != RunStatus::InProgress || queued(run) || run.waiting.as_deref().is_some_and(|w| w.contains("held by")) {
+            return None;
+        }
+        let moved = run.progress.as_ref().map(|p| p.at_ms).filter(|at| *at > 0);
+        let since = moved.or(run.started_at_ms).or(run.accepted_at_ms)?.max(self.opened_ms);
+        let machine = run.machine.clone()?;
+        (store::now_ms() - since >= STALLED_MS).then(|| Stalled {
+            since_ms: since,
+            usd_micros_per_hour: self.machines().and_then(|machines| machines.hourly(&machine)),
+            machine,
+        })
+    }
+
+    /// Says once, on its record, that a run stopped moving: where, and what that costs. The run
+    /// goes on: only its owner ends it.
+    pub(crate) fn notice_stalled(&self) {
+        let Ok(unsettled) = self.store.unsettled() else { return };
+        for id in unsettled {
+            let Ok(Some(row)) = self.store.run(id.as_str()) else { continue };
+            let Ok(run) = self.record(&row) else { continue };
+            let Some(stalled) = &run.stalled else { continue };
+            if run.warnings.iter().any(|warning| warning.code == "no_progress") {
+                continue;
+            }
+            let rate = stalled.usd_micros_per_hour.map_or(String::new(), |micros| format!(", which costs ${:.2} an hour", micros as f64 / 1e6));
+            let minutes = (store::now_ms() - stalled.since_ms) / 60_000;
+            let warning = Warning {
+                code: "no_progress".into(),
+                message: format!(
+                    "run {} has made no progress for {minutes} min on {}{rate}. It keeps running until you end it: cozy run cancel {}",
+                    run.number, stalled.machine, run.number
+                ),
+            };
+            warn!(run = %id, "{}", warning.message);
+            if let Err(e) = self.warn(&id, &warning) {
+                warn!(run = %id, "{e}");
+            }
+        }
     }
 
     /// The live events a stream opening now starts with.
@@ -511,15 +562,17 @@ impl Calcifer {
 
     /// Sends the run's events; a lifecycle event says why the run waits now, as its record does.
     fn publish(&self, id: &RunId, events: Vec<Event>) {
-        let waiting = lock(&self.live)
+        let (waiting, progress) = lock(&self.live)
             .get(id)
-            .and_then(|live| live.waiting.clone());
+            .map_or((None, None), |live| (live.waiting.clone(), live.progress.clone()));
         for mut event in events {
             if let Event::Created { run, .. }
             | Event::Queued { run, .. }
             | Event::InProgress { run, .. } = &mut event
             {
                 run.waiting.clone_from(&waiting);
+                run.progress.clone_from(&progress);
+                run.stalled = self.stalled(run);
             }
             let _ = self.events.send((id.clone(), event));
         }

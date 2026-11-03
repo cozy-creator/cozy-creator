@@ -1834,6 +1834,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
                 basis: outcome.memo_basis.clone(),
             }),
         measurements: None,
+        stalled: None,
         calls: vec![],
     })
 }

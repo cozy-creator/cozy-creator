@@ -153,9 +153,10 @@ fn row(run: &Run) -> Vec<String> {
                 Some(f) => format!("{} {:.0}%", p.stage, f * 100.0),
                 None => p.stage.clone(),
             };
-            let shown = match follow::still(p) {
-                Some(still) => format!("{shown} · no progress for {}", output::span(still)),
-                None => shown,
+            let shown = match (&run.stalled, follow::still(p)) {
+                (Some(stalled), _) => format!("{shown} · {}", follow::stalled_words(stalled)),
+                (None, Some(still)) => format!("{shown} · no progress for {}", output::span(still)),
+                (None, None) => shown,
             };
             // What it waits on says first (an update waiting for the runs in flight).
             match &run.waiting {
@@ -163,7 +164,13 @@ fn row(run: &Run) -> Vec<String> {
                 None => shown,
             }
         }
-        (Status::InProgress, None) => run.waiting.clone().or_else(|| run.machine_state.clone()).unwrap_or_default(),
+        (Status::InProgress, None) => {
+            let shown = run.waiting.clone().or_else(|| run.machine_state.clone()).unwrap_or_default();
+            match &run.stalled {
+                Some(stalled) => format!("{shown} · {}", follow::stalled_words(stalled)),
+                None => shown,
+            }
+        }
         (Status::Failed | Status::Canceled, _) => run.reason.as_ref().map(|r| r.message.clone()).unwrap_or_default(),
         _ => String::new(),
     };

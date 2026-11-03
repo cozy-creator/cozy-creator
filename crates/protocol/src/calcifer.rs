@@ -97,6 +97,16 @@ pub struct Warning {
     pub message: String,
 }
 
+/// A run that has not moved: since when, on which machine, and what that machine costs an hour
+/// (none: not a rental, or its Hub has not said).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stalled {
+    pub since_ms: i64,
+    pub machine: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd_micros_per_hour: Option<i64>,
+}
+
 /// A local file a run reads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedInput {
@@ -331,6 +341,9 @@ pub struct Run {
     /// With `?detail=full`: what the machine measured (stages, steps, GPUs, attention).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurements: Option<serde_json::Value>,
+    /// It has made no progress for a while. Shown and said once, never acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled: Option<Stalled>,
     /// With `?detail=full`: the run's settled calls, in the order they ended.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<Call>,
