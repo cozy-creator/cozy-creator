@@ -660,12 +660,12 @@ class _AutomaticGraphs:
 
     @contextmanager
     def _observe(self, key, mode):
-        from .._ext import PhaseOverlapError
+        from . import torch as vt
 
         owner = self._owner_ref()
         try:
             observation = _Observation(owner._owner.device.index, key, mode)
-        except PhaseOverlapError:
+        except vt.PhaseOverlapError:
             # Only the structured native entry refusal leaves another owned
             # token/sample untouched. Never classify a body error or its text.
             yield None

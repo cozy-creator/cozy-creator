@@ -316,8 +316,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--phase-control",
         choices=("none", "typed"),
-        default="none",
-        help="Optional parent gate on the required typed native SDK",
+        default="typed",
+        help="Typed parent controls run by default on the required matching SDK",
     )
     options = parser.parse_args()
     torch.set_num_threads(1)

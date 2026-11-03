@@ -1,9 +1,11 @@
-# Automatic nn-only dispatch vertical
+# Automatic dispatch and first nn application
 
 The controller is wired through the public `vt.offload(..., graphs="auto")`
 default. `graphs="eager"` disables automatic selection. CPU stays real eager
-execution. This first GPU qualification profile admits only the existing reviewed
-nn classes, independently of the separately recorded SDXL framework review.
+execution. The connected controller admits reviewed nn and exact SDXL framework
+paths; `TORCH-AUTO-SDXL.md` records the 39 stock candidate boundaries and 44
+effectful CLIP layer boundaries that remain eager. The small first application
+below uses only nn classes, independently of the full stock SDXL gate.
 Unknown/custom/effectful classes, aliases and unsupported input/output trees retain
 the ordinary eager path. No warmup is authorized by a cold sample alone.
 
@@ -48,7 +50,7 @@ chooses eager under the caller's existing observation, without closing/relabelin
 its token/sample. Catching this type does not wrap a body. Current implementation
 dependency is the root-owned typed-refusal feature83ebdad55 (equivalent mappings
 2bf8fd329/dcbc141b2); root supplies the matched native/PyO3 cohort. The automatic
-observation path imports PhaseOverlapError directly. Older SDKs are unsupported,
+observation path catches the public `vt.PhaseOverlapError` alias directly. Older SDKs are unsupported,
 and reject before entry/body rather than using capability/empty-tuple fallback.
 Other native admission errors on the required SDK still propagate unchanged.
 
@@ -61,8 +63,6 @@ graph/Plan/Region/tensor handles. Scope counts and Python facts are not GPU proo
 python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cpu
 # Coordinator only; required matched typed native SDK:
 python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cuda:0
-# Matched SDK with the explicit typed native addition:
-python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cuda:0 --phase-control typed
 ```
 
 The actual two sequential blocks contain Linear/ReLU/Linear. No mocked native
@@ -75,20 +75,18 @@ replay without Python bodies; independent normal outputs and exact numerical
 parity; both definitions alive with weight pins0; real trim/refill at the same
 Region addresses under unchanged definitions; native callback retirement of idle
 entry1 while the model and entry0 admission locks are held; actual pool-byte
-reduction after native trim; recapture of entry1 only. Optional --phase-control
-typed requires one eager body under the caller token. It includes named/unkeyed
-parents and changed shapes, then ordinary cached
-selection resuming after the caller closes its token. That optional result is
-not claimed by the default normal-path receipt. Quarantine may
+reduction after native trim; recapture of entry1 only. Default typed controls
+require one eager body under the caller token. They include named/unkeyed
+parents and changed shapes, then ordinary cached selection resuming after the
+caller closes its token. Quarantine may
 not increase. Python profiling observes real forward calls and installs no hooks.
 
 GPU mode is PREPARED/UNRUN by this lane. Actual source/epoch/reset/failure and stock
-SDXL selection/performance remain coordinator-owned gates. The reviewed framework
-profile is a subsequent feature, not a prerequisite for this nn-only app.
+SDXL selection/performance remain coordinator-owned gates. The framework profile
+is connected in the same SDK; the small nn app does not qualify stock execution.
 
-No arbitrary phase-enter RuntimeError is classified. Native1a supplies no active
-descriptor through phase_stats; split_context is not phase-admission proof. Both
-APIs are deliberately unused for overlap classification. Unknown native entry
+No arbitrary phase-enter RuntimeError is classified. phase_stats and split_context
+are not phase-admission proof and are unused for overlap classification. Unknown native entry
 errors propagate before yielding to any body. Only the separately owned typed
 error can authorize parent-observation eager selection.
 

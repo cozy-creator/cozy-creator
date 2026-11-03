@@ -52,6 +52,8 @@ def create(args):
         stream.synchronize()
         torch.testing.assert_close(result.cpu(), expected, rtol=2e-5, atol=2e-6)
     states = list(owner._automatic._states.values())
+    assert len(states) == 2
+    assert all(state.captures == 1 and state.replays == 2 for state in states)
     assert all(
         state.cache is not None and state.cache.segment is not None for state in states
     )

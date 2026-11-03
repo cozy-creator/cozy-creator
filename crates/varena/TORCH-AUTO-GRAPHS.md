@@ -168,10 +168,9 @@ selection. No invocation executes eager as a retry after capture/replay has begu
    from this EXACT prepare_pool call can cancel the unconsumed preparation and choose
    ordinary eager ONCE for this request. This is pre-body strategy selection, not
    OOM re-execution; no byte arithmetic, resizing or Python retry loop. On success,
-   the private auto GraphSegment path must consume that SAME admitted pool/target
-   before warmup rather than allocate a different pool. Explicit owner.capture stays
-   separate and unchanged. Until that private integration is wired, this is not a
-   claim that current default vt.offload already implements optional capture.
+   the connected private auto GraphSegment path consumes that SAME admitted pool/target
+   before warmup rather than allocating a different pool. Explicit owner.capture stays
+   separate and unchanged.
 4. Prepare static inputs and selected weights, Use+typed exports+wait_ready outside
    capture; use existing GraphSegment read-only warmup/capture and error cleanup. If
    preparation/capture executes and fails, propagate the original failure; do not
