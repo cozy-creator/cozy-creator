@@ -1,5 +1,20 @@
 # Graph frontend qualification
 
+Current returned coordinator evidence (read-only inspection): H100 run26594 PASSES
+the small frontend client on eb315 source, with exact current graph/helper/fixture
+hashes. It covers normal construction/Pins0, three same-VA trim/refill cycles,
+escaped-native-alias protection, independent outputs, enclosing-Plan restoration,
+old dtype versions and Conv stride/padding/dilation invalidation. It does not qualify
+full-model graph adoption/performance or the separate failure/retirement/tail cells.
+
+H100 run26595 FAILED in the preparation-ordering fixture worker before reaching
+unrelated-producer refusal: inference mode was not enabled on the new thread.
+Its old bound fixture2cdf0aa1 did not include captured-Working amendment764afaaa.
+Feature8f9f4fbd2 enables inference mode in both worker contexts and adds an actual
+CPU thread reproduction; the corrected current fixture needs a new GPU run.
+Original failure is preserved. Exact sources/hashes and boundaries are in
+`evidence/2026-11-03-h100-graph-26594-26595/manifest.json`.
+
 The implementation is a fixed-module graph primitive. It requires the native scoped
 `Use.wait_ready` feature and the hard-cut scoped `vt.graph` helper in this lane.
 Preparation joins the actual caller onto the capture stream and synchronizes only
@@ -20,6 +35,7 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
 CUDA_VISIBLE_DEVICES='' python replay_scope_host.py
 CUDA_VISIBLE_DEVICES='' python graph_guard_retirement_cpu.py
 CUDA_VISIBLE_DEVICES='' python graph_configuration_cpu.py
+CUDA_VISIBLE_DEVICES='' python thread_inference_cpu.py
 ```
 
 This runs actual tied/strided Torch and tiny Diffusers VAE computation through the
