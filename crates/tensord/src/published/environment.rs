@@ -242,8 +242,9 @@ impl Publisher {
             ));
         }
         let added: Vec<String> = self.check(py, job).map_err(failed)?.difference(&before).cloned().collect();
+        // A development Runtime is its owner's choice: the package runs on it, warned below.
         let floors: Vec<&str> = added.iter().filter_map(|line| floor(line)).collect();
-        if !floors.is_empty() {
+        if !floors.is_empty() && self.sdk.runtime_build.is_empty() {
             return Err(Pair::Floor(floors.join(" and ")));
         }
         if !added.is_empty() {
@@ -261,10 +262,6 @@ impl Publisher {
     /// the restart the update ends with. The refusal when it cannot; a cancel ends the wait.
     fn meet_floor(&self, label: &str, floors: &str, wanted: &BTreeMap<String, String>, job: &Job) -> Failure {
         let refuse = |why: String| ("runtime_floor_unmet", format!("{label} needs {floors}, and {why}"));
-        let build = &self.sdk.runtime_build;
-        if !build.is_empty() {
-            return refuse(format!("this machine runs development Runtime {build} (`cozy machine update --runtime <path>`)"));
-        }
         let Some(updates) = &self.updates else {
             return refuse("this machine does not update itself".into());
         };
