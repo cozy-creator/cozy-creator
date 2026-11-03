@@ -43,7 +43,10 @@ Inputs must satisfy the existing GraphSegment ordinary/nonoverlap/immutable-scal
 contract. BEFORE any capture attempt, require reviewed module effects and the actual
 recorded original/installed forward identities. The initial reviewed set is deliberately
 small: standard unmodified Torch Linear/Conv/normalization/activation/container forwards.
-Only their declared immutable deterministic eval paths are eligible initially: no
+The reviewed stock SDXL extension and exact candidate/eager inventory are in
+TORCH-AUTO-SDXL.md. It adds 39 stock-call candidates, including all 25 UNet
+frontier boundaries; 44 CLIP layers remain eager for real output-collector effects.
+Only reviewed immutable deterministic eval paths are eligible initially: no
 model RNG use or mutable Python/buffer state is authorized by a measured sample.
 Eval Dropout's identity path consumes no RNG (and standalone output aliases still
 decline). Random/custom modules need separate reviewed support; never save/rewind or

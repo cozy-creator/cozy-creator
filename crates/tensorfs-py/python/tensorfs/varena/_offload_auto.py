@@ -19,6 +19,7 @@ _REVIEWED_MODULES = (
     nn.ModuleList,
     nn.ModuleDict,
     nn.Linear,
+    nn.Embedding,
     nn.Conv1d,
     nn.Conv2d,
     nn.Conv3d,
@@ -258,6 +259,7 @@ def _module_preflight(owner, module, *, forward_origins):
     """
     from torch.nn.modules import module as module_runtime
 
+    from . import _offload_sdxl as sdxl
     from ._offload import _Weight
 
     if any(
@@ -277,8 +279,14 @@ def _module_preflight(owner, module, *, forward_origins):
             return "module_training"
         if fields.get("inplace") is True:
             return "inplace_module"
-        if type(child) not in _REVIEWED_MODULES:
+        reviewed = _REVIEWED_FORWARDS.get(type(child)) or sdxl.reviewed_forward(child)
+        if reviewed is None:
             return "unreviewed_module_effects"
+        if type(child) is nn.Embedding and child.max_norm is not None:
+            return "embedding_renorm_requires_adapter"
+        reason, _ = sdxl.module_state(child)
+        if reason:
+            return reason
         if any(
             value is not None
             and (
@@ -294,7 +302,7 @@ def _module_preflight(owner, module, *, forward_origins):
         ):
             return "buffer_tensor_type_requires_adapter"
         if (
-            type(child).__call__ is not nn.Module.__call__
+            not sdxl.reviewed_call(child)
             or type(child)._call_impl is not nn.Module._call_impl
             or child._compiled_call_impl is not None
         ):
@@ -306,13 +314,15 @@ def _module_preflight(owner, module, *, forward_origins):
         origin = forward_origins.get(id(child))
         if origin is None:
             return "forward_origin_unrecorded"
-        reviewed = _REVIEWED_FORWARDS[type(child)]
         if (
             _function(child.forward) is not _function(origin.installed)
             or _function(origin.original) is not reviewed
             or type(child).forward is not reviewed
-            or not reviewed.__globals__.get("__name__", "").startswith(
-                "torch.nn.modules."
+            or (
+                type(child) in _REVIEWED_FORWARDS
+                and not reviewed.__globals__.get("__name__", "").startswith(
+                    "torch.nn.modules."
+                )
             )
         ):
             return "custom_forward_requires_adapter"
@@ -379,9 +389,14 @@ def _cold_output_reason(module, args, kwargs, result):
 
 def _promotion_reason(owner, module, args, kwargs, result, *, forward_origins):
     """Both independent outputs AND reviewed effects are necessary for promotion."""
-    return _module_preflight(
-        owner, module, forward_origins=forward_origins
-    ) or _cold_output_reason(module, args, kwargs, result)
+    from ._offload_sdxl import invocation_reason
+
+    origin = forward_origins.get(id(module))
+    return (
+        _module_preflight(owner, module, forward_origins=forward_origins)
+        or invocation_reason(module, origin.original, args, kwargs)
+        or _cold_output_reason(module, args, kwargs, result)
+    )
 
 
 @dataclass(frozen=True)
@@ -392,10 +407,15 @@ class _Boundary:
 
 def _boundary_frontier(owner):
     """Choose existing outermost segment boundaries, excluding composite roots."""
-    roots = {id(module) for module in owner._roots.values()}
+    return _declared_frontier(owner._roots, owner._boundary_modules)
+
+
+def _declared_frontier(roots, declarations):
+    """Pure module topology selection, also usable before Source adoption."""
+    roots = {id(module) for module in roots.values()}
     selected, reasons, identities = [], {}, set()
     for name, module in sorted(
-        owner._boundary_modules.items(), key=lambda item: (item[0].count("."), item[0])
+        declarations.items(), key=lambda item: (item[0].count("."), item[0])
     ):
         if id(module) in identities:
             reasons[name] = "shared_module_uses_its_existing_boundary"
@@ -477,6 +497,7 @@ class _InvocationKey:
     def from_call(cls, owner, boundary, args, kwargs):
         from ._offload import OffloadError, _Weight
         from ._offload_graph import GraphSegment, _tree_signature
+        from ._offload_sdxl import configuration
 
         module = boundary.module
         parameters = tuple(module.parameters())
@@ -501,7 +522,7 @@ class _InvocationKey:
             (_frozen_tree(signature), tuple(descriptors)),
             GraphSegment._parameters(module),
             GraphSegment._buffers(module),
-            GraphSegment._configuration(module),
+            (GraphSegment._configuration(module), configuration(module)),
             _environment(owner._owner.device),
             tuple(
                 (
