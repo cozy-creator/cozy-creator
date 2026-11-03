@@ -1,0 +1,7 @@
+{
+  "baseline_errors": 13,
+  "candidate_errors": 13,
+  "new": [],
+  "resolved": [],
+  "scope": "paired source type check, exact TensorFS candidate source on MYPYPATH; existing Runtime findings retained"
+}

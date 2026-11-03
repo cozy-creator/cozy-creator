@@ -1,0 +1,1 @@
+{"torch": "2.14.1+cpu", "native_executed": false, "metadata_doubles": true, "checks": ["Plan failure closes all staged Regions without partial publication", "published singleton survives failed and successful refresh", "successful refresh publishes member offsets and deduplicates Plan Regions"]}

@@ -206,7 +206,7 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
                         expected_gpu = tiny(static_input)
                     stream.synchronize()
                     graph = torch.cuda.CUDAGraph()
-                    from tensorfs import varena
+                    from tensorfs.varena import _runtime as varena
                     with varena.capture(0), torch.cuda.graph(graph, stream=stream):
                         static_output = tiny(static_input)
                 if generation == 1 and driver_room:

@@ -1,0 +1,13 @@
+{
+  "runtime_stream_api": "13c0d73466762fa899ff61c3291f8f93f4cf160e",
+  "owned_streams": "Domain work/control via accel.nonblocking_stream, explicit current-stream scope",
+  "completion": "caller/work events and Domain-owned stream retirement; no fixture device-wide synchronize",
+  "matrix_storage": [
+    "float32",
+    "float16"
+  ],
+  "bias_storage": "float32 in both arms, actual H3 convention",
+  "original_fixture_preserved": "d87b6c060",
+  "cases": 31,
+  "gpu_execution": false
+}
