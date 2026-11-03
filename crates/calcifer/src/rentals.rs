@@ -113,6 +113,11 @@ impl Hubs {
         offline(&self.rental(&row.hub, row.rental_id.as_deref()?)?)
     }
 
+    /// A rental's price an hour as its Hub last said it.
+    pub(crate) fn hourly(&self, row: &MachineRow) -> Option<i64> {
+        Some(hourly(&self.rental(&row.hub, row.rental_id.as_deref()?)?))
+    }
+
     /// A rental's GPUs as its Hub last said them.
     pub(crate) fn gpus(&self, row: &MachineRow) -> Option<u32> {
         let rental = self.rental(&row.hub, row.rental_id.as_deref()?)?;

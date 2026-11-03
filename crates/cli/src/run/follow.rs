@@ -16,7 +16,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use protocol::{
     calcifer::{
         Adjustment, Event, Machine, MachineState, NoteLevel, On, OutputItem, Progress, Run, RunQuote,
-        RunRequest, Status, Submitted,
+        RunRequest, Stalled, Status, Submitted,
     },
     error::{Error, Kind},
 };
@@ -443,6 +443,8 @@ struct View {
     /// The progress last shown, and when its step count last moved: a step running far past its
     /// stage's pace says so.
     last: Option<(Progress, Instant)>,
+    /// The run has stopped moving, as Calcifer says.
+    stalled: Option<Stalled>,
 }
 
 impl View {
@@ -468,6 +470,7 @@ impl View {
             status: None,
             named: HashSet::new(),
             last: None,
+            stalled: None,
         };
         view.lifecycle(run);
         view
@@ -563,6 +566,21 @@ impl View {
         }
         self.status = Some(run.status);
         self.show();
+        self.stalled_as(run);
+    }
+
+    /// Says once that the run stopped moving. Its status line says so from then on (`tick`).
+    fn stalled_as(&mut self, run: &Run) {
+        // An event replayed as a follower attaches knows nothing of it: progress clears it.
+        let Some(stalled) = &run.stalled else { return };
+        if self.stalled.is_none() {
+            self.line(&format!(
+                "  {}. It keeps running until you end it: cozy run cancel {}",
+                stalled_words(stalled),
+                run.number
+            ));
+        }
+        self.stalled = Some(stalled.clone());
     }
 
     /// The status line: why the run waits, else where it is.
@@ -591,6 +609,10 @@ impl View {
             Some((last, at)) if (&last.stage, last.completed) == (&progress.stage, progress.completed) => *at,
             _ => Instant::now(),
         };
+        // It moved.
+        if still(progress).is_none() {
+            self.stalled = None;
+        }
         self.last = Some((progress.clone(), stepped));
         self.show_progress();
     }
@@ -598,8 +620,13 @@ impl View {
     /// The last progress again, as time passes: a step running long, or a run with no progress,
     /// says so.
     fn tick(&mut self) {
-        if self.last.is_some() {
-            self.show_progress();
+        match (&self.last, &self.stalled) {
+            (Some(_), _) => self.show_progress(),
+            (None, Some(stalled)) => {
+                let text = format!("{} · {}", self.waiting.as_deref().unwrap_or(&self.state), stalled_words(stalled));
+                self.status(&text);
+            }
+            (None, None) => {}
         }
     }
 
@@ -622,6 +649,9 @@ impl View {
         }
         if let Some(waiting) = &self.waiting {
             text = format!("{waiting} · {text}");
+        }
+        if let Some(stalled) = &self.stalled {
+            let _ = write!(text, " · {}", stalled_words(stalled));
         }
         match &self.bar {
             Some(bar) => {
@@ -686,6 +716,19 @@ pub(crate) fn still(progress: &Progress) -> Option<i64> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     let still = (now - progress.at_ms) / 1000;
     (progress.at_ms > 0 && still >= 60).then_some(still)
+}
+
+/// A stopped run for people: how long, where, and what it has cost since. By the minute: a line
+/// off a terminal changes no faster.
+pub(crate) fn stalled_words(stalled: &Stalled) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let minutes = (now - stalled.since_ms).max(0) / 60_000;
+    let mut text = format!("NO PROGRESS for {} on {}", output::span(minutes * 60), stalled.machine);
+    if let Some(hourly) = stalled.usd_micros_per_hour {
+        let so_far = hourly * minutes / 60;
+        let _ = write!(text, ", {} so far at {}/h", crate::machine::usd(so_far), crate::machine::usd(hourly));
+    }
+    text
 }
 
 /// A step's time: tenths of a second under a minute, else minutes and seconds.
