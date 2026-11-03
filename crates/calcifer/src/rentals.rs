@@ -915,9 +915,12 @@ impl Machines {
 
     async fn boot(self: &Arc<Self>, mut row: MachineRow) {
         let id = row.rental_id.clone().unwrap_or_default();
-        // One cheap read of our own Hub every 2 s: the address is seen within 2 s of the pod
-        // serving, however long the boot's last phase took. Only a failing read backs off.
+        // While a pod boots, one cheap read of our own Hub every 2 s: the address is seen within 2 s
+        // of the pod serving, however long the boot's last phase took. An order with no pod yet
+        // (the Hub holds an out-of-stock one until its renter ends it) changes rarely: its reads
+        // back off to a minute, as a failing read's do. Its runs wait for it all the same.
         const BOOTING: Duration = Duration::from_secs(2);
+        const WAITING: Duration = Duration::from_secs(60);
         let mut pause = BOOTING;
         loop {
             match self.store().machine(&row.name) {
@@ -967,11 +970,14 @@ impl Machines {
                         self.calcifer.machine_changed();
                         return self.watch(&row);
                     }
-                    pause = BOOTING;
+                    pause = match no_pod_yet(&rental) {
+                        true => (pause * 2).min(WAITING),
+                        false => BOOTING,
+                    };
                 }
                 Err(e) => {
                     warn!(machine = row.name, "reading its boot: {e}");
-                    pause = (pause * 2).min(Duration::from_secs(60));
+                    pause = (pause * 2).min(WAITING);
                 }
             }
             tokio::time::sleep(pause).await;
@@ -1486,6 +1492,11 @@ fn offline(rental: &types::Rental) -> Option<String> {
         "release_requested" => Some(format!("its Hub is ending it ({})", cause(rental))),
         _ => None,
     }
+}
+
+/// The Hub has no pod for this order yet: none can be bought now, or it is placing it again.
+fn no_pod_yet(rental: &types::Rental) -> bool {
+    rental.state == "pending_acquisition" || rental.boot.as_ref().is_some_and(|boot| boot.state == "replanning")
 }
 
 /// The Hub has proven the pod gone.
