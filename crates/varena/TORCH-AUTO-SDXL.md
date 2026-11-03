@@ -153,3 +153,25 @@ entry count. The separate real component client retains --graphs eager explicitl
 for its parity/eligibility gate and exercises BOTH encode/decode without claiming
 automatic graph execution. It now also checks the actual controller preflight on
 all39 observed candidate calls/keys. Both CUDA clients remain prepared/unrun here.
+
+## Controlled eager/automatic experiment
+
+Question: does the connected segmented cache improve repeated denoising without
+changing supported model behavior or losing reclaimability? The chosen product
+design is default automatic segmentation with native measured admission and idle
+cache retirement. `graphs="eager"` is the current diagnostic control, never an
+old-ABI fallback or a second allocator design.
+
+Use one exact RC/native/helper vector and matched GPU UUID/capacity, local model
+revision/config hashes, Torch/Diffusers/Transformers, dtype, kernels, seed, prompt,
+dimensions, steps, guidance and cache state. Interleave eager/auto arms; repeat warm
+measurements and report sample count/spread. Report cold preparation separately
+from steady steps and total inference; do not infer a general win from one pair.
+
+Acceptance requires actual automatic captures/reuse, preserved output/container
+semantics, finite outputs and roughly equal quality against native eager, with
+numerical differences reported under the existing design §4.9/§6 contract. Model
+bit identity is not the quality gate; copies/refills/lifetime assertions stay exact.
+There must be no unexplained retained growth or lost pending backing. A speed claim
+requires matched repeat measurements; regressions are investigated/adjusted on the
+same RC rather than hidden by retrying a failed body or adding compatibility modes.
