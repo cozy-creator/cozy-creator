@@ -231,6 +231,21 @@ if cell birefnet-yaml "$(birefnet)" --input "$OUT/birefnet.yaml" --lane "$lane";
 fi
 }
 
+# Over a limit is cut or clamped with a warning, never refused (Paul, 11-03): Runtime holds text and numbers, each with
+# an adjustment; Calcifer cuts a list of files, before they go.
+over_limits() {
+step "over a limit"
+if (cd "$here" && cell limited ./weightless/limited note=toolong count:=99); then
+  J '.result.note == "toolo" and .result.count == 10 and (.adjustments | length == 2)' "$OUT/limited.json" \
+    || check "limited: not cut and clamped with an adjustment each: $(jq -c '[.result, .adjustments]' "$OUT/limited.json")"
+fi
+mkdir -p "$OUT/inputs"; echo one > "$OUT/inputs/one.txt"; echo two > "$OUT/inputs/two.txt"
+if (cd "$here" && cell few ./weightless/few --file "first=$OUT/inputs/one.txt" --file "second=$OUT/inputs/two.txt"); then
+  J '(.result.assets == ["first"]) and (.warnings | any(.code == "input_limit"))' "$OUT/few.json" \
+    || check "few: not cut to its one file with a warning: $(jq -c '[.result, .warnings]' "$OUT/few.json")"
+fi
+}
+
 # After a BiRefNet run: the warm levels find it installed.
 run_flags() {
 step "run flags"

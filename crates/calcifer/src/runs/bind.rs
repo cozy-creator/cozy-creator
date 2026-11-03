@@ -2,8 +2,10 @@
 //! model choices and a conversion's destination.
 //!
 //! Typing is the interface's, never how a token looks: `steps=20` is an int because `steps` is
-//! declared int. Types, required fields and bounds are strict, and every problem is named in one
-//! refusal. An undeclared field, at any depth, is dropped with one warning and never refuses a run.
+//! declared int. Types and required fields are strict, and every problem is named in one refusal.
+//! An undeclared field, at any depth, is dropped with one warning and never refuses a run. A value
+//! over a limit is no refusal either (Paul, 11-03): Runtime clamps a number and cuts text and lists,
+//! each with an adjustment row, and a list of files is cut here, before its files go.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -23,9 +25,6 @@ use serde_json::{Map, Number, Value};
 use sha2::{Digest as _, Sha256};
 
 use super::clip::{self, Clips, Cut};
-
-/// A file with no declared bound is still bounded.
-const DEFAULT_MAX_BYTES: u64 = 64 << 20;
 
 /// The request field every callable takes beside its interface: how LoRAs apply.
 const LORA_MODE: &str = "lora_mode";
@@ -94,6 +93,8 @@ pub struct Bound {
     pub cuts: Vec<Cut>,
     /// What binding said, in order.
     pub notes: Vec<Note>,
+    /// The lists of files over a limit that were cut, as people read them.
+    pub cut: Vec<String>,
 }
 
 /// A local file bound to a payload field, whose value is its digest.
@@ -160,6 +161,7 @@ pub async fn warm_choices(
         files: Vec::new(),
         cuts: Vec::new(),
         notes: Vec::new(),
+        cut: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -213,6 +215,7 @@ pub async fn bind(
         files: Vec::new(),
         cuts: Vec::new(),
         notes: Vec::new(),
+        cut: Vec::new(),
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
@@ -246,6 +249,7 @@ pub async fn bind(
         tree_files,
         cuts: binder.cuts,
         notes: binder.notes,
+        cut: binder.cut,
     })
 }
 
@@ -260,6 +264,7 @@ struct Binder<'a> {
     files: Vec<PathBuf>,
     cuts: Vec<Cut>,
     notes: Vec<Note>,
+    cut: Vec<String>,
 }
 
 impl Binder<'_> {
@@ -541,6 +546,7 @@ impl Binder<'_> {
     /// becomes the file's digest, and the file its InputFile. A video path naming a segment of
     /// it (`clip.mp4#t=5,12`) is sent as that segment's clip.
     async fn attach(&mut self) -> Result<Vec<InputFile>, Error> {
+        self.cut_file_lists();
         let mut specs: Vec<Spec> = Vec::new();
         for field in &self.callable.request.fields {
             if let Some(value) = self.document.get(&field.name) {
@@ -558,6 +564,7 @@ impl Binder<'_> {
         }
         let positional = std::mem::take(&mut self.files);
         self.bind_positional(&positional, &mut specs)?;
+        self.cut_file_specs(&mut specs);
         self.preflight(&specs)?;
 
         let mut seen = BTreeSet::new();
@@ -660,7 +667,7 @@ impl Binder<'_> {
                         .any(|t| t.eq_ignore_ascii_case(&sniffed.media_type))
                 })
                 .or_else(|| kinds.iter().find(|(types, _)| types.is_empty()))
-                .map(|(_, max)| max.unwrap_or(kind_max))
+                .map(|(_, max)| max.or(kind_max))
                 .ok_or_else(|| {
                     let accepted: Vec<&str> = kinds
                         .iter()
@@ -676,7 +683,7 @@ impl Binder<'_> {
                         ),
                     )
                 })?;
-            if sniffed.length > max {
+            if let Some(max) = max.filter(|max| sniffed.length > *max) {
                 return Err(invalid(
                     "input_asset_bound",
                     format!(
@@ -705,7 +712,7 @@ impl Binder<'_> {
                 order,
             });
         }
-        self.count_kinds(&files)?;
+        self.cut_assets(&mut files);
         files.sort_by(|a, b| a.field.cmp(&b.field));
         Ok(files)
     }
@@ -1000,8 +1007,43 @@ impl Binder<'_> {
         Ok(())
     }
 
-    /// Labels are unique and the Assets collection holds no more than it declares, before any
-    /// file is read.
+    /// A list that holds files, cut to its limit in the payload as it stands, before a file is read.
+    fn cut_file_lists(&mut self) {
+        for field in &self.callable.request.fields {
+            let Some(max) = field.constraints.max_length.filter(|_| holds_file(&field.ty)) else {
+                continue;
+            };
+            let Some(Value::Array(list)) = self.document.get_mut(&field.name) else {
+                continue;
+            };
+            if list.len() as u64 > max {
+                let left = list.len() as u64 - max;
+                list.truncate(max as usize);
+                self.cut.push(cut_list(&self.callable.name, &field.name, max, format!("{left} items")));
+            }
+        }
+    }
+
+    /// The files named for a list past its limit: `pictures.11.image=` with `pictures` holding 10.
+    fn cut_file_specs(&mut self, specs: &mut Vec<Spec>) {
+        for field in &self.callable.request.fields {
+            let Some(max) = field.constraints.max_length.filter(|_| holds_file(&field.ty)) else {
+                continue;
+            };
+            let prefix = format!("{}.", field.name);
+            let past = |spec: &Spec| {
+                let index = spec.field.as_deref().and_then(|f| f.strip_prefix(&prefix)?.split('.').next());
+                index.and_then(|index| index.parse::<u64>().ok()).is_some_and(|index| index >= max)
+            };
+            let left: Vec<String> = specs.iter().filter(|spec| past(spec)).map(|spec| spec.source.display().to_string()).collect();
+            if !left.is_empty() {
+                specs.retain(|spec| !past(spec));
+                self.cut.push(cut_list(&self.callable.name, &field.name, max, left.join(", ")));
+            }
+        }
+    }
+
+    /// Labels are unique, before any file is read.
     fn preflight(&self, specs: &[Spec]) -> Result<(), Error> {
         let Some(assets) = &self.callable.assets else {
             return Ok(());
@@ -1011,7 +1053,6 @@ impl Binder<'_> {
             .cloned()
             .unwrap_or_default();
         let mut labels = BTreeSet::new();
-        let mut count = existing.len() as u64;
         let labelled = existing
             .iter()
             .filter_map(|e| e["label"].as_str().map(str::to_owned));
@@ -1028,52 +1069,57 @@ impl Binder<'_> {
                 ));
             }
         }
-        count += specs.iter().filter(|s| s.field.is_none()).count() as u64;
-        if let Some(max) = self
-            .callable
-            .field(&assets.parameter)
-            .and_then(|f| f.constraints.max_length)
-            && count > max
-        {
-            return Err(invalid(
-                "input_asset_count",
-                format!(
-                    "{} has {count} files; it takes at most {max}",
-                    assets.parameter
-                ),
-            ));
-        }
         Ok(())
     }
 
-    fn count_kinds(&self, files: &[InputFile]) -> Result<(), Error> {
+    /// The Assets collection cut to what it declares, in all and of each kind: the first ones stay
+    /// and the rest close up behind them.
+    fn cut_assets(&mut self, files: &mut Vec<InputFile>) {
         let Some(assets) = &self.callable.assets else {
-            return Ok(());
+            return;
         };
-        for kind in &assets.kinds {
-            let count = files
-                .iter()
-                .filter(|f| f.field.starts_with(&format!("{}.", assets.parameter)))
-                .filter(|f| {
-                    kind.media_types
-                        .iter()
-                        .any(|t| t.eq_ignore_ascii_case(&f.media_type))
-                })
-                .count() as u64;
-            if let Some(max) = kind.max_count.filter(|max| count > *max) {
-                return Err(invalid(
-                    "input_asset_count",
-                    format!(
-                        "{} has {count} {} files; it takes at most {max}",
-                        assets.parameter, kind.kind
-                    ),
-                ));
+        let prefix = format!("{}.", assets.parameter);
+        let index = |file: &InputFile| -> Option<usize> { file.field.strip_prefix(&prefix)?.split('.').next()?.parse().ok() };
+        let mut held: Vec<(usize, &InputFile)> = files.iter().filter_map(|file| Some((index(file)?, file))).collect();
+        held.sort_by_key(|(at, _)| *at);
+        let most = self.callable.field(&assets.parameter).and_then(|f| f.constraints.max_length);
+        let (mut kept, mut each) = (0, vec![0; assets.kinds.len()]);
+        let (mut gone, mut left) = (BTreeSet::new(), vec![]);
+        for (at, file) in held {
+            let kind = (assets.kinds.iter())
+                .position(|kind| kind.media_types.iter().any(|t| t.eq_ignore_ascii_case(&file.media_type)));
+            let over_kind = kind.is_some_and(|k| assets.kinds[k].max_count.is_some_and(|max| each[k] >= max));
+            if over_kind || most.is_some_and(|max| kept >= max) {
+                gone.insert(at);
+                left.push(file.path.display().to_string());
+                continue;
+            }
+            kept += 1;
+            if let Some(k) = kind {
+                each[k] += 1;
             }
         }
-        Ok(())
+        if gone.is_empty() {
+            return;
+        }
+        files.retain(|file| !index(file).is_some_and(|at| gone.contains(&at)));
+        for file in files.iter_mut() {
+            let Some(at) = index(file) else { continue };
+            let now = at - gone.range(..at).count();
+            file.field = file.field.replacen(&format!("{prefix}{at}"), &format!("{prefix}{now}"), 1);
+            file.order = now as u32;
+        }
+        if let Some(Value::Array(list)) = self.document.get_mut(&assets.parameter) {
+            let mut at = 0;
+            list.retain(|_| {
+                at += 1;
+                !gone.contains(&(at - 1))
+            });
+        }
+        self.cut.push(format!("{} takes {kept} of these files: {} left out", assets.parameter, left.join(", ")));
     }
 
-    /// What the input at `parts` accepts: the default byte bound, and each media-type set with
+    /// What the input at `parts` accepts: the byte bound it declares, and each media-type set with
     /// its own bound. None: no input file field is there.
     fn accepts(&self, parts: &[String]) -> Option<Accepts> {
         if let Some(AssetsSlot { parameter, kinds }) = &self.callable.assets
@@ -1086,7 +1132,7 @@ impl Binder<'_> {
                 .iter()
                 .map(|k| (k.media_types.clone(), k.max_bytes))
                 .collect();
-            return Some((DEFAULT_MAX_BYTES, kinds));
+            return Some((None, kinds));
         }
         let field = self.callable.field(&parts[0])?;
         asset_at(
@@ -1095,7 +1141,7 @@ impl Binder<'_> {
             &field.asset_bound.media_types,
             field.asset_bound.max_bytes,
         )
-        .map(|(types, max)| (max.unwrap_or(DEFAULT_MAX_BYTES), vec![(types, None)]))
+        .map(|(types, max)| (max, vec![(types, None)]))
     }
 
     /// An omitted integer `seed` comes from the idempotency key, so a retried key rebuilds the
@@ -1114,9 +1160,28 @@ impl Binder<'_> {
     }
 }
 
-/// What an input file field accepts: its default byte bound, and each set of media types with
+/// What an input file field accepts: the byte bound it declares, and each set of media types with
 /// its own bound.
-type Accepts = (u64, Vec<(Vec<String>, Option<u64>)>);
+type Accepts = (Option<u64>, Vec<(Vec<String>, Option<u64>)>);
+
+/// Whether a value of `ty` can name an input file.
+fn holds_file(ty: &Type) -> bool {
+    match ty {
+        Type::Asset(_) | Type::Tree => true,
+        Type::Union { branches, .. } => branches.iter().any(holds_file),
+        Type::List(item) | Type::Map(item) => holds_file(item),
+        Type::Struct(s) => s.fields.iter().any(|f| holds_file(&f.ty)),
+        _ => false,
+    }
+}
+
+/// The warning for a list of files cut to its limit.
+fn cut_list(function: &str, list: &str, max: u64, left: String) -> String {
+    match max {
+        0 => format!("{function} takes no {list}: {left} left out"),
+        max => format!("{list} takes at most {max}: {left} left out"),
+    }
+}
 
 struct Spec {
     field: Option<String>,
@@ -1341,7 +1406,7 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
                 return Some(text);
             }
             let parsed: Value = serde_json::from_str(raw).ok()?;
-            members.iter().any(|m| same(m, &parsed)).then_some(parsed)
+            (members.iter().any(|m| same(m, &parsed)) || numbers(members, &parsed)).then_some(parsed)
         }
         Type::Union { branches, .. } => {
             let scalars = || {
@@ -1382,6 +1447,11 @@ fn integer(raw: &str) -> Option<Value> {
         .map(Value::from)
         .or_else(|_| raw.parse::<u64>().map(Value::from))
         .ok()
+}
+
+/// Whether `value` is a number for a Literal of numbers: Runtime takes the nearest member.
+fn numbers(members: &[Value], value: &Value) -> bool {
+    value.is_number() && members.iter().any(Value::is_number)
 }
 
 /// JSON values equal as the interface means them: `1` and `1.0` are one number.
@@ -1504,7 +1574,7 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
         | (Type::Float, Value::Number(_)) => vec![],
         (Type::Int, Value::Number(n)) if n.is_i64() || n.is_u64() => vec![],
         (Type::Asset(_) | Type::Tree, Value::String(s)) if !s.is_empty() => vec![],
-        (Type::Literal(members), value) if members.iter().any(|m| same(m, value)) => vec![],
+        (Type::Literal(members), value) if members.iter().any(|m| same(m, value)) || numbers(members, value) => vec![],
         (Type::Literal(members), value) => {
             let allowed: Vec<String> = (members.iter())
                 .map(|m| m.as_str().map_or_else(|| m.to_string(), str::to_owned))
@@ -1650,55 +1720,18 @@ fn shown(value: &Value) -> String {
     }
 }
 
+/// What no value here can make good: too few. Over a limit goes on to Runtime, which clamps it.
 fn bounds(c: &Constraints, value: &Value, path: &str) -> Result<(), String> {
     let length = match value {
-        Value::String(s) => Some(s.chars().count() as u64),
-        Value::Array(a) => Some(a.len() as u64),
-        Value::Object(o) => Some(o.len() as u64),
-        _ => None,
+        Value::String(s) => s.chars().count() as u64,
+        Value::Array(a) => a.len() as u64,
+        Value::Object(o) => o.len() as u64,
+        _ => return Ok(()),
     };
-    if let Some(length) = length {
-        if let Some(min) = c.min_length.filter(|min| length < *min) {
-            return Err(format!("{path} has length {length}; its minimum is {min}"));
-        }
-        if let Some(max) = c.max_length.filter(|max| length > *max) {
-            if max == 0 && value.is_array() {
-                return Err(format!("it takes no {path}"));
-            }
-            return Err(format!("{path} has length {length}; its maximum is {max}"));
-        }
+    match c.min_length.filter(|min| length < *min) {
+        Some(min) => Err(format!("{path} has length {length}; its minimum is {min}")),
+        None => Ok(()),
     }
-    let Some(number) = value.as_f64() else {
-        return Ok(());
-    };
-    let shown = value.to_string();
-    for (bound, holds, says) in [
-        (c.ge, number >= c.ge.unwrap_or_default(), "its minimum is"),
-        (
-            c.gt,
-            number > c.gt.unwrap_or_default(),
-            "it must be greater than",
-        ),
-        (c.le, number <= c.le.unwrap_or_default(), "its maximum is"),
-        (
-            c.lt,
-            number < c.lt.unwrap_or_default(),
-            "it must be less than",
-        ),
-    ] {
-        if let Some(bound) = bound.filter(|_| !holds) {
-            return Err(format!("{path} is {shown}; {says} {bound}"));
-        }
-    }
-    if let Some(step) = c.multiple_of.filter(|s| *s != 0.0) {
-        let ratio = number / step;
-        if (ratio - ratio.round()).abs() > 1e-9 {
-            return Err(format!(
-                "{path} is {shown}; it must be a multiple of {step}"
-            ));
-        }
-    }
-    Ok(())
 }
 
 pub(crate) struct Sniffed {

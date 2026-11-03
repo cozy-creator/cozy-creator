@@ -3,10 +3,11 @@ reply and back, with no model, so they run on any computer."""
 
 import os
 import time
+from typing import Annotated
 
 import msgspec
 
-from cozy_runtime.author import App, File, Files, Telemetry
+from cozy_runtime.author import App, File, FileLimits, Files, Telemetry
 
 app = App()
 
@@ -68,6 +69,23 @@ class Nothing(msgspec.Struct, forbid_unknown_fields=True):
 
 class Seen(msgspec.Struct):
     assets: list[str]
+
+
+class Limited(msgspec.Struct, forbid_unknown_fields=True):
+    note: Annotated[str, msgspec.Meta(max_length=5)] = ""
+    count: Annotated[int, msgspec.Meta(ge=1, le=10)] = 1
+
+
+@app.entrypoint(accelerator=False)
+def limited(payload: Limited) -> Limited:
+    """A request over its limits, as Runtime held it."""
+    return payload
+
+
+@app.entrypoint(accelerator=False)
+def few(payload: Nothing, assets: Annotated[Files[File], FileLimits(total=1)]) -> Seen:
+    """The files Calcifer sent of more than it takes."""
+    return Seen(assets=[f"{assets.info(i).label}" for i in range(len(assets))])
 
 
 @app.entrypoint(accelerator=False)
