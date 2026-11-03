@@ -237,6 +237,8 @@ pub async fn bind(
     let mut ignored = validate(target, release, callable, &mut binder.document)?;
     ignored.extend(std::mem::take(&mut binder.choices.dropped));
     ignored.sort();
+    let replaced = std::mem::take(&mut binder.choices.replaced);
+    binder.notes.extend(replaced.into_iter().map(|message| Note { level: protocol::calcifer::NoteLevel::Warning, message }));
     Ok(Bound {
         payload: binder.document,
         files,

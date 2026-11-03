@@ -40,13 +40,16 @@ pub struct Choices<'a> {
     chosen: BTreeMap<String, Choice>,
     /// Unknown keys of `models` and `lora` entries, as people read their paths.
     pub dropped: Vec<String>,
+    /// A slot chosen again: what the later choice replaced. The later one wins (a flag over its
+    /// `--input` file).
+    pub replaced: Vec<String>,
 }
 
 impl<'a> Choices<'a> {
     /// `callable`'s choices; `target` names it in refusals (empty: its name).
     pub fn new(target: &'a str, callable: &'a str, own: &'a [Slot], calls: Vec<&'a Slot>) -> Self {
         let target = if target.is_empty() { callable } else { target };
-        Self { target, callable, own, calls, chosen: BTreeMap::new(), dropped: vec![] }
+        Self { target, callable, own, calls, chosen: BTreeMap::new(), dropped: vec![], replaced: vec![] }
     }
 
     pub fn into_choices(self) -> Vec<Choice> {
@@ -151,13 +154,15 @@ impl<'a> Choices<'a> {
     /// `model.<slot>=<reference>`.
     pub fn choose(&mut self, slot: &str, reference: String) -> Result<(), Error> {
         let slots = self.slots(slot)?;
+        let mut replaced = vec![];
         self.at(slots, |choice| {
-            if choice.reference.is_some() {
-                return Err(usage("model_slot_repeated", format!("model slot {slot} was chosen more than once")));
+            if let Some(was) = choice.reference.replace(reference.clone()).filter(|was| *was != reference) {
+                replaced.push(format!("model slot {slot}: {reference} replaces {was}"));
             }
-            choice.reference = Some(reference.clone());
             Ok(())
-        })
+        })?;
+        self.replaced.append(&mut replaced);
+        Ok(())
     }
 
     fn at(&mut self, slots: Vec<String>, mut f: impl FnMut(&mut Choice) -> Result<(), Error>) -> Result<(), Error> {

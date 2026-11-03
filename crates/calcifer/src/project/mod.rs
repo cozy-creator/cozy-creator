@@ -1135,13 +1135,17 @@ impl Walk {
             lora: render.lora.clone(),
             options: render.options.clone(),
         });
-        let warnings = match choices.dropped.is_empty() {
+        let mut warnings = match choices.dropped.is_empty() {
             true => vec![],
             false => vec![Warning {
                 code: "request_fields_ignored".into(),
                 message: format!("{node}'s render: ignored {}", choices.dropped.join(", ")),
             }],
         };
+        warnings.extend(choices.replaced.iter().map(|replaced| Warning {
+            code: "model_slot_replaced".into(),
+            message: format!("{node}'s render: {replaced}"),
+        }));
         let models = choices::wire(&choices.into_choices()).map_err(named)?;
         let mut inputs = vec![];
         let mut staged = vec![];
