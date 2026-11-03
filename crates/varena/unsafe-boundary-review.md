@@ -167,3 +167,16 @@ Child inherits deliberately locked owner control and must fail before access; on
 Exported symbols must be unique and preserve exact C signatures. Borrowed fixture stream remains alive across checked free/done retry; RETRY holds all Gpu/Region/Use/Allocation owners. C entrypoints must not unwind through caller. Apply the documented crate-root deny/boundary discipline to this new FFI fixture crate as well.
 
 The zero-span export correction and packing/source-unit-test cleanup are now source-integrated from draft #2481. Their host receipts remain tied to that lane, and GPU execution is still pending; frozen baseline receipts remain attached to their original hashes. The landed platform cleanup is preserved, including deleted shared-memory/dead memory APIs; consumers use only Signal, wait_any and Waitable.
+
+## Platform signal dependency extraction
+
+The existing Windows signal/event boundary moves byte-identically from
+`crates/platform/src/memory/windows.rs` to `crates/platform-signal/src/windows.rs`.
+The unsafe inventory substitutes that exact path; no raw FFI is added. The new
+crate root denies unsafe, while the moved Windows boundary retains its existing
+local allowance and SAFETY notes. Unix socket/poll code is also moved unchanged.
+`platform::memory` re-exports the shared implementation and preserves error
+operation/errno conversions for active callers. Varena now depends on this OS-only
+crate, preventing worker platform/fetch feature unification from moving installer
+crypto into the shared native core. Signature verification and fetch behavior stay
+in platform unchanged.

@@ -12,7 +12,7 @@ crates/platform/src/handles/unix.rs
 crates/platform/src/handles/windows.rs
 crates/platform/src/ipc/windows.rs
 crates/platform/src/lock.rs
-crates/platform/src/memory/windows.rs
+crates/platform-signal/src/windows.rs
 crates/platform/src/net.rs
 crates/platform/src/paths.rs
 crates/platform/src/process/linux.rs

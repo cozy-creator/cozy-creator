@@ -15,7 +15,7 @@ crate-type = ["dylib"]
 [dependencies]
 libloading.workspace = true
 thiserror.workspace = true
-platform.workspace = true
+platform-signal.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
