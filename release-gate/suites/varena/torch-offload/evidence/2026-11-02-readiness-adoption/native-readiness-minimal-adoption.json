@@ -1,0 +1,47 @@
+{
+  "scope": "Source object identity only; no canonical/audited native build or GPU execution in this check",
+  "commits": {
+    "canonical_input": "1eb4994755824648ac704a07d8efbc47d55de0f4",
+    "implementation_parent": "b6caa5a053ea9a837877b7d327d78c71e56b1fa7"
+  },
+  "required_implementation": "549f4915534c6f6d6840465b905d69038b07bbe7",
+  "optional_clients": "12425d44ff3de33b791f79937a2645c827529b51",
+  "separate_audited_proof": "b40f91f736a8a713229465c631e3b475428c6fb5",
+  "paths": [
+    {
+      "path": "Cargo.lock",
+      "canonical_input": "eb48dbb3b7bf67f383855ba298f00131496ab2ee",
+      "implementation_parent": "eb48dbb3b7bf67f383855ba298f00131496ab2ee"
+    },
+    {
+      "path": "crates/varena/Cargo.toml",
+      "canonical_input": "e5f7405e292e58e14a389962e447b7c00a8fa29c",
+      "implementation_parent": "e5f7405e292e58e14a389962e447b7c00a8fa29c"
+    },
+    {
+      "path": "crates/varena/src/abi.rs",
+      "canonical_input": "5141bc6d507ade21c0421dd8b22beeea0c486a31",
+      "implementation_parent": "5141bc6d507ade21c0421dd8b22beeea0c486a31"
+    },
+    {
+      "path": "crates/varena/src/async_fill.rs",
+      "canonical_input": "a118412217a9b6ade246f25d59f8ab1cf894e1b9",
+      "implementation_parent": "a118412217a9b6ade246f25d59f8ab1cf894e1b9"
+    },
+    {
+      "path": "crates/varena/include/varena.h",
+      "canonical_input": "683327f21572c37a6de84ad501f38e9db02ee66d",
+      "implementation_parent": "683327f21572c37a6de84ad501f38e9db02ee66d"
+    },
+    {
+      "path": "crates/varena-client/src/lib.rs",
+      "canonical_input": "2f75c6280d666084ddcaa8e9f6a591043b837e41",
+      "implementation_parent": "2f75c6280d666084ddcaa8e9f6a591043b837e41"
+    },
+    {
+      "path": "crates/tensorfs-py/python/tensorfs/varena/api.py",
+      "canonical_input": "fae8d73ac0a3f04ed74463ffb58d97d001bd5adc",
+      "implementation_parent": "fae8d73ac0a3f04ed74463ffb58d97d001bd5adc"
+    }
+  ]
+}

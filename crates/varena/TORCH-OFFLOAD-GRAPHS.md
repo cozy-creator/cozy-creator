@@ -227,27 +227,35 @@ ownership; capture/eviction/replay/tail/reset proof remains coordinator-owned.
 
 ## Files and coordination
 
-This lane owns new `_offload_graph.py`, graph docs and frontend clients in its durable
-worktree. Planned shared `_offload.py` edits are the narrow capture-binding context,
-dispatch/intent delegation and lazy owner capture method; `torch.py` graph helpers are
-reused. Agree shared-file ownership with the coordinator/packing owner before edits.
-Agent 2 delivered the agreed readiness feature in draft #2486:
-`186165d9fa07af7c27583d179ce2e24fe8b92c98` plus
-`1761c0612f6aa2f69f6841a62806ff8dce3c3f4e`; context `4463a4fd9` is excluded.
-Host/native checks do not qualify valid-Use GPU waiting or graph behavior. No further
-native ownership class or unchecked tensor export is required. Frozen #2449 is preserved.
+This lane owns `_offload_graph.py`, graph docs/clients, the narrow `_offload.py`
+delegation and the thin `torch.py` helper changes under root's single-writer grant.
+These interfaces are implemented; no helper approval is pending. Ship the hard-cut
+helper and graph frontend together in the same exact SDK cohort. Do not overlay the
+frontend onto an older device-synchronizing helper or introduce a compatibility flag.
+The adapter joins its original caller before switching to the capture stream, so that
+edge remains present when the helper subsequently observes caller == capture stream.
 
-Preferred integration is now audited draft #2489: native feature commits
-`549f4915534c6f6d6840465b905d69038b07bbe7` and
-`12425d44ff3de33b791f79937a2645c827529b51`, audited proof head
-`b40f91f736a8a713229465c631e3b475428c6fb5`. Root selects the audited parent
-`14e8f95dab4fff76f52b02616bdb453b62f94c8c` plus fetched master `7626bc995`.
-These supersede the old-context #2486 mapping for composition; no context/preservation
-prefix or old native snapshot is adopted by this adapter. Historical host receipts
-remain valid only for their named cohorts. All valid-Use GPU/graph proof stays pending.
+Minimal native readiness adoption is implementation commit
+`549f4915534c6f6d6840465b905d69038b07bbe7` only, the single-commit range
+`b6caa5a053ea9a837877b7d327d78c71e56b1fa7..549f4915534c6f6d6840465b905d69038b07bbe7`.
+`12425d44ff3de33b791f79937a2645c827529b51` adds optional real clients/contracts,
+not another implementation dependency. Canonical input
+`1eb4994755824648ac704a07d8efbc47d55de0f4` has identical Git blobs to b6caa5a05 for
+all seven implementation paths, independently checked in this lane. No snapshot or
+context/preservation prefix is required. The identity receipt is
+`evidence/2026-11-02-readiness-adoption/native-readiness-minimal-adoption.json`.
+
+Audited proof `b40f91f736a8a713229465c631e3b475428c6fb5` names its audited14e8/fetched7626
+source. Its build, safety and host-client results are separate from canonical1eb499475
+results, and neither is GPU proof. The earlier #2486 implementation/client mapping
+186165d9f/1761c0612 and its receipts remain historical evidence for their named cohorts;
+do not adopt context4463a4fd9. No further native ownership class, StageSource or unchecked
+Tensor export is required. Frozen #2449 is preserved. Valid-Use GPU/graph proof is pending.
 
 `vt.replay_scope(device)` is exactly the agreed thin wrapper: construct existing
 `_ext._VarenaAllocatorCapture(device, replay=True)`, yield, close in finally. It adds
 no driver call, changes to `vt.replay` or native exclusion semantics. It is host launch
-exclusion, not GPU completion or weight/pool ownership. The separate capture-helper
-context-sync opt-out remains pending; replay agreement does not authorize that edit.
+exclusion, not GPU completion or weight/pool ownership. The separately granted capture
+helper performs caller -> capture preparation and capture-stream synchronization only,
+with unchanged admission/routing/footprint/error cleanup. There is no device-wide
+fallback or synchronization opt-out. Native pool preparation may still wait/recover.

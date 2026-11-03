@@ -6,6 +6,12 @@ Preparation joins the actual caller onto the capture stream and synchronizes onl
 that stream. Other producers need explicit caller dependencies; there is no global
 barrier/opt-out. Graph/pool GPU behavior is not qualified by the host checks.
 
+Ship helper and frontend as the same exact SDK cohort; do not combine this frontend
+with an older globally synchronizing helper. Minimal native implementation is
+`549f4915534c6f6d6840465b905d69038b07bbe7` only. Clients/contracts12425d44f are optional;
+audited proofb40f91 names its own source cohort and is neither canonical1eb499475 build
+proof nor GPU proof. No old native context/snapshot prefix is required.
+
 Host frontend client, using a matching built SDK plus the exact Python feature overlay:
 
 ```sh
