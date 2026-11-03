@@ -56,7 +56,7 @@ pub fn check(input: &Input) -> Result<Checked> {
         base(input, &bases.iter().map(|(c, t)| (**c, t.as_slice())).collect::<Vec<_>>(), &mut out)?;
     }
     for (component, tensors) in &loras {
-        if let Some(adapter) = lora(input, component, tensors)? {
+        if let Some(adapter) = lora(input, component, tensors, &mut out.notes)? {
             out.adapters.insert(component.to_string(), adapter);
         }
     }
@@ -323,7 +323,7 @@ fn values(dtype: &Dtype, bytes: &[u8]) -> Option<Vec<f64>> {
 /// The adapter a LoRA component is: the family and base component its factors fit, by its
 /// converter table's family or, for a PEFT adapter, by the one family component every target
 /// fits; and what it was trained on, when declared.
-fn lora(input: &Input, component: &str, tensors: &[&Planned]) -> Result<Option<Adapter>> {
+fn lora(input: &Input, component: &str, tensors: &[&Planned], notes: &mut Vec<String>) -> Result<Option<Adapter>> {
     let mut targets: BTreeMap<&str, (Option<&[u64]>, Option<&[u64]>)> = BTreeMap::new();
     for p in tensors {
         if let Some(path) = p.key.strip_suffix(".lora_A.weight") {
@@ -346,11 +346,19 @@ fn lora(input: &Input, component: &str, tensors: &[&Planned]) -> Result<Option<A
     let (fam, base) = match claimed {
         Some(fam) => {
             let Some((root, _)) = fam.def(component) else { return Ok(None) };
-            if let Some((path, _)) = targets.iter().find(|(path, t)| !fits(fam, root, path, t)) {
+            // A layer the family lacks is left to the run's composition, which skips it and says so.
+            let unfit: Vec<&str> = targets.iter().filter(|(path, t)| !fits(fam, root, path, t)).map(|(path, _)| *path).collect();
+            if unfit.len() == targets.len() {
                 return refuse(
                     Code::ADAPTER_TARGET_UNSUPPORTED,
-                    format!("{component}/{path}: {} {root} has no such layer, or its factors do not fit it", fam.name),
+                    format!("{component}: {} {root} has none of its layers, or its factors fit none", fam.name),
                 );
+            }
+            if !unfit.is_empty() {
+                notes.push(format!(
+                    "{component}: {} of {} layers fit no layer of {} {root}, and do not apply: {}",
+                    unfit.len(), targets.len(), fam.name, unfit[..unfit.len().min(3)].join(", ")
+                ));
             }
             (fam, root.to_owned())
         }

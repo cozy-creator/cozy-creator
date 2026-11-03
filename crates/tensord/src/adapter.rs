@@ -120,16 +120,14 @@ struct Graph {
     adapters: Vec<AdapterRef>,
 }
 
-/// Every factor value finite (zero-strength inputs too); a scalar's value is returned.
+/// Whether the view can carry `tensor` as a factor: plain, of a float width [`validate`] reads.
+fn plain(tensor: &Tensor) -> bool {
+    matches!(tensor.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && matches!(tensor.body, Body::Data(_))
+}
+
+/// A plain factor's values all finite (zero-strength inputs too); a single value is returned.
 fn validate(checkpoint: &Checkpoint, component: &str, key: &str, tensor: &Tensor) -> io::Result<Option<f64>> {
-    let width = match tensor.dtype {
-        Dtype::F16 | Dtype::BF16 => 2,
-        Dtype::F32 => 4,
-        _ => 0,
-    };
-    if width == 0 || !matches!(tensor.body, Body::Data(_)) {
-        return Err(refuse("tensor", format!("{component}.{key}: plain f16, bf16 or f32 factors required")));
-    }
+    let width = if tensor.dtype == Dtype::F32 { 4 } else { 2 };
     let bytes = checkpoint.read(component, key).map_err(storage::io_error)?;
     let values: Vec<f64> = bytes
         .chunks_exact(width)
@@ -142,7 +140,7 @@ fn validate(checkpoint: &Checkpoint, component: &str, key: &str, tensor: &Tensor
     if values.iter().any(|v| !v.is_finite()) {
         return Err(refuse("nonfinite", format!("{component}.{key}: factor contains NaN or infinity")));
     }
-    Ok(if tensor.shape.is_empty() { values.first().copied() } else { None })
+    Ok(if values.len() == 1 { values.first().copied() } else { None })
 }
 
 fn half(bits: u16) -> f64 {
@@ -160,19 +158,38 @@ fn half(bits: u16) -> f64 {
 /// Factor pairs by target path: role (`a`, `b`, `alpha`) → (key, tensor).
 type Pairs<'h> = BTreeMap<String, BTreeMap<&'static str, (String, &'h Tensor)>>;
 
-fn pairs(factors: &BTreeMap<String, Tensor>) -> io::Result<Pairs<'_>> {
-    let mut pairs: Pairs = BTreeMap::new();
+/// Its factor pairs, and the tensors that are no layer's factor.
+fn pairs(factors: &BTreeMap<String, Tensor>) -> (Pairs<'_>, Vec<String>) {
+    let (mut pairs, mut stray): (Pairs, _) = (BTreeMap::new(), vec![]);
     for (key, tensor) in factors {
-        let (path, role) = [(".lora_A.weight", "a"), (".lora_B.weight", "b"), (".alpha", "alpha")]
+        let found = [(".lora_A.weight", "a"), (".lora_B.weight", "b"), (".alpha", "alpha")]
             .into_iter()
             .find_map(|(suffix, role)| key.strip_suffix(suffix).map(|path| (path, role)))
-            .ok_or_else(|| refuse("key", format!("unsupported adapter tensor {key:?}")))?;
-        if path.is_empty() {
-            return Err(refuse("target", "an adapter target must name a child linear layer"));
+            .filter(|(path, _)| !path.is_empty());
+        match found {
+            Some((path, role)) => drop(pairs.entry(path.into()).or_default().insert(role, (key.clone(), tensor))),
+            None => stray.push(key.clone()),
         }
-        pairs.entry(path.into()).or_default().insert(role, (key.clone(), tensor));
     }
-    Ok(pairs)
+    (pairs, stray)
+}
+
+/// Why a layer's factors cannot adapt the base; none when they can.
+fn unfit(pair: &BTreeMap<&'static str, (String, &Tensor)>, base: &BTreeMap<String, Tensor>, path: &str) -> Option<&'static str> {
+    let (Some((_, a)), Some((_, b))) = (pair.get("a"), pair.get("b")) else {
+        return Some("incomplete A/B pair");
+    };
+    let Some(weight) = base.get(&format!("{path}.weight")) else {
+        return Some("the base has no such layer");
+    };
+    if !matches!(weight.shape.len(), 2 | 4) {
+        return Some("not a linear or 2-D convolution layer");
+    }
+    if !(plain(a) && plain(b)) {
+        return Some("not plain f16, bf16 or f32 factors");
+    }
+    let fit = matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && a.dtype == b.dtype && fits(a, b, weight);
+    (!fit).then_some("its factors do not fit the base projection")
 }
 
 /// Whether factors `a` and `b` adapt base `weight`: a linear's `[out, in]` as A `[r, in]` and B
@@ -193,35 +210,21 @@ fn keyed(component: &Component) -> BTreeMap<String, Tensor> {
     component.tensors.iter().map(|t| (t.key.clone(), t.clone())).collect()
 }
 
-/// The one base component `factors` fit among those the call `runs`; of several, the one the LoRA
-/// was `trained_on` (a family component, through the base's `family` record) when it is one.
-fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Tensor>, trained_on: Option<&str>) -> io::Result<String> {
-    let pairs = pairs(factors)?;
-    let fits = |tensors: &BTreeMap<String, Tensor>| {
-        !pairs.is_empty()
-            && pairs.iter().all(|(path, pair)| match (pair.get("a"), pair.get("b"), tensors.get(&format!("{path}.weight"))) {
-                (Some((_, a)), Some((_, b)), Some(weight)) => fits(a, b, weight),
-                _ => false,
-            })
-    };
+/// The base components `factors` fit best among those the call `runs`: the one most of its layers
+/// fit; of a tie, the one the LoRA was `trained_on` (a family component, through the base's `family`
+/// record) when it is one, else each of them. None when no layer fits any.
+fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Tensor>, trained_on: Option<&str>) -> Vec<String> {
+    let (pairs, _) = pairs(factors);
+    let layers = |tensors: &BTreeMap<String, Tensor>| pairs.iter().filter(|(path, pair)| unfit(pair, tensors, path).is_none()).count();
     let run = |c: &&Component| runs.is_empty() || runs.contains(&c.name);
-    let matches: Vec<&String> = base.components().iter().filter(run).filter(|c| fits(&keyed(c))).map(|c| &c.name).collect();
-    let ran = || match runs.is_empty() {
-        true => "the model's components".to_string(),
-        false => format!("the components this call runs ({})", runs.join(", ")),
-    };
+    let fit: Vec<(&String, usize)> = base.components().iter().filter(run).map(|c| (&c.name, layers(&keyed(c)))).filter(|(_, n)| *n > 0).collect();
+    let most = fit.iter().map(|(_, n)| *n).max().unwrap_or_default();
+    let matches: Vec<&String> = fit.iter().filter(|(_, n)| *n == most).map(|(name, _)| *name).collect();
     let family = tensorfs::family::Record::read(&base.metadata);
     let trained = |c: &&&String| trained_on.is_some_and(|t| family.as_ref().map_or(c.as_str(), |f| f.component(c)) == t);
-    if let (true, Some(one)) = (matches.len() > 1, matches.iter().find(trained)) {
-        return Ok((*one).clone());
-    }
-    match matches.as_slice() {
-        [one] => Ok((*one).clone()),
-        [] => Err(refuse("component", format!("the LoRA's layers fit none of {}", ran()))),
-        _ => Err(refuse(
-            "component",
-            format!("the LoRA's layers fit more than one of {}: {}", ran(), matches.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
-        )),
+    match matches.iter().find(trained) {
+        Some(one) => vec![(*one).clone()],
+        None => matches.into_iter().cloned().collect(),
     }
 }
 
@@ -229,8 +232,8 @@ fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Te
 /// is the base, `i + 1` adapter `i`.
 type Take = (String, String, usize, String, String);
 
-/// What the view takes, in execution order, and its graph, refusing unsupported keys before
-/// anything is written.
+/// What the view takes, in execution order, its graph, and what each selection's run is told of
+/// what did not apply. Nothing is written.
 fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(Vec<Take>, Graph, Vec<Vec<String>>)> {
     if base.components().iter().any(|c| c.assets.contains_key(GRAPH_FILE)) {
         return Err(refuse("nested", "select the original base and one complete ordered adapter stack"));
@@ -252,7 +255,8 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
         // What it adapts, (factor component, base component): the components the selection
         // names; else, with only a factor component named, the base component its layers fit;
         // else every factor component, onto the base component named like it (an SDXL LoRA names
-        // its components after the base's) that the call runs, else the one its layers fit.
+        // its components after the base's) that the call runs, else the one its layers fit. What
+        // fits nothing is left out and the run told; only a LoRA nothing of which applies refuses.
         let components = adapter.header().components();
         let named = |name: &str| adapter.header().component(name);
         let absent = || {
@@ -260,6 +264,19 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             refuse("components", format!("the adapter has no factor component for this selection; it has: {}", has.join(", ")))
         };
         let runs = |name: &str| selection.runs.is_empty() || selection.runs.iter().any(|r| r == name);
+        let ran = || match selection.runs.is_empty() {
+            true => "the model's components".to_string(),
+            false => format!("the components this call runs ({})", selection.runs.join(", ")),
+        };
+        // Its layers fit several alike: each, and the run says so.
+        let mut tied = vec![];
+        let mut inferred = |found: &Component| -> Vec<String> {
+            let fit = infer_component(header, &selection.runs, &keyed(found), trained_on(&found.name));
+            if fit.len() > 1 {
+                tied.push(format!("{}'s layers fit {} alike; applied to each", found.name, fit.join(", ")));
+            }
+            fit
+        };
         let targets: Vec<(&Component, String)> = match (selection.component.is_empty(), selection.source_component.is_empty()) {
             (false, true) => {
                 let found = (named(&selection.component).or_else(|| named("adapter")))
@@ -269,18 +286,24 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             (false, false) => vec![(named(&selection.source_component).ok_or_else(absent)?, selection.component.clone())],
             (true, false) => {
                 let found = named(&selection.source_component).ok_or_else(absent)?;
-                vec![(found, infer_component(header, &selection.runs, &keyed(found), trained_on(&found.name))?)]
+                inferred(found).into_iter().map(|name| (found, name)).collect()
             }
             (true, true) => (components.iter())
-                .map(|found| match runs(&found.name) && header.component(&found.name).is_some() {
-                    true => Ok((found, found.name.clone())),
-                    false => Ok((found, infer_component(header, &selection.runs, &keyed(found), trained_on(&found.name))?)),
+                .flat_map(|found| match runs(&found.name) && header.component(&found.name).is_some() {
+                    true => vec![(found, found.name.clone())],
+                    false => inferred(found).into_iter().map(|name| (found, name)).collect(),
                 })
-                .collect::<io::Result<_>>()?,
+                .collect(),
         };
-        if targets.is_empty() {
+        if components.iter().all(|c| c.tensors.is_empty()) {
             return Err(refuse("empty", "adapter contains no factors"));
         }
+        // What of it no component the call runs takes.
+        for found in components.iter().filter(|c| !c.tensors.is_empty() && !targets.iter().any(|(t, _)| t.name == c.name)) {
+            said.push(format!("{}'s layers fit none of {}; skipped", found.name, ran()));
+        }
+        said.append(&mut tied);
+        let mut took = 0usize;
         for (found, component) in targets {
             let (source_component, factors) = (&found.name, &keyed(found));
             // A LoRA of another family is refused before any layer is read; one trained on another
@@ -297,47 +320,33 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             }
             // PEFT's adapter_config, the LoRA component's config: α where a module has no `.alpha`.
             let lora_alpha = found.config.get("lora_alpha").and_then(serde_json::Value::as_f64);
-            if factors.is_empty() {
-                return Err(refuse("empty", "adapter contains no factors"));
-            }
             let base_tensors = &keyed(
                 header.component(&component).ok_or_else(|| refuse("component", format!("base has no component {component:?}")))?,
             );
-            let mut scalars = BTreeMap::new();
-            for (key, tensor) in factors {
-                match (validate(adapter, source_component, key, tensor)?, key.strip_suffix(".alpha")) {
-                    (Some(value), Some(path)) => drop(scalars.insert(path.to_string(), value)),
-                    (None, Some(_)) => return Err(refuse("alpha", format!("{key}: alpha must be a scalar"))),
-                    _ => {}
-                }
-            }
+            let (layers, stray) = pairs(factors);
             let alias = format!("adapter_{}", graph.adapters.len());
-            graph.adapters.push(AdapterRef {
-                reference: selection.checkpoint.id(),
-                scale: selection.strength,
-                kind: "lora",
-                component: component.clone(),
-                source_component: source_component.clone(),
-                family: "",
-            });
-            for (path, pair) in pairs(factors)? {
-                let (Some((a_key, a)), Some((b_key, b))) = (pair.get("a"), pair.get("b")) else {
-                    return Err(refuse("pair", format!("{component}.{path}: incomplete A/B pair")));
-                };
-                let Some(weight) = base_tensors.get(&format!("{path}.weight")) else {
-                    return Err(refuse("target", format!("{component}.{path}: the base has no such layer")));
-                };
-                if !matches!(weight.shape.len(), 2 | 4) {
-                    return Err(refuse("target_type", format!("{component}.{path}: only linear and 2-D convolution LoRA targets are supported")));
+            let (total, mut skipped) = (layers.len(), vec![]);
+            let mut taken = 0usize;
+            for (path, pair) in &layers {
+                if let Some(why) = unfit(pair, base_tensors, path) {
+                    skipped.push(format!("{path} ({why})"));
+                    continue;
                 }
-                if !(matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) && a.dtype == b.dtype && fits(a, b, weight)) {
-                    return Err(refuse("shape", format!("{component}.{path}: factors do not fit the base projection")));
-                }
+                let ((a_key, a), (b_key, b)) = (&pair["a"], &pair["b"]);
+                validate(adapter, source_component, a_key, a)?;
+                validate(adapter, source_component, b_key, b)?;
+                // A stated α must be one finite value; one that is not reads as no α.
+                let stated = match pair.get("alpha") {
+                    Some((key, tensor)) if plain(tensor) => validate(adapter, source_component, key, tensor)?,
+                    _ => None,
+                };
                 let rank = a.shape[0];
-                let alpha = scalars.get(&path).copied().or(lora_alpha).unwrap_or(rank as f64);
+                let alpha = stated.or(lora_alpha).unwrap_or(rank as f64);
                 if !(alpha / rank as f64 * selection.strength).is_finite() {
-                    return Err(refuse("scale", format!("{component}.{path}: effective scale is not finite")));
+                    skipped.push(format!("{path} (its effective scale is not finite)"));
+                    continue;
                 }
+                taken += 1;
                 if selection.strength == 0.0 {
                     continue;
                 }
@@ -362,6 +371,25 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                     dtype: a.dtype.name().into(),
                 });
             }
+            if taken > 0 {
+                graph.adapters.push(AdapterRef {
+                    reference: selection.checkpoint.id(),
+                    scale: selection.strength,
+                    kind: "lora",
+                    component: component.clone(),
+                    source_component: source_component.clone(),
+                    family: "",
+                });
+            }
+            took += taken;
+            let left: Vec<&str> = skipped.iter().chain(&stray).map(String::as_str).collect();
+            if !left.is_empty() {
+                let first = left[..left.len().min(3)].join(", ");
+                said.push(format!("{} of {source_component}'s {} entries do not apply to {component} and were skipped: {first}", left.len(), total + stray.len()));
+            }
+        }
+        if took == 0 {
+            return Err(refuse("target", format!("no layer of this LoRA applies to {}: {}", ran(), said.join("; "))));
         }
         warnings.push(said);
     }

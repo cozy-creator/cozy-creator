@@ -846,7 +846,8 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         }
     };
     let identity = |g: &source::Group| component(&g.folder, &g.stem);
-    let mut planned = engine::plan(&set, tables, &recognized, &identity)?;
+    let mut skipped = Vec::new();
+    let mut planned = engine::plan(&set, tables, &recognized, &identity, &mut skipped)?;
     let (mut files, mut filled, mut versions) = documents(&set, &recognized, &planned, req, &area)?;
     let sources: BTreeMap<String, &source::Group> = (recognized.claims.iter())
         .map(|c| (c.name.clone(), &set.groups[c.group]))
@@ -939,6 +940,9 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     // What it was verified as, for the run's record.
     for note in &checked.notes {
         progress(&format!("family: {note}"), 0, 0);
+    }
+    for note in &skipped {
+        progress(&format!("warning: {note}"), 0, 0);
     }
     stopped(req)?;
     // Nothing refused: the bulk lands, each download resuming from its header.

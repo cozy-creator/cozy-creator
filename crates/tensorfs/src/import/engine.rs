@@ -50,7 +50,8 @@ pub struct Table {
     /// one of these producers, whose own code writes it. Absent: its key set alone chooses it.
     #[serde(default)]
     pub producers: Option<Vec<Producer>>,
-    /// A LoRA table: rows are modules, any non-empty subset may be present.
+    /// A LoRA table: rows are modules, any non-empty subset may be present. It claims a file most
+    /// of whose keys it knows; the rest are left out, and said (`plan`'s `skipped`).
     #[serde(default)]
     pub lora: Option<Lora>,
     /// Documents the output carries, by path.
@@ -72,7 +73,7 @@ pub struct Table {
 #[serde(deny_unknown_fields)]
 pub struct Producer {
     pub name: String,
-    /// Every source key starts with one of these.
+    /// Most of a source's keys start with one of these.
     pub keys: Vec<String>,
     pub metadata: BTreeMap<String, Match>,
     /// The pinned code (or, without public code, the declaration) the layout is read from.
@@ -92,8 +93,8 @@ pub enum Match {
 impl Producer {
     /// Whether `group` is this producer's file.
     pub fn wrote(&self, group: &Group) -> bool {
-        let keys = (group.tensors.keys()).all(|k| self.keys.iter().any(|p| k.starts_with(p.as_str())));
-        keys && self.metadata.iter().all(|(field, want)| {
+        let its = (group.tensors.keys()).filter(|k| self.keys.iter().any(|p| k.starts_with(p.as_str()))).count();
+        its * 2 > group.tensors.len() && self.metadata.iter().all(|(field, want)| {
             let Some(value) = group.metadata.get(field) else { return false };
             match want {
                 Match::Is(v) => value == v,
@@ -341,6 +342,20 @@ enum Factor {
     Alpha,
 }
 
+/// Whether `key`, past `c`'s prefix, is a factor of one of its modules.
+fn lora_module(lora: &Lora, c: &Component, key: &str) -> bool {
+    lora_split(lora, key).is_some_and(|(stem, _)| c.rows.iter().any(|r| r.key() == Some(stem)))
+}
+
+/// The keys of `group` no module of LoRA `table` holds.
+fn lora_strays<'g>(table: &Table, lora: &Lora, group: &'g Group) -> Vec<&'g str> {
+    let known = |key: &str| {
+        let owner = (table.components.iter()).filter(|c| key.starts_with(c.prefix.as_str())).max_by_key(|c| c.prefix.len());
+        owner.is_some_and(|c| lora_module(lora, c, &key[c.prefix.len()..]))
+    };
+    group.tensors.keys().map(String::as_str).filter(|k| !known(k)).collect()
+}
+
 /// Why one bucket of keys is not one component's layout: unknown and missing keys.
 fn mismatch(
     table: &Table,
@@ -348,13 +363,8 @@ fn mismatch(
     keys: &BTreeSet<&str>,
 ) -> Option<(Vec<String>, Vec<String>)> {
     if let Some(lora) = &table.lora {
-        let stems: BTreeSet<&str> = c.rows.iter().filter_map(|r| r.key()).collect();
-        let unknown: Vec<String> = keys
-            .iter()
-            .filter(|k| !lora_split(lora, k).is_some_and(|(stem, _)| stems.contains(stem)))
-            .map(|k| k.to_string())
-            .collect();
-        return (!unknown.is_empty() || keys.is_empty()).then_some((unknown, vec![]));
+        let unknown: Vec<String> = keys.iter().filter(|k| !lora_module(lora, c, k)).map(|k| k.to_string()).collect();
+        return (unknown.len() == keys.len()).then_some((unknown, vec![]));
     }
     let required: BTreeSet<&str> = c
         .rows
@@ -387,6 +397,12 @@ impl Row {
 /// How `table` projects `group`: each prefix bucket of its keys, matched to the one
 /// component whose layout it is. `Err` names the closest mismatch.
 fn project(table: &Table, group: &Group) -> std::result::Result<Vec<usize>, String> {
+    if let Some(lora) = &table.lora {
+        let strays = lora_strays(table, lora, group);
+        if strays.len() * 2 >= group.tensors.len() {
+            return Err(format!("{} of {} keys are no module's", strays.len(), group.tensors.len()));
+        }
+    }
     let prefixes: BTreeSet<&str> = table
         .components
         .iter()
@@ -400,6 +416,9 @@ fn project(table: &Table, group: &Group) -> std::result::Result<Vec<usize>, Stri
             .filter(|p| key.starts_with(**p))
             .max_by_key(|p| p.len())
         else {
+            if table.lora.is_some() {
+                continue;
+            }
             return Err(format!("{key:?} is under no component prefix"));
         };
         buckets
@@ -977,6 +996,7 @@ pub fn plan(
     tables: &[Table],
     r: &Recognized,
     identity: &dyn Fn(&Group) -> String,
+    skipped: &mut Vec<String>,
 ) -> Result<Vec<Planned>> {
     let mut out = Vec::new();
     for &t in &r.tables {
@@ -1005,7 +1025,7 @@ pub fn plan(
                     }
                 }
                 match &table.lora {
-                    Some(lora) => plan_lora(table, lora, c, claim, group, &mut out)?,
+                    Some(lora) => plan_lora(table, lora, c, claim, group, skipped, &mut out)?,
                     None => {
                         for row in &c.rows {
                             let Src::Key(k) = &row.source else { continue };
@@ -1021,6 +1041,14 @@ pub fn plan(
                     }
                 }
             }
+        }
+    }
+    let mut told = BTreeSet::new();
+    for claim in r.claims.iter().filter(|claim| told.insert(claim.group)) {
+        let (table, group) = (&tables[claim.table], &set.groups[claim.group]);
+        let strays = table.lora.as_ref().map_or(vec![], |lora| lora_strays(table, lora, group));
+        if let Some(first) = strays.first() {
+            skipped.push(format!("{}: {} of {} keys are no module's, and were left out ({first}…)", group.label(), strays.len(), group.tensors.len()));
         }
     }
     // Unclaimed groups are stored as they are, in the construction order of the class their
@@ -1103,6 +1131,7 @@ fn plan_lora(
     c: &Component,
     claim: &Claim,
     group: &Group,
+    skipped: &mut Vec<String>,
     out: &mut Vec<Planned>,
 ) -> Result<()> {
     let mut factors: BTreeMap<&str, [Option<(&str, &Tensor)>; 3]> = BTreeMap::new();
@@ -1120,7 +1149,7 @@ fn plan_lora(
         .filter(|(k, _)| longest(k) == Some(c.prefix.as_str()))
     {
         let local = &key[c.prefix.len()..];
-        let (stem, factor) = lora_split(lora, local).expect("recognition checked the key set");
+        let Some((stem, factor)) = lora_split(lora, local) else { continue };
         let slot = &mut factors.entry(stem).or_default()[factor as usize];
         if slot.replace((key, t)).is_some() {
             return refuse(
@@ -1134,10 +1163,8 @@ fn plan_lora(
             continue;
         };
         let (Some((ka, a)), Some((_, b))) = (a, b) else {
-            return refuse(
-                Code::MISSING_COMPANION_ROLE,
-                format!("{}: LoRA A and B are both required", row.target),
-            );
+            skipped.push(format!("{}: left out: no A and B factor pair", row.target));
+            continue;
         };
         let Some((input, output)) = row.ops.io else {
             return refuse(
@@ -1159,10 +1186,8 @@ fn plan_lora(
             || !float(&a.dtype)
             || alpha.is_some_and(|(_, t)| !t.shape.is_empty() || !float(&t.dtype))
         {
-            return refuse(
-                Code::SHAPE_MISMATCH,
-                format!("{ka}: LoRA factors must be float A {want_a:?}, B {want_b:?} and a scalar alpha"),
-            );
+            skipped.push(format!("{ka}: left out: not float A {want_a:?}, B {want_b:?} and a scalar alpha"));
+            continue;
         }
         let none = Ops::default();
         for (suffix, t, ops) in [
