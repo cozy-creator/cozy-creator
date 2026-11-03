@@ -40,7 +40,12 @@ impl Patience {
         Patience { tick, slowest: AtomicU64::new(0) }
     }
 
-    fn get(&self) -> Duration {
+    /// An answer took `took`.
+    pub(crate) fn saw(&self, took: Duration) {
+        self.slowest.fetch_max(took.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn get(&self) -> Duration {
         let slowest = Duration::from_nanos(self.slowest.load(Ordering::Relaxed));
         (self.tick * STILL_TICKS).max(slowest * STALL_FACTOR)
     }
@@ -82,7 +87,7 @@ where
         let began = Instant::now();
         let (why, stated) = match ask(watch.clone()).await {
             Ok(tried) => {
-                patience.slowest.fetch_max(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                patience.saw(began.elapsed());
                 match tried {
                     Tried::Done(done) => return Ok(done),
                     Tried::Again { why, wait } => (why, wait),

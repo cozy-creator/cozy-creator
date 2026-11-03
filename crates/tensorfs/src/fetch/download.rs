@@ -19,8 +19,9 @@
 //!   measurements, 2026-10-01); a patience that grew per drop let such a drip run unjudged for
 //!   minutes (tfs-138). A fetch whose every request is slow restarts none.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
-//!   a fresh location, the same wrong bytes twice), or when nothing in the whole fetch has
-//!   landed for twice its measured patience; the refusal quotes the last answer.
+//!   a fresh location, the same wrong bytes twice), on a dead peer, or when the origin has only
+//!   answered "not now" while nothing in the whole fetch landed, for [`ask`]'s stall rule; the
+//!   refusal quotes the last answer.
 //! - **Pace.** Workers start at 16 and double each window while the queue waits and goodput
 //!   grows by 1.2×, up to what the descriptor table holds (tfs-122); a full table halves them.
 
@@ -355,6 +356,7 @@ pub(crate) struct Shared {
     pub client: Client,
     pub volume: Option<VolumeOrigin>,
     pub tick: Duration,
+    patience: ask::Patience,
     queue: Mutex<Queue>,
     queued: Notify,
     closed: AtomicBool,
@@ -393,6 +395,8 @@ enum Attempt {
         /// The origin answered: a dead peer answers nothing.
         heard: bool,
     },
+    /// The origin said "not now": ask again, after `wait` when it stated one.
+    Weather { why: String, wait: Option<Duration> },
     /// 401/403: the location may be stale.
     Refused(Refusal),
     Fatal(Refusal),
@@ -412,19 +416,43 @@ impl From<Refusal> for Attempt {
     }
 }
 
-/// An object's re-asks. It never ends on stillness: a request that stalls is dropped and asked
-/// again from the byte reached (`judge`), and an origin that answers "not now" is asked again
-/// when it says. Only a dead peer ends it: `DEAD_PEER` attempts in a row that it answered
-/// nothing at all. A re-ask that moved nothing waits longer each time, up to `MAX_BACKOFF`.
+/// An object's re-asks. A request that stalls is dropped and asked again from the byte reached
+/// (`judge`), and an origin that answers "not now" is asked again when it says. Two things end
+/// it: a dead peer, `DEAD_PEER` attempts in a row that it answered nothing at all; and an origin
+/// that says "not now" once nothing in the fetch has landed for the stall rule, or for twice the
+/// longest wait it stated. A re-ask that moved nothing waits longer each time, up to `MAX_BACKOFF`.
 struct Retry {
     tick: Duration,
     unheard: u32,
     quiet: u32,
+    /// The fetch's bytes landed when last read, when they last changed, and the longest wait stated.
+    landed: u64,
+    still: Instant,
+    stated_most: Duration,
 }
 
 impl Retry {
-    fn new(tick: Duration) -> Self {
-        Self { tick, unheard: 0, quiet: 0 }
+    fn new(tick: Duration, landed: u64) -> Self {
+        Self { tick, unheard: 0, quiet: 0, landed, still: Instant::now(), stated_most: Duration::ZERO }
+    }
+
+    /// The pause before asking again after a "not now", or the origin's refusal: it is not a
+    /// network failure for a caller to wait out, and asking on would only keep a machine billing.
+    /// As in [`ask::again`], a pause stays under an eighth of what it is judged by, so the verdict
+    /// rests on many answers and not on the last two.
+    fn weather(&mut self, task: &Task, why: &str, wait: Option<Duration>, landed: u64, patience: Duration) -> Result<Duration> {
+        if landed != self.landed {
+            (self.landed, self.still) = (landed, Instant::now());
+        }
+        self.stated_most = self.stated_most.max(wait.unwrap_or_default());
+        let (still, allowed) = (self.still.elapsed(), patience.max(self.stated_most * 2));
+        if still > allowed {
+            let detail = format!("{}: nothing landed for {:.0} s and the origin only said \"not now\"; the last: {why}", task.object.sha256, still.as_secs_f64());
+            return refuse(Code::ORIGIN_REFUSED, detail);
+        }
+        self.unheard = 0;
+        self.quiet = (self.quiet + 1).min(16);
+        Ok(wait.unwrap_or((self.tick * (1 << (self.quiet - 1))).min(allowed / 8)))
     }
 
     /// The pause before the next attempt (None: at once), or the dead peer's refusal.
@@ -567,6 +595,7 @@ impl Shared {
             client,
             volume,
             tick: tick.max(Duration::from_millis(1)),
+            patience: ask::Patience::new(tick.max(Duration::from_millis(1))),
             queue: Mutex::default(),
             queued: Notify::new(),
             closed: AtomicBool::new(false),
@@ -825,7 +854,7 @@ impl Shared {
         let mut sink = Sink::open(self, task)?;
         let (mut location, mut delivery, mut relocated) = (None::<Location>, None::<Delivery>, false);
         let (mut doublings, mut wrong) = (0, None::<String>);
-        let mut retry = Retry::new(self.tick);
+        let mut retry = Retry::new(self.tick, self.stats.landed.load(Ordering::Relaxed));
         loop {
             if self.unwanted(task) {
                 return refuse(Code::TRANSFER_FAILED, "nothing wants it");
@@ -853,7 +882,7 @@ impl Shared {
                             Attempt::Fatal(refusal) | Attempt::Refused(refusal) => {
                                 return Err(refusal)
                             }
-                            Attempt::Done => unreachable!("a refusal is never done"),
+                            Attempt::Done | Attempt::Weather { .. } => unreachable!("a refusal is never done"),
                         },
                     }
                 }
@@ -924,6 +953,10 @@ impl Shared {
                     if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait)? {
                         tokio::time::sleep(pause).await;
                     }
+                }
+                Attempt::Weather { why, wait } => {
+                    let landed = self.stats.landed.load(Ordering::Relaxed);
+                    tokio::time::sleep(retry.weather(task, &why, wait, landed, self.patience.get())?).await;
                 }
                 Attempt::Refused(refusal) => {
                     if relocated {
@@ -1028,6 +1061,7 @@ impl Shared {
             }
         };
         let head = flight.began.elapsed();
+        self.patience.saw(head);
         push(&mut lock(&self.measured).heads, head.as_secs_f64());
         flight.answered.store(true, Ordering::Release);
         flight.moved();
@@ -1077,7 +1111,7 @@ impl Shared {
                     401 | 403 => Attempt::Refused(Refusal { code: Code::CREDENTIAL_REQUIRED, detail: why }),
                     404 | 410 => Attempt::Fatal(Refusal { code: Code::REF_NOT_FOUND, detail: why }),
                     416 => Attempt::Fatal(Refusal { code: Code::LENGTH_MISMATCH, detail: why }),
-                    status if ask::weather(status) => Attempt::Again { why, wait, dropped: false, heard: true },
+                    status if ask::weather(status) => Attempt::Weather { why, wait },
                     _ => Attempt::Fatal(Refusal { code: Code::HUB_REFUSED, detail: why }),
                 };
             }

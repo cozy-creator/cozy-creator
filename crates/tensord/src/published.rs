@@ -1495,7 +1495,8 @@ fn unsigned(source: &hub::Source, failure: Failure, refusal: &tensorfs::err::Ref
 
 /// `failure` of `named`, a commit by hash, read with no sign-in: it is private (or absent).
 fn private(source: &hub::Source, named: &Named, failure: Failure, refusal: &tensorfs::err::Refusal) -> Failure {
-    match source.capability.is_none() && failure.0 != UNREACHABLE {
+    // An origin that only said "not now" said nothing about who may read it.
+    match source.capability.is_none() && failure.0 != UNREACHABLE && refusal.code != tensorfs::err::Code::ORIGIN_REFUSED {
         true => (failure.0, format!("{} is private, or no such commit: this run carried no sign-in; `cozy login <email>` on the computer that sent it reads it as its account ({})", named.shown(), refusal)),
         false => unsigned(source, failure, refusal),
     }
