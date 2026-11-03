@@ -1,0 +1,28 @@
+{
+  "scope": "Actual cold CPU Torch results/metadata preflight only; automatic dispatcher/cache is still unwired. No GPU/native simulation/alias reconstruction.",
+  "source_sha256": "46c9270d8df160dc3e84af436d00c8c57adfc65b061468fa40f5d8bcc9b00d25",
+  "client_sha256": "6832a6836a4de073fef871237be381be003cfbb4e7ad46c024998aaf430bac32",
+  "baseline_head": "636037e4652a5a1c6b9c59f013eb62011294c194",
+  "explicit_graph_source_hash_unchanged": "1462072e298e8d2d7639dfc502ea4d0ad586a76634c2c132f5d846441e4ba452",
+  "existing_key_and_frontier_contract_ast_unchanged": true,
+  "checks": [
+    "Eight actual cold-result alias/independent controls execute original once and preserve actual identities/storage",
+    "Real reviewed Identity passes module preflight but fails promotion for input alias",
+    "Known inplace, mutable custom module, side-effect/replaced forwards, real public local/global hooks rejected before capture",
+    "Classifier profile:41 C10 alias metadata queries,0 Version.tensor/reservation calls",
+    "Output weakrefs expire; classifier returns only reason/no Tensor owner",
+    "Ruff/format/syntax/AST/diff pass; existing automatic_keys_cpu remains green"
+  ],
+  "return_codes": [
+    {
+      "client": "automatic_eligibility_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_keys_cpu",
+      "exit_code": 0
+    }
+  ],
+  "command": "CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=<owned matching SDK metadata-overlay> nice -n19 <torch-cpu>/bin/python <client>",
+  "remaining": "Controller must record origins at actual adoption, invoke preflight before capture and promotion gate after cold call, retain ineligible reason per immutable key and keep original result eager. No integration/capture/pressure proof is claimed."
+}

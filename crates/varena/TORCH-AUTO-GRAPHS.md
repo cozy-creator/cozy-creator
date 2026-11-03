@@ -40,11 +40,32 @@ Use non-reused owner generations in opaque native measurement keys, not a recycl
 Python owner address. Version/Region handles and pack offsets remain exact descriptors.
 
 Inputs must satisfy the existing GraphSegment ordinary/nonoverlap/immutable-scalar
-contract. Training, gradients, custom Tensor/operator/hook access without an adapter,
-unknown aliases and mutable buffer/input behavior remain ineligible or refused under
-the existing guard. Eligibility is checked before the invocation's authored body.
-Declarations do not certify arbitrary Python side effects or globals. Do not announce
-general capture support for unqualified control flow/custom kernels from a warmup pass.
+contract. BEFORE any capture attempt, require reviewed module effects and the actual
+recorded original/installed forward identities. The initial reviewed set is deliberately
+small: standard unmodified Torch Linear/Conv/normalization/activation/container forwards.
+Reject inplace=True, training, unknown custom/side-effect/buffer-mutating module classes,
+new/replaced forwards, custom module/global hooks and unadapted Tensor/call access before
+a warmup/capture body could execute again. Adoption must record actual forward origins;
+do not infer them by trusting __wrapped__ annotations after a user override. Boundary
+declarations, successful native measurement and independent outputs do NOT prove purity.
+Third-party/custom forwards/control flow/global monkeypatches need separate reviewed
+adapters; no general Python side-effect or kernel eligibility claim follows from a pass.
+
+After the original cold eager call executes ONCE, inspect its actual output Tensor
+identity/C10 Storage alias metadata, without cloning, reading values, making weight
+reservations or retaining result objects. Auto is INELIGIBLE when any output aliases
+an input, managed parameter/version, buffer, or another output leaf (including the
+same Tensor returned twice and disjoint views sharing Storage). Scalar/custom output
+types or unsupported/repeated container structure also require an adapter. Empty
+Tensor data pointers are not alias proof; identity/Storage distinguish independent
+zero-sized tensors from repeated empty aliases. No alias reconstruction is implemented.
+Return that original cold result unchanged and retain the ineligible reason for the
+same immutable key; later invocations remain ordinary eager, never independent clones.
+
+This is separate from explicit GraphSegment, whose documented independent output-leaf
+copies remain unchanged. Promotion requires BOTH reviewed effect eligibility and safe
+cold output classification. An alias-free cold result cannot authorize an unknown
+mutating module, and the read-only capture guard is not a substitute for this preflight.
 
 Known enclosing intent of this SAME offload owner can be suspended/restored using the
 existing epoch-owned Plan mechanism, outside exclusion. Extend only the private auto

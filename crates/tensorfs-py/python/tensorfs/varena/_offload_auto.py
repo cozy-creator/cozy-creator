@@ -6,6 +6,201 @@ import hashlib
 from dataclasses import dataclass, field
 
 import torch
+from torch import nn
+
+# Initial reviewed effect boundary, not a graph-capturability promise. Unknown
+# Python forwards require a separately reviewed adapter, even after a cold pass.
+_REVIEWED_MODULES = (
+    nn.Sequential,
+    nn.ModuleList,
+    nn.ModuleDict,
+    nn.Linear,
+    nn.Conv1d,
+    nn.Conv2d,
+    nn.Conv3d,
+    nn.LayerNorm,
+    nn.GroupNorm,
+    nn.ReLU,
+    nn.ReLU6,
+    nn.GELU,
+    nn.SiLU,
+    nn.Tanh,
+    nn.Sigmoid,
+    nn.Identity,
+    nn.Flatten,
+    nn.Dropout,
+    nn.Dropout1d,
+    nn.Dropout2d,
+    nn.Dropout3d,
+)
+_REVIEWED_FORWARDS = {kind: kind.forward for kind in _REVIEWED_MODULES}
+_UNSUPPORTED_TREE = object()
+
+
+def _function(value):
+    return getattr(value, "__func__", value)
+
+
+def _module_nodes(module):
+    pending, seen = [module], set()
+    while pending:
+        child = pending.pop()
+        if id(child) in seen:
+            continue
+        seen.add(id(child))
+        yield child
+        fields = object.__getattribute__(child, "__dict__")
+        pending.extend(
+            value for value in fields.get("_modules", {}).values() if value is not None
+        )
+
+
+def _registered_tensors(module, kind):
+    for child in _module_nodes(module):
+        fields = object.__getattribute__(child, "__dict__")
+        yield from (
+            value for value in fields.get(kind, {}).values() if value is not None
+        )
+
+
+@dataclass(frozen=True)
+class _ForwardOrigin:
+    installed: object = field(repr=False)
+    original: object = field(repr=False)
+
+
+def _module_preflight(owner, module, *, forward_origins):
+    """Decline known/unknown effects before a capture body can execute again.
+
+    Origins are recorded from actual originals/installed wrappers during adoption,
+    not inferred by trusting a user function's __wrapped__ annotation afterward.
+    """
+    from torch.nn.modules import module as module_runtime
+
+    from ._offload import _Weight
+
+    if any(
+        getattr(module_runtime, name)
+        for name in (
+            "_global_forward_hooks",
+            "_global_forward_pre_hooks",
+            "_global_backward_hooks",
+            "_global_backward_pre_hooks",
+        )
+    ):
+        return "global_module_hooks_require_adapter"
+    owned_hooks = {handle.id for handle in owner._hooks}
+    for child in _module_nodes(module):
+        fields = object.__getattribute__(child, "__dict__")
+        if fields.get("training", True):
+            return "module_training"
+        if fields.get("inplace") is True:
+            return "inplace_module"
+        if type(child) not in _REVIEWED_MODULES:
+            return "unreviewed_module_effects"
+        if any(
+            value is not None
+            and (
+                not isinstance(value, _Weight)
+                or value._version_owner.owner is not owner._owner
+            )
+            for value in fields.get("_parameters", {}).values()
+        ):
+            return "parameter_owner_changed"
+        if any(
+            value is not None and type(value) is not torch.Tensor
+            for value in fields.get("_buffers", {}).values()
+        ):
+            return "buffer_tensor_type_requires_adapter"
+        if (
+            type(child).__call__ is not nn.Module.__call__
+            or type(child)._call_impl is not nn.Module._call_impl
+            or child._compiled_call_impl is not None
+        ):
+            return "custom_module_call_requires_adapter"
+        if child._forward_hooks or child._backward_hooks or child._backward_pre_hooks:
+            return "custom_module_hooks_require_adapter"
+        if any(key not in owned_hooks for key in child._forward_pre_hooks):
+            return "custom_module_hooks_require_adapter"
+        origin = forward_origins.get(id(child))
+        if origin is None:
+            return "forward_origin_unrecorded"
+        reviewed = _REVIEWED_FORWARDS[type(child)]
+        if (
+            _function(child.forward) is not _function(origin.installed)
+            or _function(origin.original) is not reviewed
+            or type(child).forward is not reviewed
+            or not reviewed.__globals__.get("__name__", "").startswith(
+                "torch.nn.modules."
+            )
+        ):
+            return "custom_forward_requires_adapter"
+    return None
+
+
+def _plain_leaves(value, seen=None):
+    """Walk built-in structure without invoking registered custom flatteners."""
+    if seen is None:
+        seen = set()
+    if type(value) in (tuple, list, dict):
+        if id(value) in seen:
+            yield _UNSUPPORTED_TREE
+            return
+        seen.add(id(value))
+    if type(value) in (tuple, list):
+        for child in value:
+            yield from _plain_leaves(child, seen)
+    elif type(value) is dict:
+        for key, child in value.items():
+            if type(key) not in (str, int, float, bool, type(None)):
+                # Surface an unsupported leaf without retaining it in a key/result.
+                yield _UNSUPPORTED_TREE
+            yield from _plain_leaves(child, seen)
+    else:
+        yield value
+
+
+def _cold_output_reason(module, args, kwargs, result):
+    """Metadata-only alias classification; return no Tensor/storage owners.
+
+    This never clones/reads contents/materializes managed weights. Explicit
+    GraphSegment's independent-output contract remains separate and unchanged.
+    """
+    from ._offload import _Weight
+    from ._offload_graph import _ordinary
+
+    outputs = tuple(_plain_leaves(result))
+    input_leaves = tuple(_plain_leaves((args, kwargs)))
+    if any(value is _UNSUPPORTED_TREE for value in input_leaves):
+        return "input_type_requires_alias_adapter"
+    inputs = tuple(value for value in input_leaves if isinstance(value, torch.Tensor))
+    parameters = tuple(_registered_tensors(module, "_parameters"))
+    buffers = tuple(_registered_tensors(module, "_buffers"))
+    prior = []
+    for value in outputs:
+        if isinstance(value, _Weight):
+            return "output_aliases_managed_storage"
+        if not _ordinary(value):
+            return "output_type_requires_alias_adapter"
+        if any(value is item or torch._C._is_alias_of(value, item) for item in inputs):
+            return "output_aliases_input"
+        if any(
+            value is item or torch._C._is_alias_of(value, item) for item in parameters
+        ):
+            return "output_aliases_parameter"
+        if any(value is item or torch._C._is_alias_of(value, item) for item in buffers):
+            return "output_aliases_buffer"
+        if any(value is item or torch._C._is_alias_of(value, item) for item in prior):
+            return "outputs_alias_each_other"
+        prior.append(value)
+    return None
+
+
+def _promotion_reason(owner, module, args, kwargs, result, *, forward_origins):
+    """Both independent outputs AND reviewed effects are necessary for promotion."""
+    return _module_preflight(
+        owner, module, forward_origins=forward_origins
+    ) or _cold_output_reason(module, args, kwargs, result)
 
 
 @dataclass(frozen=True)
