@@ -297,14 +297,19 @@ impl Seal {
         environment
     }
 
-    /// Imposed names the executor did not report receiving exactly. The machine and its
-    /// Runtime ship together (hard cut), so every imposed name is in its allowlist.
-    pub fn mismatches(&self, reported: &BTreeMap<String, String>) -> Vec<String> {
-        self.imposed()
-            .into_iter()
-            .filter(|(name, value)| reported.get(name) != Some(value))
-            .map(|(name, _)| name)
-            .collect()
+    /// Imposed names the executor reported receiving differently, and those it did not report: a
+    /// Runtime older than this binary does not know a newer name, which is no reason to refuse it.
+    pub fn mismatches(&self, reported: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
+        let mut differ = vec![];
+        let mut unreported = vec![];
+        for (name, value) in self.imposed() {
+            match reported.get(&name) {
+                Some(got) if *got == value => {}
+                Some(_) => differ.push(name),
+                None => unreported.push(name),
+            }
+        }
+        (differ, unreported)
     }
 }
 

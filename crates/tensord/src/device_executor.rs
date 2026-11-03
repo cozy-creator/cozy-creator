@@ -955,7 +955,10 @@ impl DeviceExecutor {
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
-        let mismatched = config.seal.mismatches(&hello.hello.sealed);
+        let (mismatched, unreported) = config.seal.mismatches(&hello.hello.sealed);
+        if !unreported.is_empty() {
+            tracing::warn!("executor {pid} (Runtime {}) does not report sealed names {unreported:?}: it is older than this machine", hello.hello.runtime_version);
+        }
         if !hello.ok
             || hello.hello.pid != executor.birth.pid
             || hello.hello.ppid != parent
