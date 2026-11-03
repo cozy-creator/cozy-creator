@@ -17,9 +17,13 @@
 //!   request moved bytes is asked again as at first. A cold R2 object stalls at a MiB boundary
 //!   for whoever asks first, again and again, while a fresh ranged ask is answered at once (pod
 //!   measurements, 2026-10-01); a patience that grew per drop let such a drip run unjudged for
-//!   minutes (tfs-138). Such an object moves as fast asked again as left alone: its rate is its
-//!   own, and the rule neither gains nor costs it anything (tfs-141). A fetch whose every request
-//!   is slow restarts none.
+//!   minutes (tfs-138). A fetch whose every request is slow restarts none.
+//! - **A cold object** (about 0.2% of them) answers any one request at 20-70 KB/s, asked again or
+//!   left alone, for whoever asks, whatever the URL or front end, while its requests add up: to
+//!   0.6-1 MB/s at 32 at once, no more at 256 (tfs-141). So an object whose requests are dropped
+//!   twice running having moved under a part is read as parts: ranges of `PART_BYTES`, `PARTS` at
+//!   once, each judged only by its silence. They go into the store in order; those ahead wait in
+//!   memory. At most `PARTED` objects at a time: the rest stay as they are until one lands.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
 //!   a fresh location, the same wrong bytes twice), on a dead peer, or when the origin has only
 //!   answered "not now" while nothing in the whole fetch landed, for [`ask`]'s stall rule; the
@@ -28,7 +32,7 @@
 //!   grows by 1.2×, up to what the descriptor table holds (tfs-122); a full table halves them.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::future::Future;
 use std::io::Read;
 use std::path::PathBuf;
@@ -36,6 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{watch, Notify, Semaphore};
 
 use super::ask;
@@ -69,6 +74,23 @@ const STRETCH_BYTES: u64 = 64 << 10;
 /// Rate and answer-time samples kept.
 const SAMPLES: usize = 256;
 const MAX_DOUBLINGS: u32 = 6;
+/// A part's bytes: under about 1 MiB a cold object's requests move less in all (64 KiB: 113 KB/s
+/// at 16 at once, 1 MiB: 534), over it no more (4 MiB: 536).
+const PART_BYTES: u64 = 1 << 20;
+/// Parts of one object at once: 8 moved 273 KB/s, 16 about 534, 32 about 750, 64 to 256 no more.
+const PARTS: usize = 32;
+/// How far past its first unfinished part an object's parts may be, in parts: what memory holds.
+const PARTS_AHEAD: u64 = 48;
+/// Objects read as parts at once, which bounds their sockets and memory.
+const PARTED: usize = 4;
+/// Dropped requests in a row, each having moved under a part, before an object is read as parts.
+const SLOW_ASKS: u32 = 2;
+/// A part's patience, as doublings of the wait for an answer: its silences are long and leave it
+/// be, while a dead connection still ends.
+const PART_DOUBLINGS: u32 = 4;
+/// With no samples yet to judge it by, the rate under which a request is dropped, once it has had
+/// 4× the noise floor: a fetch of one cold object has nothing else to compare it with.
+const CRAWL_BYTES_PER_S: f64 = 1e6;
 /// Bytes a request gathers before handing a write to the store.
 const WRITE_BYTES: usize = 1 << 20;
 /// Writes into the store at once: more add threads stalled in the kernel, not bytes.
@@ -101,9 +123,9 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    /// The most bytes any of its requests reached.
+    /// The most bytes its requests reached, and every part's.
     pub(crate) fn received(&self) -> u64 {
-        self.reached.load(Ordering::Acquire)
+        self.reached.load(Ordering::Acquire).min(self.object.length)
     }
 
     fn enter(&self, phase: Phase) {
@@ -230,6 +252,8 @@ enum Dropped {
 struct Flight {
     task: Arc<Task>,
     file: bool,
+    /// One part of an object: judged by its silence, never its rate, and no sample of the rate.
+    part: bool,
     began: Instant,
     doublings: u32,
     answered: AtomicBool,
@@ -254,6 +278,9 @@ impl Flight {
 
     /// The stretch of body since the last write ends: its rate is a sample.
     fn stretch_ends(&self, measured: &Mutex<Measured>) {
+        if self.part {
+            return;
+        }
         let (bytes, now) = (
             self.bytes.load(Ordering::Acquire),
             self.began.elapsed().as_nanos() as u64,
@@ -384,6 +411,7 @@ pub(crate) struct Shared {
     writes: Semaphore,
     volume_reads: Semaphore,
     write_backs: Semaphore,
+    parted: Semaphore,
     pub stats: Counters,
 }
 
@@ -410,6 +438,10 @@ enum Attempt {
     Weather { why: String, wait: Option<Duration> },
     /// 401/403: the location may be stale.
     Refused(Refusal),
+    /// A part got the whole object: this origin ignores ranges, so the object is one GET.
+    NoRanges,
+    /// Where an origin redirected this object answers no more (`why`): ask the origin again.
+    Stale(String),
     Fatal(Refusal),
 }
 
@@ -542,6 +574,16 @@ impl<'s> Sink<'s> {
         Ok(())
     }
 
+    /// The next bytes, from parts whose arrival has counted already.
+    async fn deliver(&mut self, bytes: &[u8]) -> Result<()> {
+        self.buffer.extend_from_slice(bytes);
+        self.reached += bytes.len() as u64;
+        if self.buffer.len() >= WRITE_BYTES {
+            self.flush(None).await?;
+        }
+        Ok(())
+    }
+
     async fn flush(&mut self, flight: Option<&Flight>) -> Result<()> {
         if self.buffer.is_empty() {
             return Ok(());
@@ -590,6 +632,54 @@ impl<'s> Sink<'s> {
     }
 }
 
+/// One range of an object, gathered in memory.
+struct Part {
+    reached: u64,
+    end: u64,
+    bytes: Vec<u8>,
+}
+
+/// Where a request's body goes: the object, in order, or one of its parts.
+enum Target<'a, 's> {
+    Sink(&'a mut Sink<'s>),
+    Part(&'a mut Part),
+}
+
+impl Target<'_, '_> {
+    fn reached(&self) -> u64 {
+        match self {
+            Target::Sink(sink) => sink.reached,
+            Target::Part(part) => part.reached,
+        }
+    }
+
+    /// The byte after the last it wants.
+    fn end(&self, length: u64) -> u64 {
+        match self {
+            Target::Sink(_) => length,
+            Target::Part(part) => part.end,
+        }
+    }
+
+    async fn push(&mut self, shared: &Shared, task: &Task, flight: &Flight, data: &[u8]) -> Result<()> {
+        match self {
+            Target::Sink(sink) => sink.push(flight, data).await,
+            Target::Part(part) => {
+                if part.reached + data.len() as u64 > part.end {
+                    return refuse(
+                        Code::LENGTH_MISMATCH,
+                        format!("{}: the origin sent more than the range asked", task.object.sha256),
+                    );
+                }
+                part.bytes.extend_from_slice(data);
+                part.reached += data.len() as u64;
+                shared.gained(task, data.len() as u64);
+                Ok(())
+            }
+        }
+    }
+}
+
 impl Shared {
     pub fn new(
         store: Arc<dyn ObjectStore>,
@@ -627,6 +717,7 @@ impl Shared {
             writes: Semaphore::new(WRITERS),
             volume_reads: Semaphore::new(VOLUME_READS),
             write_backs: Semaphore::new(WRITE_BACKS),
+            parted: Semaphore::new(PARTED),
             stats: Counters::default(),
         }
     }
@@ -755,7 +846,7 @@ impl Shared {
         let task = lock(&self.queue).tasks.get(&object.sha256).cloned()?;
         Some(Fetching {
             phase: Phase::of(task.phase.load(Ordering::Acquire)),
-            reached: task.reached.load(Ordering::Acquire),
+            reached: task.received(),
             length: task.object.length,
             moved_unix_ms: task.moved_ms.load(Ordering::Acquire),
             waiters: task.waiters.load(Ordering::Acquire),
@@ -866,6 +957,9 @@ impl Shared {
         let (mut location, mut delivery, mut relocated) = (None::<Location>, None::<Delivery>, false);
         let (mut doublings, mut wrong) = (0, None::<String>);
         let mut retry = Retry::new(self.tick, self.stats.landed.load(Ordering::Relaxed));
+        // Dropped requests in a row that moved under a part; its place among the parted objects;
+        // whether this origin redirects: a part learns no redirect, so one request asks it anew.
+        let (mut slow, mut ranges, mut parted, mut redirects) = (0, true, None, false);
         loop {
             if self.unwanted(task) {
                 return refuse(Code::TRANSFER_FAILED, "nothing wants it");
@@ -893,12 +987,15 @@ impl Shared {
                             Attempt::Fatal(refusal) | Attempt::Refused(refusal) => {
                                 return Err(refusal)
                             }
-                            Attempt::Done | Attempt::Weather { .. } => unreachable!("a refusal is never done"),
+                            Attempt::Done | Attempt::Weather { .. } | Attempt::NoRanges | Attempt::Stale(_) => {
+                                unreachable!("a refusal is never done")
+                            }
                         },
                     }
                 }
             };
-            let reached = task.reached.load(Ordering::Acquire);
+            let reached = task.received();
+            let from = sink.reached;
             let attempt = match &here {
                 Location::File(path) => match self
                     .read_file_into(task, &mut sink, path.clone(), doublings, None)
@@ -926,17 +1023,21 @@ impl Shared {
                     );
                     let same = same_origin(url, &asked);
                     let headers: Vec<_> = headers.iter().filter(|(name, _)| same || name.eq_ignore_ascii_case("range")).cloned().collect();
-                    self.request(
-                        task,
-                        &mut sink,
-                        &asked,
-                        &headers,
-                        if same { provider } else { None },
-                        doublings,
-                        delivered,
-                        &mut delivery,
-                    )
-                    .await
+                    let provider = if same { provider } else { None };
+                    redirects |= delivered;
+                    if parted.is_none() && ranges && slow >= SLOW_ASKS {
+                        parted = self.parted.try_acquire().ok();
+                        if parted.is_some() {
+                            tracing::info!(object = %task.object.sha256, at = sink.reached, "parts");
+                        }
+                    }
+                    match parted.is_some() && (delivered || !redirects) {
+                        true => self.parts(task, &mut sink, &asked, &headers, provider, delivered).await,
+                        false => {
+                            self.request(task, Target::Sink(&mut sink), &asked, &headers, provider, doublings, delivered, &mut delivery)
+                                .await
+                        }
+                    }
                 }
             };
             location = Some(here);
@@ -955,10 +1056,11 @@ impl Shared {
                     Err(refusal) => return Err(refusal),
                 },
                 Attempt::Again { why, wait, dropped, heard } => {
-                    let moved = task.reached.load(Ordering::Acquire) > reached;
+                    let moved = task.received() > reached;
                     if dropped {
                         self.stats.restarts.fetch_add(1, Ordering::Relaxed);
                         doublings = if moved { 0 } else { (doublings + 1).min(MAX_DOUBLINGS) };
+                        slow = if sink.reached.saturating_sub(from) < PART_BYTES { slow + 1 } else { 0 };
                         tracing::info!(object = %task.object.sha256, at = sink.reached, %why, "restart");
                     }
                     if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait)? {
@@ -975,7 +1077,103 @@ impl Shared {
                     }
                     (relocated, location) = (true, None);
                 }
+                Attempt::NoRanges => {
+                    tracing::info!(object = %task.object.sha256, "the origin ignores ranges: one GET");
+                    (ranges, parted) = (false, None);
+                }
+                Attempt::Stale(why) => {
+                    delivery = None;
+                    if let Some(pause) = retry.again(task, &why, true, false, None)? {
+                        tokio::time::sleep(pause).await;
+                    }
+                }
                 Attempt::Fatal(refusal) => return Err(refusal),
+            }
+        }
+    }
+
+    /// What `sink` lacks, as ranged parts: `PARTS` at once, into the sink in order. Any answer a
+    /// part cannot take itself ends them all, for the caller to act on.
+    async fn parts(
+        &self,
+        task: &Arc<Task>,
+        sink: &mut Sink<'_>,
+        url: &str,
+        headers: &[(String, String)],
+        provider: Option<&dyn TokenProvider>,
+        delivered: bool,
+    ) -> Attempt {
+        let length = task.object.length;
+        let began = Instant::now();
+        let (mut next, from) = (sink.reached, sink.reached);
+        let mut ahead = BTreeMap::<u64, Vec<u8>>::new();
+        let mut flying = FuturesUnordered::new();
+        loop {
+            while flying.len() < PARTS && next < length && next < sink.reached + PARTS_AHEAD * PART_BYTES {
+                let end = (next + PART_BYTES).min(length);
+                flying.push(self.part(task, url, headers, provider, delivered, next, end));
+                next = end;
+            }
+            let Some((at, got)) = flying.next().await else {
+                break;
+            };
+            match got {
+                Ok(bytes) => {
+                    ahead.insert(at, bytes);
+                    while let Some(bytes) = ahead.remove(&sink.reached) {
+                        if let Err(refusal) = sink.deliver(&bytes).await {
+                            return refusal.into();
+                        }
+                    }
+                }
+                Err(attempt) => return attempt,
+            }
+        }
+        let seconds = began.elapsed().as_secs_f64();
+        let moved = sink.reached - from;
+        tracing::info!(object = %task.object.sha256, moved, seconds, kbps = moved as f64 / seconds.max(1e-3) / 1e3, "parts landed");
+        Attempt::Done
+    }
+
+    /// One part, asked again from the byte reached until it is whole; its offset and its bytes,
+    /// or what it cannot deal with.
+    #[allow(clippy::too_many_arguments)]
+    async fn part(
+        &self,
+        task: &Arc<Task>,
+        url: &str,
+        headers: &[(String, String)],
+        provider: Option<&dyn TokenProvider>,
+        delivered: bool,
+        at: u64,
+        end: u64,
+    ) -> (u64, std::result::Result<Vec<u8>, Attempt>) {
+        let mut part = Part { reached: at, end, bytes: Vec::with_capacity((end - at) as usize) };
+        let mut retry = Retry::new(self.tick, self.stats.landed.load(Ordering::Relaxed));
+        let mut doublings = PART_DOUBLINGS;
+        // A part never takes a new delivery: `Attempt::Stale` sends the object back to the origin.
+        let mut redirected = None;
+        loop {
+            let reached = part.reached;
+            let attempt = self.request(task, Target::Part(&mut part), url, headers, provider, doublings, delivered, &mut redirected).await;
+            let pause = match attempt {
+                Attempt::Done => return (at, Ok(part.bytes)),
+                Attempt::Again { why, wait, dropped, heard } => {
+                    let moved = part.reached > reached;
+                    if dropped {
+                        self.stats.restarts.fetch_add(1, Ordering::Relaxed);
+                        doublings = if moved { PART_DOUBLINGS } else { (doublings + 1).min(MAX_DOUBLINGS) };
+                    }
+                    retry.again(task, &why, heard, moved || dropped, wait).map(|pause| pause.unwrap_or_default())
+                }
+                Attempt::Weather { why, wait } => {
+                    retry.weather(task, &why, wait, self.stats.landed.load(Ordering::Relaxed), self.patience.get())
+                }
+                other => return (at, Err(other)),
+            };
+            match pause {
+                Ok(pause) => tokio::time::sleep(pause).await,
+                Err(refusal) => return (at, Err(Attempt::Fatal(refusal))),
             }
         }
     }
@@ -992,10 +1190,19 @@ impl Shared {
         }
     }
 
-    fn fly(&self, task: &Arc<Task>, file: bool, doublings: u32) -> Flying<'_> {
+    /// `bytes` of a part of `task` arrived: progress, though they are not yet in order.
+    fn gained(&self, task: &Task, bytes: u64) {
+        task.reached.fetch_add(bytes, Ordering::AcqRel);
+        self.stats.landed.fetch_add(bytes, Ordering::Relaxed);
+        let _ = task.phase.compare_exchange(Phase::Origin as u8, Phase::Receiving as u8, Ordering::AcqRel, Ordering::Acquire);
+        task.moved_ms.store(unix_ms(), Ordering::Release);
+    }
+
+    fn fly(&self, task: &Arc<Task>, file: bool, part: bool, doublings: u32) -> Flying<'_> {
         let flight = Arc::new(Flight {
             task: Arc::clone(task),
             file,
+            part,
             began: Instant::now(),
             doublings,
             answered: AtomicBool::new(false),
@@ -1029,13 +1236,13 @@ impl Shared {
         }
     }
 
-    /// One GET of what `sink` still lacks. `delivered`: `url` is where the origin redirected an
+    /// One GET of what `into` still lacks. `delivered`: `url` is where the origin redirected an
     /// earlier ask, which a refusal sends back to the origin.
     #[allow(clippy::too_many_arguments)]
     async fn request(
         &self,
         task: &Arc<Task>,
-        sink: &mut Sink<'_>,
+        mut into: Target<'_, '_>,
         url: &str,
         headers: &[(String, String)],
         provider: Option<&dyn TokenProvider>,
@@ -1044,16 +1251,17 @@ impl Shared {
         delivery: &mut Option<Delivery>,
     ) -> Attempt {
         let object = &task.object;
+        let (from, end) = (into.reached(), into.end(object.length));
         // Nothing left to ask (an answer whose last bytes came but whose end did not): a range
         // past the end is refused (R2: 400 for `bytes=N-(N-1)`), so what is here is committed.
-        if sink.reached == object.length {
+        if from == end {
             return Attempt::Done;
         }
-        let flying = self.fly(task, false, doublings);
+        let flying = self.fly(task, false, matches!(into, Target::Part(_)), doublings);
         let flight = &flying.flight;
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
         let mut headers = headers.to_vec();
-        let range = (sink.reached > 0).then(|| format!("bytes={}-{}", sink.reached, object.length - 1));
+        let range = (from > 0 || end < object.length).then(|| format!("bytes={from}-{}", end - 1));
         if let Some(range) = &range {
             headers.push(("range".into(), range.clone()));
         }
@@ -1084,11 +1292,15 @@ impl Shared {
         let what = || format!("{}: {status} from {url}", object.sha256);
         match status {
             200 => {
-                if sink.reached > 0 {
+                match &mut into {
+                    Target::Part(_) => return Attempt::NoRanges,
                     // The origin ignored the range: the object starts over from this answer.
-                    if let Err(refusal) = sink.fresh() {
-                        return Attempt::Fatal(refusal);
+                    Target::Sink(sink) if from > 0 => {
+                        if let Err(refusal) = sink.fresh() {
+                            return Attempt::Fatal(refusal);
+                        }
                     }
+                    Target::Sink(_) => {}
                 }
                 let length = answer
                     .header("content-length")
@@ -1102,10 +1314,10 @@ impl Shared {
             }
             206 => {
                 let range = answer.content_range();
-                if !range.is_some_and(|(first, total)| first == sink.reached && total.is_none_or(|t| t == object.length)) {
+                if !range.is_some_and(|(first, total)| first == from && total.is_none_or(|t| t == object.length)) {
                     return Attempt::Fatal(Refusal {
                         code: Code::LENGTH_MISMATCH,
-                        detail: format!("{}: content-range {range:?} for byte {}", what(), sink.reached),
+                        detail: format!("{}: content-range {range:?} for byte {from}", what()),
                     });
                 }
             }
@@ -1115,10 +1327,7 @@ impl Shared {
                 let said = said(&mut answer, flight).await;
                 let why = format!("{}; range {}; said {said:?}", what(), range.as_deref().unwrap_or("none"));
                 return match status {
-                    401 | 403 | 404 | 410 if delivered => {
-                        *delivery = None;
-                        Attempt::Again { why, wait: None, dropped: false, heard: true }
-                    }
+                    401 | 403 | 404 | 410 if delivered => Attempt::Stale(why),
                     401 | 403 => Attempt::Refused(Refusal { code: Code::CREDENTIAL_REQUIRED, detail: why }),
                     404 | 410 => Attempt::Fatal(Refusal { code: Code::REF_NOT_FOUND, detail: why }),
                     416 => Attempt::Fatal(Refusal { code: Code::LENGTH_MISMATCH, detail: why }),
@@ -1136,7 +1345,7 @@ impl Shared {
                 Ok(Some(data)) => {
                     flight.bytes.fetch_add(data.len() as u64, Ordering::AcqRel);
                     flight.moved();
-                    if let Err(refusal) = sink.push(flight, &data).await {
+                    if let Err(refusal) = into.push(self, task, flight, &data).await {
                         return refusal.into();
                     }
                 }
@@ -1149,7 +1358,7 @@ impl Shared {
                         "{}: {} at {} of {} B",
                         what(),
                         refusal.detail,
-                        sink.reached,
+                        into.reached(),
                         object.length
                     );
                     return Attempt::Again {
@@ -1161,14 +1370,13 @@ impl Shared {
                 }
             }
         }
-        match sink.reached == object.length {
+        match into.reached() == end {
             true => Attempt::Done,
             false => Attempt::Again {
                 why: format!(
-                    "{}: the body ended at {} of {} B",
+                    "{}: the body ended at {} of {end} B",
                     what(),
-                    sink.reached,
-                    object.length
+                    into.reached(),
                 ),
                 wait: None,
                 dropped: false,
@@ -1201,7 +1409,7 @@ impl Shared {
         doublings: u32,
         volume: Option<&VolumeOrigin>,
     ) -> FileRead {
-        let flying = self.fly(task, true, doublings);
+        let flying = self.fly(task, true, false, doublings);
         let flight = &flying.flight;
         if sink.reached > 0 {
             if let Err(refusal) = sink.fresh() {
@@ -1420,7 +1628,9 @@ impl Shared {
             }
             let window = lock(&flight.window).clone();
             let full = (JUDGE_TICKS << flight.doublings) + 1;
-            match reference {
+            let elapsed = flight.began.elapsed();
+            let average = flight.bytes.load(Ordering::Acquire) as f64 / elapsed.as_secs_f64().max(1e-3);
+            match reference.filter(|_| !flight.part) {
                 Some(reference) if window.len() >= full => {
                     let rate =
                         (window[window.len() - 1] - window[0]) as f64 / (tick * (full - 1) as f64);
@@ -1438,6 +1648,9 @@ impl Shared {
                         silent.as_secs_f64(),
                         (head * scale).as_secs_f64()
                     )));
+                }
+                None if !flight.part && reference.is_none() && elapsed > floor * 4 && average < CRAWL_BYTES_PER_S => {
+                    flight.drop_with(judged(format!("{:.0} KB/s, with nothing yet to compare it to", average / 1e3)));
                 }
                 _ => {}
             }

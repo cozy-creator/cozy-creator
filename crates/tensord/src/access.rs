@@ -134,6 +134,8 @@ pub struct Fetch {
     /// Each wanted checkpoint not all here when it was wanted: its repository and where it comes
     /// from, its bytes, and its objects still absent.
     arriving: Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>,
+    /// The same of its on-demand models, which a step reads when it comes to them.
+    behind: Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>,
     required: Mutex<Required>,
 }
 
@@ -149,6 +151,7 @@ impl Fetch {
             held: Mutex::default(),
             replaced: Mutex::default(),
             arriving: Mutex::default(),
+            behind: Mutex::default(),
             required: Mutex::default(),
         })
     }
@@ -382,8 +385,9 @@ impl Fetch {
                 absent_all.extend(absent.iter().cloned());
                 wanted.push(Wanted { bytes, remote: remote.clone(), objects: absent, label: format!("{repository} {component}") });
             }
-            if let (true, false, Some(pulled)) = (metered, absent_all.is_empty(), pulled) {
-                self.arriving.lock().unwrap().push((pulled.repository, remote.clone(), bytes_all, absent_all));
+            if let (false, Some(pulled)) = (absent_all.is_empty(), pulled) {
+                let list = if metered { &self.arriving } else { &self.behind };
+                list.lock().unwrap().push((pulled.repository, remote.clone(), bytes_all, absent_all));
             }
             self.held.lock().unwrap().push(checkpoint);
         }
@@ -428,11 +432,16 @@ impl Fetch {
         })
     }
 
-    /// The weights it wants that are not all here yet, while any are not: their repositories,
-    /// and the bytes here of all it found absent, an object still arriving counted to the byte it
-    /// reached. An object here stays: its checkpoint is held.
+    /// The weights it wants that are not all here yet, while any are not: those its run waits on,
+    /// then its on-demand ones.
     pub fn arriving(&self) -> Option<Weights> {
-        let mut arriving = self.arriving.lock().unwrap();
+        self.counted(&self.arriving, false).or_else(|| self.counted(&self.behind, true))
+    }
+
+    /// `list`'s repositories not all here, and the bytes here of all it found absent, an object
+    /// still arriving counted to the byte it reached. An object here stays: its checkpoint is held.
+    fn counted(&self, list: &Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>, behind: bool) -> Option<Weights> {
+        let mut arriving = list.lock().unwrap();
         let (mut models, mut done, mut total) = (vec![], 0, 0);
         for (repository, remote, bytes, absent) in arriving.iter_mut() {
             // Each download as it stands, read before the store: one landing meanwhile counts whole.
@@ -451,7 +460,7 @@ impl Fetch {
             }
             (done, total) = (done + *bytes - missing, total + *bytes);
         }
-        (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total })
+        (!models.is_empty()).then(|| Weights { models: models.join(" and "), done, total, behind })
     }
 
     /// Whether it ended (`end`).
@@ -474,11 +483,12 @@ impl Fetch {
 
 /// While what `fetch` wants is not all here, run `id`'s progress says which weights it waits on
 /// and how many of their bytes are here, from a quarter-second look at the store; once they are,
-/// or the fetch ends, its own stage shows again. While a required want is unanswered, the run's
+/// or the fetch ends, its own stage shows again. On-demand weights arriving show beside its stage,
+/// so a step that reads them, which says nothing itself meanwhile, is seen moving. While a required want is unanswered, the run's
 /// waiting reason says on what (`Fetch::waiting_on`), and TensorD's log says so each time where
 /// its chunks are changes. A run whose weights are here hears nothing.
 pub fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
-    if fetch.arriving.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
+    if fetch.arriving.lock().unwrap().is_empty() && fetch.behind.lock().unwrap().is_empty() && fetch.required.lock().unwrap().pending == 0 {
         return;
     }
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
@@ -508,7 +518,7 @@ pub fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
             }
             // What the run waited for lands in the transport log, as a pull's does.
             if weights.is_none() && waiting.is_none() {
-                if let (Some(Weights { models, total, .. }), true) = (last, live.is_some()) {
+                if let (Some(Weights { models, total, behind: false, .. }), true) = (last, live.is_some()) {
                     let waited = format!("bytes={total} seconds={:.1} run={id}", began.elapsed().as_secs_f64());
                     storage::transport(&store, "arrived", &models, &waited);
                 }
