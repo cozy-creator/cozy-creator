@@ -14,7 +14,7 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{FileTerm, Note, StagedInput},
+    calcifer::{FileTerm, Note, NoteLevel, StagedInput},
     contract as describe,
     error::{Error, Kind},
     ids::Digest,
@@ -413,9 +413,9 @@ impl Binder<'_> {
 
     /// One positional value fills the first declared field a text value can fill.
     fn primary(&mut self, positional: Vec<String>) -> Result<(), Error> {
-        let Some(first) = positional.first() else {
+        if positional.is_empty() {
             return Ok(());
-        };
+        }
         let Some(field) = self
             .callable
             .request
