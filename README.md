@@ -248,8 +248,8 @@ true`, goes to its function, and importing another file for it puts only those s
 in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
 shot. What a function does not take is left out and said.
 
-`qwen-image-2` draws a character as a 16:9 sheet (front, back, three close-ups) and a prop as a 3:2 sheet (front, back), both
-transparent. Any character or prop picture that comes back without a real share of transparent pixels is cleaned before
+`qwen-image-2` draws a character or a prop as a 3:2 sheet (front, back), both transparent.
+Any character or prop picture that comes back without a real share of transparent pixels is cleaned before
 use. A picture you import is used as it is unless you marked it. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy project render <name>` when you want a new take. A node renders by its `render:` block: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
 project's folder, which Calcifer makes ready on each `--on` machine), `models` and `lora` as `cozy run --input` takes them, and
