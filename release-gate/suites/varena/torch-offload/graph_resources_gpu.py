@@ -30,6 +30,37 @@ def poll(timeout, observe, label):
     raise TimeoutError("graph resource collection gate: " + label)
 
 
+class GateOwner:
+    """Independent fixture root; always open the gate before cleanup joins."""
+
+    def __init__(self, gate, timeout):
+        self.gate = gate
+        self.requested, self.opened = threading.Event(), threading.Event()
+        self.errors = []
+        self.worker = threading.Thread(target=self._release, args=(timeout,))
+        self.worker.start()
+
+    def _release(self, timeout):
+        try:
+            if not self.requested.wait(timeout):
+                self.errors.append(TimeoutError("fixture gate-release deadline"))
+        finally:
+            try:
+                self.gate.gate_set(1)
+            except BaseException as error:
+                self.errors.append(error)
+                raise
+            finally:
+                self.opened.set()
+
+    def release(self, timeout):
+        self.requested.set()
+        self.worker.join(timeout)
+        assert not self.worker.is_alive(), "gate owner did not finish release"
+        if self.errors:
+            raise self.errors[0]
+
+
 def create(args):
     torch.set_float32_matmul_precision("highest")
     torch.manual_seed(734)
@@ -77,7 +108,7 @@ def create(args):
             weakref.ref(segment._definition.resources) for segment in segments
         ],
     }
-    gate = None
+    gate_owner = None
     replay_stream = stream
     if args.mode == "inflight":
         spec = importlib.util.spec_from_file_location(
@@ -88,59 +119,88 @@ def create(args):
         with torch.cuda.device(args.device):
             provider = module.Provider(args.provider)
             gate = provider.create(owner._owner.gpu, 32, mode="ordering")
-        replay_stream = torch.cuda.Stream(device=args.device)
-        replay_stream.wait_stream(stream)
-        gate.gate_wait(replay_stream.cuda_stream)
-        with torch.no_grad(), torch.cuda.stream(replay_stream):
-            result = model(value)  # Real cached launch/copies queued behind gate.
-        assert gate.stream_pending(replay_stream.cuda_stream)
+        gate_owner = GateOwner(gate, args.timeout_s)
+        try:
+            replay_stream = torch.cuda.Stream(device=args.device)
+            replay_stream.wait_stream(stream)
+            gate.gate_wait(replay_stream.cuda_stream)
+            with torch.no_grad(), torch.cuda.stream(replay_stream):
+                result = model(value)  # Real cached launch/copies behind gate.
+            assert gate.stream_pending(replay_stream.cuda_stream)
+        except BaseException:
+            gate_owner.release(args.timeout_s)
+            raise
     before = vt.stats(args.device)
     # Only result/input/actual stream/gate/weak diagnostics leave this scope.
     # No owner.close(), cache request or graph.reset() is performed.
-    return refs, result, expected, value, stream, replay_stream, gate, before
+    return refs, result, expected, value, stream, replay_stream, gate_owner, before
 
 
 def run(args):
     quarantine = api.retirement_stats()["quarantined"]
-    refs, result, expected, _value, _stream, replay_stream, gate, before = create(args)
+    refs, result, expected, _value, _stream, replay_stream, gate_owner, before = create(
+        args
+    )
+    gate = gate_owner.gate if gate_owner is not None else None
     probe = api.open(args.device)  # Observer only; does not reference Python owner.
-    collected = threading.Event()
-    errors = []
+    started = threading.Event()
+    errors, observations = [], {}
 
     def collect():
+        started.set()
         try:
             with torch.cuda.device(args.device):
                 gc.collect()
+                observations["first_collection_before_gate_release"] = (
+                    gate_owner is not None and not gate_owner.opened.is_set()
+                )
+                dead = {
+                    name: all(ref() is None for ref in group)
+                    for name, group in refs.items()
+                }
+                if gate_owner is not None and not all(dead.values()):
+                    # Reset/GC may wait for consumers; no nonblocking promise.
+                    assert gate_owner.opened.wait(args.timeout_s)
+                    replay_stream.synchronize()
+                    gc.collect()
+                dead = {
+                    name: all(ref() is None for ref in group)
+                    for name, group in refs.items()
+                }
+                assert all(dead.values()), dead  # BEFORE trim/cache pressure.
+                observations["collected_without_close_or_pressure"] = dead
+                observations["trim_started_before_gate_release"] = (
+                    gate_owner is not None and not gate_owner.opened.is_set()
+                )
+                probe.trim()  # Checked trim may also wait for consumer completion.
+                vt.trim(args.device)
         except BaseException as error:
             errors.append(error)
             raise
-        finally:
-            collected.set()
 
     worker = threading.Thread(target=collect)
-    worker.start()
+    pending = None
     try:
-        assert collected.wait(args.timeout_s), "collection blocked before gate release"
-        if errors:
-            raise errors[0]
-        dead = {
-            name: all(ref() is None for ref in group) for name, group in refs.items()
-        }
-        assert all(dead.values()), dead  # BEFORE explicit trim or pressure.
         if gate is not None:
             assert gate.stream_pending(replay_stream.cuda_stream)
-            probe.trim()
-            vt.trim(args.device)
             pending = vt.stats(args.device)
+            assert before["pools_bytes"] > 0
             assert pending["pools_bytes"] >= before["pools_bytes"]
             assert gate.stream_pending(replay_stream.cuda_stream)
-        else:
-            pending = None
+        worker.start()
+        assert started.wait(args.timeout_s), "collection worker did not enter"
     finally:
-        if gate is not None:
-            gate.gate_set(1)
-        worker.join(args.timeout_s)
+        # The gate has an independent owner, also during native/driver waits.
+        # Never join collection/reset/trim while its consumers remain gated.
+        try:
+            if gate_owner is not None:
+                gate_owner.release(args.timeout_s)
+        finally:
+            if worker.ident is not None:
+                worker.join(args.timeout_s)
     assert not worker.is_alive()
+    if errors:
+        raise errors[0]
     replay_stream.synchronize()
     torch.testing.assert_close(result.cpu(), expected, rtol=2e-5, atol=2e-6)
     poll(
@@ -165,9 +225,10 @@ def run(args):
     return {
         "passed": True,
         "mode": args.mode,
-        "collected_without_close_or_pressure": dead,
+        **observations,
+        "cleanup_nonblocking_not_required": True,
         "before": before,
-        "while_gate_pending": pending,
+        "before_cleanup_while_gate_pending": pending,
         "after": after,
         "exact_output_after_drop": True,
         "gpu_executed": True,

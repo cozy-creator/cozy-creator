@@ -61,10 +61,15 @@ Run only in root's guarded ordinary-Cozy child/cohort. These use actual automati
 graphs; no model close/reset or cache-pressure request is allowed to produce the
 collection result. Weak owner/model/controller/cache/segment/graph/resource refs
 must disappear BEFORE any trim. Inflight mode queues real replay/copies behind the
-existing native mapped gate, collects on a checked host thread without opening
-that gate, then requires native trim to keep pending backing owned. After release,
-actual output parity, retirement completion and pool release must hold without
-new quarantine. Whole-child protocol deadline remains root-owned.
+existing mapped gate, with an independent fixture owner that releases it on request
+or the explicit fixture deadline. Actual pending-stream/pool facts are checked
+before cleanup. Collection/reset and trim may wait for consumer completion: the
+gate is released before joining cleanup. Collection must complete before any trim;
+if necessary it is checked again after consumer completion. There is no
+nonblocking-GC/reset/trim acceptance condition. Actual output
+parity, retirement completion and pool release must hold without new quarantine.
+Whole-child protocol deadline remains root-owned. The pre-cleanup pool sample is
+not a claim that a synchronous trim returned while consumers were pending.
 
 The old exact-source automatic gate remains UNRUN/unqualified pending this patch
 and actual GPU receipts. This source fix does not convert prior CPU/old-source
