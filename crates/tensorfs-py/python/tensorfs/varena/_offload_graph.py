@@ -226,6 +226,7 @@ class _Resources:
     """
 
     device: torch.device
+    versions: tuple
     sources: tuple
     regions: tuple
     plan: object
@@ -239,6 +240,7 @@ class _Resources:
 def _retained_payload(definition):
     resources = _Resources(
         definition.owner._owner.device,
+        definition.versions,
         tuple(version.source for version in definition.versions),
         definition.regions,
         definition.plan,
