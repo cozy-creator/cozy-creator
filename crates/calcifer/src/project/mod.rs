@@ -9,6 +9,7 @@
 mod folder;
 mod graph;
 pub(crate) mod host;
+mod remote;
 mod video;
 
 use std::{
@@ -89,6 +90,8 @@ struct Project {
     asked: Notify,
     /// Held while a cut is made.
     cutting: Arc<Mutex<()>>,
+    /// Held while its files move to or from its Hub.
+    moving: tokio::sync::Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
 }
@@ -100,6 +103,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs", post(runs))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/rename", post(rename))
+        .route("/v1/projects/{id}/push", post(remote::pushed))
+        .route("/v1/projects/{id}/pull", post(remote::pulled))
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/nodes/{name}", get(node))
         .route("/v1/projects/{id}/assets/{asset}", get(asset))
@@ -123,7 +128,7 @@ impl Projects {
 
     /// The project in `dir` (canonical), opened once; its walk goes on when project.lock owes one.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
-        let folder = Folder::open(dir, api.machines.hubs.home().tools())?;
+        let folder = Folder::open(dir, api.machines.hubs.home())?;
         let id = project_id(dir);
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
             .or_insert_with(|| {
@@ -134,6 +139,7 @@ impl Projects {
                     walking: Mutex::new(false),
                     asked,
                     cutting: Arc::default(),
+                    moving: tokio::sync::Mutex::default(),
                     keys: Mutex::default(),
                 })
             })
@@ -307,7 +313,10 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     open.remove(&id);
     drop(open);
     match indexed(&api, true, |index| index.projects.remove(&id)) {
-        Some(_) => Ok(StatusCode::NO_CONTENT),
+        Some(entry) => {
+            let _ = std::fs::remove_file(folder::taken_at(api.machines.hubs.home(), &entry.path));
+            Ok(StatusCode::NO_CONTENT)
+        }
         None => Err(Refusal(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {id}")))),
     }
 }
@@ -357,9 +366,11 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     }
     warnings.dedup();
     let busy = *project.walking.lock().expect("walking lock");
+    let moving = project.moving.try_lock().is_err();
+    let absent = lock.assets().keys().filter(|path| !project.folder.dir.join(path).is_file()).count() as u64;
     let orphans = orphans(&video, &lock);
     let (path, fps) = (project.folder.dir.clone(), video.canvas.fps);
-    Ok(Json(ProjectState { id, path, fps, nodes, missing, stale, orphans, busy, cuts, warnings }))
+    Ok(Json(ProjectState { id, path, fps, nodes, missing, stale, orphans, busy, moving, absent, cuts, warnings }))
 }
 
 /// Where a node stands, for the lists under a project's table.
@@ -386,7 +397,7 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
     let assets = match (made, &node.file) {
         (Some(made), _) => listed(made),
         (None, Some((path, sha256))) => {
-            let original = lock.inputs.iter().find(|(_, input)| input.asset.path == *path).map(|(file, _)| file.clone());
+            let original = lock.inputs.iter().find(|(_, input)| input.path == *path).map(|(file, _)| file.clone());
             BTreeMap::from([(video.field(i).to_owned(), Listing { path: path.clone(), sha256: sha256.clone(), original })])
         }
         (None, None) => BTreeMap::new(),
@@ -944,13 +955,12 @@ impl Walk {
             if pieces.is_empty() {
                 continue;
             }
-            let (folder, cutting, began) =
-                (Folder::open(&self.folder().dir, self.folder().tools.clone())?, self.project.cutting.clone(), Instant::now());
+            let (project, cutting, began) = (self.project.clone(), self.project.cutting.clone(), Instant::now());
             let canvas = Canvas { short: if preview { None } else { video.canvas.short }, ..video.canvas.clone() };
             let cache = self.host.cache().join("cuts");
             let made = tokio::task::spawn_blocking(move || {
                 let _held = cutting.lock().expect("cutting lock");
-                video::cut(&ffmpeg, &ffprobe, &folder, &pieces, &canvas, name, &cache)
+                video::cut(&ffmpeg, &ffprobe, &project.folder, &pieces, &canvas, name, &cache)
             })
             .await
             .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
@@ -1137,7 +1147,7 @@ impl Walk {
         let mut staged = vec![];
         for (field, path, digest) in files {
             let length = std::fs::metadata(&path)
-                .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())))?
+                .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"))?
                 .len();
             let order = field.split('.').filter_map(|part| part.parse().ok()).next_back().unwrap_or(0);
             let media_type = media_type(&path).to_owned();

@@ -6,7 +6,8 @@ use std::{path::PathBuf, process::ExitCode};
 use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
-    project::{Approve, Approved, Event, Open, Opened, Projects, Rename, Renamed, Runs, State},
+    hub::At,
+    project::{Approve, Approved, Event, Open, Opened, Projects, Rename, Renamed, Runs, State, Transferred},
 };
 
 use crate::{
@@ -20,6 +21,8 @@ const EXAMPLES: &str = "Examples:
   cozy project render fight -n 3 --on kiyui    three takes of fight
   cozy project approve fight 2
   cozy project rename theo mara                after renaming it in project.yaml
+  cozy project push                            its files to your Tensorhub account
+  cozy project pull                            on another computer, beside project.yaml and project.lock
 
 project.yaml's comments and the README explain the rest.";
 
@@ -74,6 +77,12 @@ enum Verb {
         /// Its name in project.yaml now: a node of the same kind with no versions.
         to: String,
     },
+    /// Send every file project.lock names that your Tensorhub account lacks, private to it.
+    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; assets/ stays out of git\n\nCtrl-C stops following, never the transfer.")]
+    Push,
+    /// Fetch every file project.lock names that assets/ lacks, as real files.
+    #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nCtrl-C stops following, never the transfer.")]
+    Pull,
 }
 
 /// Make new takes and versions; `all` brings everything up to date.
@@ -180,8 +189,44 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
+        Verb::Push => {
+            let done = transfer(ctx, args.path.as_ref(), "push", "sent").await?;
+            let at = done.kept_in.as_deref().unwrap_or("the Hub");
+            let (files, moved, bytes) = (done.files, done.moved, output::bytes(done.bytes));
+            output::say(ctx, &format!("{files} files at {at}: {moved} sent ({bytes}), {} there already", files - moved));
+        }
+        Verb::Pull => {
+            let done = transfer(ctx, args.path.as_ref(), "pull", "fetched").await?;
+            let (files, moved, bytes) = (done.files, done.moved, output::bytes(done.bytes));
+            output::say(ctx, &format!("{files} files here: {moved} fetched ({bytes}), {} here already", files - moved));
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `POST /v1/projects/{id}/<verb>`, followed on the project's events to its end, which `--json` prints.
+async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) -> Result<Transferred, Error> {
+    let opened = open(ctx, at, false).await?;
+    let calcifer = ctx.calcifer().await?;
+    let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
+    let ask = At { hub: Some(ctx.hub().to_string()) };
+    let _: Opened = calcifer.post(&format!("/v1/projects/{}/{verb}", opened.id), &ask, None).await?;
+    while let Some(event) = events.next().await {
+        match event {
+            Event::Moved { file: Some(file), bytes } => output::say(ctx, &format!("{moved} {file} ({} so far)", output::bytes(bytes))),
+            Event::Moved { file: None, bytes } => output::say(ctx, &format!("{} so far", output::bytes(bytes))),
+            Event::Transferred { error: Some(error), .. } => return Err(error),
+            Event::Transferred { done: Some(done), .. } => {
+                if ctx.json {
+                    output::json(&done);
+                }
+                return Ok(done);
+            }
+            _ => {}
+        }
+    }
+    let said = format!("Calcifer stopped before the {verb} ended; run it again and it goes on from what landed");
+    Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.path.display())))
 }
 
 async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {
@@ -216,6 +261,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             }
             Event::Said { message } => output::say(ctx, &message),
             Event::Warning { message } => output::warn(&message),
+            Event::Moved { .. } | Event::Transferred { .. } => {}
             Event::Cut { cut, frames, fps, retimed, took_s } => {
                 let path = output::link(ctx, &opened.path.join(&cut));
                 output::say(ctx, &format!("cut {path}: {}{} in {took_s:.1} s", length(frames, fps), retimes(&retimed, fps)));
@@ -260,7 +306,10 @@ fn summary(ctx: &Context, state: &State) {
         }
     }
     let uncut = state.cuts.iter().any(|cut| cut.cut_at_ms.is_none());
-    if !state.missing.is_empty() || !state.stale.is_empty() || uncut {
+    if state.absent > 0 {
+        output::say(ctx, &format!("{} files project.lock names are not on this computer", state.absent));
+        output::next(ctx, &["cozy project pull"]);
+    } else if !state.missing.is_empty() || !state.stale.is_empty() || uncut {
         output::next(ctx, &["cozy project render all --on <machine>"]);
     }
 }

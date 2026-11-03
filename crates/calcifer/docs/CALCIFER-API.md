@@ -313,12 +313,14 @@ fixed by its folder. Every file the project uses
 is in `assets/<sha256>.<ext>`, flat: what cozy makes as real files, and each file project.yaml names (relative,
 absolute or `~/…`) taken in on first use, by the first method that works: a copy-on-write clone (reflink:
 Btrfs, XFS, ZFS 2.2+, APFS), else a symlink to the original, else (Windows without the right) a hard link on
-the same volume, else a copy, said once. project.lock records each file's path, size, sha256 and method under
-the path written, and with every video asset (made or named) its shape, probed once: `{width, height, fps,
-frames}`. A changed original is taken in again and what read it goes out of date; for a link that is
-said (`reference changed`), and a gone original is `reference missing: relink`, what reads it not rendering.
-A clone or copy is the project's own: the original moving changes nothing. Names live only in project.yaml and
-project.lock. Calcifer deletes from `assets/` only what project.lock no longer names.
+the same volume, else a copy, said once. project.lock records each file's path and sha256 under
+the path written, a label, and with every video asset (made or named) its shape, probed once: `{width, height, fps,
+frames}`. It names nothing of this computer, so it travels with project.yaml: how a file was taken in (where it is,
+the method, its size and time) is in Calcifer's `projects/<id>.json`. A file not at its path whose asset is here is
+that asset, and nothing is said. A changed file is taken in again and what read it goes out of date; for a link that
+is said (`reference changed`). A file neither at its path nor in `assets/` is `reference missing: relink`, what reads
+it not rendering. Names live only in project.yaml and project.lock. Calcifer deletes from `assets/` only what
+project.lock no longer names.
 
 A shot's `description` is opaque text but for its `<mentions>`, sent as its function's `prompt`. Calcifer adds nothing:
 a person writes the function's own conventions in it.
@@ -365,12 +367,22 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   (versions, approval, what other versions read of it, what is owed) is kept as `to`, a node project.yaml names
   now, of the same kind and with no versions (`409 rename_taken`, `400 rename_kind`, `409 project_busy` while it
   renders). Nothing on disk moves.
+- `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
+  project.lock names that the Hub lacks, by content (`/blobs/…`: what it holds never moves; a killed push sends only the
+  files that had not landed), reading through links, and records them all as a private commit of the account's model
+  `project-assets`, which keeps them until its owner deletes it (`cozy model delete`). A file not on this computer
+  needs only be at the Hub. The most one file can be is 5 GiB.
+- `POST /v1/projects/{id}/pull` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Fetches every file
+  project.lock names that `assets/` lacks, as a real file: a killed pull goes on from the byte it reached
+  (`assets/.<name>.part`), and each is held to its sha256 before it is named. Both say how they go on the events
+  (`moved`, `transferred`) and go on when their client goes; one project moves one at a time.
 - `POST /v1/projects/{id}/approve` `{name, version}` (`version` its number): `{name, noun, number, assets, path,
   stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
   again when a shot's take changed.
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
   `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, frames, fps, retimed?, took_s}` and
-  `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
+  `moved {file?, bytes}` (a push or pull landed `file`, or is under way), `transferred {done?: {files, moved, bytes,
+  kept_in?, commit?}, error?}` when it ends, `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
 - `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`, and each one's `.otio`): the cut or its
@@ -398,6 +410,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project ls` | `GET /v1/projects` |
 | `cozy project render …` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/runs`; each `started` run followed on `GET /v1/runs/{id}/events` |
 | `cozy project approve <node> <n>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/approve` |
+| `cozy project push`, `pull` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull` |
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |

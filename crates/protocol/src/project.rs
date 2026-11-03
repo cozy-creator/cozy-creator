@@ -68,6 +68,12 @@ pub struct State {
     pub orphans: Vec<Orphan>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
+    /// Whether a push or pull is going.
+    #[serde(default)]
+    pub moving: bool,
+    /// How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
+    #[serde(default)]
+    pub absent: u64,
     /// The cuts it makes: `edit.mp4`, and `preview.mp4` when it has a `resolution:`.
     pub cuts: Vec<Cut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -235,6 +241,22 @@ pub struct Renamed {
     pub versions: u32,
 }
 
+/// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
+/// project.lock names that the Hub lacks; a pull fetches every one `assets/` lacks.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Transferred {
+    /// The files project.lock names.
+    pub files: u64,
+    /// Those sent or fetched now.
+    pub moved: u64,
+    pub bytes: u64,
+    /// A push's: the private model and commit that keep them at the Hub, until deleted by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_in: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+}
+
 /// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -258,6 +280,19 @@ pub enum Event {
     },
     Warning {
         message: String,
+    },
+    /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
+    Moved {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        bytes: u64,
+    },
+    /// A push or pull ended: what it moved, or what stopped it.
+    Transferred {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        done: Option<Transferred>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<Error>,
     },
     /// A cut (`edit.mp4`, `preview.mp4`, and its `.otio`) was made again here, in `took_s`: `frames`
     /// long at `fps`, the takes in `retimed` retimed to it.

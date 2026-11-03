@@ -4,7 +4,8 @@
 //! cut (`edit.mp4`). Every file the project uses is in `assets/<sha256>.<ext>`, flat: each take and
 //! version, clean and latents cozy makes (real files), and each file project.yaml names, taken in on
 //! first use: a copy-on-write clone where the filesystem has them, else a link to the original
-//! (`Method`). Names live only in project.yaml and the lock.
+//! (`Method`). Names live only in project.yaml and the lock. The lock names nothing of this computer, so
+//! it travels with project.yaml; how this computer took each file in is its own (`Taken`).
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
@@ -12,7 +13,7 @@ use std::{
     sync::Mutex,
 };
 
-use platform::durable;
+use platform::{durable, paths::Home};
 use protocol::{
     calcifer::On,
     error::{Error, Kind},
@@ -108,9 +109,9 @@ impl Made {
         PRIMARY.iter().find_map(|name| self.assets.get(*name))
     }
 
-    /// Its assets' and writes' paths.
-    pub fn paths(&self) -> impl Iterator<Item = &String> {
-        self.assets.values().chain(self.writes.values()).map(|asset| &asset.path)
+    /// Its assets and writes.
+    fn files(&self) -> impl Iterator<Item = &Asset> {
+        self.assets.values().chain(self.writes.values())
     }
 }
 
@@ -192,9 +193,10 @@ pub struct Lock {
     /// renamed (`cozy project rename`).
     #[serde(default)]
     pub nodes: BTreeMap<String, Node>,
-    /// The files project.yaml names, by the path written there: each one's asset as last read.
+    /// The files project.yaml names, by the path written there, a label: each one's asset as last
+    /// read, its hash the truth.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub inputs: BTreeMap<String, Input>,
+    pub inputs: BTreeMap<String, Asset>,
     /// By idempotency key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
@@ -202,12 +204,12 @@ pub struct Lock {
     pub walk: Owed,
 }
 
-/// A file project.yaml names, as last taken in: its asset, how it was made, where the original is
-/// (absolute), and the size and time it had then, which spare hashing it again while they hold.
+/// How this computer last took in a file project.yaml names, kept out of project.lock, which travels:
+/// where it is (absolute), how its asset was made, and the hash, size and time it had then, which spare
+/// hashing it again while they hold.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Input {
-    #[serde(flatten)]
-    pub asset: Asset,
+pub struct Taken {
+    pub sha256: String,
     pub method: Method,
     pub original: PathBuf,
     pub size: u64,
@@ -224,6 +226,8 @@ pub enum Method {
     Symlink,
     Hardlink,
     Copy,
+    /// Its asset was here already (pulled): the project's own.
+    Here,
 }
 
 impl Method {
@@ -277,6 +281,16 @@ pub struct Take {
 }
 
 impl Lock {
+    /// Every file it names, by path, with its sha256: each input, each version's assets and writes,
+    /// what each pending run makes and continues.
+    pub fn assets(&self) -> BTreeMap<&str, &str> {
+        let pending = self.pending.values().map(|pending| &pending.made);
+        let versions = self.nodes.values().flat_map(|node| &node.versions).chain(pending).flat_map(Made::files);
+        let from = self.pending.values().filter_map(|pending| pending.call.as_ref()?.from.as_ref());
+        let continued = from.flat_map(|(video, latents)| std::iter::once(video).chain(latents));
+        (self.inputs.values().chain(versions).chain(continued)).map(|asset| (asset.path.as_str(), asset.sha256.as_str())).collect()
+    }
+
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
     pub fn owes(&self) -> bool {
         self.walk.all.is_some() || !self.walk.takes.is_empty() || !self.pending.is_empty()
@@ -326,13 +340,15 @@ pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
+    /// This computer's record of the files project.yaml names (`Taken`), by the path written there.
+    taken: PathBuf,
     /// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
     writing: Mutex<()>,
 }
 
 impl Folder {
-    /// The project in `dir`, its videos probed with the ffprobe in `tools` (else PATH's).
-    pub fn open(dir: &Path, tools: PathBuf) -> Result<Self, Error> {
+    /// The project in `dir`, its videos probed with the ffprobe in `home`'s tools (else PATH's).
+    pub fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
         if !dir.join(PROJECT).is_file() {
             return Err(Error::new(
                 Kind::NotFound,
@@ -341,7 +357,8 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools, writing: Mutex::default() })
+        let (tools, taken) = (home.tools(), taken_at(home, dir));
+        Ok(Self { dir: dir.to_owned(), tools, taken, writing: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -383,29 +400,45 @@ impl Folder {
         Ok(Asset { path, sha256, video: None })
     }
 
-    /// The file project.yaml names as `file` (relative to the folder, absolute, or `~/…`), taken in as
-    /// an asset `assets/<sha256>.<ext>` (`Method`): hashed again unless `known`, as last taken in,
-    /// still has its size and time. None when the original is not there and the asset was a link to
-    /// it; a reflink or a copy is the project's own and stays.
-    pub fn take_in(&self, file: &str, known: Option<&Input>) -> Result<Option<Input>, Error> {
+    /// What this computer recorded of the files project.yaml names; an unreadable record only costs
+    /// hashing them again.
+    pub fn taken(&self) -> BTreeMap<String, Taken> {
+        std::fs::read(&self.taken).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    }
+
+    pub fn keep_taken(&self, taken: &BTreeMap<String, Taken>) -> Result<(), Error> {
+        if let Some(dir) = self.taken.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| io_at(dir, e))?;
+        }
+        let bytes = serde_json::to_vec_pretty(taken).expect("a record serializes");
+        durable::replace(&self.taken, &bytes, 0o644).map_err(io)
+    }
+
+    /// The file project.yaml names as `file` (relative to the folder, absolute, or `~/…`), as an asset
+    /// `assets/<sha256>.<ext>` (`Method`), and how it was taken in (None: it is not at its path). The
+    /// file at its path is hashed again unless `was`, as last taken in, still has its size and time. Not
+    /// at its path, the asset project.lock `known`s is used when it is here; None when it is not.
+    pub fn take_in(&self, file: &str, known: Option<&Asset>, was: Option<&Taken>) -> Result<Option<(Asset, Option<Taken>)>, Error> {
+        let here = known.filter(|known| self.dir.join(&known.path).is_file());
         let original = std::path::absolute(self.path(file)).map_err(|e| io_at(&self.path(file), e))?;
         let Ok(meta) = std::fs::metadata(&original) else {
-            let owned = known.filter(|known| !known.method.linked() && self.dir.join(&known.asset.path).is_file());
-            return Ok(owned.cloned());
+            return Ok(here.map(|known| (known.clone(), None)));
         };
         let modified_ms = (meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()))
             .map_or(0, |at| at.as_millis() as i64);
-        let same = known.filter(|known| known.original == original && known.size == meta.len() && known.modified_ms == modified_ms);
-        if let Some(known) = same.filter(|known| self.dir.join(&known.asset.path).is_file()) {
-            return Ok(Some(known.clone()));
+        let taken = |sha256: &str, method| Taken { sha256: sha256.into(), method, original: original.clone(), size: meta.len(), modified_ms };
+        if let (Some(known), Some(was)) = (here, was)
+            && *was == taken(&known.sha256, was.method)
+        {
+            return Ok(Some((known.clone(), Some(was.clone()))));
         }
         let sha256 = hash(&original)?;
         let path = asset_of(&sha256, &original);
         let at = self.dir.join(&path);
-        let kept = known.filter(|known| known.asset.sha256 == sha256 && known.original == original && at.is_file());
-        let method = match kept {
-            Some(known) => known.method,
-            None => {
+        let method = match (was.filter(|was| was.sha256 == sha256), at.is_file()) {
+            (Some(was), true) => was.method,
+            (None, true) => Method::Here,
+            (_, false) => {
                 let dir = self.dir.join(ASSETS);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
                 let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
@@ -417,7 +450,8 @@ impl Folder {
                 made.and_then(|method| std::fs::rename(&part, &at).map(|()| method)).map_err(|e| io_at(&at, e))?
             }
         };
-        Ok(Some(Input { asset: Asset { path, sha256, video: None }, method, original, size: meta.len(), modified_ms }))
+        let (taken, video) = (taken(&sha256, method), known.filter(|known| known.sha256 == sha256).and_then(|known| known.video));
+        Ok(Some((Asset { path, sha256, video }, Some(taken))))
     }
 
     /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there.
@@ -451,7 +485,7 @@ impl Folder {
         };
         let versions = lock.nodes.values().flat_map(|node| &node.versions).flat_map(|made| made.assets.values());
         let wanted: BTreeSet<&String> =
-            lock.inputs.values().map(|input| &input.asset).chain(versions).filter(|a| unshaped(a)).map(|a| &a.path).collect();
+            lock.inputs.values().chain(versions).filter(|a| unshaped(a)).map(|a| &a.path).collect();
         if wanted.is_empty() {
             return Ok(());
         }
@@ -461,7 +495,7 @@ impl Folder {
             .collect();
         let fill = |lock: &mut Lock| {
             let versions = lock.nodes.values_mut().flat_map(|node| &mut node.versions).flat_map(|made| made.assets.values_mut());
-            for asset in lock.inputs.values_mut().map(|input| &mut input.asset).chain(versions) {
+            for asset in lock.inputs.values_mut().chain(versions) {
                 asset.video = asset.video.or_else(|| shapes.get(&asset.path).copied());
             }
         };
@@ -476,23 +510,21 @@ impl Folder {
     /// not), no pending run or call, no input.
     pub fn collect_garbage(&self) -> Result<(), Error> {
         let lock = self.lock()?;
-        let pending = lock.pending.values().map(|pending| &pending.made);
-        let mut named: BTreeSet<&String> = lock.inputs.values().map(|input| &input.asset.path).collect();
-        for made in lock.nodes.values().flat_map(|node| &node.versions).chain(pending) {
-            named.extend(made.paths());
-        }
-        for (video, latents) in lock.pending.values().filter_map(|pending| pending.call.as_ref()?.from.as_ref()) {
-            named.extend(std::iter::once(&video.path).chain(latents.iter().map(|asset| &asset.path)));
-        }
+        let named = lock.assets();
         for entry in std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten() {
             let path = format!("{ASSETS}/{}", entry.file_name().to_string_lossy());
             let ours = entry.file_type().is_ok_and(|kind| kind.is_file() || kind.is_symlink());
-            if ours && !path.contains("/.") && !named.contains(&path) {
+            if ours && !path.contains("/.") && !named.contains_key(path.as_str()) {
                 std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
             }
         }
         Ok(())
     }
+}
+
+/// Where this computer keeps its record of the project in `dir`.
+pub fn taken_at(home: &Home, dir: &Path) -> PathBuf {
+    home.calcifer().join("projects").join(format!("{}.json", super::project_id(dir)))
 }
 
 /// An asset's path: `assets/<hex of sha256>.<the source's extension>`.

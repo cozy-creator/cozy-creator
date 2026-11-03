@@ -131,6 +131,8 @@ Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a firs
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
 more than one pod calls `order` per pod, then `ready` per pod; the guard and the trap cover every one.
+`project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
+and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
 `vram-yield` (xs-088) starts a stand-in game (`fixtures/game.py`) on an 8 GB card in shared mode, with models idle and
 mid-call: it must have its memory within 2 s, and the call must complete, never ended for it. The game must start
