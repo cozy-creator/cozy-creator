@@ -212,14 +212,14 @@ impl Machine {
     }
 }
 
-/// Runs `work`, telling `report` the bytes `progress` holds of its total every quarter second
+/// Runs `work`, telling `report` the bytes `progress` has of its total every quarter second
 /// meanwhile, and once more at the end.
 pub fn watched<T>(progress: &Progress, report: &(dyn Fn(u64, u64) + Sync), work: impl FnOnce() -> T) -> T {
     use std::sync::atomic::Ordering::Relaxed;
     let done = Stop::default();
     std::thread::scope(|scope| {
         scope.spawn(|| loop {
-            report(progress.held.load(Relaxed), progress.total.load(Relaxed));
+            report(progress.done(), progress.total.load(Relaxed));
             if done.is_cancelled() {
                 return;
             }

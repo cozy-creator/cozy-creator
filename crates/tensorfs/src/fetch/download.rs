@@ -99,6 +99,11 @@ pub(crate) struct Task {
 }
 
 impl Task {
+    /// The most bytes any of its requests reached.
+    pub(crate) fn received(&self) -> u64 {
+        self.reached.load(Ordering::Acquire)
+    }
+
     fn enter(&self, phase: Phase) {
         self.phase.store(phase as u8, Ordering::Release);
         self.moved_ms.store(unix_ms(), Ordering::Release);
@@ -164,6 +169,10 @@ pub(crate) struct Waiter {
 }
 
 impl Waiter {
+    pub fn task(&self) -> Arc<Task> {
+        Arc::clone(&self.task)
+    }
+
     pub async fn wait(mut self) -> Result<Tier> {
         let answer = self.answer.wait_for(Option::is_some).await;
         match answer.as_deref() {
