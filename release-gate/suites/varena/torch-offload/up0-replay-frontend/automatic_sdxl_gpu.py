@@ -22,8 +22,9 @@ allowed = {"--model", "--output", "--device", "--steps", "--height", "--width",
 assert len(sys.argv[1:]) % 2 == 0
 assert all(flag in allowed for flag in sys.argv[1::2]), "use exact frozen option names"
 assert len(set(sys.argv[1::2])) == len(sys.argv[1::2])
+assert "--seed" in sys.argv, "the frozen ordinary runner explicitly passes its qualified seed"
 for flag, value in (("--steps", "20"), ("--height", "1024"), ("--width", "1024"),
-                    ("--graphs", "auto"), ("--seed", "777"), ("--guidance", "5.0"), ("--device", "0"),
+                    ("--graphs", "auto"), ("--seed", "1150504160"), ("--guidance", "5.0"), ("--device", "0"),
                     ("--prompt", "A lighthouse above a calm ocean at sunset")):
     assert sys.argv.count(flag) <= 1
     assert not any(arg.startswith(flag + "=") for arg in sys.argv[1:])
@@ -43,7 +44,26 @@ import torch
 import tensorfs
 from tensorfs.varena import torch as vt
 from tensorfs.varena import _offload_auto as auto, _offload_graph as graph, api
-from frontend_trace import FrontendTrace, bind_native
+
+
+def load_sibling(name):
+    # The ordinary runner uses python -I and runpy(file): no sibling import path
+    # is available. Load only the exact files already checked by the manifest.
+    assert name not in sys.modules, "diagnostic module slot is already owned"
+    spec = importlib.util.spec_from_file_location(name, HERE / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
+load_sibling("capture_pressure_evidence")
+frontend = load_sibling("frontend_trace")
+FrontendTrace, bind_native = frontend.FrontendTrace, frontend.bind_native
 
 assert torch.__version__ == "2.15.0+cu132"
 assert torch.version.git_version == "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e"

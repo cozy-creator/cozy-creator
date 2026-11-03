@@ -77,7 +77,8 @@ def main():
         "development_context": json.loads((source / "ownership.json").read_text()),
         "helper_handoff_sha256": sha(args.helper_handoff),
         "settings": {"cap_bytes": 6 * 1024**3, "height": 1024, "width": 1024,
-                     "steps": 20, "calls": 2, "added_synchronization": False,
+                     "steps": 20, "calls": 2, "seed": 1150504160,
+                     "guidance": 5.0, "added_synchronization": False,
                      "added_body_retry": False, "launch_blocking": False},
     }
     (args.out / "frontend-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
