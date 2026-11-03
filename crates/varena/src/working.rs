@@ -15,6 +15,7 @@ mod split;
 mod cache;
 mod execution;
 mod observer;
+mod packing;
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use execution::Execution;
@@ -333,6 +334,8 @@ pub struct PhaseStats {
     pub total_peak_bytes: usize,
     /// Distinct backing segments containing phase-owned live/pending blocks: admission watermark.
     pub backing_peak_bytes: usize,
+    /// Empty-pool capacity fitted to the successful eager allocation/free sequence.
+    pub capture_pool_bytes: usize,
     pub successful_passes: u64,
     pub aborted_passes: u64,
     pub aborted_peak_bytes: usize,
@@ -355,6 +358,7 @@ pub struct PhaseObservation {
     pub reason: String,
     pub successful_peak_bytes: usize,
     pub successful_backing_peak_bytes: usize,
+    pub successful_capture_pool_bytes: usize,
     pub successful_passes: u64,
 }
 
@@ -369,6 +373,7 @@ struct ActivePhase {
     owned_peak: usize,
     backing: usize,
     backing_peak: usize,
+    packing: Option<packing::Trace>,
     invalid: Option<String>,
     replay: Option<ReplayTrace>,
     committed_site: Option<(String, String)>,
@@ -906,7 +911,6 @@ impl Working {
     }
 
     fn take(
-        &self,
         state: &mut State,
         bytes: usize,
         requested: usize,
@@ -953,6 +957,7 @@ impl Working {
     }
 
     fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
+        packing::allocated(state, ptr);
         if let Some(trace) = &mut state.trace {
             let block = &state.blocks[&ptr];
             if state.segments[&block.segment].pool == Some(trace.footprint.pool) {
@@ -1095,7 +1100,6 @@ impl Working {
     }
 
     fn fit_pool(
-        &self,
         state: &mut State,
         pool: PoolId,
         bytes: usize,
@@ -1527,11 +1531,11 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
                 ));
             }
         }
-        if let Some(ptr) = owner.take(&mut state, class, bytes, stream, pool) {
+        if let Some(ptr) = Working::take(&mut state, class, bytes, stream, pool) {
             return Ok(Working::activate(&mut state, ptr, bytes));
         }
         if let Some(id) = pool {
-            if let Some(ptr) = owner.fit_pool(&mut state, id, class, bytes, stream) {
+            if let Some(ptr) = Working::fit_pool(&mut state, id, class, bytes, stream) {
                 return Ok(Working::activate(&mut state, ptr, bytes));
             }
             return Err(Error::OutOfMemory {
@@ -1552,7 +1556,7 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
             let _context = owner.driver.enter()?;
             let result = (|| -> crate::AllocationResult<u64> {
                 owner.poll(&mut state)?;
-                if let Some(ptr) = owner.take(&mut state, class, bytes, stream, None) {
+                if let Some(ptr) = Working::take(&mut state, class, bytes, stream, None) {
                     return Ok(Working::activate(&mut state, ptr, bytes));
                 }
                 if attempt == 2 {
@@ -1561,8 +1565,7 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
                     owner.trim(&mut state, mapped - retired_reclaimed, None)?;
                 }
                 owner.map(&mut state, mapped, None, class)?;
-                let ptr = owner
-                    .take(&mut state, class, bytes, stream, None)
+                let ptr = Working::take(&mut state, class, bytes, stream, None)
                     .expect("new slab has a block");
                 Ok(Working::activate(&mut state, ptr, bytes))
             })();
@@ -1667,6 +1670,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     })();
     let (requested, pool, class, reusable_on, reusable, observed) =
         transition.map_err(|error| owner.fail(&mut state, error))?;
+    packing::freed(&mut state, ptr, false);
     if reusable {
         state
             .free
@@ -1742,6 +1746,7 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     };
     block.reusable_on = None;
     block.streams.clear();
+    packing::freed(&mut state, ptr, completed);
     if completed {
         state
             .free
@@ -2055,6 +2060,7 @@ fn phase_enter_inner(
         owned_peak: 0,
         backing: 0,
         backing_peak: 0,
+        packing: (mode == PhaseMode::Eager).then(packing::Trace::default),
         invalid,
         replay: None,
         committed_site,
@@ -2231,13 +2237,20 @@ pub fn phase_leave(
             String::new()
         }
     });
+    let published = reason.is_empty() && active.invalid.is_none();
+    let capture_pool_bytes = if published {
+        active.packing.as_ref()
+            .map(|trace| trace.capacity(active.owned_peak, owner.page))
+            .transpose()?.unwrap_or(0)
+    } else {
+        0
+    };
     let split_observations = split::phase_finished(
         &mut state,
         active.token,
         completed && active.mode == PhaseMode::Eager && active.invalid.is_none(),
         &reason,
     );
-    let published = reason.is_empty() && active.invalid.is_none();
     let definitions: Vec<_> = active.replay.as_ref().map_or_else(Vec::new, |trace| {
         trace
             .footprints
@@ -2280,6 +2293,7 @@ pub fn phase_leave(
             record.peak_bytes = active.owned_peak;
             record.total_peak_bytes = active.peak;
             record.backing_peak_bytes = active.backing_peak;
+            record.capture_pool_bytes = capture_pool_bytes;
             record.successful_passes += 1;
         } else {
             record.aborted_passes += 1;
@@ -2303,6 +2317,7 @@ pub fn phase_leave(
         reason,
         successful_peak_bytes: sample.peak_bytes,
         successful_backing_peak_bytes: sample.backing_peak_bytes,
+        successful_capture_pool_bytes: sample.capture_pool_bytes,
         successful_passes: sample.successful_passes,
     })
 }

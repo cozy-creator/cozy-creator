@@ -804,6 +804,7 @@ pub(super) fn observation<'py>(
     row.set_item("invalidated", observed.invalidated)?;
     row.set_item("reason", &observed.reason)?;
     row.set_item("successful_peak_bytes", observed.successful_peak_bytes)?;
+    row.set_item("successful_capture_pool_bytes", observed.successful_capture_pool_bytes)?;
     row.set_item(
         "successful_backing_peak_bytes",
         observed.successful_backing_peak_bytes,
@@ -836,6 +837,7 @@ fn _varena_phase_stats<'py>(
     row.set_item("peak_bytes", sample.peak_bytes)?;
     row.set_item("total_peak_bytes", sample.total_peak_bytes)?;
     row.set_item("backing_peak_bytes", sample.backing_peak_bytes)?;
+    row.set_item("capture_pool_bytes", sample.capture_pool_bytes)?;
     row.set_item("successful_passes", sample.successful_passes)?;
     row.set_item("aborted_passes", sample.aborted_passes)?;
     row.set_item("aborted_peak_bytes", sample.aborted_peak_bytes)?;

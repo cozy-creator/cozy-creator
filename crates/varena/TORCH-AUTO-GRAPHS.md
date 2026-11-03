@@ -151,14 +151,23 @@ not turn CPU tensors into GPU proof.
 The state machine is cold -> measured -> prepared/cached; a changed key retires the old
 selection. No invocation executes eager as a retry after capture/replay has begun.
 
+Native `capture_pool_bytes` fits the successful eager allocation/free sequence into an
+empty pool using the same exact-size reuse and contiguous-fit code as capture. Starting
+at the charged peak, metadata replay grows the candidate by an observed rounded request
+only when that request cannot fit. This performs no GPU work or authored-body execution.
+Unknown or multiple consumer streams remain blocked unless completion was explicitly
+proved. Invalid lifetimes and overflow cannot publish a packing measurement. The result
+is a trace-derived packing requirement, not an actual mapped-byte peak or a guarantee for
+a future divergent sequence. Existing charged and backing peak metrics stay unchanged.
+
 1. Preflight the key/eligibility and known native intent before any authored body.
 2. A cold eligible signature executes its normal eager body exactly once under native
    `vt.phase_enter(device, key, mode="eager")`. After checked explicit-stream completion,
    call `vt.phase_leave(..., completed=True)` and retain only a published matching
-   native charged-capacity sample. Abort/invalidate on any error; never train a failed
+   native allocation-packing sample. Abort/invalidate on any error; never train a failed
    observation. Outputs remain the real eager outputs of this invocation.
 3. On a LATER invocation with the same immutable key, pass that native sample's
-   `successful_peak_bytes`/`phase_stats.peak_bytes` verbatim as the pool reserve target.
+   `successful_capture_pool_bytes`/`phase_stats.capture_pool_bytes` verbatim as the pool reserve target.
    No Python multiplier, rounding, estimated scratch, global allocated_peak or predicted
    weight budget. Existing native prepare_pool rounds/adopts/refuses capacity.
    The eager sample is an observation, not a fit promise or a current closed allocation
