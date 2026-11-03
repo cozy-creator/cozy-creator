@@ -347,7 +347,16 @@ def cases(payload, request, vt, on, backend):
                         result["keys"].append(key)
                         held = {}
 
-                        def allocate(i, marker, values):
+                        def allocate(
+                            i,
+                            marker,
+                            values,
+                            *,
+                            key=key,
+                            variant=variant,
+                            held=held,
+                            prepared=prepared,
+                        ):
                             del i, marker, values
                             selection = vt.split_select(
                                 device,
