@@ -55,6 +55,8 @@ pub enum Error {
     Busy,
     #[error("residency changes are forbidden during CUDA graph capture")]
     CaptureActive,
+    #[error("execution phases cannot overlap on one device")]
+    PhaseOverlap,
     #[error("invalid residency operation: {0}")]
     Invalid(&'static str),
     #[error("CUDA virtual memory unavailable: {0}")]

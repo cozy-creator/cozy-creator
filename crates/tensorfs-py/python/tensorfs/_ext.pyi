@@ -505,6 +505,9 @@ def _varena_working_pool_retain(device: int, pool: tuple[int, int]) -> None: ...
 def _varena_working_pool_release(device: int, pool: tuple[int, int]) -> None: ...
 def _varena_working_retire_stream(device: int, stream: int) -> None: ...
 
+class PhaseOverlapError(RuntimeError):
+    """Execution observation entry refused because this device already has an active phase."""
+
 class VarenaPoisonedError(RuntimeError):
     sticky: Literal[True]
 

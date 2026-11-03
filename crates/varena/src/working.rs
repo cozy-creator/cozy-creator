@@ -777,6 +777,7 @@ impl Working {
             Error::OutOfMemory { .. }
                 | Error::Exhausted { .. }
                 | Error::Invalid(_)
+                | Error::PhaseOverlap
                 | Error::CaptureActive
                 | Error::Busy
         ) {
@@ -1980,9 +1981,7 @@ fn phase_enter_inner(
     }
     let mut state = owner.lock()?;
     if state.phases.active.is_some() {
-        return Err(Error::Invalid(
-            "execution phases cannot overlap on one device",
-        ));
+        return Err(Error::PhaseOverlap);
     }
     if committed_site.is_some() && state.splits.active_is_present() {
         return Err(Error::Invalid("committed execution cannot overlap an active split"));

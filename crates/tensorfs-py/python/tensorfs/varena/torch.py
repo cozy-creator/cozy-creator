@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, c
 
 from .. import _ext
 
+PhaseOverlapError = _ext.PhaseOverlapError
+
 if TYPE_CHECKING:
     from torch import device as TorchDevice
     from torch.cuda import Stream
@@ -228,6 +230,8 @@ def split_end(device: DeviceLike, observation_id: int, *, submitted: bool) -> di
 def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["eager", "capture", "replay", "preparation"] = "eager") -> int:
     """Begin one execution observation. An unknown key never enables speculation.
 
+    PhaseOverlapError means another observation already owns this device; entry
+    left its token and sample intact. Other admission failures retain their types.
     A known key promises fixed geometry/dispatch/split choices. Only successful eager
     execution can publish in this checkpoint; recording and replay remain unqualified.
     """
