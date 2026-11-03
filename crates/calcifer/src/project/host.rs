@@ -189,7 +189,8 @@ impl Host {
         let Resolved::Release { package, function, card, .. } = target::published(&self.api, &hub, target).await? else {
             unreachable!("a published target resolves to a release");
         };
-        let function = function.ok_or_else(|| {
+        // A package of one function needs no more naming, here as in `cozy run`.
+        let function = function.or_else(|| target::only_function(&card.interface).map(str::to_owned)).ok_or_else(|| {
             let said = format!("{target} is not [org/]package/function[@release]");
             Error::new(Kind::Validation, "renderer_malformed", said)
         })?;

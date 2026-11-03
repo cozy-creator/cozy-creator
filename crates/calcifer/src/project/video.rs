@@ -224,6 +224,7 @@ impl Reference {
 struct Setup {
     name: String,
     /// Where the camera is, in screen terms: what is near or far, left or right.
+    #[serde(default)]
     camera: String,
     /// The plate from a shot's frame in place of the environment's picture (H3-Director's "place
     /// like shot N"): the place in it, with nobody, seen from this camera.
@@ -259,7 +260,7 @@ struct Shot {
     #[serde(default, deserialize_with = "or_default")]
     summary: String,
     /// Its moments, on its own timeline. A cut is a new shot.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     beats: Vec<Beat>,
     /// Its sound bed (else the project's), and its music.
     soundscape: Option<String>,
@@ -281,6 +282,7 @@ struct Shot {
 #[derive(Clone, Deserialize)]
 struct Beat {
     /// Seconds from the shot's start.
+    #[serde(default)]
     at: f64,
     #[serde(default, deserialize_with = "or_default")]
     description: String,
@@ -400,6 +402,21 @@ pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
             said.push(format!("the edit cuts {} from frame {}, past its take's end: that cut is left out", piece.node, piece.start));
         }
         !past
+    });
+    said
+}
+
+/// Takes from `pieces` what an edit cannot read here, and says each: the rest still make the edit.
+pub fn unreadable(pieces: &mut Vec<Piece>) -> Vec<String> {
+    let mut said = vec![];
+    pieces.retain(|piece| {
+        let why = match (piece.path.is_file(), piece.shape.is_some()) {
+            (false, _) => "is not on this computer: cozy project pull",
+            (true, false) => "holds no video ffprobe reads",
+            (true, true) => return true,
+        };
+        said.push(format!("{}: {} {why}: that cut is left out", piece.node, piece.path.display()));
+        false
     });
     said
 }
@@ -554,15 +571,23 @@ impl Video {
     /// The project as project.yaml says now; a field cozy does not read, and a mention of nothing,
     /// are `warnings`.
     pub fn load(folder: &Folder) -> Result<Self, Error> {
-        let value = protocol::yaml::to_json(&folder.text()?)
+        Self::read(folder, &folder.text()?)
+    }
+
+    /// The project `text` says. Only a file that reads as no project at all is refused: what one
+    /// line gets wrong is said, and that line does the best it can (`spell`, `settle`).
+    pub fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
+        let mut value = protocol::yaml::to_json(text)
             .map_err(|why| {
                 invalid("project_yaml", format!("{}: {why}", folder::PROJECT))
                     .remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`")
             })?;
+        let mut spelled = vec![];
+        spell(&mut value, &mut spelled);
         let mut ignored: Vec<String> = vec![];
         let mut note = |path: serde_ignored::Path<'_>| ignored.push(path.to_string().replace("?.", ""));
         let read = serde_ignored::Deserializer::new(&value, &mut note);
-        let project: Project = serde_path_to_error::deserialize(read).map_err(|e| {
+        let mut project: Project = serde_path_to_error::deserialize(read).map_err(|e| {
             let at = e.path().to_string();
             invalid("project_yaml", format!("{}: {at}: {}", folder::PROJECT, e.into_inner()))
                 .remedy("each entity has a name and a kind: see `cozy project --help`")
@@ -580,13 +605,8 @@ impl Video {
         if project.version.is_none() {
             warnings.push(format!("{} has no `version:`, so it reads as version 1: add `version: 1`", folder::PROJECT));
         }
-        for reference in &project.references {
-            let n = reference.files().len();
-            if n != 1 {
-                let said = format!("reference {} names {n} files", reference.name);
-                return Err(invalid("reference_file", said).remedy("give it one of video:, audio: or image:"));
-            }
-        }
+        warnings.extend(spelled);
+        settle(&mut project, &mut warnings);
         warnings.extend(
             (project.defaults.keys())
                 .filter(|kind| !RENDERERS.iter().any(|(k, _)| k == kind))
@@ -632,6 +652,18 @@ impl Video {
         }
         folder.shape_videos(&mut lock)?;
         let inputs = lock.inputs.clone();
+        // A shot with no length: its video's when it has one attached, else one segment's, or past its last beat.
+        for shot in project.shots.iter_mut().filter(|shot| shot.duration_s <= 0.0) {
+            let attached = shot.video.as_deref().and_then(|file| inputs.get(file)).and_then(|asset| asset.video);
+            let last = shot.beats.iter().map(|beat| beat.at).fold(0.0, f64::max);
+            shot.duration_s = match attached {
+                Some(shape) => shape.frames as f64 / shape.fps,
+                None => (last + 5.0).max(15.0),
+            };
+            if attached.is_none() {
+                warnings.push(format!("{} has no duration_s: it renders {} s", shot.name, shot.duration_s));
+            }
+        }
         let input_file = |id: &str, field: &str, path: &str| input_file(&inputs, id, field, path);
         // Its current file and its versions' files: the approved version, else the file attached by
         // hand (there, or the node is named with the fix), or that picture's clean.
@@ -640,19 +672,10 @@ impl Video {
         let mut items = vec![];
         for (a, entity) in project.entities.iter().enumerate() {
             let kind = entity.kind.name();
-            if !entity.setups.is_empty() && entity.kind != EntityKind::Environment {
-                return Err(invalid(
-                    "setup_owner",
-                    format!("{} is a {kind}: only an environment has setups", entity.name),
-                ));
-            }
             let cleans = entity.kind != EntityKind::Environment;
             let (file, made) = versions(&entity.name, &entity.image, cleans)?;
             let mut reads = vec![];
             if let Some(voice) = &entity.voice {
-                if entity.kind != EntityKind::Character {
-                    return Err(invalid("voice_owner", format!("{} is a {kind}: only a character has a voice", entity.name)));
-                }
                 reads.push(input_file(&entity.name, "voice", voice)?);
             }
             nodes.push(Node {
@@ -714,15 +737,8 @@ impl Video {
         for entity in &project.entities {
             for (setup, frame) in entity.setups.iter().filter_map(|s| s.frame.as_ref().map(|f| (s, f))) {
                 let id = format!("{}.{}", entity.name, setup.name);
-                let fix = "give frame: a shot: (its name) and an at: (seconds into it)";
                 let shot = project.shots.iter().find(|shot| name_key(&shot.name) == name_key(&frame.shot));
-                let Some(shot) = shot else {
-                    return Err(invalid(
-                        "frame_unknown",
-                        format!("{id}'s frame names {}, which is no shot", frame.shot),
-                    )
-                    .remedy(fix));
-                };
+                let Some(shot) = shot else { continue };
                 if !(0.0..shot.duration_s).contains(&frame.at) {
                     warnings.push(format!(
                         "{id}'s frame is at {} s, outside {}'s 0–{} s: the nearest frame stands in",
@@ -753,15 +769,7 @@ impl Video {
         for (k, shot) in project.shots.iter().enumerate() {
             let texts = shot.texts();
             let (mut needs, mut implied) = (vec![], vec![]);
-            if let Some(setup) = &shot.setup {
-                if !nodes.iter().any(|n| n.kind == "setup" && name_key(&n.id) == name_key(setup)) {
-                    return Err(invalid(
-                        "setup_unknown",
-                        format!("{}'s setup {setup} is no setup (write Environment.Setup)", shot.name),
-                    ));
-                }
-                needs.push(setup.clone());
-            }
+            needs.extend(shot.setup.clone());
             // An environment named with no setup of it is shot from its first setup.
             let framed = shot.setup.as_deref().and_then(|s| s.rsplit_once('.')).map(|(env, _)| name_key(env));
             for mention in texts.iter().flat_map(|text| mentions(text)) {
@@ -810,8 +818,7 @@ impl Video {
             items.push(Item::Upscale(k));
         }
         if let Some(all) = nodes.iter().find(|node| name_key(&node.id) == name_key(ALL)) {
-            let said = format!("{} is named `{ALL}`, which `cozy project render {ALL}` means", all.id);
-            return Err(invalid("name_reserved", said).remedy("rename it"));
+            warnings.push(format!("{} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest", all.id));
         }
         let mut graph = Graph::new(nodes)?;
         warnings.extend(graph.unknown.iter().map(|(i, mention)| {
@@ -828,7 +835,6 @@ impl Video {
             if shot.video.is_none() && shot.texts().iter().all(|text| text.trim().is_empty()) {
                 warnings.push(format!("{} has no summary and no beats: its renderer is given no text", shot.name));
             }
-            let mut written = BTreeSet::new();
             for write in &shot.writes {
                 let at = write.at.unwrap_or(shot.duration_s);
                 if !(at > 0.0 && at <= shot.duration_s) {
@@ -836,9 +842,6 @@ impl Video {
                         "{} writes {} at {at} s, outside its 0–{} s: the nearest frame stands in",
                         shot.name, write.state, shot.duration_s
                     ));
-                }
-                if !written.insert(name_key(&write.state)) {
-                    return Err(invalid("write_twice", format!("{} writes {} twice", shot.name, write.state)));
                 }
             }
         }
@@ -855,6 +858,24 @@ impl Video {
             });
         }
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref(), project.fps)?;
+        // An `edit:` entry that cuts nothing is left out: every other piece still makes the edit.
+        if let Some(edit) = &mut project.edit {
+            let shots = &project.shots;
+            edit.retain(|cut| {
+                let shot = shots.iter().find(|shot| name_key(&shot.name) == name_key(&cut.shot));
+                let why = match shot {
+                    None => Some("which is no shot".to_owned()),
+                    Some(shot) => {
+                        let (start, end) = (cut.start.unwrap_or(0), cut.end.unwrap_or((shot.duration_s * canvas.fps).round() as u64));
+                        (start >= end).then(|| format!("from frame {start} to {end}: nothing"))
+                    }
+                };
+                if let Some(why) = &why {
+                    warnings.push(format!("the edit cuts {}, {why}: that cut is left out", cut.shot));
+                }
+                why.is_none()
+            });
+        }
         let shapes = (graph.nodes.iter())
             .map(|node| {
                 let (path, _) = node.file.as_ref()?;
@@ -1392,10 +1413,9 @@ impl Video {
         };
         let (mut pieces, mut skipped) = (vec![], vec![]);
         for (name, start, end) in cuts {
-            let k = (self.project.shots.iter()).position(|s| name_key(&s.name) == name_key(name)).ok_or_else(|| {
-                invalid("cut_unknown", format!("the edit cuts {name}, which is no shot"))
-                    .remedy("each edit entry names a shot:, with an optional start: and end:")
-            })?;
+            let Some(k) = (self.project.shots.iter()).position(|s| name_key(&s.name) == name_key(name)) else {
+                continue;
+            };
             let shot = &self.project.shots[k];
             let upscale = self.graph.find(&format!("{}.upscale", shot.name)).expect("a shot's upscale is a node");
             let i = match !preview && self.wanted(upscale) {
@@ -1404,10 +1424,6 @@ impl Video {
             };
             let node = &self.graph.nodes[i];
             let (start, end) = (start.unwrap_or(0), end.unwrap_or((shot.duration_s * self.canvas.fps).round() as u64));
-            if start >= end {
-                let said = format!("the edit cuts {name} from frame {start} to {end}: nothing");
-                return Err(invalid("cut_empty", said).remedy("each edit entry names a shot:, with start: and end: in frames, start before end"));
-            }
             match &node.file {
                 Some((file, digest)) => {
                     let (node, path, asset, shape) = (node.id.clone(), folder.path(file), file.clone(), self.shapes[i]);
@@ -1450,9 +1466,6 @@ pub fn cut(
     name: &str,
     cache: &Path,
 ) -> Result<Cutted, Error> {
-    if let Some(piece) = pieces.iter().find(|piece| !piece.path.is_file()) {
-        return Err(failed(format!("{}: {} is not on this computer", piece.node, piece.path.display())).next("cozy project pull"));
-    }
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
     let (width, height) = canvas.edit_size(probes[0].size);
@@ -1878,6 +1891,202 @@ fn named(project: &Project) -> Vec<&str> {
         files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
     }
     files
+}
+
+/// What a person wrote, as the reader takes it: an empty `key:` is no key, a bare number is text where
+/// text goes and a word a number where a number goes, a kind in any case, a canvas in its common
+/// spellings. What can't be read is said and left out, so one line never refuses the project.
+fn spell(value: &mut Value, said: &mut Vec<String>) {
+    let Value::Object(top) = value else { return };
+    tidy(top);
+    canvas_spelled(top, said);
+    for (list, name) in [("references", "name"), ("edit", "shot")] {
+        items(top, list, name, said);
+    }
+    for entity in items(top, "entities", "name", said) {
+        let setups = entity.contains_key("setups");
+        let written = entity.get("kind").and_then(Value::as_str).map(|kind| kind.trim().to_ascii_lowercase());
+        let kind = match written.as_deref() {
+            Some("character" | "prop" | "environment") => written.clone().expect("matched"),
+            _ => {
+                let kind = if setups { "environment" } else if entity.contains_key("voice") { "character" } else { "prop" };
+                let name = entity.get("name").and_then(Value::as_str).unwrap_or_default();
+                said.push(format!("{name}'s kind is {}: read as {kind}", written.as_deref().unwrap_or("not given")));
+                kind.to_owned()
+            }
+        };
+        entity.insert("kind".into(), Value::String(kind));
+        items(entity, "setups", "name", said);
+    }
+    items(top, "world_states", "name", said);
+    for shot in items(top, "shots", "name", said) {
+        number(shot, "duration_s");
+        items(shot, "writes", "state", said);
+        for beat in items(shot, "beats", "at", said) {
+            number(beat, "at");
+        }
+    }
+}
+
+/// The objects in `map`'s list `key`, each tidied and `name` read as text; an item with no `name` is said and left out.
+fn items<'a>(map: &'a mut Map<String, Value>, key: &str, name: &str, said: &mut Vec<String>) -> Vec<&'a mut Map<String, Value>> {
+    if map.get(key).is_some_and(|value| !value.is_array()) {
+        said.push(format!("{}: {key} is not a list: it is ignored", folder::PROJECT));
+        map.remove(key);
+    }
+    let Some(Value::Array(list)) = map.get_mut(key) else {
+        return vec![];
+    };
+    let mut at = 0;
+    list.retain_mut(|item| {
+        at += 1;
+        let Value::Object(item) = item else {
+            said.push(format!("{}: {key}[{}] is ignored: it names no {name}", folder::PROJECT, at - 1));
+            return false;
+        };
+        tidy(item);
+        if let Some(text) = item.get(name).filter(|value| name != "at" && (value.is_number() || value.is_boolean())).map(Value::to_string) {
+            item.insert(name.into(), Value::String(text));
+        }
+        let named = item.contains_key(name);
+        if !named {
+            said.push(format!("{}: {key}[{}] is ignored: it names no {name}", folder::PROJECT, at - 1));
+        }
+        named
+    });
+    list.iter_mut().filter_map(Value::as_object_mut).collect()
+}
+
+/// `map` with no empty keys: `key:` alone is as if it were not written.
+fn tidy(map: &mut Map<String, Value>) {
+    map.retain(|_, value| !value.is_null());
+}
+
+/// `map`'s `key` as a number when it was written as text (`"6"`, `6s`); left out when it is neither.
+fn number(map: &mut Map<String, Value>, key: &str) {
+    let Some(Value::String(text)) = map.get(key) else { return };
+    match text.trim().trim_end_matches('s').trim().parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
+        Some(read) => drop(map.insert(key.into(), Value::Number(read))),
+        None => drop(map.remove(key)),
+    }
+}
+
+/// `resolution`, `aspect_ratio` and `fps` as `Canvas::read` takes them, or left out with a word.
+fn canvas_spelled(top: &mut Map<String, Value>, said: &mut Vec<String>) {
+    let scalar = |value: &Value| value.as_str().map_or_else(|| value.to_string(), |text| text.trim().to_ascii_lowercase());
+    if let Some(written) = top.get("resolution").map(scalar) {
+        let short = match written.as_str() {
+            "4k" => Some(2160),
+            "2k" => Some(1440),
+            "8k" => Some(4320),
+            text => text.strip_suffix('p').unwrap_or(text).parse::<u64>().ok().filter(|short| *short >= 16),
+        };
+        match short {
+            Some(short) => drop(top.insert("resolution".into(), Value::String(format!("{short}p")))),
+            None => {
+                said.push(format!("resolution {written} is not a short edge such as 1080p: the takes' own size stands"));
+                top.remove("resolution");
+            }
+        }
+    }
+    if let Some(written) = top.get("aspect_ratio").map(scalar) {
+        let ratio = written.replace(['/', 'x', '×'], ":");
+        let ratio = if ratio.contains(':') { ratio } else { format!("{ratio}:1") };
+        let side = |text: &str| text.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0);
+        match ratio.split_once(':').and_then(|(w, h)| Some((side(w)?, side(h)?))) {
+            Some(_) => drop(top.insert("aspect_ratio".into(), Value::String(ratio))),
+            None => {
+                said.push(format!("aspect_ratio {written} is not W:H: 16:9 stands"));
+                top.remove("aspect_ratio");
+            }
+        }
+    }
+    let Some(written) = top.get("fps").cloned() else { return };
+    number(top, "fps");
+    match top.get("fps").and_then(Value::as_f64).filter(|fps| fps.is_finite() && *fps > 0.0) {
+        Some(fps) if fps <= 240.0 => {}
+        Some(_) => {
+            said.push(format!("fps {written}: 240 stands"));
+            top.insert("fps".into(), json!(240));
+        }
+        None => {
+            said.push(format!("fps {written} is not a frame rate: 24 stands"));
+            top.remove("fps");
+        }
+    }
+}
+
+/// What the project's lines say of each other, made to agree: what can't apply is said and left out.
+fn settle(project: &mut Project, said: &mut Vec<String>) {
+    project.references.retain_mut(|reference| {
+        let files = reference.files().len();
+        if files > 1 {
+            said.push(format!("reference {} names {files} files: its first is read", reference.name));
+            let first = reference.files()[0].0;
+            for (field, file) in [("video", &mut reference.video), ("audio", &mut reference.audio), ("image", &mut reference.image)] {
+                if field != first {
+                    *file = None;
+                }
+            }
+        }
+        if files == 0 {
+            said.push(format!("reference {} names no file (video:, audio: or image:): it is left out", reference.name));
+        }
+        files > 0
+    });
+    let shots: Vec<String> = project.shots.iter().map(|shot| name_key(&shot.name)).collect();
+    for entity in &mut project.entities {
+        let kind = entity.kind.name();
+        if !entity.setups.is_empty() && entity.kind != EntityKind::Environment {
+            said.push(format!("{} is a {kind}: only an environment has setups: they are ignored", entity.name));
+            entity.setups.clear();
+        }
+        if entity.voice.is_some() && entity.kind != EntityKind::Character {
+            said.push(format!("{} is a {kind}: only a character has a voice: it is ignored", entity.name));
+            entity.voice = None;
+        }
+        for setup in &mut entity.setups {
+            if setup.camera.trim().is_empty() {
+                said.push(format!("{}.{} has no camera: it is drawn from the environment alone", entity.name, setup.name));
+            }
+            if setup.frame.as_ref().is_some_and(|frame| !shots.contains(&name_key(&frame.shot))) {
+                said.push(format!("{}.{}'s frame names no shot: it is drawn from the environment", entity.name, setup.name));
+                setup.frame = None;
+            }
+        }
+    }
+    let states: Vec<String> = project.world_states.iter().map(|state| name_key(&state.name)).collect();
+    let setups: Vec<(String, String, String)> = (project.entities.iter())
+        .flat_map(|entity| entity.setups.iter().map(|setup| (entity.name.clone(), setup.name.clone(), format!("{}.{}", entity.name, setup.name))))
+        .collect();
+    for shot in &mut project.shots {
+        if let Some(written) = shot.setup.take() {
+            let key = name_key(&written);
+            // `coast.sea`; `coast`, its first setup, as a mention of it reads; `sea`, when one environment has it.
+            let exact = setups.iter().find(|(.., id)| name_key(id) == key);
+            let of_place = setups.iter().find(|(place, ..)| name_key(place) == key);
+            let mut named = setups.iter().filter(|(_, setup, _)| name_key(setup) == key);
+            let bare = named.next().filter(|_| named.next().is_none());
+            match exact.or(of_place).or(bare) {
+                Some((.., id)) => shot.setup = Some(id.clone()),
+                None => said.push(format!("{}'s setup {written} is no setup (write Environment.Setup): it renders without one", shot.name)),
+            }
+        }
+        let mut written = BTreeSet::new();
+        let name = shot.name.clone();
+        shot.writes.retain(|write| {
+            let key = name_key(&write.state);
+            if !states.contains(&key) {
+                said.push(format!("{name} writes {}, which is no world state: it is ignored", write.state));
+                return false;
+            }
+            if !written.insert(key) {
+                said.push(format!("{name} writes {} twice: the first stands", write.state));
+                return false;
+            }
+            true
+        });
+    }
 }
 
 /// A field a person may leave empty as `key:` alone (a null).

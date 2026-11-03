@@ -13,7 +13,7 @@ mod remote;
 mod video;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::Infallible,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
@@ -97,6 +97,8 @@ struct Project {
     moving: tokio::sync::Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
+    /// project.yaml as the walk last read it, and whether it has said it can't read a later save.
+    read: Mutex<Option<(String, bool)>>,
 }
 
 pub fn routes() -> Router<Arc<Api>> {
@@ -144,6 +146,7 @@ impl Projects {
                     cutting: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
                     keys: Mutex::default(),
+                    read: Mutex::default(),
                 })
             })
             .clone();
@@ -606,15 +609,37 @@ async fn runs(
     let video = Video::load(&project.folder).map_err(Refusal)?;
     let target = Target { on: asked.on, hub: asked.hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
-    let mut takes = vec![];
+    let lock = project.folder.lock().map_err(Refusal)?;
+    let say = |message: String| drop(project.events.send(Event::Warning { message }));
+    let (mut takes, mut first, mut first_made) = (vec![], None, BTreeSet::new());
     for name in asked.names.iter().filter(|_| !all) {
-        let i = find(&video, name).map_err(Refusal)?;
+        // A name that is nothing to render is said; the rest go on.
+        let found = find(&video, name).and_then(|i| match video.is_reference(i) {
+            true => Err(video::reference_made(&video.graph.nodes[i].id)),
+            false => Ok(i),
+        });
+        let i = match found {
+            Ok(i) => i,
+            Err(error) => {
+                say(error.message.clone());
+                first.get_or_insert(error);
+                continue;
+            }
+        };
         let node = video.graph.nodes[i].id.clone();
-        if video.is_reference(i) {
-            return Err(Refusal(video::reference_made(&node)));
-        }
         let take = || Take { key: new_key(), node: node.clone(), target: target.clone(), approve: asked.approve };
         takes.extend((0..asked.n.max(1)).map(|_| take()));
+        // What it reads with no version yet is made first, and stands as that node's.
+        for j in unmade(&video, &lock, i) {
+            let up = video.graph.nodes[j].id.clone();
+            if first_made.insert(j) {
+                say(format!("{node} reads {up}, which has no version yet: making it first"));
+                takes.push(Take { key: new_key(), node: up, target: target.clone(), approve: true });
+            }
+        }
+    }
+    if let (Some(error), true, false) = (first, takes.is_empty(), all) {
+        return Err(Refusal(error));
     }
     (project.folder.update_lock(|lock| {
         if all {
@@ -626,6 +651,24 @@ async fn runs(
     .map_err(Refusal)?;
     walk(&api, &project);
     Ok((StatusCode::ACCEPTED, Json(Opened { id, path: project.folder.dir.clone() })))
+}
+
+/// What node `i` reads, near or far, with no version yet and none on its way.
+fn unmade(video: &Video, lock: &Lock, i: usize) -> Vec<usize> {
+    let graph = &video.graph;
+    let (mut found, mut seen, mut next) = (vec![], BTreeSet::new(), graph.upstream[i].iter().map(|edge| edge.node).collect::<Vec<_>>());
+    while let Some(j) = next.pop() {
+        if !seen.insert(j) {
+            continue;
+        }
+        next.extend(graph.upstream[j].iter().map(|edge| edge.node));
+        let on_its_way = (lock.pending.values().any(|pending| name_key(&pending.made.node) == name_key(&graph.nodes[j].id)))
+            || lock.walk.takes.iter().any(|take| name_key(&take.node) == name_key(&graph.nodes[j].id));
+        if graph.nodes[j].file.is_none() && !video.is_reference(j) && !on_its_way {
+            found.push(j);
+        }
+    }
+    found
 }
 
 async fn approve(
@@ -783,6 +826,44 @@ impl Walk {
         &self.project.folder
     }
 
+    /// The project as project.yaml reads now. A save that doesn't read, say mid-edit, stops nothing:
+    /// the walk goes on with what it last read, and says so once.
+    fn video(&self) -> Result<Video, Error> {
+        let text = self.folder().text()?;
+        let mut read = self.project.read.lock().expect("read lock");
+        match Video::read(self.folder(), &text) {
+            Ok(video) => {
+                *read = Some((text, false));
+                Ok(video)
+            }
+            Err(e) if e.kind == Kind::Validation && read.is_some() => {
+                let (last, said) = read.as_mut().expect("is some");
+                if !std::mem::replace(said, true) {
+                    self.say(Event::Warning { message: format!("{}: the render goes on with what it said before", e.message) });
+                }
+                Video::read(self.folder(), last)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
+    /// again under that key, each attempt said; one its Hub says stopped or ended is refused at once.
+    async fn send_run(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+        const WAITS: [u64; 4] = [3, 6, 12, 24];
+        for (attempt, wait) in WAITS.iter().enumerate() {
+            match self.host.submit(key, run.clone()).await {
+                Err(e) if e.code == "machine_unreachable" => {
+                    let message = format!("{}; attempt {}/{} in {wait} s", e.message, attempt + 2, WAITS.len() + 1);
+                    self.say(Event::Warning { message });
+                    tokio::time::sleep(std::time::Duration::from_secs(*wait)).await;
+                }
+                answer => return answer,
+            }
+        }
+        self.host.submit(key, run).await
+    }
+
     fn say(&self, event: Event) {
         let _ = self.project.events.send(event);
     }
@@ -792,12 +873,12 @@ impl Walk {
     /// owed: then the first thing that failed, if one did. What `all` asked ends with the edit, cut
     /// once nothing more of it can be made.
     async fn go(&self) -> Result<Option<Error>, Error> {
-        for message in Video::load(self.folder())?.warnings {
+        for message in self.video()?.warnings {
             self.say(Event::Warning { message });
         }
         let (mut first, mut following, mut followed) = (None, FuturesUnordered::new(), HashSet::new());
         loop {
-            let (video, lock) = (Video::load(self.folder())?, self.folder().lock()?);
+            let (video, lock) = (self.video()?, self.folder().lock()?);
             for take in lock.walk.takes.iter().filter(|take| video.graph.find(&take.node).is_none()) {
                 let said = format!("{} is no longer in {}: its version is not made", take.node, folder::PROJECT);
                 self.failed(Error::new(Kind::NotFound, "node_unknown", said), &mut first);
@@ -933,7 +1014,7 @@ impl Walk {
     /// filling the project's canvas (`made_cuts`; a preview walk makes only the native one). What has
     /// nothing made yet is skipped, and said.
     async fn recut(&self) -> Result<(), Error> {
-        let video = Video::load(self.folder())?;
+        let video = self.video()?;
         let preview_walk = self.folder().lock()?.walk.preview;
         let cuts = made_cuts(&video).into_iter().filter(|(_, native)| *native || !preview_walk);
         for (name, preview) in cuts {
@@ -947,9 +1028,9 @@ impl Walk {
             let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
             // A file taken in before this computer had an ffprobe is probed now.
             if pieces.iter().any(|piece| piece.shape.is_none()) {
-                pieces = Video::load(self.folder())?.cuts(self.folder(), preview)?.0;
+                pieces = self.video()?.cuts(self.folder(), preview)?.0;
             }
-            for message in video::past_end(&mut pieces, video.canvas.fps) {
+            for message in video::unreadable(&mut pieces).into_iter().chain(video::past_end(&mut pieces, video.canvas.fps)) {
                 self.say(Event::Warning { message });
             }
             if pieces.is_empty() {
@@ -986,7 +1067,7 @@ impl Walk {
                 }
                 Landed::Clean { made, picture, approve, hub } => (made, picture, approve, hub),
             };
-            let cleaner = Video::load(self.folder())?.clean_render();
+            let cleaner = self.video()?.clean_render();
             let picture = (picture.clone(), folder::hash(&picture)?);
             let settle = |lock: &mut Lock| drop(lock.pending.remove(&key));
             self.clean(&new_key(), &hub, &cleaner, picture, *made, Then::List { approve }, &settle).await?;
@@ -997,7 +1078,7 @@ impl Walk {
             return (key, Err(error));
         }
         let cut = async {
-            let video = Video::load(self.folder())?;
+            let video = self.video()?;
             match landed?.and_then(|node| video.graph.find(&node)).is_some_and(|i| video.cut_reads(i)) {
                 true => self.recut().await,
                 false => Ok(()),
@@ -1022,7 +1103,7 @@ impl Walk {
     ) -> Result<Option<String>, Error> {
         let folder = self.folder();
         let node = made.node.clone();
-        let video = Video::load(folder)?;
+        let video = self.video()?;
         let i = find(&video, &node)?;
         let noun = video.graph.nodes[i].noun;
         let Some(video_asset) = made.assets.get("video").cloned() else {
@@ -1142,7 +1223,7 @@ impl Walk {
         };
         let asked = Renderer { function: adapter.to_owned(), ..renderer.clone() };
         let submit = SubmitRun { on: placed, hub: hub.to_owned(), kind: RunKind::Call, target: asked.target(), spec, inputs, out: None, warnings: vec![], agreed: None };
-        let run = self.host.submit(&new_key(), submit).await?;
+        let run = self.send_run(&new_key(), submit).await?;
         let run = self.host.wait(&run.id).await?;
         if run.status != RunStatus::Completed {
             return Err(failed(run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone())));
@@ -1168,14 +1249,8 @@ impl Walk {
         let named = |e: Error| Error { message: format!("{node}'s render: {}", e.message), ..e };
         let mut payload = payload.clone();
         let fields = payload.as_object_mut().expect("a request is an object");
-        if let Some(field) = render.options.keys().find(|key| matches!(key.as_str(), "resolution" | "aspect_ratio")) {
-            let said = format!("{node}'s render options set `{field}`: {field} is set by the project");
-            return Err(Error::new(Kind::Validation, "option_project", said).remedy(format!("set {field}: in project.yaml")));
-        }
-        if let Some(field) = render.options.keys().find(|key| fields.contains_key(*key) || matches!(key.as_str(), "models" | "lora")) {
-            let said = format!("{node}'s render options set `{field}`, which the project sends");
-            return Err(Error::new(Kind::Validation, "option_compiled", said).remedy("remove it from options"));
-        }
+        // A person's options stand over what the project sends, and that is said.
+        let over: Vec<String> = render.options.keys().filter(|key| fields.contains_key(*key)).cloned().collect();
         fields.extend(render.options.clone());
         for (key, value) in [("models", &render.models), ("lora", &render.lora)] {
             if !value.is_null() {
@@ -1202,6 +1277,10 @@ impl Walk {
         warnings.extend(choices.replaced.iter().map(|replaced| Warning {
             code: "model_slot_replaced".into(),
             message: format!("{node}'s render: {replaced}"),
+        }));
+        warnings.extend((!over.is_empty()).then(|| Warning {
+            code: "render_options_over".into(),
+            message: format!("{node}'s render options set {} over what the project sends", over.join(", ")),
         }));
         let models = choices::wire(&choices.into_choices()).map_err(named)?;
         let mut inputs = vec![];
@@ -1254,7 +1333,7 @@ impl Walk {
             lock.pending.insert(key.into(), pending.clone());
             settle(lock);
         })?;
-        let run = match self.host.submit(key, submit).await {
+        let run = match self.send_run(key, submit).await {
             Ok(run) => run,
             Err(error) => {
                 self.folder().update_lock(|lock| {
@@ -1300,7 +1379,7 @@ impl Walk {
                 })
         };
         let picture = saved(&pending.field, 0)?;
-        let video = Video::load(folder)?;
+        let video = self.video()?;
         let Some(i) = video.graph.find(&node) else {
             folder.update_lock(|lock| drop(lock.pending.remove(key)))?;
             let message = format!("{node} is no longer in {}: run {}'s file is not kept", folder::PROJECT, run.number);
@@ -1463,7 +1542,9 @@ fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
         let up = graph.upstream[i].iter().any(|edge| unsettled[edge.node]);
         // A node reading a reference that is gone is not made, and nor is what reads it.
         let gone = !video.missing(i).is_empty();
-        unsettled[i] = busy || owed || up || gone;
+        // A take of a node with no version yet: what reads it waits for it.
+        let taken = graph.nodes[i].file.is_none() && walk.takes.iter().any(|take| name_key(&take.node) == id);
+        unsettled[i] = busy || owed || up || gone || taken;
         if up || gone {
             continue;
         }

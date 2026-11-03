@@ -8,7 +8,6 @@
 # - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's sheet at 16:9,
 #   transparent with no clean.
 # - project-local: a node rendered `with: ./still.py/draw`, local code made ready by Calcifer.
-# - project-refusals: an option that sets the canvas, refused before any run.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg/fn names the gate's folder; a project reads `with:` from its own.
 abs() { [[ $1 == ./* ]] && echo "$OUT/${1#./}" || echo "$1"; }
@@ -178,22 +177,3 @@ YAML
     "made by $(jq -r '.made_by.with // "nothing"' <<< "$v")${f:+, aspect $(aspect "$P/$f")}: $(tail -c 200 project-local.log)"
 fi
 
-if want project-refusals; then
-  P=$(project project-refusals <<YAML
-aspect_ratio: "16:9"
-entities:
-  - {name: yard, kind: environment, description: "$SCENE", image: place.png}
-shots:
-  - {name: square, summary: "<yard>.", duration_s: 5, render: {with: $SDXL, options: {aspect_ratio: "1:1"}}}
-YAML
-)
-  for c in "square:set by the project"; do
-    n=${c%%:*} why=${c#*:}
-    if render "project-refusal-$n" "$P" "$n" || ! grep -q "$why" "project-refusal-$n.log"; then
-      expect "project-refusal-$n" FAIL "not refused ($why): $(tail -c 300 "project-refusal-$n.log")"
-    else
-      runs=$(lockq "$P" "sum(len(n.get('versions', [])) for n in lock['nodes'].values()) + len(lock.get('pending', {}))")
-      expect "project-refusal-$n" "$([ "${runs:-0}" = 0 ] && echo PASS || echo FAIL)" "$(grep -m1 "$why" "project-refusal-$n.log"); ${runs:-0} runs"
-    fi
-  done
-fi

@@ -382,8 +382,9 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
 - `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?}]}`.
 - `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?}` (`Idempotency-Key`): `n` new takes
   or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
-  cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1); a reference is refused
-  (`400 reference_file`). `202 {id, path}`; the
+  cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). What a node reads with no
+  version yet is made first. A name that is no node, or a reference, is warned of and the rest go on; only an ask with
+  nothing left is refused (`node_unknown`, `400 reference_file`). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.
 - `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from`
   (versions, approval, what other versions read of it, what is owed) is kept as `to`, a node project.yaml names
