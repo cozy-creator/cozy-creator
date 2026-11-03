@@ -221,13 +221,15 @@ impl Steps {
 /// How often [`newest_releases`] reads them again.
 const NEWEST: Duration = Duration::from_secs(300);
 
-/// The newest release of every package this computer installed or ran, read again from its Hub
-/// now and each [`NEWEST`] after (`hub_client::latest`): an unversioned run names the kept one and
-/// asks the Hub nothing, and a release published elsewhere reaches it one read late at most.
+/// The newest release of each package this computer ran or installed within the hour, read again
+/// from its Hub now and each [`NEWEST`] after (`hub_client::latest`): an unversioned run names the
+/// kept one and asks the Hub nothing, and a release published elsewhere reaches it one read late at
+/// most. A computer at rest reads nothing. Passes a slow Hub made it miss are not made up.
 /// Signed in when this computer is, for an owner's private packages.
 async fn newest_releases(home: Home, hub: config::Origin) {
     let http = reqwest::Client::new();
     let mut every = tokio::time::interval(NEWEST);
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         every.tick().await;
         let client = match hub.device_key(&home).exists() {
