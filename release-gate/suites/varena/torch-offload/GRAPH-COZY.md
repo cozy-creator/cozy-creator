@@ -48,6 +48,8 @@ that owned ordinary-Cozy fixture are:
 python graph_frontend_gpu.py --device 0
 python graph_epochs_gpu.py --device 0 --provider "$matched_source_helper" \
   --provider-python "$matched_provider_python" --mode tail --timeout-s 60
+python graph_retirement_wait_gpu.py --device 0 --provider "$matched_source_helper" \
+  --provider-python "$matched_provider_python" --timeout-s 60
 ```
 
 Run separate fresh children for epoch modes `reset`, `source_failure`, `capture_refusal`
@@ -56,6 +58,21 @@ The helper is the existing real C public-Source provider; use its matched `provi
 and library, including the new readiness controls. The gate is mapped HOST memory,
 not a timed CUDA sleep or a fabricated resource. The coordinator owns the child deadline
 and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assertions.
+
+`graph_retirement_wait_gpu.py` adds a distinct prepared/unrun frontend readiness
+control. The real Source first publishes exact bytes and completes its producer/consumer
+stream while the existing native Job retirement mutex remains held and reports VR_BUSY.
+Graph construction then acquires its own Ready Use/typed exports. Python profiling
+observes the actual public wait_ready method without replacing it; no authored model
+warmup/capture body may have run while retirement remains held. The independent
+positive-control Use/export releases normally, and releasing the mutex permits capture,
+Pins0 classification and exact replay. The actual warm/capture bodies also require the
+existing helper's CPU-atomic Job-dropped count, without a device call inside capture.
+The mutex releases on the same thread that
+acquired it, including failure cleanup. Provider capabilities/semantics are unchanged.
+This is not proof of exact native wait admission timing, a late retirement ERROR, or
+retirement waiting on a replay/refill epoch; those remain separate gates. It prevents
+the immediate prepare-error cell from being cited as that missing frontend coverage.
 
 - Frontend: multiple live definitions, weight Pins zero, same-VA trim/refill/replay,
   independent old outputs, an escaped native alias on a graph Region, and stale-version
