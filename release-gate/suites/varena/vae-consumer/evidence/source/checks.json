@@ -1,0 +1,21 @@
+{
+  "ruff": true,
+  "ast": true,
+  "offline_uv_lock": true,
+  "real_cpu_file_consumer": true,
+  "source_bytes": 268574720,
+  "metadata_reads": 0,
+  "actual_cpu_output_bit_exact": true,
+  "cuda_initialized": false,
+  "cases": {
+    "whole": 4,
+    "cut": 4,
+    "minimum": 4,
+    "late": 4
+  },
+  "real_rotary_shape": "[1,T,1,48], actual MiniMaxH3VideoRotaryPosEmbed",
+  "runtime_shape_fix": "5ba942b79",
+  "initial_shape_failure": "outputs/xs138-p2-vae-block/full-consumer-cpu-001.log preserved",
+  "native_readiness": "actual int8_linear.native before outermost baseline; GPU check pending",
+  "gpu_execution": false
+}

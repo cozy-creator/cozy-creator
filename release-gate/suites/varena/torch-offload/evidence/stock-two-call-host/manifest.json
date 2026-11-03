@@ -1,0 +1,42 @@
+{
+  "scope": "Fixture-only two COMPLETE stock SDXL pipeline calls on one pipe/Offload/native GPU handle per eager or automatic process; GPU/model loading UNRUN",
+  "parent": "8edd5cb340d9094e3f5200918560c990cd181601",
+  "source_sha256": "7ed61bae195b943905f432ccda55be9a9530a4f5e9f5c120f201316e26fe81aa",
+  "product_changes": false,
+  "call_contract": {
+    "calls": 2,
+    "owner_lifetime": "load/adopt once, close exactly once after both successful calls; no close/reset/re-adoption/cache clearing between",
+    "seed": "fresh CPU generator seeded identically for each complete call",
+    "settings": "unchanged20steps/1024x1024/seed777/guidance5 by default, fixed variant fp16/local_files_only/use_safetensors, same prompt/dtype/settings",
+    "mode_pairing": "eager and automatic remain separate processes"
+  },
+  "artifacts": [
+    "call-1/output.npy",
+    "call-1/result.json",
+    "call-2/output.npy",
+    "call-2/result.json",
+    "result.json with call_count2/calls[0]/calls[1]",
+    "per-call failure.json and root failure.json retain completed first call on later failure"
+  ],
+  "records": [
+    "actual process/Offload/native GPU handle identities",
+    "before-call/first-step/final graph facts and native statistics",
+    "per-call UNet capture/replay/eager deltas plus cumulative facts",
+    "prior live UNet definitions reused without recapture",
+    "per-call component/VAE decode entry deltas",
+    "separate first/same-owner warm inference and per-step CUDA timings; load/adoption/file writes excluded"
+  ],
+  "automatic_acceptance": "first call requires actual captures; BOTH calls require repeated UNet graph reuse; second may reuse prior definitions with capture delta0. No model quality/speed pass from one mode/pair.",
+  "checks": {
+    "ruff": "PASS",
+    "syntax": "PASS",
+    "git_diff_check": "PASS",
+    "actual_cli_help_exit": 0,
+    "product_delta": "none"
+  },
+  "qualification": "NO CUDA/model/pipeline execution or Source/Version/Plan qualification from these host checks. Operator must run actual two complete images and bind this new fixture hash. Old one-call/help/CPU receipts remain historical.",
+  "receipts": {
+    "stock-two-call-help.stderr": "d5215ea0f332bfe891721d239eefbc181858202cc62889c28beabcc0fa5af7e7",
+    "stock-two-call-help.txt": "24d8dd66528782c2ae5c13296e0124f1eb2e1705adbcd4f34ccd610a085a1c23"
+  }
+}

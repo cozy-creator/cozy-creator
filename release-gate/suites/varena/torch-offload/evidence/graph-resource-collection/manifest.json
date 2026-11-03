@@ -1,0 +1,74 @@
+{
+  "scope": "Ownerless graph-finalizer resource source correction; actual CPU model/Torch holder/finalizer collection only, NO CUDAGraph/GPU simulation",
+  "parent": "3790c1347af2830c9818196414e6f6314c492e30",
+  "graph_parent_byte_identical_to_nn_only_6c7": true,
+  "red": {
+    "exit_code": 1,
+    "receipt": "graph-resources-red.stderr",
+    "mechanism": "actual CPU Offload +Torch retained-holder/finalize; preserving the old retainDefinition edge retained owner; no fake graph"
+  },
+  "green": [
+    {
+      "client": "graph_resources_cpu",
+      "args": [],
+      "exit_code": 0
+    },
+    {
+      "client": "component_stream_wiring_cpu",
+      "args": [],
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_two_block",
+      "args": [
+        "--device",
+        "cpu"
+      ],
+      "exit_code": 0
+    },
+    {
+      "client": "graph_resources_gpu",
+      "args": [
+        "--help"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "new_payload": "slotted ownerless Sources/OPEN Regions/native Plan, flat detached Working storage, pool/footprint/streams/tail; no control owner/module/Versions/Device/tree contexts",
+  "source_hashes": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py": "dc7f8d03051a55e98303e358d582f95db32be1185212048e32e1f37c125908f8",
+    "release-gate/suites/varena/torch-offload/graph_resources_cpu.py": "3118d0ea7bee2d857b4bfe733a7b21ca5487074d613dc2667fe63a52ddd159d7",
+    "release-gate/suites/varena/torch-offload/graph_resources_gpu.py": "c148ddb6d81ae338ba945df40d2f5fafa28d64f437e94aa37e455184bcd087f0"
+  },
+  "host_images": {
+    "core": "1d6b24dd4a32bd285daaa2f827f9dcd714ff96638080b78957d43c328ef854e0",
+    "extension": "cf0ec25f2c59c006a72f0e102632983ce9f4f4678a346b104d6ed5ba30ebff64",
+    "scope": "existing audited host images, CPU-only; no new build/current GPU SDK qualification"
+  },
+  "remaining": [
+    "actual graph idle abandonment/collection",
+    "gated in-flight drop/backing/consumer tail lifetime",
+    "other automatic exact-source gates remain unrun",
+    "direct-class hard-cut scope clarification requested from root; separate change"
+  ],
+  "gpu_commands_prepared_unrun": [
+    "graph_resources_gpu.py --device 0 --mode idle",
+    "graph_resources_gpu.py --device 0 --mode inflight --provider MATCHED_PROVIDER --provider-python MATCHED_PROVIDER_PY"
+  ],
+  "receipts": {
+    "graph_resources_cpu.json": "a18a45da3f7c52ddf19756bd229f657d43bc97f362ff4c254eb2fc3386367e45",
+    "graph_resources_gpu.json": "7cc51a09f64126c7270766b54cb48914e5609685bb62c4d1dcd26342ec198b5d",
+    "automatic_two_block.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "graph-resources-red.stderr": "f8bd7b4736f173fed4fb7498ff6ec0d10675a128783e1de4da30bdb5c928cd9a",
+    "graph-resources-red.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "component_stream_wiring_cpu.json": "fa971ffe60dd3b417845ed8d7ba0b4f3d4dc9a1f5b6ad3365565723e9a0a67a3",
+    "graph-resources-green.json": "7a35bce87e96ed93db1434c95f011fc40b618a83984c5033ac1e97d8b39a7d1c",
+    "graph_resources_gpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "graph-resources-collection.json": "a18a45da3f7c52ddf19756bd229f657d43bc97f362ff4c254eb2fc3386367e45",
+    "graph_resources_cpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "component_stream_wiring_cpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "automatic_two_block.json": "2ce53a51acbcef9b03429d0f24ba11b7065722fb2ba67485c6251bff142bcfc1",
+    "resources-final-returns.json": "95fc9a6b6446995c4eca37f829f17655e8d07d69ea41c29287c183fa931bf047"
+  },
+  "no_native_gpu_rental_machine_merge_release": true
+}

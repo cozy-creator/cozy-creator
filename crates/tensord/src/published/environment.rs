@@ -283,6 +283,7 @@ impl Publisher {
             tensorfs,
             cozy: None,
             gpu_memory_limit: None,
+            mode: None,
             binary: None,
             toolchain: false,
         };

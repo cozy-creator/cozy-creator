@@ -1,0 +1,8 @@
+{
+  "passed": false,
+  "cuda_initialized": false,
+  "scope": "real native metadata/OFD/process proof only; no driver capacity measurement",
+  "binary_sha256": "2d70de371d94d85127c75e8a7ec8f1bc025f63e886813bcff9348adf933e00aa",
+  "stopped_holder": 10,
+  "error": "AssertionError: observer: native operation blocked; protocol deadline is not a death inference"
+}

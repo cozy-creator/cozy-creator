@@ -1,0 +1,59 @@
+{
+  "observed_utc": "2026-11-03T01:18:45.500509+00:00",
+  "owner": "/root/vae_post_quant_nov3",
+  "source_only": true,
+  "cpu_affinity": [
+    0
+  ],
+  "nice": 19,
+  "torch": "2.14.1+cpu",
+  "runtime_dependency": "5498a8f09e25672952abeb67ddccfc28205c3181",
+  "host_python": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task/torch-cpu/bin/python",
+  "host_command": [
+    "python",
+    "host.py",
+    "--consumer",
+    "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p2-vae-post-quant/src/cozy_runtime/internal/execution/native_vae_post_quant.py"
+  ],
+  "environment": {
+    "CUDA_VISIBLE_DEVICES": "",
+    "HF_HUB_OFFLINE": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "XDG_CACHE_HOME": "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p2-vae-post-quant/.task/cache",
+    "UV_CACHE_DIR": "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p2-vae-post-quant/.task/cache/uv"
+  },
+  "passed": [
+    "24 actual CPU Conv3d comparisons",
+    "15 metadata/layout refusals",
+    "payload inventory and copy-only packing",
+    "actual fixture import and Diffusers post_quant_conv CPU construction",
+    "Python AST and project TOML parse",
+    "git diff --check"
+  ],
+  "unrun": [
+    "CUDA provider query/validation/execution",
+    "GPU allocator census and 20 fixture cells",
+    "native library driver allocation closure",
+    "asynchronous CUDA failure custody",
+    "raw Source retirement",
+    "outer decoder sequence and model quality"
+  ],
+  "full_h3_acceptance": {
+    "seconds": 15,
+    "frames": 362,
+    "width": 1344,
+    "height": 768,
+    "steps": 30,
+    "audio": true
+  },
+  "files": {
+    "/home/fidika/cozy/.worktrees/cozy-runtime/xs138-p2-vae-post-quant/src/cozy_runtime/internal/execution/native_vae_post_quant.py": "2208c596448200d155e62c6da8f98e59ed24ba3931442bedd5fc6e69931923b0",
+    "release-gate/suites/varena/vae-post-quant/host.py": "852b8467d7d800e83c1b8dc5561b93bf56419c6574fef8b9805d0f41a851c0ec",
+    "release-gate/suites/varena/vae-post-quant/ci_varena_post_quant/__init__.py": "a7c6f9d79e68ee3a5e967a7fac357397a21338b1dff13cd475af5290849f18bc",
+    "release-gate/suites/varena/vae-post-quant/prepare.py": "7320e78532e1fb4c14aa9042fa8fc27161bba92896452a486107c52380520add",
+    "release-gate/suites/varena/vae-post-quant/pyproject.toml": "820ae74ff4e41ad6be72699217d6de73e08013a954cb20952e41e2dd4e6407bb"
+  }
+}

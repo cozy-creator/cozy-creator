@@ -1,0 +1,13 @@
+{
+  "rc_ref": "5fe91712b06ec875ed3ceee4abf5d28bfd563f47",
+  "offload_sources": {
+    "tensorfs/varena/_offload.py": "b555ff809cca883b3acbbe5ad44a64e9ba7897a9d0d6d7ed3731bdcead5f3570",
+    "tensorfs/varena/_offload_auto.py": "5a25e85a82227ff90f68e7d550f84bf62134c69069f2269d9096f237c296f265",
+    "tensorfs/varena/_offload_graph.py": "ea8722290259dda68b7dbac9adfed6aadcdb07af743de3b9a2ad2b65643c734e",
+    "tensorfs/varena/_offload_review.py": "ee05de5b79a3f5e1d8ccdb9162be70dc293ddb2a4f9f2fb5640c72fd742c878e",
+    "tensorfs/varena/_offload_sdxl.py": "81a27733a6c25b6aa18bc5f688be72e9e94d61d13de7d7d7fccf18b6ff15db8c",
+    "tensorfs/varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0"
+  },
+  "host_native_origin": "/home/fidika/cozy_v2/outputs/xs138-auto-vertical-host-20261103/attempt-001/package",
+  "scope": "RC-matching offload Python plus narrow public-class amendment; actual typed host images from root; CPU only, not the final Torch2.15 portable SDK/GPU vector"
+}

@@ -1,0 +1,81 @@
+{
+  "product_commit": "906cebea719ae5c48900185c14b15f60095c3c45",
+  "control_commit": "1a066af55a982c3fc6407af1a332a65695289437",
+  "context_merge": "0febc0e5e8eb99cf38c4c5883c03fb3d83431eba",
+  "context_lock_fix": "d9bca3c46",
+  "scope": "actual Linux metadata ledger namespace/backing proof; not GPU donation or new SDK qualification",
+  "report": "/home/fidika/cozy_v2/outputs/xs138-ledger-scope-v4-20261103/proof-001/report.json",
+  "report_sha256": "19cb4394dac06c801b0a094fcd0ee6c393a5984deef208f2adea9697d6dc9c74",
+  "module_source": {
+    "peers": {
+      "v3": {
+        "commit": "1a066af55a982c3fc6407af1a332a65695289437",
+        "source_files": {
+          "crates/varena/src/ledger.rs": "20a034de83c9f8d40f1fb9d01b44d45a2734c200961eb6f74316a2cad60fdcf7",
+          "crates/varena/src/ledger/os.rs": "115f7f3566f0148ee1681d1f5a2322eab78466e83e2a5b4b49caaaf814678430"
+        },
+        "client_sha256": "376fc48b01878b5a1ca614ad0942e6ac06d7c50683225a3a93f2f665baf4e6c3",
+        "project": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-ledger-mount-scope/.task/module-build-001/v3"
+      },
+      "v4": {
+        "commit": "906cebea719ae5c48900185c14b15f60095c3c45",
+        "source_files": {
+          "crates/varena/src/ledger.rs": "3edbb7b720f29d609135be2b0c56f48062b08c9accf043607f18fcd52632d903",
+          "crates/varena/src/ledger/os.rs": "115f7f3566f0148ee1681d1f5a2322eab78466e83e2a5b4b49caaaf814678430"
+        },
+        "client_sha256": "376fc48b01878b5a1ca614ad0942e6ac06d7c50683225a3a93f2f665baf4e6c3",
+        "project": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-ledger-mount-scope/.task/module-build-001/v4"
+      }
+    },
+    "gpu_executed": false,
+    "module_only": true
+  },
+  "build_seconds": 16.49829626083374,
+  "build_exit": 0,
+  "one_cpu": true,
+  "operator_cache_used": false,
+  "build_container_absent": true,
+  "binaries": {
+    "v3": "6c3288d33b16ef0438d447ff96d55fbf483498a4f9e386d1417340cc63bfc634",
+    "v4": "0083f53d5999758118d11c50c4fb5e006f1aad819a7fb918cb9ce03a22bd120e"
+  },
+  "available_cases_passed": true,
+  "cases": [
+    "actual_v3_different_mount_refusal",
+    "actual_v4_shared_mount_positive",
+    "actual_private_pid_refusal",
+    "actual_uid_refusal",
+    "copied_nonempty_backing_refusal",
+    "actual_ofd_death_reap",
+    "same_path_private_backing_isolated",
+    "replace_existing_connection_refusal",
+    "symlink_existing_connection_refusal",
+    "actual_same_connection_mount_migration"
+  ],
+  "unavailable_cases": {
+    "same_connection_mount_migration": {
+      "ok": true,
+      "operation": "migrate_mount",
+      "qualified": false,
+      "reason": "Operation not permitted (os error 1)",
+      "unavailable_errno": 1
+    }
+  },
+  "actual_container_count": 12,
+  "all_owned_containers_absent": true,
+  "all_exact_processes_gone": true,
+  "gpu_executed": false,
+  "gpu_libraries_loaded": false,
+  "device_key": "GPU-13800000-0000-0000-0000-000000000003",
+  "gpu_identity_discovered": false,
+  "private_files_preserved": "/dev/shm/xs138-ledger-scope-v4-0jxuk7_d",
+  "frozen_v3_fixtures_preserved": true,
+  "memory_safety_advisories": "pass after one-line merged workspace platform-signal version correction; original locked refusal preserved",
+  "files": {
+    "actual-process-report.json.gz": "a09b3029444e85e483f0ea36d91c8b72ff02b668a4f9c84f224c369c208039dc",
+    "initial-locked-guard-refusal.log.gz": "30053e249ed563575847ce65c6e1b46edf5cb32ed4f135a6cc48d4e97dfef1ce",
+    "memory-safety.log.gz": "4866826161c4132d1ef94709f7daf2445de824f6ba6bc076e899df28eacd761b",
+    "module-build.log.gz": "b568745ff08affce6f39c2620d0f2149bc63bed4ebc3c988cb01fa7d608b8105",
+    "source-equivalence.json": "81d9807d442102693e4911c30825a282ec456a6cb669296c727bcd5b9ab3b24c"
+  }
+}

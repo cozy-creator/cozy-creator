@@ -1,0 +1,43 @@
+{
+  "reviewed_head": "f574e526a7dfb528881e02315dc99bdc194b8479",
+  "cpu_fix_commit": "20b45ab9837c6d56c78aafc997de24625dac1e8a",
+  "intent_commit": "5e1fe22227e0e65bb0c8a3fc441a3ed80593ec74",
+  "scope": "real public-package CPU execution and production native host boundaries; no CUDA or wheel-install qualification",
+  "torch": "2.14.1+cpu",
+  "diffusers": "0.41.0",
+  "gpu_executed": false,
+  "commands": [
+    "CARGO_TARGET_DIR=.task/native-target CARGO_BUILD_JOBS=1 PYO3_PYTHON=<absolute .task/torch-cpu/bin/python> VARENA_LIB_DIR=<absolute .task/native-target/debug/deps> cargo build -p tensorfs-py -p varena-mixed-client -j 1",
+    "PYTHONPATH=.task/review-host-package CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 .task/torch-cpu/bin/python release-gate/suites/varena/torch-offload/<review_cpu.py|intent.py|adapter_cpu.py>",
+    ".task/torch-cpu/bin/python release-gate/suites/varena/native-tensor-export/native_host.py --extension .task/review-host-package/tensorfs/_ext.so",
+    "PYTHONPATH=.task/review-host-package .task/torch-cpu/bin/python release-gate/suites/varena/public-api/mixed.py --c .task/review-mixed-c.so --rust .task/native-target/debug/libvarena_mixed_client.so --order <native-first|python-first>"
+  ],
+  "results": {
+    "review_regressions": "7/7 pass (original out=/four convenience casts red; both explicit to controls pass)",
+    "intent_cpu": "6 actual declared/repeated boundaries, parent restoration, direct forward/signature, exception cleanup, immutable-version refresh and passive diagnostics pass; native=False",
+    "adapter_cpu": "original tied/alias/Transformer/VAE client passes",
+    "native_host": "metadata/refusal checks pass",
+    "mixed": "C/external Rust/internal Rust/Python pass both load orders; new intent symbols reject actual absent handles",
+    "ruff": "check and format --check pass for changed Python files",
+    "diff": "git diff --check pass",
+    "rustfmt": "Whole-file checks report inherited formatting differences; only new ABI wrapper formatting was corrected, no unrelated Rust formatting changes applied."
+  },
+  "native_change": "Two additive v1 ABI intent wrappers call existing native Plan.activate/deactivate; no working phase observation or compute key, policy/ledger/reclamation unchanged. Safe Rust and Python bindings added.",
+  "gpu_fixture": "intent.py --device 0 prepared only: actual native phase names/Region bytes, nested restore, exceptions, version replacement and final deactivation",
+  "source_sha256": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload.py": "b3d0d8ad449a402486f134ba5b34fe2028e4a0da3e555a9c26b1e3156feb53bc",
+    "crates/tensorfs-py/python/tensorfs/varena/api.py": "e4cc2b43a500a205f03dba35d5a5a2dda411f41708d4b6631779d7a91652c119",
+    "crates/varena/src/abi.rs": "d7f7f0ab93450fe14297b1d6b4acefb2f3070d025329dc70c4f433500373c2e9",
+    "crates/varena/include/varena.h": "19a4e6a65d21a0453e4c5532ff7b1a44a080950831321a7ba1bd71f44f7bc757",
+    "crates/varena-client/src/lib.rs": "fabad669ee95c1f5852ade1ef7cc511a88537de168aee874b27d9265873ffb61",
+    "release-gate/suites/varena/public-api/native.c": "a792aa310192ee1e03a086476307895092de4cb7dacfdbfc07023aafbadd2f4e",
+    "release-gate/suites/varena/torch-offload/review_cpu.py": "582e854d07db2c2e43689661776db6c1010114f16f398ae32d6638b744c73d7b",
+    "release-gate/suites/varena/torch-offload/intent.py": "18cc88001599fb2cec5566e4c99d2c34263d9ec9b529ee6028bcd3803588ebac"
+  },
+  "native_sha256": {
+    ".task/review-host-package/tensorfs/_ext.so": "fbc9bee2d76fa6fc180a13db6ddae854af4b98a4179184b13e951a9d344bd7a9",
+    ".task/review-host-package/tensorfs/.native/libvarena.so": "1fbf23e01aedd831de3bd17793ecba96e700cc51c0f289c6f8dcacd8df6ee503",
+    ".task/native-target/debug/libvarena_mixed_client.so": "595bd0853811d9ce703240dca020cc4ff7516d27268c502952051b3d09a8db62",
+    ".task/review-mixed-c.so": "2dff8f852429ee7c5dae48f4354d87165960235728a90e173491a12562f1a1c1"
+  }
+}
