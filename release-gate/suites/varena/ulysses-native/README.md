@@ -4,6 +4,8 @@
 ProcessGroup Store messages, supplied all-to-all receivers and production packing/
 assembly functions. It covers unequal and zero local row counts and head padding.
 The arithmetic control is real Torch Q+K+V; it does not emulate a native GPU provider.
+`spans.py` uses real distinct frombuffer Storage objects to check contiguous and
+strided-source physical overlap refusal before writes.
 `eager.py` checks actual ordinary Conv3d/RMSNorm/Diffusers FFN execution and authored
 fixed windows after removal of the Python capacity/retry ladder.
 

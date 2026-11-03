@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -57,6 +58,9 @@ print(
             "torch_commit": torch.version.git_version,
             "scope": "actual CPU native-ineligible ordinary operations and authored fixed windows, no fake provider",
             "GPU_qualified": False,
+            "runtime_source_sha256": hashlib.sha256(
+                Path(cuts.__file__).read_bytes()
+            ).hexdigest(),
             "cases": rows,
         },
         indent=2,

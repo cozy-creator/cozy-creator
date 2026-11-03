@@ -1,3 +1,4 @@
+import hashlib
 import json
 import socket
 import sys
@@ -173,6 +174,9 @@ if __name__ == "__main__":
                 "python": sys.executable,
                 "torch_path": torch.__file__,
                 "GPU_qualified": False,
+                "runtime_source_sha256": hashlib.sha256(
+                    Path(native.__file__).read_bytes()
+                ).hexdigest(),
                 "scope": "actual two/four-rank CPU Gloo transport and host Store, real tensor packing/arithmetic; no native GPU provider emulation",
                 "ranks": records,
             },
