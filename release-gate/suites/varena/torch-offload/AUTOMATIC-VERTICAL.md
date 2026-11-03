@@ -47,8 +47,9 @@ owner outside capture. Native typed `PhaseOverlapError` at observation ENTRY alo
 chooses eager under the caller's existing observation, without closing/relabeling
 its token/sample. Catching this type does not wrap a body. Current implementation
 dependency is the root-owned typed-refusal feature83ebdad55 (equivalent mappings
-2bf8fd329/dcbc141b2); root supplies the matched native/PyO3 cohort. Without that
-native type an untagged refusal propagates before body, never gets guessed.
+2bf8fd329/dcbc141b2); root supplies the matched native/PyO3 cohort. This required
+cohort exposes the exact public vt.PhaseOverlapError class; no absence fallback
+is supported. Other admission errors still propagate before body unchanged.
 
 `owner.graph_facts()` returns passive reasons/counters/native keys and peaks, not
 graph/Plan/Region/tensor handles. Scope counts and Python facts are not GPU proof.
