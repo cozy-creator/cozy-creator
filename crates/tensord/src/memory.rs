@@ -1,6 +1,6 @@
 //! Executor-owned GPU memory: TensorD records measurements and offloads whole idle executors.
 //! It creates no CUDA context, GPU allocation, lease listener or page-reclamation thread.
-//! GPU permits schedule calls; measured peaks are placement hints, never admission gates.
+//! GPU permits schedule calls; observed GPU peaks are telemetry, never byte-admission gates.
 //! Host RAM uses the existing pressure watcher and per-process growth accounting.
 use crate::machine::receipt;
 use platform::contain::host_memory;
@@ -345,7 +345,6 @@ impl Figures {
         self.changed.set();
     }
     pub fn host_peak(&self, package: &str, shape: &str) -> Option<u64> { self.figure("host", &format!("{package}|{shape}")) }
-    pub fn request_peak(&self, package: &str, shape: &str) -> Option<u64> { self.figure("peak", &format!("{package}|{shape}")) }
     fn figure(&self, kind: &str, key: &str) -> Option<u64> {
         let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let full = format!("{kind}/{key}");
