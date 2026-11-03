@@ -270,7 +270,20 @@ def exercise(payload, ctx, request, vt):
                     observed = cpu_result(output)
                     numerical = compare(observed, expected)
                     assert tuple(observed[0].shape) == (batch, 1797, 2048) and observed[0].dtype is torch.float16
-                    assert held['execute_calls'] == 1 and held['submission']['published']
+                    case = {'case': 'actual-h3-prefix', 'facts': facts,
+                        'policy': asdict(prepared.policy), 'preparation_census': census.calls,
+                        **numerical, 'packing_copy_bit_exact': True,
+                        'phase': request.working_phases[-1], **held}
+                    result['cases'].append(case)
+                    submission = held['submission']
+                    completed = [row for row in case['phase']['split_observations']
+                                 if all(row[field] == submission[field]
+                                        for field in ('observation_id', 'key', 'choice_id'))]
+                    case['completion_observations'] = completed
+                    assert held['execute_calls'] == 1
+                    assert submission['pending'] and not submission['published']
+                    assert len(completed) == 1
+                    assert completed[0]['published'] and not completed[0]['pending'] and not completed[0]['reason']
                     assert held['execute_after']['allocations'] == held['execute_before']['allocations']
                     assert Counter(c['live_delta'] for c in held['census'] if c['allocations']) == Counter(allocations)
                     assert sum(c['allocations'] for c in held['census']) == len(allocations)
@@ -279,10 +292,6 @@ def exercise(payload, ctx, request, vt):
                         raise AssertionError('one-shot replay accepted')
                     except RuntimeError as replay:
                         assert 'one-shot' in str(replay)
-                    result['cases'].append({'case': 'actual-h3-prefix', 'facts': facts,
-                        'policy': asdict(prepared.policy), 'preparation_census': census.calls,
-                        **numerical, 'packing_copy_bit_exact': True,
-                        'phase': request.working_phases[-1], **held})
                     owned[:] = [item for item in owned if item is not bound]
                     bound = output = observed = None
                     held.clear()
@@ -349,6 +358,15 @@ def exercise(payload, ctx, request, vt):
                         assert bound.completed and not bound.retained
                         result['cases'].append({'case': 'post-write-refusal-once', 'error': failure,
                                                'phase': request.working_phases[-1], **held})
+                        late_case = result['cases'][-1]
+                        late_submission = held['submission']
+                        late_completed = [row for row in late_case['phase']['split_observations']
+                                          if all(row[field] == late_submission[field]
+                                                 for field in ('observation_id', 'key', 'choice_id'))]
+                        late_case['completion_observations'] = late_completed
+                        assert late_submission['pending'] and not late_submission['published']
+                        assert len(late_completed) == 1 and not late_completed[0]['pending']
+                        assert not late_completed[0]['published'] and late_completed[0]['reason']
                         owned[:] = [item for item in owned if item is not bound]
                         bound = output = None
                         held.clear()
@@ -432,17 +450,27 @@ def prefix(payload: Probe, ctx: Context) -> Report:
     before = vt.stats(device)
     domain = Domain(torch, request.memory)
     result = {'passed': False}
+    library_preparation = {}
     try:
         domain.initialize()
         domain.stream.wait_event(admitted)
         with torch.cuda.stream(domain.stream), domain.using():
+            library_preparation['before'] = vt.stats(device)
+            library_preparation['configuration'] = {
+                'cublas_workspace_bytes': torch.backends.cuda.cublas_workspace_size(),
+                'cublaslt_workspace_bytes': torch.backends.cuda.cublaslt_workspace_size(),
+                'preferred_blas': str(torch.backends.cuda.preferred_blas_library()),
+            }
+            domain.prime_blas()
+            settle(vt, device)
+            library_preparation['after'] = vt.stats(device)
             result = exercise(payload, ctx, request, vt)
         result['streams'] = {'work': domain.stream.cuda_stream, 'control': domain.control.cuda_stream}
     except Exception:
         result['error'] = traceback.format_exc()
     finally:
         result.update(provenance=provenance, startup_before=startup, pre_domain=before,
-                      native_readiness=native_readiness)
+                      native_readiness=native_readiness, library_preparation=library_preparation)
         try:
             domain.finish()
             vt.trim(device)
