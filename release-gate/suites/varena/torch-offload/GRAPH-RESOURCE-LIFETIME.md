@@ -9,9 +9,10 @@ The holder's process-rooted bound finalizer therefore prevents its own target
 from collecting. No caller reference is necessary. Explicit close/pressure could
 break it, but neither is an acceptable condition for normal abandoned ownership.
 
-The graph now retains a slotted `_Resources` payload. It has no owner, module,
-Version/_Device, controller, cache, segment, graph, whole input/output container or
-TreeSpec. It retains exact immutable Sources, OPEN Region wrappers and the dedicated
+The graph now retains a slotted `_Resources` payload. It has no Offload owner, module,
+controller, cache, segment, graph, whole input/output container or TreeSpec.
+It retains exact Versions (whose owner is only _Device, not Offload), immutable
+Sources, OPEN Region wrappers and the dedicated
 native Plan (which retains canonical Weight/Source/Region identity and layout),
 pool/footprint metadata, consuming streams, last recorded tail and flat detached
 Working Tensor storage owners. Detach preserves actual allocation/storage custody
@@ -34,7 +35,7 @@ actual CPU Working tensors and installed Torch2.14 `_RetainedCallbacks` with the
 real weakref.finalize registry. No fake CUDAGraph/Region/Plan or CUDA execution is
 constructed. The initial return-Definition payload ran red: the real Offload owner
 remained alive. That receipt is preserved. The corrected payload collects control
-owner/model/Versions/_Device while the holder is still rooted; source/storage
+owner/model while the holder is still rooted; exact Versions/_Device/source/storage
 owners stay live until its independent real CPU target dies and holder fires.
 The output has an actual Python control_owner attribute; detached resource wrappers
 do not retain that back-reference. Storage values stay exact. Sources and Working

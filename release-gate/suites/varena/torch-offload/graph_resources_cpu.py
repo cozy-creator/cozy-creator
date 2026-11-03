@@ -75,12 +75,13 @@ if __name__ == "__main__":
     )
     assert refs["model"]() is None
     assert refs["original_result"]() is None
-    assert all(value() is None for value in refs["versions"])
-    assert refs["device_owner"]() is None
+    assert all(value() is not None for value in refs["versions"])
+    assert refs["device_owner"]() is not None
     assert refs["finalizer"].alive and not refs["holder"]._fired
     assert refs["source_ids"] <= tracked_sources()
     payload = refs["payload"]()
     assert payload is not None
+    assert payload.versions == tuple(value() for value in refs["versions"])
     assert not hasattr(payload, "owner") and not hasattr(payload, "module")
     assert all(
         not tensor.__dict__ and tensor._base is None for tensor in payload.working
@@ -94,6 +95,8 @@ if __name__ == "__main__":
     assert not refs["holder"].objects
     gc.collect()
     assert not (refs["source_ids"] & tracked_sources())
+    assert all(value() is None for value in refs["versions"])
+    assert refs["device_owner"]() is None
     assert refs["payload"]() is None and all(value() is None for value in working_refs)
     assert not torch.cuda.is_initialized()
     print(
@@ -104,6 +107,7 @@ if __name__ == "__main__":
                 "owner_model_versions_sources_collected": True,
                 "ordinary_tensor_backref_not_retained": True,
                 "resources_stay_live_without_control_owner_until_holder_fires": True,
+                "exact_versions_and_device_custody_retained_until_holder_fires": True,
                 "torch_cuda_initialized": False,
             }
         )
