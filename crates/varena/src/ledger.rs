@@ -10,8 +10,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, TryLockError};
 
 pub const ROWS: usize = 64;
-const MAGIC: u64 = u64::from_le_bytes(*b"VARENA3\0");
-const VERSION: u64 = 3;
+const MAGIC: u64 = u64::from_le_bytes(*b"VARENA4\0");
+const VERSION: u64 = 4;
 const HEADER: usize = 16;
 const SELECTOR: usize = 15;
 const ROW_WORDS: usize = 22;
@@ -274,6 +274,7 @@ pub struct Snapshot {
     pub capacity_epoch: u64,
     pub backing_device: u64,
     pub backing_inode: u64,
+    /// This connection's stable process scope; mount visibility is not shared-table identity.
     pub scope: Scope,
     pub rows: Vec<Row>,
     pub sample: Option<Sample>,
@@ -340,7 +341,7 @@ impl Ledger {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let path = directory.join(format!("varena-v3-{}-{boot}-{}", scope.uid, device.name()));
+        let path = directory.join(format!("varena-v4-{}-{boot}-{}", scope.uid, device.name()));
         let halves = |bytes: [u8; 16]| {
             [
                 u64::from_le_bytes(bytes[..8].try_into().unwrap()),
@@ -349,6 +350,18 @@ impl Ledger {
         };
         let gpu = halves(device.uuid);
         let boot = halves(scope.boot);
+        let file = os::Descriptor::open(&path)?;
+        let _publication = file.lock(0, blocking)?.ok_or(Error::Busy)?;
+        let (dev, ino, size) = file.identity()?;
+        let named = fs::symlink_metadata(&path)?;
+        if named.file_type().is_symlink() { return Err(Error::Incompatible("ledger path is a symlink")); }
+        if (named.dev(), named.ino()) != (dev, ino) {
+            // The backing changed while this descriptor waited. Never join a detached
+            // table or replace/reinitialize live state; a later caller may try again.
+            return Err(Error::Busy);
+        }
+        // Bind initialized state to the exact opened tmpfs object. Different mount
+        // namespaces may share it; a copied nonempty table on another inode may not.
         let expected = [
             MAGIC,
             VERSION,
@@ -362,20 +375,10 @@ impl Ledger {
             scope.uid as u64,
             scope.user_namespace,
             scope.pid_namespace,
-            scope.mount_namespace,
+            dev, // Shared backing identity, not the opener's mount namespace.
             u64::from_ne_bytes(*b"abcdefgh"),
-            0,
+            ino,
         ];
-        let file = os::Descriptor::open(&path)?;
-        let _publication = file.lock(0, blocking)?.ok_or(Error::Busy)?;
-        let (dev, ino, size) = file.identity()?;
-        let named = fs::symlink_metadata(&path)?;
-        if named.file_type().is_symlink() { return Err(Error::Incompatible("ledger path is a symlink")); }
-        if (named.dev(), named.ino()) != (dev, ino) {
-            // The backing changed while this descriptor waited. Never join a detached
-            // table or replace/reinitialize live state; a later caller may try again.
-            return Err(Error::Busy);
-        }
         if size == 0 {
             file.resize(WORDS * 8)?;
         } else if size != (WORDS * 8) as u64 {
