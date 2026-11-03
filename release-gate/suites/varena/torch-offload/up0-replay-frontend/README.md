@@ -70,7 +70,7 @@ python3 "$frontend_source/bind.py" \
   --sdk-wheel /home/fidika/cozy_v2/outputs/xs138-final-admission-build-20261103/worker-sdk-9d959e31-001/wheels/tensorfs-0.17.18+dev.g9d959e31-cp311-abi3-linux_x86_64.whl \
   --runtime-wheel /home/fidika/cozy_v2/outputs/xs138-resume19-build-20261103/runtime-c059-001/source/dist/cozy_runtime-0.37.9+dev.gc059294c-cp312-abi3-manylinux_2_28_x86_64.whl \
   --frozen-bin /home/fidika/cozy_v2/outputs/xs138-rental-pressure-9d959e31-c059-20261103/fixture-001/project/ci_xs138_rental_pressure_resume19/pressure/bin \
-  --helper-handoff /home/fidika/cozy_v2/outputs/xs138-27056-diagnostic-preparation-20261103/HANDOFF.json \
+  --helper-handoff /home/fidika/cozy_v2/outputs/xs138-27056-diagnostic-preparation-20261103/ORIGINAL9D-HANDOFF.json \
   --out /home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-001
 ```
 
@@ -114,10 +114,20 @@ are explicit controls and do not execute or emulate model dispatch/capture.
 
 Source checks additionally verify the actual9d copy/clone call sites, no product
 diff, no replacement dispatch or graph methods, and no added sync/facts/cap calls.
-Actual invocation2/3 window traversal and Rust callback coverage require operator
-GPU evidence and remain unrun.
+`host_window.py` separately adopts a real two-Linear CPU pipeline through its
+supported components mapping. Three actual forwards traverse the ORIGINAL
+automatic dispatch with no injected controller state or frame IDs. It verifies
+selection of invocations2/3, following up1 closure, exactly-once body counters,
+unchanged outputs, unknown CPU device/stream metadata, and nine released weakrefs
+while the tracer remains alive. This CPU dispatch/window control passes. Actual
+GPU capture/replay paths and Rust callback coverage remain unrun.
 
 Actual host controls passed on original wheel4e70c846 plus helper00348b74e90.
 See `validation.json` and the durable receipt directory it names. The helper
 header is2551e703; the older helper002/header4ecd pair is preserved historical
 evidence. The host container exited0 and is independently confirmed absent.
+
+A prepared ORIGINAL9d bundle exists at
+`/home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-001`; manifest
+SHA256 `1f1b6c685a3c8516cd5f69f465f9317c1c57f10040145b4a604d4230e3bf30c9`.
+It is bound to immutable `ORIGINAL9D-HANDOFF.json` and remains GPU-unrun.
