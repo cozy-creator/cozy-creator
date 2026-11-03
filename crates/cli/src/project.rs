@@ -1,13 +1,13 @@
-//! `cozy project`: the CLI's side of Calcifer's projects (xs-136, cl-716). Calcifer finds the
-//! project, makes its takes and versions and keeps its assets; these verbs ask it and print, and
-//! `render` follows each run as `cozy run` does. Ctrl-C stops following, never the runs.
+//! `cozy project`: the CLI's side of Calcifer's projects (xs-151, cl-758). Calcifer finds the
+//! project, makes its assets' takes and versions and keeps their files; these verbs ask it and print,
+//! and `render` follows each run as `cozy run` does. Ctrl-C stops following, never the runs.
 use std::{path::PathBuf, process::ExitCode};
 
 use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Clean, Event, Import, Imported, Open, Opened, Projects, Rename, Renamed, Rendered, Runs, State, Transferred},
+    project::{Approve, Approved, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -20,34 +20,37 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
-  cd garden && cozy project import ./kyogre.png --character   prints the line to paste into project.yaml
+  cd garden && cozy project import ./kyogre.png --character   prints what to paste into project.yaml
   cozy project render all --on kiyui
   cozy project render fight --new -n 3 --on kiyui    three more takes of fight
-  cozy project approve fight 2
+  cozy project approve fight 2                 writes its hash into fight's lines in project.yaml: fight is a constant now
+  cozy project unpin fight                     removes that line
   cozy project rename theo mara                after renaming it in project.yaml
+  cozy project reclaim --yes                   deletes what project.yaml no longer names
   cozy project push                            its files to your Tensorhub account
   cozy project pull                            on another computer, beside project.yaml and project.lock
 
 project.yaml's comments and the README explain the rest.";
 
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy project render all --on kiyui               everything missing or out of date, then the edit
+  cozy project render all --on kiyui               everything with no state; the cuts follow, free
   cozy project render all --on kiyui,jitae         spread over two machines
-  cozy project render fight --on kiyui             fight and what it reads, if missing or out of date
+  cozy project render fight --on kiyui             fight and what it reads, if it has no state
   cozy project render fight --new --on kiyui       a new take of fight, whatever stands
   cozy project render fight --new -n 3 --on kiyui  three new takes of fight
   cozy project render fight --new --approve --on kiyui
-  cozy project render all --new --on kiyui         every node again
+  cozy project render all --new --on kiyui         every asset with an operation again
   cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
   cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
   cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
 
-A node reads as what `approve` or --approve chose, else its newest. A file in its image: or video: pins it: nothing is made.
+An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unpin` removes it), else its newest
+version with these inputs, else none. Reverting a text returns the old output with no run.
 
 Ctrl-C stops following, never the runs.";
 
-/// A video project: a folder of nodes (characters, props, environments and their camera setups,
-/// world states, shots) whose takes and versions `cozy project render` makes.
+/// A project: a folder of assets, each a stable name holding a set of files, whose takes and versions
+/// `cozy project render` makes.
 #[derive(clap::Args, Debug)]
 #[command(after_help = EXAMPLES)]
 pub struct Args {
@@ -71,34 +74,47 @@ enum Verb {
     Ls,
     Import(ImportFile),
     Render(Render),
-    /// Approve a take or version.
-    #[command(after_help = "Example:\n  cozy project approve fight 2")]
+    /// Pin a take or version: its hash goes on the asset's line in project.yaml.
+    #[command(after_help = "Example:\n  cozy project approve fight 2\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
     Approve {
-        /// The node: `theo`, `dock.b` (a setup), `fight`, `fight.upscale`, …
+        /// The asset: `theo`, `dock b`, `fight`, `fight upscale`, …
         name: String,
         /// Its take or version, 1 first.
         version: u32,
     },
-    /// What is missing or out of date, and each node's file.
+    /// Take an asset's pin out of project.yaml: its state follows its inputs again.
+    #[command(after_help = "Example:\n  cozy project unpin fight")]
+    Unpin {
+        /// The asset.
+        name: String,
+    },
+    /// What has no state and why, and each asset's file.
     #[command(after_help = "Example:\n  cozy project status")]
     Status,
-    /// Keep a node's versions after renaming it in project.yaml.
+    /// Keep an asset's versions after renaming it in project.yaml.
     #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
     Rename {
         /// Its name in project.lock.
         from: String,
-        /// Its name in project.yaml now: a node of the same kind with no versions.
+        /// Its name in project.yaml now: an asset with no versions.
         to: String,
     },
+    /// List what project.yaml no longer names, and with --yes delete it: its versions, and any file nothing else names.
+    #[command(after_help = "Example:\n  cozy project reclaim\n  cozy project reclaim --yes\n\nNothing is ever deleted without it.")]
+    Reclaim {
+        /// Delete them.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Send every file project.lock names that your Tensorhub account lacks, private to it.
-    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; assets/ stays out of git\n\nA file over the 5 GiB the Hub holds is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
+    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; files/ stays out of git\n\nA file over the 5 GiB the Hub holds is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Push,
-    /// Fetch every file project.lock names that assets/ lacks, as real files.
+    /// Fetch every file project.lock names that files/ lacks, as real files.
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
 }
 
-/// Bring a picture, video or sound into the project, and print the line that names it in project.yaml.
+/// Bring a picture, video or sound into the project, and print what names it in project.yaml.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
   cozy project import ./kyogre.png --character
@@ -110,38 +126,33 @@ A URL is downloaded here, up to 64 MiB, from a public address.")]
 struct ImportFile {
     /// A path, or an http(s) URL.
     source: String,
-    /// The picture is a character's: its background is removed, here if this computer runs models, else on
-    /// the first machine that renders something reading it.
+    /// The picture is a character's: it prints two assets to paste, the picture and its clean.
     #[arg(long, conflicts_with = "prop")]
     character: bool,
-    /// The picture is a prop's: its background is removed, as with --character.
+    /// The picture is a prop's: as with --character.
     #[arg(long)]
     prop: bool,
 }
 
-/// Bring nodes up to date: make only what is missing or out of date, text edits included.
+/// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
 struct Render {
-    /// The nodes (`theo`, `dock.b`, `fight`, `fight.upscale`, …) to bring up to date, with what they read,
-    /// or `all`: every node, in order, then the edit.
+    /// The assets (`theo`, `dock b`, `fight`, `fight upscale`, …), with what they read, or `all`: every asset.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
     #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',', default_value = "local")]
     on: Vec<String>,
-    /// How many takes or versions of each node it renders. A current node stays as it is without --new.
+    /// How many new takes or versions of each asset named: over 1 draws new seeds as --new does.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
-    /// Render what is current too; an approved version stays chosen over what it makes.
+    /// A new seed even with a state. A pinned asset's new one is to look at: its state doesn't move.
     #[arg(long)]
     new: bool,
-    /// Approve the new take or version when it lands (only with -n 1).
+    /// Pin the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
-    /// With `all`: no upscales; cut only the native preview (`preview.mp4`).
-    #[arg(long)]
-    preview: bool,
     /// One shot: a new take keeping this take's start, not the one in use. Without --in, it goes on from this take's end.
     #[arg(long, value_name = "N")]
     take: Option<u32>,
@@ -197,9 +208,46 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             } else {
                 let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
                 let path = output::link(ctx, &opened.path.join(&approved.path));
-                output::say(ctx, &format!("{name}: {noun} {number} approved ({path})"));
+                output::say(ctx, &format!("{name}: {noun} {number} pinned in project.yaml ({path})"));
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
+                }
+            }
+        }
+        Verb::Unpin { name } => {
+            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let path = format!("/v1/projects/{}/unpin", opened.id);
+            let unpinned: Unpinned = ctx.calcifer().await?.post(&path, &Unpin { name }, None).await?;
+            if ctx.json {
+                output::json(&unpinned);
+            } else {
+                match unpinned.version {
+                    Some(version) => output::say(ctx, &format!("{}: no longer pinned to {version}", unpinned.name)),
+                    None => output::say(ctx, &format!("{}: no longer pinned", unpinned.name)),
+                }
+                if !unpinned.stale.is_empty() {
+                    output::say(ctx, &format!("out of date now: {}", unpinned.stale.join(", ")));
+                }
+            }
+        }
+        Verb::Reclaim { yes } => {
+            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let path = format!("/v1/projects/{}/reclaim", opened.id);
+            let reclaimed: Reclaimed = ctx.calcifer().await?.post(&path, &Reclaim { yes }, None).await?;
+            if ctx.json {
+                output::json(&reclaimed);
+                return Ok(ExitCode::SUCCESS);
+            }
+            for orphan in &reclaimed.orphans {
+                output::say(ctx, &format!("{}: {} made, {} only it names, which project.yaml no longer names", orphan.name, orphan.versions, output::bytes(orphan.bytes)));
+            }
+            let (files, bytes) = (reclaimed.files, output::bytes(reclaimed.bytes));
+            match (reclaimed.deleted, files) {
+                (true, _) => output::say(ctx, &format!("deleted {files} files, {bytes}")),
+                (false, 0) if reclaimed.orphans.is_empty() => output::say(ctx, "nothing to reclaim"),
+                (false, _) => {
+                    output::say(ctx, &format!("{files} files nothing else names, {bytes}"));
+                    output::next(ctx, &["cozy project reclaim --yes"]);
                 }
             }
         }
@@ -211,20 +259,20 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
             }
-            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "APPROVED", "MADE BY", "STATUS", "FILE"]);
-            let rows = state.nodes.iter().map(|n| {
-                let made = match n.versions {
-                    1 => format!("1 {}", n.noun),
-                    count => format!("{count} {}s", n.noun),
+            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "PINNED", "MADE BY", "STATUS", "FILE"]);
+            let rows = state.assets.iter().map(|a| {
+                let made = match a.versions {
+                    1 => format!("1 {}", a.noun),
+                    count => format!("{count} {}s", a.noun),
                 };
-                let approved = match n.approved {
-                    _ if n.pinned => "pinned".into(),
+                let pinned = match a.approved {
                     Some(number) => number.to_string(),
+                    None if a.pinned => "file".into(),
                     None => "-".into(),
                 };
-                let made_by = n.made_by.clone().unwrap_or_else(|| "-".into());
-                let file = n.path.clone().unwrap_or_else(|| "-".into());
-                [n.name.clone(), n.kind.clone(), made, approved, made_by, n.status.clone(), file]
+                let made_by = a.made_by.clone().unwrap_or_else(|| "-".into());
+                let file = a.path.clone().unwrap_or_else(|| "-".into());
+                [a.name.clone(), a.kind.clone(), made, pinned, made_by, a.status.clone(), file]
             });
             rows.fold(table, output::Table::row).print();
             summary(ctx, &state);
@@ -293,57 +341,24 @@ async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) 
     Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.path.display())))
 }
 
-/// `POST /v1/projects/{id}/imports`, a clean sent with it followed to its end, and the line to paste.
+/// `POST /v1/projects/{id}/imports`, and what to paste.
 async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
-    let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let source = match args.source.contains("://") {
         true => args.source,
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
-    let ask = Import { source, clean: args.character || args.prop, hub: ctx.hub().to_string() };
-    let mut imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &ask, None).await?;
+    let ask = Import { source, clean: args.character || args.prop };
+    let imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &ask, None).await?;
     imported.warnings.iter().for_each(|warning| output::warn(warning));
-    // `removed` from Calcifer is an earlier clean; one that lands here was made now.
-    let mut cleaned_now = false;
-    if let Clean::Removing { run } = &imported.clean {
-        let followed = watched(ctx, calcifer.run(run).await?).await?;
-        imported.clean = match settled(&followed) {
-            false => imported.clean,
-            true => {
-                let mut landed = Clean::Later;
-                while let Some(event) = events.next().await {
-                    match event {
-                        Event::Cleaned { sha256, error } if sha256 == imported.sha256 => {
-                            match error {
-                                Some(error) => output::warn(&error),
-                                None => (landed, cleaned_now) = (Clean::Removed, true),
-                            }
-                            break;
-                        }
-                        Event::Ended { .. } => break,
-                        _ => {}
-                    }
-                }
-                landed
-            }
-        };
-    }
     if ctx.json {
         output::json(&imported);
         return Ok(ExitCode::SUCCESS);
     }
-    let said = match imported.clean {
-        Clean::Untouched => "",
-        Clean::Removed if cleaned_now => " (background removed)",
-        Clean::Removed => " (background already removed)",
-        Clean::Removing { .. } => " (its background is being removed)",
-        Clean::Later => " (its background is removed when a machine first renders something that reads it)",
-    };
     let verb = if imported.already { "already imported" } else { "imported" };
-    anstream::println!("{verb} {}{said}", imported.prefix);
+    anstream::println!("{verb} {}", imported.prefix);
     anstream::println!("{}", imported.line);
     Ok(ExitCode::SUCCESS)
 }
@@ -359,7 +374,6 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         n: args.n,
         on,
         hub: ctx.hub().to_string(),
-        preview: args.preview,
         approve: args.approve,
         new: args.new,
         take: args.take,
@@ -395,7 +409,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                 output::failure(ctx, &error.message, &error.next);
                 failed.insert(error.message);
             }
-            Event::Moved { .. } | Event::Transferred { .. } | Event::Cleaned { .. } => {}
+            Event::Moved { .. } | Event::Transferred { .. } => {}
             Event::Cut { cut, frames, fps, retimed, unchanged, .. } => {
                 let (path, seconds) = (output::link(ctx, &opened.path.join(&cut)), frames as f64 / fps);
                 let (name, left) = (cut.trim_end_matches(".mp4"), if unchanged { " (unchanged)" } else { "" });
@@ -430,14 +444,14 @@ fn finished(rendered: &Rendered) -> String {
     format!("rendered {} in {}{}", made.join(" and "), clock(rendered.elapsed_ms), generation.unwrap_or_default())
 }
 
-/// Under the table: what is missing, what is out of date and why, and where the cuts are.
+/// Under the table: what is missing, what is out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
-    for node in state.nodes.iter().filter(|node| !node.prefixes.is_empty()) {
-        let made: Vec<String> = node.prefixes.iter().map(|made| format!("{} {} {}", node.noun, made.number, made.prefix)).collect();
-        output::say(ctx, &format!("{}: {}", node.name, made.join(", ")));
-        for made in &node.prefixes {
+    for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
+        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}", asset.noun, made.number, made.prefix)).collect();
+        output::say(ctx, &format!("{}: {}", asset.name, made.join(", ")));
+        for made in &asset.prefixes {
             if let Some(kept) = made.kept {
-                output::say(ctx, &kept.said(&node.name, made.number));
+                output::say(ctx, &kept.said(&asset.name, made.number));
             }
         }
     }
@@ -450,10 +464,13 @@ fn summary(ctx: &Context, state: &State) {
     }
     for orphan in &state.orphans {
         let (n, name, kind) = (orphan.versions, &orphan.name, &orphan.kind);
-        let said = format!("project.lock keeps {n} made of {name} (a {kind}), which project.yaml no longer names");
+        let said = format!("project.lock keeps {n} made of {name} (a {kind}), {}, which project.yaml no longer names", output::bytes(orphan.bytes));
         output::say(ctx, &said);
         let to = orphan.renamed_to.as_deref().unwrap_or("<its new name>");
         output::next(ctx, &[&format!("cozy project rename {} {to}", orphan.name)]);
+    }
+    if !state.orphans.is_empty() {
+        output::next(ctx, &["cozy project reclaim"]);
     }
     for cut in &state.cuts {
         let skips = match cut.skips.as_slice() {
@@ -461,8 +478,8 @@ fn summary(ctx: &Context, state: &State) {
             skips => format!("; it skips {} (nothing made yet)", skips.join(", ")),
         };
         let name = cut.cut.trim_end_matches(".mp4");
-        let made = cut.frames.map(|frames| format!(", {}", length(frames, state.fps))).unwrap_or_default();
-        let retimed = retimes(&cut.retimed, state.fps);
+        let made = cut.frames.map(|frames| format!(", {}", length(frames, cut.fps))).unwrap_or_default();
+        let retimed = retimes(&cut.retimed, cut.fps);
         match cut.cut_at_ms {
             Some(at_ms) => output::say(
                 ctx,
@@ -471,11 +488,10 @@ fn summary(ctx: &Context, state: &State) {
             None => output::say(ctx, &format!("{name}: not cut yet ({})", cut.path.display())),
         }
     }
-    let uncut = state.cuts.iter().any(|cut| cut.cut_at_ms.is_none());
     if state.absent > 0 {
         output::say(ctx, &format!("{} files project.lock names are not on this computer", state.absent));
         output::next(ctx, &["cozy project pull"]);
-    } else if !state.missing.is_empty() || !state.stale.is_empty() || uncut {
+    } else if !state.missing.is_empty() || !state.stale.is_empty() {
         output::next(ctx, &["cozy project render all --on <machine>"]);
     }
 }

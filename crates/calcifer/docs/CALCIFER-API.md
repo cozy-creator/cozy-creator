@@ -325,120 +325,60 @@ machine lacks it, then the call with its files. Its interface comes from Runtime
 Python and cozy-runtime its project locks; nothing runs to describe it.
 
 ### Projects
-A project is a folder holding `project.yaml` (people's), `project.lock` (Calcifer's), `assets/`, and its cuts
-(`edit.mp4`, with `resolution:` also `preview.mp4`), each with its timeline beside it (`edit.otio`). Its id is
-fixed by its folder. Every file the project uses
-is a real file in `assets/<sha256>.<ext>`, flat: what cozy makes, and what `POST /v1/projects/{id}/imports` brought in.
-project.lock records each import under its sha256 (`{path, sha256, video?, mark?, clean?}`), and with every video asset
-its shape, probed once: `{width, height, fps, frames}`. It names nothing of this computer, so it travels with project.yaml.
-A file field (an entity's `image`, `voice`, a setup's or world state's `image`, an asset's `image`, `video`, `audio`,
-a shot's `plate.video`, `first_frame`, `last_frame`, `video`) holds a hex prefix of an asset's hash: any file project.lock
-names, imported or made. A value that is no prefix (a path, a URL), one that fits no asset, and one that fits several
-each give a warning, and that node renders without the file. An asset project.lock names that is not on this computer
-holds what reads it (`not on this computer: cozy project pull`). A marked import's hash resolves to its clean once made;
-until then what reads it waits, and the walk that owes one of those readers sends the clean to its machines first. A
-failed clean stops only what reads it, and the next walk tries again. Calcifer deletes from `assets/` only what
-project.lock no longer names; an import is never dropped.
+A project is a folder holding `project.yaml` (people's; Calcifer writes one line of it, at `approve` and `unpin`), `project.lock`
+(Calcifer's), `files/`, and its cuts at the root (`<name>.mp4` and `<name>.otio`). Its id is fixed by its folder. Every file the project
+uses is a real file in `files/<sha256>.<ext>`, flat, in the lock's `files` table with what is measured of it once: `{path, sha256, width?,
+height?, fps?, frames?, alpha?}`. The lock names nothing of this computer, so it travels with project.yaml. A format 1 yaml or lock is refused
+and left as it is. `design/project-graph.md` in the tracker is the model.
 
-A shot's `summary` and `beats` are opaque text but for their `<mentions>`. Calcifer sends a node to its package's project
-adapter (`project-adapter-<kind>`, on the render machine), and runs the function and input it answers, recording them on the
-take as `invocations`; a file in them is its digest. A function with no adapter gets one flat `prompt`, with a warning.
+An asset's state is the hash in project.yaml (`image`, `video`, `audio`; a hash of a version's main file brings its whole file set), else its
+newest version whose `inputs` match now, else none. `inputs` is a digest of `with` (no release, no `_/`), `models`, `lora`, `options`, `kind`,
+every other field after defaults, each asset it mentions (name, kind, fields, files by sha256) and the revisions it writes: exactly what its
+adapter is given. A tool's holds only what it reads of its fields, and the files. Calcifer knows no kind's meaning and no field's shape.
 
-```yaml
-version: 1
-shots:
-  - name: fight
-    summary: <theo> and <juno> circle each other on <dock>.
-    beats:
-      - duration: 5
-        description: They circle.
-      - duration: 15
-        description: <juno> lunges.
-```
-
-A shot is as long as its beats. An adapter's record gives it as `duration_s`, and each beat's start, the sum of the
-durations before it, as `at`.
-
-A made version is out of date when what the author wrote that reaches it changed since it was made or approved. project.lock
-keeps that as `text`: by field, a digest of the words, trimmed. The fields are a shot's `summary`, `beats` (each `duration` and
-`description`), `soundscape`, `music` and `style`, and `<name>` for each description of what it reads; an entity's `description`,
-its own `render: instructions:` and `style`; a setup's `camera`, its environment's `description` and `style`; a world state's `init`, `blocking` and `style`. Only
-fields both sides have are compared and a field's meaning never changes, so a cozy update never puts anything out of date. A
-version with no `text`, made before this, has what it says now recorded the first time it is read. A file in a node's own
-`image` or `video` pins it: that is what it reads, whatever is approved, and nothing is made of it. Otherwise it reads as what
-`approve` or `--approve` chose, else its newest, which is the only way approval is written. A cut holding what it held is not
-made again (`cuts` in project.lock). `approve` records the text
-and files as they stand, and `rename` the text of what reads the node, since it rewrites the mentions.
-
-A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
-field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reused) and is a set of assets
-(`{path, sha256}`).
+An operation is a package (`with`, `[org/]package[@release]`, or local code) and a `kind`. Calcifer runs the package's `project-adapter-<kind>` on
+the render machine, on `{version: 2, asset, kind, fields, reads, writes, keep}`, and runs the `invocations` it answers in order as one version: a
+string in `input` that is exactly `$0.video` is that field of call 0's result, as its digest. `[]` is no run: the asset's files are what it
+reads. A failed call stops the list and makes no version; a function taking `seed` gets the one Calcifer drew, kept for the next try when the
+run failed. `models` and `lora` go on the first call, `options` on any that takes them. The version records each call as `invocations`, and
+each file by its output's name, later over earlier. `written`, a list, is a function's frames for `op.writes`, in order; a write with none is
+cut from the landed video. The package `cozy` is reserved: `kind: edit` and `kind: frame` run here, free, with no machine, once what they
+read settles and on `approve`, reading each asset's state, else its newest version, which they say. A tool keeps one version and its pinned one.
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
   records it in the index as used now. `404 project_not_found` when no folder up from `path` is a project.
-- `POST /v1/projects/{id}/imports` `{source, clean?, hub}`: `{path, sha256, prefix, line, already?, clean, warnings?}`. `already`: its bytes were in `assets/`, so nothing was copied. Keeps the
-  file at `source` (an absolute path, or an `http(s)` URL) as a real asset, its type read from its bytes; `line` is what to
-  paste into project.yaml (`image: ab12cd34ef56`, or `video:`, `audio:`). A URL: 64 MiB at most, public addresses only at
-  every redirect. `400 import_failed` says why not. `clean` marks a picture (a later import of it says again): `clean` answers `{state:
-  "untouched"}`, `"removed"` (an earlier clean stands, and no run was sent), `"removing", run` (a run sent to this computer's machine; follow it, then `cleaned` on the events)
-  or `"later"` (this computer runs no models, or the run could not be sent: the first machine to render a reader cleans it).
+- `POST /v1/projects/{id}/imports` `{source, clean?}`: `{path, sha256, prefix, line, already?, warnings?}`. `already`: its bytes were in `files/`,
+  so nothing was copied. `line` is what to paste: `image: ab12cd34ef56`, or `video:`, `audio:`; with `clean`, two assets, the picture and its
+  clean. A URL: 64 MiB at most, public addresses only at every hop.
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms,
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
-- `GET /v1/projects/{id}`: `{id, path, fps, nodes, missing, stale: [{name, why}], orphans: [{name, kind, versions,
-  renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, frames?, retimed?, skips}], warnings}`. `fps` is the
-  edit's frame rate; a cut's `frames` its length at it and `retimed` the takes in it at another rate
-  (`<node> (<fps> fps)`), both from the shapes project.lock records. Each node is `{name, kind, noun,
-  versions, prefixes?, approved?, assets, path?, made_by?, status}`: `versions` counts them, `prefixes` gives each one's `{number, prefix, kept?}` for project.yaml (`kept: {take, until_s}`: the take whose start it keeps, and up to where), `approved` is the number of the one chosen by `approve` or `--approve`, `pinned` says a file in project.yaml is its result, `assets` what the node reads as now by output name,
-  `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
-  keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none. A
-  file under `assets:` is a node of kind `asset`: shots read it by mention, and it has no versions.
-  `warnings` holds what project.yaml's reading said and what each node's current version says: its function's
-  warnings and what was left out of its request. A cut past a take's end is left out and said here.
-- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?, kept?}]}`.
-- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or
-  `names: ["all"]`, brought up to date with what it reads: what is missing or out of date gets `n` new takes or versions, any
-  approval it had goes, and `all` ends with the cuts. A current name is left, with a `said` event; a pinned one too. With `new`,
-  what is current gets them as well, its approval kept, and what a named node reads with no version yet is made first.
-  With `take` or `in_s` and one shot's name, each new take keeps a take's start (`take`, else the one in use) up to `in_s` (else
-  that take's end), and what follows is made; it is warned of what it comes to instead (`400 take_unknown`: no such take).
-  `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). A name that is no node, or a reference, is warned of and the rest go on; only an ask with
-  nothing left is refused (`node_unknown`, `400 asset_file`). `202 {id, path}`; the
-  work goes on in the project's walk and is followed on its events.
-- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from`
-  (versions, approval, what other versions read of it, what is owed) is kept as `to`, a node project.yaml names
-  now, of the same kind and with no versions (`409 rename_taken`, `400 rename_kind`, `409 project_busy` while it
-  renders). Nothing on disk moves.
+- `GET /v1/projects/{id}`: `{id, path, assets, missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
+  absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?}], warnings}`. Each asset is `{name, kind, noun, with?, versions, prefixes?,
+  approved?, pinned?, inputs?, files, path?, made_by?, status}`: `approved` is the version a pin is, `pinned` that a hash in project.yaml is its state,
+  `files` its state by output name, `path` its main file, and `status` is for people, in the asset's noun. An orphan is an asset project.lock keeps
+  versions of that project.yaml no longer names; its `bytes` count what `reclaim` would free of it, each file once; `renamed_to` the one new asset of
+  its kind with none. `absent` counts files the lock names that are not here. `warnings` holds what project.yaml's reading said, what each
+  state's version says, and each asset whose known published package has no adapter for its kind.
+- `GET /v1/projects/{id}/assets/{name}`: `{asset, versions: [{number, files, made_by?, seed?, runs, approved?, warnings?, kept?}]}`.
+- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or `all`, and what it reads: run
+  its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
+  `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`); the adapter gets it as `keep`. `202 {id, path}`, or `200` when
+  its key asked it already. The work goes on in the project's walk and is followed on its events.
+- `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, files, path, stale, warnings?}`. Writes the version's main file's hash into
+  that asset's lines in project.yaml, editing that one line, re-read just before it writes, and checks what it wrote reads as the same project with that one change (`400 project_edit` otherwise, saying what to write by hand). A line holding an input keeps it, `video: <hash>  # was <clash>`.
+  Makes any tool whose reads settled, with no machine.
+- `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Removes that line, or restores the input it was over. A constant, nothing but its file, keeps it (`400 project_edit`).
+- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names
+  now with no versions (`409 rename_taken`, `409 project_busy` while it renders). Nothing on disk moves. What reads it goes out of date unless pinned.
+- `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, deleted?}`. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
-  project.lock names that the Hub lacks, by content (`/blobs/…`: what it holds never moves; a killed push sends only the
-  files that had not landed), reading through links, and records them all as a private commit of the account's model
-  `project-assets`, which keeps them until its owner deletes it (`cozy model delete`). A file not on this computer
-  needs only be at the Hub. A file over 5 GiB, or on neither, is left out and named in `skipped`; everything else goes.
-- `POST /v1/projects/{id}/pull` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Fetches every file
-  project.lock names that `assets/` lacks, as a real file: a killed pull goes on from the byte it reached
-  (`assets/.<name>.part`), and each is held to its sha256 before it is named. A file not at the Hub is left out and named
-  in `skipped`; everything else comes. Both say how they go on the events
-  (`moved`, `transferred`) and go on when their client goes; one project moves one at a time.
-- `POST /v1/projects/{id}/approve` `{name, version}` (`version` its number): `{name, noun, number, assets, path,
-  stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
-  again when a shot's take changed.
-- `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
-  `landed {name, noun, number, assets, path, execution_ms?}`, `said {message}`, `warning {message}`, `failed {error}` (one version failed, said once; the walk goes on), `cut {cut, frames, fps, retimed?, took_s, unchanged?}` and
-  `moved {file?, bytes}` (a push or pull landed `file`, or is under way), `transferred {done?: {files, moved, bytes,
-  skipped?: [{path, why}], kept_in?, commit?}, error?}` when it ends, `cleaned {sha256, error?}` when the run cleaning an import ended, `ended {error?, rendered?: {takes, versions, elapsed_ms, execution_ms}}` (the first failure) when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
-  after reconnecting.
-- `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
-- `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`, and each one's `.otio`): the cut or its
-  timeline as last made (Files), so a `<video>` seeks it; `404 file_missing` before the first cut. Every in
-  and out point is an exact frame at the project's `fps`. The timeline is OpenTimelineIO JSON
-  (`application/json`): the project's rate, a video and an audio track (a piece without sound is a gap), one
-  clip per edit entry with its frame-exact `source_range`, referencing that take's asset
-  (`assets/<sha256>.<ext>`); a retimed clip's metadata is `{cozy: {retimed_from_fps}}`. The encoded edge
-  pieces are kept in cozy's cache folder (`$XDG_CACHE_HOME/cozy/cuts`, `~/Library/Caches/cozy/cuts`,
-  `%LOCALAPPDATA%\cozy\cache\cuts`) by take, frames and encoding, unused ones pruned after 14 days and the oldest
-  past 10 GiB.
+  project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. `transferred` on the events ends it.
+- `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
+- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`.
+- `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
 
 ### Tools and Calcifer
 Calcifer fetches the tools it runs on first need, pinned builds held to their sha256, into `~/.cozy/tools`:

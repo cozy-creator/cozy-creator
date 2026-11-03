@@ -127,7 +127,7 @@ impl Tally {
 /// The files `lock` names, by path, each with its sha256.
 fn named(project: &Project) -> Result<Vec<(String, String)>, Error> {
     let lock = project.folder.lock()?;
-    Ok(lock.assets().into_iter().map(|(path, sha256)| (path.to_owned(), sha256.to_owned())).collect())
+    Ok(lock.files.into_values().map(|file| (file.path, file.sha256)).collect())
 }
 
 /// One file sent unless the Hub holds it; not on this computer, it need only be
@@ -159,9 +159,9 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: Strin
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
-    let (assets, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
-    let files = assets.len() as u64;
-    let sending = stream::iter(assets)
+    let (named, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
+    let files = named.len() as u64;
+    let sending = stream::iter(named)
         .map(|(path, sha256)| send(project, endpoint, &tally, path, sha256))
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();
@@ -169,7 +169,7 @@ async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpo
     let objects: Vec<ObjectRef> = objects.into_iter().flatten().collect();
     let (mut kept_in, mut commit) = (None, None);
     if !objects.is_empty() {
-        let tree = objects.into_iter().map(|object| (format!("{}/{}", folder::ASSETS, object.sha256), object)).collect();
+        let tree = objects.into_iter().map(|object| (format!("{}/{}", folder::FILES, object.sha256), object)).collect();
         let name = format!("{account}/{MODEL}");
         let kept = keep(endpoint, &name, &tree).await.map_err(failed)?;
         (kept_in, commit) = (Some(name), Some(kept.id()));
@@ -227,14 +227,14 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, path: Stri
     Ok(())
 }
 
-/// Fetches every file project.lock names that `assets/` lacks.
+/// Fetches every file project.lock names that `files/` lacks.
 async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let _held = project.moving.lock().await;
-    let (dir, assets) = (&project.folder.dir, named(project)?);
-    let store = dir.join(folder::ASSETS);
+    let (dir, named) = (&project.folder.dir, named(project)?);
+    let store = dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", store.display())))?;
-    let (files, tally) = (assets.len() as u64, Tally::default());
-    let fetching = stream::iter(assets.into_iter().filter(|(path, _)| !dir.join(path).is_file()))
+    let (files, tally) = (named.len() as u64, Tally::default());
+    let fetching = stream::iter(named.into_iter().filter(|(path, _)| !dir.join(path).is_file()))
         .map(|(path, sha256)| fetch(project, endpoint, &tally, path, sha256))
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();

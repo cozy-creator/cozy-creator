@@ -34,57 +34,52 @@ ffmpeg -v error -y -f lavfi -i "color=c=teal:size=832x480" -frames:v 1 -metadata
 hash_of() { cozy --json project -p "$P" import "$1" | jq -r .prefix | sed 's/.*/"&"/'; }
 {
   cat <<YAML
-entities:
-  - name: coast
+version: 2
+assets:
+  coast:
     kind: environment
     description: |
       A grey coast.
     image: $(hash_of "$F/coast.png")
-assets:
 YAML
   # Bulk that moves for seconds, so a kill lands mid-way; never seen before, so it moves at all.
   for i in $(seq 1 12); do
     { printf 'RIFF\0\0\0\0WAVE'; head -c 32M /dev/urandom; } > "$P/refs/r$i.wav"
-    printf '  - name: r%s\n    audio: %s\n' "$i" "$(hash_of "$P/refs/r$i.wav")"
+    printf '  r%s:\n    audio: %s\n' "$i" "$(hash_of "$P/refs/r$i.wav")"
   done
   cat <<YAML
-shots:
-  - name: a
-    summary: |
-      Test pattern a.
-    beats:
-      - duration: 6
+  a:
     video: $(hash_of "$P/plates/a.mp4")
-  - name: b
-    summary: |
-      Test pattern b.
-    beats:
-      - duration: 6
+  b:
     video: $(hash_of "$P/plates/b.mp4")
-edit:
-  - {shot: a, start: 0, end: 120}
-  - {shot: b, start: 24, end: 120}
+  edit:
+    with: cozy
+    kind: edit
+    pieces:
+      - {video: <a>, start: 0, end: 120}
+      - {video: <b>, start: 24, end: 120}
 YAML
 } > "$P/project.yaml" || fail "project.yaml"
 step render project -p "$P" render all --on local || fail "render all: $(tail -5 "$OUT/render.txt")"
 [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4")" = 1344,768 ] || fail "the edit is not its takes' size"
-CUT=$(sha "$P/edit.mp4") TOTAL=$(cat "$F/coast.png" "$P"/plates/* "$P"/refs/* | wc -c)
+# The cut is a file of the project's too, so 15 files and it.
+CUT=$(sha "$P/edit.mp4") TOTAL=$(cat "$F/coast.png" "$P"/plates/* "$P"/refs/* "$P/edit.mp4" | wc -c)
 say "edit.mp4 $CUT; $TOTAL bytes to move"
 ! grep -qE "$HOME|\"original\"|\"method\"" "$P/project.lock" || fail "project.lock names this computer: $(grep -nE "$HOME|\"original\"|\"method\"" "$P/project.lock" | head -3)"
 
 say "push, its Calcifer killed once the first file landed"
 cozy project -p "$P" push > "$OUT/push-killed.txt" 2>&1 & PUSH=$!
-until grep -q '^sent assets/' "$OUT/push-killed.txt" || ! kill -0 "$PUSH" 2> /dev/null; do sleep 0.05; done
+until grep -q '^sent files/' "$OUT/push-killed.txt" || ! kill -0 "$PUSH" 2> /dev/null; do sleep 0.05; done
 kill -0 "$PUSH" 2> /dev/null || fail "push ended before a file landed: $(tail -3 "$OUT/push-killed.txt")"
 kill -9 "$(pid_of "$HOME")"; wait "$PUSH"; code=$?
 [ "$code" != 0 ] || fail "the push finished before its Calcifer was killed: make the bulk bigger"
-say "killed: $(grep -c '^sent assets/' "$OUT/push-killed.txt") files had landed; the CLI said $(tail -1 "$OUT/push-killed.txt" | cut -c1-120)"
+say "killed: $(grep -c '^sent files/' "$OUT/push-killed.txt") files had landed; the CLI said $(tail -1 "$OUT/push-killed.txt" | cut -c1-120)"
 cozy --json project -p "$P" push > "$OUT/push-2.json" 2> "$OUT/push-2.err" || fail "push again: $(tail -3 "$OUT/push-2.err")"
 COMMIT=$(jq -r .commit "$OUT/push-2.json"); say "push again: $(jq -c . "$OUT/push-2.json")"
-J --argjson t "$TOTAL" '.files == 15 and .moved > 0 and .moved < 15 and .bytes > 0 and .bytes < $t' "$OUT/push-2.json" || fail "the second push did not send only the rest"
+J --argjson t "$TOTAL" '.files == 16 and .moved > 0 and .moved < 16 and .bytes > 0 and .bytes < $t' "$OUT/push-2.json" || fail "the second push did not send only the rest"
 cozy --json project -p "$P" push > "$OUT/push-3.json" 2> "$OUT/push-3.err" || fail "third push: $(tail -3 "$OUT/push-3.err")"
 say "push a third time: $(jq -c . "$OUT/push-3.json")"
-J --arg c "$COMMIT" '.files == 15 and .moved == 0 and .bytes == 0 and .commit == $c' "$OUT/push-3.json" || fail "the third push moved something, or made another commit"
+J --arg c "$COMMIT" '.files == 16 and .moved == 0 and .bytes == 0 and .commit == $c' "$OUT/push-3.json" || fail "the third push moved something, or made another commit"
 step model-info model info "$MODEL" || say "model info: $(tail -3 "$OUT/model-info.txt")"
 step model-ls model ls "$MODEL" || say "model ls: $(tail -3 "$OUT/model-ls.txt")"
 
@@ -106,25 +101,25 @@ second login --key "$H/key.json" > "$OUT/login-second.txt" 2>&1; code=$?; sudo r
 
 say "pull, it and its Calcifer killed mid-way"
 sudo -u "$U" -H sh -c "echo \$\$ > '$H/pull.pid'; exec '/opt/$U/cozy' project -p '$C' pull" > "$OUT/pull-killed.txt" 2>&1 < /dev/null & PULL=$!
-parts() { sudo find "$C/assets" -name '.*.part' -size +1M 2> /dev/null | head -1; }
+parts() { sudo find "$C/files" -name '.*.part' -size +1M 2> /dev/null | head -1; }
 until [ -n "$(parts)" ] || ! kill -0 "$PULL" 2> /dev/null; do sleep 0.05; done
 [ -n "$(parts)" ] || fail "pull ended before any file part: $(tail -3 "$OUT/pull-killed.txt")"
 sudo kill -9 "$(sudo cat "$H/pull.pid")" "$(pid_of "$H")"; wait "$PULL"; code=$?
 [ "$code" != 0 ] || fail "the pull finished before it was killed: make the bulk bigger"
-sudo find "$C/assets" -type f -printf '%f %s\n' | sort > "$OUT/after-kill.txt"
+sudo find "$C/files" -type f -printf '%f %s\n' | sort > "$OUT/after-kill.txt"
 HELD=$(awk '{ n += $2 } END { print n + 0 }' "$OUT/after-kill.txt")
 say "killed: $HELD of $TOTAL bytes held, $(grep -c part "$OUT/after-kill.txt") partial files"
 second --json project -p "$C" pull > "$OUT/pull-2.json" 2> "$OUT/pull-2.err" || fail "pull again: $(tail -3 "$OUT/pull-2.err")"
 say "pull again: $(jq -c . "$OUT/pull-2.json")"
-J --argjson held "$HELD" --argjson t "$TOTAL" '.files == 15 and .moved > 0 and .bytes > 0 and .bytes == $t - $held' "$OUT/pull-2.json" \
+J --argjson held "$HELD" --argjson t "$TOTAL" '.files == 16 and .moved > 0 and .bytes > 0 and .bytes == $t - $held' "$OUT/pull-2.json" \
   || fail "the second pull did not fetch exactly what the first left ($TOTAL - $HELD)"
 second --json project -p "$C" pull > "$OUT/pull-3.json" 2> "$OUT/pull-3.err" || fail "third pull: $(tail -3 "$OUT/pull-3.err")"
-J '.files == 15 and .moved == 0 and .bytes == 0' "$OUT/pull-3.json" || fail "a third pull moved something: $(jq -c . "$OUT/pull-3.json")"
+J '.files == 16 and .moved == 0 and .bytes == 0' "$OUT/pull-3.json" || fail "a third pull moved something: $(jq -c . "$OUT/pull-3.json")"
 
 say "the second computer has it all"
-sudo find "$C/assets" -mindepth 1 ! -type f -printf '%p %y\n' > "$OUT/not-real.txt"; [ ! -s "$OUT/not-real.txt" ] || fail "not real files: $(head -3 "$OUT/not-real.txt")"
-[ -z "$(sudo find "$C/assets" -name '.*')" ] || fail "parts left in assets/: $(sudo find "$C/assets" -name '.*' | head -3)"
-sudo sh -c "cd '$C/assets' && for f in *; do [ \"\$(sha256sum \"\$f\" | cut -c1-64)\" = \"\${f%%.*}\" ] || echo \"\$f\"; done" > "$OUT/wrong.txt"
+sudo find "$C/files" -mindepth 1 ! -type f -printf '%p %y\n' > "$OUT/not-real.txt"; [ ! -s "$OUT/not-real.txt" ] || fail "not real files: $(head -3 "$OUT/not-real.txt")"
+[ -z "$(sudo find "$C/files" -name '.*')" ] || fail "parts left in files/: $(sudo find "$C/files" -name '.*' | head -3)"
+sudo sh -c "cd '$C/files' && for f in *; do [ \"\$(sha256sum \"\$f\" | cut -c1-64)\" = \"\${f%%.*}\" ] || echo \"\$f\"; done" > "$OUT/wrong.txt"
 [ ! -s "$OUT/wrong.txt" ] || fail "not their sha256: $(head -3 "$OUT/wrong.txt")"
 second --json project -p "$C" status > "$OUT/status-pulled.json" 2> "$OUT/status-pulled.err" || fail "status: $(tail -3 "$OUT/status-pulled.err")"
 J '(.missing | length == 0) and (.stale | length == 0) and (.warnings | length == 0) and .absent == 0' "$OUT/status-pulled.json" \
@@ -140,7 +135,7 @@ AGAIN=$(sudo sha256sum "$C/edit.mp4" | cut -c1-64); say "edit.mp4 with no encode
 [ "$AGAIN" = "$CUT" ] || fail "an edit with no encode is another file on the second computer"
 
 say "an edit that encodes its edges: the same film, not the same bytes"
-edges='s/{shot: a, start: 0, end: 120}/{shot: a, start: 7, end: 131}/; s/{shot: b, start: 24, end: 120}/{shot: b, start: 13, end: 140}/'
+edges='s/{video: <a>, start: 0, end: 120}/{video: <a>, start: 7, end: 131}/; s/{video: <b>, start: 24, end: 120}/{video: <b>, start: 13, end: 140}/'
 sed -i "$edges" "$P/project.yaml"; sudo sed -i "$edges" "$C/project.yaml"
 step render-edges project -p "$P" render all --on local || fail "render edges: $(tail -5 "$OUT/render-edges.txt")"
 second project -p "$C" render all --on local > "$OUT/recut-edges.txt" 2>&1 || fail "cut edges: $(tail -5 "$OUT/recut-edges.txt")"
@@ -153,19 +148,21 @@ say "$(shape "$P/edit.mp4") on both; the same bytes: $([ "$(sha "$P/edit.mp4")" 
 awk -v s="$LOW" 'BEGIN { exit !(s >= 0.99) }' || fail "per-frame SSIM $LOW is under 0.99"
 rm -f "$OUT/edges-second.mp4"
 second --json project -p "$C" push > "$OUT/push-second.json" 2> "$OUT/push-second.err" || fail "push from the second computer: $(tail -3 "$OUT/push-second.err")"
-J '.files == 15 and .moved == 0' "$OUT/push-second.json" || fail "the second computer's push moved something: $(jq -c . "$OUT/push-second.json")"
+# Its own cut's bytes are all that is new.
+J '.files == 16 and .moved == 1' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
+cozy --json project -p "$P" push > "$OUT/push-edges.json" 2> "$OUT/push-edges.err" || fail "push the first computer's cut: $(tail -3 "$OUT/push-edges.err")"
 
 say "a sparse file over the Hub's limit, and a new file beside it"
 printf 'RIFF\0\0\0\0WAVE' > "$P/refs/huge.wav" && truncate -s 5368709121 "$P/refs/huge.wav" || fail "no sparse file"
 { printf 'RIFF\0\0\0\0WAVE'; head -c 1048564 /dev/urandom; } > "$P/refs/fresh.wav" || fail "no fresh file"
 HUGE=$(hash_of "$P/refs/huge.wav") FRESH=$(hash_of "$P/refs/fresh.wav")
-sed -i "/^shots:/i\  - name: huge\n    audio: $HUGE\n  - name: fresh\n    audio: $FRESH" "$P/project.yaml"
+sed -i "/^  edit:$/i\  huge:\n    audio: $HUGE\n  fresh:\n    audio: $FRESH" "$P/project.yaml"
 code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
 PARTIAL=$(jq -r '.commit // empty' "$OUT/push-huge.json"); say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/push-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a push that skipped a file exited $code, not 3"
-J '.files == 17 and .moved == 1 and .bytes == 1048576 and (.skipped | length == 1) and (.skipped[0].path | test("^assets/")) and (.skipped[0].why | test("5 GiB"))' "$OUT/push-huge.json" \
+J '.files == 18 and .moved == 1 and .bytes == 1048576 and (.skipped | length == 1) and (.skipped[0].path | test("^files/")) and (.skipped[0].why | test("5 GiB"))' "$OUT/push-huge.json" \
   || fail "the push did not send everything else and name the file"
-grep -q 'warning: skipped assets/' "$OUT/push-huge.err" || fail "no warning names the file: $(tail -3 "$OUT/push-huge.err")"
+grep -q 'warning: skipped files/' "$OUT/push-huge.err" || fail "no warning names the file: $(tail -3 "$OUT/push-huge.err")"
 cozy project -p "$P" push > "$OUT/push-huge-2.txt" 2>&1; code=$?
 [ "$code" = 3 ] && grep -q ': 0 sent' "$OUT/push-huge-2.txt" || fail "pushed again, exit $code: $(tail -3 "$OUT/push-huge-2.txt")"
 tail -2 "$OUT/push-huge-2.txt" | cut -c1-200 | tee -a "$R"
@@ -174,10 +171,10 @@ sudo install -d -o "$U" -m 700 "$C2" && sudo install -o "$U" -m 644 "$P/project.
 code=0; second --json project -p "$C2" pull > "$OUT/pull-huge.json" 2> "$OUT/pull-huge.err" || code=$?
 say "pull: exit $code, $(jq -c . "$OUT/pull-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/pull-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a pull that skipped a file exited $code, not 3"
-J '.files == 17 and .moved == 16 and (.skipped | length == 1) and (.skipped[0].path | test("^assets/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+J '.files == 18 and .moved == 17 and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
 second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-huge.err" || fail "status: $(tail -3 "$OUT/status-huge.err")"
 J '.absent == 1' "$OUT/status-huge.json" || fail "status does not count the one file: $(jq -c '{absent, missing}' "$OUT/status-huge.json")"
 second --json project -p "$C2" push > "$OUT/push-partial-copy.json" 2> "$OUT/push-partial-copy.err"; code=$?
-{ [ "$code" = 3 ] && J '.moved == 0 and (.skipped[0].path | test("^assets/"))' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
+{ [ "$code" = 3 ] && J '.moved == 0 and (.skipped[0].path | test("^files/"))' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
 
 say "PROVEN"
