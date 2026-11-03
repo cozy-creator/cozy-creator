@@ -46,10 +46,11 @@ Known same-owner enclosing intent is suspended/restored by the existing epoch
 owner outside capture. Native typed `PhaseOverlapError` at observation ENTRY alone
 chooses eager under the caller's existing observation, without closing/relabeling
 its token/sample. Catching this type does not wrap a body. Current implementation
-dependency FOR THAT OPTIONAL FALLBACK is the root-owned typed-refusal
-feature83ebdad55 (equivalent mappings
-2bf8fd329/dcbc141b2); root supplies the matched native/PyO3 cohort. Without that
-native type an untagged refusal propagates before body, never gets guessed.
+dependency is the root-owned typed-refusal feature83ebdad55 (equivalent mappings
+2bf8fd329/dcbc141b2); root supplies the matched native/PyO3 cohort. The automatic
+observation path imports PhaseOverlapError directly. Older SDKs are unsupported,
+and reject before entry/body rather than using capability/empty-tuple fallback.
+Other native admission errors on the required SDK still propagate unchanged.
 
 `owner.graph_facts()` returns passive reasons/counters/native keys and peaks, not
 graph/Plan/Region/tensor handles. Scope counts and Python facts are not GPU proof.
@@ -58,10 +59,8 @@ graph/Plan/Region/tensor handles. Scope counts and Python facts are not GPU proo
 
 ```sh
 python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cpu
-# Coordinator only; normal isolated path needs no typed overlap seam:
+# Coordinator only; required matched typed native SDK:
 python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cuda:0
-# Native1a negative control: generic error propagates, zero bodies, parent intact:
-python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cuda:0 --phase-control untyped
 # Matched SDK with the explicit typed native addition:
 python release-gate/suites/varena/torch-offload/automatic_two_block.py --device cuda:0 --phase-control typed
 ```
@@ -77,11 +76,10 @@ parity; both definitions alive with weight pins0; real trim/refill at the same
 Region addresses under unchanged definitions; native callback retirement of idle
 entry1 while the model and entry0 admission locks are held; actual pool-byte
 reduction after native trim; recapture of entry1 only. Optional --phase-control
-untyped requires a real admission error with ZERO authored bodies and the same
-caller token; --phase-control typed requires one eager body under that token.
-Both include named/unkeyed parents and changed shapes, then ordinary cached
-selection resuming after the caller closes its token. Neither optional result is
-claimed by the default normal-path receipt. Quarantine may
+typed requires one eager body under the caller token. It includes named/unkeyed
+parents and changed shapes, then ordinary cached
+selection resuming after the caller closes its token. That optional result is
+not claimed by the default normal-path receipt. Quarantine may
 not increase. Python profiling observes real forward calls and installs no hooks.
 
 GPU mode is PREPARED/UNRUN by this lane. Actual source/epoch/reset/failure and stock
@@ -93,3 +91,7 @@ descriptor through phase_stats; split_context is not phase-admission proof. Both
 APIs are deliberately unused for overlap classification. Unknown native entry
 errors propagate before yielding to any body. Only the separately owned typed
 error can authorize parent-observation eager selection.
+
+Current hard cut supersedes the historical native1a/--phase-control untyped
+compatibility client at cd59. That receipt/source remains preserved, not replayed
+into this required-SDK lane. The pinned unwired 594/006 overlay is independent.

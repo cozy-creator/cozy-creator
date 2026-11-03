@@ -40,8 +40,8 @@ def pointers(gpu, regions, stream):
     return result
 
 
-def check_parent_observations(owner, model, value, expected, stream, counts, mode):
-    """Real optional negative/typed gates; no admission error is retried eager."""
+def check_parent_observations(owner, model, value, expected, stream, counts):
+    """Real typed SDK gates; no authored execution is retried."""
     receipts = []
     for name, supplied, wanted in (
         ("two-block-caller", value, expected),
@@ -52,29 +52,15 @@ def check_parent_observations(owner, model, value, expected, stream, counts, mod
             row["native_key"] for row in owner.graph_facts()["boundaries"].values()
         ]
         parent = vt.phase_enter(stream.device, name, mode="eager")
-        error_type = None
         try:
-            if mode == "typed":
-                result = model(supplied)
-                stream.synchronize()
-                torch.testing.assert_close(result.cpu(), wanted, rtol=2e-5, atol=2e-6)
-                assert list(counts.values()) == [number + 1 for number in before]
-                assert all(
-                    row["reason"] == "parent_observation_active"
-                    for row in owner.graph_facts()["boundaries"].values()
-                )
-            else:
-                try:
-                    model(supplied)
-                except RuntimeError as error:
-                    # Expected negative control only. No message classification
-                    # and NO second authored execution in this invocation.
-                    error_type = type(error).__name__
-                    assert list(counts.values()) == before
-                else:
-                    raise AssertionError(
-                        "untagged admission was not refused before body"
-                    )
+            result = model(supplied)
+            stream.synchronize()
+            torch.testing.assert_close(result.cpu(), wanted, rtol=2e-5, atol=2e-6)
+            assert list(counts.values()) == [number + 1 for number in before]
+            assert all(
+                row["reason"] == "parent_observation_active"
+                for row in owner.graph_facts()["boundaries"].values()
+            )
         finally:
             row = vt.phase_leave(stream.device, parent, completed=False)
         assert row["observation_id"] == parent and row["key"] == name
@@ -92,10 +78,9 @@ def check_parent_observations(owner, model, value, expected, stream, counts, mod
             {
                 "parent_key": name,
                 "same_token_returned": True,
-                "body_calls_during_refusal": [
+                "body_calls_under_parent": [
                     right - left for left, right in zip(before, after)
                 ],
-                "propagated_error_type": error_type,
                 "cached_replay_resumed": True,
             }
         )
@@ -289,7 +274,6 @@ def run(args):
                     changed_expected,
                     stream,
                     counts,
-                    args.phase_control,
                 )
             final = owner.graph_facts()
             assert [row["captures"] for row in final["boundaries"].values()] == [1, 2]
@@ -316,7 +300,6 @@ def run(args):
             "parent_observation_control": args.phase_control,
             "parent_observation_receipts": parent_receipts,
             "typed_parent_observation_eager_choice": args.phase_control == "typed",
-            "unknown_admission_refused_before_body": args.phase_control == "untyped",
             "matmul_precision": torch.get_float32_matmul_precision(),
             "rng_state_preserved": True,
             "unkeyed_parent_preserves_old_key_across_shape_change": args.phase_control
@@ -332,9 +315,9 @@ if __name__ == "__main__":
     parser.add_argument("--timeout-s", type=float, default=30)
     parser.add_argument(
         "--phase-control",
-        choices=("none", "untyped", "typed"),
+        choices=("none", "typed"),
         default="none",
-        help="Optional parent observation gate; default normal flow needs no typed native seam",
+        help="Optional parent gate on the required typed native SDK",
     )
     options = parser.parse_args()
     torch.set_num_threads(1)
