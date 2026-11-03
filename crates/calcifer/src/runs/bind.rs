@@ -1412,6 +1412,9 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
             if let Some(member) = members.iter().find(|m| m.as_str().is_some_and(|m| m.eq_ignore_ascii_case(raw))) {
                 return Some(member.clone());
             }
+            if tiers(members, raw) {
+                return Some(text);
+            }
             let parsed: Value = serde_json::from_str(raw).ok()?;
             (members.iter().any(|m| same(m, &parsed)) || numbers(members, &parsed)).then_some(parsed)
         }
@@ -1467,6 +1470,7 @@ fn respelled(ty: &Type, value: &Value) -> Option<Value> {
         (Type::Int | Type::Float | Type::Bool, Value::String(s)) => scalar(ty, s),
         (Type::Int, Value::Number(n)) if !(n.is_i64() || n.is_u64()) => integer(&n.to_string()),
         (Type::Literal(_), Value::String(s)) => scalar(ty, s),
+        (Type::Literal(members), Value::Number(n)) if tiers(members, &n.to_string()) => Some(Value::String(n.to_string())),
         (Type::Str, Value::Number(_) | Value::Bool(_)) => Some(Value::String(value.to_string())),
         _ => None,
     }
@@ -1475,6 +1479,18 @@ fn respelled(ty: &Type, value: &Value) -> Option<Value> {
 /// Whether `value` is a number for a Literal of numbers: Runtime takes the nearest member.
 fn numbers(members: &[Value], value: &Value) -> bool {
     value.is_number() && members.iter().any(Value::is_number)
+}
+
+/// Whether `text` is a resolution (`4k`, `720p`, `1080`) for a Literal of them (`768p`, `1080p`, …):
+/// Runtime takes the nearest. Any other text a Literal doesn't name stays refused.
+fn tiers(members: &[Value], text: &str) -> bool {
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let tier = |member: &Value| member.as_str().and_then(|member| member.strip_suffix('p')).is_some_and(digits);
+    let mut named = members.iter().filter(|member| !member.is_null()).peekable();
+    let text = text.trim().to_ascii_lowercase();
+    named.peek().is_some()
+        && named.all(tier)
+        && (digits(&text) || text.strip_suffix(['p', 'k']).is_some_and(digits))
 }
 
 /// JSON values equal as the interface means them: `1` and `1.0` are one number.
@@ -1600,7 +1616,13 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
         | (Type::Float, Value::Number(_)) => vec![],
         (Type::Int, Value::Number(n)) if n.is_i64() || n.is_u64() => vec![],
         (Type::Asset(_) | Type::Tree, Value::String(s)) if !s.is_empty() => vec![],
-        (Type::Literal(members), value) if members.iter().any(|m| same(m, value)) || numbers(members, value) => vec![],
+        (Type::Literal(members), value)
+            if members.iter().any(|m| same(m, value))
+                || numbers(members, value)
+                || value.as_str().is_some_and(|text| tiers(members, text)) =>
+        {
+            vec![]
+        }
         (Type::Literal(members), value) => {
             let allowed: Vec<String> = (members.iter())
                 .map(|m| m.as_str().map_or_else(|| m.to_string(), str::to_owned))
