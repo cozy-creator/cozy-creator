@@ -351,9 +351,9 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
                 if footprint is not None:
                     # Binding is to this capture cycle, not merely the shared pool. The callback
                     # references only metadata and makes no CUDA call on reset or finalization.
-                    cuda_graph.register_destroy_callback(footprint.retire)
                     footprint._begin(device, pool)
                     tracing = True
+                    cuda_graph.register_destroy_callback(footprint.retire)
                 cuda_graph.capture_begin(pool=pool)
                 started = True
                 yield cuda_graph
