@@ -163,7 +163,7 @@ impl Graph {
                 let mut names: Vec<&str> = cycle.iter().rev().map(|&i| nodes[i].id.as_str()).collect();
                 names.push(&nodes[*cycle.last().expect("a cycle")].id);
                 return Err(invalid("cycle", format!("a cycle: {} (each is made from the one before it)", names.join(" → ")))
-                    .remedy("remove the `setup:` or `frame:` that closes it"));
+                    .remedy("remove the `frame:` that closes it"));
             };
             upstream[reader].retain(|edge| edge.node != read);
             closing.push((reader, read));

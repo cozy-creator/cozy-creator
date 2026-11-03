@@ -71,9 +71,8 @@ entities:
 
 shots:
   - name: awaken
-    setup: coast.sea
     summary: |
-      <kyogre> bursts out of the stormy sea of <coast>.
+      <kyogre> bursts out of the stormy sea of <coast.sea>.
     soundscape: Howling wind, crashing waves, and rolling thunder.
     beats:
       - duration: 6
@@ -81,9 +80,8 @@ shots:
           A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
 
   - name: erupt
-    setup: coast.cliffs
     summary: |
-      <groudon> claws its way out of the lava cliffs of <coast> and roars.
+      <groudon> claws its way out of the lava cliffs of <coast.cliffs> and roars.
     soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
     beats:
       - duration: 6
@@ -91,9 +89,8 @@ shots:
           A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   - name: clash
-    setup: coast.wide
     summary: |
-      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts, with storm clouds and heavy rain on the left and hard sunlight on the right.
+      <kyogre> and <groudon> fight on <coast.wide> in one continuous shot with no cuts, with storm clouds and heavy rain on the left and hard sunlight on the right.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
       - duration: 14
@@ -255,9 +252,7 @@ struct WorldState {
 #[derive(Deserialize)]
 struct Shot {
     name: String,
-    /// `Environment.Setup`.
-    setup: Option<String>,
-    /// The scene, the same in every segment: opaque here but for its `<mentions>`.
+    /// The scene, the same in every segment: opaque here but for its `<mentions>`, which are all it reads.
     #[serde(default, deserialize_with = "or_default")]
     summary: String,
     /// Its moments, one after the other: it is as long as they are. A cut is a new shot.
@@ -673,7 +668,7 @@ impl Video {
                     id,
                     kind: "setup",
                     noun: "version",
-                    mentionable: false,
+                    mentionable: true,
                     state: false,
                     order: None,
                     texts: vec![setup.camera.clone()],
@@ -740,14 +735,16 @@ impl Video {
         }
         for (k, shot) in project.shots.iter().enumerate() {
             let texts = shot.texts();
-            let (mut needs, mut implied) = (vec![], vec![]);
-            needs.extend(shot.setup.clone());
+            let mut implied = vec![];
             // An environment named with no setup of it is shot from its first setup.
-            let framed = shot.setup.as_deref().and_then(|s| s.rsplit_once('.')).map(|(env, _)| name_key(env));
+            let framed: BTreeSet<String> = (texts.iter().flat_map(|text| mentions(text)))
+                .filter_map(|mention| setup_named(&project.entities, mention))
+                .map(|(env, _)| name_key(&env.name))
+                .collect();
             for mention in texts.iter().flat_map(|text| mentions(text)) {
                 let env = (project.entities.iter())
                     .find(|e| e.kind == EntityKind::Environment && name_key(&e.name) == name_key(mention));
-                if let Some(env) = env.filter(|env| framed.as_deref() != Some(&name_key(&env.name)))
+                if let Some(env) = env.filter(|env| !framed.contains(&name_key(&env.name)))
                     && let Some(first) = env.setups.first()
                 {
                     implied.push(format!("{}.{}", env.name, first.name));
@@ -762,7 +759,7 @@ impl Video {
                 state: false,
                 order: Some(k),
                 texts,
-                needs,
+                needs: vec![],
                 implied,
                 writes: shot.writes.iter().map(|write| write.state.clone()).collect(),
                 inputs: shot_inputs(&input_file, shot)?,
@@ -828,6 +825,9 @@ impl Video {
                 }
                 field == "image"
             });
+        }
+        for shot in &mut project.shots {
+            spoken(shot, &project.entities);
         }
         let canvas = Canvas::read(project.resolution.as_deref(), project.aspect_ratio.as_deref(), project.fps)?;
         // An `edit:` entry that cuts nothing is left out: every other piece still makes the edit.
@@ -1218,7 +1218,7 @@ impl Video {
 
     /// Shot `k`'s call `call`, on the shot's one timeline, both ways:
     /// - as the project says it, for its function's adapter: its summary and beats, its style, sound and music, each
-    ///   reference it reads by name, kind, description and digest, its plate, its first frame (first call), its last
+    ///   reference this call's text names (its summary, and the beats it overlaps) by name, kind, description and digest, its plate, its first frame (first call), its last
     ///   frame (last call) and the call before it. A world state's picture is the version current at the call's start:
     ///   the shot's own frame once it wrote it, `own`.
     /// - as one flat request for a function with no adapter: the summary and each beat's description as `prompt`, with
@@ -1258,6 +1258,13 @@ impl Video {
             let input = self.inputs.get(path).ok_or_else(|| invalid("file_missing", format!("{}: {path} is not there", shot.name)))?;
             Ok((folder.path(&input.path), input.sha256.clone()))
         };
+        let named = |texts: &mut dyn Iterator<Item = &String>| -> BTreeSet<String> {
+            texts.flat_map(|text| mentions(text)).map(name_key).collect()
+        };
+        let timed = shot.timed();
+        let told_ever = named(&mut std::iter::once(&shot.summary).chain(timed.iter().map(|(_, beat)| &beat.description)));
+        let here = timed.iter().filter(|(at, beat)| *at < end && at + beat.duration > start).map(|(_, beat)| &beat.description);
+        let told_here = named(&mut std::iter::once(&shot.summary).chain(here));
         // Each reference as the project knows it.
         let mut references: Vec<Value> = vec![];
         for read in reads {
@@ -1272,9 +1279,12 @@ impl Video {
                     }
                     references.push(entry);
                 }
-                (Item::Setup(a, _), _) => {
+                (Item::Setup(a, s), _) => {
                     let env = &self.project.entities[a];
-                    references.push(json!({"name": env.name, "kind": "environment", "description": env.description, "image": picture(files)}));
+                    // Under the name the text calls it: `<coast.wide>`'s (`spoken`), else `<coast>`'s.
+                    let own = setup_name(env, &env.setups[s]);
+                    let name = if told_ever.contains(&name_key(&own)) { own } else { env.name.clone() };
+                    references.push(json!({"name": name, "kind": "environment", "description": env.description, "image": picture(files)}));
                 }
                 (Item::State(_), _) | (Item::Shot(_), Some(_)) => {
                     let name = read.edge.state.clone().unwrap_or_else(|| self.graph.nodes[read.edge.node].id.clone());
@@ -1301,6 +1311,7 @@ impl Video {
             entry["fields"] = Value::Object(fields);
             references.push(entry);
         }
+        references.retain(|entry| told_here.contains(&name_key(entry["name"].as_str().unwrap_or_default())));
         let sound = shot.soundscape.as_deref().unwrap_or(&self.project.soundscape).trim();
         let music = shot.music.as_deref().unwrap_or_default().trim();
         let style = self.project.style.trim();
@@ -1847,6 +1858,42 @@ fn shot_inputs(input_file: &impl Fn(&str, &str, &str) -> Result<(String, String)
 /// A node's current file (path and digest) and its versions' files.
 type Versions = (Option<(String, String)>, Vec<String>);
 
+/// The setup `mention` names, `<environment.setup>`, with its environment.
+fn setup_named<'a>(entities: &'a [Entity], mention: &str) -> Option<(&'a Entity, &'a Setup)> {
+    let key = name_key(mention);
+    (entities.iter().filter(|entity| entity.kind == EntityKind::Environment))
+        .flat_map(|env| env.setups.iter().map(move |setup| (env, setup)))
+        .find(|(env, setup)| name_key(&format!("{}.{}", env.name, setup.name)) == key)
+}
+
+/// The name a renderer reads a setup a shot's text names by: words, with no `.`.
+fn setup_name(env: &Entity, setup: &Setup) -> String {
+    format!("{} {}", env.name, setup.name)
+}
+
+/// `shot`'s text as its renderer reads it: `<coast.wide>` as `<coast wide>`, and `<coast>`, when the shot names a setup of
+/// it, as the first of those.
+fn spoken(shot: &mut Shot, entities: &[Entity]) {
+    let texts = shot.texts();
+    let said: Vec<&str> = texts.iter().flat_map(|text| mentions(text)).collect();
+    let (mut renamed, mut first) = (vec![], BTreeMap::new());
+    for mention in &said {
+        if let Some((env, setup)) = setup_named(entities, mention) {
+            let name = setup_name(env, setup);
+            first.entry(name_key(&env.name)).or_insert_with(|| name.clone());
+            renamed.push((*mention, name));
+        }
+    }
+    renamed.extend(said.iter().filter_map(|mention| Some((*mention, first.get(&name_key(mention))?.clone()))));
+    let say = |text: &mut String| {
+        for (from, to) in &renamed {
+            *text = text.replace(&format!("<{from}>"), &format!("<{to}>"));
+        }
+    };
+    say(&mut shot.summary);
+    shot.beats.iter_mut().for_each(|beat| say(&mut beat.description));
+}
+
 /// A node's current file and its versions' files (`Node::file`, `Node::versions`): the version
 /// project.lock approves; else the asset attached in project.yaml.
 fn current(inputs: &BTreeMap<String, Asset>, lock: &Lock, id: &str, attached: &Option<String>) -> Result<Versions, Error> {
@@ -2137,26 +2184,11 @@ fn settle(project: &mut Project, said: &mut Vec<String>) {
         }
     }
     let states: Vec<String> = project.world_states.iter().map(|state| name_key(&state.name)).collect();
-    let setups: Vec<(String, String, String)> = (project.entities.iter())
-        .flat_map(|entity| entity.setups.iter().map(|setup| (entity.name.clone(), setup.name.clone(), format!("{}.{}", entity.name, setup.name))))
-        .collect();
     for shot in &mut project.shots {
         for (n, beat) in shot.beats.iter_mut().enumerate() {
             if beat.duration <= 0.0 {
                 said.push(format!("{}'s beat {} has no duration: it lasts {BEAT_S} s", shot.name, n + 1));
                 beat.duration = BEAT_S;
-            }
-        }
-        if let Some(written) = shot.setup.take() {
-            let key = name_key(&written);
-            // `coast.sea`; `coast`, its first setup, as a mention of it reads; `sea`, when one environment has it.
-            let exact = setups.iter().find(|(.., id)| name_key(id) == key);
-            let of_place = setups.iter().find(|(place, ..)| name_key(place) == key);
-            let mut named = setups.iter().filter(|(_, setup, _)| name_key(setup) == key);
-            let bare = named.next().filter(|_| named.next().is_none());
-            match exact.or(of_place).or(bare) {
-                Some((.., id)) => shot.setup = Some(id.clone()),
-                None => said.push(format!("{}'s setup {written} is no setup (write Environment.Setup): it renders without one", shot.name)),
             }
         }
         let mut written = BTreeSet::new();

@@ -148,9 +148,8 @@ entities:
 
 shots:
   - name: clash
-    setup: coast.wide
     summary: |
-      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
+      <kyogre> and <groudon> fight on <coast.wide> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
       - duration: 14
@@ -234,7 +233,9 @@ A take can be shorter than its shot: `minimax-h3` renders 15 s of a longer shot 
 the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
 
 `<name>` in a text names another node, which it is then made from; a setup's camera is written in
-screen terms (what is near or far, left or right). A shot reads a world state it
+screen terms (what is near or far, left or right). A shot reads only what its text names: a mention in its `summary` reaches
+every segment, and one in a beat only the segment holding that beat. `<coast.wide>` names a setup; `<coast>` alone is the
+setup of it the shot names, else its first. A shot reads a world state it
 names and changes the ones it `writes` (each a `state`, and `at`, by default its end). A shot that mentions a state it
 writes partway renders as consecutive calls split there (`continue_from`), the later one reading its own frame. A
 renderer that cannot continue, or a call under its shortest piece, renders on through: the shot reads the state as it

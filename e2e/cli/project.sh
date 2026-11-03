@@ -156,6 +156,7 @@ cozy --json project -p "$P" status > "$OUT/project-renamed.json" 2>/dev/null || 
 
 references
 imports
+setups
 never_refuse
 frames_otio
 take_size
@@ -438,11 +439,104 @@ J '.warnings | any(test("cozy reads no field shots\\.2\\.references; it is ignor
 J '[.nodes[].name] | index("old") == null' "$OUT/refs-old.json" || check "references: a shot's references: was read: $(jq -c '[.nodes[].name]' "$OUT/refs-old.json")"
 }
 
+# setups: a shot reads only what its text names. <coast.wide> is that setup, as <coast wide> to the renderer, and <coast> beside
+# it the same one; <coast> alone is the first setup. A summary's mention reaches every call and a beat's only the call it
+# overlaps. A leftover setup: is an unknown field.
+setups() {
+step "a project: a setup named in a shot's text, and each call's references"
+local S=$OUT/setups
+mkdir -p "$S"; cp "$here/project/shoot.py" "$here/project/draw.py" "$S/"
+plate "$S/plate.mp4" testsrc2 440 300; still "$S/still.png" teal
+cat > "$S/project.yaml" <<YAML
+version: 1
+defaults:
+  shot:
+    with: ./shoot.py/shoot
+  setup:
+    with: ./draw.py/draw
+entities:
+  - name: coast
+    kind: environment
+    description: |
+      A coast.
+    image: still.png
+    setups:
+      - name: sea
+        camera: |
+          At the water.
+      - name: wide
+        camera: |
+          Far back.
+  - name: hero
+    kind: prop
+    description: |
+      A hero.
+    image: still.png
+  - name: sword
+    kind: prop
+    description: |
+      A sword.
+    image: still.png
+world_states:
+  - name: after
+    image: still.png
+shots:
+  - name: named
+    setup: coast.sea
+    summary: |
+      On <coast.wide>, and <coast> again.
+    beats:
+      - duration: 6
+        description: |
+          Nothing moves.
+    plate:
+      video: plate.mp4
+  - name: bare
+    summary: |
+      On <coast>.
+    beats:
+      - duration: 6
+        description: |
+          Nothing moves.
+    plate:
+      video: plate.mp4
+  - name: called
+    summary: |
+      A long day on <coast.wide>.
+    beats:
+      - duration: 3
+        description: |
+          <hero> stands.
+      - duration: 3
+        description: |
+          <sword> falls, after <after>.
+    writes:
+      - state: after
+        at: 3
+    plate:
+      video: plate.mp4
+YAML
+imported "$S" plate.mp4 still.png
+cozy --json project -p "$S" status > "$OUT/setups-status.json" 2> /dev/null || check "setups: status failed"
+J '.warnings | any(test("cozy reads no field shots\\.0\\.setup; it is ignored"))' "$OUT/setups-status.json" || check "setups: a leftover setup: did not warn: $(jq -c .warnings "$OUT/setups-status.json")"
+local code=0; cozy project -p "$S" render all --on local > "$OUT/setups-render.txt" 2>&1 || code=$?
+[ "$code" = 0 ] || { check "setups: render all: exit $code: $(tail -c 500 "$OUT/setups-render.txt")"; return; }
+asked() { jq -c --arg s "$1" --argjson n "$2" '.nodes[$s].versions[-1].invocations[$n].input' "$S/project.lock"; }
+local names wide sea
+wide=$(jq -r '.nodes["coast.wide"].versions[-1].assets.image.sha256' "$S/project.lock") sea=$(jq -r '.nodes["coast.sea"].versions[-1].assets.image.sha256' "$S/project.lock")
+J --arg w "$wide" '[.references[] | {name, kind, image}] == [{"name": "coast wide", "kind": "environment", "image": $w}] and (.prompt | contains("On <coast wide>, and <coast wide> again."))' <<< "$(asked named 0)" \
+  || check "setups: <coast.wide> and <coast> did not reach named as one reference, coast wide: $(asked named 0 | cut -c1-400)"
+J --arg s "$sea" '[.references[] | {name, image}] == [{"name": "coast", "image": $s}]' <<< "$(asked bare 0)" \
+  || check "setups: <coast> alone is not its first setup, named coast: $(asked bare 0 | cut -c1-400)"
+names=$(jq -c '[.references[].name] | sort' <<< "$(asked called 0)"); [ "$names" = '["coast wide","hero"]' ] || check "setups: the first call's references are $names"
+names=$(jq -c '[.references[].name] | sort' <<< "$(asked called 1)"); [ "$names" = '["after","coast wide","sword"]' ] || check "setups: the second call's references are $names"
+}
+
 # never_refuse: nothing a shot says is refused. A take shorter than its shot is cut at its real length, a write or a
 # setup's frame past its end takes its last frame, a plate its function does not take is left out, and status says so
 # and what its function said. No text renders, and a function with no adapter gets one flat prompt: the summary, then
 # each beat's description. A shot mentioning a state it writes splits there and reads its own frame, or, where it cannot, renders on
-# through and says so. A mention that closes a cycle stays plain text, while a cycle of setup: and frame: is refused. An
+# through and says so. A mention that closes a cycle stays plain text, a setup's and a frame's too. An
 # edit past a take's end leaves that cut out. A stale prompt: or description: is a field cozy does not read, and a
 # text opening a YAML line with `[` is told where it goes.
 never_refuse() {
@@ -614,10 +708,9 @@ J '[.warnings[] | select(test("cozy reads no field shots\\.1\\.(prompt|descripti
 J '(.warnings | any(test("cozy reads no field shots\\.2\\.beats\\.0\\.at; it is ignored"))) and (.warnings | any(contains("timed'"'"'s beat 1 has no duration: it lasts 5 s")))' "$OUT/never-stale.json" \
   || check "never_refuse: a beat with at: and no duration did not warn: $(jq -c .warnings "$OUT/never-stale.json")"
 cp "$OUT/never-ok.yaml" "$N/project.yaml"
-# A cycle of what the file declares, with no mention in it, is a malformed project.
-sed -i 's|^          shot: long$|          shot: long-way|; s|^  - name: silent$|  - name: long-way\n    setup: place.a\n    beats: [{duration: 6}]\n  - name: silent|' "$N/project.yaml"
+sed -i 's|^          shot: long$|          shot: long-way|; s|^  - name: silent$|  - name: long-way\n    summary: On <place.a>.\n    beats: [{duration: 6}]\n  - name: silent|' "$N/project.yaml"
 code=0; cozy project -p "$N" status > "$OUT/never-cycle.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'a cycle: ' "$OUT/never-cycle.txt"; } || check "never_refuse: a cycle of setup: and frame: was not refused (exit $code): $(tail -c 300 "$OUT/never-cycle.txt")"
+{ [ "$code" = 0 ] && grep -q 'long-way mentions place.a, which is made from it: that mention stays plain text' "$OUT/never-cycle.txt"; } || check "never_refuse: a mention of a setup made from the shot did not stay plain text (exit $code): $(tail -c 300 "$OUT/never-cycle.txt")"
 cp "$OUT/never-ok.yaml" "$N/project.yaml"
 sed -i 's|^    summary: A long shot\.$|    summary: [Shot 1] A long shot.|' "$N/project.yaml"
 code=0; cozy project -p "$N" status > "$OUT/never-bracket.txt" 2>&1 || code=$?
