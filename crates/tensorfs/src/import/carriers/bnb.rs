@@ -18,9 +18,8 @@ use crate::import::source::{Group, SourceSet, Tensor};
 
 const STATE: &str = ".quant_state.bitsandbytes__";
 
-/// bnb's `quant_state` document; any other key is refused.
+/// bnb's `quant_state` document, what reads its encoding: a later bitsandbytes' other keys are ignored.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct QuantState {
     quant_type: String,
     blocksize: u64,

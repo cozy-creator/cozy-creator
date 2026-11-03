@@ -375,12 +375,8 @@ fn split_url(url: &str) -> Result<(String, String, Option<u16>, String)> {
             "source URL is empty, over 16 KiB, or not ASCII",
         );
     }
-    if url.contains('#') {
-        return refuse(
-            Code::SOURCE_NOT_ALLOWED,
-            "source URL carries a fragment, which is not sent to a server",
-        );
-    }
+    // A fragment is never sent to a server.
+    let url = url.split('#').next().unwrap_or(url);
     let Some((scheme, rest)) = url.split_once("://") else {
         return refuse(Code::SOURCE_NOT_ALLOWED, "source URL is not absolute");
     };

@@ -790,13 +790,17 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             progress(&format!("warning: {} GGUF files: taking {}. Name another by its path to take it instead: {others}", ggufs.len(), taken.path), 0, 0);
         }
         for m in selected {
-            if members.iter().any(|o| o.path == m.path) {
-                return refuse(
-                    Code::DUPLICATE_KEY,
-                    format!("two sources both hold {}", m.path),
-                );
+            match members.iter().find(|o| o.path == m.path) {
+                None => members.push(m),
+                Some(o) if o.sha256.is_some() && o.sha256 == m.sha256 => {}
+                Some(_) if remote::weights(&m.path) => {
+                    return refuse(
+                        Code::DUPLICATE_KEY,
+                        format!("two sources both hold {} with other bytes", m.path),
+                    );
+                }
+                Some(_) => progress(&format!("warning: two sources both hold {}: keeping the first", m.path), 0, 0),
             }
-            members.push(m);
         }
     }
     let id = digest(&[

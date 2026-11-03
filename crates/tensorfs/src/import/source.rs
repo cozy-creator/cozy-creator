@@ -245,11 +245,9 @@ impl SourceSet {
                 let (tensors, metadata) = read_header(&shard.local, file, shard.length)?;
                 let mut named: Vec<&str> = keys.clone();
                 named.sort();
+                // The shard's own header is the truth; a stale index is no reason to refuse it.
                 if tensors.keys().map(String::as_str).ne(named.iter().copied()) {
-                    return refuse(
-                        Code::MISSING_TENSOR,
-                        format!("{shard_path}: its keys differ from {path}'s weight map"),
-                    );
+                    tracing::warn!("{shard_path}: its keys differ from {path}'s weight map; taking the shard's");
                 }
                 group.tensors.extend(tensors);
                 group.metadata.extend(metadata);
