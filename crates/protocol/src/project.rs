@@ -250,11 +250,24 @@ pub struct Transferred {
     /// Those sent or fetched now.
     pub moved: u64,
     pub bytes: u64,
+    /// The files it could not move, which stopped nothing else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<Skipped>,
     /// A push's: the private model and commit that keep them at the Hub, until deleted by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept_in: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+}
+
+/// A file a push or pull left out: its path in the project, the path project.yaml writes for it if it
+/// names it, and why.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Skipped {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
+    pub why: String,
 }
 
 /// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.

@@ -371,10 +371,11 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   project.lock names that the Hub lacks, by content (`/blobs/…`: what it holds never moves; a killed push sends only the
   files that had not landed), reading through links, and records them all as a private commit of the account's model
   `project-assets`, which keeps them until its owner deletes it (`cozy model delete`). A file not on this computer
-  needs only be at the Hub. The most one file can be is 5 GiB.
+  needs only be at the Hub. A file over 5 GiB, or on neither, is left out and named in `skipped`; everything else goes.
 - `POST /v1/projects/{id}/pull` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Fetches every file
   project.lock names that `assets/` lacks, as a real file: a killed pull goes on from the byte it reached
-  (`assets/.<name>.part`), and each is held to its sha256 before it is named. Both say how they go on the events
+  (`assets/.<name>.part`), and each is held to its sha256 before it is named. A file not at the Hub is left out and named
+  in `skipped`; everything else comes. Both say how they go on the events
   (`moved`, `transferred`) and go on when their client goes; one project moves one at a time.
 - `POST /v1/projects/{id}/approve` `{name, version}` (`version` its number): `{name, noun, number, assets, path,
   stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
@@ -382,7 +383,7 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
   `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, frames, fps, retimed?, took_s}` and
   `moved {file?, bytes}` (a push or pull landed `file`, or is under way), `transferred {done?: {files, moved, bytes,
-  kept_in?, commit?}, error?}` when it ends, `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
+  skipped?: [{path, original?, why}], kept_in?, commit?}, error?}` when it ends, `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
 - `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`, and each one's `.otio`): the cut or its
@@ -410,7 +411,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project ls` | `GET /v1/projects` |
 | `cozy project render …` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/runs`; each `started` run followed on `GET /v1/runs/{id}/events` |
 | `cozy project approve <node> <n>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/approve` |
-| `cozy project push`, `pull` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull` |
+| `cozy project push`, `pull` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull`; exits 3 when `skipped` names a file |
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
