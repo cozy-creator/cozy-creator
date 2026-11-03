@@ -198,7 +198,9 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
             (local.package.as_str(), function.as_deref(), code)
         }
     };
-    let Some(function) = function else {
+    // Given something to run with, a package of one function runs it; given nothing, it is listed.
+    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || !ask.files.is_empty() || ask.warm.is_some();
+    let Some(function) = function.or(target::only_function(code.interface).filter(|_| given)) else {
         let release = match &resolved {
             Resolved::Release { release: Some(release), .. } => Some(release.as_str()),
             _ => None,
@@ -281,12 +283,12 @@ async fn call(
     };
     let target = format!("{}/{}", code.package, callable.name);
     let (spec, bound, out) = match ask.warm {
-        Some(_) if ask.gpus.is_some() => {
-            return Err(Error::new(Kind::Usage, "warm_gpus", "--gpus applies to a run, not to --warm"));
-        }
         Some(level) => {
+            if ask.gpus.is_some() {
+                notes.push(Note { level: NoteLevel::Warning, message: "--gpus applies to a run, not to --warm: ignored".into() });
+            }
             let (models, payload) = bind::warm_choices(
-                &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu,
+                &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu, &mut notes,
             )
             .await?;
             (call.warm(level, &models, payload)?, None, None)
@@ -327,7 +329,7 @@ async fn gpuless(api: &Api, on: &On, interface: &Interface, callable: &Callable,
 
 /// The function `asked` names: exact, else the one name equal with `-` as `_`.
 pub(crate) fn callable<'a>(package: &str, interface: &'a Interface, asked: &str) -> Result<&'a Callable, Error> {
-    let fold = |name: &str| name.replace('-', "_");
+    let fold = |name: &str| name.replace('-', "_").to_ascii_lowercase();
     let found = interface.callables.iter().find(|c| c.name == asked).or_else(|| {
         let mut matches = interface.callables.iter().filter(|c| fold(&c.name) == fold(asked));
         matches.next().filter(|_| matches.next().is_none())

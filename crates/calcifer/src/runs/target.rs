@@ -107,12 +107,13 @@ pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<
 
 /// The function local code's run calls: the one named, else its only public one.
 fn chosen(interface: &Interface, function: Option<String>) -> Option<String> {
-    let public: Vec<&str> = (interface.callables.iter()).filter(|c| !c.internal).map(|c| c.name.as_str()).collect();
-    match (function, public.as_slice()) {
-        (Some(function), _) => Some(function),
-        (None, [only]) => Some((*only).to_owned()),
-        (None, _) => None,
-    }
+    function.or_else(|| only_function(interface).map(str::to_owned))
+}
+
+/// A package's one public function, when it has just one (a project adapter is `cozy project`'s).
+pub(crate) fn only_function(interface: &Interface) -> Option<&str> {
+    let mut public = interface.public().into_iter().filter(|name| !name.starts_with("project-adapter-"));
+    public.next().filter(|_| public.next().is_none())
 }
 
 fn parse(document: &serde_json::Value) -> Result<Interface, Error> {

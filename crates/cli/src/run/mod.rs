@@ -35,7 +35,7 @@ const EXAMPLES: &str = "Examples:
   cozy run sdxl/generate prompt='a fox in fresh snow'  (inline, for quick runs)
   cozy run sdxl/generate --describe                    (the fields it takes)
 
-A video path may name a segment, path#t=<start>,<end> (whole seconds, m:ss or h:mm:ss; either may be left
+A video path may name a segment, path#t=<start>,<end> (seconds, m:ss or h:mm:ss; either may be left
 out): it is cut once into ~/.cozy/cache/clips and sent instead of the whole file.
 
 A run is followed to its end: Ctrl-C stops following, never the run; `cozy run show N` follows it again.";

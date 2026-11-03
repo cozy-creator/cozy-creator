@@ -118,7 +118,8 @@ a spec.
     `adjustments`, and a list of files is cut here, before they go, with a warning.
   - `notes` are what binding said, in order (`info`: a clip cut; `warning`: fields dropped, a list of files cut,
     a machine with no GPU). `preparing`: the run is local code's install; follow it, then send the same request under the same key.
-  - Refusals name the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
+  - A package of one public function runs it when the request gives it something to run with. Refusals name
+    the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
     `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, …. `local_unavailable`
     (`on: local` where this OS runs no models) comes once the target names a function, or at once for local code.
     `machine_unreachable` records nothing: ask again under the same key (the CLI does, five times with backoff, saying

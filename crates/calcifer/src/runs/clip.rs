@@ -17,7 +17,6 @@ use sha2::{Digest as _, Sha256};
 
 /// What follows a path to name a segment of it (W3C media fragments' temporal dimension).
 const FRAGMENT: &str = "#t=";
-const MIN_SECONDS: f64 = 2.0;
 const THREADS: &str = "4";
 /// Re-encoded at the source's size and rate. Part of each clip's key.
 #[rustfmt::skip]
@@ -61,7 +60,7 @@ pub fn fragment(source: &Path, at: &str) -> Result<(PathBuf, Option<Range>), Err
     let (path, times) = (&text[..split], &text[split + FRAGMENT.len()..]);
     let malformed = || {
         invalid(format!("{at}: {text:?} names no range after {FRAGMENT}"))
-            .remedy("path#t=<start>,<end> in whole seconds, m:ss or h:mm:ss; either may be left out (#t=5, #t=,0:12)")
+            .remedy("path#t=<start>,<end> in seconds, m:ss or h:mm:ss; either may be left out (#t=5, #t=,0:12)")
     };
     let (start, end) = times.split_once(',').unwrap_or((times, ""));
     if path.is_empty() || (start.is_empty() && end.is_empty()) {
@@ -71,13 +70,8 @@ pub fn fragment(source: &Path, at: &str) -> Result<(PathBuf, Option<Range>), Err
         if t.is_empty() {
             return Ok(None);
         }
-        seconds(t).map(|s| Some(s as f64)).ok_or_else(|| {
-            let fraction = t.contains('.');
-            invalid(match fraction {
-                true => format!("{at}: {t} has a fraction of a second; a range is whole seconds"),
-                false => format!("{at}: {t} is not a time"),
-            })
-            .remedy("whole seconds (199), m:ss (3:19) or h:mm:ss (1:03:19)")
+        seconds(t).map(Some).ok_or_else(|| {
+            invalid(format!("{at}: {t} is not a time")).remedy("seconds (199, 1.5), m:ss (3:19) or h:mm:ss (1:03:19)")
         })
     };
     let range = Range {
@@ -85,24 +79,18 @@ pub fn fragment(source: &Path, at: &str) -> Result<(PathBuf, Option<Range>), Err
         end: time(end)?,
     };
     if let Some(end) = range.end {
-        range.long_enough(end, at)?;
+        range.ordered(end, at)?;
     }
     Ok((path.into(), Some(range)))
 }
 
 impl Range {
-    fn long_enough(self, end: f64, at: &str) -> Result<Self, Error> {
+    fn ordered(self, end: f64, at: &str) -> Result<Self, Error> {
         if end <= self.start {
             return Err(invalid(format!(
                 "{at}: end {} is not after start {}",
                 clock(end),
                 clock(self.start)
-            )));
-        }
-        if end - self.start < MIN_SECONDS {
-            return Err(invalid(format!(
-                "{at}: {self} is {:.3} s; a segment is at least {MIN_SECONDS} s",
-                end - self.start
             )));
         }
         Ok(self)
@@ -133,7 +121,9 @@ impl Clips {
     /// `range` of `source` as a clip: the one cut before for this version of the file, else cut
     /// now. What it did is said in `notes`.
     pub async fn cut(&self, field: &str, source: &Path, range: Range, notes: &mut Vec<Note>) -> Result<Cut, Error> {
-        let mut say = |message: String| notes.push(Note { level: NoteLevel::Info, message });
+        fn say(notes: &mut Vec<Note>, message: String) {
+            notes.push(Note { level: NoteLevel::Info, message });
+        }
         let key = key(source, range).ok_or_else(|| {
             Error::new(
                 Kind::NotFound,
@@ -153,12 +143,15 @@ impl Clips {
                 .write(true)
                 .open(&clip)
                 .and_then(|f| f.set_times(FileTimes::new().set_accessed(SystemTime::now())));
-            say(format!("{field}: {range} of {}, cut before: {}", source.display(), clip.display()));
+            say(notes, format!("{field}: {range} of {}, cut before: {}", source.display(), clip.display()));
             return Ok(cut);
         }
         let ffmpeg = crate::tools::ffmpeg(&self.home, &|line| tracing::info!("{line}")).await?;
-        let end = within(&ffmpeg, field, source, range)?;
-        say(format!("{field}: cutting {range} of {}", source.display()));
+        let (end, past) = within(&ffmpeg, field, source, range)?;
+        if past {
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{field}: {range} runs past the end of {}: cut to its end, {}", source.display(), clock(end)) });
+        }
+        say(notes, format!("{field}: cutting {range} of {}", source.display()));
         let began = Instant::now();
         let (source, dir) = (source.to_owned(), self.dir.clone());
         tokio::task::spawn_blocking(move || {
@@ -166,31 +159,25 @@ impl Clips {
         })
         .await
         .map_err(|e| Error::new(Kind::Internal, "clip_cut", e.to_string()))??;
-        say(format!("{field}: cut in {:.1} s: {}", began.elapsed().as_secs_f64(), cut.clip.display()));
+        say(notes, format!("{field}: cut in {:.1} s: {}", began.elapsed().as_secs_f64(), cut.clip.display()));
         Ok(cut)
     }
 }
 
-/// The range's end, once it is checked against the source's duration.
-fn within(ffmpeg: &crate::tools::Ffmpeg, at: &str, source: &Path, range: Range) -> Result<f64, Error> {
+/// The range's end, held to the source's duration, and whether that moved it.
+fn within(ffmpeg: &crate::tools::Ffmpeg, at: &str, source: &Path, range: Range) -> Result<(f64, bool), Error> {
     let duration = probe(&ffmpeg.ffprobe, source)?;
-    let past = |what: &str, t: f64| {
-        invalid(format!(
-            "{at}: {what} {} is past the end of {} ({})",
-            clock(t),
+    if range.start >= duration {
+        return Err(invalid(format!(
+            "{at}: start {} is past the end of {} ({})",
+            clock(range.start),
             source.display(),
             clock(duration)
-        ))
-    };
-    if range.start >= duration {
-        return Err(past("start", range.start));
+        )));
     }
     let end = range.end.unwrap_or(duration);
-    if end > duration + 0.0005 {
-        return Err(past("end", end));
-    }
-    range.long_enough(end, at)?;
-    Ok(end)
+    let past = end > duration + 0.0005;
+    Ok((if past { duration } else { end }, past))
 }
 
 /// `start..end` of `source`, encoded into `clip` whole or not at all.
@@ -351,14 +338,15 @@ fn sweep(dir: &Path) {
 }
 
 /// Whole seconds written as `s`, `m:ss` or `h:mm:ss`.
-fn seconds(text: &str) -> Option<u64> {
+fn seconds(text: &str) -> Option<f64> {
     let parts: Vec<&str> = text.split(':').collect();
     if parts.len() > 3 {
         return None;
     }
-    parts.iter().enumerate().try_fold(0u64, |total, (i, part)| {
-        let n: u64 = part.parse().ok().filter(|_| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))?;
-        (i == 0 || n < 60).then_some(total * 60 + n)
+    parts.iter().enumerate().try_fold(0.0, |total, (i, part)| {
+        let plain = !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+        let n: f64 = part.parse().ok().filter(|n: &f64| plain && n.is_finite())?;
+        (i == 0 || n < 60.0).then_some(total * 60.0 + n)
     })
 }
 

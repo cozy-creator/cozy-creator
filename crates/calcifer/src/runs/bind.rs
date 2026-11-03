@@ -150,7 +150,7 @@ fn canonical(value: &Value) -> String {
 /// carries no payload, so any other term is refused.
 pub async fn warm_choices(
     target: &str, release: Option<&str>, interface: &Interface, callable: &Callable,
-    terms: &Terms, program: bool,
+    terms: &Terms, program: bool, notes: &mut Vec<Note>,
 ) -> Result<(Vec<Choice>, Option<protocol::machine::Json>), Error> {
     let mut binder = Binder {
         target: "",
@@ -159,6 +159,7 @@ pub async fn warm_choices(
         document: Map::new(),
         choices: Choices::new("", &callable.name, &callable.models, interface.call_slots(callable)),
         files: Vec::new(),
+        named_files: Vec::new(),
         cuts: Vec::new(),
         notes: Vec::new(),
         cut: Vec::new(),
@@ -173,13 +174,14 @@ pub async fn warm_choices(
     if !positional.is_empty()
         || !binder.document.is_empty()
         || !binder.files.is_empty()
+        || !binder.named_files.is_empty()
         || !terms.assets.is_empty()
         || !terms.fidelities.is_empty()
         || terms.input_file.is_some()
         || terms.input.is_some()
     {
         if program {
-            if !binder.files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
+            if !binder.files.is_empty() || !binder.named_files.is_empty() || !terms.assets.is_empty() || !terms.fidelities.is_empty() {
                 return Err(usage("warm_inputs", "GPU program warming takes scalar inputs, not media files"));
             }
             let bound = bind(target, release, interface, callable, terms).await?;
@@ -189,10 +191,10 @@ pub async fn warm_choices(
             let payload = bound.canonical_payload();
             return Ok((bound.models, Some(payload)));
         }
-        return Err(usage(
-            "warm_inputs",
-            "--warm keeps a function ready and takes no inputs, only model.<slot>= and --lora choices",
-        ));
+        notes.push(Note {
+            level: NoteLevel::Warning,
+            message: "--warm keeps a function ready and takes no inputs, only model.<slot>= and --lora choices: they are ignored".into(),
+        });
     }
     Ok((binder.choices.into_choices(), None))
 }
@@ -213,6 +215,7 @@ pub async fn bind(
         document: Map::new(),
         choices: Choices::new(target, &callable.name, &callable.models, interface.call_slots(callable)),
         files: Vec::new(),
+        named_files: Vec::new(),
         cuts: Vec::new(),
         notes: Vec::new(),
         cut: Vec::new(),
@@ -264,6 +267,8 @@ struct Binder<'a> {
     choices: Choices<'a>,
     /// Positional local files, bound to media inputs by kind.
     files: Vec<PathBuf>,
+    /// `key=value` terms whose field is a file: `--file key=value`.
+    named_files: Vec<FileTerm>,
     cuts: Vec<Cut>,
     notes: Vec<Note>,
     cut: Vec<String>,
@@ -384,6 +389,11 @@ impl Binder<'_> {
                 continue;
             }
             let key = self.fold(key)?;
+            let spelled = self.callable.field(&key).and_then(|field| scalar(&field.ty, raw));
+            if !structured && spelled.is_none() && self.names_a_file(&key) {
+                self.named_files.push(FileTerm { name: Some(key), file: raw.to_owned() });
+                continue;
+            }
             let value = if structured {
                 serde_json::from_str(raw).map_err(|_| {
                     usage("json_malformed", format!("{key}:=… is not JSON: {raw}")).remedy(
@@ -413,27 +423,14 @@ impl Binder<'_> {
             .iter()
             .find(|f| !self.callable.is_assets(&f.name) && f.ty.media().is_none())
         else {
-            return Err(usage(
-                "positional_unbound",
-                format!(
-                    "{} has no request field a positional value fills",
-                    self.callable.name
-                ),
-            ));
+            self.warn(format!("{} has no request field a value fills: {} ignored", self.callable.name, positional.join(" ")));
+            return Ok(());
         };
         if positional.len() > 1 {
-            return Err(usage(
-                "positional_extra",
-                format!(
-                    "{} takes one positional value ({}); got {}",
-                    self.callable.name,
-                    field.name,
-                    positional.len()
-                ),
-            )
-            .remedy("every other field is `key=value` or `key:=<json>`"));
+            let words = positional.len();
+            self.warn(format!("{words} values given for {}: read as one (quote it, or `key=value`)", field.name));
         }
-        let value = self.typed(field, first)?;
+        let value = self.typed(field, &positional.join(" "))?;
         self.document.insert(field.name.clone(), value);
         Ok(())
     }
@@ -477,16 +474,22 @@ impl Binder<'_> {
         }
     }
 
+    fn warn(&mut self, message: String) {
+        self.notes.push(Note { level: NoteLevel::Warning, message });
+    }
+
+    /// Whether `key` is an input file, or a list of them (`image`, `pictures.0.image`, `plate.video`).
+    fn names_a_file(&self, key: &str) -> bool {
+        let list = self.callable.field(key).is_some_and(|field| field.ty.media().is_some());
+        let parts: Vec<String> = key.split('.').map(str::to_owned).collect();
+        list || self.accepts(&parts).is_some()
+    }
+
     /// A scalar spelled as the field's declared type.
     fn typed(&self, field: &Field, raw: &str) -> Result<Value, Error> {
         scalar(&field.ty, raw).ok_or_else(|| {
             let name = format!("{}.{}", self.callable.name, field.name);
             match &field.ty {
-                Type::Asset(_) => invalid(
-                    "asset_needs_file",
-                    format!("{name} is an input file and `key=value` cannot attach one"),
-                )
-                .remedy(format!("use --file {}=<file>", field.name)),
                 Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Model => invalid(
                     "value_not_scalar",
                     format!("{name} is not a scalar and `key=value` cannot spell one"),
@@ -555,7 +558,7 @@ impl Binder<'_> {
                 embedded_files(&field.ty, value, &field.name, self.terms, &mut specs)?;
             }
         }
-        for term in &self.terms.assets {
+        for term in self.terms.assets.iter().chain(&self.named_files) {
             let spec = self.asset_spec(term, &specs);
             specs.push(spec);
         }
@@ -649,15 +652,23 @@ impl Binder<'_> {
                 None => (path, sniffed),
                 Some(range) => {
                     if !sniffed.media_type.starts_with("video/") {
-                        return Err(invalid(
-                            "input_segment_invalid",
-                            format!("{field}: #t= cuts a video, and {} is {}", path.display(), sniffed.media_type),
-                        ));
+                        self.warn(format!("{field}: #t= cuts a video, and {} is {}: sent whole", path.display(), sniffed.media_type));
+                        (path, sniffed)
+                    } else {
+                        match self.terms.clips.cut(&field, &path, range, &mut self.notes).await {
+                            Ok(cut) => {
+                                let clipped = (cut.clip.clone(), sniff(&cut.clip)?);
+                                self.cuts.push(cut);
+                                clipped
+                            }
+                            // No ffmpeg costs the cut, never the run (Paul, 10-17).
+                            Err(e) if e.code == "ffmpeg_unavailable" => {
+                                self.warn(format!("{field}: {range} of {} is not cut, the whole file is sent: {}", path.display(), e.message));
+                                (path, sniffed)
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
-                    let cut = self.terms.clips.cut(&field, &path, range, &mut self.notes).await?;
-                    let clipped = (cut.clip.clone(), sniff(&cut.clip)?);
-                    self.cuts.push(cut);
-                    clipped
                 }
             };
             let (kind_max, kinds) = accepts;
@@ -768,20 +779,15 @@ impl Binder<'_> {
             return Ok(());
         }
         let Some(assets) = &self.callable.assets else {
-            return Err(usage(
-                "assets_undeclared",
-                format!(
-                    "{} declares no Files input for --file-fidelity",
-                    self.callable.name
-                ),
-            ));
+            self.warn(format!("{} declares no Files input: --file-fidelity is ignored", self.callable.name));
+            return Ok(());
         };
         let mut none = vec![];
         let list = match self.document.get_mut(&assets.parameter) {
             Some(Value::Array(list)) => list,
             _ => &mut none,
         };
-        let mut given = BTreeSet::new();
+        let (mut given, mut ignored) = (BTreeSet::new(), vec![]);
         for term in &self.terms.fidelities {
             let (key, fidelity) = term.rsplit_once('=').expect("clap checked its form");
             let index = list.iter().position(|e| e["label"] == key).or_else(|| {
@@ -789,19 +795,15 @@ impl Binder<'_> {
                 (index < list.len()).then_some(index)
             });
             let Some(index) = index.filter(|i| list[*i].is_object()) else {
-                return Err(usage(
-                    "asset_fidelity_unmatched",
-                    format!("--file-fidelity {key:?} names no attached file"),
-                ));
+                ignored.push(format!("--file-fidelity {key:?} names no attached file: ignored"));
+                continue;
             };
             if !given.insert(index) {
-                return Err(usage(
-                    "asset_fidelity_repeated",
-                    format!("file {key:?} was given a fidelity more than once"),
-                ));
+                ignored.push(format!("file {key:?} was given a fidelity more than once: the last stands"));
             }
             list[index]["fidelity"] = fidelity.into();
         }
+        ignored.into_iter().for_each(|message| self.warn(message));
         Ok(())
     }
 
@@ -1396,16 +1398,19 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
             .filter(|f| f.is_finite())
             .and_then(Number::from_f64)
             .map(Value::Number),
-        Type::Bool => match raw {
-            "true" => Some(Value::Bool(true)),
-            "false" => Some(Value::Bool(false)),
+        Type::Bool => match raw.to_ascii_lowercase().as_str() {
+            "true" | "yes" => Some(Value::Bool(true)),
+            "false" | "no" => Some(Value::Bool(false)),
             _ => None,
         },
-        Type::Null => (raw == "null").then_some(Value::Null),
+        Type::Null => (raw.eq_ignore_ascii_case("null") || raw.eq_ignore_ascii_case("none")).then_some(Value::Null),
         Type::Literal(members) => {
             let text = Value::String(raw.to_owned());
             if members.contains(&text) {
                 return Some(text);
+            }
+            if let Some(member) = members.iter().find(|m| m.as_str().is_some_and(|m| m.eq_ignore_ascii_case(raw))) {
+                return Some(member.clone());
             }
             let parsed: Value = serde_json::from_str(raw).ok()?;
             (members.iter().any(|m| same(m, &parsed)) || numbers(members, &parsed)).then_some(parsed)
@@ -1436,19 +1441,35 @@ pub(super) fn scalar(ty: &Type, raw: &str) -> Option<Value> {
                     other => other,
                 });
             }
+            // `True` for a bool|null, `20.0` for an int|null: text is text wherever a string could hold it.
             scalars()
                 .filter(|b| matches!(b, Type::Str | Type::Literal(_)))
                 .find_map(|b| scalar(b, raw))
+                .or_else(|| scalars().find_map(|b| scalar(b, raw)))
         }
         Type::List(_) | Type::Map(_) | Type::Struct(_) | Type::Asset(_) | Type::Model => None,
     }
 }
 
 fn integer(raw: &str) -> Option<Value> {
+    let whole = || raw.parse::<f64>().ok().filter(|f| f.fract() == 0.0 && f.abs() < (1u64 << 53) as f64);
     raw.parse::<i64>()
         .map(Value::from)
         .or_else(|_| raw.parse::<u64>().map(Value::from))
         .ok()
+        .or_else(|| whole().map(|f| Value::from(f as i64)))
+}
+
+/// A scalar a request file wrote as another spelling of the value `ty` takes: `"20"` or `20.0` for
+/// an int, `"true"` for a bool, `Fast` for `fast`, a number for a string.
+fn respelled(ty: &Type, value: &Value) -> Option<Value> {
+    match (ty, value) {
+        (Type::Int | Type::Float | Type::Bool, Value::String(s)) => scalar(ty, s),
+        (Type::Int, Value::Number(n)) if !(n.is_i64() || n.is_u64()) => integer(&n.to_string()),
+        (Type::Literal(_), Value::String(s)) => scalar(ty, s),
+        (Type::Str, Value::Number(_) | Value::Bool(_)) => Some(Value::String(value.to_string())),
+        _ => None,
+    }
 }
 
 /// Whether `value` is a number for a Literal of numbers: Runtime takes the nearest member.
@@ -1568,6 +1589,9 @@ fn check_field(
 /// with fewest problems), never just that it matched none. Undeclared struct members are
 /// dropped into `ignored`.
 fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) -> Vec<String> {
+    if let Some(spelled) = respelled(ty, value) {
+        *value = spelled;
+    }
     match (ty, &mut *value) {
         (Type::Unknown | Type::Model, _)
         | (Type::Str, Value::String(_))
@@ -1595,6 +1619,9 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
             value,
         ) => {
             let mut closest: Option<(u8, Vec<String>, Vec<String>)> = None;
+            // The branch of the value's own kind first: 20 for str|int stays a number.
+            let mut branches: Vec<&Type> = branches.iter().collect();
+            branches.sort_by_key(|branch| std::cmp::Reverse(shape(branch, value)));
             for branch in branches {
                 let branch = match (branch, tag_field) {
                     (Type::Struct(s), Some(tag)) if s.tag_field.is_none() => {
