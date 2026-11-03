@@ -62,13 +62,28 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
     for owner in owners {
         let state = owner.lock()?;
         for (address, segment) in &state.segments {
-            let blocks = state.blocks.range(*address..*address + segment.bytes as u64)
-                .map(|(_, block)| WorkingBlock {
+            let end = *address + segment.bytes as u64;
+            let mut cursor = *address;
+            let mut blocks = Vec::new();
+            for (base, block) in state.blocks.range(*address..end) {
+                if cursor < *base {
+                    blocks.push(WorkingBlock { bytes: (*base - cursor) as usize,
+                        requested: 0, allocated: false, active: false });
+                }
+                blocks.push(WorkingBlock {
                     bytes: block.capacity,
                     requested: block.requested,
                     allocated: block.life == Life::Live,
                     active: block.charge() != 0,
-                }).collect();
+                });
+                cursor = *base + block.capacity as u64;
+            }
+            // Eager classes need not divide a backing slab. This is real mapped
+            // but unassigned space, not an allocation slot or a promise of reuse.
+            if cursor < end {
+                blocks.push(WorkingBlock { bytes: (end - cursor) as usize,
+                    requested: 0, allocated: false, active: false });
+            }
             out.push(WorkingSnapshot {
                 segment: WorkingSegment { device: owner.device, address: *address,
                     bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool }, blocks,
