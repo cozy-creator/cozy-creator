@@ -49,6 +49,7 @@ def preparation_ordering(device, capture, fixture, pool, reserve, timeout_s):
     def attempt():
         try:
             with (
+                torch.inference_mode(),
                 torch.cuda.device(device),
                 torch.cuda.stream(caller),
                 vt.graph(graph, pool=pool, stream=capture, reserve_bytes=reserve),
@@ -182,6 +183,7 @@ def run(device, provider_path, provider_python, timeout_s):
         def attempt_scoped_capture():
             try:
                 with (
+                    torch.inference_mode(),
                     torch.cuda.device(device),
                     torch.cuda.stream(capture),
                     vt.graph(
