@@ -228,7 +228,15 @@ def run(args):
             # Real native callback request while model and another entry admission
             # are held. Idle entry1 must retire WITHOUT acquiring the model lock.
             stream.synchronize()
+            before_weight_trim = vt.stats(device)
+            owner._owner.gpu.trim()  # Ready weights must not satisfy this request.
+            weights_before_pressure = [
+                row for segment in segments for row in segment._weight_entries()
+            ]
+            assert all(row["mapped_bytes"] == 0 for row in weights_before_pressure)
             before_pressure = vt.stats(device)
+            assert before_pressure["pools_bytes"] == before_weight_trim["pools_bytes"]
+            assert [state.cache.segment for state in states] == segments
             request = None
             try:
                 with owner._owner.lock, states[0].cache.admission():
@@ -238,10 +246,10 @@ def run(args):
                     assert request is not None
                     poll(
                         args.timeout_s,
-                        lambda: not states[1].cache.facts()["has_definition"],
+                        lambda: states[1].cache.segment is None,
                         "native idle cache retirement",
                     )
-                    assert states[0].cache.facts()["has_definition"]
+                    assert states[0].cache.segment is segments[0]
                     request_facts = poll(
                         args.timeout_s,
                         lambda: (
@@ -252,7 +260,9 @@ def run(args):
                     assert (
                         request_facts["returned"] >= 1 and not request_facts["failed"]
                     )
-                    assert states[1].cache.facts()["native_retirements"] >= 1
+                    idle_after_request = states[1].cache.facts()
+                    assert idle_after_request["native_retirements"] >= 1
+                    stream.synchronize()  # Join the actual completed release tail.
                     vt.trim(device)
                     physical = vt.stats(device)
                     assert physical["pools_bytes"] < before_pressure["pools_bytes"]
@@ -292,8 +302,11 @@ def run(args):
             "all_definitions_live_with_zero_weight_pins": True,
             "independent_normal_outputs": True,
             "body_calls": list(counts.values()),
+            "weights_before_pressure": weights_before_pressure,
+            "pool_bytes_before_weight_trim": before_weight_trim["pools_bytes"],
             "pool_bytes_before_pressure": before_pressure["pools_bytes"],
             "pool_bytes_after_pressure": physical["pools_bytes"],
+            "idle_cache_after_request": idle_after_request,
             "native_request": request_facts,
             "parent_observation_control": "typed",
             "parent_observation_receipts": parent_receipts,
