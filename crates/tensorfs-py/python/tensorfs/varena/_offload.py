@@ -447,7 +447,9 @@ class Offload:
     aliases retain their immutable Source/device owners and remain readable.
     """
 
-    def __init__(self, model, device=0, *, source=None):
+    def __init__(self, model, device=0, *, source=None, graphs="auto"):
+        if graphs not in ("auto", "eager"):
+            raise ValueError("graphs must be 'auto' or 'eager'")
         roots = _roots(model)
         inventory = inspect_cpu_roots(roots)
         if source is not None:
@@ -490,6 +492,7 @@ class Offload:
         self._method_origins = {}
         self._component_entries = {}
         self._root_names = {id(module): name for name, module in roots.items()}
+        self._automatic = None
         self._intent_plan = None
         self._intent_dirty = True
         self._intent_failed = False
@@ -557,6 +560,9 @@ class Offload:
                 torch.utils.swap_tensors(parameter, candidate)
             raise
         self.facts = inventory.facts()
+        from ._offload_auto import _AutomaticGraphs
+
+        self._automatic = _AutomaticGraphs(self, graphs)
 
     def _check(self):
         if self.closed:
@@ -565,6 +571,8 @@ class Offload:
             raise OffloadError(
                 "native intent cleanup failed; close/retry the retained handle"
             )
+        if self._automatic is not None:
+            self._automatic.check()
 
     def _refresh_intent(self):
         if not self._intent_dirty:
@@ -766,7 +774,11 @@ class Offload:
                 ):
                     owner._check()
                     if not component:
-                        return original(*args, **kwargs)
+                        if owner._automatic is None:
+                            return original(*args, **kwargs)
+                        return owner._automatic.dispatch(
+                            module, original, args, kwargs, None
+                        )
                     from ._offload_stream import component_scope
 
                     with component_scope(
@@ -779,7 +791,13 @@ class Offload:
                             owner._component_entries[name] = (
                                 owner._component_entries.get(name, 0) + 1
                             )
-                        return scope.output(original(*args, **kwargs))
+                        if owner._automatic is None:
+                            result = original(*args, **kwargs)
+                        else:
+                            result = owner._automatic.dispatch(
+                                module, original, args, kwargs, scope
+                            )
+                        return scope.output(result)
 
             replace("forward", forward, bind=False)
 
@@ -966,7 +984,20 @@ class Offload:
             pool=pool,
         )
 
+    def graph_facts(self):
+        """Passive automatic selection/counter/native-measurement metadata."""
+        self._automatic.check_process()
+        with self._owner.lock:
+            return self._automatic.facts()
+
     def close(self):
+        # Drain callbacks outside model/entry locks after stopping host admission.
+        self._automatic.check_process()
+        with self._owner.lock:
+            if self._intent_frames and not self._intent_failed:
+                raise OffloadError("close outside an active declared module boundary")
+            self._automatic.stop()
+        self._automatic.close()
         with self._owner.lock:
             if self._intent_frames and not self._intent_failed:
                 raise OffloadError("close outside an active declared module boundary")
@@ -979,11 +1010,11 @@ class Offload:
             self.closed = True
 
 
-def offload(model_or_pipeline, device=0, *, source=None):
-    """Adopt ordinary materialized CPU eval weights for immutable eager inference.
+def offload(model_or_pipeline, device=0, *, source=None, graphs="auto"):
+    """Adopt CPU eval weights; automatically graph reviewed immutable boundaries.
 
     CUDA requires Varena installation before any CUDA initialization. Explicit
     device='cpu' runs the same Source/alias/conversion frontend on real host tensors
     for integration and inspection; it exercises no native residency or CUDA path.
     """
-    return Offload(model_or_pipeline, device, source=source)
+    return Offload(model_or_pipeline, device, source=source, graphs=graphs)
