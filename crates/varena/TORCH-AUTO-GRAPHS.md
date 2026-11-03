@@ -132,8 +132,9 @@ Required component-helper corrections before shared wiring:
 The committed helper implements these corrections without edits from this lane.
 Owned shared reuse wiring24bf43e3f retains ordinary/materialized records and validates
 the actual owner device/capture state before fast reuse. Both helper/wired source
-hashes must ship together; explicit scopes are usable, but automatic root-forward/VAE
-wrappers and default graph dispatch are not claimed by this stage. Actual host/binding/
+hashes must ship together. The subsequent COMPONENT-ENTRIES.md delta wires reviewed
+root-forward/VAE method stream scopes with actual provenance; default graph dispatch
+remains unwired. Actual host/binding/
 tiny-VAE explicit-method CPU checks pass; CUDA fast-path/events/performance are unrun.
 The helper owner's final committed clients/diagnostic are now composed; no WIP file was
 imported. Prefix witnesses are independently owned completed-prefix proofs, not stored
