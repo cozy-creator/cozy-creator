@@ -1,7 +1,7 @@
 """Prepared real native optional-pool refusal with an otherwise fitting eager body.
 
 Coordinator-only isolated ordinary-Cozy child. No fake pool, patched method or
-allocation menu. The target is the native measured eager peak, unmodified.
+allocation menu. The target is the native measured packing capacity, unmodified.
 """
 
 from __future__ import annotations
@@ -43,7 +43,8 @@ def run(device):
         finally:
             observation = vt.phase_leave(device, token, completed=completed)
         assert observation["published"] and observation["successful_peak_bytes"] > 0
-        native_target = observation["successful_peak_bytes"]
+        native_target = observation["successful_capture_pool_bytes"]
+        assert native_target >= observation["successful_peak_bytes"]
         torch.testing.assert_close(measured.cpu(), expected, rtol=0, atol=0)
         del measured
         stream.synchronize()
