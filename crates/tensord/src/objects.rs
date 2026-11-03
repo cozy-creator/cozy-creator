@@ -33,6 +33,8 @@ pub struct Objects {
     root: PathBuf,
     cas: Cas,
     engine: Arc<Engine>,
+    /// Its `maintain` frees the machine's garbage, then what the store may evict, for bytes coming in.
+    store: Arc<tensorfs::store::Store>,
     /// Uploads under way, by part file.
     uploads: Mutex<HashMap<PathBuf, Weak<Upload>>>,
 }
@@ -143,12 +145,13 @@ fn write_held(part: &Path, length: u64, held: &Ranges) -> io::Result<()> {
 }
 
 impl Objects {
-    pub fn new(root: &Path, engine: Arc<Engine>) -> io::Result<Self> {
+    pub fn new(root: &Path, engine: Arc<Engine>, store: Arc<tensorfs::store::Store>) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         Ok(Self {
             root: root.to_path_buf(),
             cas: engine.cas(),
             engine,
+            store,
             uploads: Mutex::default(),
         })
     }
@@ -337,6 +340,20 @@ impl Objects {
     /// The upload of `digest`, `length` bytes, for this signer: joined while under way, else
     /// resumed from the ranges an earlier one synced. None once the object is stored.
     pub fn upload(&self, actor: &str, digest: &str, length: u64) -> Result<Option<Arc<Upload>>, Refused> {
+        match self.open_upload(actor, digest, length, false) {
+            // Short: what the machine can free goes first (no lock held: a sweep takes custody),
+            // and then it may use the reserve, since this is what the caller asked to put here.
+            Err(refusal) if refusal.code == "machine_disk_full" => {
+                if let Err(error) = self.store.maintain(length) {
+                    tracing::warn!("making room for an upload: {error}");
+                }
+                self.open_upload(actor, digest, length, true)
+            }
+            opened => opened,
+        }
+    }
+
+    fn open_upload(&self, actor: &str, digest: &str, length: u64, reserve: bool) -> Result<Option<Arc<Upload>>, Refused> {
         let hex = valid(digest)?;
         // Custody from the stored check through the part's open: a settle takes the part under
         // custody and keeps it until the object is stored and bound, so the part is never
@@ -369,9 +386,11 @@ impl Objects {
         file.set_len(length)?;
         let missing = length - held.iter().map(|(s, e)| e - s).sum::<u64>();
         let disk = Disk::measure(&self.engine.root)?;
+        if missing > if reserve { disk.available } else { disk.free() } {
+            return Err(refused("machine_disk_full", format!("no room for the object: {missing} bytes do not fit, {} are free", disk.available)));
+        }
         if missing > disk.free() {
-            let free = disk.free();
-            return Err(refused("machine_disk_full", format!("no room for the object: {missing} bytes do not fit, {free} are free past the reserve")));
+            tracing::warn!("an upload of {missing} bytes takes this machine's disk into its reserve: {} are free", disk.available);
         }
         let landed = tokio::sync::watch::Sender::new(length - missing);
         let upload = Arc::new(Upload {

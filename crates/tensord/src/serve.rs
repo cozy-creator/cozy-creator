@@ -411,7 +411,7 @@ fn start_api(
     let publisher = crate::published::Publisher::new(sdk, machine.clone(), identity.updates.clone());
     service.configure_publisher(publisher.clone());
     backend.publisher = Some(publisher.clone());
-    let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone())?);
+    let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone(), store.clone())?);
     service.engine.hold_memos(&objects);
     backend.runs = Some(Arc::new(crate::runs::Runs {
         service: service.clone(),
