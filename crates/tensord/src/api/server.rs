@@ -33,6 +33,8 @@ pub struct MachineIdentity {
     pub store: Option<std::path::PathBuf>,
     /// The GPUs this boot measured, which its readiness receipt names.
     pub gpus: Vec<receipt::Gpu>,
+    /// Why a GPU of this computer is not among them.
+    pub gpu_problems: Vec<String>,
     /// The most memory each of them offers (`machine.gpu_memory_limit`).
     pub gpu_memory_limit: Option<u64>,
     /// `shared` or `dedicated` (`machine.mode`, else by its lifetime).
@@ -70,6 +72,7 @@ impl MachineIdentity {
             updates: None,
             store: None,
             gpus: vec![],
+            gpu_problems: vec![],
             gpu_memory_limit: None,
             mode: "",
             torch: None,

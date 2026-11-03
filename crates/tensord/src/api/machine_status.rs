@@ -225,6 +225,7 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
             true => String::new(),
             false => platform::gpu::DRIVER_FLOOR.into(),
         },
+        gpu_problems: identity.gpu_problems.clone(),
         toolchain: identity.updates.as_ref().map(|u| u.toolchain()).unwrap_or_default(),
         kernels: identity.updates.as_ref().map(|u| u.kernels()).unwrap_or_default(),
         tensord_pid: std::process::id(),

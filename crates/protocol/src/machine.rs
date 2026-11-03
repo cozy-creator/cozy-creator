@@ -725,6 +725,9 @@ pub struct StatusFrame {
     pub mode: String,
     /// The oldest NVIDIA driver this machine's kernels run on; empty: no GPU stack.
     pub driver_floor: String,
+    /// Why a GPU of this computer is not among `gpus`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gpu_problems: Vec<String>,
     /// What builds kernels here when no prebuilt one serves the card.
     pub toolchain: Toolchain,
     /// Each native kernel's verdict on this machine's cards, as the Runtime keeps it.

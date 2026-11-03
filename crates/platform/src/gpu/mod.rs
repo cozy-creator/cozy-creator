@@ -72,31 +72,34 @@ pub fn below_floor(driver: &str) -> Option<String> {
     })
 }
 
-/// `visible` is `CUDA_VISIBLE_DEVICES` as the caller's config read it: indices or UUIDs, and an
-/// empty value hides every GPU.
-pub fn probe(visible: Option<&str>) -> Result<Vec<Gpu>> {
+/// The GPUs this process may use, and why any it cannot read is left out: a lost or unreadable GPU
+/// costs that GPU, never the machine. `visible` is `CUDA_VISIBLE_DEVICES` as the caller's config
+/// read it: indices or UUIDs, and an empty value hides every GPU.
+pub fn probe(visible: Option<&str>) -> (Vec<Gpu>, Vec<String>) {
     if visible.is_some_and(|visible| visible.trim().is_empty()) {
-        return Ok(vec![]);
+        return (vec![], vec![]);
     }
     if let Some(gpus) = apple() {
-        return Ok(gpus);
+        return (gpus, vec![]);
     }
     let nvml = match Nvml::init() {
         Ok(nvml) => nvml,
         Err(
             NvmlError::LibloadingError(_) | NvmlError::DriverNotLoaded | NvmlError::LibraryNotFound,
         ) => {
-            return Ok(vec![]);
+            return (vec![], vec![]);
         }
-        Err(error) => return Err(failed("init")(error)),
+        Err(error) => return (vec![], vec![format!("NVML did not start ({error}): no GPU is used")]),
     };
-    let driver = nvml
-        .sys_driver_version()
-        .map_err(failed("driver version"))?;
-    let mut gpus = vec![];
-    for index in 0..nvml.device_count().map_err(failed("device count"))? {
+    let count = match nvml.device_count() {
+        Ok(count) => count,
+        Err(error) => return (vec![], vec![format!("NVML counts no GPUs ({error}): no GPU is used")]),
+    };
+    let driver = nvml.sys_driver_version().unwrap_or_default();
+    let named: Option<Vec<&str>> = visible.map(|visible| visible.split(',').map(str::trim).collect());
+    let read = |index: u32| -> Result<Gpu> {
         let device = nvml.device_by_index(index).map_err(failed("device"))?;
-        gpus.push(Gpu {
+        Ok(Gpu {
             index,
             name: device.name().map_err(failed("name"))?,
             uuid: device.uuid().map_err(failed("uuid"))?,
@@ -107,15 +110,23 @@ pub fn probe(visible: Option<&str>) -> Result<Vec<Gpu>> {
                 .cuda_compute_capability()
                 .map_or(String::new(), |cc| format!("{}.{}", cc.major, cc.minor)),
             memory_class: None,
-        });
+        })
+    };
+    let (mut gpus, mut problems) = (vec![], vec![]);
+    for index in 0..count {
+        match read(index) {
+            Ok(gpu) => gpus.push(gpu),
+            // One the caller hid by its index is none of its business.
+            Err(_) if named.as_ref().is_some_and(|named| named.iter().all(|n| n.parse::<u32>().is_ok_and(|n| n != index))) => {}
+            Err(error) => problems.push(format!("GPU {index} cannot be read ({error}): it is not used")),
+        }
     }
-    if let Some(visible) = visible {
-        let named: Vec<&str> = visible.split(',').map(str::trim).collect();
+    if let Some(named) = named {
         gpus.retain(|gpu| {
             named.contains(&gpu.index.to_string().as_str()) || named.contains(&gpu.uuid.as_str())
         });
     }
-    Ok(gpus)
+    (gpus, problems)
 }
 
 /// An Apple Silicon Mac's GPU; `None` elsewhere, where NVML answers.

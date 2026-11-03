@@ -857,6 +857,9 @@ pub struct MachineStatus {
     /// The oldest NVIDIA driver its kernels run on; empty: no GPU stack.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub driver_floor: String,
+    /// Why a GPU of that computer is not among `gpus`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_problems: Vec<String>,
     /// Its build toolchain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain: Option<crate::machine::Toolchain>,

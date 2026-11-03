@@ -182,21 +182,27 @@ pub struct Gpu {
 /// The driver's inventory (NVML) and each GPU's memory class (CUDA's device attributes). It
 /// initializes CUDA here: call it once, in the service, which forks nothing without exec after.
 /// No NVIDIA driver is a CPU machine.
-pub fn gpus(visible: Option<&str>) -> io::Result<Vec<Gpu>> {
-    let mut probed = platform::gpu::probe(visible).map_err(io::Error::other)?;
-    platform::gpu::memory_classes(&mut probed).map_err(io::Error::other)?;
-    if probed.len() > 16 {
-        return Err(invalid("GPU inventory is oversized"));
-    }
-    probed.into_iter().map(row).collect()
+pub fn gpus(visible: Option<&str>) -> (Vec<Gpu>, Vec<String>) {
+    let (mut probed, mut problems) = platform::gpu::probe(visible);
+    platform::gpu::memory_classes(&mut probed);
+    let gpus = (probed.into_iter())
+        .filter_map(|gpu| {
+            let row = row(gpu);
+            if let Err(why) = &row {
+                problems.push(why.clone());
+            }
+            row.ok()
+        })
+        .collect();
+    (gpus, problems)
 }
 
 /// One probed GPU as the receipt names it. An integrated GPU's (GB10) memory is the host's, as
 /// the probe reads it.
-fn row(g: platform::gpu::Gpu) -> io::Result<Gpu> {
+fn row(g: platform::gpu::Gpu) -> Result<Gpu, String> {
     use platform::gpu::MemoryClass;
     let memory_bytes = match g.memory_bytes {
-        0 => return Err(invalid(&format!("the driver reports no memory for {}", g.name))),
+        0 => return Err(format!("the driver reports no memory for GPU {} ({}): it is not used", g.index, g.name)),
         // Whole MiB, as the receipts sealed before NVML read them.
         bytes => bytes >> 20 << 20,
     };
@@ -294,16 +300,19 @@ fn same_attestation(before: &[u8], after: &[u8], refresh_local_gpu: bool) -> io:
     let before = facts(before).map_err(|_| invalid("retained readiness facts are unreadable"))?;
     let after = facts(after).map_err(|_| invalid("current readiness facts are unreadable"))?;
     let same_gpus = before.get("gpus") == after.get("gpus");
+    // A signed envelope is served as sealed: a GPU lost since costs that GPU, and Status says so.
+    if !same_gpus && !refresh_local_gpu {
+        tracing::warn!("this machine's GPUs differ from what this boot attested");
+    }
     let different: Vec<_> = before.iter().filter_map(|(key, value)|
-        (after.get(key) != Some(value) && !(refresh_local_gpu && *key == "gpus"))
-            .then_some(*key)).collect();
+        (after.get(key) != Some(value) && *key != "gpus").then_some(*key)).collect();
     if !different.is_empty() {
         // Names only: the leaf, owner key and token hashes are never included in diagnostics.
         return Err(invalid(&format!(
             "this boot attested different facts before restarting: {}", different.join(", ")
         )));
     }
-    Ok(same_gpus)
+    Ok(same_gpus || !refresh_local_gpu)
 }
 
 fn parse(raw: &[u8]) -> io::Result<Envelope> {

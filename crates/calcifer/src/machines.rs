@@ -1593,6 +1593,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
             .collect(),
         mode: frame.mode.clone(),
         driver_floor: frame.driver_floor.clone(),
+        gpu_problems: frame.gpu_problems.clone(),
         toolchain: Some(frame.toolchain.clone()).filter(|t| !t.state.is_empty()),
         kernels: frame.kernels.clone(),
         stuck: frame.stuck.clone(),

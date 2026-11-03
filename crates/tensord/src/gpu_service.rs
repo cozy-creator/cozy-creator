@@ -126,6 +126,9 @@ pub struct GpuConfig {
     /// (`precision`).
     #[serde(default)]
     pub inventory: Vec<crate::machine::receipt::Gpu>,
+    /// Why a GPU of this computer is not in it: each run on it is told.
+    #[serde(default)]
+    pub problems: Vec<String>,
     /// Development only: each GPU behaves as a card of this many bytes (Start's
     /// `gpu_memory_limit`, and `memory::Gpu::free`).
     #[serde(default)]
@@ -1640,6 +1643,10 @@ impl Pool {
         let ccs: Vec<&str> = self.devices.iter().take(degree as usize)
             .map(|d| self.inventory(&d.entry).map_or("", |g| g.compute_cap.as_str())).collect();
         crate::precision::Gpus::of(&ccs)
+    }
+    /// Why a GPU of this computer is not used: each run on it is told.
+    pub fn problems(&self) -> Vec<String> {
+        self.config.problems.clone()
     }
     /// The first `degree` GPUs as the Hub resolves a model for them: each one's capability, and
     /// what a call can have on the one with the least: free bytes plus the weights idle executors

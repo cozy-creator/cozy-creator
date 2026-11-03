@@ -336,6 +336,7 @@ pub fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
         };
         fields.push(("driver floor".into(), floor));
     }
+    fields.extend(status.gpu_problems.iter().map(|problem| ("GPU problem".to_owned(), problem.clone())));
     if let Some(toolchain) = &status.toolchain {
         let cell = match toolchain.state.as_str() {
             "ready" => format!("ready: {} · {}", toolchain.nvcc, toolchain.host_compiler),

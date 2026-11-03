@@ -1269,7 +1269,7 @@ impl Publisher {
         };
         let picked: Vec<_> = slots.iter().map(pick).collect::<Result<_, _>>()?;
         land(&picked)?;
-        let (mut grants, mut warnings) = (vec![], vec![]);
+        let (mut grants, mut warnings) = (vec![], gpu.problems());
         for (grant, _, said) in picked {
             grants.push(grant);
             warnings.extend(said);

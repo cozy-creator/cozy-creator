@@ -2,7 +2,6 @@
 //! `nvcuda.dll`, opened at run time). A computer with no CUDA driver answers nothing.
 #![allow(unsafe_code)]
 use super::{Gpu, MemoryClass};
-use crate::{Error, Result};
 use libloading::Library;
 use std::ffi::{CString, c_char, c_int, c_uint};
 
@@ -15,18 +14,18 @@ const LIBRARY: &str = "nvcuda.dll";
 const LIBRARY: &str = "libcuda.so.1";
 
 /// Fills each GPU's `memory_class`: integrated → `Unified`, else pageable memory through the
-/// host's page tables → `Coherent`, else `Discrete`. No CUDA driver, no device or a bus id CUDA
-/// does not know leaves it `None`; only an attribute a matched device refuses is an error.
+/// host's page tables → `Coherent`, else `Discrete`. No CUDA driver, no device, a bus id CUDA does
+/// not know or an attribute a device will not answer leaves it `None`.
 ///
 /// It initializes CUDA in the calling process: call it only where no fork without exec follows
 /// (TensorD's service after its stable parent's fork; executors are started with exec).
-pub fn memory_classes(gpus: &mut [Gpu]) -> Result<()> {
+pub fn memory_classes(gpus: &mut [Gpu]) {
     if gpus.is_empty() {
-        return Ok(());
+        return;
     }
     // SAFETY: the CUDA driver library, loaded by its documented name.
     let Ok(library) = (unsafe { Library::new(LIBRARY) }) else {
-        return Ok(());
+        return;
     };
     type Init = unsafe extern "C" fn(c_uint) -> c_int;
     type ByBusId = unsafe extern "C" fn(*mut c_int, *const c_char) -> c_int;
@@ -40,11 +39,11 @@ pub fn memory_classes(gpus: &mut [Gpu]) -> Result<()> {
         )
     };
     let (Ok(init), Ok(by_bus_id), Ok(attribute)) = symbols else {
-        return Ok(());
+        return;
     };
     // SAFETY: cuInit takes flags 0; any failure (no device, a driver too old) is no answer.
     if unsafe { init(0) } != 0 {
-        return Ok(());
+        return;
     }
     // The driver stays loaded: it registered exit handlers inside itself at cuInit.
     std::mem::forget(library);
@@ -57,31 +56,22 @@ pub fn memory_classes(gpus: &mut [Gpu]) -> Result<()> {
         if unsafe { by_bus_id(&mut device, bus_id.as_ptr()) } != 0 {
             continue;
         }
-        let has = |attr: c_int, name: &'static str| read(attribute, device, attr, name);
-        gpu.memory_class = Some(if has(INTEGRATED, "integrated")? {
-            MemoryClass::Unified
-        } else if has(PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES, "host page tables")? {
-            MemoryClass::Coherent
-        } else {
-            MemoryClass::Discrete
-        });
+        let has = |attr: c_int| read(attribute, device, attr);
+        gpu.memory_class = match (has(INTEGRATED), has(PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES)) {
+            (Some(true), _) => Some(MemoryClass::Unified),
+            (Some(false), Some(true)) => Some(MemoryClass::Coherent),
+            (Some(false), Some(false)) => Some(MemoryClass::Discrete),
+            _ => None,
+        };
     }
-    Ok(())
 }
 
 fn read(
     attribute: unsafe extern "C" fn(*mut c_int, c_int, c_int) -> c_int,
     device: c_int,
     attr: c_int,
-    name: &'static str,
-) -> Result<bool> {
+) -> Option<bool> {
     let mut value: c_int = 0;
     // SAFETY: an out-param for a device the driver just named.
-    match unsafe { attribute(&mut value, attr, device) } {
-        0 => Ok(value != 0),
-        code => Err(Error::Gpu {
-            op: "CUDA device attribute",
-            detail: format!("{name}: CUresult {code}"),
-        }),
-    }
+    (unsafe { attribute(&mut value, attr, device) } == 0).then_some(value != 0)
 }

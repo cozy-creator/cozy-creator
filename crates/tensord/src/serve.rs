@@ -248,13 +248,15 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     // degree-K plan uses the first K) and deviceless executors, with the executor environment
     // the pod proofs used.
     boot.at("gpus");
-    let mut gpus = receipt::gpus(visible_devices.as_deref())?;
+    let (mut gpus, mut gpu_problems) = receipt::gpus(visible_devices.as_deref());
     // A driver below CUDA 13.0's floor serves no GPU; the machine stays for CPU work.
     if let Some(why) = gpus.first().and_then(|gpu| platform::gpu::below_floor(&gpu.driver_version)) {
-        tracing::error!("{why}; this machine offers no GPU");
+        gpu_problems.push(format!("{why}; until then this machine runs on its CPU"));
         gpus.clear();
     }
+    gpu_problems.iter().for_each(|problem| tracing::error!("{problem}"));
     identity.gpus = gpus.clone();
+    identity.gpu_problems = gpu_problems.clone();
     identity.gpu_memory_limit = gpu_memory_limit;
     identity.mode = mode.name();
     boot.at("pool");
@@ -265,6 +267,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         let config = serde_json::json!({
             "devices": devices.join(","),
             "inventory": gpus,
+            "problems": gpu_problems,
             "authorized_device_limit_bytes": null,
             "gpu_memory_limit": gpu_memory_limit,
             "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home, "COZY_HOME": home},
