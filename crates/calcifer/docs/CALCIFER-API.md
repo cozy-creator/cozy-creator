@@ -366,11 +366,11 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
   records it in the index as used now. `404 project_not_found` when no folder up from `path` is a project.
-- `POST /v1/projects/{id}/imports` `{source, clean?, hub}`: `{path, sha256, prefix, line, clean, warnings?}`. Keeps the
+- `POST /v1/projects/{id}/imports` `{source, clean?, hub}`: `{path, sha256, prefix, line, already?, clean, warnings?}`. `already`: its bytes were in `assets/`, so nothing was copied. Keeps the
   file at `source` (an absolute path, or an `http(s)` URL) as a real asset, its type read from its bytes; `line` is what to
   paste into project.yaml (`image: ab12cd34ef56`, or `video:`, `audio:`). A URL: 64 MiB at most, public addresses only at
   every redirect. `400 import_failed` says why not. `clean` marks a picture (a later import of it says again): `clean` answers `{state:
-  "untouched"}`, `"removed"`, `"removing", run` (a run sent to this computer's machine; follow it, then `cleaned` on the events)
+  "untouched"}`, `"removed"` (an earlier clean stands, and no run was sent), `"removing", run` (a run sent to this computer's machine; follow it, then `cleaned` on the events)
   or `"later"` (this computer runs no models, or the run could not be sent: the first machine to render a reader cleans it).
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms,
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.

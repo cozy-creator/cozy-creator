@@ -39,6 +39,16 @@ const URL_MOST: usize = 64 << 20;
 /// How long a URL may take. Measured progress can't judge this one: a stranger's server can drip a
 /// byte at a time for ever, so this is the last resort, and it leaves room for `URL_MOST` over a slow line.
 const URL_LONGEST: Duration = Duration::from_secs(300);
+/// What an import kept: its asset, and the field that names one of its type (`image`, `video`, `audio`).
+pub struct Kept {
+    pub asset: Asset,
+    pub field: &'static str,
+    /// Its bytes were in `assets/` already, so nothing was copied.
+    pub already: bool,
+    /// It was marked for a clean before, and this import did not mark it.
+    pub unmarked: bool,
+}
+
 /// How many hex characters of its hash cozy prints for an asset, for project.yaml.
 const PREFIX: usize = 12;
 
@@ -414,9 +424,8 @@ impl Folder {
 
     /// The file at `source` (an absolute path, or an `http(s)` URL) kept as a real file
     /// `assets/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock with `mark` (none
-    /// for what is no picture; a later import's word stands). Answers it, and the field that names one of
-    /// its type (`image`, `video`, `audio`). Err: why not.
-    pub async fn import(&self, source: &str, mark: bool) -> Result<(Asset, &'static str), String> {
+    /// for what is no picture; a later import's word stands). Err: why not.
+    pub async fn import(&self, source: &str, mark: bool) -> Result<Kept, String> {
         if is_url(source) {
             let bytes = fetch_url(source).await?;
             let (kind, field) = media(infer::get(&bytes))?;
@@ -447,30 +456,32 @@ impl Folder {
         field: &'static str,
         mark: bool,
         write: impl Fn(&Path) -> std::io::Result<()>,
-    ) -> Result<(Asset, &'static str), String> {
+    ) -> Result<Kept, String> {
         let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
-        self.store(&path, write).map_err(|e| e.message)?;
+        let already = !self.store(&path, write).map_err(|e| e.message)?;
         let asset = Asset { path, sha256, video: None };
         let mark = mark && field == "image";
+        let unmarked = !mark && self.lock().map_err(|e| e.message)?.imports.get(&asset.sha256).is_some_and(|import| import.mark);
         let new = || Import { asset: asset.clone(), mark, clean: None };
         let record = |lock: &mut Lock| {
             lock.imports.entry(asset.sha256.clone()).and_modify(|import| import.mark = mark).or_insert_with(new);
         };
         self.update_lock(record).map_err(|e| e.message)?;
-        Ok((asset, field))
+        Ok(Kept { asset, field, already, unmarked })
     }
 
-    /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there.
-    fn store(&self, path: &str, write: impl Fn(&Path) -> std::io::Result<()>) -> Result<(), Error> {
+    /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there. Whether it wrote it.
+    fn store(&self, path: &str, write: impl Fn(&Path) -> std::io::Result<()>) -> Result<bool, Error> {
         let at = self.dir.join(path);
         if at.is_file() {
-            return Ok(());
+            return Ok(false);
         }
         let dir = self.dir.join(ASSETS);
         std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
         let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
         let _ = std::fs::remove_file(&part);
-        write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))
+        write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))?;
+        Ok(true)
     }
 
     /// An asset's path, as the lock writes it, on this computer.

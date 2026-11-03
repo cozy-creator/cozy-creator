@@ -105,6 +105,8 @@ Paste that line under the node. It works for pictures, video and sound in every 
 `voice`, a setup's or world state's `image`, `references:`, and a shot's `plate`, `first_frame` and `last_frame`. Any
 prefix of the hash will do; one that fits two assets is said, and asks for a longer one. A URL is downloaded here, up to
 64 MiB, from a public address. A made version is an asset too: `cozy project status` prints each one's 12 characters.
+Importing a file that is already here copies nothing and says so, and so does a clean it reuses:
+`already imported ab12cd34ef56 (background already removed)`, with the same line to paste.
 `--character` and `--prop` have its background removed: at once if this computer runs models, else by the first machine
 that renders something reading it. That clean is an asset like any other, and it is what the hash means from then on.
 A path or URL in a file field is never read: it warns with the import command, and that node renders without it.

@@ -213,6 +213,15 @@ grep -qx "image: ${ROOM:0:12}" "$OUT/import-room.txt" || check "import: room.png
 step "a project: --character, cleaned on this computer, what reads the hash gets"
 (cd "$U" && cozy project import hero.png --character) > "$OUT/import-hero.txt" 2> "$OUT/import-hero.err" || check "import --character: $(tail -c 400 "$OUT/import-hero.err")"
 grep -qx "imported ${HERO:0:12} (background removed)" "$OUT/import-hero.txt" || check "import --character printed: $(cat "$OUT/import-hero.txt"); $(tail -c 300 "$OUT/import-hero.err")"
+(cd "$U" && cozy project import room.png) > "$OUT/import-room-2.txt" 2>&1 || check "import: room.png again: $(tail -c 300 "$OUT/import-room-2.txt")"
+{ grep -qx "already imported ${ROOM:0:12}" "$OUT/import-room-2.txt" && grep -qx "image: ${ROOM:0:12}" "$OUT/import-room-2.txt"; } || check "import: room.png again printed: $(cat "$OUT/import-room-2.txt")"
+local runs; runs=$(cozy --json run ls --limit 0 | jq '.runs | length')
+(cd "$U" && cozy project import hero.png --character) > "$OUT/import-hero-2.txt" 2> "$OUT/import-hero-2.err" || check "import --character again: $(tail -c 300 "$OUT/import-hero-2.err")"
+{ grep -qx "already imported ${HERO:0:12} (background already removed)" "$OUT/import-hero-2.txt" && grep -qx "image: ${HERO:0:12}" "$OUT/import-hero-2.txt"; } || check "import --character again printed: $(cat "$OUT/import-hero-2.txt")"
+[ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs" ] || check "import --character again sent a run"
+(cd "$U" && cozy project import hero.png) > "$OUT/import-hero-3.txt" 2>&1 || check "import of a marked picture with no flag: $(tail -c 300 "$OUT/import-hero-3.txt")"
+{ grep -qx "already imported ${HERO:0:12}" "$OUT/import-hero-3.txt" && grep -q 'used as it is from now on' "$OUT/import-hero-3.txt"; } || check "import of a marked picture with no flag printed: $(cat "$OUT/import-hero-3.txt")"
+(cd "$U" && cozy project import hero.png --character) > /dev/null 2>&1 || check "import --character to mark it again failed"
 local CLEAN; CLEAN=$(jq -r --arg h "sha256:$HERO" '.imports[$h].clean.sha256 // "" | ltrimstr("sha256:")' "$U/project.lock")
 { [ -n "$CLEAN" ] && [ "$CLEAN" != "$HERO" ] && [ -f "$U/assets/$CLEAN.png" ] && [ ! -L "$U/assets/$CLEAN.png" ]; } \
   || check "import --character: no clean recorded as a real asset: $(jq -c .imports "$U/project.lock" | cut -c1-500)"

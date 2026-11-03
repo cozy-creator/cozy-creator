@@ -662,7 +662,7 @@ async fn import(
     Origin::parse(&asked.hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let (asset, field) = folder.import(&asked.source, asked.clean).await.map_err(|why| {
+    let folder::Kept { asset, field, already, unmarked } = folder.import(&asked.source, asked.clean).await.map_err(|why| {
         let said = format!("{}: {why}", asked.source);
         Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
     })?;
@@ -670,6 +670,9 @@ async fn import(
     let mut warnings = vec![];
     if asked.clean && !mark {
         warnings.push(format!("a{} {field} has no background to remove: it is imported as it is", if field == "audio" { "n" } else { "" }));
+    }
+    if unmarked {
+        warnings.push("it was marked to have its background removed, and is used as it is from now on: import it with --character or --prop to mark it again".into());
     }
     let lock = folder.lock().map_err(Refusal)?;
     let cleaned = lock.imports.get(&asset.sha256).is_some_and(|import| import.clean.is_some());
@@ -695,7 +698,7 @@ async fn import(
     };
     let prefix = folder::prefix_of(&asset.sha256).to_owned();
     let line = format!("{field}: {}", video::yaml_scalar(&prefix));
-    Ok(Json(Imported { path: asset.path, sha256: asset.sha256, prefix, line, clean, warnings }))
+    Ok(Json(Imported { path: asset.path, sha256: asset.sha256, prefix, line, already, clean, warnings }))
 }
 
 /// What node `i` reads, near or far, with no version yet and none on its way.

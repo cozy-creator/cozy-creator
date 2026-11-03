@@ -125,12 +125,15 @@ pub struct Imported {
     pub prefix: String,
     /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is.
     pub line: String,
+    /// Its bytes were in `assets/` already, so nothing was copied.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
     pub clean: Clean,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
-/// An imported picture's background: not to be removed; removed; being removed by run `run` (which
+/// An imported picture's background: not to be removed; removed by an earlier run, so none was sent; being removed by run `run` (which
 /// `GET /v1/runs/{id}/events` follows; `cleaned` on the project's events says it landed); or to be removed
 /// by the first machine that renders something that reads it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

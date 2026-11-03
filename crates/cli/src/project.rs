@@ -284,6 +284,8 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     let ask = Import { source, clean: args.character || args.prop, hub: ctx.hub().to_string() };
     let mut imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &ask, None).await?;
     imported.warnings.iter().for_each(|warning| output::warn(warning));
+    // `removed` from Calcifer is an earlier clean; one that lands here was made now.
+    let mut cleaned_now = false;
     if let Clean::Removing { run } = &imported.clean {
         let followed = watched(ctx, calcifer.run(run).await?).await?;
         imported.clean = match settled(&followed) {
@@ -295,7 +297,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
                         Event::Cleaned { sha256, error } if sha256 == imported.sha256 => {
                             match error {
                                 Some(error) => output::warn(&error),
-                                None => landed = Clean::Removed,
+                                None => (landed, cleaned_now) = (Clean::Removed, true),
                             }
                             break;
                         }
@@ -313,11 +315,13 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     }
     let said = match imported.clean {
         Clean::Untouched => "",
-        Clean::Removed => " (background removed)",
+        Clean::Removed if cleaned_now => " (background removed)",
+        Clean::Removed => " (background already removed)",
         Clean::Removing { .. } => " (its background is being removed)",
         Clean::Later => " (its background is removed when a machine first renders something that reads it)",
     };
-    anstream::println!("imported {}{said}", imported.prefix);
+    let verb = if imported.already { "already imported" } else { "imported" };
+    anstream::println!("{verb} {}{said}", imported.prefix);
     anstream::println!("{}", imported.line);
     Ok(ExitCode::SUCCESS)
 }
