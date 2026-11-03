@@ -55,6 +55,20 @@ it is never caught after execution to silently retry/fallback.
 
 ## First-call measurement, then capture
 
+The separate eager component-stream helper is Agent2-owned; this lane does not
+duplicate or edit its new file. Compose its eventual exact API outside automatic
+dispatch: component input/output scope -> measured eager/graph dispatcher on the
+actual selected stream -> one outer output handoff. Reuse that selected stream and
+the helper's checked join/completion information. If actual caller-stream changes
+leave no scoped completion proof, return the once-executed cold eager result but
+invalidate/abort its native observation; do not promote a guessed sample. Lifetime
+recording alone is not an ordering/completion witness. Never redirect an explicit
+stream change back to an assumed owner stream. Capture bindings bypass eager helper
+joins/records; their frozen exports/stream ownership remain authoritative. VAE
+decode/encode entry coverage is separate from a root.forward-only wrapper. Exact
+minimal shared wiring will be composed by this lane after Agent2 provides its helper
+interface; no second stream helper or speculative per-op fence removal is introduced.
+
 The state machine is cold -> measured -> prepared/cached; a changed key retires the old
 selection. No invocation executes eager as a retry after capture/replay has begun.
 
