@@ -22,9 +22,9 @@ overlap or performance claim. Completed/retired warm controls take the native fa
 Producer ordering plus fresh checked exports alone would protect dependency/lifetime
 safety and permit overlap, but would NOT acknowledge late selected producer/resource
 errors before submission. That is a different error contract, not the current path.
-Historical347d7b9ec implemented that non-waiting replay sequence. Its readiness omission
-was unnecessary for ordering, not equivalent to selected retirement-error acknowledgement
-before submission. Policy7b3f0b397 superseded it with the conservative barrier above;
+Historical347d7b9ec implemented that non-waiting replay sequence. It did not need
+readiness for ordering; it did not acknowledge selected retirement errors before
+submission. Policy7b3f0b397 superseded it with the conservative barrier above;
 the historical347 CPU receipts do not qualify either CUDA error/overlap contract.
 Fences/quarantine remain required for custody in either case. No application retry
 hides errors. Future graph/device faults and final persistent Source/service teardown
