@@ -225,12 +225,18 @@ def decode_answer(data: bytes) -> Answer: ...
 
 class ChildEvents(_Wire): ...
 
+class SavedFile(_Wire):
+    asset_ref: str
+    digest: str
+    media_type: str
+
 class ChildCall(_Wire):
     call_index: int
     module: str
     export: str
     payload: str
     progress_label: str
+    saved: list[SavedFile]
 
 class ChildPoll(_Wire):
     call_index: int

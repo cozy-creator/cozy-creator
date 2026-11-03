@@ -8,7 +8,7 @@
 use crate::{
     api::domain,
     catalog::Generation,
-    device_executor::{Answer, CheckpointItem, Publish},
+    device_executor::{Answer, CheckpointItem, Publish, SavedFile},
     execution::Engine,
     journal::StoredProduct,
 };
@@ -103,6 +103,24 @@ fn spool_file(spool: &Path, name: &str) -> io::Result<PathBuf> {
         return Err(refuse());
     }
     Ok(path)
+}
+
+/// A file its attempt saved, as a caller passes it to a child: a regular file of its spool whose
+/// bytes hash here to the digest it is named by, so only a holder of the bytes passes, whatever
+/// digest it names. No tree: its manifest would name objects the caller need not hold.
+pub(crate) fn saved(spool: &Path, file: &SavedFile) -> io::Result<(PathBuf, ObjectRef)> {
+    if file.media_type == protocol::tree::MEDIA {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "a tree cannot be passed as a saved file"));
+    }
+    let path = spool_file(spool, &spool_name(&file.asset_ref))?;
+    let object = hash_file(&path)?;
+    if format!("sha256:{}", object.sha256) != file.digest {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} does not hold the bytes of {}", file.asset_ref, file.digest),
+        ));
+    }
+    Ok((path, object))
 }
 
 /// A saved asset's spool file, named as the SDK's post phase names it:
