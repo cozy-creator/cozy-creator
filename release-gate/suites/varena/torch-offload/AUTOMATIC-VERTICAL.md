@@ -75,7 +75,7 @@ replay without Python bodies; independent normal outputs and exact numerical
 parity; both definitions alive with weight pins0; real trim/refill at the same
 Region addresses under unchanged definitions; native callback retirement of idle
 entry1 while the model and entry0 admission locks are held; actual pool-byte
-reduction after native trim; recapture of entry1 only. Default typed controls
+reduction after native trim; recapture of entry1 only. Mandatory typed controls
 require one eager body under the caller token. They include named/unkeyed
 parents and changed shapes, then ordinary cached selection resuming after the
 caller closes its token. Quarantine may
@@ -90,6 +90,6 @@ are not phase-admission proof and are unused for overlap classification. Unknown
 errors propagate before yielding to any body. Only the separately owned typed
 error can authorize parent-observation eager selection.
 
-Current hard cut supersedes the historical native1a/--phase-control untyped
-compatibility client at cd59. That receipt/source remains preserved, not replayed
-into this required-SDK lane. The pinned unwired 594/006 overlay is independent.
+There is no parent-control bypass flag or alternate ABI path. The matching native
+typed class and scoped Use readiness are mandatory. Historical receipts remain
+preserved without keeping their obsolete execution paths.

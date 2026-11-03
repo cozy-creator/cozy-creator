@@ -265,16 +265,14 @@ def run(args):
                 fifth.cpu(), changed_expected, rtol=2e-5, atol=2e-6
             )
             assert list(counts.values()) == [3, 5]
-            parent_receipts = []
-            if args.phase_control != "none":
-                parent_receipts = check_parent_observations(
-                    owner,
-                    model,
-                    value,
-                    changed_expected,
-                    stream,
-                    counts,
-                )
+            parent_receipts = check_parent_observations(
+                owner,
+                model,
+                value,
+                changed_expected,
+                stream,
+                counts,
+            )
             final = owner.graph_facts()
             assert [row["captures"] for row in final["boundaries"].values()] == [1, 2]
             assert not owner._intent_frames and not owner._intent_failed
@@ -297,13 +295,12 @@ def run(args):
             "pool_bytes_before_pressure": before_pressure["pools_bytes"],
             "pool_bytes_after_pressure": physical["pools_bytes"],
             "native_request": request_facts,
-            "parent_observation_control": args.phase_control,
+            "parent_observation_control": "typed",
             "parent_observation_receipts": parent_receipts,
-            "typed_parent_observation_eager_choice": args.phase_control == "typed",
+            "typed_parent_observation_eager_choice": True,
             "matmul_precision": torch.get_float32_matmul_precision(),
             "rng_state_preserved": True,
-            "unkeyed_parent_preserves_old_key_across_shape_change": args.phase_control
-            != "none",
+            "unkeyed_parent_preserves_old_key_across_shape_change": True,
         }
     finally:
         sys.setprofile(previous)
@@ -313,12 +310,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--timeout-s", type=float, default=30)
-    parser.add_argument(
-        "--phase-control",
-        choices=("none", "typed"),
-        default="typed",
-        help="Typed parent controls run by default on the required matching SDK",
-    )
     options = parser.parse_args()
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)

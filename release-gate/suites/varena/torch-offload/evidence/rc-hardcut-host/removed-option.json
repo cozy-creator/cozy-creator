@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "scope": "real release client CLI refuses removed optional parent-control path before run",
+  "exit_code": 2,
+  "expected_exit_code": 2
+}
