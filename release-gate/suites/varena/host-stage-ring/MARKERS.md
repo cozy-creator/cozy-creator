@@ -1,0 +1,15 @@
+# Shared native host markers (supersedes the standalone profile proxy)
+
+Owner: external P4 session01a198c8-91aa-7a31-8e38-1e6d91cd48f4. Worktree `~/cozy/.worktrees/cozy-creator/xs138-p4-shared-host-markers`; branch `codex/xs138-p4-shared-host-markers`. Fresh master500b6de76 plus separately recorded coherent development context5a196232c11f1b601cce01263d50bc3417d98591 (master+627), NOT an execution/adoption claim. The reference diagnostic features were cherry-picked separately. Previous2544/e432 and its bundle remain frozen.
+
+Root/native marker agreement: exact eight arguments and uint64 common committed ordinal from `allocation_trace_marker`. Final native header SHA2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad, helper SHA48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955. Native owner publishes/owns both; this lane never edits/builds them. Snapshot markers1..8 stay separate.
+
+Use CPython interpreter monitoring, code-local original identities and actual PY_RETURN/PY_UNWIND/PY_YIELD events. Actual CPython3.12 control observed Path.exists start+return on a fresh _testcapi C thread, with the correct target frame. Therefore no product callback proxy is needed or retained. Target-native callback ownership/GPU behavior still requires actual execution; host coverage proves the hook mechanism only.
+
+Emit100/101/102 up0 dispatch;110/111/112 prepare_use;120/121/122 wait_ready;130/131/132 actual input copy C calls;140/141/142 replay host call;150/151/152 actual output clone C calls;160/161/162 epoch release;170/171/172 following up1 boundary;180/181/182 select intent;190/191/192 restore intent;200/201/202 cache callback with203 declined. Return is host return, never GPU completion. Copy/clone are observed without replacing Tensor operations.
+
+The private scalar row records the returned common native ordinal. Zero for a requested native marker means explicit unavailable/loss, not success. Shared graph_identity is a weak-key diagnostic GraphSegment token, not a CUDA handle; Plan is its public ABI handle, not native PlanID. Unknown fields remain0/-1 with reasons. No identity is derived from a byte delta. No Tensor/Storage/Owner is strongly retained for logging.
+
+Window1 spans up0 invocation2, the gap and invocation3 through following boundary/error. Stage0 disables ATen during the gap; ATen selection remains limited to selected up0 bodies. Original helper format3/row_fields/kind are preserved. Source bindings/static/output addresses and copies of existing product census returns are metadata-only at confirmed safe exits. No new facts polling or snapshots inside exclusions. Native dumps do not depend on phase_stats success.
+
+Execution is explicitly sealed to root-selected original9d or controlled-b91 images, never the merged development master. No new synchronization, launch blocking, allocator policy, cap change, authored retry, native build/install/GPU/rental/process action. Optional one-stream checkpoint remains a separate future experiment.
