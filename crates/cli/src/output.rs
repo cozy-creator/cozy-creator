@@ -96,6 +96,21 @@ pub fn warn(message: &str) {
     anstream::eprintln!("{WARN}warning{WARN:#}: {}", shown(message));
 }
 
+/// Whether `name` holds every one of `words`, in any case: `ls` words over what a machine holds.
+pub fn names(name: &str, words: &[String]) -> bool {
+    let name = name.to_lowercase();
+    words.iter().all(|word| name.contains(&word.to_lowercase()))
+}
+
+/// `value` held between 1 and `most`, said when that moved it.
+pub fn at_most(flag: &str, value: u32, most: u32) -> u32 {
+    let held = value.clamp(1, most);
+    if held != value {
+        warn(&format!("{flag} {value}: using {held}"));
+    }
+    held
+}
+
 /// At most two commands to try next, for a person; a JSON document carries its own.
 pub fn next(ctx: &Context, commands: &[&str]) {
     if ctx.json {

@@ -15,8 +15,7 @@ use crate::{Context, calcifer_client::{Client, path}, machine::usd, output};
 
 #[derive(clap::Args, Debug)]
 pub struct Login {
-    /// Your Tensorhub account's email.
-    #[arg(required_unless_present = "key")]
+    /// Your Tensorhub account's email; asked for when it isn't given.
     email: Option<String>,
     /// Enroll a new key for another computer, such as CI, and write it to FILE (owner-only);
     /// this computer's own key is untouched
@@ -44,7 +43,11 @@ pub async fn login(ctx: &Context, args: Login) -> Result<ExitCode, Error> {
         let account = calcifer.put("/v1/account/key", &ask).await?;
         return signed_in(ctx, &calcifer, hub, account, "signed in").await;
     }
-    let email = args.email.as_deref().unwrap_or_default().trim();
+    let email = match &args.email {
+        Some(email) => email.trim().to_owned(),
+        None => ask_line(ctx, "Your Tensorhub account's email: ", "email")?,
+    };
+    let email = email.as_str();
     if let Some(file) = &args.export {
         let Proven::Export(key) = prove(ctx, &calcifer, hub, Purpose::Export, Some(email)).await? else {
             return Err(unexpected());

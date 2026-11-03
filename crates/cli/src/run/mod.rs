@@ -124,9 +124,10 @@ enum Warm {
 #[derive(clap::Subcommand, Debug)]
 enum Verb {
     /// Every run, newest first; live on a terminal.
+    #[command(alias = "list")]
     Ls {
-        /// Only runs in this state.
-        #[arg(long, value_parser = ["queued", "in_progress", "completed", "failed", "canceled"])]
+        /// Only runs in this state: queued, in_progress (or running), completed, failed or canceled.
+        #[arg(long, value_name = "STATE", value_parser = run_state)]
         state: Option<String>,
         /// Only this package's runs.
         #[arg(long)]
@@ -163,6 +164,16 @@ enum Verb {
         #[arg(long, default_value = "24h")]
         expires: String,
     },
+}
+
+/// A state `run ls` filters on, in any case, with its plain synonyms.
+fn run_state(text: &str) -> Result<String, String> {
+    match text.to_ascii_lowercase().as_str() {
+        state @ ("queued" | "in_progress" | "completed" | "failed" | "canceled") => Ok(state.to_owned()),
+        "running" => Ok("in_progress".to_owned()),
+        "cancelled" => Ok("canceled".to_owned()),
+        _ => Err("use queued, in_progress, completed, failed or canceled".to_owned()),
+    }
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {

@@ -8,7 +8,7 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::Subcommand;
 use protocol::error::{Error, Kind};
 
-use crate::{Context, run::Placement};
+use crate::{Context, output, run::Placement};
 use protocol::target::Published;
 
 mod author;
@@ -26,11 +26,12 @@ pub struct Args {
 enum Command {
     /// The Hub's packages; words search. `--on` lists what machines have installed instead, live on
     /// a terminal.
+    #[command(alias = "list")]
     Ls {
         /// Words to match; none lists every package.
         query: Vec<String>,
-        /// At most this many results.
-        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=200))]
+        /// At most this many results (the Hub lists up to 200 at once).
+        #[arg(long, default_value_t = 20)]
         limit: u32,
         /// What machines hold instead of the Hub's packages: `local`, a machine's name, or `all`.
         #[arg(long, value_name = "MACHINE")]
@@ -98,15 +99,8 @@ enum Command {
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.command {
         Command::Ls { query, limit, on } => match on {
-            Some(on) if query.is_empty() => {
-                machine::list(ctx, (on != "all").then(|| on.into())).await
-            }
-            Some(_) => Err(Error::new(
-                Kind::Usage,
-                "package_ls_on_query",
-                "--on lists what machines hold; words search the Hub",
-            )),
-            None => catalog::search(ctx, &query.join(" "), limit).await,
+            Some(on) => machine::list(ctx, (on != "all").then(|| on.into()), &query).await,
+            None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200)).await,
         },
         Command::Info { package } => catalog::info(ctx, &PackageRef::parse(&package)?).await,
         Command::Install { package, placement } => match local(ctx, &package)? {
@@ -180,14 +174,12 @@ fn names(texts: &[String]) -> Result<Vec<String>, Error> {
     texts
         .iter()
         .map(|text| match PackageRef::parse(text)? {
-            PackageRef {
-                release: Some(_), ..
-            } => Err(Error::new(
-                Kind::Usage,
-                "package_release_not_taken",
-                format!("{text} names a release; name the package alone"),
-            )),
-            parsed => Ok(parsed.package()),
+            parsed => {
+                if parsed.release.is_some() {
+                    output::warn(&format!("{text}: a machine holds one release of a package: removing {}", parsed.package()));
+                }
+                Ok(parsed.package())
+            }
         })
         .collect()
 }

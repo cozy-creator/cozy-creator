@@ -35,6 +35,7 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 enum Verb {
     /// Every machine: this computer's, rentals and added ones; live on a terminal.
+    #[command(alias = "list")]
     Ls {
         /// Every rental instead, ended ones too and rented from any computer, newest first: what
         /// each ran and cost, and the total per UTC day and in all.

@@ -2,9 +2,9 @@
 use std::process::ExitCode;
 
 use clap::{ArgGroup, Subcommand};
-use protocol::error::{Error, Kind};
+use protocol::error::Error;
 
-use crate::Context;
+use crate::{Context, output};
 
 mod catalog;
 mod machine;
@@ -22,6 +22,7 @@ enum Verb {
     /// The Hub's models you can see, one row each with its newest release: public ones, and your
     /// own and your orgs' while private (no release yet). Words search; `--on` lists what machines
     /// hold instead.
+    #[command(alias = "list")]
     Ls(Ls),
     /// A model's releases and their lanes; to its org's members, every commit too.
     Info(Info),
@@ -50,8 +51,8 @@ pub(crate) struct Ls {
     /// Only models of this discovery family.
     #[arg(long)]
     family: Option<String>,
-    /// At most this many models (1–100).
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=100))]
+    /// At most this many models (the Hub lists up to 100 at once).
+    #[arg(long, default_value_t = 20)]
     limit: u32,
     /// What machines hold instead of the Hub's models: `local`, a machine's name, or `all`.
     #[arg(long, value_name = "MACHINE")]
@@ -172,14 +173,12 @@ pub(crate) struct Delete {
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls(args) => match args.on {
-            Some(on) if args.query.is_empty() && args.family.is_none() => {
-                machine::list(ctx, (on != "all").then_some(on)).await
+            Some(on) => {
+                if args.family.is_some() {
+                    output::warn("--family searches the Hub; with --on it is ignored");
+                }
+                machine::list(ctx, (on != "all").then_some(on), &args.query).await
             }
-            Some(_) => Err(Error::new(
-                Kind::Usage,
-                "model_ls_on_query",
-                "--on lists what machines hold; words and --family search the Hub",
-            )),
             None => catalog::search(ctx, args).await,
         },
         Verb::Info(args) => catalog::info(ctx, args).await,

@@ -58,7 +58,7 @@ enum Verb {
         path: PathBuf,
     },
     /// List your projects.
-    #[command(after_help = "Example:\n  cozy project ls")]
+    #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
     Render(Render),
     /// Approve a take or version.

@@ -188,7 +188,7 @@ struct Held {
 
 /// What every machine holds (or the one `--on` names), from its latest Status through Calcifer.
 /// The models machines hold: `on` one, else every machine.
-pub(crate) async fn list(ctx: &Context, on: Option<String>) -> Result<ExitCode, Error> {
+pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) -> Result<ExitCode, Error> {
     let on = match &on {
         Some(on) => Some(crate::machine::machine(ctx, on).await?.name),
         None => None,
@@ -201,7 +201,7 @@ pub(crate) async fn list(ctx: &Context, on: Option<String>) -> Result<ExitCode, 
             continue;
         };
         stores.push(format!("{}: {} in {} models", machine.name, output::bytes(status.models_bytes), status.models.len()));
-        for model in &status.models {
+        for model in status.models.iter().filter(|model| output::names(&model.repository, words)) {
             let held = |release: &str, lane: (&str, &str), checkpoint: &str| Held {
                 machine: machine.name.clone(),
                 model: model.repository.clone(),

@@ -33,7 +33,7 @@ struct Searching<'a> {
 
 pub(crate) async fn search(ctx: &Context, args: Ls) -> Result<ExitCode, Error> {
     let query = args.query.join(" ");
-    let ask = Searching { hub: ctx.hub(), q: &query, family: args.family.as_deref(), limit: args.limit };
+    let ask = Searching { hub: ctx.hub(), q: &query, family: args.family.as_deref(), limit: output::at_most("--limit", args.limit, 100) };
     let view: ModelSearch = ctx.calcifer().await?.get_query("/v1/models", &ask).await?;
     let total = view.total;
     if ctx.json {

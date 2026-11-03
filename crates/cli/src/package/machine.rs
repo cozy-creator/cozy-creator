@@ -195,20 +195,21 @@ impl Held<'_> {
     }
 }
 
-pub async fn list(ctx: &Context, on: Option<On>) -> Result<ExitCode, Error> {
-    if !ctx.json && ctx.term.stdout {
+pub async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Result<ExitCode, Error> {
+    if !ctx.json && ctx.term.stdout && words.is_empty() {
         let view = super::live::Packages::open(ctx, on).await?;
         crate::tui::show(ctx, crate::tui::Screen::Packages(view)).await?;
         return Ok(ExitCode::SUCCESS);
     }
     let machines = machines(ctx, on.as_ref()).await?;
-    let rows = rows(ctx, &machines);
+    let mut rows = rows(ctx, &machines);
+    rows.retain(|row| output::names(&row.package, words));
     if ctx.json {
         output::json(&serde_json::json!({ "packages": rows }));
         return Ok(ExitCode::SUCCESS);
     }
     if rows.is_empty() {
-        println!("No packages installed.");
+        println!("No packages installed{}.", if words.is_empty() { "" } else { " that match" });
         output::next(
             ctx,
             &["cozy package ls", "cozy package install <[org/]name>"],
