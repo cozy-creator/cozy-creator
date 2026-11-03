@@ -72,8 +72,8 @@ def actual(payload, ctx):
     root = Path(minimax_h3.__file__).resolve().parent
     assert all(digest(root / name) == expected for name, expected in payload.package_modules.items())
     assert payload.kernel_identity == VAE_BLOCK.kernels.identity
-    assert str(torch.__version__) == '2.14.0+cu130'
-    assert torch.version.git_version == '08187d9e0fba026dc8217405802ab5381dc88d90'
+    assert str(torch.__version__) == '2.15.0+cu132'
+    assert torch.version.git_version == 'd0f2af8b66b20da4baa50644c0cd3f887a2eae2e'
     assert ctx.device.type == 'cuda' and torch.cuda.device_count() == 1
     uuid = str(torch.cuda.get_device_properties(0).uuid)
     assert uuid.removeprefix('GPU-').lower() == payload.gpu_uuid.removeprefix('GPU-').lower()

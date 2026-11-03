@@ -61,8 +61,8 @@ def actual(payload, ctx):
     assert version('tensorfs') == payload.tensorfs_version
     assert digest(_ext.__file__) == payload.extension_sha256
     assert digest(Path(tensorfs.__file__).resolve().parent / '_varena_torch.so') == payload.shim_sha256
-    assert str(torch.__version__) == '2.14.0+cu130'
-    assert torch.version.git_version == '08187d9e0fba026dc8217405802ab5381dc88d90'
+    assert str(torch.__version__) == '2.15.0+cu132'
+    assert torch.version.git_version == 'd0f2af8b66b20da4baa50644c0cd3f887a2eae2e'
     assert ctx.device.type == 'cuda' and torch.cuda.device_count() == 1
     uuid = str(torch.cuda.get_device_properties(0).uuid)
     assert uuid.removeprefix('GPU-').lower() == payload.gpu_uuid.removeprefix('GPU-').lower()
