@@ -28,6 +28,9 @@ use reqwest::{RequestBuilder, Response, StatusCode, header};
 
 /// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
 const IGNORED_FIELDS: &str = "cozy-ignored-fields";
+/// A machine that answers no connect, and the seconds before each further attempt at it.
+const UNREACHABLE: &str = "machine_unreachable";
+const UNREACHABLE_WAITS: [u64; 4] = [3, 6, 12, 24];
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{Context, output};
@@ -151,8 +154,31 @@ impl Client {
         self.exchange(|c, base| c.get(format!("{base}{path}")).query(query)).await
     }
 
-    /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask.
+    /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask. A machine that answers
+    /// no connect records nothing and is asked again under that key, each attempt said (Paul,
+    /// 11-03); one its Hub says stopped or ended is refused otherwise, and at once.
     pub async fn post<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
+    where
+        B: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        let attempts = UNREACHABLE_WAITS.len() + 1;
+        for (attempt, wait) in UNREACHABLE_WAITS.iter().enumerate() {
+            match self.posted(path, body, key).await {
+                Err(e) if key.is_some() && e.code == UNREACHABLE => {
+                    output::warn(&format!("{}; attempt {}/{attempts} in {wait} s", e.message, attempt + 2));
+                    tokio::time::sleep(Duration::from_secs(*wait)).await;
+                }
+                answer => return answer,
+            }
+        }
+        self.posted(path, body, key).await.map_err(|e| match e.code == UNREACHABLE {
+            true => Error { message: format!("{}, after {attempts} attempts", e.message), ..e },
+            false => e,
+        })
+    }
+
+    async fn posted<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,

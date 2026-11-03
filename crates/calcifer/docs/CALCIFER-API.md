@@ -121,6 +121,8 @@ a spec.
   - Refusals name the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
     `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, …. `local_unavailable`
     (`on: local` where this OS runs no models) comes once the target names a function, or at once for local code.
+    `machine_unreachable` records nothing: ask again under the same key (the CLI does, five times with backoff, saying
+    each); `machine_offline` and `machine_ended` are the Hub's word, and asking again won't help.
 - `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
   (`RunQuote`). Nothing is rented or recorded.
 - `GET /v1/targets?target=&cwd=&hub=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it:
