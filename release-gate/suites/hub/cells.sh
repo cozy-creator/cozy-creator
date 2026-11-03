@@ -7,7 +7,9 @@
 #   providers        an admin rental of the cheapest CPU SKU on each provider (RunPod, vast), ended and checked
 #                    gone, so both acquisition paths are covered (renters never pick one: th-254)
 #   package          lock and publish 0.1.0 and 0.1.1; the unversioned run takes 0.1.1; yank 0.1.1 → the simple index marks it
-#                    data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again
+#                    data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again;
+#                    publish 0.1.2 --yanked → the Hub's newest never names it, read throughout, the publisher's next
+#                    unversioned run keeps 0.1.1, and its exact pin installs (cl-732)
 #   model            upload a commit in lane f16, publish it as 0.1.0 (listed), download; the exact pin and lane
 #                    download; delete → gone
 # Each is an `expect` row: a FAIL fails the gate. The migration rehearsal on a prod dump is the release agent's
@@ -33,13 +35,27 @@ hub_runs() {
   [ "$got" = "$want" ] && expect "hub $check" PASS "run $n of $3${4:+@$4} served $got" ||
     expect "hub $check" FAIL "run $n of $3${4:+@$4} served '${got}', not $want: $(tail -c 300 "$HB/$check.err")"
 }
-# hub_release <version>: the throwaway package at that version, published from its own directory.
+# hub_release <version> [publish flag...]: the throwaway package at that version, published from its own directory.
 hub_release() {
   local dir=$HB/pkg-$1
   rm -rf "$dir" && cp -r "$HERE/suites/hub/pkg" "$dir"
   sed -i "s/^name = \"ci-hub-pkg\"/name = \"$HUB_PKG\"/; s/^version = \"0.1.0\"/version = \"$1\"/" "$dir/pyproject.toml"
   sed -i "s/^RELEASE = \"0.1.0\"/RELEASE = \"$1\"/" "$dir/ci_hub_pkg/__init__.py"
-  (cd "$dir" && hub_do "package-lock-$1" ok package lock && hub_do "package-publish-$1" ok package publish -y)
+  (cd "$dir" && hub_do "package-lock-$1" ok package lock && hub_do "package-publish-$1" ok package publish -y "${@:2}")
+}
+# hub_candidate <version>: published yanked while the Hub's newest is read throughout: no read names it (cl-732).
+hub_candidate() {
+  local seen=$HB/package-candidate-newest.txt poller
+  : >"$seen"
+  ( while :; do "$CLI" --json package info "$WHO/$HUB_PKG" 2>/dev/null |
+      python3 -I -c 'import json,sys; print(json.load(sys.stdin)["latest_release"])' >>"$seen" 2>/dev/null; sleep 0.2; done ) &
+  poller=$!
+  hub_release "$1" --yanked && HUB_LIVE="$HUB_LIVE $1"
+  kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null
+  local reads named
+  reads=$(wc -l <"$seen") named=$(grep -cxF "$1" "$seen")
+  [ "$reads" -gt 0 ] && [ "$named" = 0 ] && expect "hub package-candidate-never-newest" PASS "$reads reads of the Hub's newest during the publish, none named $1" ||
+    expect "hub package-candidate-never-newest" FAIL "$reads reads of the Hub's newest during the publish, $named named $1"
 }
 # hub_listed <check>: `cozy model info` lists the model's release 0.1.0 with its one lane, f16.
 hub_listed() {
@@ -142,6 +158,12 @@ hub_runs package-pinned-yanked 0.1.1 "$WHO/$HUB_PKG" 0.1.1
 hub_do package-unyank ok package yank --undo "$WHO/$HUB_PKG@0.1.1"
 hub_do package-remove-again ok package remove "$WHO/$HUB_PKG" --on "$M"
 hub_runs package-unyanked 0.1.1 "$WHO/$HUB_PKG"
+# A cozy from before `package publish --yanked` has no candidate to publish.
+if "$CLI" package publish --help 2>/dev/null | grep -q -- --yanked; then
+  hub_candidate 0.1.2
+  hub_runs package-candidate-skipped 0.1.1 "$WHO/$HUB_PKG"
+  hub_runs package-candidate-pinned 0.1.2 "$WHO/$HUB_PKG" 0.1.2
+fi
 # model: 8 MiB of new random weights as a CozyTensors folder.
 uv run -q --no-project --with numpy --with safetensors python -I - "$HB/w.safetensors" <<'PY'
 import sys
