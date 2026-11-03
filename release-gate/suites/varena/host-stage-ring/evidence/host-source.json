@@ -1,0 +1,150 @@
+{
+  "source_commit": "6e99b958dcb6b48b0db3045da50df87b387d9d85",
+  "branch": "codex/xs138-p4-host-stage-ring",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-host-stage-ring",
+  "base": "500b6de76d6e19e0e432ece04be81d6ee31ca268",
+  "plan_commit": "70326e8c3",
+  "context_commits_imported": [],
+  "draft_pr": "https://github.com/cozy-creator/cozy-creator/pull/2544",
+  "bundle": "/home/fidika/cozy_v2/outputs/xs138-host-stage-ring-20261103/host-stage-ring-ready-9d-002.tar.gz",
+  "bundle_sha256": "88de31c4f9efb81acda0c9b49ce8a8e43c18b0bfba5208bb0d681cb1c6b573b6",
+  "bundle_members": {
+    "source_seals.json": "a13521c81c0e69a432173da6cb4f4faa4777668696e103b4a91ad25f8a46eb0a",
+    "binding.json": "68931bbf430e7223cce419dd58bfa0e6829abe0272d54b58b5f2ab9cf5b3cb34",
+    "host_stage_ring.py": "1c9012e15ace48d46327501d98877baf9ad654828cc46f119939ac540cd0e47a",
+    "host_stage_observe.py": "2377c1b90b10f4c7009299fe5574533d27d2b5f759e751da64f76ff29648d977",
+    "analyze.py": "2cde500145690305e82323aef86457f821f99e1ae779b164eb655031e7133700",
+    "host_stage_seal.py": "9ed37ea2ff188e888fcabf5c43e6af99899b6bd3b0077a7eeeda36e4d9c4eaa4",
+    "entry.py": "6cfaa98376bba54023edf8c5d36579f4e26e7dd258bd5b99642b858402d4c417",
+    "original_sdxl.py": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652"
+  },
+  "ring_sha256": "1c9012e15ace48d46327501d98877baf9ad654828cc46f119939ac540cd0e47a",
+  "original_numerical_sha256": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
+  "cap_bytes": 6442450944,
+  "evidence": {
+    "host": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-host-stage-ring-20261103/host-sealed-012/result.json",
+      "sha256": "6f7cc9e69392d841c0f9e39d1c4614f7038bae8313f65e6a4ed4b4af5672efd5",
+      "result": {
+        "passed": true,
+        "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "checks": {
+          "real_io_none_return_and_exception_unwind": true,
+          "actual_stdlib_source_and_code_identity": true,
+          "real_foreign_c_thread_proxy_original_called_once": true,
+          "callback_proxy_preserves_actual_exception": true,
+          "real_file_generator_normal_exit_vs_unwind_conservative": true,
+          "overflow_reports_unavailable_without_changing_io": true,
+          "collector_lock_declines_nonblocking": true,
+          "actual_profile_slot_not_replaced": true
+        },
+        "torch": null,
+        "gpu_execution": false,
+        "native_capture_or_cache_owner_qualification": false
+      }
+    },
+    "sdk_cpu": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-host-stage-ring-20261103/sdk-cpu-sealed-013/result.json",
+      "sha256": "0fe609f681ea3a6a38671883200479ccef73c1689b495ace71d7d1083f2e46ea",
+      "result": {
+        "passed": true,
+        "python": "3.14.7 (main, Aug 25 2026, 14:02:56) [Clang 22.1.3 ]",
+        "torch_version": "2.15.0+cpu",
+        "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+        "metadata": {
+          "cohort": "9d",
+          "product_revision": "9d959e31d6fc58a2d4c1f7371bc3a2b6b658c6de",
+          "source_files": {
+            "varena/_offload.py": "b555ff809cca883b3acbbe5ad44a64e9ba7897a9d0d6d7ed3731bdcead5f3570",
+            "varena/_offload_auto.py": "831608fe961047c75103a10f8c3514f4157c20d3f25df9555ed148a4490d21be",
+            "varena/_offload_graph.py": "2fc6fd464505d57ba3441b694586b2b648539b7dc63b97a938ba2b90c61eb27e",
+            "varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+            "varena/api.py": "2ab2348c5059a616ffc29201cffbe9028f5c20a0c380df70d3b451ae0330d78e",
+            "varena/torch.py": "9fc6130efbf0a6341bd0e77e8133bcdf9873438e3662d89930ffaa9fbe321777"
+          },
+          "scope": "one inference thread plus the fixture-attached native callback bodies",
+          "callback_proxy": true,
+          "product_bodies_replaced": false,
+          "native_reads_added": false,
+          "synchronization_added": false,
+          "torch_version": "2.15.0+cpu",
+          "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+          "host_control_only": true
+        },
+        "rows": 21,
+        "boundaries": {
+          "1": "unet.up_blocks.0",
+          "2": "unet.up_blocks.1",
+          "3": "unet.up_blocks.2"
+        },
+        "owner_and_module_collected_with_ring_alive": true,
+        "actual_cpu_outputs_equal": true,
+        "late_host_window_and_following_component_cleanup": true,
+        "cuda_initialized": false,
+        "native_gpu_callback_capture_replay_qualification": false
+      }
+    },
+    "cpu_storage": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-host-stage-ring-20261103/tensor-storage-sealed-014/result.json",
+      "sha256": "ceb3303e6193b920f1c05896851a6c3f465ced07c82aa09584afdb3f68252039",
+      "result": {
+        "passed": true,
+        "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "checks": {
+          "real_io_none_return_and_exception_unwind": true,
+          "actual_stdlib_source_and_code_identity": true,
+          "real_foreign_c_thread_proxy_original_called_once": true,
+          "callback_proxy_preserves_actual_exception": true,
+          "real_file_generator_normal_exit_vs_unwind_conservative": true,
+          "overflow_reports_unavailable_without_changing_io": true,
+          "collector_lock_declines_nonblocking": true,
+          "actual_profile_slot_not_replaced": true,
+          "real_cpu_linear_tensor_and_c10_storage_not_retained": true
+        },
+        "torch": {
+          "version": "2.9.1+cu128",
+          "git": "5811a8d7da873dd699ff6687092c225caffcf1bb",
+          "cuda_initialized": false,
+          "scope": "CPU reference lifetime only; no SDK/native/GPU ownership proof"
+        },
+        "gpu_execution": false,
+        "native_capture_or_cache_owner_qualification": false
+      }
+    },
+    "old_trace_gap": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-host-stage-ring-20261103/saved-27056-gap.json",
+      "sha256": "87acb016eb618c791c3e5aed338435892e9311ac6c6506c6936d3f4811660a36",
+      "result": {
+        "evidence": "saved original27056",
+        "late_interval_present": false,
+        "status": "MISSING_LATE_INTERVAL",
+        "trace_boundary": "unet.up_blocks.1",
+        "trace_attempt": 2,
+        "trace_rows": 36200,
+        "later_up0_replays": 2,
+        "original_gpu_result_remains_failed": true
+      }
+    },
+    "early_control_failure": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-host-stage-ring-20261103/host-001/failure.json",
+      "sha256": "b1970f53b05976f6734b5b59427eea847f8ce30565255434fad3ff9c22fe5c05",
+      "result": {
+        "passed": false,
+        "control": "foreign cProfile slot ownership",
+        "error": "AssertionError: foreign real profiler was replaced",
+        "scope": "host control assumption was wrong: Python3.12 cProfile uses a separate monitoring facility, not the occupied sysprofile slot asserted by this control",
+        "host_check_sha256": "dba0a93a02c1d2b015b84b282f34a1831b3012f2b590ac7ae8959e70740f2e06",
+        "product_or_gpu_failure": false
+      }
+    }
+  },
+  "gpu_execution": "UNRUN",
+  "target_gpu_python": "3.12",
+  "sdk_cpu_check_python": "3.14.7",
+  "sdk_cpu_check_torch": "2.15.0+cpu / d0f2",
+  "cp312_storage_check_torch": "2.9.1+cu128 / CPU tensors only",
+  "native_gpu_callback_ownership_qualified": false,
+  "native_cpp_tracer_composed": false,
+  "product_files_changed": false,
+  "builds_or_installs_or_hardware_actions": false
+}
