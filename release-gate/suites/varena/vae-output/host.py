@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-assert torch.version.git_version == '08187d9e0fba026dc8217405802ab5381dc88d90'
+assert torch.version.git_version == 'd0f2af8b66b20da4baa50644c0cd3f887a2eae2e'
 torch.set_num_threads(1)
 torch.manual_seed(1732)
 rows = []
