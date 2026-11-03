@@ -11,6 +11,10 @@ use serde_json::Value;
 
 use crate::Client;
 
+/// How long a run waits on a read of its package's newest release. It holds up a run, so a Hub
+/// slower than this leaves the run with what is kept.
+const LATE: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Debug)]
 pub struct Card {
     pub release: String,
@@ -67,18 +71,38 @@ pub async fn card(
     keep(root, hub, package, &document)
 }
 
-/// The newest release of `package` this computer keeps, which Calcifer refreshes in the background:
-/// a run makes no Hub read for a package it knows. One it never knew is read once ([`fresh`]).
+/// The newest release of `package` this computer keeps, which Calcifer refreshes in the background
+/// while it is in use: a run makes no Hub read for it then. One unused for a while is read first,
+/// and names what is kept if the Hub does not answer within [`LATE`]. One it never knew is read
+/// once ([`fresh`]).
 pub async fn latest(
     client: impl FnOnce() -> Result<Client, Error>,
     root: &Path,
     hub: &str,
     package: &str,
 ) -> Result<String, Error> {
-    match crate::latest::kept(&dir(root, hub, package)) {
-        Some(release) => Ok(release),
-        None => fresh(&client()?, root, hub, package).await,
-    }
+    let at = dir(root, hub, package);
+    let release = match crate::latest::kept(&at) {
+        Some((release, true)) => release,
+        Some((release, false)) => {
+            let read = async { fresh(&client()?, root, hub, package).await };
+            match tokio::time::timeout(LATE, read).await {
+                Ok(Ok(newest)) => newest,
+                Ok(Err(error)) if error.kind == Kind::NotFound => return Err(error),
+                Ok(Err(error)) => {
+                    tracing::warn!("{package}'s newest release: {error}; naming the one kept");
+                    release
+                }
+                Err(_) => {
+                    tracing::warn!("{package}'s newest release: no answer in {}s; naming the one kept", LATE.as_secs());
+                    release
+                }
+            }
+        }
+        None => fresh(&client()?, root, hub, package).await?,
+    };
+    crate::latest::used(&at);
+    Ok(release)
 }
 
 /// The Hub's newest published release of `package` now, and kept: what an install names.
