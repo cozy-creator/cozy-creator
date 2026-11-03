@@ -63,6 +63,30 @@ class _Device:
             ]
             if any(v.device != self.device for v in tensors):
                 raise OffloadError("cross-device operands need an explicit copy")
+            device_matches = torch.cuda.current_device() == self.device.index
+            if device_matches:
+                capturing = torch.cuda.is_current_stream_capturing()
+            else:
+                # Inspect the owner's actual stream, not an unrelated device's
+                # current stream. The safe old context still handles this case.
+                with torch.cuda.device(self.device):
+                    capturing = torch.cuda.is_current_stream_capturing()
+            if capturing:
+                raise OffloadError(
+                    "offload currently supports eager inference outside capture"
+                )
+            from ._offload_stream import reuse
+
+            reusable = reuse(self, caller)  # Observe changed streams even on fallback.
+            if device_matches and reusable:
+                try:
+                    yield caller
+                finally:
+                    # Scope reuse proves context/order, not operand lifetime:
+                    # internal ordinary out/alias operands may not be root inputs.
+                    for tensor in tensors:
+                        tensor.record_stream(caller)
+                return
             # A stream record protects lifetime only. This wait orders input contents.
             if stream != caller:
                 stream.wait_stream(caller)
