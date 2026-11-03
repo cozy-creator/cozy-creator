@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 mod split;
 mod cache;
 mod execution;
+mod observer;
+pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use execution::Execution;
 pub use split::{
@@ -477,6 +479,7 @@ impl Block {
 
 struct Segment {
     bytes: usize,
+    size_class: usize,
     handle: u64,
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
@@ -633,6 +636,7 @@ impl State {
 }
 
 struct Working {
+    device: i32,
     driver: cuda::Driver,
     page: usize,
     room: Arc<crate::Room>,
@@ -1024,6 +1028,7 @@ impl Working {
             ptr,
             Segment {
                 bytes,
+                size_class: class,
                 handle,
                 pool,
                 charged_blocks: 0,
@@ -1036,6 +1041,7 @@ impl Working {
         state.stats.mapped_bytes += bytes;
         state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
         self.driver.map(ptr, bytes, handle)?;
+        observer::mapped(self, ptr, bytes, pool, class)?;
         if let Some(pool) = pool {
             state.blocks.insert(
                 ptr,
@@ -1285,6 +1291,7 @@ impl Working {
             }
             let segment = &state.segments[&base];
             if segment.bytes > maximum.saturating_sub(released) { continue; }
+            observer::retiring(self, base, segment.bytes, segment.pool, segment.size_class)?;
             self.driver.unmap(base, segment.bytes)?;
             self.driver.release(segment.handle)?;
             *completed += segment.bytes;
@@ -1429,6 +1436,7 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
     let mut state = State::default();
     state.addresses.insert(base, bytes);
     let owner = Arc::new(Working {
+        device,
         driver,
         page,
         room,

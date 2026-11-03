@@ -159,6 +159,86 @@ unsafe extern "C" fn pool_release(device: i32, a: u64, b: u64, failure: *mut Fai
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct Segment {
+    device: i32,
+    address: u64,
+    bytes: usize,
+    size_class: usize,
+    pool_a: u64,
+    pool_b: u64,
+}
+
+impl From<varena::working::WorkingSegment> for Segment {
+    fn from(value: varena::working::WorkingSegment) -> Self {
+        let (pool_a, pool_b) = value.pool.unwrap_or_default();
+        Self { device: value.device, address: value.address, bytes: value.bytes, size_class: value.size_class, pool_a, pool_b }
+    }
+}
+
+#[repr(C)]
+struct SnapshotBlock {
+    bytes: usize,
+    requested: usize,
+    allocated: i32,
+    active: i32,
+}
+
+type Observe = unsafe extern "C" fn(i32, *const Segment, usize, *mut Failure) -> i32;
+type Visit = unsafe extern "C" fn(*mut std::ffi::c_void, *const Segment, *const SnapshotBlock, usize, *mut Failure) -> i32;
+
+struct Observer(Observe);
+
+fn observer_error(error: &Failure) -> varena::Error {
+    let end = error.message.iter().position(|byte| *byte == 0).unwrap_or(error.message.len());
+    varena::Error::Poisoned(format!("Torch Working observer: {}", String::from_utf8_lossy(&error.message[..end])))
+}
+
+impl Observer {
+    fn notify(&self, action: i32, segments: &[Segment]) -> varena::Result<()> {
+        let mut failure = Failure { kind: 0, cuda: 0, message: [0; 512] };
+        // SAFETY: the process-lifetime shim retains this callback. The borrowed array and
+        // writable failure live through this synchronous non-reentrant, non-unwinding call.
+        let result = unsafe { (self.0)(action, segments.as_ptr(), segments.len(), &mut failure) };
+        if result == 1 && failure.kind == 0 { Ok(()) } else { Err(observer_error(&failure)) }
+    }
+}
+
+impl varena::working::WorkingObserver for Observer {
+    fn initialize(&self, segments: &[varena::working::WorkingSegment]) -> varena::Result<()> {
+        self.notify(0, &segments.iter().copied().map(Segment::from).collect::<Vec<_>>())
+    }
+    fn mapped(&self, segment: varena::working::WorkingSegment) -> varena::Result<()> {
+        self.notify(1, &[segment.into()])
+    }
+    fn retiring(&self, segment: varena::working::WorkingSegment) -> varena::Result<()> {
+        self.notify(2, &[segment.into()])
+    }
+}
+
+unsafe extern "C" fn observe(observer: Observe, failure: *mut Failure) -> i32 {
+    call(failure, || varena::working::observe_working(Arc::new(Observer(observer))).map(|()| 1))
+}
+
+unsafe extern "C" fn snapshot(context: *mut std::ffi::c_void, visit: Visit, failure: *mut Failure) -> i32 {
+    call(failure, || {
+        for value in varena::working::working_snapshot()? {
+            let segment = Segment::from(value.segment);
+            let blocks = value.blocks.into_iter().map(|block| SnapshotBlock {
+                bytes: block.bytes, requested: block.requested,
+                allocated: i32::from(block.allocated), active: i32::from(block.active),
+            }).collect::<Vec<_>>();
+            let mut error = Failure { kind: 0, cuda: 0, message: [0; 512] };
+            // SAFETY: the shim owns context/visitor for this synchronous traversal. All
+            // descriptor buffers remain live and the visitor contains C++ exceptions.
+            let result = unsafe { visit(context, &segment, blocks.as_ptr(), blocks.len(), &mut error) };
+            if result != 1 || error.kind != 0 { return Err(observer_error(&error)); }
+        }
+        Ok(1)
+    })
+}
+
+#[repr(C)]
 struct Bindings {
     abi: u32,
     size: u32,
@@ -169,10 +249,12 @@ struct Bindings {
     pool_begin: unsafe extern "C" fn(i32, u64, u64, u64, *mut Failure) -> i32,
     pool_end: unsafe extern "C" fn(i32, u64, u64, *mut Failure) -> i32,
     pool_release: unsafe extern "C" fn(i32, u64, u64, *mut Failure) -> i32,
+    observe: unsafe extern "C" fn(Observe, *mut Failure) -> i32,
+    snapshot: unsafe extern "C" fn(*mut std::ffi::c_void, Visit, *mut Failure) -> i32,
 }
 
 static BINDINGS: Bindings = Bindings {
-    abi: 1,
+    abi: 2,
     size: std::mem::size_of::<Bindings>() as u32,
     alloc,
     free,
@@ -181,6 +263,8 @@ static BINDINGS: Bindings = Bindings {
     pool_begin,
     pool_end,
     pool_release,
+    observe,
+    snapshot,
 };
 
 #[pyfunction]
