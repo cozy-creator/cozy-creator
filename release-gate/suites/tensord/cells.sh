@@ -1,6 +1,8 @@
 # Suite `tensord`: the machine agent through `cozy`, on one rental (2 GPUs for placement). Each check below is an `expect`
 # row, PASS or FAIL with what happened, which analyze.py fails the gate on. Every request has its own prompt and seed.
 T=$OUT/tensord; mkdir -p "$T"
+# --only names none of this suite: nothing here runs, only --cells (a suite's rows are not cells, so cell() can't skip them).
+[ -z "$ONLY" ] || [[ $ONLY == *,tensord* ]] || return 0
 # Local code's environment stays whole through reclaim's passes, 10 minutes apart: its own wheels were deleted while it ran (cl-724: 26176, 26187).
 links_resolve() { nice -n 19 "$CLI" run "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
 LINKS_AT=$(date +%s); LINKS_FIRST=$(links_resolve)
@@ -34,18 +36,18 @@ released() {  # released <package>: the newest release users get (not yanked), t
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
-read -r first second <<< "$(released sdxl)"
-NEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^sdxl@//p' | head -1); NEW=${NEW:-$first}
+# anima: its last two releases both import on the current Runtime. sdxl's one before 0.2.0 predates Runtime 0.37.0 and refuses to (cl-739).
+read -r first second <<< "$(released anima)"
+NEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^anima@//p' | head -1); NEW=${NEW:-$first}
 OLD=$first; [ "$OLD" != "$NEW" ] || OLD=$second
-"$CLI" package install "sdxl@$OLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
-"$CLI" package install "sdxl@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
-n1=$(submit "sdxl/generate@$NEW" prompt="$SCENE, generation $NEW" seed:=$((R + 30))); until_status "$n1" terminal
-"$CLI" package install "sdxl@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
-# A release from before the xs-133 cutover names `_/sdxl`, which moved: the rollback names its home, as its user would.
-n2=$(submit "sdxl/generate@$OLD" prompt="$OBJECT, generation $OLD" seed:=$((R + 31)) model.model=stabilityai/sdxl@1.0.0); until_status "$n2" terminal
-if [[ " $a " == *" sdxl@$OLD "* && " $b " == *" sdxl@$NEW "* && " $c " == *" sdxl@$OLD "* ]] \
+"$CLI" package install "anima@$OLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
+"$CLI" package install "anima@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
+n1=$(submit "anima/generate@$NEW" prompt="masterpiece, anime illustration of $SCENE, generation $NEW" seed:=$((R + 30))); until_status "$n1" terminal
+"$CLI" package install "anima@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
+n2=$(submit "anima/generate@$OLD" prompt="masterpiece, anime illustration of $OBJECT, generation $OLD" seed:=$((R + 31))); until_status "$n2" terminal
+if [[ " $a " == *" anima@$OLD "* && " $b " == *" anima@$NEW "* && " $c " == *" anima@$OLD "* ]] \
    && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
-  expect tensord-generations PASS "sdxl $OLD installed, updated to $NEW (run $n1), rolled back to $OLD (run $n2)"
+  expect tensord-generations PASS "anima $OLD installed, updated to $NEW (run $n1), rolled back to $OLD (run $n2)"
 else
   expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
 fi
