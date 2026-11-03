@@ -213,6 +213,50 @@ class _Definition:
     static_tree: object = None
     outputs: object = None
     footprint: object = None
+    resources: object = None
+
+
+@dataclass(slots=True, weakref_slot=True)
+class _Resources:
+    """Graph-finalizer custody only; never a path to Python execution control.
+
+    Native Plan/Regions retain exact canonical weights, immutable Sources and VA.
+    Detached flat Working wrappers retain storage without Tensor attributes,
+    autograd/control owners, output containers or custom TreeSpec contexts.
+    """
+
+    device: torch.device
+    versions: tuple
+    sources: tuple
+    regions: tuple
+    plan: object
+    pool: tuple | None
+    working: tuple
+    footprint: object
+    streams: list
+    tail: object = None
+
+
+def _retained_payload(definition):
+    resources = _Resources(
+        definition.owner._owner.device,
+        definition.versions,
+        tuple(version.source for version in definition.versions),
+        definition.regions,
+        definition.plan,
+        definition.pool,
+        tuple(
+            tensor.detach()
+            for tensor in tree_flatten(
+                (definition.static_tree, definition.outputs, definition.buffer_owners)
+            )[0]
+            if type(tensor) is torch.Tensor
+        ),
+        definition.footprint,
+        definition.streams,
+    )
+    definition.resources = resources
+    return resources
 
 
 @dataclass
@@ -556,9 +600,12 @@ class GraphSegment:
                     raise CaptureOwnershipUncertain(
                         "capture leaves physical weight Pins; streamed graph classification refused"
                     )
-                # Resource does not reference graph/segment. Native pool/weight
-                # tails protect submitted GPU work if this definition is dropped.
-                graph.retain_object(definition, synchronize_before_release=False)
+                # Torch's process-rooted finalizer must NOT retain Definition:
+                # its owner reaches this graph through automatic caches. Keep
+                # only ownerless resource/storage custody in that registry.
+                graph.retain_object(
+                    _retained_payload(definition), synchronize_before_release=False
+                )
                 if _preparation is not None:
                     _preparation.pool = None  # Definition now owns the captured pool.
             except BaseException as error:
@@ -753,6 +800,7 @@ class GraphSegment:
             )
             self._tail = torch.cuda.Event()
             self._tail.record(stream)
+            definition.resources.tail = self._tail
             epoch.release()
         if epoch.pool_reference:
             _ext._varena_working_pool_release(
@@ -954,5 +1002,6 @@ class GraphSegment:
         definition.owner = definition.module = None
         definition.footprint = None
         definition.streams.clear()
+        definition.resources = None
         self._definition = self._graph = self._tail = None
         self._closed = True

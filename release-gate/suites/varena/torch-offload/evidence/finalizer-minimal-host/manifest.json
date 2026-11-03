@@ -1,0 +1,65 @@
+{
+  "scope": "Minimal ownerless graph-finalizer payload on exact root f56 graph source; real CPU collection only",
+  "root_integration_base": "f56be7edc1b198d2c87965919fa2a78530c45764",
+  "branch_base": "86a749c1db0b0e2487c672917c928cef3c86ae30",
+  "skip_context": "3eff4e85568639ed7adcc6e96b7255fee430d0cf",
+  "production_delta": "one graph module; 52 insertions / 3 deletions; no controller, shared helper, native, SDXL or strict two-block fixture changes",
+  "root_graph_preimage_byte_identical": true,
+  "graph_methods_changed_only": [
+    "__init__",
+    "_finish_epoch",
+    "_close_definition"
+  ],
+  "source_hashes": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py": "ea8722290259dda68b7dbac9adfed6aadcdb07af743de3b9a2ad2b65643c734e",
+    "release-gate/suites/varena/torch-offload/graph_resources_cpu.py": "0b7453250def6312e0f193ba9ad353ffc9d76a47dcd029cdf5706723bf0276ac",
+    "release-gate/suites/varena/torch-offload/graph_resources_gpu.py": "3a375e8d660648994d98a79bd2af7f8ae686b38c8a5713f7f0e326e72cf11893",
+    "release-gate/suites/varena/torch-offload/GRAPH-RESOURCE-LIFETIME.md": "b50241ed273e77e94f2218f429e6b4ee50e5dc9b4af2a343a3a8a12334135638"
+  },
+  "checked_host_images": {
+    "extension_sha256": "5764f77b786387c2cc26985ce642505fbb2572fc1204985509dcdd20d65385d0",
+    "core_sha256": "fdf0c565cae39e8e4a894498871322db9138a49dffcdf548ab0f51b372c95442",
+    "origin": "read-only copy of outputs/xs138-auto-vertical-host-20261103/attempt-001/package; only graph Python module replaced; no native build"
+  },
+  "checks": {
+    "real_cpu_collection": {
+      "exit_code": 0,
+      "receipt": "collection-cpu.json",
+      "cuda_initialized": false,
+      "no_fake_cudagraph_or_native_resources": true
+    },
+    "gpu_client_help": {
+      "exit_code": 0,
+      "receipt": "abandonment-help.txt",
+      "gpu_executed": false
+    },
+    "ruff": "pass (uvx --offline ruff check; three changed Python files)",
+    "syntax": "three changed Python files parsed",
+    "git_diff_check": "pass",
+    "graph_method_ast_scope": "pass"
+  },
+  "historical_red": {
+    "commit": "e5f4bb9341b0d5438216cbd6c5fcffd02bd7d67f",
+    "path": "release-gate/suites/varena/torch-offload/evidence/graph-resource-collection/graph-resources-red.stderr",
+    "scope": "earlier real CPU return-Definition payload control retained the real owner; not an actual CUDA graph run"
+  },
+  "setup_diagnostic": "Initial artifact hash lookup assumed _ext.abi3.so and failed; actual imported host extension is _ext.so, verified in import-identity.json. Collection client passed. No source/artifact was removed.",
+  "gpu_abandonment": {
+    "status": "prepared UNRUN",
+    "modes": [
+      "idle",
+      "inflight with existing matched provider.py/provider.so"
+    ],
+    "requires": "coherent exact typed2bf SDK/controller/helper package; root/operator owns install, ordinary Cozy child and GPU execution",
+    "assertions": "two actual captures, cached replay, control+graph weakrefs collect before trim/close, exact Versions/Source/Working custody, gated pending backing/tails and output parity"
+  },
+  "sdxl_activation_included": false,
+  "no_gpu_rental_machine_merge_release": true,
+  "receipts": {
+    "abandonment-help.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "collection-cpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "abandonment-help.txt": "7cc51a09f64126c7270766b54cb48914e5609685bb62c4d1dcd26342ec198b5d",
+    "collection-cpu.json": "7eadddd552ef94b3e25dc16c5013efcea9089c456bdf28e7adfb590a84de59ff",
+    "import-identity.json": "871668c71f4f37eede8bb2ab67fbcea744d4f6d414ba2411faab8ae6589a9f85"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "package": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-finalizer-minimal/.task/verify-package/tensorfs",
+  "graph": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-finalizer-minimal/.task/verify-package/tensorfs/varena/_offload_graph.py",
+  "graph_sha256": "ea8722290259dda68b7dbac9adfed6aadcdb07af743de3b9a2ad2b65643c734e",
+  "extension": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-finalizer-minimal/.task/verify-package/tensorfs/_ext.so",
+  "extension_sha256": "5764f77b786387c2cc26985ce642505fbb2572fc1204985509dcdd20d65385d0",
+  "core_sha256": "fdf0c565cae39e8e4a894498871322db9138a49dffcdf548ab0f51b372c95442"
+}
