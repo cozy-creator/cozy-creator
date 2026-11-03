@@ -1,5 +1,34 @@
 # P3 ledger foundation
 
+## Current v4 shared-backing scope
+
+The shared-table identity is one effective UID, user namespace, PID namespace,
+host boot, physical GPU/MIG UUID, layout/endian convention and actual tmpfs
+`(st_dev, st_ino)`. Independent connections may open the same object through
+different mount namespaces and path spellings. The versioned header records the
+actual descriptor device/inode in words12/14; copied nonempty state on another
+inode is incompatible. Separate empty private backing objects remain separate
+cooperation domains, even when their path spellings match.
+
+The magic/version/filename are `VARENA4`,4 and `varena-v4-*`. Existing v3 files and
+receipts remain untouched. There is no migration, reset, resize of incompatible
+state or old/new table join. Participants intending to cooperate must use v4 on
+the same object; this does not qualify a mixed-version GPU cohort.
+
+`Scope` still records mount namespace for local diagnostics and connection
+stability. Every existing connection retains the full current-Scope comparison,
+and the process-local service identity retains it too. Namespace migration of an
+opened connection is unsupported. UID/private-file/tmpfs validation, OFD row and
+publication locks, PID birth, fork rejection, symlink/path-inode checks and zero
+GPU-byte credit for reaped metadata are unchanged. Private PID namespaces and
+different users remain outside the shared domain.
+
+This is a metadata contract change only. Actual shared-container ledger proof
+and new-cohort GPU donation qualification are distinct gates. The following
+foundation text and its older checkpoint evidence remain historical.
+
+## Prior namespace foundation
+
 This checkpoint adds Linux shared metadata only. It does not activate allocation policy, query CUDA, reclaim
 GPU memory or delete TensorD's current room/lifecycle mechanism. General Varena remains independent of TensorD.
 The P2 allocator/replay foundation is a dependency, not a new P3 qualification claim.
