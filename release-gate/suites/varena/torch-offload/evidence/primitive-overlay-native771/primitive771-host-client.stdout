@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "scope": "real package/provider/eager CPU only; GPU UNRUN",
+  "controller_wired": false,
+  "normal_offload": "eager",
+  "version": "0.17.16+dev.g77178571.primitives7eee1780",
+  "torch": "2.14.1+cpu",
+  "package": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-auto-graphs/.task/primitive771-verify/tensorfs",
+  "shared_core_identity": true,
+  "cache_protocol": 1,
+  "native_core_sha256": "191c74448d20ca6b06eb61d8d9dd311d1025fb211edeb8de6dd89dafdbd22f30",
+  "native_extension_sha256": "24119b9e61a4c9b08ddb820bf9ad8efc0e7bf1567619d064915662fa67826893",
+  "provider_host_contract": true,
+  "cuda_initialized": false
+}
+{"passed":true,"mode":"host","constructor_retained_provider":true,"cuda_loaded":false}

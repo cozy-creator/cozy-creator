@@ -1,0 +1,26 @@
+{
+  "scope": "EXACT native771 wheel composition host import/provider/eager CPU only; GPU UNRUN",
+  "results": [
+    {
+      "passed": true,
+      "controller_wired": false,
+      "normal_offload": "eager",
+      "torch": "2.14.1+cpu",
+      "tensorfs": "0.17.16+dev.g77178571.primitives7eee1780",
+      "package": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-auto-graphs/.task/primitive771-verify/tensorfs",
+      "core_identity_shared": true,
+      "cache_protocol": 1,
+      "native771_core_sha256": "191c74448d20ca6b06eb61d8d9dd311d1025fb211edeb8de6dd89dafdbd22f30",
+      "native771_ext_sha256": "24119b9e61a4c9b08ddb820bf9ad8efc0e7bf1567619d064915662fa67826893",
+      "provider_host_contract": true,
+      "cuda_initialized": false,
+      "gpu_clients": "UNRUN"
+    },
+    {
+      "passed": true,
+      "mode": "host",
+      "constructor_retained_provider": true,
+      "cuda_loaded": false
+    }
+  ]
+}

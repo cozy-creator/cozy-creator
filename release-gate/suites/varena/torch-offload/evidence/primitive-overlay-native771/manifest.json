@@ -1,0 +1,284 @@
+{
+  "kind": "EXACT_COMPOSITION_NOT_A_SINGLE_GIT_TREE",
+  "label": "eb315-complete-package+7eee-unwired-594-006-primitives",
+  "package_base_commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+  "six_python_overrides_commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+  "controller_wired": false,
+  "normal_offload_behavior": "eager; explicit owner.capture only",
+  "mechanisms": {
+    "_Preparation": "594bfb49ba81d1397e1b3fa4a5b118310fe8f8b0",
+    "_GraphCacheEntry_and_private_retirement": "006bdf850b6de5c7444ef60299cec187e4cc3659"
+  },
+  "class_ast_checks": "Preparation identical to594; GraphCacheEntry identical to006; graph module identical to006",
+  "file_origins": {
+    "tensorfs/__init__.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/__init__.py",
+      "git_blob": "87b04ca08750dee3413be9829f7b12ca4fee0f6f",
+      "sha256": "d2dcbc2e04d9240e18413ef2c506789c7bfe403c8d044ebee8c32ec2c8d093c0"
+    },
+    "tensorfs/_ext.pyi": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/_ext.pyi",
+      "git_blob": "72b936e510dedceb6d31a196efbd32496d0fbf72",
+      "sha256": "be3e045020c11f83476a54a5dfc24d52f1fc881beffb3cc9499abef5c7ed97d2"
+    },
+    "tensorfs/_native.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/_native.py",
+      "git_blob": "54c1756b469dc893deb44e15cae4ecb3d85b92b0",
+      "sha256": "2f466a59bd812009ea8c40771d8a38fdc51f173937cd6ad8153b17e9c0f96e23"
+    },
+    "tensorfs/_native_identity.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/_native_identity.py",
+      "git_blob": "e9de31476fd8b66b14139d6235edfaf0da0899a5",
+      "sha256": "fada839f6730078280c141f8ff7c90a3b015bcb2bea1eaa3bfde7db4048e48fb"
+    },
+    "tensorfs/api.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/api.py",
+      "git_blob": "25f387c3b2466bae2d514db3d14cb4457f5a1ecf",
+      "sha256": "e88867188a416ea01f68f7187409b4bfe6773489508eccad66bffe3f49e956a6"
+    },
+    "tensorfs/api.pyi": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/api.pyi",
+      "git_blob": "542606940554afbd93c610da6419c15b2c005ca9",
+      "sha256": "6f3f5d61f5f2691cf80ee53a37c70bfa880e7567600ef98a0ff4fd392ad38b44"
+    },
+    "tensorfs/executor.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/executor.py",
+      "git_blob": "c09b706519c0aa3a57a24f537a15ab367e669def",
+      "sha256": "fdbabcd5f1c03352535d9bb8aa62dbbd0abaead62ddc3128420d3658f3b0df5f"
+    },
+    "tensorfs/executor.pyi": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/executor.pyi",
+      "git_blob": "786100048e2c1ceb5e9074b1a0a409a4a06c941c",
+      "sha256": "0676578975e330ad04e85b62da7fa8ab8848c2414dd5c75603fdafc0f6fb34b3"
+    },
+    "tensorfs/py.typed": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/py.typed",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tensorfs/raw.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/raw.py",
+      "git_blob": "a7e667878d74ee05d08027a587a4626681b712bc",
+      "sha256": "18b14e08fe920dea12e6856d53425f86e391c9e6c1406fe3bbb6d0e2d301d9cc"
+    },
+    "tensorfs/raw.pyi": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/raw.pyi",
+      "git_blob": "03f1d53095ed7db6d2fcd540f21aac6120b1babf",
+      "sha256": "acf2c62ab4db6e931e0ce265307ab8df13c58a89ea8ded4da9640aa024b371bd"
+    },
+    "tensorfs/varena/README.md": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/README.md",
+      "git_blob": "3908ff4aba19563a58c25b91b6bdca1e35baa3a8",
+      "sha256": "938dddc1dbeccb96173930467fdcefe275df048e62f022729b60c5a4042f75ba"
+    },
+    "tensorfs/varena/__init__.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/__init__.py",
+      "git_blob": "1b24b8a47fe5c112a8cf9b76c16dd17500b179fe",
+      "sha256": "4a88a4b0590a58a24eb4443b87cdd3070577881ce09ecd84c131f01d324a9502"
+    },
+    "tensorfs/varena/_cooperative.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_cooperative.py",
+      "git_blob": "74728fdc5c107e24c68316fbf7dcac2114b959aa",
+      "sha256": "68e855b8dfc76d83fa1f726ae99ca1bc1b2bb00891aae889f03c93a2187f7690"
+    },
+    "tensorfs/varena/_offload.py": {
+      "commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload.py",
+      "git_blob": "559db80e9b8125e874cf153efed63fedc8095221",
+      "sha256": "8ffc9663bafd667e556bcc7f01dbc952080952a5b15e912e77e0961503b54348"
+    },
+    "tensorfs/varena/_offload_graph.py": {
+      "commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py",
+      "git_blob": "93633dfd03693452f77a9d8eb358b27cd5ddc739",
+      "sha256": "a060a9e63cf25f07ab2b78d50ee098dcebc1e11cfec63fb5d1f673202279043a"
+    },
+    "tensorfs/varena/_offload_inventory.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload_inventory.py",
+      "git_blob": "24c7340af6bfb4e6759ab7550855b1bfea5c1ffe",
+      "sha256": "973aca63ca767d0754bbbf70ada84a89808618c552d5db7cf45e180e4e4ad011"
+    },
+    "tensorfs/varena/_runtime.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_runtime.py",
+      "git_blob": "b9227a04757860052d8d8afd1875923feaba9c1c",
+      "sha256": "21d56d2bdbe0c452f0d76109c928f259724b7e6ea52426334eb71eb98910f584"
+    },
+    "tensorfs/varena/api.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/api.py",
+      "git_blob": "1d7819fb062e8c39fe11214a9bb3a5eaf563353c",
+      "sha256": "fbfdff99a026e58fd2ec6364c710b486f3ac500c01c4d2c64db9b93f7f255e0f"
+    },
+    "tensorfs/varena/sources.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/sources.py",
+      "git_blob": "c892a9571c34e9b5fffa75b53a24e7b48d856efb",
+      "sha256": "c20047404e7007eb611d77002871bbcc82224fdb5d0147e2a22b00836f63ea06"
+    },
+    "tensorfs/varena/torch.py": {
+      "commit": "eb3157bb1aa2aed79685f0a80cb2e0a193ee01a5",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/torch.py",
+      "git_blob": "491cc282fef9129ce7fe12b3885ba07b7b9da192",
+      "sha256": "7fbb79e817798a7aa2f932268bf68fcf6ba0f925a0a9a326b8c34617266e3566"
+    },
+    "tensorfs/varena/_offload_auto.py": {
+      "commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload_auto.py",
+      "git_blob": "9eeab0e027f62c904e8852708c849dca2a41b49b",
+      "sha256": "6f66dd5174b486e6322231ab6a57699d281e86199fe56d1d6f9098b32167d42f"
+    },
+    "tensorfs/varena/_offload_stream.py": {
+      "commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload_stream.py",
+      "git_blob": "e59a35156815d3b2d2c226e0bcffc4f29db9d9cf",
+      "sha256": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0"
+    },
+    "tensorfs/varena/_offload_sdxl.py": {
+      "commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload_sdxl.py",
+      "git_blob": "89263068bfe965afdcbc2f154fa631f5c2d2fcca",
+      "sha256": "c45900b7c437e4de10b39fbd87af25187ef0369ebc882d65b96cd416e630fc72"
+    },
+    "tensorfs/varena/_offload_review.py": {
+      "commit": "7eee17802b2877e318fcefccf8ee015dfa9c66be",
+      "path": "crates/tensorfs-py/python/tensorfs/varena/_offload_review.py",
+      "git_blob": "8a630fe3ee4815aaf611853608dd7e5f75b79913",
+      "sha256": "ee05de5b79a3f5e1d8ccdb9162be70dc293ddb2a4f9f2fb5640c72fd742c878e"
+    },
+    "clients/optional_pool_admission_gpu.py": {
+      "commit": "594bfb49ba81d1397e1b3fa4a5b118310fe8f8b0",
+      "path": "release-gate/suites/varena/torch-offload/optional_pool_admission_gpu.py",
+      "git_blob": "8b44fb57121611a2818d8804725f615116fc4602",
+      "sha256": "1b14c60f165a74d271aa924ee837ed0899fcd8a8d3c344e1d27ed7d365f6f4f6"
+    },
+    "clients/automatic_cache_pressure_gpu.py": {
+      "commit": "006bdf850b6de5c7444ef60299cec187e4cc3659",
+      "path": "release-gate/suites/varena/torch-offload/automatic_cache_pressure_gpu.py",
+      "git_blob": "6d861d1dbd23dbe6cad746af5f809d4dd7a4aeb2",
+      "sha256": "6f60e3d0fba644679bd3106a362a3cabea3a19330d33f0ec30c660e72fffc615"
+    },
+    "helpers/provider.py": {
+      "commit": "77178571c6968da69af66e2a811c93101da6bf69",
+      "path": "release-gate/suites/varena/native-tensor-export/provider.py",
+      "git_blob": "7d9e10a5f0d9f353e6f3a15fd0ecf462a4fd00aa",
+      "sha256": "edbde16566ae6d63d3a686ca40af857865658ab86c3182d57efece0fbaf17654"
+    },
+    "helpers/source_provider.c": {
+      "commit": "77178571c6968da69af66e2a811c93101da6bf69",
+      "path": "release-gate/suites/varena/native-tensor-export/source_provider.c",
+      "git_blob": "36625723a721b294691e43dd17f56a11df3c6248",
+      "sha256": "5a574d965f3873bbd8d1bafc729bcdbb39e0c7de0625d110009eb97f1475f56d"
+    },
+    "provider-source/public-source/source.c": {
+      "commit": "77178571c6968da69af66e2a811c93101da6bf69",
+      "path": "release-gate/suites/varena/public-source/source.c",
+      "git_blob": "d871d616962d9ef343a846516b740a393b0b631d",
+      "sha256": "da77fb2e76d7fe3bc2e462756a78b6163d01723a3ab02dd1172a7ded3132a341"
+    },
+    "provider-source/include/varena.h": {
+      "commit": "77178571c6968da69af66e2a811c93101da6bf69",
+      "path": "crates/varena/include/varena.h",
+      "git_blob": "716bf29cc3257b9571939e9790cd6fd947c7bf65",
+      "sha256": "9460ff4754113dcd9e1a7a214f2ffe0871c633a3b93f9936345473d1c65dd595"
+    }
+  },
+  "file_hashes": {
+    "clients/automatic_cache_pressure_gpu.py": "6f60e3d0fba644679bd3106a362a3cabea3a19330d33f0ec30c660e72fffc615",
+    "clients/optional_pool_admission_gpu.py": "1b14c60f165a74d271aa924ee837ed0899fcd8a8d3c344e1d27ed7d365f6f4f6",
+    "helpers/provider.py": "edbde16566ae6d63d3a686ca40af857865658ab86c3182d57efece0fbaf17654",
+    "helpers/source_provider.c": "5a574d965f3873bbd8d1bafc729bcdbb39e0c7de0625d110009eb97f1475f56d",
+    "helpers/varena-tensor-export-provider.so": "a0fe8451d38e5c089737b64d5dac57ae9a93cbe5a0ccc95334d8d794ba1a8ac1",
+    "provider-source/include/varena.h": "9460ff4754113dcd9e1a7a214f2ffe0871c633a3b93f9936345473d1c65dd595",
+    "provider-source/public-source/source.c": "da77fb2e76d7fe3bc2e462756a78b6163d01723a3ab02dd1172a7ded3132a341",
+    "tensorfs/__init__.py": "d2dcbc2e04d9240e18413ef2c506789c7bfe403c8d044ebee8c32ec2c8d093c0",
+    "tensorfs/_ext.pyi": "be3e045020c11f83476a54a5dfc24d52f1fc881beffb3cc9499abef5c7ed97d2",
+    "tensorfs/_native.py": "2f466a59bd812009ea8c40771d8a38fdc51f173937cd6ad8153b17e9c0f96e23",
+    "tensorfs/_native_identity.py": "fada839f6730078280c141f8ff7c90a3b015bcb2bea1eaa3bfde7db4048e48fb",
+    "tensorfs/api.py": "e88867188a416ea01f68f7187409b4bfe6773489508eccad66bffe3f49e956a6",
+    "tensorfs/api.pyi": "6f3f5d61f5f2691cf80ee53a37c70bfa880e7567600ef98a0ff4fd392ad38b44",
+    "tensorfs/executor.py": "fdbabcd5f1c03352535d9bb8aa62dbbd0abaead62ddc3128420d3658f3b0df5f",
+    "tensorfs/executor.pyi": "0676578975e330ad04e85b62da7fa8ab8848c2414dd5c75603fdafc0f6fb34b3",
+    "tensorfs/py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tensorfs/raw.py": "18b14e08fe920dea12e6856d53425f86e391c9e6c1406fe3bbb6d0e2d301d9cc",
+    "tensorfs/raw.pyi": "acf2c62ab4db6e931e0ce265307ab8df13c58a89ea8ded4da9640aa024b371bd",
+    "tensorfs/varena/README.md": "938dddc1dbeccb96173930467fdcefe275df048e62f022729b60c5a4042f75ba",
+    "tensorfs/varena/__init__.py": "4a88a4b0590a58a24eb4443b87cdd3070577881ce09ecd84c131f01d324a9502",
+    "tensorfs/varena/_cooperative.py": "68e855b8dfc76d83fa1f726ae99ca1bc1b2bb00891aae889f03c93a2187f7690",
+    "tensorfs/varena/_offload.py": "8ffc9663bafd667e556bcc7f01dbc952080952a5b15e912e77e0961503b54348",
+    "tensorfs/varena/_offload_auto.py": "6f66dd5174b486e6322231ab6a57699d281e86199fe56d1d6f9098b32167d42f",
+    "tensorfs/varena/_offload_graph.py": "a060a9e63cf25f07ab2b78d50ee098dcebc1e11cfec63fb5d1f673202279043a",
+    "tensorfs/varena/_offload_inventory.py": "973aca63ca767d0754bbbf70ada84a89808618c552d5db7cf45e180e4e4ad011",
+    "tensorfs/varena/_offload_review.py": "ee05de5b79a3f5e1d8ccdb9162be70dc293ddb2a4f9f2fb5640c72fd742c878e",
+    "tensorfs/varena/_offload_sdxl.py": "c45900b7c437e4de10b39fbd87af25187ef0369ebc882d65b96cd416e630fc72",
+    "tensorfs/varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+    "tensorfs/varena/_runtime.py": "21d56d2bdbe0c452f0d76109c928f259724b7e6ea52426334eb71eb98910f584",
+    "tensorfs/varena/api.py": "fbfdff99a026e58fd2ec6364c710b486f3ac500c01c4d2c64db9b93f7f255e0f",
+    "tensorfs/varena/sources.py": "c20047404e7007eb611d77002871bbcc82224fdb5d0147e2a22b00836f63ea06",
+    "tensorfs/varena/torch.py": "7fbb79e817798a7aa2f932268bf68fcf6ba0f925a0a9a326b8c34617266e3566"
+  },
+  "prebuilt_provider": {
+    "path": "/home/fidika/cozy_v2/outputs/xs138-successor-readiness-20261102/sdk-bound-eb3157bb-graph-001/helpers/varena-tensor-export-provider.so",
+    "sha256": "a0fe8451d38e5c089737b64d5dac57ae9a93cbe5a0ccc95334d8d794ba1a8ac1",
+    "fixture_abi": 1,
+    "must_share_installed_core": true,
+    "rebuilt": false
+  },
+  "native": {
+    "commit": "77178571c6968da69af66e2a811c93101da6bf69",
+    "input_wheel": "/home/fidika/cozy_v2/outputs/xs138-native-api-integrated/linux-77178571c-final-001/wheels/tensorfs-0.17.16+dev.g77178571-cp311-abi3-linux_x86_64.whl",
+    "input_wheel_sha256": "e5ffedbc29a65dd84643c62f57e06cbac0ecbf05f034bbec1804c7839e30fa23",
+    "files_preserved_byte_for_byte": {
+      "tensorfs/.native/libstd-7e719de9c4abc98f.so": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c",
+      "tensorfs/.native/libvarena.so": "191c74448d20ca6b06eb61d8d9dd311d1025fb211edeb8de6dd89dafdbd22f30",
+      "tensorfs/_ext.abi3.so": "24119b9e61a4c9b08ddb820bf9ad8efc0e7bf1567619d064915662fa67826893",
+      "tensorfs/_varena_torch.json": "a284562970762db14ce02111833bc346aa06256e725e7ec58170e7a6eeeadb5a",
+      "tensorfs/_varena_torch.so": "09684b61d0b909c39d56c7d129432e906ddb0a57f1b4b916b20bb2c4c8d7716e"
+    },
+    "native_build_performed": false
+  },
+  "controlled_wheel": {
+    "filename": "tensorfs-0.17.16+dev.g77178571.primitives7eee1780-cp311-abi3-linux_x86_64.whl",
+    "version": "0.17.16+dev.g77178571.primitives7eee1780",
+    "sha256": "d21f0f3f92685e780c431c4af196118fa986f1abe66f4b1f63795c1f81ffc927",
+    "scope": "controlled qualification repack, not a release"
+  },
+  "child_commands": [
+    [
+      "python",
+      "-B",
+      "clients/optional_pool_admission_gpu.py",
+      "--device",
+      "0"
+    ],
+    [
+      "python",
+      "-B",
+      "clients/automatic_cache_pressure_gpu.py",
+      "--device",
+      "0",
+      "--provider",
+      "helpers/varena-tensor-export-provider.so",
+      "--provider-python",
+      "helpers/provider.py",
+      "--timeout-s",
+      "60"
+    ]
+  ],
+  "scope": "Ready source/native binding; GPU execution UNRUN here. Root owns guarded ordinary-Cozy runs. No machine/install/rental action performed."
+}

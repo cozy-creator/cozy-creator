@@ -1,0 +1,9 @@
+{
+  "composition_manifest_sha256": "11f990cdbcfa53b8f3883b526ea1ff9c39b7cebd9dfa4734e10387db293e943b",
+  "archive_sha256": "c82bc8330cdae16ee6c709a3fe1113c679afb01e1c12988ea28387fdfb9243a2",
+  "wheel_sha256": "d21f0f3f92685e780c431c4af196118fa986f1abe66f4b1f63795c1f81ffc927",
+  "operator_sha256": "155b9810ff62801304fe73c04ac2d2c383e0ddeaf075a3bace9b0e42b3d9f8ba",
+  "host_verification_sha256": "b825b35eec8748201ca17ac02869e08c31bd1fdea9e99354bd5163c7e8d21653",
+  "gpu_executed": false,
+  "controller_wired_in_this_pinned_bundle": false
+}
