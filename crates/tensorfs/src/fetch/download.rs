@@ -20,10 +20,11 @@
 //!   minutes (tfs-138). A fetch whose every request is slow restarts none.
 //! - **A cold object** (about 0.2% of them) answers any one request at 20-70 KB/s, asked again or
 //!   left alone, for whoever asks, whatever the URL or front end, while its requests add up: to
-//!   0.6-1 MB/s at 32 at once, no more at 256 (tfs-141). So an object whose requests are dropped
+//!   0.3-1 MB/s at 32 at once, no more at 256 (tfs-141). So an object whose requests are dropped
 //!   twice running having moved under a part is read as parts: ranges of `PART_BYTES`, `PARTS` at
 //!   once, each judged only by its silence. They go into the store in order; those ahead wait in
-//!   memory. At most `PARTED` objects at a time: the rest stay as they are until one lands.
+//!   memory. At most `PARTED` objects at a time: the rest stay as they are until one lands. An
+//!   object with under two parts to go stays one request: parts could gain it nothing.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
 //!   a fresh location, the same wrong bytes twice), on a dead peer, or when the origin has only
 //!   answered "not now" while nothing in the whole fetch landed, for [`ask`]'s stall rule; the
@@ -85,9 +86,9 @@ const PARTS_AHEAD: u64 = 48;
 const PARTED: usize = 4;
 /// Dropped requests in a row, each having moved under a part, before an object is read as parts.
 const SLOW_ASKS: u32 = 2;
-/// A part's patience, as doublings of the wait for an answer: its silences are long and leave it
-/// be, while a dead connection still ends.
-const PART_DOUBLINGS: u32 = 4;
+/// A part's patience, as doublings of the wait for an answer: a cold object's silences are longer
+/// than a request's, while a dead connection must not hold its object for long.
+const PART_DOUBLINGS: u32 = 2;
 /// With no samples yet to judge it by, the rate under which a request is dropped, once it has had
 /// 4× the noise floor: a fetch of one cold object has nothing else to compare it with.
 const CRAWL_BYTES_PER_S: f64 = 1e6;
@@ -1025,7 +1026,7 @@ impl Shared {
                     let headers: Vec<_> = headers.iter().filter(|(name, _)| same || name.eq_ignore_ascii_case("range")).cloned().collect();
                     let provider = if same { provider } else { None };
                     redirects |= delivered;
-                    if parted.is_none() && ranges && slow >= SLOW_ASKS {
+                    if parted.is_none() && ranges && slow >= SLOW_ASKS && task.object.length - sink.reached >= 2 * PART_BYTES {
                         parted = self.parted.try_acquire().ok();
                         if parted.is_some() {
                             tracing::info!(object = %task.object.sha256, at = sink.reached, "parts");
