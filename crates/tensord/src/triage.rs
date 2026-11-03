@@ -43,25 +43,6 @@ pub struct Facts<'a> {
     pub fault: &'a str,
 }
 
-/// A group fault's evidence: the dead rank, then the stderr all ranks share, its last lines.
-const FAULT_LINES: usize = 50;
-
-/// The last `lines` lines of `text` within `bytes`, its end kept.
-pub fn tail_lines(text: &str, lines: usize, bytes: usize) -> String {
-    let all: Vec<&str> = text.trim_end().lines().collect();
-    capped(&all[all.len().saturating_sub(lines)..].join("\n"), bytes).to_string()
-}
-
-fn fault_section(bundle: &serde_json::Value, bytes: usize) -> Option<String> {
-    let fault = bundle["executor"]["fault"].as_str().filter(|f| !f.is_empty())?;
-    let stderr = bundle["executor"]["stderr_tail"].as_str().map(str::trim).unwrap_or_default();
-    Some(match stderr.is_empty() {
-        true => format!("{fault}; its group's stderr is empty"),
-        false => format!("{fault}; the last {FAULT_LINES} lines of its stderr, which every rank writes:\n{}",
-            tail_lines(stderr, FAULT_LINES, bytes)),
-    })
-}
-
 /// `text` within `limit` chars: whole, or its head and its tail around a marker. A failure's
 /// first line names the operation and its last lines the cause (uv's error after its progress).
 pub fn ends(text: &str, limit: usize) -> String {
@@ -93,41 +74,40 @@ pub fn masked(text: &str) -> String {
     out + rest
 }
 
-/// What travels with a failed run (its log and `Reason.detail`): its bundle's traceback, else
-/// its executor's stderr, the last `DETAIL_LINES` lines within `DETAIL_BYTES`, secrets masked.
+/// What travels with a failed run (`Reason.detail`, and a failed child's answer to its caller): its
+/// raising traceback, else the end of its executor's stderr with repeats collapsed, secrets masked.
 pub fn detail(bundle: &[u8]) -> Option<String> {
-    const DETAIL_LINES: usize = 40;
+    const TRACEBACK_LINES: usize = 30;
+    const STDERR_LINES: usize = 12;
     const DETAIL_BYTES: usize = 8 << 10;
     let bundle: serde_json::Value = serde_json::from_slice(bundle).ok()?;
-    // A group fault's leader traceback only says the group broke; the dead rank's stderr says why.
-    if let Some(section) = fault_section(&bundle, DETAIL_BYTES) {
-        return Some(masked(&section));
-    }
-    let text = [&bundle["terminal"]["traceback"], &bundle["executor"]["stderr_tail"]]
-        .into_iter()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::trim)
-        .find(|text| !text.is_empty())?;
-    let lines: Vec<&str> = text.lines().collect();
-    let tail = lines[lines.len().saturating_sub(DETAIL_LINES)..].join("\n");
+    let text = |field: &serde_json::Value| field.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+    let (lines, most) = match text(&bundle["terminal"]["traceback"]) {
+        Some(traceback) => (traceback.lines().map(str::to_owned).collect(), TRACEBACK_LINES),
+        None => (collapsed(&text(&bundle["executor"]["stderr_tail"])?), STDERR_LINES),
+    };
+    let lines: Vec<String> = lines;
+    let tail = lines[lines.len().saturating_sub(most)..].join("\n");
     Some(masked(capped(&tail, DETAIL_BYTES)))
 }
 
-/// A failed attempt's whole raising traceback (else its executor's stderr), secrets masked:
-/// what a failed child call hands its caller.
-pub fn traceback(bundle: &[u8]) -> Option<String> {
-    let bundle: serde_json::Value = serde_json::from_slice(bundle).ok()?;
-    let fault = fault_section(&bundle, MAX_STDERR as usize);
-    let text = [&bundle["terminal"]["traceback"], &bundle["executor"]["stderr_tail"]]
-        .into_iter()
-        .filter_map(serde_json::Value::as_str)
-        .map(str::trim)
-        .find(|text| !text.is_empty());
-    match (bundle["terminal"]["traceback"].as_str().map(str::trim).filter(|t| !t.is_empty()), fault) {
-        (Some(traceback), Some(fault)) => Some(masked(&format!("{traceback}\n\n{fault}"))),
-        (None, Some(fault)) => Some(masked(&fault)),
-        _ => text.map(masked),
+/// `text`'s lines, each once where it last came, with how many times, its digits aside: a CUDA
+/// assert writes one line per GPU thread, then all of it again.
+fn collapsed(text: &str) -> Vec<String> {
+    let mut lines: Vec<(&str, u32)> = vec![];
+    let mut seen = std::collections::HashMap::new();
+    for line in text.lines().rev() {
+        let key: String = line.chars().filter(|c| !c.is_ascii_digit()).collect();
+        let at = *seen.entry(key).or_insert_with(|| {
+            lines.push((line, 0));
+            lines.len() - 1
+        });
+        lines[at].1 += 1;
     }
+    lines.into_iter().rev().map(|(line, times)| match times {
+        1 => line.to_owned(),
+        times => format!("{line} (x{times})"),
+    }).collect()
 }
 
 fn capped(text: &str, limit: usize) -> &str {

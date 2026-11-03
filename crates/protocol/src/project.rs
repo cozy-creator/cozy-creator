@@ -334,6 +334,11 @@ pub enum Event {
     Warning {
         message: String,
     },
+    /// Something asked could not be made, said as it happens; the walk goes on with what does not
+    /// read it.
+    Failed {
+        error: Error,
+    },
     /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
     Moved {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -365,7 +370,7 @@ pub enum Event {
         took_s: f64,
     },
     /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
-    /// that failed.
+    /// that failed (`Failed` said it already, unless the walk itself stopped).
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,

@@ -69,6 +69,7 @@ pub async fn exec(ctx: &Context, id: &str, once: bool) -> Result<ExitCode, Error
             let reason = call
                 .reason
                 .as_ref()
+                .filter(|r| run.reason.as_ref().is_none_or(|own| own.message != r.message))
                 .map(|r| r.message.clone())
                 .unwrap_or_default();
             table = table.row([

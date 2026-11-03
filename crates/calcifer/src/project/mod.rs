@@ -1005,7 +1005,7 @@ impl Walk {
 
     /// A version that failed: said now, never sent again this walk; what does not read it goes on.
     fn failed(&self, error: Error, first: &mut Option<Error>) {
-        self.say(Event::Warning { message: error.message.clone() });
+        self.say(Event::Failed { error: error.clone() });
         first.get_or_insert(error);
     }
 
@@ -1435,9 +1435,11 @@ impl Walk {
         }
         let node = pending.made.node.clone();
         if run.status != RunStatus::Completed {
-            let why =
-                run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
-            let said = format!("{node}'s run {} did not complete: {why}; it is not run again", run.number);
+            let status = format!("{:?}", run.status).to_lowercase();
+            let said = match &run.reason {
+                Some(reason) => format!("{node}: {status}: {}", reason.message),
+                None => format!("{node}: {status}"),
+            };
             return Err(
                 Error::new(Kind::Unavailable, "version_failed", said).next(format!("cozy run show {}", run.number))
             );
@@ -1528,7 +1530,7 @@ impl Walk {
             RunStatus::Completed => saved(run, "image").and_then(|picture| folder.keep(&picture)),
             _ => {
                 let why = run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
-                Err(Error::new(Kind::Unavailable, "clean_failed", format!("run {} did not complete: {why}", run.number)).next(format!("cozy run show {}", run.number)))
+                Err(Error::new(Kind::Unavailable, "clean_failed", why).next(format!("cozy run show {}", run.number)))
             }
         };
         let (sha256, name) = (of.to_owned(), folder::prefix_of(of));

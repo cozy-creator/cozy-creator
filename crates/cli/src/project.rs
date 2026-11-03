@@ -12,7 +12,7 @@ use protocol::{
 
 use crate::{
     Context, output,
-    run::{follow, mint_key, settled, watched},
+    run::{mint_key, settled, watched},
 };
 
 /// A push or pull that moved all it could and left out a file.
@@ -339,10 +339,11 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let path = format!("/v1/projects/{}/runs", opened.id);
     let _: Opened = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     let status = format!("cozy project -p {} status", opened.path.display());
+    let mut failed = std::collections::HashSet::new();
     while let Some(event) = events.next().await {
         match event {
             Event::Started { run, .. } => {
-                if !settled(&follow(ctx, calcifer.run(&run).await?).await?) {
+                if !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
                     output::say(ctx, "the project's runs go on in Calcifer");
                     output::next(ctx, &[&status]);
                     return Ok(ExitCode::SUCCESS);
@@ -354,10 +355,17 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             }
             Event::Said { message } => output::say(ctx, &message),
             Event::Warning { message } => output::warn(&message),
+            Event::Failed { error } => {
+                output::failure(ctx, &error.message, &error.next);
+                failed.insert(error.message);
+            }
             Event::Moved { .. } | Event::Transferred { .. } | Event::Cleaned { .. } => {}
             Event::Cut { cut, frames, fps, retimed, took_s } => {
                 let path = output::link(ctx, &opened.path.join(&cut));
                 output::say(ctx, &format!("cut {path}: {}{} in {took_s:.1} s", length(frames, fps), retimes(&retimed, fps)));
+            }
+            Event::Ended { error: Some(error) } if !ctx.json && failed.contains(&error.message) => {
+                return Ok(ExitCode::from(error.exit_code() as u8));
             }
             Event::Ended { error: Some(error) } => return Err(error),
             Event::Ended { error: None } => return Ok(ExitCode::SUCCESS),

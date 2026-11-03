@@ -412,9 +412,9 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
   again when a shot's take changed.
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
-  `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `cut {cut, frames, fps, retimed?, took_s}` and
+  `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `failed {error}` (one version failed, said once; the walk goes on), `cut {cut, frames, fps, retimed?, took_s}` and
   `moved {file?, bytes}` (a push or pull landed `file`, or is under way), `transferred {done?: {files, moved, bytes,
-  skipped?: [{path, why}], kept_in?, commit?}, error?}` when it ends, `cleaned {sha256, error?}` when the run cleaning an import ended, `ended {error?}` when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
+  skipped?: [{path, why}], kept_in?, commit?}, error?}` when it ends, `cleaned {sha256, error?}` when the run cleaning an import ended, `ended {error?}` (the first failure) when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
 - `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`, and each one's `.otio`): the cut or its

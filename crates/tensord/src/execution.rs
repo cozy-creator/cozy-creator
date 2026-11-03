@@ -859,11 +859,11 @@ impl Engine {
         }
     }
 
-    /// A faulted run's failure is its fault, then what its executor said.
+    /// A faulted run's failure is its fault: what its executor then said is the consequence.
     fn faulted(&self, id: &str, outcome: Outcome) -> Outcome {
         match (self.faults.lock().unwrap().remove(id), outcome) {
-            (Some(mut fault), Outcome::Failed(said)) => {
-                fault.message = format!("{}; then {}: {}", fault.message, said.code, said.message);
+            (Some(fault), Outcome::Failed(said)) => {
+                tracing::warn!("run {id}: after its fault, {}: {}", said.code, said.message);
                 Outcome::Failed(fault)
             }
             (_, outcome) => outcome,
@@ -1035,14 +1035,11 @@ impl Engine {
         if let Err(error) = result {
             tracing::warn!("execution {id}: triage bundle not kept: {error}");
         }
-        // Its traceback's end travels with the run, in its log.
-        let detail = self.triage(id).ok().flatten().and_then(|(_, bundle)| crate::triage::detail(&bundle));
-        for line in detail.iter().flat_map(|detail| detail.lines()) {
-            if let Err(error) = self.append_log(id, "error", line) {
-                tracing::warn!("execution {id}: its failure is not in its log: {error}");
-                break;
-            }
-        }
+        // The whole failure stays in the machine's log (`cozy machine logs`); the run carries its
+        // reason and a short detail.
+        let text = format!("{}\n{}\n{}", facts.fault, facts.traceback, facts.stderr_tail);
+        tracing::warn!("run {id}: {} ({}), executor {}:\n{}", facts.message, facts.code, facts.executor_pid,
+            crate::triage::masked(text.trim()));
     }
     /// The run's triage bundle bytes and their reference, if it kept one.
     pub fn triage(&self, id: &str) -> io::Result<Option<(crate::triage::TriageRef, Vec<u8>)>> {
