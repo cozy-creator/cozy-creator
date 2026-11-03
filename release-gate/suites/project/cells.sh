@@ -7,8 +7,8 @@
 #   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
-# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's sheet at 16:9,
-#   transparent with no clean.
+# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's picture at 16:9,
+#   kept as drawn at 5% fully transparent or more, else cleaned (BiRefNet composites on white by design).
 # - project-local: a node rendered `with: ./still.py/draw`, local code made ready by Calcifer.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg/fn names the gate's folder; a project reads `with:` from its own.
@@ -39,6 +39,8 @@ approved() { lockq "$1" "json.dumps(next((v for v in reversed(lock['nodes'].get(
 PRIMARY='.assets.video.path // .assets.clean.path // .assets.image.path // empty' 
 aspect() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1" | awk -F, '{ printf "%.4f", $1 / $2 }'; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a / b - 1; print (d < 0 ? -d : d) <= 0.03 ? "PASS" : "FAIL" }'; }
+# transparent_share <picture>: its share of fully transparent pixels, as Calcifer's clean rule reads it.
+transparent_share() { ffmpeg -v error -i "$1" -frames:v 1 -vf format=rgba,alphaextract -f rawvideo -pix_fmt gray - | python3 -c 'import sys; b = sys.stdin.buffer.read(); print(round(b.count(0) / len(b), 4))'; }
 SEAMBAR='if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end'
 
 if want project-split || want project-upscale; then
@@ -204,9 +206,10 @@ YAML
   done
   f=$(jq -r "$PRIMARY" <<< "$(approved "$P" cook)")
   expect project-stills-sheet "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"
-  ymin=$([ -n "$f" ] && ffmpeg -v error -i "$P/$f" -vf alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=- -f null - | grep -oE 'YMIN=[0-9]+' | head -1)
-  expect project-stills-transparent "$(lockq "$P" "'FAIL' if any(v.get('cleaned') for v in lock['nodes']['cook']['versions']) else 'PASS'" || echo FAIL)" "cook's sheet not cleaned"
-  expect project-stills-alpha "$([ "$ymin" = YMIN=0 ] && echo PASS || echo FAIL)" "cook's sheet has transparent pixels: $ymin"
+  drawn=$(lockq "$P" "lock['nodes']['cook']['versions'][-1]['assets']['image']['path']")
+  share=$([ -n "$drawn" ] && transparent_share "$P/$drawn")
+  cleaned=$(lockq "$P" "any(v.get('cleaned') for v in lock['nodes']['cook']['versions'])")
+  expect project-stills-transparent "$(awk -v s="${share:-x}" -v c="$cleaned" 'BEGIN { print (s != "x" && (s < 0.05 ? "True" : "False") == c) ? "PASS" : "FAIL" }')" "cook's picture ${share:-unread} fully transparent, cleaned: ${cleaned:-unread}"
   sed -i 's/aspect_ratio: "16:9"/aspect_ratio: "9:16"/' "$P/project.yaml"
   render project-stills-916 "$P" kitchen --new
   f=$(lockq "$P" "lock['nodes']['kitchen']['versions'][-1]['assets']['image']['path']")
