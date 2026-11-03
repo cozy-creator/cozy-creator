@@ -20,9 +20,9 @@
 //!   minutes (tfs-138). A fetch whose every request is slow restarts none.
 //! - **A cold object** (about 0.2% of them) answers any one request at 20-70 KB/s, asked again or
 //!   left alone, for whoever asks, whatever the URL or front end, while its requests add up: to
-//!   0.3-1 MB/s at 32 at once, no more at 256 (tfs-141). So an object whose requests are dropped
-//!   twice running having moved under a part is read as parts: ranges of `PART_BYTES`, `PARTS` at
-//!   once, each judged only by its silence. They go into the store in order; those ahead wait in
+//!   0.3-1 MB/s at 32 at once, no more at 256 (tfs-141). So an object whose requests are answered
+//!   and dropped twice running having moved under a part is read as parts: ranges of `PART_BYTES`,
+//!   `PARTS` at once, each judged only by its silence. They go into the store in order; those ahead wait in
 //!   memory. At most `PARTED` objects at a time: the rest stay as they are until one lands. An
 //!   object with under two parts to go stays one request: parts could gain it nothing.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
@@ -84,7 +84,8 @@ const PARTS: usize = 32;
 const PARTS_AHEAD: u64 = 48;
 /// Objects read as parts at once, which bounds their sockets and memory.
 const PARTED: usize = 4;
-/// Dropped requests in a row, each having moved under a part, before an object is read as parts.
+/// Requests in a row answered and dropped, each having moved under a part, before an object is
+/// read as parts.
 const SLOW_ASKS: u32 = 2;
 /// A part's patience, as doublings of the wait for an answer: a cold object's silences are longer
 /// than a request's, while a dead connection must not hold its object for long.
@@ -434,6 +435,9 @@ enum Attempt {
         dropped: bool,
         /// The origin answered: a dead peer answers nothing.
         heard: bool,
+        /// The watch dropped it with its answer begun: a cold object answers at once, then
+        /// drips. An origin too busy to answer is not asked by more requests.
+        dripped: bool,
     },
     /// The origin said "not now": ask again, after `wait` when it stated one.
     Weather { why: String, wait: Option<Duration> },
@@ -454,6 +458,7 @@ impl From<Refusal> for Attempt {
                 wait: None,
                 dropped: false,
                 heard: false,
+                dripped: false,
             },
             _ => Attempt::Fatal(refusal),
         }
@@ -1012,6 +1017,7 @@ impl Shared {
                         wait: None,
                         dropped: true,
                         heard: true,
+                        dripped: false,
                     },
                     FileRead::Failed(refusal) => Attempt::Fatal(refusal),
                 },
@@ -1056,12 +1062,12 @@ impl Shared {
                     }
                     Err(refusal) => return Err(refusal),
                 },
-                Attempt::Again { why, wait, dropped, heard } => {
+                Attempt::Again { why, wait, dropped, heard, dripped } => {
                     let moved = task.received() > reached;
                     if dropped {
                         self.stats.restarts.fetch_add(1, Ordering::Relaxed);
                         doublings = if moved { 0 } else { (doublings + 1).min(MAX_DOUBLINGS) };
-                        slow = if sink.reached.saturating_sub(from) < PART_BYTES { slow + 1 } else { 0 };
+                        slow = if dripped && sink.reached.saturating_sub(from) < PART_BYTES { slow + 1 } else { 0 };
                         tracing::info!(object = %task.object.sha256, at = sink.reached, %why, "restart");
                     }
                     if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait)? {
@@ -1159,7 +1165,7 @@ impl Shared {
             let attempt = self.request(task, Target::Part(&mut part), url, headers, provider, doublings, delivered, &mut redirected).await;
             let pause = match attempt {
                 Attempt::Done => return (at, Ok(part.bytes)),
-                Attempt::Again { why, wait, dropped, heard } => {
+                Attempt::Again { why, wait, dropped, heard, .. } => {
                     let moved = part.reached > reached;
                     if dropped {
                         self.stats.restarts.fetch_add(1, Ordering::Relaxed);
@@ -1229,6 +1235,7 @@ impl Shared {
                 wait: None,
                 dropped: true,
                 heard: true,
+                dripped: flight.answered.load(Ordering::Acquire),
             },
             Dropped::Unwanted => Attempt::Fatal(Refusal {
                 code: Code::TRANSFER_FAILED,
@@ -1281,8 +1288,11 @@ impl Shared {
             }
         };
         let head = flight.began.elapsed();
-        self.patience.saw(head);
-        push(&mut lock(&self.measured).heads, head.as_secs_f64());
+        // A part's wait is its own object's: it steers no other request's patience.
+        if !flight.part {
+            self.patience.saw(head);
+            push(&mut lock(&self.measured).heads, head.as_secs_f64());
+        }
         flight.answered.store(true, Ordering::Release);
         flight.moved();
         flight.stretch_begins();
@@ -1367,6 +1377,7 @@ impl Shared {
                         wait: None,
                         dropped: false,
                         heard: true,
+                        dripped: false,
                     };
                 }
             }
@@ -1382,6 +1393,7 @@ impl Shared {
                 wait: None,
                 dropped: false,
                 heard: true,
+                dripped: false,
             },
         }
     }
