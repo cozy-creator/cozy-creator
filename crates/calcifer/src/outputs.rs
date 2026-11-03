@@ -54,6 +54,8 @@ use crate::{
 /// cuts parts: a lane that finishes early takes the next from the queue, so no lane trails alone.
 const RANGE: u64 = 8 << 20;
 const RANGES_PER_LANE: usize = 4;
+/// How many whole reads of one revision may fail its digest before it is given up.
+const WRONG_READS: u32 = 3;
 
 /// An output Calcifer still owes this computer: its run's number, its name and index, its length
 /// and the bytes of it in place.
@@ -97,6 +99,9 @@ enum Failure {
     Lost(String),
     /// Tried again after a pause, or once the machine changes.
     Again(String),
+    /// Read whole, and its bytes are not this revision's. Tried again [`WRONG_READS`] times in all:
+    /// a link can spoil one read, not every one.
+    Wrong(String),
     /// The machine's definitive refusal: final once the run has ended (no newer revision can
     /// come to read instead), tried again before.
     Refused(String),
@@ -178,6 +183,7 @@ impl Calcifer {
     /// each. Paces retries while nothing moves; never gives up without recording why.
     async fn export_run(&self, id: &RunId, wake: &Notify) {
         let mut pause = Pause::default();
+        let mut wrong: HashMap<(String, u32, u64), u32> = HashMap::new();
         loop {
             let (run, items) = match self.next_exports(id) {
                 Ok(Some(next)) => next,
@@ -213,6 +219,14 @@ impl Calcifer {
                     Err(Failure::Refused(message)) if run.state == RunState::Settled => {
                         Err(Failure::Lost(format!("the machine refused it ({message})")))
                     }
+                    Err(Failure::Wrong(message)) => {
+                        let reads = wrong.entry((name.clone(), index, rev)).or_default();
+                        *reads += 1;
+                        match *reads >= WRONG_READS {
+                            true => Err(Failure::Lost(format!("read {reads} times, never its bytes: {message}"))),
+                            false => Err(Failure::Again(message)),
+                        }
+                    }
                     exported => exported,
                 };
                 match exported {
@@ -235,7 +249,7 @@ impl Calcifer {
                             }
                         }
                     }
-                    Err(Failure::Again(message) | Failure::Refused(message)) => {
+                    Err(Failure::Again(message) | Failure::Refused(message) | Failure::Wrong(message)) => {
                         warn!(run = %id, output = %name, rev, "export waits: {message}");
                         again = true;
                     }
@@ -657,8 +671,8 @@ async fn fetch_file(
         match check(&part, item.length, &item.digest).await {
             Ok(()) => return Ok(part),
             // The file did not hold the revision this one extends.
-            Err(_) if from > 0 => from = 0,
-            Err(message) => return Err(Failure::Again(message)),
+            Err(Failure::Wrong(_)) if from > 0 => from = 0,
+            Err(failure) => return Err(failure),
         }
     }
 }
@@ -685,9 +699,7 @@ async fn fetch_tree(
     });
     prepared.await.map_err(unwritable)?;
     fetch(link, target, item.rev, 0, item.length, &manifest, moved).await?;
-    check(&manifest, item.length, &item.digest)
-        .await
-        .map_err(Failure::Again)?;
+    check(&manifest, item.length, &item.digest).await?;
     let listed = std::fs::read(&manifest).map_err(unwritable)?;
     let _ = std::fs::remove_file(&manifest);
     let mut read: HashMap<String, PathBuf> = HashMap::new();
@@ -710,9 +722,7 @@ async fn fetch_tree(
             ..target.clone()
         };
         fetch(link, &member, item.rev, 0, length, &file, moved).await?;
-        check(&file, length, &digest)
-            .await
-            .map_err(Failure::Again)?;
+        check(&file, length, &digest).await?;
         read.insert(digest, file);
     }
     Ok(stage)
@@ -742,7 +752,7 @@ fn prepare(part: &Path, dest: &Path, from: u64, length: u64) -> std::io::Result<
 }
 
 /// Whether `path` holds exactly `length` bytes with `digest`; they are synced to disk if so.
-async fn check(path: &Path, length: u64, digest: &str) -> Result<(), String> {
+async fn check(path: &Path, length: u64, digest: &str) -> Result<(), Failure> {
     let (path, digest) = (path.to_owned(), digest.to_owned());
     let reported_path = path.clone();
     let queued = Instant::now();
@@ -765,9 +775,9 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), String> {
         let got = Digest::from_bytes(hasher.finalize().into()).to_string();
         let hash_ms = hash_began.elapsed().as_secs_f64() * 1000.0;
         if held != length || got != digest {
-            return Ok(Err(format!(
+            return Ok(Err(Failure::Wrong(format!(
                 "read {held} bytes with digest {got}, not {length} with {digest}"
-            )));
+            ))));
         }
         let sync_began = Instant::now();
         file.sync_all()?;
@@ -775,7 +785,7 @@ async fn check(path: &Path, length: u64, digest: &str) -> Result<(), String> {
             blocking_queue_ms, hash_ms, sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0);
         Ok(Ok(()))
     });
-    let result = checked.await.unwrap_or_else(|e| Err(e.to_string()));
+    let result = checked.await.unwrap_or_else(|e| Err(Failure::Again(e.to_string())));
     info!(path = %reported_path.display(), phase = "output_check_result", ok = result.is_ok(),
         elapsed_ms = queued.elapsed().as_secs_f64() * 1000.0);
     result
