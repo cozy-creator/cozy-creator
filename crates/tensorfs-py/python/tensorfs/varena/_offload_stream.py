@@ -64,6 +64,8 @@ class Completion:
         self._failure = None
 
     def _check(self):
+        if _CAPTURE.get():
+            raise _error("eager completion cannot run inside capture bindings")
         if self._failure is not None:
             raise _error("failed component has no successful completion witness") from self._failure
 
@@ -146,13 +148,13 @@ class Scope:
         self.completion = None
         self._owner, self._frame = owner, frame
         self._inputs, self._outputs = inputs, ()
-        self._checkpoints = []
+        self._thread = threading.get_ident()
         self._closed = False
 
     def output(self, result, *, values=None):
         """Return the identical tree; opaque method outputs supply exact `values`."""
-        if self._closed:
-            raise _error("component outputs must be supplied before scope exit")
+        if self._closed or self._thread != threading.get_ident():
+            raise _error("component outputs require their open owning-thread scope")
         if not self.capture and self.stream is not None:
             self._outputs = _outputs(result, self._owner.device, values)
         return result
@@ -166,16 +168,11 @@ class Scope:
         """
         if self.capture:
             return None
-        if self._closed:
-            raise _error("component checkpoint requires an open scope")
-        proof = self._frame.witness()
-        self._checkpoints.append(proof)
-        return proof
+        if self._closed or self._thread != threading.get_ident():
+            raise _error("component checkpoint requires its open owning-thread scope")
+        return self._frame.witness()
 
     def _failed(self, error):
-        for proof in self._checkpoints:
-            proof._failure = error
-            proof.can_train = False
         if self.completion is not None:
             self.completion._failure = error
             self.completion.can_train = False
@@ -216,6 +213,7 @@ def component_scope(owner, values=(), *, capture_bindings=None):
             yield scope
         finally:
             scope._closed = True
+            scope._owner = None
             _CAPTURE.reset(token)
         return
     with owner.lock:
