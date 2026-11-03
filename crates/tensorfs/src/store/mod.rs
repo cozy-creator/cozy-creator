@@ -170,6 +170,12 @@ pub(crate) fn same_major(tag: &str, want: &str) -> bool {
     split(tag).is_some() && split(tag) == split(want)
 }
 
+/// Whether a store format's major is below this TensorFS's.
+fn older(tag: &str) -> bool {
+    let major = |tag: &str| tag.split_once('/')?.1.split('.').next()?.parse::<u32>().ok();
+    major(tag).zip(major(FORMAT)).is_some_and(|(found, ours)| found < ours)
+}
+
 pub(crate) fn same_family(tag: &str, want: &str) -> bool {
     tag.split_once('/').map(|t| t.0) == want.split_once('/').map(|w| w.0)
 }
@@ -199,7 +205,7 @@ impl std::fmt::Debug for Reclaim {
 }
 
 impl Store {
-    /// Opens the store at `root`, creating it when `root` is absent or empty.
+    /// Opens the store at `root`, creating it when `root` holds none.
     pub fn open(root: impl Into<PathBuf>) -> Result<Store> {
         let root = root.into();
         fs::create_dir_all(&root).map_err(fail("create", &root))?;
@@ -213,13 +219,17 @@ impl Store {
                 }
                 match serde_json::from_slice::<Record>(&bytes) {
                     Ok(found) if same_major(&found.format, FORMAT) => {}
-                    Ok(found) if same_family(&found.format, FORMAT) => {
-                        let why = format!(
-                            "is a {} store from an older TensorFS, which this one cannot read: \
-                             remove it and pull again (tensorfs.store/3 holds trees and D10 headers)",
-                            found.format
-                        );
-                        return Err(invalid(&record, why));
+                    // An older store this one cannot read: moved aside, never deleted (it may hold
+                    // a model made here), and this store starts empty.
+                    Ok(found) if same_family(&found.format, FORMAT) && older(&found.format) => {
+                        let aside = root.with_file_name(format!(
+                            "{}.{}",
+                            root.file_name().unwrap_or_default().to_string_lossy(),
+                            found.format.replace('/', "-")
+                        ));
+                        fs::rename(&root, &aside).map_err(fail("move aside", &root))?;
+                        tracing::warn!("{} was a {} store from an older TensorFS, which this one cannot read: moved to {}, and models are pulled again", root.display(), found.format, aside.display());
+                        return Store::open(root);
                     }
                     _ => {
                         let found = String::from_utf8_lossy(&bytes);
@@ -227,14 +237,8 @@ impl Store {
                     }
                 }
             }
+            // Other files beside it (a mounted disk's `lost+found`) are not the store's business.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                for entry in fs::read_dir(&root).map_err(fail("list", &root))? {
-                    let name = entry.map_err(fail("list", &root))?.file_name();
-                    let name = name.to_string_lossy();
-                    if !LAYOUT.contains(&&*name) && !name.starts_with(".format") {
-                        return Err(invalid(&root, "is neither empty nor a TensorFS store"));
-                    }
-                }
                 let bytes = format!("{{\"format\":\"{FORMAT}\"}}");
                 durable::replace(&record, bytes.as_bytes(), 0o644)
                     .map_err(platform("write", &record))?;
