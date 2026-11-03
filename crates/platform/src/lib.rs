@@ -21,6 +21,8 @@ pub mod paths;
 pub mod process;
 #[cfg(feature = "fetch")]
 pub mod release;
+#[cfg(feature = "fetch")]
+pub mod native_bundle;
 pub mod service;
 pub mod tail;
 pub mod tools;
@@ -74,6 +76,13 @@ impl Error {
 
     pub(crate) fn os(op: &'static str) -> impl FnOnce(io::Error) -> Self {
         move |source| Self::Os { op, source }
+    }
+}
+
+impl From<platform_signal::Error> for Error {
+    fn from(error: platform_signal::Error) -> Self {
+        let platform_signal::Error::Os { op, source } = error;
+        Self::Os { op, source }
     }
 }
 

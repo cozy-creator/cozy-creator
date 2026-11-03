@@ -1,0 +1,48 @@
+{
+  "feature": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+  "preimage_comparisons": [
+    {
+      "path": "crates/tensorfs-py/python/tensorfs/_ext.pyi",
+      "preimage_sha256": "be3e045020c11f83476a54a5dfc24d52f1fc881beffb3cc9499abef5c7ed97d2",
+      "matches_989": true,
+      "matches_771": true
+    },
+    {
+      "path": "crates/tensorfs-py/python/tensorfs/varena/torch.py",
+      "preimage_sha256": "5ddda2bdafaa4ce7b55dc24d6e3c421b575509aac51311d0ac08ef3adbb69d99",
+      "matches_989": true,
+      "matches_771": true
+    },
+    {
+      "path": "crates/tensorfs-py/src/varena/mod.rs",
+      "preimage_sha256": "f8010088752571c1f5d409006fc8aee83c839490e43f5568047c540a31527b84",
+      "matches_989": true,
+      "matches_771": true
+    },
+    {
+      "path": "crates/varena/src/abi.rs",
+      "preimage_sha256": "d6ecb2f0c9b3239593296b2b3e3f55c0e838e9b54d743da773dcc23da7b970f4",
+      "matches_989": true,
+      "matches_771": true
+    },
+    {
+      "path": "crates/varena/src/lib.rs",
+      "preimage_sha256": "b871932d96f265e32f722b98a66aadeb91baba1d9760662bc67e44be46771085",
+      "matches_989": true,
+      "matches_771": true
+    },
+    {
+      "path": "crates/varena/src/working.rs",
+      "preimage_sha256": "ed547c72e6763c3d5169d708aca4aa7ae7c98cb049319a82d357f461e9946968",
+      "matches_989": true,
+      "matches_771": true
+    }
+  ],
+  "one_constructing_site": true,
+  "admission_order_and_mutations_unchanged": true,
+  "execution_and_split_refusals_byte_identical": true,
+  "abi_status_preserved": 5,
+  "graph_integration": "2bf8fd329e73204fdd3ddfc3962f25bd8ce643cf",
+  "paired_integration": "83ebdad5506b4e7e50e0fc2a42d134d3d7dc4871",
+  "gpu_executed": false
+}

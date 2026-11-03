@@ -1,0 +1,128 @@
+{
+  "passed": true,
+  "torch": "2.14.0+cpu",
+  "torch_commit": "08187d9e0fba026dc8217405802ab5381dc88d90",
+  "scope": "actual CPU allocation corroboration of the exact pinned native schema; CUDA source reviewed separately",
+  "cuda_initialized": false,
+  "gpu_qualified": false,
+  "cases": [
+    {
+      "batch": 1,
+      "shape": [
+        1,
+        1797,
+        2048
+      ],
+      "dtypes": [
+        "torch.float32",
+        "torch.float32",
+        "torch.float32"
+      ],
+      "shapes": [
+        [
+          1,
+          1797,
+          2048
+        ],
+        [
+          1,
+          1797,
+          1
+        ],
+        [
+          1,
+          1797,
+          1
+        ]
+      ],
+      "functional_allocations": [
+        {
+          "op": "aten::empty",
+          "bytes": 14721024
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 7188
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 7188
+        }
+      ],
+      "out_wrapper_allocations": [
+        {
+          "op": "aten::empty",
+          "bytes": 14721024
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 7188
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 7188
+        }
+      ],
+      "out_is_zero_allocation": false
+    },
+    {
+      "batch": 3,
+      "shape": [
+        3,
+        1797,
+        2048
+      ],
+      "dtypes": [
+        "torch.float32",
+        "torch.float32",
+        "torch.float32"
+      ],
+      "shapes": [
+        [
+          3,
+          1797,
+          2048
+        ],
+        [
+          3,
+          1797,
+          1
+        ],
+        [
+          3,
+          1797,
+          1
+        ]
+      ],
+      "functional_allocations": [
+        {
+          "op": "aten::empty",
+          "bytes": 44163072
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 21564
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 21564
+        }
+      ],
+      "out_wrapper_allocations": [
+        {
+          "op": "aten::empty",
+          "bytes": 44163072
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 21564
+        },
+        {
+          "op": "aten::empty",
+          "bytes": 21564
+        }
+      ],
+      "out_is_zero_allocation": false
+    }
+  ]
+}

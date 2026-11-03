@@ -1,0 +1,47 @@
+{
+  "torch": "2.14.1+cpu",
+  "cuda": false,
+  "results": {
+    "cross_component_no_split": [
+      "left.child",
+      "right.child"
+    ],
+    "fallback_component_missing": [
+      "layers.0",
+      "layers.1"
+    ],
+    "derived_declared_block": [
+      "model"
+    ],
+    "layerwise_casting_accepted": {
+      "accepted": true,
+      "has_hf_hook": false,
+      "diffusers_hooks": [
+        "layerwise_casting"
+      ],
+      "dtype": "torch.float16"
+    },
+    "requires_grad_false_use_count_2": {
+      "use_count": 2,
+      "inventory_accepted": true,
+      "swap": "RuntimeError: It is not possible to get the gradient edge for a Tensor that does not require gradients"
+    },
+    "conjugate_view": {
+      "accepted": true,
+      "is_conj": true,
+      "descriptor_fields": [
+        "tensor",
+        "slots",
+        "storage_id",
+        "shape",
+        "stride",
+        "byte_offset",
+        "byte_end",
+        "requires_grad"
+      ],
+      "logical": "Parameter containing:\ntensor([1.-2.j, 3.-4.j])",
+      "storage_view": "tensor([1.+2.j, 3.+4.j])",
+      "matches_without_conj": false
+    }
+  }
+}

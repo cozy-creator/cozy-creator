@@ -1,0 +1,43 @@
+{
+  "scope": "Direct-class hard cut only; required native PhaseOverlapError imported before observation entry, no capability/empty tuple/older-SDK fallback. No new native code.",
+  "parent": "e5f4bb9341b0d5438216cbd6c5fcffd02bd7d67f",
+  "required_native": "root matched83eb/2bf/dcbc typed SDK; missing type is unsupported before entry/body",
+  "checks": [
+    {
+      "client": "graph_resources_cpu",
+      "args": [],
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_two_block",
+      "args": [
+        "--device",
+        "cpu"
+      ],
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_two_block",
+      "args": [
+        "--help"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "qualification_limit": "Actual CPU collection/public eager path +CLI only. GPU native typed admission not executed; old host images do not exercise required CUDA SDK path.",
+  "source_hashes": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_auto.py": "bcdae110311414bf3e107859c22de096c64598ae912353892f7dba0faac25021",
+    "release-gate/suites/varena/torch-offload/automatic_two_block.py": "9ecc2d441ca69046c02cff144e34b77e2eb99c15942480ac217995898b82a0aa"
+  },
+  "superseded": "Historical cd59 native1a/untyped compatibility fixture preserved; removed from current required-SDK client. Pinned unwired594/006 bundle remains unchanged.",
+  "receipts": {
+    "automatic_two_block-direct-class-cpu.stdout": "2ce53a51acbcef9b03429d0f24ba11b7065722fb2ba67485c6251bff142bcfc1",
+    "graph_resources_cpu-direct-class-cpu.stdout": "a18a45da3f7c52ddf19756bd229f657d43bc97f362ff4c254eb2fc3386367e45",
+    "graph_resources_cpu-direct-class-cpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "direct-class-returns.json": "cde0f9e1df61299b4a7012cfea391f7bcac308682af2936d0e7c05476e1563ec",
+    "automatic_two_block-direct-class-help.stdout": "737f25b20965fcb6a09005ef1dc15c062d9bc171f977224d8f8d0cc44a87d74f",
+    "automatic_two_block-direct-class-cpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "automatic_two_block-direct-class-help.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "no_native_gpu_rental_machine_merge_release": true
+}

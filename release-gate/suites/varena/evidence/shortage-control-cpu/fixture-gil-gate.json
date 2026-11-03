@@ -1,0 +1,48 @@
+{
+  "source_commit": "d3a698c3f592cc4f98607dbd37a0afb58cc8431b",
+  "fixture": "/home/fidika/cozy_v2/outputs/xs138-p3-shortage/fixture-d3a698c/release-gate/suites/varena/owner-runtime",
+  "files": {
+    "README.md": "71f264da924bab541f7caacb90cf39cb550d38ef750f21e9cde267fc3ccc8c52",
+    "package.toml": "f0a13d43196e20b8d99417cda48cd010c6096a68d78692d7f2022a5fd407e9ce",
+    "stage-shortage.py": "b94d59805a701266e06929548b3227763f60438e6422ea9abf532530164f1c69",
+    "uv.lock": "7945f10235ecaad3c1bc55683853cfe7199b14bbedabcab822890bb59bd90e25",
+    "pyproject.toml": "10d577fe05fe27602294f518b86e7b38acf9390e3caae80737a0b3b2f9545979",
+    "make-payload.py": "c6a18f25f5a5643dc5efc1eee48ca6ff19795d00e478d9ca7c03cbb7ca268f2a",
+    "ci_varena_owner/gil_gate.c": "06314663878e68eb18a13dcf0be9649e8bfb6325c51bf2f46752fb76f32ccead",
+    "ci_varena_owner/pressure.py": "ad03431275ecae610bfcb11fb413392e21340f6713e343cd71d769dd8c94bbff",
+    "ci_varena_owner/_gil_gate.so": "7a4be79dcb70e4005d71b27c8a43996c9a72cd211b54f64bb0a7f14c2ecef720",
+    "ci_varena_owner/publication_holder.py": "680496a9da2c5c81e3985d276b390ce7218ce7fd03f6f29183f6cb13a6603c41",
+    "ci_varena_owner/requester.py": "f3d3effc499a99df6f03daba10ea5dc165a1af796b4f313c0e0dff2a54f91c3e",
+    "ci_varena_owner/__init__.py": "f73c5c485790de23eb64dabd1f625ae9692879b19f4b6114a1316cec6efe5c14",
+    "ci_varena_owner/donor.py": "407aad3ea0397bd0b9c30de07c0f331ed5bea634da71a70e02cecffb33aced11"
+  },
+  "build_command": [
+    "nice",
+    "-n",
+    "19",
+    "cc",
+    "-shared",
+    "-fPIC",
+    "-O2",
+    "-Wl,--build-id=none",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-shortage/fixture-d3a698c/release-gate/suites/varena/owner-runtime/ci_varena_owner/gil_gate.c",
+    "-o",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-shortage/fixture-d3a698c/release-gate/suites/varena/owner-runtime/ci_varena_owner/_gil_gate.so"
+  ],
+  "gil_gate_sha256": "7a4be79dcb70e4005d71b27c8a43996c9a72cd211b54f64bb0a7f14c2ecef720",
+  "glibc_versions": [
+    "2.2.5",
+    "2.4"
+  ],
+  "gil_gate_cpu": {
+    "ready": {
+      "gil_gate": true,
+      "gil_held": 1
+    },
+    "returned": {
+      "returned": 0,
+      "cuda_loaded": false
+    }
+  },
+  "gpu_qualification": false
+}
