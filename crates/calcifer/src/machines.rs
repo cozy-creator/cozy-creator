@@ -71,6 +71,10 @@ pub struct Machines {
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
     pub(crate) renting: Mutex<HashSet<RunId>>,
+    /// The rent asks being asked of a Hub now: one loop per key.
+    pub(crate) asking: Mutex<HashSet<String>>,
+    /// The rent asks a Hub has not answered, by key, and why.
+    pub(crate) unanswered: Mutex<HashMap<String, String>>,
     /// Told when a rental appears or is ready: `any` runs may fit it.
     pub(crate) placing: Notify,
     /// Told when an end stops waiting for its machine's outputs (`--force`).
@@ -125,6 +129,8 @@ impl Machines {
             watching: Mutex::default(),
             booting: Mutex::default(),
             renting: Mutex::default(),
+            asking: Mutex::default(),
+            unanswered: Mutex::default(),
             placing: Notify::new(),
             end_waits: Notify::new(),
             local,
@@ -193,8 +199,10 @@ impl Machines {
         for row in rows.iter().filter(listed) {
             machines.push(self.picture(row)?);
         }
-        let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows);
+        let orders = self.orders()?;
+        let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows, &orders);
         machines.extend(others);
+        machines.extend(orders);
         let live = machines.iter().filter(|m| m.state != MachineState::Ended);
         let rentals = wire::LiveRentals::of(live.filter_map(|m| m.rental.as_ref()));
         Ok(MachineList {
@@ -209,6 +217,9 @@ impl Machines {
     /// One machine by its name, former name or rental id (`named`), with its Status read now:
     /// `local` starts for it.
     pub async fn show(self: &Arc<Self>, text: &str) -> Result<Machine, Error> {
+        if let Some(order) = self.order_named(text)? {
+            return Ok(self.order(&order));
+        }
         let row = match self.named_now(text).await? {
             Named::Here(row) => row,
             Named::Other(machine) => return Ok(*machine),
@@ -485,6 +496,9 @@ impl Machines {
     pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
         if text == "local" {
             return Err(local_refusal());
+        }
+        if let Some(order) = self.order_named(text)? {
+            return self.stop_order(order);
         }
         let row = match self.named_now(text).await? {
             Named::Here(row) => row,

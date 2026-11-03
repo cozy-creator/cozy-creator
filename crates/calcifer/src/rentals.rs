@@ -29,7 +29,7 @@ use tracing::warn;
 
 use crate::{
     machines::{Machines, internal, lock, not_found, pin_of, write_key},
-    store::{Ask, AskKind, AskState, Endpoint, MachineRow, RunRow},
+    store::{Ask, AskKind, AskState, Endpoint, MachineRow, RunRow, State},
 };
 
 /// The Hubs Calcifer rents from, and what each last listed.
@@ -144,6 +144,7 @@ impl Hubs {
     pub(crate) fn listing(
         &self,
         rows: &[MachineRow],
+        orders: &[Machine],
     ) -> (Vec<HubListing>, Vec<HubProblem>, Vec<String>, Vec<Machine>) {
         let listings = lock(&self.listings);
         let (mut hubs, mut problems, mut signed_out, mut others) = (vec![], vec![], vec![], vec![]);
@@ -162,7 +163,9 @@ impl Hubs {
                 let recorded = rows
                     .iter()
                     .any(|row| row.rental_id.as_deref() == Some(rental.rental_id.as_str()));
-                if !recorded && !gone(&rental.state) {
+                // An order whose answer was lost shows once, as the order, until it is answered.
+                let ordered = orders.iter().any(|order| order.name == rental.name);
+                if !recorded && !ordered && !gone(&rental.state) {
                     others.push(other(origin, rental, listing.problem.is_some()));
                 }
             }
@@ -348,6 +351,13 @@ impl Machines {
             }
             return Ok((asked, false));
         }
+        // A rent its Hub has not answered is this computer's one order for what it asks: asking
+        // again, under any key, never buys a second pod.
+        if run.is_none()
+            && let Some(order) = self.unanswered_order(&digest)?
+        {
+            return Ok((order, false));
+        }
         // An ask the Hub would refuse unasked, or one this computer cannot sign, records nothing.
         if !(1..=200).contains(&key.len()) {
             let message = format!("the key {key:?} is not 1 to 200 characters");
@@ -376,7 +386,7 @@ impl Machines {
             kind: AskKind::Rent,
             hub: origin.into(),
             digest,
-            body: serde_json::to_vec(&RentBody { request, quote }).expect("serializes"),
+            body: serde_json::to_vec(&RentBody { request, quote, stopped: false }).expect("serializes"),
             machine: Some(alias),
             run,
             state: AskState::Pending,
@@ -406,8 +416,10 @@ impl Machines {
     /// Makes a recorded rent ask. The Hub's acceptance records the rental as a booting machine
     /// (no endpoint: its runs wait in the outbox) in the transaction that ends the ask; its
     /// refusal, of this computer's credential too, ends the ask and the run it was made for. A Hub
-    /// that does not answer is asked again under the same key, paced; `told` hears the first
-    /// answer, or that there was none.
+    /// that does not answer is asked again under the same key, paced, so one ask buys at most one
+    /// pod (the Hub answers a key it holds with that rental); `told` hears the first answer, or
+    /// that there was none. Until it stops ([`Self::withdraw`]): it buys nothing more once `cozy
+    /// machine end` stopped it or the run it was made for ended.
     async fn ask_hub(
         self: &Arc<Self>,
         ask: &Ask,
@@ -419,7 +431,18 @@ impl Machines {
                 let _ = told.send(answer.clone());
             }
         };
+        if !lock(&self.asking).insert(ask.key.clone()) {
+            let pending = Err(order_pending(ask));
+            tell(&pending);
+            return pending;
+        }
+        let _asking = Asking(self, &ask.key);
         loop {
+            if self.withdrawn(ask)? {
+                let stopped = self.withdraw(ask).await;
+                tell(&stopped);
+                return stopped;
+            }
             match self.ask_once(ask).await {
                 Err(error) if error.kind != Kind::Unavailable => {
                     let reason = said(&error);
@@ -440,12 +463,17 @@ impl Machines {
                 }
                 Err(e) => {
                     warn!(ask = ask.key, "asking {} again: {e}", ask.hub);
-                    let key = &ask.key;
+                    lock(&self.unanswered).insert(ask.key.clone(), e.message.clone());
+                    self.calcifer.machine_changed();
+                    let name = ask.machine.as_deref().unwrap_or(&ask.key);
                     tell(&Err(e.remedy(format!(
-                        "it is asked again under the key {key:?}; the same key answers its outcome"
+                        "it is asked again under one key, so it buys one pod at most: `cozy machine ls` shows it as {name}, `cozy machine end {name}` stops it"
                     ))));
                     pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60));
-                    tokio::time::sleep(pause).await;
+                    tokio::select! {
+                        () = tokio::time::sleep(pause) => {}
+                        () = self.end_waits.notified() => {}
+                    }
                 }
                 Ok(rental) => {
                     let alias = ask.machine.clone().unwrap_or_default();
@@ -468,13 +496,21 @@ impl Machines {
                         usd_micros_per_hour: hourly(&rental),
                         usd_micros_per_gb: rental.bandwidth_usd_micros_per_gb.unwrap_or_default(),
                     };
-                    if above(&locked, &quoted.agreed()) {
-                        let reason = format!(
-                            "rental.rate_changed: {} locked {}, above the {} quoted; it is released",
-                            ask.hub,
-                            rate(&locked),
-                            rate(&quoted.agreed())
-                        );
+                    // An order stopped while this answer was on its way is released as well.
+                    let released = match self.withdrawn(ask)? {
+                        true => Some(("rental_stopped", STOPPED.to_owned())),
+                        false if above(&locked, &quoted.agreed()) => Some((
+                            "rental_rate_changed",
+                            format!(
+                                "rental.rate_changed: {} locked {}, above the {} quoted; it is released",
+                                ask.hub,
+                                rate(&locked),
+                                rate(&quoted.agreed())
+                            ),
+                        )),
+                        false => None,
+                    };
+                    if let Some((code, reason)) = released {
                         let id = rental.rental_id.clone();
                         self.hubs.seen(&ask.hub, rental);
                         self.calcifer.put_machine(&row).map_err(internal)?;
@@ -490,8 +526,7 @@ impl Machines {
                             };
                             self.calcifer.fail(run, reason).map_err(internal)?;
                         }
-                        let refused =
-                            Err(Error::new(Kind::Conflict, "rental_rate_changed", reason));
+                        let refused = Err(Error::new(Kind::Conflict, code, reason));
                         tell(&refused);
                         return refused;
                     }
@@ -510,6 +545,120 @@ impl Machines {
                 }
             }
         }
+    }
+
+    /// Whether `ask` is to buy nothing more: stopped by `cozy machine end`, or its run has ended.
+    fn withdrawn(&self, ask: &Ask) -> Result<bool, Error> {
+        let stopped = (self.store().ask(&ask.key).map_err(internal)?)
+            .is_none_or(|now| RentBody::of(&now).is_ok_and(|body| body.stopped));
+        let run_over = match &ask.run {
+            Some(run) => (self.store().run(run.as_str()).map_err(internal)?).is_none_or(|row| row.state == State::Settled),
+            None => false,
+        };
+        Ok(stopped || run_over)
+    }
+
+    /// Settles a withdrawn ask once its Hub answers: what an unanswered attempt may have placed is
+    /// in its listing under the name it was asked with, and is ended.
+    async fn withdraw(self: &Arc<Self>, ask: &Ask) -> Result<MachineRow, Error> {
+        let name = ask.machine.clone().unwrap_or_default();
+        let mut pause = Duration::ZERO;
+        loop {
+            let listed = match self.hubs.client(&ask.hub) {
+                Ok(client) => client.list_rentals("live").await.map_err(|e| hub_refusal(&ask.hub, e)),
+                Err(e) => Err(e),
+            };
+            match listed {
+                Ok(listing) => {
+                    for rental in listing.rentals.iter().filter(|rental| rental.name == name) {
+                        warn!(ask = ask.key, rental = rental.rental_id, "the stopped order was placed: ending it");
+                        self.ask_end(&format!("end-{}", rental.rental_id), &ask.hub, &rental.rental_id, None, false)?;
+                    }
+                    break;
+                }
+                // Refused, it cannot be read: what it placed shows in `machine ls` once it can.
+                Err(e) if e.kind != Kind::Unavailable => {
+                    warn!(ask = ask.key, "reading what the stopped order placed: {e}");
+                    break;
+                }
+                Err(e) => warn!(ask = ask.key, "reading what the stopped order placed: {e}"),
+            }
+            pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60));
+            tokio::time::sleep(pause).await;
+        }
+        self.store().settle_ask(&ask.key, Err(STOPPED)).map_err(internal)?;
+        if let Some(run) = &ask.run {
+            let reason = Reason { code: "rental_stopped".into(), message: STOPPED.into(), ..Default::default() };
+            self.calcifer.fail(run, reason).map_err(internal)?;
+        }
+        self.calcifer.machine_changed();
+        Err(Error::new(Kind::Conflict, "rental_stopped", STOPPED))
+    }
+
+    /// The orders being placed: rent asks no machine records yet, each a booting machine under
+    /// the name it was asked with. Nothing bills for one the Hub has not taken.
+    pub(crate) fn orders(&self) -> Result<Vec<Machine>, Error> {
+        let asks = self.store().pending_asks().map_err(internal)?;
+        Ok(asks.iter().filter(|ask| ask.kind == AskKind::Rent).map(|ask| self.order(ask)).collect())
+    }
+
+    /// One order as `cozy machine ls` lists it.
+    pub(crate) fn order(&self, ask: &Ask) -> Machine {
+        let row = MachineRow {
+            name: ask.machine.clone().unwrap_or_else(|| ask.key.clone()),
+            kind: MachineKind::Rental,
+            hub: ask.hub.clone(),
+            rental_id: None,
+            endpoint: None,
+            key: Default::default(),
+            state: MachineState::Booting,
+            served: false,
+            reason: None,
+        };
+        let mut machine = Machine::from(&row);
+        match RentBody::of(ask).is_ok_and(|body| body.stopped) {
+            true => {
+                machine.state = MachineState::Ending;
+                machine.ending = Some(format!("{}'s answer: it ends what the order placed", ask.hub));
+            }
+            false => {
+                machine.boot = Some(match lock(&self.unanswered).get(&ask.key) {
+                    Some(why) => format!("ordering, not answered yet: {why}"),
+                    None => "ordering".into(),
+                });
+            }
+        }
+        machine
+    }
+
+    /// The order that goes by `text`, the name it was asked with.
+    pub(crate) fn order_named(&self, text: &str) -> Result<Option<Ask>, Error> {
+        let asks = self.store().pending_asks().map_err(internal)?;
+        Ok(asks.into_iter().find(|ask| ask.kind == AskKind::Rent && ask.machine.as_deref() == Some(text)))
+    }
+
+    /// Stops an order: it buys nothing more, and its loop ends what it may have placed.
+    pub(crate) fn stop_order(&self, mut ask: Ask) -> Result<Ended, Error> {
+        let mut body = RentBody::of(&ask)?;
+        body.stopped = true;
+        ask.body = serde_json::to_vec(&body).expect("serializes");
+        self.store().rewrite_ask(&ask.key, &ask.body).map_err(internal)?;
+        self.end_waits.notify_waiters();
+        self.calcifer.machine_changed();
+        Ok(Ended { machine: self.order(&ask), changed: true, abandoned: vec![] })
+    }
+
+    /// The renter's order for `digest` that its Hub has not answered, if there is one.
+    fn unanswered_order(&self, digest: &str) -> Result<Option<Ask>, Error> {
+        let asks = self.store().pending_asks().map_err(internal)?;
+        let unanswered = lock(&self.unanswered);
+        Ok(asks.into_iter().find(|ask| {
+            ask.kind == AskKind::Rent
+                && ask.run.is_none()
+                && ask.digest == digest
+                && unanswered.contains_key(&ask.key)
+                && !RentBody::of(ask).is_ok_and(|body| body.stopped)
+        }))
     }
 
     async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Error> {
@@ -727,6 +876,10 @@ impl Machines {
         for ask in pending {
             if let Some(run) = &ask.run {
                 lock(&self.renting).insert(run.clone());
+            }
+            // Asked before this Calcifer: whether the Hub took it is not known here.
+            if ask.kind == AskKind::Rent {
+                lock(&self.unanswered).insert(ask.key.clone(), "its Calcifer restarted before the Hub answered".into());
             }
             let me = self.clone();
             self.spawn(async move {
@@ -1228,6 +1381,33 @@ fn alternatives(machines: &[types::RentalPlacementMachine]) -> Vec<Alternative> 
 struct RentBody {
     request: types::RentalRequest,
     quote: types::RentalQuote,
+    /// `cozy machine end` stopped it.
+    #[serde(default)]
+    stopped: bool,
+}
+
+/// Why a stopped order ended.
+const STOPPED: &str = "the order was stopped before its Hub answered; nothing bills for it";
+
+/// One ask in flight: its loop's place, and what was said of it, are gone with it.
+struct Asking<'a>(&'a Machines, &'a str);
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.asking).remove(self.1);
+        lock(&self.0.unanswered).remove(self.1);
+    }
+}
+
+/// The answer to asking again for an order still being asked: it, and no second one.
+fn order_pending(ask: &Ask) -> Error {
+    let name = ask.machine.as_deref().unwrap_or(&ask.key);
+    Error::new(
+        Kind::Unavailable,
+        "rental_order_pending",
+        format!("{name} is this order, not yet answered by {}: no second one is placed", ask.hub),
+    )
+    .remedy(format!("`cozy machine ls` shows it; `cozy machine end {name}` stops it"))
 }
 
 impl RentBody {
