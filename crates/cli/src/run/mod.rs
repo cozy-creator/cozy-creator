@@ -97,16 +97,17 @@ struct RunArgs {
 /// Where a run goes; shared by every verb that submits one.
 #[derive(clap::Args, Debug, Clone)]
 pub struct Placement {
-    /// `local`, a machine's name, `any`, or `new[:sku]` to rent one.
-    #[arg(long = "on", value_name = "MACHINE", default_value = "local")]
-    on: String,
+    /// `local` (the default), a machine's name, `any`, or `new[:sku]` to rent one.
+    #[arg(long = "on", value_name = "MACHINE")]
+    on: Option<String>,
 }
 
 impl Placement {
     /// Where the run goes; `local` refused where this OS runs no models itself.
     pub fn on(&self) -> Result<On, Error> {
-        protocol::calcifer::local_usable(&self.on)?;
-        Ok(On::from(self.on.clone()))
+        let on = self.on.clone().unwrap_or_else(|| "local".to_owned());
+        protocol::calcifer::local_usable(&on)?;
+        Ok(On::from(on))
     }
 }
 
@@ -234,8 +235,8 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
 fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path) -> Result<RunRequest, Error> {
     Ok(RunRequest {
         target,
-        // Calcifer refuses `local` where this OS runs no models, once the target names a function.
-        on: Some(On::from(args.placement.on.clone())),
+        // None: Calcifer's to say, by what this OS runs and the machines there are (`default_on`).
+        on: args.placement.on.clone().map(On::from),
         hub: ctx.hub().to_string(),
         input: None,
         input_file: args.input_file.clone(),

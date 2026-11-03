@@ -15,7 +15,7 @@ use axum::{
     http::StatusCode,
 };
 use protocol::{
-    calcifer::{Agreed, Kind as RunKind, On, OutputItem, Run, StagedInput, SubmitRun},
+    calcifer::{Agreed, Kind as RunKind, On, OutputItem, Run, StagedInput, SubmitRun, Warning},
     config::Origin,
     error::{Error, Kind},
     hub::{Mirrored, ModelCommitAsk, ModelDownload, ModelUpload, ModelUploading, RecordedCommit},
@@ -85,7 +85,8 @@ async fn source(raw: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal
 /// A local model file, measured once: one regular `.safetensors` file.
 fn measure(path: &Path) -> Result<StagedInput, Refusal> {
     let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
-    let regular = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+    // A link is its file: a Hugging Face snapshot is all links.
+    let regular = std::fs::metadata(path).is_ok_and(|m| m.is_file());
     if !regular || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("safetensors")) {
         return Err(refused(format!("{} is not one regular .safetensors file", path.display())));
     }
@@ -198,26 +199,36 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
 impl Ask for ModelDownload {
     async fn prepare(self, api: &Arc<Api>) -> Result<Prepared, Refusal> {
         let hub = origin(api, self.hub.as_deref())?;
-        let destination = match self.alias.as_deref().map(Repo::parse).transpose().map_err(Refusal)? {
+        let mut said = vec![];
+        let mut destination = match self.alias.as_deref().map(Repo::parse).transpose().map_err(Refusal)? {
             Some(repo) if repo.org == "local" => repo.to_string(),
             Some(_) => return Err(usage("model_alias_invalid", "the name a machine keeps a model under is local/<name>")),
             None => String::new(),
         };
         let mut made = source(&self.model).await?;
         if let Some(format) = &self.source_format {
-            formatted(&mut made.0, format)?;
+            match formatted(&mut made.0, format) {
+                Ok(()) => {}
+                Err(_) => said.push("--source-format converts a provider source or a local file: ignored".to_owned()),
+            }
         }
+        // A local file is kept under a name: its own, unless it is given one.
         if made.1.is_some() && destination.is_empty() {
-            return Err(usage("model_alias_missing", "a local file is kept under a name: add local/<name>"));
+            let stem = Path::new(&self.model).file_stem().map(|stem| stem.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
+            destination = Repo::parse(&format!("local/{stem}")).map_err(Refusal)?.to_string();
+            said.push(format!("kept as {destination}"));
         }
         if let Some(lane) = self.lane {
             let lane = refs::label("--lane", &lane).map_err(Refusal)?;
             if made.0.repository.is_empty() || made.0.repository.starts_with("local/") {
-                return Err(usage("model_lane_unused", "--lane names a lane of a Hub model"));
+                said.push("--lane names a lane of a Hub model: ignored".to_owned());
+            } else {
+                made.0.lane = lane;
             }
-            made.0.lane = lane;
         }
-        let submit = warm(&hub, self.on, self.agreed, self.model, made.into(), destination, String::new());
+        let mut submit = warm(&hub, self.on, self.agreed, self.model, made.into(), destination, String::new());
+        submit.warnings.extend(said.into_iter().map(|message| Warning { code: "model_download".into(), message }));
         Ok(Prepared { submit, after: None })
     }
 }

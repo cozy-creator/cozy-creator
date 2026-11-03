@@ -14,7 +14,7 @@ use axum::{
     http::StatusCode,
 };
 use protocol::{
-    calcifer::{Kind as RunKind, Note, NoteLevel, On, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
+    calcifer::{Kind as RunKind, MachineKind, MachineState, Note, NoteLevel, On, RunQuote, RunRequest, StagedInput, SubmitRun, Submitted},
     error::{Error, Kind},
     interface::{Callable, Interface},
     machine::{self as v1, WarmLevel},
@@ -60,7 +60,7 @@ pub(crate) async fn quote(
         // Local code rents with its install, which the call then follows to its machine.
         Some(found) => {
             let (path, _) = found.map_err(Refusal)?;
-            let on = ask.on.clone().unwrap_or_else(|| On::Machine("local".into()));
+            let on = ask.on.clone().unwrap_or_else(|| default_on(&api));
             let hub = hub(&api, &ask.hub);
             let home = api.machines.hubs.home();
             let origin = protocol::config::Origin::parse(&hub).map_err(Refusal)?;
@@ -160,7 +160,7 @@ enum Prepared {
 
 /// Resolves and binds `ask` into the submission Calcifer records.
 async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared, Error> {
-    let on = ask.on.clone().unwrap_or_else(|| On::Machine("local".into()));
+    let on = ask.on.clone().unwrap_or_else(|| default_on(api));
     // Local code installs as it resolves. A package answers for itself first: one named without a
     // function lists its functions on an OS that runs no models here.
     if local(api, ask).is_some() {
@@ -212,8 +212,29 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         return Err(recipes(package, code.interface));
     }
     protocol::calcifer::local_usable(&on.to_string())?;
-    let (submit, notes) = call(api, code, callable, ask, key, &hub).await?;
+    let left = match &resolved {
+        Resolved::Local { local, .. } => local.left.clone(),
+        Resolved::Release { .. } => vec![],
+    };
+    let (submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
+    if !left.is_empty() {
+        notes.push(Note { level: NoteLevel::Warning, message: format!("left out of the code it runs: {}", left.join(", ")) });
+    }
     Ok(Prepared::Run { submit, notes })
+}
+
+/// Where a run that names no machine goes: this computer's, on an OS that runs models itself; on
+/// another, a machine this computer has when it has one, else `local`, refused with the way forward.
+fn default_on(api: &Api) -> On {
+    let local = On::Machine("local".into());
+    if platform::Os::CURRENT.local_inference() {
+        return local;
+    }
+    let machines = api.calcifer.store().machines().unwrap_or_default();
+    match machines.iter().any(|row| row.kind != MachineKind::Local && row.state != MachineState::Ended) {
+        true => On::Any,
+        false => local,
+    }
 }
 
 /// The request's Hub, else Calcifer's.

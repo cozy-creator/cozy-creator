@@ -54,6 +54,8 @@ pub struct Source {
     pub package: String,
     pub source: v1::LocalSource,
     pub inputs: Vec<StagedInput>,
+    /// What never goes, as people read it (`source_files`).
+    pub left: Vec<String>,
     /// What the machine's environment is built from, apart from the project's own source: its
     /// metadata and lock, its path dependencies, carried wheels and indexes.
     pub environment: Digest,
@@ -114,6 +116,8 @@ pub struct Project {
     pub root: PathBuf,
     pub name: String,
     pub version: String,
+    /// Whether `version` is written in pyproject.toml, as a release needs.
+    pub identified: bool,
     pub requires_python: String,
     pub account_index: bool,
     /// A dependency or uv source fetched with git: locking and publishing need git.
@@ -146,14 +150,16 @@ impl Project {
                 .try_fold(pyproject.get(*first)?, |at, key| at.get(*key))
         };
         let text = |path: &[&str]| field(path).and_then(toml::Value::as_str).map(str::to_owned);
-        let (Some(name), Some(version)) =
-            (text(&["project", "name"]), text(&["project", "version"]))
-        else {
+        // A dynamic version runs as local code all the same; only a release needs it (`identified`).
+        let Some(name) = text(&["project", "name"]) else {
             return Err(refuse(
                 "project_identity_missing",
-                "pyproject.toml's [project] needs a literal name and version",
+                "pyproject.toml's [project] needs a literal name",
             ));
         };
+        let literal = text(&["project", "version"]);
+        let identified = literal.is_some();
+        let version = literal.unwrap_or_else(|| "0.0.0".to_owned());
         let indexes = field(&["tool", "uv", "index"]).and_then(toml::Value::as_array);
         if indexes
             .into_iter()
@@ -197,6 +203,7 @@ impl Project {
             // The package keeps its name as written (`qwen3.5`); the Hub resolves PEP 503 spellings.
             name: name.trim().to_ascii_lowercase(),
             version,
+            identified,
             requires_python: text(&["project", "requires-python"]).unwrap_or_default(),
             account_index,
             git,
@@ -205,15 +212,15 @@ impl Project {
 }
 
 /// The files a package's source is, relative to `root`, sorted: what a publish uploads and local code
-/// sends. Credentials, keys, bytecode and weights are refused, not skipped.
-pub fn source_files(root: &Path) -> Result<Vec<PathBuf>, Error> {
+/// sends. Credentials, keys, bytecode, weights and symlinks never go: each is said in `left`.
+pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>, Error> {
     let mut files = vec![];
-    walk(root, Path::new(""), &mut files)?;
+    walk(root, Path::new(""), &mut files, left)?;
     files.sort();
     Ok(files)
 }
 
-fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
+fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String>) -> Result<(), Error> {
     const SKIP: &str = ".git .hg .svn .jj __pycache__ .mypy_cache .ruff_cache .pytest_cache .tox";
     const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
     const SECRET_DIRS: &str = ".aws .ssh credentials secrets";
@@ -230,25 +237,18 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> 
         let kind = entry
             .file_type()
             .map_err(|e| refuse("project_unreadable", e))?;
-        let refused = |why: &str| {
-            refuse(
-                "package_source_refused",
-                format!("{} {why}", path.display()),
-            )
-            .remedy(
-                "move credentials, keys, bytecode and model weights out of the package directory",
-            )
-        };
         if kind.is_symlink() {
-            return Err(refused("is a symlink"));
+            left.push(format!("{} (a symlink)", path.display()));
+            continue;
         }
         if kind.is_dir() {
             if listed(SECRET_DIRS, &name) {
-                return Err(refused("holds credentials"));
+                left.push(format!("{} (holds credentials)", path.display()));
+                continue;
             }
             let at_root = rel.as_os_str().is_empty() && listed(SKIP_AT_ROOT, &name);
             if !listed(SKIP, &name) && !name.ends_with(".egg-info") && !at_root {
-                walk(root, &path, files)?;
+                walk(root, &path, files, left)?;
             }
             continue;
         }
@@ -257,7 +257,11 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> 
             || name.starts_with("id_rsa")
             || listed(SECRET_FILES, &name);
         if secret || REFUSED.split(' ').any(|suffix| name.ends_with(suffix)) {
-            return Err(refused("must never ship in a package"));
+            // Bytecode is a build's litter, not worth a word.
+            if !(name.ends_with(".pyc") || name.ends_with(".pyo")) {
+                left.push(path.display().to_string());
+            }
+            continue;
         }
         let scratch = name.ends_with(".swp")
             || name.ends_with('~')
@@ -370,14 +374,15 @@ pub async fn source(
             .to_string_lossy()
             .replace('\\', "/")
     };
-    let mut names: Vec<PathBuf> = source_files(&project_dir)?
+    let mut left = vec![];
+    let mut names: Vec<PathBuf> = source_files(&project_dir, &mut left)?
         .into_iter()
         .map(|f| project_dir.join(f))
         .collect();
     for local in &locals {
         match local.is_file() {
             true => names.push(local.clone()),
-            false => names.extend(source_files(local)?.into_iter().map(|f| local.join(f))),
+            false => names.extend(source_files(local, &mut left)?.into_iter().map(|f| local.join(f))),
         }
     }
     // A path source inside the project (`deps/x.whl`) is one of its files already: listed twice,
@@ -481,6 +486,7 @@ pub async fn source(
         length: document.len() as u64,
     });
     Ok(Source {
+        left,
         package: manifest.package,
         source: v1::LocalSource {
             manifest: digest.to_string(),
@@ -613,12 +619,7 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
         }
     };
     if let Some(other) = block.keys().next() {
-        return Err(refuse(
-            "script_metadata_invalid",
-            format!(
-                "the `# /// script` block names {other:?}: it takes dependencies, requires-python and [tool]"
-            ),
-        ));
+        tracing::warn!("the `# /// script` block names {other:?}: it takes dependencies, requires-python and [tool]; ignored");
     }
     // A path source names a directory beside the script: relative to the written project
     // instead, so the project and its libraries travel to a machine as one tree.
@@ -832,6 +833,8 @@ pub struct Prepared {
     pub package: String,
     pub source: v1::LocalSource,
     pub files: Vec<StagedInput>,
+    /// What never goes, as people read it (`source_files`).
+    pub left: Vec<String>,
     pub interface: Option<Value>,
     /// The machine's name for the installation, when an install answered here.
     pub installation: Option<String>,
@@ -863,6 +866,7 @@ pub async fn prepare(
         package: code.package.clone(),
         source: code.source.clone(),
         files: code.inputs.clone(),
+        left: code.left.clone(),
         interface,
         installation,
         machine,

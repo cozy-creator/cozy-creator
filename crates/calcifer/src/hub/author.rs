@@ -72,7 +72,12 @@ impl Stage {
         let dir = tempfile::tempdir().map_err(|e| refuse("stage_unavailable", e))?;
         let root = dir.path().to_path_buf();
         let src = root.join("src");
-        for file in source_files(&project.root)? {
+        let mut left = vec![];
+        let files = source_files(&project.root, &mut left)?;
+        if !left.is_empty() {
+            say(&format!("left out of the package: {}", left.join(", ")));
+        }
+        for file in files {
             let to = src.join(&file);
             fs::create_dir_all(to.parent().unwrap_or(&src))
                 .and_then(|()| fs::copy(project.root.join(&file), &to))
@@ -271,6 +276,9 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
     let hub = origin(api, ask.hub.as_deref()).map_err(|r| r.0)?;
     let hub_error = |e| refusal(&hub, e).0;
     let project = blocking(|| Project::read(ask.dir.clone()))?;
+    if !project.identified {
+        return Err(refuse("project_identity_missing", "a release needs a literal version in pyproject.toml's [project]"));
+    }
     let client = signed_in(api, &hub).map_err(|r| r.0)?;
     let account = publisher(&client, ask.root).await?;
     let mut result = Published {
@@ -288,6 +296,10 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
             e if e.kind == Kind::NotFound => {}
             e => return Err(e),
         },
+    }
+    if !project.root.join("uv.lock").is_file() {
+        say("this project has no uv.lock: locking it first");
+        lock(api, LockAsk { hub: ask.hub.clone(), dir: ask.dir.clone(), root: ask.root, upgrade: vec![] }, work).await?;
     }
     let uv_path = tools(api, &project, say).await?;
     let stage = blocking(|| Stage::new(&project, uv_path, say))?;
