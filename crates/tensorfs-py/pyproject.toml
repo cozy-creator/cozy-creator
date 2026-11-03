@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.16,<2"]
+requires = ["maturin>=1.16,<2", "uv==0.12.7; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 # maturin, behind a clear refusal when an sdist build finds no Rust (backend/tensorfs_build.py).
 build-backend = "tensorfs_build"
 backend-path = ["backend"]
