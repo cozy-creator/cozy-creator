@@ -596,7 +596,10 @@ pub unsafe extern "C" fn vr_v1_use_prepare(
             return Err(invalid("use requires regions on this GPU"));
         }
         gpu.eager(stream)?;
-        let mut admission = use_prepare::Admission::prepare(gpu, &weights)?;
+        // Keep every getter's lifetime-bearing Lease through service, acquisition,
+        // publication and cleanup. Admission separately retains explicit owner Arcs.
+        let retained = weights.iter().map(|weight| Arc::clone(&weight.value)).collect::<Vec<_>>();
+        let mut admission = use_prepare::Admission::prepare(Arc::clone(&gpu.value), &retained)?;
         let result = acquire_use(&weights, stream, Some(&mut admission));
         admission.completed(&result);
         unsafe { out.write(result?); }
@@ -604,21 +607,36 @@ pub unsafe extern "C" fn vr_v1_use_prepare(
     })
 }
 
-fn acquire_use(weights: &[Arc<Weight>], stream: u64,
+fn acquire_use(weights: &[Lease<Weight>], stream: u64,
                mut admission: Option<&mut use_prepare::Admission>) -> Result<u64> {
     let mut pins = Vec::with_capacity(weights.len());
     let acquired = (|| -> Result<()> {
         for weight in weights {
             if let Some(admission) = &mut admission { admission.begin_region(weight)?; }
-            let pin = match unsafe { weight.region.prepare_on(stream)? } {
-                crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
-                crate::StreamPreparation::Fill(fill) => match &weight.bytes {
-                    Bytes::Host(bytes) => host_source::acquire(weight, bytes.clone(), fill, stream)?,
-                    Bytes::Foreign(provider) => source::acquire(weight, provider, fill, stream)?,
-                },
+            let (pin, own_fill_generation) = match unsafe { weight.region.prepare_on(stream)? } {
+                crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => (pin, None),
+                crate::StreamPreparation::Fill(fill) => {
+                    let generation = if let Some(admission) = &admission {
+                        match admission.own_fill_generation(weight, &fill) {
+                            Ok(generation) => Some(generation),
+                            Err(error) => {
+                                // This exact Fill has not reached a Source or submitted writes.
+                                unsafe { drop(fill.abort_completed()); }
+                                return Err(error.into());
+                            }
+                        }
+                    } else { None };
+                    let pin = match &weight.bytes {
+                        Bytes::Host(bytes) => host_source::acquire(weight, bytes.clone(), fill, stream)?,
+                        Bytes::Foreign(provider) => source::acquire(weight, provider, fill, stream)?,
+                    };
+                    (pin, generation)
+                }
             };
             pins.push(pin);
-            if let Some(admission) = &mut admission { admission.acquired(weight); }
+            if let Some(admission) = &mut admission {
+                admission.acquired(weight, pins.last().expect("just retained unpublished Pin"), own_fill_generation)?;
+            }
         }
         if let Some(admission) = &admission { admission.finish_acquisition()?; }
         Ok(())
@@ -632,7 +650,8 @@ fn acquire_use(weights: &[Arc<Weight>], stream: u64,
         return Err(error);
     }
     insert(Handle::Use(Arc::new(Use {
-        _weights: weights.to_vec(), pins: Mutex::new(Some(pins)), stream,
+        _weights: weights.iter().map(|weight| Arc::clone(&weight.value)).collect(),
+        pins: Mutex::new(Some(pins)), stream,
     })))
 }
 #[unsafe(no_mangle)]
