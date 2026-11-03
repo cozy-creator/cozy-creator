@@ -16,7 +16,7 @@ HUB, MODE = sys.argv[1].rstrip('/'), sys.argv[2]
 # The first-party root namespace and a package, model and SKU every Hub release serves.
 PATHS = [('/v1/software', {}), ('/.well-known/oauth-protected-resource', {}),
          ('/v1/auth/.well-known/jwks.json', {}), ('/v1/packages', {}), ('/v1/packages/{org}/{name}', {'org': '_', 'name': 'sdxl'}),
-         ('/v1/models', {}), ('/v1/models/{org}/{name}', {'org': '_', 'name': 'sdxl'}), ('/v1/rental-skus', {}),
+         ('/v1/models', {}), ('/v1/models/{org}/{name}', {'org': 'stabilityai', 'name': 'sdxl'}), ('/v1/rental-skus', {}),
          ('/v1/rental-skus/{name}', {'name': 'cpu'}), ('/v1/execution-environment', {}), ('/v1/index/{org}/simple/', {'org': '_'}),
          ('/v1/index/{org}/simple/{distribution}/', {'org': '_', 'distribution': 'sdxl'})]
 
