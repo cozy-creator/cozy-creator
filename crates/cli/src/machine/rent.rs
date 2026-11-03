@@ -101,9 +101,11 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
     let rented: Rented = match calcifer.post("/v1/machines", &ask(agreed), Some(&key)).await {
         // An answer lost on the way back may still have placed the order, which Calcifer keeps.
         Err(e) if matches!(e.kind, Kind::Unavailable | Kind::Internal) => {
-            let e = e
-                .remedy("the order may stand: `cozy machine ls` shows it before you rent again")
-                .next("cozy machine ls");
+            let e = match e.remedy {
+                Some(_) => e,
+                None => e.remedy("the order may stand: `cozy machine ls` shows it before you rent again"),
+            };
+            let e = e.next("cozy machine ls");
             output::refusal(ctx, &e);
             return Ok(ExitCode::from(UNFOLLOWED));
         }

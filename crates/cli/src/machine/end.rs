@@ -35,7 +35,9 @@ pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Err
             abandoned.join(", ")
         ));
     }
-    if machine.state == MachineState::Ending {
+    // An order the Hub has not answered: stopped now, whatever becomes of the Hub.
+    let order = machine.kind == MachineKind::Rental && machine.rental_id.is_none();
+    if machine.state == MachineState::Ending && !order {
         // Followed by its rental id: the name is the Hub's and an alias may be what was typed.
         let id = machine
             .rental_id
@@ -53,6 +55,10 @@ pub async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCode, Err
         return Ok(ExitCode::SUCCESS);
     }
     let said = match (machine.kind, changed) {
+        _ if order => format!(
+            "{}'s order is stopped: it buys nothing more. Once the Hub answers, Calcifer ends anything it placed; `cozy machine ls` shows it until then.",
+            machine.name
+        ),
         (MachineKind::Added, true) => format!(
             "{} is no longer one of this computer's machines.",
             machine.name

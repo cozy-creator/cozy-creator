@@ -157,6 +157,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
     `202 Rented {machine, quote, replay}`, or `200` on a replay. Follow the boot on the events until the
     machine is `ready`, or `ended` without one. `agreed` is the quote's `agreed()`: a dearer order rents
     nothing (`rental_price_rose`).
+    - A Hub that does not answer is asked again under the same key, across restarts, so one order buys one
+      pod at most. Until it answers, the order is a `booting` machine in the list, under the name it was asked
+      with and with no `rental_id`. Another rent of the same thing joins it (`503 rental_order_pending`).
   - `{"kind": "add", name, address, fingerprint}` answers `Machine`.
 - `DELETE /v1/machines/{name}[?force=true]`: `Ended {machine, changed, abandoned}`, `202` while `ending`.
   - The end is recorded at once and survives a restart. Calcifer carries it out once the outputs of the
@@ -164,6 +167,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - `force` ends it now; `abandoned` names the outputs given up. Asked again with `force`, it stops the wait.
   - A rental is `ending` until its Hub affirms the pod gone, then `ended`. An added machine is removed.
   - An ending machine takes no new runs (`409 machine_ending`), and `local` is refused.
+  - An order its Hub has not answered stops at once (`ending`, no `rental_id`): it buys nothing more, and leaves
+    the list once its Hub answers and anything it placed is ending. So does one whose run ended.
 - `POST /v1/machines/{name}/keepalive`: `Keepalive`. It restarts a rental's 15-minute idle clock once the
   machine acknowledges.
 - `POST /v1/machines/{name}/update` (`MachineUpdate`), with an `Idempotency-Key`: the machine's Runtime,
