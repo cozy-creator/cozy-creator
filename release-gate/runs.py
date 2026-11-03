@@ -114,9 +114,11 @@ class Run:
 
     @property
     def step1_read_ms(self):
-        """What step 1 waited on weight reads: the `host · <read>` stalls the Runtime's sampler logged at step 1's
-        end (its stage's first entry ends there). A fresh pod's first call reads its weights from a cold disk inside
-        step 1; that is I/O, which the run's execution time and the tensorfs/varena suites judge, not step compute."""
+        """What step 1 spent getting its weights ready, once: its reads (the `host · <read>` stalls the Runtime's sampler
+        logged at its end, where its stage's first entry ends, or its fills' own times, which see more than the sampler's
+        last stall), a LoRA's construction inside the step and its bake (FLUX.2 Turbo on a 4090, 56 blocks: 15 s against
+        1.6 s steps, on every Runtime it has run on). A fresh pod's first call does these inside step 1: the run's
+        execution time and the tensorfs/varena suites judge them, not step compute."""
         m, track = self._step_track()
         series = (track or {}).get('series') or []
         if not series:
@@ -129,6 +131,11 @@ class Run:
             if name.startswith('host · ') and name[len('host · '):] in WEIGHT_READS and st.get('count'):
                 if abs(st['started_unix_ms'] + st['first_ms'] - end) <= max(window, 2):
                     ms += st['first_ms']
+        began = end - series[0][1]
+        native = [row.get('stats') or {} for row in ((m.get('memory') or {}).get('stats') or {}).get('varena') or []]
+        ms = max(ms, sum(fill.get('ns', 0) for row in native for fill in row.get('trace') or [] if began <= fill.get('at_unix_ms', 0) <= end) / 1e6)
+        ms += sum(built.get('prepare_ms', 0) for built in ((m.get('execution') or {}).get('on_demand') or {}).values() if began <= built.get('prepared_unix_ms', 0) <= end)
+        ms += sum(((row.get('moved') or {}).get('bake') or {}).get('device_ns', 0) for row in native) / 1e6
         return min(ms, series[0][1])
 
     def stage_ms(self, name):
