@@ -119,6 +119,7 @@ impl Client {
                 code: if reason.is_empty() { error } else { reason },
                 message: text("error_description"),
                 remedy: String::new(),
+                retry_after_s: None,
             });
         }
         serde_json::from_value(body).map_err(|e| Error::Answer(e.to_string()))

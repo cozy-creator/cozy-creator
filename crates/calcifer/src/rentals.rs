@@ -471,10 +471,10 @@ impl Machines {
                     lock(&self.unanswered).insert(ask.key.clone(), e.message.clone());
                     self.calcifer.machine_changed();
                     let name = ask.machine.as_deref().unwrap_or(&ask.key);
+                    pause = e.wait_or((pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60)));
                     tell(&Err(e.remedy(format!(
                         "it is asked again under one key, so it buys one pod at most: `cozy machine ls` shows it as {name}, `cozy machine end {name}` stops it"
                     ))));
-                    pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(60));
                     tokio::select! {
                         () = tokio::time::sleep(pause) => {}
                         () = self.end_waits.notified() => {}
@@ -982,7 +982,7 @@ impl Machines {
                 }
                 Err(e) => {
                     warn!(machine = row.name, "reading its boot: {e}");
-                    pause = (pause * 2).min(WAITING);
+                    pause = e.wait_or((pause * 2).min(WAITING));
                 }
             }
             tokio::time::sleep(pause).await;
@@ -1257,6 +1257,7 @@ impl Machines {
         }
         let mut released = false;
         loop {
+            pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             let client = match self.hubs.client(&ask.hub) {
                 Ok(client) => client,
                 Err(e) => return settle(Err(e.message)),
@@ -1273,7 +1274,8 @@ impl Machines {
                     }
                     Err(e) if e.kind == Kind::Credential => return settle(Err(said(&e))),
                     Err(e) if e.kind == Kind::Unavailable => {
-                        warn!(rental = id, "releasing it: {e}")
+                        warn!(rental = id, "releasing it: {e}");
+                        pause = e.wait_or(pause);
                     }
                     Err(_) => released = true,
                 }
@@ -1292,11 +1294,13 @@ impl Machines {
                     }
                     Err(e) => match hub_refusal(&ask.hub, e) {
                         e if e.kind == Kind::Credential => return settle(Err(said(&e))),
-                        e => warn!(rental = id, "reading its end: {e}"),
+                        e => {
+                            warn!(rental = id, "reading its end: {e}");
+                            pause = e.wait_or(pause);
+                        }
                     },
                 }
             }
-            pause = (pause * 2).clamp(Duration::from_secs(2), Duration::from_secs(30));
             tokio::time::sleep(pause).await;
         }
     }

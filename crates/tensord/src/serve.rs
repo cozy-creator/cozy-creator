@@ -502,10 +502,11 @@ fn report_endpoint(grant: crate::machine::grant::HubGrant, endpoint: crate::mach
         for attempt in 0..5u32 {
             match hub.report_endpoint(&endpoint).await {
                 Ok(()) => return tracing::info!("reported endpoint {}", endpoint.public_host),
-                Err(Refusal::Denied) => return tracing::warn!("the Hub refused the endpoint report"),
-                Err(Refusal::Transport(error)) => {
+                Err(Refusal::Denied | Refusal::Ended) => return tracing::warn!("the Hub refused the endpoint report"),
+                Err(Refusal::NotReady) => tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await,
+                Err(Refusal::Transport(error, wait)) => {
                     tracing::warn!("endpoint report: {error}");
-                    tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+                    tokio::time::sleep(wait.unwrap_or(std::time::Duration::from_secs(1 << attempt))).await;
                 }
             }
         }

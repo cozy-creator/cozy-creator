@@ -42,6 +42,9 @@ pub struct Error {
     /// The originating component's own stable code (a machine's or the Hub's), when not ours.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
+    /// How long the one refusing said to wait before asking again, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_s: Option<u64>,
 }
 
 /// The HTTP body of a refusal.
@@ -59,6 +62,7 @@ impl Error {
             remedy: None,
             next: vec![],
             cause: None,
+            retry_after_s: None,
         }
     }
 
@@ -85,6 +89,11 @@ impl Error {
     }
     pub fn internal(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(Kind::Internal, code, message)
+    }
+
+    /// The wait after this refusal: the stated one, else `otherwise`.
+    pub fn wait_or(&self, otherwise: std::time::Duration) -> std::time::Duration {
+        self.retry_after_s.map_or(otherwise, std::time::Duration::from_secs)
     }
 
     pub fn remedy(mut self, remedy: impl Into<String>) -> Self {

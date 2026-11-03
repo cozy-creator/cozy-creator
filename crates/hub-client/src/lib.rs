@@ -26,6 +26,9 @@ pub enum Error {
         code: String,
         message: String,
         remedy: String,
+        /// The answer's `Retry-After`, in seconds.
+        #[serde(default)]
+        retry_after_s: Option<u64>,
     },
     #[error("Tensorhub: {0}")]
     Call(String),
@@ -48,6 +51,14 @@ impl Error {
         }
     }
 
+    /// How long the answer said to wait before asking again.
+    pub fn stated_wait(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Hub { retry_after_s, .. } => retry_after_s.map(std::time::Duration::from_secs),
+            _ => None,
+        }
+    }
+
     /// The one reading of a failed call as cozy's refusal: the Hub's code (also the cause),
     /// message and remedy, classed by status, `Unavailable` exactly when [`Error::retry`]. A
     /// refused credential (a login refused, a key missing, unusable or revoked, a 401) is
@@ -59,6 +70,7 @@ impl Error {
                 code,
                 message,
                 remedy,
+                ..
             } => (
                 Refusal::credential("hub_credential", message)
                     .cause(code)
@@ -70,8 +82,9 @@ impl Error {
                 code,
                 message,
                 remedy,
+                retry_after_s,
             } => (
-                Refusal::new(Kind::of_http(status), code.clone(), message).cause(code),
+                Refusal { retry_after_s, ..Refusal::new(Kind::of_http(status), code.clone(), message).cause(code) },
                 remedy,
             ),
             Self::Call(message) => (
@@ -111,6 +124,8 @@ impl Error {
     /// (a proxy's page, an empty body) is `http_<status>` with the start of what came back.
     async fn refused(response: reqwest::Response) -> Self {
         let status = response.status();
+        let retry_after_s = (response.headers().get(reqwest::header::RETRY_AFTER))
+            .and_then(|value| value.to_str().ok()?.trim().parse().ok());
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(e) => return Self::unanswered(&e),
@@ -142,6 +157,7 @@ impl Error {
             code: code.unwrap_or_else(|| format!("http_{}", status.as_u16())),
             message: message.unwrap_or_else(|| status.to_string()),
             remedy: remedy.unwrap_or_default(),
+            retry_after_s,
         }
     }
 }

@@ -23,10 +23,15 @@ pub struct Hub {
 
 #[derive(Debug)]
 pub enum Refusal {
-    /// 401/403: the Hub denies this attempt's authority.
+    /// 401 `worker.ended`: the rental behind this pod is over, for good.
+    Ended,
+    /// Any other 401/403: the Hub denies this attempt's authority now.
     Denied,
-    /// Unreachable, slow or any other answer: proves nothing either way.
-    Transport(String),
+    /// 425 `worker.not_ready`: its readiness receipt has not landed yet.
+    NotReady,
+    /// Unreachable, slow or any other answer: proves nothing either way. With how long the answer
+    /// said to wait.
+    Transport(String, Option<Duration>),
 }
 
 impl Hub {
@@ -75,11 +80,16 @@ impl Hub {
                 .store(super::lifecycle::now_ms(), Ordering::Release);
         }
         answer.map_err(|error| match error {
+            hub_client::Error::Hub { status: 401, code, .. } if code == "worker.ended" => Refusal::Ended,
             hub_client::Error::Hub {
                 status: 401 | 403, ..
             } => Refusal::Denied,
-            hub_client::Error::Call(why) => Refusal::Transport(format!("reach Tensorhub: {why}")),
-            other => Refusal::Transport(other.to_string()),
+            hub_client::Error::Hub { status: 425, .. } => Refusal::NotReady,
+            hub_client::Error::Call(why) => Refusal::Transport(format!("reach Tensorhub: {why}"), None),
+            other => {
+                let wait = other.stated_wait();
+                Refusal::Transport(other.to_string(), wait)
+            }
         })
     }
 
@@ -87,7 +97,7 @@ impl Hub {
     pub async fn authorized_keys(&self) -> Result<(Vec<VerifyingKey>, Duration), Refusal> {
         let answer = self.call(self.client.get_worker_authorized_keys()).await;
         let document = self.heard(answer)?;
-        let invalid = || Refusal::Transport("rental authority metadata is invalid".into());
+        let invalid = || Refusal::Transport("rental authority metadata is invalid".into(), None);
         if document.worker_id != self.grant.worker_id
             || !(1..=3600).contains(&document.lease_seconds)
         {
@@ -133,8 +143,10 @@ impl Hub {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Ended => write!(f, "the Hub says this rental has ended"),
             Self::Denied => write!(f, "the Hub denied this rental's authority"),
-            Self::Transport(detail) => write!(f, "{detail}"),
+            Self::NotReady => write!(f, "the Hub says this rental is not ready yet"),
+            Self::Transport(detail, _) => write!(f, "{detail}"),
         }
     }
 }
