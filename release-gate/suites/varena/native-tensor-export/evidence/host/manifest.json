@@ -1,0 +1,51 @@
+{
+  "boundary": "host source and native bridge only; no GPU execution",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-native-exports",
+  "branch": "codex/xs138-p4-torch-native-exports",
+  "master_base": "9bb4283220d72e142ef8f8c26db0cd278e961a07",
+  "integration_input": "2ba51b29e5c84927c4a7d45337374d0ea8ff27b3",
+  "checks": [
+    {
+      "command": "cargo check -p tensorfs-py --no-default-features -j 2",
+      "exit": 0
+    },
+    {
+      "command": "cargo check -p tensorfs-py -j 2",
+      "exit": 0
+    },
+    {
+      "command": "cargo build -p tensorfs-py -j 2",
+      "exit": 0
+    },
+    {
+      "command": "source_cpu.py with real Torch 2.14.1+cpu",
+      "exit": 0
+    },
+    {
+      "command": "native_host.py --extension target/debug/lib_ext.so with production PyO3/core",
+      "exit": 0
+    },
+    {
+      "command": "ruff check and ruff format --check for changed Python and proof clients",
+      "exit": 0
+    }
+  ],
+  "gpu_client": "prepared only; coordinator owns execution",
+  "gpu_artifacts": "existing cache-pages and varena evidence unchanged from integration input",
+  "source_sha256": {
+    "crates/varena/src/abi.rs": "67f6d01797af6905caef6ae555f853419406a42985297d60256b79b89a739817",
+    "crates/varena/src/abi/tensor_export.rs": "0c7dedf0874d530f31e07745289287eb6f859159244927afe93d51ac35ba9f1e",
+    "crates/varena/src/abi/retirement.rs": "7abd2aaa6e24b460afe0311e5f64d0888042c0422b36641112798dd382eb65b2",
+    "crates/varena/src/tensor_consumers.rs": "a77eb4e646d8cbc493de2a9d5407534fabd9863787eba8468c7ac3c084af8eb7",
+    "crates/varena/src/working.rs": "594d83853e7cb7691494fda9a4d3d51dcdef828303fe35369e01980d1d9628c8",
+    "crates/varena/src/lib.rs": "0ac9633ce287ec6f1ddc7570bf261f0ae69b998007f174e8ae7a9999f9887b0b",
+    "crates/tensorfs-py/src/varena/mod.rs": "9d3049f73a6aa79a9d8134e3325f1b34c0c9bccd1c238df0d27b20addc007c9c",
+    "crates/tensorfs-py/src/varena/tensor_export.rs": "7de39c8dc67ecb00ee0a39637d677ec3fc9d5894d3237a9e86febe502066dcf0",
+    "crates/tensorfs-py/python/tensorfs/varena/api.py": "80ee2cfdceed0b3fd3fce08506b439b31952df498ee04f594956c39fc1cef088",
+    "crates/tensorfs-py/python/tensorfs/varena/__init__.py": "4a88a4b0590a58a24eb4443b87cdd3070577881ce09ecd84c131f01d324a9502",
+    "crates/tensorfs-py/python/tensorfs/varena/sources.py": "c20047404e7007eb611d77002871bbcc82224fdb5d0147e2a22b00836f63ea06",
+    "release-gate/suites/varena/native-tensor-export/source_cpu.py": "49d94f84ee3dc950eff71e194f25e98a626394c4a791eb201f58c575fdf610ed",
+    "release-gate/suites/varena/native-tensor-export/native_host.py": "36be5664266fd4e10fa0ab1ea278f746da3a8ecd4ca61c763f4f00464db138ca",
+    "release-gate/suites/varena/native-tensor-export/gpu.py": "796abecb5b9fd8adde8351b7972becd91123560e1f5d39992a9a492d42a6e847"
+  }
+}
