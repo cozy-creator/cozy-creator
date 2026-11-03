@@ -78,129 +78,17 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A project is a folder:
-- `project.yaml`: yours. cozy writes it at `new`, and one line of it at `approve` and `unpin`, keeping everything else as you wrote it.
-- `project.lock`: cozy's record of every file and each asset's takes or versions, and what made each.
-- `files/`: every file the project uses, a real file kept by content as `files/<sha256>.<ext>`.
-- `edit.mp4`: a film, cut on this computer, and beside it `edit.otio`, the same edit as an OpenTimelineIO timeline, each
-  clip referencing its take in `files/`.
-
-Everything in the film is an **asset**: a stable name holding a set of files. An **operation** makes it: a package, by `with`,
-and a `kind`, which that package's adapter turns into calls. Each result is a **version**, or a **take** if it holds a video,
-numbered from 1 and never renumbered. `cozy project new garden` makes a folder holding a short film that renders as it stands.
-
-```yaml
-version: 2
-defaults:
-  all:
-    style: High-quality Unreal Engine graphics.
-    aspect_ratio: "16:9"
-  character:
-    with: qwen-image-2
-  shot:
-    with: minimax-h3
-  edit:
-    with: cozy
-
-assets:
-  kyogre art:
-    image: 47bc2b8d463a          # a hash: a constant, nothing is made
-  kyogre:
-    kind: character
-    description: |
-      Kyogre, the colossal blue whale-like legendary Pokémon.
-    instructions: |
-      <kyogre art> as a realistic creature, front and back on one sheet.
-  clash:
-    kind: shot
-    summary: |
-      <kyogre> fights on the coast in one continuous shot.
-    beats:
-      - duration: 14
-        description: |
-          <kyogre> surges forward and a storm breaks.
-        writes:
-          - scene: coast.1
-            at: 12
-      - duration: 10
-        description: |
-          The fight goes on under <coast.1>.
-  edit:
-    kind: edit
-    fps: 24
-    pieces:
-      - <clash>
-      - {video: <clash>, start: 12, end: 132}
-```
-
-`<name>` in any text reads that asset. Cozy reads `with`, `kind`, `models`, `lora`, `options`, a hash in `image`, `video` or
-`audio`, and a beat's `duration` and `writes`. Every other field goes to the adapter and is yours and the package's. `with` is
-`[org/]package[@release]`, or local code (`./dir`, `./script.py`); with none, of its own or in `defaults.<kind>`, an asset has nothing
-to make, and a package with no adapter for its kind can't make it: `status` and `render` say so, and the rest goes on. An asset with an
-operation and no `kind` is an `image`. An asset naming its own `with` takes nothing from `defaults`.
-
-**State.** An asset's state is the hash in `project.yaml`, else its newest version for its current inputs, else none. Its inputs are what its
-adapter is given: everything the file says of it, and the files and fields of what it mentions. So a comment, a reformat or a package
-update changes nothing, a text, option or `defaults` edit puts it out of date, and reverting the text returns the old output with no
-run. A new release of a package doesn't re-render anything; `--new` shows what it makes.
+A project is a folder: `project.yaml`, which says what should exist; `project.lock` and `files/`, cozy's record of what was made; and the cuts. Everything in the film is an asset, a package makes it through an adapter for its kind, and a run happens only when an asset has no state. Putting old text back returns the old take with no run, and a pin in the file is what approving means.
 
 ```sh
-cozy project render all --on <machine>     # everything with no state; cuts follow, free
-cozy project render clash --on <machine>   # clash and what it reads, if it has no state
-cozy project render clash --new -n 3 --on <machine>   # three more takes
-cozy project approve clash 2               # pins take 2
-cozy project unpin clash
-cozy project render clash --in 15 --on <machine>      # a new take: the take in use up to about 15 s, the rest new
-cozy project render clash --take 2 --in 15 --on <machine>
-cozy project status                        # what has no state and why, and each cut
-cozy project ls                            # every project this computer has opened
+cozy project new garden && cd garden       # a short film that renders as it stands
+cozy project render all --on <machine>
+cozy project render clash --new -n 3 --on <machine>
+cozy project approve clash 2               # pins take 2, one line in project.yaml
+cozy project status
 ```
 
-**Approve** writes `video: b333794f3640` (`image:` for a picture) into that asset in `project.yaml`, and `unpin` removes the line, so
-the file shows at a glance what is a constant. Its `with` and text stay, ignored while pinned, and `status` says which version a pin is and
-what has changed since. When the hash is a version's, its latents and written world states come with it. A pinned asset is never made
-again; `--new` makes takes to look at, its state unmoved. The first `render` of a project with nothing owed sends nothing.
-
-**Files** enter a project one way, and `project.yaml` names them only by hash:
-
-```sh
-cozy project import ./coast.jpg
-cozy project import https://example.com/groudon.png --character
-```
-
-```
-imported ab12cd34ef56
-image: ab12cd34ef56
-```
-
-Any prefix of the hash will do; one that fits two is said. `--character` and `--prop` print two assets to paste: the picture, and its clean.
-A URL is downloaded here, up to 64 MiB, from a public address. A path or URL in a file field is never read: it warns with the import
-command. A made version is a file too: `status` prints each one's 12 characters.
-
-**Scenes.** A `scene` asset holds a place as it stands, and a beat can write one: `writes: [{scene: coast.1, at: 12}]` is a screenshot `at` seconds
-into that beat (its end if left out, clamped with a warning past it), its picture re-used as a reference in a later generation. A scene may be
-declared on its own with a `description`; the write only fills in its picture. A mention names exactly that asset: `<coast.1>` is `coast.1`, and
-`<coast>` is `coast`. A write the shot reads after its beat goes to its function, inside its key, as one take; any other is a free frame, cut here,
-and moving it re-renders nothing.
-
-**Cuts.** `with: cozy`, `kind: edit`, as many as you like, each writing `<name>.mp4` and `<name>.otio` at the root. `pieces` holds `<name>`,
-the whole take, or `{video: <name>, start: 12, end: 132}`, in frames at its `fps` (24 by default), every in and out point exact. `aspect_ratio` and
-`resolution` set its canvas: every piece fills it, center-cropped, never letterboxed or stretched; a take at another rate is retimed, and
-`status` names it. With no `resolution`, the cut is its first take's own size when that is the aspect but for a model's rounding, so takes of that
-size join with no encode. A cut runs here, free, once what it reads settles and on `approve`; same takes, not cut again. It reads each
-asset's state, else its newest version, and says so. `kind: frame`, `{with: cozy, kind: frame, video: <clash>, at: 3}`, is one frame the same way.
-
-**Moving a project.** Commit `project.yaml` and `project.lock`, keep `files/` out of git, and `cozy project push` sends the files to your
-Tensorhub account, private to you. `cozy project pull` next to a clone fetches them as real files. Both send only what is missing and go on
-after an interruption. What you pushed stays until you `cozy model delete <account>/project-assets`. A file over 5 GiB is skipped with a
-warning: everything else goes, and the command exits 3.
-
-**Renames and space.** Rename an asset in `project.yaml` (and its `<mentions>`), then `cozy project rename <old> <new>` keeps its versions;
-`status` suggests it. What reads it goes out of date unless pinned. An asset the file no longer names keeps its versions and files: `status` lists
-each with its bytes, `cozy project reclaim` lists what it would free, and `--yes` deletes their versions and any file nothing else names. Never
-automatic. `render` runs go on in Calcifer, and Ctrl-C stops following, never the runs.
-
-The project is the folder holding `project.yaml`, found from where you are or above it; `-p <path>` names another.
+The format, the kinds and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
 
 ## Remove cozy
 
