@@ -44,7 +44,7 @@ fn run(lifetime: Lifetime, service_ready: Option<u64>) -> io::Result<()> {
     // Linux names the calling thread: this one, before any other starts.
     if let Err(error) = platform::process::set_name("tensord") {
         if !error.is_unsupported() {
-            return Err(io::Error::other(format!("cannot set TensorD process name: {error}")));
+            eprintln!("cannot set TensorD process name: {error}");
         }
     }
     // Whatever this process inherited (its own re-execution's credential pipe) reaches nothing

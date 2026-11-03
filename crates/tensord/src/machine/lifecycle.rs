@@ -135,8 +135,11 @@ impl Lifecycle {
     pub fn open(path: PathBuf, rental: bool, fresh: bool, grace: i64) -> io::Result<Arc<Self>> {
         let fresh = fresh || !rental;
         let mut ledger: Ledger = match std::fs::read(&path) {
-            Ok(raw) if !fresh => serde_json::from_slice(&raw)
-                .map_err(|e| io::Error::other(format!("the idle ledger is unreadable: {e}")))?,
+            // Unreadable, the idle clock starts over: at worst a rental waits one more grace.
+            Ok(raw) if !fresh => serde_json::from_slice(&raw).unwrap_or_else(|e| {
+                tracing::warn!("the idle ledger is unreadable, so the idle clock starts over: {e}");
+                Ledger::default()
+            }),
             Ok(_) => Ledger::default(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ledger::default(),
             Err(e) => return Err(e),

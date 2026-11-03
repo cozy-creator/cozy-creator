@@ -331,7 +331,11 @@ pub fn recover_activation(paths: &Paths) -> io::Result<Recovered> {
         "waiting" | "preparing" | "waiting_activation" | "installing" | "failed" | "canceled" => {
             rollback_pending(paths, "machine_restarted: software publication did not finish")
         }
-        state => Err(invalid(&format!("cannot recover update state {state}"))),
+        // A state a newer binary wrote, before a rollback to this one.
+        state => {
+            tracing::warn!("update state {state} is unknown to cozy {VERSION}: rolling it back");
+            rollback_pending(paths, &format!("machine_restarted: cozy {VERSION} does not know update state {state}"))
+        }
     }
 }
 
