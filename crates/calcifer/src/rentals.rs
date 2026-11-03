@@ -652,7 +652,7 @@ impl Machines {
     /// The order that goes by `text`, the name it was asked with.
     pub(crate) fn order_named(&self, text: &str) -> Result<Option<Ask>, Error> {
         let asks = self.store().pending_asks().map_err(internal)?;
-        Ok(asks.into_iter().find(|ask| ask.kind == AskKind::Rent && ask.machine.as_deref() == Some(text)))
+        Ok(asks.into_iter().find(|ask| ask.kind == AskKind::Rent && ask.machine.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(text))))
     }
 
     /// Stops an order: it buys nothing more, and its loop ends what it may have placed.
