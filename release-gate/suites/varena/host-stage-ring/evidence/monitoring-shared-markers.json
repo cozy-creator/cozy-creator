@@ -1,0 +1,193 @@
+{
+  "status": "frontend diagnostic implemented, GPU UNRUN",
+  "draft_pr": "https://github.com/cozy-creator/cozy-creator/pull/2547",
+  "branch": "codex/xs138-p4-shared-host-markers",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-shared-host-markers",
+  "fresh_master_base": "500b6de76d6e19e0e432ece04be81d6ee31ca268",
+  "development_context_NOT_FOR_ADOPTION": "5a196232c11f1b601cce01263d50bc3417d98591",
+  "source_feature": "983e789ec82a28a6760d48ea6c8d06ec2ffc6157",
+  "old_reference_draft_preserved": "https://github.com/cozy-creator/cozy-creator/pull/2544",
+  "execution_binding": {
+    "format": "varena-host-stage-binding-v2",
+    "cohort": "9d",
+    "execution_artifact": "9d",
+    "helper_sha256": "48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955",
+    "header_sha256": "2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad",
+    "product_revision": "9d959e31d6fc58a2d4c1f7371bc3a2b6b658c6de",
+    "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+    "native_files": {
+      "_ext.abi3.so": "75057bc3d82720250baf87b7921a709ab6d3299f38bf9dabdc12fd160f53dc6f",
+      "_varena_torch.so": "a6047a39624f83d2c59d2453cc11dc244ce4c79f96054af401d2edd72084e7f4",
+      ".native/libvarena.so": "e9752505f78948b91b8a924c979de06ec11c492e3ab377e692cff50cff6ee573"
+    },
+    "diagnostic_files": {
+      "monitoring_hook.py": "4875257f2e5f286d89fa6c64cf47b3717e23b5ed0281525337b3347281675b0a",
+      "native_markers.py": "12dc10c84c49d09a472fd3bdb24e2d59c2e30881a10d1310f0ca3c0285ae312d",
+      "safe_bindings.py": "6835e79a7b9b0fb47c136b508ea9a4268eaa24678f3a1782ff2161b6c7ff1185",
+      "entry.py": "114b99a3d2644099d5c474384d725ad17e5837ca3f63de99aa9a310ad0d96562",
+      "host_stage_observe.py": "2e7f3c36858f8a262284c87735f5d178074bec16615551a229fd17e3baba8a93",
+      "host_stage_ring.py": "6fb4892dfc25461d162e5cd16b625b796589069636fc40787a464731e546a4d9",
+      "host_stage_seal.py": "503f5c6f10bce0fde8bee9ff3cfa2404686fc8510a9123216c0e4c6ac8dea75e",
+      "source_seals.json": "a13521c81c0e69a432173da6cb4f4faa4777668696e103b4a91ad25f8a46eb0a",
+      "analyze.py": "cc2d7be9bfc7bb4bbdfa610b235b2c58d0ab6a627c32a01ce52da9f09b268b15",
+      "original_sdxl.py": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
+      "allocation_trace.so": "48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955",
+      "diagnostic_markers.h": "2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad"
+    },
+    "numerical_client_sha256": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
+    "cap_bytes": 6442450944,
+    "numerical_script_invocations": 1,
+    "pipeline_calls_in_original_body": 2,
+    "synchronization_added": false,
+    "allocator_tracer_implementation_added": false,
+    "existing_native_tracer_installed": true,
+    "gpu_execution": "UNRUN"
+  },
+  "bundle": "/home/fidika/cozy_v2/outputs/xs138-shared-host-markers-20261103/shared-host-markers-9d-final-002.tar.gz",
+  "bundle_sha256": "7cb88b1b98a80c2d58a929daf77f0ff4ec609ebe648b7668e1be9fae2bcec131",
+  "bundle_members": {
+    "source_seals.json": "a13521c81c0e69a432173da6cb4f4faa4777668696e103b4a91ad25f8a46eb0a",
+    "safe_bindings.py": "6835e79a7b9b0fb47c136b508ea9a4268eaa24678f3a1782ff2161b6c7ff1185",
+    "allocation_trace.so": "48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955",
+    "binding.json": "056b6c89f8de0c75b98f7794421e3cbddc1c0fe3eeb4deeef7561609d5e17dd0",
+    "monitoring_hook.py": "4875257f2e5f286d89fa6c64cf47b3717e23b5ed0281525337b3347281675b0a",
+    "host_stage_ring.py": "6fb4892dfc25461d162e5cd16b625b796589069636fc40787a464731e546a4d9",
+    "host_stage_observe.py": "2e7f3c36858f8a262284c87735f5d178074bec16615551a229fd17e3baba8a93",
+    "analyze.py": "cc2d7be9bfc7bb4bbdfa610b235b2c58d0ab6a627c32a01ce52da9f09b268b15",
+    "host_stage_seal.py": "503f5c6f10bce0fde8bee9ff3cfa2404686fc8510a9123216c0e4c6ac8dea75e",
+    "entry.py": "114b99a3d2644099d5c474384d725ad17e5837ca3f63de99aa9a310ad0d96562",
+    "native_markers.py": "12dc10c84c49d09a472fd3bdb24e2d59c2e30881a10d1310f0ca3c0285ae312d",
+    "original_sdxl.py": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
+    "diagnostic_markers.h": "2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad"
+  },
+  "receipts": {
+    "monitor_host": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-shared-host-markers-20261103/monitor-host-005/result.json",
+      "sha256": "f756a5f1af7884f58de1e9806b7633766c3e5d26810877d11290f9a65028c456",
+      "result": {
+        "passed": true,
+        "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "checks": {
+          "real_io_none_return_and_exception_unwind": true,
+          "actual_stdlib_source_and_code_identity": true,
+          "unwrapped_foreign_c_thread_original_once": true,
+          "real_file_generator_normal_exit_vs_unwind_conservative": true,
+          "overflow_reports_unavailable_without_changing_io": true,
+          "collector_lock_declines_nonblocking": true,
+          "actual_profile_slot_not_replaced": true,
+          "actual_monitoring_tool_not_replaced": true
+        },
+        "torch": null,
+        "gpu_execution": false,
+        "native_capture_or_cache_owner_qualification": false
+      }
+    },
+    "monitor_tensor": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-shared-host-markers-20261103/monitor-tensor-006/result.json",
+      "sha256": "e91ea2a8319223211eb22a6a9dc6e7dba42b7c327bcb1ef2ab49cbc09344dce6",
+      "result": {
+        "passed": true,
+        "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+        "checks": {
+          "real_io_none_return_and_exception_unwind": true,
+          "actual_stdlib_source_and_code_identity": true,
+          "unwrapped_foreign_c_thread_original_once": true,
+          "real_file_generator_normal_exit_vs_unwind_conservative": true,
+          "overflow_reports_unavailable_without_changing_io": true,
+          "collector_lock_declines_nonblocking": true,
+          "actual_profile_slot_not_replaced": true,
+          "actual_monitoring_tool_not_replaced": true,
+          "actual_cpu_address_bindings_scalar_only": true,
+          "real_cpu_linear_tensor_and_c10_storage_not_retained": true,
+          "weak_graph_identity_does_not_retain_actual_module": true,
+          "actual_unwrapped_tensor_copy_clone_and_natural_error": true
+        },
+        "torch": {
+          "version": "2.9.1+cu128",
+          "git": "5811a8d7da873dd699ff6687092c225caffcf1bb",
+          "cuda_initialized": false,
+          "scope": "CPU reference lifetime only; no SDK/native/GPU ownership proof"
+        },
+        "gpu_execution": false,
+        "native_capture_or_cache_owner_qualification": false
+      }
+    },
+    "source_sdk_cpu": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-shared-host-markers-20261103/monitor-sdk-007/result.json",
+      "sha256": "33b6c6c9675acd5de858baf8191bbcffecc0f15acca464e26fcf202a11d9b997",
+      "result": {
+        "passed": true,
+        "python": "3.14.7 (main, Aug 25 2026, 14:02:56) [Clang 22.1.3 ]",
+        "torch_version": "2.15.0+cpu",
+        "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+        "metadata": {
+          "cohort": "9d",
+          "product_revision": "9d959e31d6fc58a2d4c1f7371bc3a2b6b658c6de",
+          "source_files": {
+            "varena/_offload.py": "b555ff809cca883b3acbbe5ad44a64e9ba7897a9d0d6d7ed3731bdcead5f3570",
+            "varena/_offload_auto.py": "831608fe961047c75103a10f8c3514f4157c20d3f25df9555ed148a4490d21be",
+            "varena/_offload_graph.py": "2fc6fd464505d57ba3441b694586b2b648539b7dc63b97a938ba2b90c61eb27e",
+            "varena/_offload_stream.py": "4634606ba2954f69884d86d1a0c591a7bfc909f0dc181153d9c310eed0e167e0",
+            "varena/api.py": "2ab2348c5059a616ffc29201cffbe9028f5c20a0c380df70d3b451ae0330d78e",
+            "varena/torch.py": "9fc6130efbf0a6341bd0e77e8133bcdf9873438e3662d89930ffaa9fbe321777"
+          },
+          "scope": "sealed-code interpreter monitoring, including fresh foreign C threads",
+          "callback_proxy": false,
+          "interpreter_monitoring": true,
+          "product_bodies_replaced": false,
+          "native_reads_added": "one-shot scalar/address bindings at confirmed exits; existing census returns copied",
+          "synchronization_added": false,
+          "torch_version": "2.15.0+cpu",
+          "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+          "host_control_only": true
+        },
+        "rows": 21,
+        "boundaries": {
+          "1": "unet.up_blocks.0",
+          "2": "unet.up_blocks.1",
+          "3": "unet.up_blocks.2"
+        },
+        "owner_and_module_collected_with_ring_alive": true,
+        "actual_cpu_outputs_equal": true,
+        "late_host_window_and_following_component_cleanup": true,
+        "cuda_initialized": false,
+        "native_gpu_callback_capture_replay_qualification": false
+      }
+    },
+    "preserved_monitor_setup_failure": {
+      "path": "/home/fidika/cozy_v2/outputs/xs138-shared-host-markers-20261103/monitor-host-001/failure.json",
+      "sha256": "e659069f8d2546ea2b832edc7ec7de2a555f482b5ba7edcdd80266b89a757a8d",
+      "result": {
+        "passed": false,
+        "scope": "CPython monitoring adapter setup, before original body",
+        "error": "ValueError: invalid local event set 0x300f",
+        "cause": "PY_UNWIND/PY_THROW must be global; C_RETURN/C_RAISE ancillary flags normalize to CALL",
+        "hook_sha256": "17d4904e67141313db203631e9d6dea87fc2d424ecadb89ed2d95dcc31a73d53",
+        "gpu_execution": false
+      }
+    }
+  },
+  "native_helper_external_owner": "/root/packing_review_resume20",
+  "native_helper_ours_built_or_edited": false,
+  "native_header_ours_edited": false,
+  "native_emission_and_gpu_run_by_this_lane": false,
+  "callback_wrapping": false,
+  "native_stage_coverage": "mechanism qualified by actual foreign C thread; actual native GPU callback rows pending",
+  "synchronization_added": false,
+  "numerical_body_replaced": false,
+  "cap_changed": false,
+  "build_install_hardware_actions": false,
+  "code": {
+    "safe_bindings.py": "6835e79a7b9b0fb47c136b508ea9a4268eaa24678f3a1782ff2161b6c7ff1185",
+    "prepare.py": "440210092e6b2db28497b068ab207cded235be27572f44909ab89d467b1f0e86",
+    "monitoring_hook.py": "4875257f2e5f286d89fa6c64cf47b3717e23b5ed0281525337b3347281675b0a",
+    "host_stage_ring.py": "6fb4892dfc25461d162e5cd16b625b796589069636fc40787a464731e546a4d9",
+    "host_stage_observe.py": "2e7f3c36858f8a262284c87735f5d178074bec16615551a229fd17e3baba8a93",
+    "host_check.py": "845f656a9037060299f62bc5e8d03c0fbf2460faf40376275bc360130d0f42ad",
+    "analyze.py": "cc2d7be9bfc7bb4bbdfa610b235b2c58d0ab6a627c32a01ce52da9f09b268b15",
+    "host_stage_seal.py": "503f5c6f10bce0fde8bee9ff3cfa2404686fc8510a9123216c0e4c6ac8dea75e",
+    "entry.py": "114b99a3d2644099d5c474384d725ad17e5837ca3f63de99aa9a310ad0d96562",
+    "native_markers.py": "12dc10c84c49d09a472fd3bdb24e2d59c2e30881a10d1310f0ca3c0285ae312d",
+    "sdk_cpu_check.py": "287bbd3748d48a51de1236a2e860b1c2fa19c1ce4db2bcc0d888cfcb008cc7c1"
+  }
+}
