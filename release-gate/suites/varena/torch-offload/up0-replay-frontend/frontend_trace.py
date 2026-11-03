@@ -159,6 +159,7 @@ class FrontendTrace(ReturnEvidence):
         else:
             token = previous[1]
         device = definition.owner._owner.device.index
+        device = device if type(device) is int else -1
         actual_stream = int(stream.cuda_stream) if stream is not None else 0
         # _handle is a public-ABI wrapper handle, never a native Plan ID.
         plan = int(definition.plan._handle)
@@ -170,9 +171,11 @@ class FrontendTrace(ReturnEvidence):
         if len(self.host_rows) >= LIMIT:
             self.fail("host_marker_overflow")
             return
-        ordinal = self.native.allocation_trace_marker(marker, self.invocation, *values)
+        invocation = self.invocation if self.dispatch_frame is not None else 0
+        boundary = self.boundary if self.dispatch_frame is not None else None
+        ordinal = self.native.allocation_trace_marker(marker, invocation, *values)
         self.host_rows.append({"ordinal": int(ordinal), "marker": marker,
-                               "boundary": self.boundary, "invocation": self.invocation,
+                               "boundary": boundary, "invocation": invocation,
                                "python_thread": threading.get_ident(),
                                "identity_unavailable_reason": reason})
         if not ordinal:
@@ -195,7 +198,8 @@ class FrontendTrace(ReturnEvidence):
             self.following = self.await_following
             self.boundary = name
             self.dispatch_frame = id(frame)
-            self.device = controller._owner_ref()._owner.device.index
+            device = controller._owner_ref()._owner.device.index
+            self.device = device if type(device) is int else -1
             if not self.window:
                 if self.native.allocation_trace_window(1) != 0:
                     self.fail("native_window_open_failed")
@@ -204,8 +208,11 @@ class FrontendTrace(ReturnEvidence):
             values, reason = self.identity(frame)
             # scope.stream exists before graph definition selection.
             scope = frame.f_locals.get("scope")
-            if values[1] == 0 and scope is not None:
-                values = (self.device, int(scope.stream.cuda_stream), *values[2:])
+            stream = getattr(scope, "stream", None)
+            if values[1] == 0 and stream is not None:
+                values = (self.device, int(stream.cuda_stream), *values[2:])
+            elif values[1] == 0:
+                reason = "definition_or_scope_stream_unavailable"
             self.emit(170 if self.following else 100, values, reason)
         elif event == "return" and id(frame) == self.dispatch_frame:
             normal = frame.f_lasti in self.return_offsets[self.dispatch_code]
