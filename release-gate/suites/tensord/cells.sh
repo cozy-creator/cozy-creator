@@ -36,18 +36,19 @@ released() {  # released <package>: the newest release users get (not yanked), t
 NGPU=$("$CLI" --json machine show "$M" 2>/dev/null | jq '.status.gpus | length')
 
 # Generations: install, update and roll back a package; then the Runtime back a release and forward to the candidate.
-# anima: its last two releases both import on the current Runtime. sdxl's one before 0.2.0 predates Runtime 0.37.0 and refuses to (cl-739).
+# sdxl is the package the rest of this suite runs, at $NEW.
+read -r NEW _ <<< "$(released sdxl)"; NEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^sdxl@//p' | head -1 | grep . || echo "$NEW")
+# The rollback is anima's: its last two releases both import on the current Runtime. sdxl's one before 0.2.0 predates Runtime 0.37.0 and refuses to (cl-739).
 read -r first second <<< "$(released anima)"
-NEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^anima@//p' | head -1); NEW=${NEW:-$first}
-OLD=$first; [ "$OLD" != "$NEW" ] || OLD=$second
-"$CLI" package install "anima@$OLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
-"$CLI" package install "anima@$NEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
-n1=$(submit "anima/generate@$NEW" prompt="masterpiece, anime illustration of $SCENE, generation $NEW" seed:=$((R + 30))); until_status "$n1" terminal
-"$CLI" package install "anima@$OLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
-n2=$(submit "anima/generate@$OLD" prompt="masterpiece, anime illustration of $OBJECT, generation $OLD" seed:=$((R + 31))); until_status "$n2" terminal
-if [[ " $a " == *" anima@$OLD "* && " $b " == *" anima@$NEW "* && " $c " == *" anima@$OLD "* ]] \
+AOLD=$first; ANEW=$(tr , '\n' <<< "$PINS" | sed -n 's/^anima@//p' | head -1); ANEW=${ANEW:-$first}; [ "$AOLD" != "$ANEW" ] || AOLD=$second
+"$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/install.log" 2>&1; a=$(envs)
+"$CLI" package install "anima@$ANEW" --on "$M" -y > "$T/update.log" 2>&1; b=$(envs)
+n1=$(submit "anima/generate@$ANEW" prompt="masterpiece, anime illustration of $SCENE, generation $ANEW" seed:=$((R + 30))); until_status "$n1" terminal
+"$CLI" package install "anima@$AOLD" --on "$M" -y > "$T/rollback.log" 2>&1; c=$(envs)
+n2=$(submit "anima/generate@$AOLD" prompt="masterpiece, anime illustration of $OBJECT, generation $AOLD" seed:=$((R + 31))); until_status "$n2" terminal
+if [[ " $a " == *" anima@$AOLD "* && " $b " == *" anima@$ANEW "* && " $c " == *" anima@$AOLD "* ]] \
    && [ "$(get "$n1" status)" = completed ] && [ "$(get "$n2" status)" = completed ]; then
-  expect tensord-generations PASS "anima $OLD installed, updated to $NEW (run $n1), rolled back to $OLD (run $n2)"
+  expect tensord-generations PASS "anima $AOLD installed, updated to $ANEW (run $n1), rolled back to $AOLD (run $n2)"
 else
   expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
 fi
