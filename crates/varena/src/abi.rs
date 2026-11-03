@@ -45,7 +45,7 @@ impl From<Error> for Failure {
             Error::Unsupported(_) => (UNSUPPORTED, 0),
             Error::Busy => (BUSY, 0),
             Error::Callback(_) => (SOURCE_ERROR, 0),
-            Error::Cuda { .. } | Error::Invalid(_) => (INVALID, 0),
+            Error::Cuda { .. } | Error::Invalid(_) | Error::PhaseOverlap => (INVALID, 0),
         };
         Self(status, error.to_string(), requested)
     }

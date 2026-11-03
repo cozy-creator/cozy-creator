@@ -28,6 +28,7 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 pyo3::create_exception!(tensorfs, VarenaPoisonedError, PyRuntimeError);
+pyo3::create_exception!(tensorfs, PhaseOverlapError, PyRuntimeError);
 
 // Final CUDA owner teardown may join streams or take native locks. Python/native
 // destructors move that owner to the existing cleanup worker, without acquiring Python.
@@ -102,6 +103,7 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
         },
         varena::Error::OutOfMemory { .. } | varena::Error::Exhausted { .. } => "OutOfMemoryError",
         varena::Error::Poisoned(_) => return VarenaPoisonedError::new_err(message),
+        varena::Error::PhaseOverlap => return PhaseOverlapError::new_err(message),
         varena::Error::DeviceFault { .. } | varena::Error::Cuda { .. } => "AcceleratorError",
         _ => return PyRuntimeError::new_err(message),
     };
@@ -822,6 +824,9 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;
     module.add("VarenaPoisonedError", poisoned)?;
+    let overlap = module.py().get_type::<PhaseOverlapError>();
+    overlap.setattr("__module__", "tensorfs._ext")?;
+    module.add("PhaseOverlapError", overlap)?;
     module.add_class::<PyArena>()?;
     module.add_class::<PyArenaRetirement>()?;
     module.add_class::<plan::PyPlan>()?;
