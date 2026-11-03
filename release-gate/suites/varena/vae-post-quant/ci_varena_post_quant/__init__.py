@@ -20,6 +20,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 app = App()
 MODULES = (
     'internal/execution/native_vae_metadata.py',
+    'internal/execution/native_rms_norm.py', 'internal/execution/native_split.py',
     '_kernels/_dense.abi3.so', '_kernels/__init__.py', 'internal/dense_linear.py',
     'internal/execution/native_vae_post_quant.py', 'internal/execution/native_vae.py',
     'internal/execution/phase.py', 'internal/execution/catch.py', 'internal/residency.py',
@@ -438,6 +439,19 @@ def post_quant(payload: Probe, ctx: Context) -> Report:
                 library_preparation['effective_dense_policy'] = (
                     None if effective_policy is None else asdict(effective_policy))
                 assert effective_policy is not None, 'current Torch CUDA dense policy must qualify before numerical cells'
+            from cozy_runtime.internal.execution.native_rms_norm import rms_norm
+            with torch.no_grad(), torch.autocast('cuda', enabled=False):
+                rms_input = torch.ones((2, 128), dtype=torch.float32, device=request.memory.device)
+                rms_module = torch.nn.RMSNorm(128, eps=1e-6, device=request.memory.device).eval().requires_grad_(False)
+                rms_expected = rms_module(rms_input)
+                rms_actual = rms_norm('fixture.current-provider-prerequisite', rms_module, rms_input)
+                assert rms_actual is not None, 'current Torch CUDA RMS provider must qualify before numerical cells'
+                torch.testing.assert_close(rms_actual, rms_expected, rtol=0, atol=0)
+                domain.stream.synchronize()
+                library_preparation['rms_provider'] = {'non_none': True, 'stock_exact': True,
+                                                       'shape': list(rms_actual.shape), 'native_calls': 1}
+                del rms_actual, rms_expected, rms_module, rms_input
+            settle(vt, device)
             library_preparation['before'] = vt.stats(device)
             library_preparation['configuration'] = {
                 'cublas_workspace_bytes': torch.backends.cuda.cublas_workspace_size(),
