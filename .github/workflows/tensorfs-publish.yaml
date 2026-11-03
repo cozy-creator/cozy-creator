@@ -70,6 +70,8 @@ jobs:
     needs: kernels
     name: wheel ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     # Hang bound, not a work budget.
     timeout-minutes: 60
     strategy:
@@ -79,7 +81,6 @@ jobs:
           - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64, cuda: true }
           - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64, cuda: true }
           - { name: macos-arm64, os: macos-15, target: aarch64-apple-darwin, cuda: false }
-          - { name: macos-x86_64, os: macos-15-intel, target: x86_64-apple-darwin, cuda: false }
           - { name: windows-x86_64, os: windows-2025, target: x86_64-pc-windows-msvc, cuda: true }
           - { name: windows-arm64, os: windows-11-arm, target: aarch64-pc-windows-msvc, cuda: false, no310: true }
     env:
@@ -145,6 +146,15 @@ jobs:
           path: crates/tensorfs-py/dist/*-cp310-cp310-*.whl
           if-no-files-found: error
           retention-days: 7
+      # Images bake only this wheel, so it's on the tag's prerelease as soon as it's built: they
+      # don't wait for the other platforms (cl-740). `candidate` adds the rest.
+      - if: inputs.candidate && !inputs.dev && matrix.name == 'linux-x86_64'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title "TensorFS ${GITHUB_REF_NAME#tensorfs-v} (candidate)" --notes "Gate, then publish: release-gate/README.md" -- dist/*-cp311-abi3-*.whl
 
   # The sdist builds with Rust (it carries the module, not the `tfs` binary the wheels do).
   sdist:
@@ -170,7 +180,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The candidate: every platform and the sdist, or nothing, on the tag's prerelease.
+  # The candidate: every platform and the sdist on the tag's prerelease, SHA256SUMS last, which marks it whole.
   candidate:
     if: inputs.candidate && !inputs.dev
     needs: [tag, wheel, sdist]
@@ -188,10 +198,19 @@ jobs:
           path: dist
       - run: |
           cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
-          ! gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || { echo "::error::$GITHUB_REF_NAME already has a release: a candidate's files never change"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
-            --title "TensorFS ${GITHUB_REF_NAME#tensorfs-v} (candidate)" --notes "Gate, then publish: release-gate/README.md" -- *
+          have=$(gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null) \
+            || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+              --title "TensorFS ${GITHUB_REF_NAME#tensorfs-v} (candidate)" --notes "Gate, then publish: release-gate/README.md"
+          ! grep -qx SHA256SUMS <<< "$have" || { echo "::error::$GITHUB_REF_NAME is whole already: a candidate's files never change"; exit 1; }
+          # `wheel` may have put the Linux x86_64 wheel there: it must be this file.
+          while read -r sum name; do
+            if grep -qxF "$name" <<< "$have"; then
+              gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p "$name" -O - | sha256sum | grep -q "^$sum " || { echo "::error::$name differs from the one on the release"; exit 1; }
+            else
+              gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -- "$name"
+            fi
+          done < SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -- SHA256SUMS
           w=$(grep -E 'cp311-abi3-manylinux[^ ]*x86_64\.whl$' SHA256SUMS | head -1)
           echo "gate with: tensorfs_wheel=https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/${w##* }#sha256=${w%% *}" \
             | tee -a "$GITHUB_STEP_SUMMARY"
