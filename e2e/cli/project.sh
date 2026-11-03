@@ -33,6 +33,16 @@ probe() {
     | jq -c '{video: ([.streams[] | select(.codec_type == "video") | .bit_rate | tonumber] | first),
               audio: ([.streams[] | select(.codec_type == "audio") | {bit_rate: (.bit_rate | tonumber), sample_rate, channels}] | first)}'
 }
+# imported <project> <file>…: each file `cozy project import`ed, and where project.yaml writes it, its hash prefix instead.
+imported() {
+  local P=$1 f h; shift
+  for f in "$@"; do
+    h=$(cd "$P" && cozy --json project import "$f" | jq -r .prefix) || check "import $f failed"
+    sed -i "s#: *$f\b#: \"$h\"#" "$P/project.yaml"
+  done
+}
+# swap <project> <hash> <hash>: project.yaml names the second where it named the first.
+swap() { sed -i "s#\"${2:0:12}\"#\"${3:0:12}\"#" "$1/project.yaml"; }
 # api <curl args…>: Calcifer, with the bearer of its lock record.
 api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
 
@@ -62,6 +72,7 @@ shots:
   - {name: b, summary: "test pattern b", duration_s: 6, video: plates/b.mp4}
 edit: [{shot: a, start: 12, end: 132}, {shot: b, start: 12, end: 132}]
 YAML
+imported "$P" plates/a.mp4 plates/b.mp4 plates/c.mp4 "$E/look.mp4" "$E/stage.png"
 local A B C
 A=$(sha "$P/plates/a.mp4") B=$(sha "$P/plates/b.mp4") C=$(sha "$P/plates/c.mp4")
 # From a subfolder: the project is found walking up. render all makes place and stage.a here and cuts the edit.
@@ -73,11 +84,10 @@ local ID; ID=$(jq -r '.id // empty' "$OUT/project-status.json" 2>/dev/null) || I
 [ -n "$ID" ] || check "project status --json names no id: $(head -c 300 "$OUT/project-status.json")"
 cozy project -p "$P" status > "$OUT/project-status.txt" 2>&1 || check "project status (text) failed"
 
-step "a project: inputs taken into assets/, by symlink on ext4"
-[ "$(readlink "$P/assets/$A.mp4")" = "$P/plates/a.mp4" ] || check "assets/$A.mp4 is not a symlink to plates/a.mp4: $(ls -l "$P/assets/" | head -5)"
-J '.inputs["plates/a.mp4"] | has("original") or has("method") | not' "$P/project.lock" || check "project.lock says how this computer took plates/a.mp4: $(jq -c '.inputs["plates/a.mp4"]' "$P/project.lock")"
-J --arg a "assets/$A.mp4" '.nodes[] | select(.name == "a") | .path == $a and .assets.video.original == "plates/a.mp4"' "$OUT/project-status.json" \
-  || check "status: shot a is not assets/$A.mp4 from plates/a.mp4: $(jq -c '.nodes[]? | select(.name == "a")' "$OUT/project-status.json")"
+step "a project: imports are real files, named by hash"
+{ [ -f "$P/assets/$A.mp4" ] && [ ! -L "$P/assets/$A.mp4" ]; } || check "assets/$A.mp4 is not a real file: $(ls -l "$P/assets/" | head -5)"
+J --arg a "assets/$A.mp4" '.nodes[] | select(.name == "a") | .path == $a and .assets.video.sha256 == "sha256:'"$A"'"' "$OUT/project-status.json" \
+  || check "status: shot a is not assets/$A.mp4: $(jq -c '.nodes[]? | select(.name == "a")' "$OUT/project-status.json")"
 
 step "a project: --approve with -n 2 refused"
 code=0; cozy project -p "$P" render a -n 2 --approve --on local > "$OUT/project-approve-n.txt" 2>&1 || code=$?
@@ -102,7 +112,7 @@ local hidden; hidden=$(cd "$P" && find . -mindepth 1 -name '.*' | head -5)
 [ -z "$hidden" ] || check "the project holds hidden files: $hidden"
 cozy project -p "$P" render all --on local > "$OUT/project-render-2.txt" 2>&1 || check "render all again failed: $(tail -c 300 "$OUT/project-render-2.txt")"
 pieces > "$OUT/cuts-2.txt"; cmp -s "$OUT/cuts-1.txt" "$OUT/cuts-2.txt" || check "the second cut made edge pieces again: $(diff "$OUT/cuts-1.txt" "$OUT/cuts-2.txt" | head -5)"
-sed -i 's#video: plates/b.mp4#video: plates/c.mp4#' "$P/project.yaml"
+swap "$P" "$B" "$C"
 cozy project -p "$P" render all --on local > "$OUT/project-render-3.txt" 2>&1 || check "render all with b's plate swapped failed: $(tail -c 300 "$OUT/project-render-3.txt")"
 pieces > "$OUT/cuts-3.txt"; cat "$OUT/cuts-3.txt"
 { grep -q "^${C:0:16}-" "$OUT/cuts-3.txt" && [ "$(grep "^${A:0:16}-" "$OUT/cuts-1.txt")" = "$(grep "^${A:0:16}-" "$OUT/cuts-3.txt")" ]; } \
@@ -120,18 +130,6 @@ cozy project -p "$P" approve place 2 > "$OUT/project-approve.txt" 2>&1 || check 
 ls -la "$P/assets" > "$OUT/assets-2.txt"
 { J '.nodes.place.approved == .nodes.place.versions[1].assets.image.path' "$P/project.lock" && cmp -s "$OUT/assets-1.txt" "$OUT/assets-2.txt"; } \
   || check "approving place 2 changed a file, or the lock does not approve version 2: $(jq -c .nodes.place.approved "$P/project.lock")"
-
-step "a project: a reference changed, then missing"
-still "$E/stage.png" orange
-cozy project -p "$P" status > "$OUT/project-changed.txt" 2>&1 || true
-{ grep -q 'reference changed: .*stage.png' "$OUT/project-changed.txt" && grep -q 'stage.a .*out of date: stage changed' "$OUT/project-changed.txt"; } \
-  || check "an edited reference: status does not say it changed and stage.a is out of date: $(tail -c 400 "$OUT/project-changed.txt")"
-mv "$E/stage.png" "$E/stage-moved.png"
-cozy project -p "$P" status > "$OUT/project-missing.txt" 2>&1 || true
-code=0; cozy project -p "$P" render stage.a --on local > "$OUT/project-missing-render.txt" 2>&1 || code=$?
-{ grep -q 'reference missing: .*stage.png: relink' "$OUT/project-missing.txt" && [ "$code" != 0 ] && grep -q 'reference missing' "$OUT/project-missing-render.txt"; } \
-  || check "a moved reference: status does not say relink, or stage.a rendered (exit $code): $(tail -c 300 "$OUT/project-missing.txt")"
-mv "$E/stage-moved.png" "$E/stage.png"
 
 step "a project: a copy of its yaml, lock and real assets, its paths gone, needs nothing"
 local copy=$OUT/garden-copy
@@ -157,9 +155,8 @@ cozy --json project -p "$P" status > "$OUT/project-renamed.json" 2>/dev/null || 
   || check "after the rename yard is not place's 3 versions with 2 approved: $(jq -c '{orphans, yard: (.nodes[]? | select(.name == "yard"))}' "$OUT/project-renamed.json")"
 
 references
-urls
+imports
 never_refuse
-reflinked
 frames_otio
 take_size
 http_surface "$P" "$ID"
@@ -180,35 +177,147 @@ cozy --json project ls > "$OUT/project-ls-3.json" || true
   || check "DELETE did not forget the project, or touched its folder"
 }
 
-# urls: a picture named by its URL: status stays offline, the render fetches it (through a redirect) as a real asset, what
-# reads it gets its digest and never the URL, and it is never fetched again; a 404 and a private address fail only their nodes.
-urls() {
-step "a project: a picture by URL, fetched once; a bad one fails only its node"
-local U=$OUT/linked code hash
+# imports: `cozy project import` by path and URL, a real asset either way, and the line to paste, with no machine; what a
+# bad URL says. A prefix in project.yaml, a shorter one, one that fits two assets; a path and a URL there are never read:
+# each warns with the command and its node renders without it. --character cleans on this computer (./clean.py here), and
+# what reads the hash gets the clean; with its clean not made yet (a lock from a computer that can't), the first render
+# makes it, here. A made version is an asset too, used by the prefix status prints, and what is approved stands over it.
+imports() {
+step "a project: import by path and by URL"
+local U=$OUT/linked code hash line value
 local seed=https://github.com/cozy-creator/cozy-creator/raw/master/release-gate/ref/seed.jpg
 local lost=https://raw.githubusercontent.com/cozy-creator/cozy-creator/master/release-gate/ref/no-such.jpg
-local inside=http://127.0.0.1:9/inside.png
-mkdir -p "$U"; cp "$here/project/draw.py" "$U/draw.py"
-picture() { printf '  - name: %s\n    kind: environment\n    description: |\n      A place.\n    image: %s\n' "$1" "$2"; }
-shore() { picture shore "$seed"; printf '    setups:\n      - name: a\n        camera: |\n          Wide.\n        render:\n          with: ./draw.py/draw\n'; }
-{ echo 'version: 1'; echo 'entities:'; shore; picture lost "$lost"; picture inside "$inside"; } > "$U/project.yaml"
-cozy --json project -p "$U" status > "$OUT/urls-status.json" 2> "$OUT/urls-status.err" || check "urls: status: $(tail -c 300 "$OUT/urls-status.err")"
-J --arg want "not fetched yet: $seed" '.nodes[] | select(.name == "shore") | .status == $want' "$OUT/urls-status.json" \
-  || check "urls: status does not say shore is not fetched: $(jq -c '.nodes[]? | select(.name == "shore")' "$OUT/urls-status.json")"
-[ ! -e "$U/assets" ] || check "urls: status fetched: $(ls -A "$U/assets")"
-code=0; cozy project -p "$U" render all --on local > "$OUT/urls-render.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -qF "lost: $lost: HTTP 404" "$OUT/urls-render.txt" && grep -qF "inside: $inside: 127.0.0.1 resolves to 127.0.0.1, which is" "$OUT/urls-render.txt"; } \
-  || check "urls: a 404 and a private address were not each said, naming the node (exit $code): $(tail -c 500 "$OUT/urls-render.txt")"
-hash=$(jq -r --arg u "$seed" '.inputs[$u].sha256 // "" | ltrimstr("sha256:")' "$U/project.lock")
-{ [ -n "$hash" ] && [ -f "$U/assets/$hash.jpg" ] && [ ! -L "$U/assets/$hash.jpg" ] && [ "$(sha "$U/assets/$hash.jpg")" = "$hash" ]; } \
-  || check "urls: shore is not a real assets/<sha256>.jpg recorded under its URL: $(ls -l "$U/assets" 2>&1 | head -3); $(jq -c .inputs "$U/project.lock")"
-J --arg lost "$lost" --arg inside "$inside" '.inputs | has($lost) or has($inside) | not' "$U/project.lock" || check "urls: a URL that failed is in the lock: $(jq -c .inputs "$U/project.lock")"
-J --arg h "sha256:$hash" --arg u "$seed" '.nodes["shore.a"].versions[-1] | (.upstream | any(.asset == $h)) and (tojson | contains($u) | not)' "$U/project.lock" \
-  || check "urls: shore.a did not read the picture by its digest alone: $(jq -c '.nodes["shore.a"]' "$U/project.lock" | cut -c1-500)"
-local was; was=$(stat -c '%i %Y' "$U/assets/$hash.jpg" 2>&1)
-{ echo 'version: 1'; echo 'entities:'; shore; } > "$U/project.yaml"
-cozy project -p "$U" render all --on local > "$OUT/urls-again.txt" 2>&1 || check "urls: with the bad ones gone, render all: $(tail -c 300 "$OUT/urls-again.txt")"
-{ ! grep -q 'fetched' "$OUT/urls-again.txt" && [ "$(stat -c '%i %Y' "$U/assets/$hash.jpg" 2>&1)" = "$was" ]; } || check "urls: fetched again: $(tail -c 300 "$OUT/urls-again.txt")"
+mkdir -p "$U"; cp "$here/project/draw.py" "$here/project/clean.py" "$U/"
+printf 'version: 1\ndefaults:\n  clean:\n    with: ./clean.py/clean\n' > "$U/project.yaml"
+cozy project -p "$U" import "$seed" > "$OUT/import-url.txt" 2> "$OUT/import-url.err" || check "import: a URL: $(tail -c 300 "$OUT/import-url.err")"
+value=$(sed -n '2s/^image: //p' "$OUT/import-url.txt")
+hash=$(sha256sum "$U"/assets/*.jpg | cut -c1-64)
+{ [ "${#value}" = 12 ] && [ "${hash:0:12}" = "$value" ] && [ ! -L "$U/assets/$hash.jpg" ] && [ "$(sed -n 1p "$OUT/import-url.txt")" = "imported $value" ]; } \
+  || check "import: a URL did not print its 12 characters and land as a real file: $(cat "$OUT/import-url.txt"); $(ls -l "$U/assets" 2>&1 | head -3)"
+! grep -q github "$U/project.lock" || check "import: the lock names the URL: $(grep github "$U/project.lock" | head -2)"
+for bad in "$lost" http://127.0.0.1:9/inside.png http://169.254.169.254/inside.png; do
+  code=0; cozy project -p "$U" import "$bad" > "$OUT/import-bad.txt" 2>&1 || code=$?
+  { [ "$code" != 0 ] && grep -q import_failed "$OUT/import-bad.txt"; } || check "import: $bad was not refused, naming why (exit $code): $(tail -c 300 "$OUT/import-bad.txt")"
+done
+[ "$(ls "$U/assets" | wc -l)" = 1 ] || check "import: a refused URL left a file: $(ls "$U/assets")"
+still "$U/room.png" teal; still "$U/hero.png" navy; printf 'no picture' > "$U/notes.txt"
+ffmpeg -v error -y -f lavfi -i "sine=frequency=220:sample_rate=32000:duration=1" "$U/voice.wav"
+line=$(cd "$U" && cozy project import ./voice.wav | sed -n 2p); [[ $line == "audio: "* ]] || check "import: a sound's line is $line"
+code=0; cozy project -p "$U" import "$U/notes.txt" > "$OUT/import-notes.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'no picture, video or sound' "$OUT/import-notes.txt"; } || check "import: a text file was not refused (exit $code): $(tail -c 300 "$OUT/import-notes.txt")"
+local ROOM HERO; ROOM=$(sha "$U/room.png") HERO=$(sha "$U/hero.png")
+(cd "$U" && cozy project import room.png) > "$OUT/import-room.txt" 2>&1 || check "import: room.png: $(tail -c 300 "$OUT/import-room.txt")"
+grep -qx "image: ${ROOM:0:12}" "$OUT/import-room.txt" || check "import: room.png printed: $(cat "$OUT/import-room.txt")"
+
+step "a project: --character, cleaned on this computer, what reads the hash gets"
+(cd "$U" && cozy project import hero.png --character) > "$OUT/import-hero.txt" 2> "$OUT/import-hero.err" || check "import --character: $(tail -c 400 "$OUT/import-hero.err")"
+grep -qx "imported ${HERO:0:12} (background removed)" "$OUT/import-hero.txt" || check "import --character printed: $(cat "$OUT/import-hero.txt"); $(tail -c 300 "$OUT/import-hero.err")"
+local CLEAN; CLEAN=$(jq -r --arg h "sha256:$HERO" '.imports[$h].clean.sha256 // "" | ltrimstr("sha256:")' "$U/project.lock")
+{ [ -n "$CLEAN" ] && [ "$CLEAN" != "$HERO" ] && [ -f "$U/assets/$CLEAN.png" ] && [ ! -L "$U/assets/$CLEAN.png" ]; } \
+  || check "import --character: no clean recorded as a real asset: $(jq -c .imports "$U/project.lock" | cut -c1-500)"
+
+step "a project: hashes in project.yaml, a path and a URL there"
+cat > "$U/project.yaml" <<YAML
+version: 1
+defaults:
+  clean:
+    with: ./clean.py/clean
+entities:
+  - name: hero
+    kind: character
+    description: |
+      A hero.
+    image: "${HERO:0:12}"
+  - name: room
+    kind: environment
+    description: |
+      A room.
+    image: "${ROOM:0:8}"
+    render:
+      with: ./draw.py/draw
+    setups:
+      - name: a
+        camera: |
+          Wide, with <hero>.
+        render:
+          with: ./draw.py/draw
+  - name: old
+    kind: character
+    description: |
+      By an old path.
+    image: ./old.png
+    render:
+      with: ./draw.py/draw
+  - name: linked
+    kind: prop
+    description: |
+      By a URL.
+    image: $seed
+    render:
+      with: ./draw.py/draw
+  - name: gone
+    kind: environment
+    description: |
+      A hash of nothing.
+    image: "feedfacefeed"
+    render:
+      with: ./draw.py/draw
+YAML
+still "$U/old.png" red
+cozy --json project -p "$U" status > "$OUT/import-status.json" 2> "$OUT/import-status.err" || check "status with paths in file fields: $(tail -c 300 "$OUT/import-status.err")"
+said() { J --arg t "$1" '.warnings | any(contains($t))' "$OUT/import-status.json" || check "imports: status does not say '$1': $(jq -c .warnings "$OUT/import-status.json")"; }
+said 'cozy project import ./old.png --character'
+said "cozy project import $seed --prop"
+said 'no asset'\''s hash starts with feedfacefeed'
+J --arg c "sha256:$CLEAN" '.nodes[] | select(.name == "hero") | .assets.image.sha256 == $c' "$OUT/import-status.json" \
+  || check "imports: hero does not resolve to its clean: $(jq -c '.nodes[]? | select(.name == "hero")' "$OUT/import-status.json")"
+J --arg r "sha256:$ROOM" '.nodes[] | select(.name == "room") | .assets.image.sha256 == $r' "$OUT/import-status.json" \
+  || check "imports: a shorter prefix does not name room: $(jq -c '.nodes[]? | select(.name == "room")' "$OUT/import-status.json")"
+code=0; cozy project -p "$U" render all --on local > "$OUT/import-render.txt" 2>&1 || code=$?
+[ "$code" = 0 ] || check "imports: render all with a path and a URL in file fields: exit $code: $(tail -c 500 "$OUT/import-render.txt")"
+J --arg c "sha256:$CLEAN" --arg r "sha256:$ROOM" '.nodes["room.a"].versions[-1].upstream | any(.asset == $c) and any(.asset == $r)' "$U/project.lock" \
+  || check "imports: room.a did not read hero's clean and room: $(jq -c '.nodes["room.a"].versions[-1].upstream' "$U/project.lock")"
+J '.nodes.old.versions | length == 1 and all(.assets.image.path | test("^assets/"))' "$U/project.lock" \
+  || check "imports: old did not render without its picture: $(jq -c .nodes.old "$U/project.lock" | cut -c1-300)"
+[ ! -e "$U/assets/$(sha "$U/old.png").png" ] || check "imports: a path in project.yaml was read"
+[ -f "$U/assets/$hash.jpg" ] || check "imports: an asset project.yaml does not name was collected"
+
+step "a project: the mark travels, a prefix that fits two, a made version by its prefix"
+local M=$OUT/marked
+mkdir -p "$M"; cp "$U/project.yaml" "$U/clean.py" "$U/draw.py" "$M/"; cp -r "$U/assets" "$M/assets"
+jq --arg h "sha256:$HERO" 'del(.imports[$h].clean) | del(.nodes)' "$U/project.lock" > "$M/project.lock"
+cozy project -p "$M" render room.a --on local > "$OUT/import-marked.txt" 2>&1 || check "imports: a marked picture with no clean, render room.a: $(tail -c 400 "$OUT/import-marked.txt")"
+J --arg h "sha256:$HERO" '.imports[$h].clean.sha256 as $c | ($c != null) and (.nodes["room.a"].versions[-1].upstream | any(.asset == $c))' "$M/project.lock" \
+  || check "imports: the first render did not clean the marked picture and read its clean: $(jq -c '{imports, up: .nodes["room.a"].versions[-1].upstream}' "$M/project.lock" | cut -c1-500)"
+local i one='' other='' first
+for i in $(seq 1 40); do
+  still "$U/s$i.png" "0x$(printf '%06x' $((i * 4099)))"
+  first=$(sha "$U/s$i.png"); first=${first:0:1}
+  case " $one " in *" $first:"*) other=$U/s$i.png; one=${one##* $first:}; one=${one%% *}; break ;; esac
+  one="$one $first:$U/s$i.png"
+done
+if [ -n "$other" ]; then
+  cozy project -p "$U" import "$one" > /dev/null 2>&1; cozy project -p "$U" import "$other" > /dev/null 2>&1
+  sed -i "s#image: \"feedfacefeed\"#image: \"$first\"#" "$U/project.yaml"
+  cozy project -p "$U" status > "$OUT/import-two.txt" 2>&1 || check "imports: status with a prefix of two: $(tail -c 300 "$OUT/import-two.txt")"
+  grep -q "gone's image: $first fits .* assets: write more of its hash" "$OUT/import-two.txt" || check "imports: a prefix of two was not said: $(tail -c 400 "$OUT/import-two.txt")"
+else
+  check "imports: 40 stills had no first character in common"
+fi
+cozy project -p "$U" status > "$OUT/import-versions.txt" 2>&1 || true
+local made; made=$(jq -r '.nodes["room.a"].versions[-1].assets.image.sha256 | ltrimstr("sha256:") | .[:12]' "$U/project.lock")
+grep -q "room.a: version 1 $made" "$OUT/import-versions.txt" || check "imports: status does not print room.a's version 1 as $made: $(tail -c 400 "$OUT/import-versions.txt")"
+printf '  - name: borrowed\n    kind: environment\n    description: |\n      As made.\n    image: "%s"\n' "$made" >> "$U/project.yaml"
+cozy --json project -p "$U" status > "$OUT/import-made.json" 2> /dev/null || true
+J --arg m "$made" '.nodes[] | select(.name == "borrowed") | .assets.image.sha256 | ltrimstr("sha256:") | startswith($m)' "$OUT/import-made.json" \
+  || check "imports: a made version's prefix does not name it: $(jq -c '.nodes[]? | select(.name == "borrowed")' "$OUT/import-made.json")"
+cozy project -p "$U" render room --on local > "$OUT/import-take.txt" 2>&1 || check "imports: render room: $(tail -c 300 "$OUT/import-take.txt")"
+J '.nodes.room | (.versions | length) == 1 and .approved == null' "$U/project.lock" || check "imports: a new version was approved over an attached picture: $(jq -c .nodes.room "$U/project.lock" | cut -c1-300)"
+cozy --json project -p "$U" status > "$OUT/import-attached.json" 2> /dev/null || true
+J --arg r "sha256:$ROOM" '.nodes[] | select(.name == "room") | .assets.image.sha256 == $r' "$OUT/import-attached.json" || check "imports: room does not read its attached picture until one is approved"
+cozy project -p "$U" approve room 1 > /dev/null 2>&1 || check "imports: approve room 1"
+cozy --json project -p "$U" status > "$OUT/import-approved.json" 2> /dev/null || true
+J --arg r "sha256:$ROOM" '.nodes[] | select(.name == "room") | .assets.image.sha256 != $r' "$OUT/import-approved.json" || check "imports: an approved version does not stand over the attached picture"
 }
 
 # references: a top-level reference reaches the shots that mention it (on any line, in any case) and no other,
@@ -255,6 +364,7 @@ shots:
     plate:
       video: three.mp4
 YAML
+imported "$R" clip.mp4 voice.wav look.png one.mp4 two.mp4 three.mp4
 local code=0
 cozy project -p "$R" render all --on local > "$OUT/refs-render.txt" 2>&1 || code=$?
 [ "$code" = 0 ] || { check "references: render all: exit $code: $(tail -c 400 "$OUT/refs-render.txt")"; return; }
@@ -268,16 +378,14 @@ ONE=$(given mentions) TWO=$(given again) THREE=$(given plain)
 [ "$THREE" = '[]' ] || check "references: a shot that mentions none was given $THREE"
 J '.nodes.mentions.versions[-1].upstream | any(.node == "clip" and .asset == "sha256:'"$CLIP"'")' "$R/project.lock" \
   || check "references: the take does not record what it read: $(jq -c '.nodes.mentions.versions[-1].upstream' "$R/project.lock")"
-[ "$(readlink "$R/assets/$CLIP.mp4")" = "$R/clip.mp4" ] \
-  || check "references: clip.mp4 not taken in by symlink: $(ls -l "$R/assets/$CLIP.mp4")"
 cozy --json project -p "$R" status > "$OUT/refs-status.json" 2> /dev/null || check "references: status failed"
 J '(.stale | length == 0) and (.warnings | length == 0) and (.nodes[] | select(.name == "clip") | .kind == "reference" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
   || check "references: after render all: $(jq -c '{stale, warnings, clip: (.nodes[]? | select(.name == "clip"))}' "$OUT/refs-status.json")"
 
-step "a project: a reference edited puts only what mentions it out of date"
+step "a project: another file for a reference puts only what mentions it out of date"
 plate "$R/clip.mp4" rgbtestsrc 330 400
-cozy project -p "$R" status > "$OUT/refs-changed.txt" 2>&1 || true
-grep -q 'reference changed: clip.mp4' "$OUT/refs-changed.txt" || check "references: status does not say clip.mp4 changed: $(tail -c 300 "$OUT/refs-changed.txt")"
+(cd "$R" && cozy project import clip.mp4) > /dev/null 2>&1 || check "references: import of the new clip failed"
+swap "$R" "$CLIP" "$(sha "$R/clip.mp4")"
 cozy --json project -p "$R" status > "$OUT/refs-changed.json" 2> /dev/null || true
 J '[.stale[] | "\(.name): \(.why)"] | sort == ["again: clip changed", "mentions: clip changed"]' "$OUT/refs-changed.json" \
   || check "references: out of date: $(jq -c .stale "$OUT/refs-changed.json"), not exactly again and mentions"
@@ -288,13 +396,13 @@ CLIP=$(sha "$R/clip.mp4")
 [ "$(given again | jq -r '.[0].sha256')" = "$CLIP" ] || check "references: again's new take was not given the edited clip: $(given again)"
 
 step "a project: a reference gone, a reference rendered, a name used twice"
-mv "$R/clip.mp4" "$R/clip-moved.mp4"
+mv "$R/assets/$CLIP.mp4" "$R/clip-moved.mp4"
 cozy project -p "$R" status > "$OUT/refs-missing.txt" 2>&1 || true
-grep -q 'reference missing: clip.mp4: relink' "$OUT/refs-missing.txt" || check "references: a moved file: status does not say relink: $(tail -c 300 "$OUT/refs-missing.txt")"
+grep -q 'not on this computer: cozy project pull' "$OUT/refs-missing.txt" || check "references: an asset gone: status does not say to pull: $(tail -c 300 "$OUT/refs-missing.txt")"
 code=0; cozy project -p "$R" render mentions --on local > "$OUT/refs-missing-render.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'reference missing' "$OUT/refs-missing-render.txt"; } || check "references: mentions rendered with its file gone (exit $code): $(tail -c 300 "$OUT/refs-missing-render.txt")"
+{ [ "$code" != 0 ] && grep -q 'not on this computer' "$OUT/refs-missing-render.txt"; } || check "references: mentions rendered with its file gone (exit $code): $(tail -c 300 "$OUT/refs-missing-render.txt")"
 cozy project -p "$R" render plain --on local > "$OUT/refs-plain.txt" 2>&1 || check "references: plain did not render with an unrelated file gone: $(tail -c 300 "$OUT/refs-plain.txt")"
-mv "$R/clip-moved.mp4" "$R/clip.mp4"
+mv "$R/clip-moved.mp4" "$R/assets/$CLIP.mp4"
 code=0; cozy project -p "$R" render clip --on local > "$OUT/refs-made.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q reference_file "$OUT/refs-made.txt"; } || check "references: render clip was not refused (exit $code): $(tail -c 300 "$OUT/refs-made.txt")"
 cp "$R/project.yaml" "$OUT/refs-ok.yaml"
@@ -447,6 +555,7 @@ shots:
       - state: uncontinued
         at: 2
 YAML
+imported "$N" plate.mp4 still.png
 code=0; cozy project -p "$N" render all --on local > "$OUT/never-render.txt" 2>&1 || code=$?
 [ "$code" = 0 ] || { check "never_refuse: render all: exit $code: $(tail -c 500 "$OUT/never-render.txt")"; return; }
 cozy --json project -p "$N" status > "$OUT/never-status.json" 2> /dev/null || check "never_refuse: status failed"
@@ -510,36 +619,6 @@ code=0; cozy project -p "$N" status > "$OUT/never-bracket.txt" 2>&1 || code=$?
 cp "$OUT/never-ok.yaml" "$N/project.yaml"
 }
 
-# A reference on a filesystem with copy-on-write clones (an XFS image made here): taken in by reflink, the project's
-# own; its original moved changes nothing; its original edited is taken in again, its reader out of date.
-reflinked() {
-step "a project: references reflinked on XFS"
-local img=$OUT/xfs.img X=/mnt/cozy-xfs
-command -v mkfs.xfs > /dev/null || { check "no mkfs.xfs on this runner"; return; }
-truncate -s 300M "$img" && mkfs.xfs -q "$img" && sudo mkdir -p "$X" && sudo mount -o loop "$img" "$X" && sudo chown "$(id -u):$(id -g)" "$X" \
-  || { check "could not mount an XFS image at $X"; return; }
-local P=$X/clone
-cozy project new "$P" > /dev/null 2>&1 || check "project new on XFS failed"
-mkdir -p "$P/refs"; cp "$here/project/draw.py" "$P/draw.py"; still "$P/refs/stage.png" navy
-cat > "$P/project.yaml" <<YAML
-entities:
-  - {name: stage, kind: environment, description: "a navy stage", image: refs/stage.png,
-     setups: [{name: a, camera: "wide", render: {with: ./draw.py/draw}}]}
-YAML
-cozy project -p "$P" render stage.a --on local > "$OUT/xfs-render.txt" 2>&1 || check "render stage.a on XFS failed: $(tail -c 300 "$OUT/xfs-render.txt")"
-local S; S=$(sha "$P/refs/stage.png")
-{ [ -f "$P/assets/$S.png" ] && [ ! -L "$P/assets/$S.png" ]; } \
-  || check "XFS: refs/stage.png not reflinked: $(ls -l "$P/assets/" | head -5)"
-mv "$P/refs/stage.png" "$P/refs/stage-moved.png"
-cozy project -p "$P" status > "$OUT/xfs-moved.txt" 2>&1 || true
-{ ! grep -q 'reference missing' "$OUT/xfs-moved.txt" && grep -q 'stage.a .*current' "$OUT/xfs-moved.txt"; } \
-  || check "XFS: a reflinked original moved, and status changed: $(tail -c 300 "$OUT/xfs-moved.txt")"
-still "$P/refs/stage.png" maroon
-cozy project -p "$P" status > "$OUT/xfs-edited.txt" 2>&1 || true
-{ ! grep -q 'reference changed' "$OUT/xfs-edited.txt" && grep -q 'stage.a .*out of date: stage changed' "$OUT/xfs-edited.txt" && [ -f "$P/assets/$S.png" ]; } \
-  || check "XFS: an edited original is not taken in again with stage.a out of date: $(tail -c 300 "$OUT/xfs-edited.txt")"
-}
-
 # cl-716 A2: an edit in frames, cut frame-exact. Odd cuts (a 7-151, b 13-140, a 48-96, b 150-161 at 24 fps): ffprobe's
 # exact count, every frame its intended source frame (copied ones md5-equal), edge pieces named by frames and none for
 # the keyframe-aligned a 48-96, edit.otio read by OpenTimelineIO with its clips and frames, the lock's probed shapes,
@@ -563,6 +642,7 @@ shots:
   - {name: b, summary: "test pattern b", duration_s: 8, video: plates/b.mp4}
 edit: [{shot: a, start: 7, end: 151}, {shot: b, start: 13, end: 140}, {shot: a, start: 48, end: 96}, {shot: b, start: 150, end: 161}]
 YAML
+imported "$P" plates/a.mp4 plates/b.mp4 plates/r.mp4
 ls -1 "$CACHE" 2>/dev/null | sort > "$OUT/frames-cache-0.txt" || true
 cozy project -p "$P" render all --on local > "$OUT/frames-render-1.txt" 2>&1 || check "frames: render all failed: $(tail -c 300 "$OUT/frames-render-1.txt")"
 n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 "$P/edit.mp4" 2>/dev/null) || n=
@@ -578,14 +658,14 @@ done
   || check "frames: not every frame its source frame, or the copied 264 not bit-exact: $(grep -E 'FAIL|md5-equal' "$OUT/frames-1.txt" | head -3 | paste -sd' ')"
 "${OT[@]}" "$P/edit.otio" 24 "a:7:151:assets/$SA.mp4" "b:13:140:assets/$SB.mp4" "a:48:96:assets/$SA.mp4" "b:150:161:assets/$SB.mp4" > "$OUT/otio-1.txt" 2>&1 || true
 tail -1 "$OUT/otio-1.txt" | grep -q 'otio PASS' || check "frames: edit.otio is not the edit: $(grep FAIL "$OUT/otio-1.txt" | head -3 | paste -sd' ')"
-J '(.inputs["plates/a.mp4"].video | .width == 854 and .height == 480 and .fps == 24 and .frames == 192) and (.inputs["plates/b.mp4"].video | .fps == 24 and .frames == 192)' "$P/project.lock" \
-  || check "frames: project.lock does not hold the plates' probed shapes: $(jq -c '.inputs | map_values(.video)' "$P/project.lock")"
+J --arg a "sha256:$SA" --arg b "sha256:$SB" '(.imports[$a].video | .width == 854 and .height == 480 and .fps == 24 and .frames == 192) and (.imports[$b].video | .fps == 24 and .frames == 192)' "$P/project.lock" \
+  || check "frames: project.lock does not hold the plates' probed shapes: $(jq -c '.imports | map_values(.video)' "$P/project.lock")"
 cozy --json project -p "$P" status > "$OUT/frames-status-1.json" 2>/dev/null || true
 J '.fps == 24 and .cuts[0].frames == 330 and (.cuts[0].retimed // []) == []' "$OUT/frames-status-1.json" \
   || check "frames: status is not 330 frames at 24 fps, nothing retimed: $(jq -c '{fps, cuts}' "$OUT/frames-status-1.json")"
 
 step "a project: a take at 25 fps, retimed on the full path"
-sed -i 's#video: plates/b.mp4#video: plates/r.mp4#' "$P/project.yaml"
+swap "$P" "$SB" "$SR"
 cozy project -p "$P" render all --on local > "$OUT/frames-render-2.txt" 2>&1 || check "frames: render all with r failed: $(tail -c 300 "$OUT/frames-render-2.txt")"
 n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 "$P/edit.mp4" 2>/dev/null) || n=
 [ "$n" = "24/1,330" ] || check "frames: the retimed edit.mp4 is $n, not 330 frames at 24/1"
@@ -598,10 +678,10 @@ cozy --json project -p "$P" status > "$OUT/frames-status-2.json" 2>/dev/null || 
 cozy project -p "$P" status > "$OUT/frames-status-2.txt" 2>&1 || true
 { J '.cuts[0].frames == 330 and .cuts[0].retimed == ["b (25 fps)"]' "$OUT/frames-status-2.json" && grep -q "retimes b (25 fps) to 24 fps" "$OUT/frames-status-2.txt"; } \
   || check "frames: status does not name b as retimed: $(jq -c .cuts "$OUT/frames-status-2.json")"
-J '.inputs["plates/r.mp4"].video | .fps == 25 and .frames == 200' "$P/project.lock" || check "frames: project.lock does not hold r's 25 fps and 200 frames"
+J --arg r "sha256:$SR" '.imports[$r].video | .fps == 25 and .frames == 200' "$P/project.lock" || check "frames: project.lock does not hold r's 25 fps and 200 frames"
 
 step "a project: the first edit again, its edges from the cache"
-sed -i 's#video: plates/r.mp4#video: plates/b.mp4#' "$P/project.yaml"
+swap "$P" "$SR" "$SB"
 cozy project -p "$P" render all --on local > "$OUT/frames-render-3.txt" 2>&1 || check "frames: render all with b back failed"
 ls -1 "$CACHE" | sort > "$OUT/frames-cache-3.txt"
 [ -z "$(comm -13 "$OUT/frames-cache-1.txt" "$OUT/frames-cache-3.txt")" ] || check "frames: the first edit again made edge pieces anew: $(comm -13 "$OUT/frames-cache-1.txt" "$OUT/frames-cache-3.txt" | head -3 | paste -sd' ')"
@@ -638,6 +718,7 @@ edit:
   - {shot: a, start: 0, end: 48}
   - {shot: b, start: 24, end: 48}
 YAML
+imported "$P" plates/a.mp4 plates/b.mp4 plates/c.mp4
 cozy project -p "$P" render all --on local > "$OUT/rounded-1.txt" 2>&1 || check "rounded: render all failed: $(tail -c 300 "$OUT/rounded-1.txt")"
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1"; }
 [ "$(size "$P/edit.mp4")" = 1344,768 ] || check "rounded: edit.mp4 is $(size "$P/edit.mp4"), not its takes' 1344,768"
@@ -647,7 +728,7 @@ md5s() { ffmpeg -v error -i "$1" -map 0:v -f framemd5 - | grep -v '^#' | awk '{p
 first=$(sha "$P/edit.mp4")
 cozy project -p "$P" render all --on local > "$OUT/rounded-2.txt" 2>&1 || check "rounded: render all again failed"
 [ "$(sha "$P/edit.mp4")" = "$first" ] || check "rounded: cut again, edit.mp4 is another file"
-sed -i 's#video: plates/b.mp4#video: plates/c.mp4#' "$P/project.yaml"
+swap "$P" "$(sha "$P/plates/b.mp4")" "$(sha "$P/plates/c.mp4")"
 cozy project -p "$P" render all --on local > "$OUT/rounded-3.txt" 2>&1 || check "rounded: render all with an 854x480 plate failed"
 [ "$(size "$P/edit.mp4")" = 1344,768 ] || check "rounded: a plate of another size: edit.mp4 is $(size "$P/edit.mp4"), not 1344,768"
 }

@@ -36,7 +36,7 @@ use tensorfs::{
     format::{Header, ObjectRef, Tree},
 };
 
-use super::{Project, folder, video::Video};
+use super::{Project, folder};
 use crate::api::{Api, Refusal};
 
 /// The account's model whose commits keep its projects' files.
@@ -117,12 +117,10 @@ impl Tally {
         self.skipped.lock().expect("skipped lock").push((path, why));
     }
 
-    /// What it left out, each under the path project.yaml writes for it if it names it.
-    fn skipped(self, project: &Project) -> Result<Vec<Skipped>, Error> {
-        let lock = project.folder.lock()?;
-        let original = |path: &str| lock.inputs.iter().find(|(_, input)| input.path == path).map(|(file, _)| file.clone());
+    /// What it left out.
+    fn skipped(self) -> Vec<Skipped> {
         let skipped = self.skipped.into_inner().expect("skipped lock");
-        Ok(skipped.into_iter().map(|(path, why)| Skipped { original: original(&path), path, why }).collect())
+        skipped.into_iter().map(|(path, why)| Skipped { path, why }).collect()
     }
 }
 
@@ -132,7 +130,7 @@ fn named(project: &Project) -> Result<Vec<(String, String)>, Error> {
     Ok(lock.assets().into_iter().map(|(path, sha256)| (path.to_owned(), sha256.to_owned())).collect())
 }
 
-/// One file sent unless the Hub holds it, a link read through; not on this computer, it need only be
+/// One file sent unless the Hub holds it; not on this computer, it need only be
 /// there. None: it is left out, which stops nothing else.
 async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: String, sha256: String) -> Result<Option<ObjectRef>, Failed> {
     let file = project.folder.dir.join(&path);
@@ -161,8 +159,6 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: Strin
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
-    // A file changed at its path is taken in first: the lock names what the project reads now.
-    Video::load(&project.folder)?;
     let (assets, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
     let files = assets.len() as u64;
     let sending = stream::iter(assets)
@@ -179,7 +175,7 @@ async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpo
         (kept_in, commit) = (Some(name), Some(kept.id()));
     }
     let (moved, bytes) = (tally.moved.load(Ordering::Relaxed), tally.bytes.load(Ordering::Relaxed));
-    Ok(Transferred { files, moved, bytes, skipped: tally.skipped(project)?, kept_in, commit })
+    Ok(Transferred { files, moved, bytes, skipped: tally.skipped(), kept_in, commit })
 }
 
 /// `files` as a commit of model `name`, its header naming no tensors, sent and recorded.
@@ -244,7 +240,7 @@ async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Err
         .try_collect::<Vec<_>>();
     ticking(project, || tally.bytes.load(Ordering::Relaxed), fetching).await.map_err(failed)?;
     let (moved, bytes) = (tally.moved.load(Ordering::Relaxed), tally.bytes.load(Ordering::Relaxed));
-    Ok(Transferred { files, moved, bytes, skipped: tally.skipped(project)?, kept_in: None, commit: None })
+    Ok(Transferred { files, moved, bytes, skipped: tally.skipped(), kept_in: None, commit: None })
 }
 
 /// What a transfer asks for, refused now when this computer is not signed in.

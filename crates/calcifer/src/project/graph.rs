@@ -56,8 +56,7 @@ pub struct Node {
     /// their digest: a version made from another file is out of date.
     pub inputs: Vec<(String, String)>,
     /// The file it reads as now (relative to the project) and its digest: the approved version's
-    /// primary asset, else the file attached in project.yaml (or that file's clean); None before the
-    /// first version.
+    /// primary asset, else the asset attached in project.yaml; None before the first version.
     pub file: Option<(String, String)>,
     /// Its versions' primary assets, in the order they were made.
     pub versions: Vec<String>,
@@ -191,7 +190,7 @@ impl Graph {
 
     /// Each node's status. Only files make a node out of date, never text: a made one is out of
     /// date when it read another file than its upstream holds now, or something it reads is out of
-    /// date. A file attached by hand, and its clean, never is.
+    /// date. A file attached by hand never is.
     pub fn status(&self, lock: &Lock) -> Vec<Status> {
         let mut status = vec![Status::Empty; self.nodes.len()];
         for &i in &self.order {

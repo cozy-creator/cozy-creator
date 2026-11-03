@@ -81,22 +81,38 @@ restarts a Calcifer that is stuck or runs an older cozy.
 A video project is a folder:
 - `project.yaml`: yours. cozy writes it only at `new`.
 - `project.lock`: cozy's record of each node's takes or versions, what made each, which is approved, and the
-  files `project.yaml` names.
-- `assets/`: every file the project uses, kept by content as `assets/<sha256>.<ext>`. What cozy makes is kept
-  there as real files; a file you name in `project.yaml` (relative to the folder, absolute, or `~/…`) is taken in
-  on first use: a copy-on-write clone where the filesystem has them (no space used), else a link to where you
-  keep it. A file can also be an `http(s)://` URL at a public address, up to 64 MiB: the first render that needs it
-  downloads it here, and `project.lock` keeps its URL and hash, so it is not fetched again and can't change.
+  files imported.
+- `assets/`: every file the project uses, a real file kept by content as `assets/<sha256>.<ext>`: what cozy makes,
+  and what you import.
 - `edit.mp4`: the film, cut on this computer as shots land, and beside it `edit.otio`, the same edit as an
   OpenTimelineIO timeline for an editing app, each clip referencing its take in `assets/`.
 
-Names live in `project.yaml` and `project.lock` only; `cozy project status` prints each node's file. Edit a
-file you named and what reads it goes out of date; move a linked one and `status` says to relink it (fix its
-path).
+Files enter a project one way, and `project.yaml` names them only by hash:
+
+```sh
+cozy project import ./kyogre.png --character
+cozy project import https://example.com/groudon.png --character
+cozy project import ./coast.jpg
+cozy project import ./sword.png --prop
+```
+
+```
+imported ab12cd34ef56 (background removed)
+image: ab12cd34ef56
+```
+
+Paste that line under the node. It works for pictures, video and sound in every file field: an entity's `image` and
+`voice`, a setup's or world state's `image`, `references:`, and a shot's `plate`, `first_frame` and `last_frame`. Any
+prefix of the hash will do; one that fits two assets is said, and asks for a longer one. A URL is downloaded here, up to
+64 MiB, from a public address. A made version is an asset too: `cozy project status` prints each one's 12 characters.
+`--character` and `--prop` have its background removed: at once if this computer runs models, else by the first machine
+that renders something reading it. That clean is an asset like any other, and it is what the hash means from then on.
+A path or URL in a file field is never read: it warns with the import command, and that node renders without it.
+An asset never changes, so only a different hash, or something upstream, puts what reads it out of date.
 
 On another computer: commit `project.yaml` and `project.lock`, keep `assets/` out of git, and `cozy project push`
 sends the files to your Tensorhub account, private to you. `cozy project pull` next to a clone fetches them as real
-files; the paths in `project.yaml` need not exist there, as the hash in `project.lock` is what counts. Both send only
+files, and a picture not cleaned yet is cleaned there when something reads it. Both send only
 what is missing and go on after an interruption. What you pushed stays until you `cozy model delete
 <account>/project-assets`, the private model that holds it. A file over 5 GiB is skipped with a warning: everything
 else goes, and the command exits 3. Pulling such a project does the same for what is not there.
@@ -163,7 +179,7 @@ defaults:
 
 references:
   - name: kata
-    video: ~/footage/kata.mp4
+    video: 7c9e2d41a0b3
 
 world_states:
   - name: shore
@@ -225,13 +241,13 @@ something from itself, stays plain text, also said.
 
 A file that is no entity goes under `references:` with a name and one `video:`, `audio:` or `image:` (sent as a
 prop). A shot that mentions it gets it, exactly as with an entity: any other field, such as `use_audio:
-true`, goes to its function, and editing the file puts only those shots out of date. Names are shared with entities,
+true`, goes to its function, and importing another file for it puts only those shots out of date. Names are shared with entities,
 in any case, and each is used once. `plate:` (the video a shot edits), `first_frame:` and `last_frame:` stay on the
 shot. What a function does not take is left out and said.
 
 `qwen-image-2` draws a character as a 16:9 sheet (front, back, three close-ups) and a prop as a 3:2 sheet (front, back), both
-transparent. Any character or prop picture that comes back without a real share of transparent pixels, and a picture you
-attach, is cleaned on this computer before use. Only a changed upstream file puts something out of date, never a text edit or a render block:
+transparent. Any character or prop picture that comes back without a real share of transparent pixels is cleaned before
+use. A picture you import is used as it is unless you marked it. Only a changed upstream file puts something out of date, never a text edit or a render block:
 `cozy project render <name>` when you want a new take. A node renders by its `render:` block: `with` a function as `cozy run` takes it (`pkg/fn@0.3.0`, or local code, `./dir/fn` from the
 project's folder, which Calcifer makes ready on each `--on` machine), `models` and `lora` as `cozy run --input` takes them, and
 `options`, the function's own fields. A block that

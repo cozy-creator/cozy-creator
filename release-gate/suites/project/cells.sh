@@ -20,6 +20,15 @@ project() {
   nice -n 19 ffmpeg -v error -y -i "${K:-$REF}" "$P/hero.png"; nice -n 19 ffmpeg -v error -y -i "$REF" "$P/place.png"
   echo "$P"
 }
+# imported <folder> [flag] <file>…: each file `cozy project import`ed, and where project.yaml writes it, its hash prefix.
+imported() {
+  local P=$1 flag='' f h; shift
+  [[ $1 == --* ]] && { flag=$1; shift; }
+  for f in "$@"; do
+    h=$("$CLI" project -p "$P" import "$P/$f" $flag | tail -1 | sed 's/^[a-z]*: //')
+    sed -i "s#: $f\b#: $h#" "$P/project.yaml"
+  done
+}
 render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
 # lockq <folder> <python expression of lock>
 lockq() { python3 -c "import json, sys; lock = json.load(open(sys.argv[1] + '/project.lock')); print($2)" "$1" 2>/dev/null; }
@@ -58,6 +67,7 @@ shots:
     writes: [{state: wall, at: 5}]
 YAML
 )
+  imported "$P" --character hero.png; imported "$P" place.png
   render project-split "$P" all --preview || expect project-split FAIL "render all --preview: $(tail -c 300 project-split.log)"
   v=$(approved "$P" mural)
   f=$(jq -r "$PRIMARY" <<< "$v")
@@ -102,6 +112,7 @@ YAML
 )
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
   nice -n 19 ffmpeg -v error -y -i "$P/plate.mp4" -frames:v 1 "$P/plate.png"
+  imported "$P" plate.png plate.mp4
   render project-plate "$P" follow
   f=$(jq -r "$PRIMARY" <<< "$(approved "$P" follow)")
   r=$([ -n "$f" ] && "${FR[@]}" guide "$P/plate.mp4" "$P/$f" 2>&1 | tail -1)
@@ -125,6 +136,7 @@ YAML
   src=$(lockq "$OUT/project-split" "next(v for v in lock['nodes']['mural']['versions'])['assets']['video']['path']"); src=${src:+$OUT/project-split/$src}; src=${src:-$CLIP}
   if [ -n "$src" ]; then nice -n 19 ffmpeg -v error -y -ss 5 -i "$src" -t 4 -vn -ac 1 -ar 24000 "$P/voice.wav"
   else nice -n 19 ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=4 -ac 1 -ar 24000 "$P/voice.wav"; fi
+  imported "$P" --character hero.png; imported "$P" place.png voice.wav
   render project-voice "$P" hello
   v=$(approved "$P" hello); f=$(jq -r "$PRIMARY" <<< "$v")
   # Sent: a piece's logged references name the character's voice (H3 attaches it as "<name>'s voice").

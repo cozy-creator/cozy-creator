@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::{self, Asset, Call, Folder, Lock, Made, Shape, Upstream},
+    folder::{self, Asset, Call, Folder, Lock, Made, Shape, Target, Upstream},
     graph::{Edge, Graph, Node, mentions, name_key},
     host::{Accepts, Renderer},
 };
@@ -168,9 +168,9 @@ struct Entity {
     description: String,
     #[serde(default)]
     setups: Vec<Setup>,
-    /// A picture attached by hand: its version until one cozy made is approved.
+    /// A picture attached by hand, as a hash prefix: its version until one cozy made is approved.
     image: Option<String>,
-    /// A character's voice, a sound file attached by hand.
+    /// A character's voice, a sound attached by hand, as a hash prefix.
     voice: Option<String>,
     render: Option<Render>,
 }
@@ -193,8 +193,8 @@ impl EntityKind {
     }
 }
 
-/// A file that is no entity, which each shot mentioning its `name` is given: one `video` (a motion
-/// guide), `audio`, or `image` (a `prop` to its renderer). Any other field is its function's
+/// A file that is no entity, by hash prefix, which each shot mentioning its `name` is given: one `video`
+/// (a motion guide), `audio`, or `image` (a `prop` to its renderer). Any other field is its function's
 /// (`use_audio`, `description`, `follow`).
 #[derive(Deserialize)]
 struct Reference {
@@ -437,10 +437,13 @@ pub fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
 
 pub struct Video {
     project: Project,
-    /// Each file project.yaml names, by the path written there, as taken in.
+    /// Each hash prefix project.yaml names, as the asset it resolves to.
     inputs: BTreeMap<String, Asset>,
-    /// The files it names that are gone: what reads one cannot render.
+    /// Those not on this computer: what reads one cannot render here until they are pulled.
     missing: BTreeSet<String>,
+    /// Those marked for a clean with none made yet, each with the hash its clean is of: what reads one
+    /// waits for it.
+    unclean: BTreeMap<String, String>,
     items: Vec<Item>,
     pub graph: Graph,
     pub warnings: Vec<String>,
@@ -613,50 +616,8 @@ impl Video {
                 .map(|kind| format!("{}: defaults.{kind} is no node kind; it is ignored", folder::PROJECT)),
         );
         let mut lock = folder.lock()?;
-        // Every file it names, linked as an asset on first use (and again when it changed), and
-        // recorded in project.lock with the path written. One not at its path whose asset is here is
-        // that asset; one gone keeps its record: what reads it cannot render until it is back.
-        let (was, mut taken) = (folder.taken(), BTreeMap::new());
-        let (mut inputs, mut missing) = (BTreeMap::new(), BTreeSet::new());
-        for file in named(&project) {
-            let (known, before) = (lock.inputs.get(file), was.get(file));
-            match folder.take_in(file, known, before)? {
-                Some((asset, now)) => {
-                    // A link is the original: it changing changes the project. A clone or copy is taken in again.
-                    let changed = known.is_some_and(|known| known.sha256 != asset.sha256);
-                    if changed && before.is_some_and(|before| before.method.linked()) {
-                        warnings.push(format!("reference changed: {file}; what reads it is out of date"));
-                    }
-                    let copied = now.as_ref().is_some_and(|now| now.method == folder::Method::Copy);
-                    if copied && before.is_none_or(|before| before.method != folder::Method::Copy) {
-                        warnings.push(format!("{file}: copied into {}/, as this computer allows it no link", folder::ASSETS));
-                    }
-                    inputs.insert(file.to_owned(), asset);
-                    taken.extend(now.or_else(|| before.cloned()).map(|now| (file.to_owned(), now)));
-                }
-                // Reading stays offline: what reads a URL not fetched yet waits for the render that fetches it.
-                None if folder::is_url(file) => {
-                    missing.insert(file.to_owned());
-                    inputs.extend(known.map(|known| (file.to_owned(), known.clone())));
-                }
-                None => {
-                    let said = format!("reference missing: {file}: relink (put it back, fix its path in {}, or cozy project pull)", folder::PROJECT);
-                    warnings.push(said);
-                    missing.insert(file.to_owned());
-                    inputs.extend(known.map(|known| (file.to_owned(), known.clone())));
-                    taken.extend(before.map(|before| (file.to_owned(), before.clone())));
-                }
-            }
-        }
-        if inputs != lock.inputs {
-            folder.update_lock(|lock| lock.inputs = inputs.clone())?;
-            lock.inputs = inputs;
-        }
-        if taken != was {
-            folder.keep_taken(&taken)?;
-        }
         folder.shape_videos(&mut lock)?;
-        let inputs = lock.inputs.clone();
+        let (inputs, missing, unclean) = attach(folder, &mut project, &lock, &mut warnings);
         // A shot with no length: its video's when it has one attached, else one segment's, or past its last beat.
         for shot in project.shots.iter_mut().filter(|shot| shot.duration_s <= 0.0) {
             let attached = shot.video.as_deref().and_then(|file| inputs.get(file)).and_then(|asset| asset.video);
@@ -670,15 +631,13 @@ impl Video {
             }
         }
         let input_file = |id: &str, field: &str, path: &str| input_file(&inputs, id, field, path);
-        // Its current file and its versions' files: the approved version, else the file attached by
-        // hand (there, or the node is named with the fix), or that picture's clean.
-        let versions = |id: &str, attached: &Option<String>, cleans: bool| current(&inputs, &lock, id, attached, cleans);
+        // Its current file and its versions' files: the approved version, else the asset attached by hand.
+        let versions = |id: &str, attached: &Option<String>| current(&inputs, &lock, id, attached);
         let mut nodes = vec![];
         let mut items = vec![];
         for (a, entity) in project.entities.iter().enumerate() {
             let kind = entity.kind.name();
-            let cleans = entity.kind != EntityKind::Environment;
-            let (file, made) = versions(&entity.name, &entity.image, cleans)?;
+            let (file, made) = versions(&entity.name, &entity.image)?;
             let mut reads = vec![];
             if let Some(voice) = &entity.voice {
                 reads.push(input_file(&entity.name, "voice", voice)?);
@@ -701,7 +660,7 @@ impl Video {
             items.push(Item::Entity(a));
             for (s, setup) in entity.setups.iter().enumerate() {
                 let id = format!("{}.{}", entity.name, setup.name);
-                let (file, made) = versions(&id, &setup.image, false)?;
+                let (file, made) = versions(&id, &setup.image)?;
                 nodes.push(Node {
                     id,
                     kind: "setup",
@@ -721,7 +680,7 @@ impl Video {
             }
         }
         for (r, reference) in project.references.iter().enumerate() {
-            let (file, made) = versions(&reference.name, &Some(reference.file().1.to_owned()), false)?;
+            let (file, made) = versions(&reference.name, &Some(reference.file().1.to_owned()))?;
             nodes.push(Node {
                 id: reference.name.clone(),
                 kind: "reference",
@@ -753,7 +712,7 @@ impl Video {
             }
         }
         for (w, state) in project.world_states.iter().enumerate() {
-            let (file, made) = versions(&state.name, &state.image, false)?;
+            let (file, made) = versions(&state.name, &state.image)?;
             nodes.push(Node {
                 id: state.name.clone(),
                 kind: "world_state",
@@ -786,7 +745,7 @@ impl Video {
                     implied.push(format!("{}.{}", env.name, first.name));
                 }
             }
-            let (file, made) = versions(&shot.name, &shot.video, false)?;
+            let (file, made) = versions(&shot.name, &shot.video)?;
             nodes.push(Node {
                 id: shot.name.clone(),
                 kind: "shot",
@@ -804,7 +763,7 @@ impl Video {
             });
             items.push(Item::Shot(k));
             let id = format!("{}.upscale", shot.name);
-            let (file, made) = versions(&id, &shot.upscale.video, false)?;
+            let (file, made) = versions(&id, &shot.upscale.video)?;
             nodes.push(Node {
                 id,
                 kind: "upscale",
@@ -889,7 +848,7 @@ impl Video {
                 made.or_else(attached)?.video
             })
             .collect();
-        Ok(Self { project, inputs, missing, items, graph, warnings, canvas, shapes })
+        Ok(Self { project, inputs, missing, unclean, items, graph, warnings, canvas, shapes })
     }
 
     /// Node `i`'s render block (`resolve`).
@@ -959,81 +918,80 @@ impl Video {
         self.shapes[shot].is_none_or(|shape| shape.width.min(shape.height) < short)
     }
 
-    /// Whether node `i`'s pictures are cleaned before use: a character's or a prop's.
+    /// Whether the pictures cozy makes of node `i` are cleaned before use: a character's or a prop's.
     pub fn cleans(&self, i: usize) -> bool {
         matches!(self.graph.nodes[i].kind, "character" | "prop")
     }
 
-    /// Node `i`'s current picture and its digest when it still needs its clean: a character's or
-    /// prop's attached by hand, with no clean in project.lock yet (every version cozy makes of one
-    /// is its clean).
-    pub fn unclean(&self, lock: &Lock, i: usize) -> Option<(String, String)> {
-        let node = &self.graph.nodes[i];
-        let file = node.file.as_ref().filter(|_| self.cleans(i))?;
-        lock.made(&node.id, &file.0).is_none().then(|| file.clone())
+    /// The files not on this computer that node `i` reads, its own or through what it reads.
+    pub fn missing(&self, i: usize) -> Vec<&str> {
+        self.reads(i).into_iter().filter(|file| self.missing.contains(*file)).collect()
     }
 
-    /// The files gone that node `i` reads, its own or through what it reads: it cannot render until
-    /// they are linked again.
-    pub fn missing(&self, i: usize) -> Vec<&str> {
-        let mut gone: BTreeSet<&str> = self.own_missing(i).into_iter().collect();
+    /// The hashes of the marked pictures with no clean yet that node `i` reads, its own or through what it reads.
+    pub fn unclean(&self, i: usize) -> Vec<&str> {
+        self.reads(i).into_iter().filter_map(|file| self.unclean.get(file)).map(String::as_str).collect()
+    }
+
+    /// Whether a picture node `i` itself names waits for its clean.
+    pub fn own_unclean(&self, i: usize) -> bool {
+        self.own_files(i).iter().any(|file| self.unclean.contains_key(*file))
+    }
+
+    /// The marked pictures with no clean yet that what `lock`'s walk owes reads, by hash, each with the
+    /// machines that asks for it: the first machine to render one of its readers cleans it.
+    pub fn to_clean(&self, lock: &Lock) -> BTreeMap<String, Target> {
+        let takes = lock.walk.takes.iter().filter_map(|take| Some((self.graph.find(&take.node)?, &take.target)));
+        let all = (0..self.graph.nodes.len())
+            .filter(|&i| self.wanted(i))
+            .flat_map(|i| lock.walk.all.as_ref().map(|target| (i, target)));
+        let mut found = BTreeMap::new();
+        for (i, target) in takes.chain(all) {
+            for sha256 in self.unclean(i) {
+                found.entry(sha256.to_owned()).or_insert_with(|| target.clone());
+            }
+        }
+        found
+    }
+
+    /// The files node `i` reads, as project.yaml writes them: its own, and those of what it reads.
+    fn reads(&self, i: usize) -> BTreeSet<&str> {
+        let mut files: BTreeSet<&str> = self.own_files(i).into_iter().collect();
         let mut seen = vec![false; self.graph.nodes.len()];
         let mut next: Vec<usize> = self.graph.upstream[i].iter().map(|edge| edge.node).collect();
         while let Some(j) = next.pop() {
             if !std::mem::replace(&mut seen[j], true) {
-                gone.extend(self.own_missing(j));
+                files.extend(self.own_files(j));
                 next.extend(self.graph.upstream[j].iter().map(|edge| edge.node));
             }
         }
-        gone.into_iter().collect()
+        files
     }
 
-    /// The URLs not fetched yet that what `lock`'s walk owes reads: for `all` any, for a take its node's.
-    pub fn unfetched(&self, lock: &Lock) -> BTreeSet<&str> {
-        let all = (0..self.graph.nodes.len()).filter(|&i| lock.walk.all.is_some() && self.wanted(i));
-        let takes = lock.walk.takes.iter().filter_map(|take| self.graph.find(&take.node));
-        all.chain(takes).flat_map(|i| self.missing(i)).filter(|file| folder::is_url(file)).collect()
-    }
-
-    /// The nodes whose own field names `file`.
-    pub fn named_by(&self, file: &str) -> Vec<&str> {
-        let own = (0..self.graph.nodes.len()).filter(|&i| self.own_missing(i).contains(&file));
-        own.map(|i| self.graph.nodes[i].id.as_str()).collect()
-    }
-
-    /// Whether node `i` is attached to a URL not fetched yet: it reads as that file once it is, so nothing
-    /// is made in its place.
-    pub fn awaits_url(&self, i: usize) -> bool {
+    /// The files project.yaml names for node `i` itself. The one attached counts until a version cozy
+    /// made is approved, which it then reads instead.
+    fn own_files(&self, i: usize) -> Vec<&str> {
+        let node = &self.graph.nodes[i];
+        let approved = node.file.as_ref().is_some_and(|(path, _)| node.versions.contains(path));
+        let mut files: Vec<&str> = vec![];
         let attached = match self.items[i] {
-            Item::Entity(a) => self.project.entities[a].image.as_deref(),
+            Item::Entity(a) => {
+                files.extend(self.project.entities[a].voice.as_deref());
+                self.project.entities[a].image.as_deref()
+            }
             Item::Reference(r) => Some(self.project.references[r].file().1),
             Item::Setup(a, s) => self.project.entities[a].setups[s].image.as_deref(),
             Item::State(w) => self.project.world_states[w].image.as_deref(),
-            Item::Shot(k) => self.project.shots[k].video.as_deref(),
-            Item::Upscale(k) => self.project.shots[k].upscale.video.as_deref(),
-        };
-        attached.is_some_and(|file| folder::is_url(file) && self.missing.contains(file))
-    }
-
-    /// The files project.yaml names for node `i` itself that are gone.
-    fn own_missing(&self, i: usize) -> Vec<&str> {
-        let mut files: Vec<&str> = vec![];
-        match self.items[i] {
-            Item::Entity(a) => {
-                let entity = &self.project.entities[a];
-                files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
-            }
-            Item::Reference(r) => files.push(self.project.references[r].file().1),
-            Item::Setup(a, s) => files.extend(self.project.entities[a].setups[s].image.as_deref()),
-            Item::State(w) => files.extend(self.project.world_states[w].image.as_deref()),
             Item::Shot(k) => {
                 let shot = &self.project.shots[k];
-                files.extend([&shot.video, &shot.first_frame, &shot.last_frame].into_iter().filter_map(Option::as_deref));
+                files.extend([&shot.first_frame, &shot.last_frame].into_iter().filter_map(Option::as_deref));
                 files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
+                shot.video.as_deref()
             }
-            Item::Upscale(k) => files.extend(self.project.shots[k].upscale.video.as_deref()),
-        }
-        files.into_iter().filter(|file| self.missing.contains(*file)).collect()
+            Item::Upscale(k) => self.project.shots[k].upscale.video.as_deref(),
+        };
+        files.extend(attached.filter(|_| !approved));
+        files
     }
 
     /// The request that makes a version of node `i`, from what it reads now, as its function
@@ -1858,8 +1816,7 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
     }
 }
 
-/// A file a node reads that is no node's, as its key (`<node>.<field>`) and sha256 (`inputs`: the
-/// files project.yaml names, as taken in; one gone and never taken in reads as none).
+/// A file a node reads that is no node's, as its key (`<node>.<field>`) and sha256.
 fn input_file(inputs: &BTreeMap<String, Asset>, id: &str, field: &str, path: &str) -> Result<(String, String), Error> {
     let sha256 = inputs.get(path).map(|input| input.sha256.clone()).unwrap_or_default();
     Ok((format!("{id}.{field}"), sha256))
@@ -1883,46 +1840,106 @@ fn shot_inputs(input_file: &impl Fn(&str, &str, &str) -> Result<(String, String)
 type Versions = (Option<(String, String)>, Vec<String>);
 
 /// A node's current file and its versions' files (`Node::file`, `Node::versions`): the version
-/// project.lock approves; else the file attached in project.yaml (its asset; none when it is gone and
-/// was never taken in), or that picture's clean when the node `cleans`.
-fn current(
-    inputs: &BTreeMap<String, Asset>,
-    lock: &Lock,
-    id: &str,
-    attached: &Option<String>,
-    cleans: bool,
-) -> Result<Versions, Error> {
+/// project.lock approves; else the asset attached in project.yaml.
+fn current(inputs: &BTreeMap<String, Asset>, lock: &Lock, id: &str, attached: &Option<String>) -> Result<Versions, Error> {
     let node = lock.node(id);
     let versions: Vec<String> =
         (node.into_iter().flat_map(|node| &node.versions)).filter_map(|made| Some(made.primary()?.path.clone())).collect();
     let approved = node.and_then(|node| node.approved.as_ref()).and_then(|path| lock.made(id, path)?.primary());
-    if let Some(approved) = approved {
-        return Ok((Some((approved.path.clone(), approved.sha256.clone())), versions));
-    }
-    let Some(file) = attached else { return Ok((None, versions)) };
-    let Some(asset) = inputs.get(file) else { return Ok((None, versions)) };
-    let clean = (node.into_iter().flat_map(|node| &node.versions))
-        .find(|made| cleans && made.clean_of.as_deref() == Some(asset.sha256.as_str()));
-    let clean = clean.and_then(Made::primary).unwrap_or(asset);
-    Ok((Some((clean.path.clone(), clean.sha256.clone())), versions))
+    let file = approved.or_else(|| inputs.get(attached.as_ref()?));
+    Ok((file.map(|file| (file.path.clone(), file.sha256.clone())), versions))
 }
 
-/// Every file project.yaml names: attached pictures and videos, voices, references, plates and
-/// frames.
-fn named(project: &Project) -> Vec<&str> {
-    let mut files: Vec<&str> = vec![];
-    for entity in &project.entities {
-        files.extend(entity.image.iter().chain(&entity.voice).map(String::as_str));
-        files.extend(entity.setups.iter().filter_map(|setup| setup.image.as_deref()));
+/// Each file field of `project` read as the asset its value names, the fields whose value names none
+/// emptied and said: a path or URL, with the command that imports it (`--character` or `--prop` for that
+/// entity's picture), a hash of no asset, or one that fits several. So what reads it renders without it.
+/// Answers each value's asset, what is not on this computer, and what waits for its clean.
+fn attach(folder: &Folder, project: &mut Project, lock: &Lock, said: &mut Vec<String>) -> (BTreeMap<String, Asset>, BTreeSet<String>, BTreeMap<String, String>) {
+    let (mut inputs, mut missing, mut unclean) = (BTreeMap::new(), BTreeSet::new(), BTreeMap::new());
+    let mut read = |node: &str, field: &str, flag: &str, value: &mut Option<String>| {
+        let Some(written) = value.clone() else { return };
+        let matching = lock.matching(&written.to_ascii_lowercase());
+        let found = match matching.as_slice() {
+            _ if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) => Err(format!(
+                "{node}'s {field} is not a hash: {written} is not read: `cozy project import {}{flag}` prints what to write",
+                quoted(&written)
+            )),
+            [asset] => Ok(*asset),
+            [] => Err(format!("{node}'s {field}: no asset's hash starts with {written}: `cozy project import <file>{flag}` prints what to write")),
+            several => Err(format!("{node}'s {field}: {written} fits {} assets: write more of its hash", several.len())),
+        };
+        let asset = match found {
+            Ok(asset) => asset,
+            Err(why) => {
+                said.push(format!("{why}. {node} renders without it"));
+                *value = None;
+                return;
+            }
+        };
+        let import = lock.imports.get(&asset.sha256).filter(|import| import.mark);
+        let reads = import.and_then(|import| import.clean.as_ref()).unwrap_or(asset);
+        if !folder.path(&reads.path).is_file() {
+            said.push(format!("{node}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&reads.sha256)));
+            missing.insert(written.clone());
+        } else if import.is_some_and(|import| import.clean.is_none()) {
+            unclean.insert(written.clone(), asset.sha256.clone());
+        }
+        inputs.insert(written, reads.clone());
+    };
+    for entity in &mut project.entities {
+        let flag = match entity.kind {
+            EntityKind::Character => " --character",
+            EntityKind::Prop => " --prop",
+            EntityKind::Environment => "",
+        };
+        read(&entity.name, "image", flag, &mut entity.image);
+        read(&entity.name, "voice", "", &mut entity.voice);
+        for setup in &mut entity.setups {
+            read(&format!("{}.{}", entity.name, setup.name), "image", "", &mut setup.image);
+        }
     }
-    files.extend(project.references.iter().map(|reference| reference.file().1));
-    files.extend(project.world_states.iter().filter_map(|state| state.image.as_deref()));
-    for shot in &project.shots {
-        let own = [&shot.video, &shot.upscale.video, &shot.first_frame, &shot.last_frame];
-        files.extend(own.into_iter().filter_map(Option::as_deref));
-        files.extend(shot.plate.as_ref().and_then(|plate| plate.get("video")).and_then(Value::as_str));
+    project.references.retain_mut(|reference| {
+        let name = reference.name.clone();
+        read(&name, "video", "", &mut reference.video);
+        read(&name, "audio", "", &mut reference.audio);
+        read(&name, "image", "", &mut reference.image);
+        !reference.files().is_empty()
+    });
+    for state in &mut project.world_states {
+        read(&state.name, "image", "", &mut state.image);
     }
-    files
+    for shot in &mut project.shots {
+        let name = shot.name.clone();
+        read(&name, "video", "", &mut shot.video);
+        read(&format!("{name}.upscale"), "video", "", &mut shot.upscale.video);
+        read(&name, "first_frame", "", &mut shot.first_frame);
+        read(&name, "last_frame", "", &mut shot.last_frame);
+        if let Some(plate) = &mut shot.plate {
+            let mut video = plate.get("video").and_then(Value::as_str).map(str::to_owned);
+            let named = video.is_some();
+            read(&name, "plate", "", &mut video);
+            if named && video.is_none() {
+                shot.plate = None;
+            }
+        }
+    }
+    (inputs, missing, unclean)
+}
+
+/// `text` as one word on a command line.
+fn quoted(text: &str) -> String {
+    match text.bytes().any(|byte| byte.is_ascii_whitespace() || b"'\"$&;|<>()*?#`".contains(&byte)) {
+        true => format!("'{}'", text.replace('\'', r"'\''")),
+        false => text.to_owned(),
+    }
+}
+
+/// `value` as a file field writes it: quoted when YAML would read it as a number.
+pub fn yaml_scalar(value: &str) -> String {
+    match value.parse::<f64>() {
+        Ok(_) => format!("\"{value}\""),
+        Err(_) => value.to_owned(),
+    }
 }
 
 /// What a person wrote, as the reader takes it: an empty `key:` is no key, a bare number is text where
@@ -1932,9 +1949,10 @@ fn spell(value: &mut Value, said: &mut Vec<String>) {
     let Value::Object(top) = value else { return };
     tidy(top);
     canvas_spelled(top, said);
-    for (list, name) in [("references", "name"), ("edit", "shot")] {
-        items(top, list, name, said);
+    for reference in items(top, "references", "name", said) {
+        as_text(reference, &["video", "audio", "image"]);
     }
+    items(top, "edit", "shot", said);
     for entity in items(top, "entities", "name", said) {
         let setups = entity.contains_key("setups");
         let written = entity.get("kind").and_then(Value::as_str).map(|kind| kind.trim().to_ascii_lowercase());
@@ -1948,11 +1966,22 @@ fn spell(value: &mut Value, said: &mut Vec<String>) {
             }
         };
         entity.insert("kind".into(), Value::String(kind));
-        items(entity, "setups", "name", said);
+        as_text(entity, &["image", "voice"]);
+        for setup in items(entity, "setups", "name", said) {
+            as_text(setup, &["image"]);
+        }
     }
-    items(top, "world_states", "name", said);
+    for state in items(top, "world_states", "name", said) {
+        as_text(state, &["image"]);
+    }
     for shot in items(top, "shots", "name", said) {
         as_number(shot, "duration_s");
+        as_text(shot, &["video", "first_frame", "last_frame"]);
+        for nested in ["plate", "upscale"] {
+            if let Some(Value::Object(nested)) = shot.get_mut(nested) {
+                as_text(nested, &["video"]);
+            }
+        }
         items(shot, "writes", "state", said);
         for beat in items(shot, "beats", "at", said) {
             as_number(beat, "at");
@@ -1992,6 +2021,15 @@ fn items<'a>(map: &'a mut Map<String, Value>, key: &str, name: &str, said: &mut 
 /// `map` with no empty keys: `key:` alone is as if it were not written.
 fn tidy(map: &mut Map<String, Value>) {
     map.retain(|_, value| !value.is_null());
+}
+
+/// `map`'s `keys` as text when written as numbers: a hash of digits alone reads as one.
+fn as_text(map: &mut Map<String, Value>, keys: &[&str]) {
+    for key in keys {
+        if let Some(value) = map.get_mut(*key).filter(|value| value.is_number()) {
+            *value = Value::String(value.to_string());
+        }
+    }
 }
 
 /// `map`'s `key` as a number when it was written as text (`"6"`, `6s`); left out when it is neither.

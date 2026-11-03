@@ -626,39 +626,6 @@ pub fn space(path: &Path) -> Result<Space> {
     }
 }
 
-/// `to`, a new file, as a copy-on-write clone of `from` (a reflink): its own file, sharing `from`'s
-/// blocks until either is written, so it costs no space and stays whatever `from` becomes. Linux's
-/// `FICLONE` (Btrfs, XFS, ZFS 2.2+, bcachefs) and macOS's `clonefile` (APFS); refused on another
-/// filesystem, across two, and on Windows, where callers link or copy instead.
-pub fn reflink(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        let source = File::open(from)?;
-        let clone = OpenOptions::new().write(true).create_new(true).open(to)?;
-        rustix::fs::ioctl_ficlone(&clone, &source).map_err(|error| {
-            drop(clone);
-            let _ = fs::remove_file(to);
-            io::Error::from(error)
-        })
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        let name = |path: &Path| std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other);
-        let (from, to) = (name(from)?, name(to)?);
-        // SAFETY: both are NUL-terminated paths that outlive the call.
-        match unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) } {
-            0 => Ok(()),
-            _ => Err(io::Error::last_os_error()),
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = (from, to);
-        Err(io::ErrorKind::Unsupported.into())
-    }
-}
-
 /// A symlink. Windows types it by what `target` is now, and needs Developer Mode or the
 /// privilege: callers copy instead when it is refused.
 pub fn symlink(target: &Path, link: &Path) -> Result<()> {
