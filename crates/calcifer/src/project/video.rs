@@ -1920,10 +1920,10 @@ fn spell(value: &mut Value, said: &mut Vec<String>) {
     }
     items(top, "world_states", "name", said);
     for shot in items(top, "shots", "name", said) {
-        number(shot, "duration_s");
+        as_number(shot, "duration_s");
         items(shot, "writes", "state", said);
         for beat in items(shot, "beats", "at", said) {
-            number(beat, "at");
+            as_number(beat, "at");
         }
     }
 }
@@ -1963,7 +1963,7 @@ fn tidy(map: &mut Map<String, Value>) {
 }
 
 /// `map`'s `key` as a number when it was written as text (`"6"`, `6s`); left out when it is neither.
-fn number(map: &mut Map<String, Value>, key: &str) {
+fn as_number(map: &mut Map<String, Value>, key: &str) {
     let Some(Value::String(text)) = map.get(key) else { return };
     match text.trim().trim_end_matches('s').trim().parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
         Some(read) => drop(map.insert(key.into(), Value::Number(read))),
@@ -2002,7 +2002,7 @@ fn canvas_spelled(top: &mut Map<String, Value>, said: &mut Vec<String>) {
         }
     }
     let Some(written) = top.get("fps").cloned() else { return };
-    number(top, "fps");
+    as_number(top, "fps");
     match top.get("fps").and_then(Value::as_f64).filter(|fps| fps.is_finite() && *fps > 0.0) {
         Some(fps) if fps <= 240.0 => {}
         Some(_) => {
