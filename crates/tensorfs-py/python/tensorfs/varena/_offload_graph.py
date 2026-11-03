@@ -830,26 +830,60 @@ class GraphSegment:
         with device_owner.lock, self._lock:
             if self._closed:
                 return
+            self._close_definition()
+
+    def _try_retire_cached(self):
+        """Native CacheOwner callback only; caller holds its idle entry admission.
+
+        The callback's native producer exclusion forbids capture. Never acquire
+        the model's execution lock: another allocating segment can hold it.
+        """
+        self._check_process()
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._closed:
+                return True
             if self._busy or self._failure is not None:
-                raise adapter.OffloadError(
-                    "cannot reset active or unproven graph execution"
-                )
-            self._closing = True
+                return False
+            definition = self._definition
             try:
-                self._graph.reset()
+                if self._tail is not None and not self._tail.query():
+                    return False
+                self._close_definition()
+            except (api.Busy, api.Capturing):
+                return False  # Retryable identity/custody remains attached.
             except BaseException as error:
-                self._retain_failure(_Epoch(definition, None), error)
+                if self._failure is None:
+                    self._retain_failure(_Epoch(definition, None), error)
                 raise
-            definition.plan.close()
-            self._closed_facts = {**self.facts(), "closed": True, "region_handles": []}
-            definition.plan = None
-            definition.outputs = definition.static_tree = None
-            definition.buffer_owners = ()
-            definition.regions = definition.versions = ()
-            definition.leased_versions = ()
-            definition.parameter_state = definition.buffer_state = ()
-            definition.owner = definition.module = None
-            definition.footprint = None
-            definition.streams.clear()
-            self._definition = self._graph = self._tail = None
-            self._closed = True
+            return True
+        finally:
+            self._lock.release()
+
+    def _close_definition(self):
+        """Own refs only; caller holds self._lock and applicable owner/admission."""
+        if self._busy or self._failure is not None:
+            raise adapter.OffloadError(
+                "cannot reset active or unproven graph execution"
+            )
+        definition = self._definition
+        self._closing = True
+        try:
+            self._graph.reset()
+        except BaseException as error:
+            self._retain_failure(_Epoch(definition, None), error)
+            raise
+        definition.plan.close()
+        self._closed_facts = {**self.facts(), "closed": True, "region_handles": []}
+        definition.plan = None
+        definition.outputs = definition.static_tree = None
+        definition.buffer_owners = ()
+        definition.regions = definition.versions = ()
+        definition.leased_versions = ()
+        definition.parameter_state = definition.buffer_state = ()
+        definition.owner = definition.module = None
+        definition.footprint = None
+        definition.streams.clear()
+        self._definition = self._graph = self._tail = None
+        self._closed = True

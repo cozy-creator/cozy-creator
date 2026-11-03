@@ -110,14 +110,13 @@ Required component-helper corrections before shared wiring:
   it or handing outputs to the original caller. Auto can wait that cold-only checkpoint;
   ordinary steady eager execution does not add checkpoints. This remains a scoped
   tracked-consumer proof, not arbitrary device/custom-consumer completion.
-- Reuse must receive ordinary operand values (or an equivalent observe-inputs seam),
-  not just owner/current stream. A hidden ordinary external tensor used in a managed
-  op may not appear in the outer inputs; if its last reference drops, skipping the
-  old record_stream would lose the S consumer. Register each newly observed ordinary
-  C10 Storage family once, or retain existing per-op records for unproven families.
-  Keep only weak family identities, never retain all intermediates/Storage owners;
-  do not deduplicate by data_ptr. Weight export Pins/fences are unchanged. A changed
-  actual stream still uses the existing safe per-op path and joins witness tracking.
+- The local owner's refined first contract RETAINS the existing per-operation
+  ordinary-input record_stream loop and every materialized-weight record/Pin path.
+  Therefore reuse(owner, current_stream) remains sufficient: skip only duplicate
+  selection/context/joins, never operand lifetime validation/records. This supersedes
+  the earlier proposed operand/weak-family dedup requirement; no new dedup helper is
+  needed now. Hidden ordinary external operands remain protected by the actual per-op
+  records. Changed actual streams still use that safe path and witness tracking.
 - scope.output returns the identical original result/objects and defers outer handoff
   until its event is recorded; it does not reconstruct or clone aliases. Nested scopes
   must not accumulate every intermediate result until outer exit. Ordinary output
@@ -221,6 +220,18 @@ work; independent outputs and pool tail lifetime remain unchanged. Retiring cach
 definition refs does not close shared Region wrappers or escaped weight/output owners.
 Owner.close disables admission, drains CacheOwner outside device/entry locks, then
 retires its idle definitions/measurement keys; refusal keeps retryable exact ownership.
+
+Implemented cache primitive: `_GraphCacheEntry` retains the native weak callback's
+actual target, publishes only a proven definition and holds its entry admission across
+execution. Callback acquires only that entry/graph lock nonblocking; the graph's private
+`_try_retire_cached` checks a real completed tail before owned graph/Plan retirement,
+without taking the offload-wide lock. Existing public close keeps normal owner-lock
+order through the same close actions. Busy/capture refusals keep retryable exact refs;
+unknown failures retain the graph/epoch and fail the cache. Passive facts report busy
+rather than blocking on a running callback. Registration close drains outside locks.
+Native accounting/ready trim still owns physical release; no callback byte credit.
+The explicit capture/replay/validation bodies are unchanged; new callback retirement
+and controller composition require the prepared real GPU pressure proof.
 
 ## Minimal actual clients and qualification boundary
 
