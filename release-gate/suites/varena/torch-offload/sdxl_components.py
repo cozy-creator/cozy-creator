@@ -26,6 +26,7 @@ from tensorfs.varena._offload_auto import (
     _boundary_frontier,
     _cold_output_reason,
     _ForwardOrigin,
+    _InvocationKey,
     _module_preflight,
     _promotion_reason,
 )
@@ -94,6 +95,9 @@ def components(*, reduced=True, device="cpu"):
 def run(device):
     from tensorfs.varena._offload_inventory import inspect_cpu_roots
 
+    if device.type == "cuda":
+        device = torch.device("cuda", 0 if device.index is None else device.index)
+        vt.install(device.index)  # Before any baseline CUDA tensor/model creation.
     torch.manual_seed(715)
     models = components()
     inventory = inspect_cpu_roots(models)
@@ -126,7 +130,15 @@ def run(device):
         ).sample
         encoded = models["vae"].encode(image)
         decoded = models["vae"].decode(noise)
-        return first.last_hidden_state, second.text_embeds, denoise, encoded, decoded
+        return (
+            first.last_hidden_state,
+            second.text_embeds,
+            denoise,
+            encoded,
+            decoded,
+            first,
+            second,
+        )
 
     # Baseline uses actual same component weights before Source adoption. GPU
     # copies are explicit and moved back before CPU-source adoption.
@@ -141,6 +153,10 @@ def run(device):
                 baseline[3].latent_dist.mode(),
                 baseline[4].sample,
             )
+        )
+        expected_hidden = tuple(
+            tuple(value.clone() for value in output.hidden_states)
+            for output in baseline[5:]
         )
     del baseline
     for model in models.values():
@@ -172,6 +188,7 @@ def run(device):
     class_counts = collections.Counter()
     declined = collections.Counter()
     qualified = set()
+    boundary_by_id = {id(boundary.module): boundary for boundary in frontier}
     for child, args, kwargs, result in calls:
         reason = _promotion_reason(
             owner, child, args, kwargs, result, forward_origins=origins
@@ -181,6 +198,9 @@ def run(device):
             declined[reason] += 1
             continue
         assert reason is None, (type(child).__name__, reason, kwargs.keys())
+        # Exercise actual cold inputs against the immutable key/tree/alias rules,
+        # not only the class/effect whitelist.
+        _InvocationKey.from_call(owner, boundary_by_id[id(child)], args, kwargs)
         qualified.add(id(child))
         class_counts[type(child).__name__] += 1
     assert len(qualified) == 39 and sum(declined.values()) == 44, (
@@ -193,6 +213,13 @@ def run(device):
             expected, (*actual[:3], actual[3].latent_dist.mode(), actual[4].sample)
         ):
             torch.testing.assert_close(left, right, rtol=2e-5, atol=2e-6)
+        assert actual[0] is actual[5].last_hidden_state
+        assert actual[1] is actual[6].text_embeds
+        for expected_states, output in zip(expected_hidden, actual[5:]):
+            assert type(output.hidden_states) is tuple and output.attentions is None
+            assert len(expected_states) == len(output.hidden_states)
+            for left, right in zip(expected_states, output.hidden_states):
+                torch.testing.assert_close(left, right, rtol=2e-5, atol=2e-6)
         # Real repeated eager components: extra reviewed eval execution must not
         # change CPU/CUDA RNG state. This is not a proof of arbitrary Python code.
         before = torch.get_rng_state().clone()
@@ -213,7 +240,12 @@ def run(device):
         for method, value in (("encode", image), ("decode", noise)):
             with component_scope(owner._owner, (value,)) as scope:
                 result = getattr(models["vae"], method)(value)
-                leaves = vae_entry_leaves(models["vae"], method, result)
+                leaves = vae_entry_leaves(
+                    models["vae"],
+                    method,
+                    result,
+                    originals=owner._method_origins.get(id(models["vae"])),
+                )
                 assert leaves is not None, method
                 assert scope.output(result, values=leaves) is result
                 assert (
@@ -274,6 +306,11 @@ def run(device):
         _cold_output_reason(torch.nn.Identity(), (), {}, (torch.ones(1), None))
         == "output_type_requires_alias_adapter"
     )
+    component_entries = owner.component_facts()["entries"]
+    assert component_entries["unet"] == 2
+    assert component_entries["text_encoder"] == component_entries["text_encoder_2"] == 2
+    assert component_entries["vae.encode"] == component_entries["vae.decode"] == 3
+    assert "vae" not in component_entries, "encode/decode evidence counted root forward"
     owner.close()
     return {
         "passed": True,
@@ -285,10 +322,15 @@ def run(device):
         "declared": len(inventory.boundaries),
         "frontier": len(frontier),
         "eligible_observed": len(qualified),
+        "actual_candidate_input_keys_checked": len(qualified),
+        "clip_hidden_state_tuples_and_none_preserved": [
+            len(values) for values in expected_hidden
+        ],
         "subsumed": len(nested),
         "observed_calls": dict(class_counts),
         "declined_calls": dict(declined),
         "vae_encode_decode": True,
+        "automatic_component_scope_entries": component_entries,
         "cuda_initialized": torch.cuda.is_initialized(),
     }
 

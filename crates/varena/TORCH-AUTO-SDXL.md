@@ -78,8 +78,10 @@ decode.sample and encode's distribution parameters/mean/logvar/std/var. It never
 calls sample() to discover leaves or consumes RNG. The reviewed mode() returns
 the existing mean. Tuple returns remain tuples; unsupported slicing/tiling,
 Accelerate hooks or method overrides require another entry adapter. These
-explicit entry scopes are exercised by the client; default automatic method
-wrapping remains to be wired with the controller.
+explicit entry scopes were exercised by the first client. The subsequent
+COMPONENT-ENTRIES.md delta wires reviewed UNet/text outer scopes and explicit
+VAE encode/decode method scopes by default, independently of the still-unwired
+automatic graph controller. Host scope counts are not graph-selection evidence.
 
 ## Runnable gates and remaining automatic proof
 

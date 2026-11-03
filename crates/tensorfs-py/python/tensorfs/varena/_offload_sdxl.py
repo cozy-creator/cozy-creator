@@ -22,11 +22,14 @@ _IMPLEMENTATIONS = {
     "transformers.models.clip.modeling_clip.CLIPAttention.forward": "5538250a160b9186c63eaf5fa44c964e567783bc86d36c5318d003cf45b4e4bb",
     "transformers.models.clip.modeling_clip.CLIPMLP.forward": "0466c9fba8d68970306415522aa92fc203d350c270d16b23fcb0cfee5e67a71c",
     "transformers.models.clip.modeling_clip.eager_attention_forward": "342a33838a210505e92082054ddd07ff1bfda1331508c015e1c4c42738d43de5",
+    "transformers.models.clip.modeling_clip.CLIPTextModel.forward": "9e8216ac36adc1b5ae265618ebf7cad8de4e25f50b1ac87183c8e6ae7d146c37",
+    "transformers.models.clip.modeling_clip.CLIPTextModelWithProjection.forward": "881a5b3316e7996be7431636f018817ca2fe68ec42073a62c8f100597cb77e99",
     "transformers.activations.GELUActivation.forward": "e465fd3f9cc63a6e7aff631419ad02639e1a335094f11e3cd00c97c215f7aee2",
     "transformers.activations.QuickGELUActivation.forward": "1e8789900ec40c2c638c11715b1eb1643fe2b56249eaede165b96e36b599bc15",
     "transformers.modeling_layers.GradientCheckpointingLayer.__call__": "15f8ea1e2ebb5ff2f9c22449affae5ca348ac29e55233ddaccd8629f86c13981",
     "transformers.integrations.sdpa_attention.sdpa_attention_forward": "21e12077a594bea224cec9fc7ebe54e9fefafe7d8d748cae56679140b86fd65b",
     "diffusers.models.resnet.ResnetBlock2D.forward": "09cf9c9182076849c03f9fb16284f1bdbf00353ae0822696b7b2a73033a3eb4e",
+    "diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.forward": "e9e062cf51103658f35ddcaf345cd50f5fec7bf83fe7509f22fd4a61701d5877",
     "diffusers.models.unets.unet_2d_blocks.DownEncoderBlock2D.forward": "5f0ffbef3a394fef94b29fd99560cbfbb58dccbf7bb8978817b87a532a59e777",
     "diffusers.models.unets.unet_2d_blocks.UpDecoderBlock2D.forward": "5c9b3b3fd07866440f51fb21f63734f0cf9c51b81dbc3fee84e6753cd6eae1d6",
     "diffusers.models.unets.unet_2d_blocks.CrossAttnUpBlock2D.forward": "3f740f7770a0fff154bb213097d11fae756ca599ae2339dc6ef790fb7cacbe8a",
@@ -118,6 +121,19 @@ def reviewed_call(module):
     return type(module).__call__ is _resolve(name) and _matches(
         name, type(module).__call__
     )
+
+
+def reviewed_component_forward(module, original):
+    """Eager root stream scope only; this never grants graph eligibility."""
+    kind = type(module)
+    name = kind.__module__ + "." + kind.__name__
+    if name not in (
+        "transformers.models.clip.modeling_clip.CLIPTextModel",
+        "transformers.models.clip.modeling_clip.CLIPTextModelWithProjection",
+        "diffusers.models.unets.unet_2d_condition.UNet2DConditionModel",
+    ):
+        return False
+    return _resolve(name) is kind and _matches(name + ".forward", original)
 
 
 def module_state(module):
@@ -257,22 +273,30 @@ def invocation_reason(module, original, args, kwargs):
     return None
 
 
-def vae_entry_leaves(module, method, result):
+def vae_entry_supported(module, originals=None):
+    """Check original methods before opening a managed eager method scope."""
+    base = "diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL"
+    if (
+        type(module) is not _resolve(base)
+        or getattr(module, "_hf_hook", None) is not None
+    ):
+        return False
+    if module.use_tiling or module.use_slicing:
+        return False
+    originals = originals or {}
+    return all(
+        _matches(base + "." + key, originals.get(key, getattr(module, key)))
+        for key in ("encode", "decode", "_encode", "_decode")
+    )
+
+
+def vae_entry_leaves(module, method, result, *, originals=None):
     """Read exact stock return owners without sampling/reconstructing a distribution.
 
     Used for an eager component scope, never to make encode/decode a whole graph.
     None means this opaque result needs another reviewed adapter.
     """
-    kind = type(module)
-    base = "diffusers.models.autoencoders.autoencoder_kl.AutoencoderKL"
-    if kind is not _resolve(base) or getattr(module, "_hf_hook", None) is not None:
-        return None
-    if module.use_tiling or module.use_slicing:
-        return None
-    if not all(
-        _matches(base + "." + key, getattr(module, key))
-        for key in ("encode", "decode", "_encode", "_decode")
-    ):
+    if not vae_entry_supported(module, originals):
         return None
     if method == "decode":
         if type(result) is _resolve("diffusers.models.autoencoders.vae.DecoderOutput"):
