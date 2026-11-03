@@ -823,8 +823,7 @@ impl Runs {
         let degree = match (&plan, self.service.pool()) {
             (Some(plan), _) => plan.degree,
             (None, Some(pool)) => pool
-                .degree(entry, spec.gpus)
-                .map_err(|e| refused("gpu_count_unavailable", e.to_string().replace("gpu_count_unavailable: ", "")))?,
+                .degree(entry, spec.gpus),
             (None, None) => 0,
         };
         // A memoized callable's run is answered from the success this machine holds for its
@@ -1282,9 +1281,12 @@ impl Runs {
         // them after its LoRAs: the same LoRA again takes the new strength, and strength 0 drops
         // it. Declaration and data-access validation stay in the existing resolver.
         for choice in passed {
-            let path = addressed(&choice.parameter, &installed.package, &callee_interface)
+            let Some(path) = addressed(&choice.parameter, &installed.package, &callee_interface)
                 .filter(|path| path.starts_with(&prefix))
-                .ok_or_else(|| refused("invalid_request", "model choice does not name a declared callee slot"))?;
+            else {
+                tracing::warn!("{}: a call's model choice {} names no slot of {entrypoint}: ignored", installed.package, choice.parameter);
+                continue;
+            };
             let prior = spec.models.iter().position(|prior| prior.parameter == path).map(|at| spec.models.remove(at));
             let names_model = !choice.repository.is_empty() || choice.manifest.is_some() || !choice.source.is_empty();
             let mut chosen = match prior {

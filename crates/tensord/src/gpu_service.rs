@@ -1680,13 +1680,10 @@ impl Pool {
         if degree == 0 {
             return Ok(&[]);
         }
-        self.devices.get(start..start + degree as usize).ok_or_else(|| self.unavailable(degree))
-    }
-    fn unavailable(&self, wanted: u32) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("gpu_count_unavailable: {wanted} GPUs asked of a machine with {}", self.devices.len()),
-        )
+        self.devices.get(start..start + degree as usize).ok_or_else(|| {
+            let why = format!("gpu_count_unavailable: {degree} GPUs asked of a machine with {}", self.devices.len());
+            io::Error::new(io::ErrorKind::Unsupported, why)
+        })
     }
     fn lane_devices(&self, start: usize, degree: u32) -> io::Result<String> {
         Ok(self
@@ -2273,20 +2270,22 @@ impl Pool {
     }
     /// A call's degree as its declaration and this machine set it: 0 for `accelerator=False`
     /// or a machine with no GPU, else its constructed slots' group, or the GPUs a call that
-    /// constructs nothing asks for (one by default); more than the machine has is refused.
-    pub fn degree(&self, entry: &serde_json::Value, wanted: u32) -> io::Result<u32> {
+    /// constructs nothing asks for (one by default), up to what the machine has.
+    pub fn degree(&self, entry: &serde_json::Value, wanted: u32) -> u32 {
         let models = entry.get("models").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
         let constructed: Vec<_> = models.into_iter().filter(constructed).collect();
-        Ok(match entry.get("accelerator").and_then(serde_json::Value::as_bool) {
+        match entry.get("accelerator").and_then(serde_json::Value::as_bool) {
             Some(false) => 0,
             _ if self.devices.is_empty() => 0,
-            _ if constructed.is_empty() && wanted as usize > self.devices.len() => {
-                return Err(self.unavailable(wanted))
+            // It constructs nothing: the GPUs it asks for, held by its one process, up to what there are.
+            _ if constructed.is_empty() => {
+                if wanted as usize > self.devices.len() {
+                    tracing::warn!("{wanted} GPUs asked of a machine with {}: it runs on those", self.devices.len());
+                }
+                wanted.clamp(1, self.devices.len() as u32)
             }
-            // It constructs nothing: the GPUs it asks for, held by its one process.
-            _ if constructed.is_empty() => wanted.max(1),
             _ => group_degree(&constructed, wanted, self.devices.len()),
-        })
+        }
     }
 
     /// Derive each model slot's binding from the installed SDK's real static interface and
@@ -2335,7 +2334,7 @@ impl Pool {
                 ));
             }
         }
-        let degree = self.degree(entry, degree)?;
+        let degree = self.degree(entry, degree);
         let (mut planned, mut sources) = (vec![], vec![]);
         for (model, (path, parameter)) in models.iter().zip(&slots) {
             let class = model

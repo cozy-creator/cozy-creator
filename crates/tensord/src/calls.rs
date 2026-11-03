@@ -490,7 +490,11 @@ impl Calls {
             }
             // A hint about a future call: TensorD may prepare its weights and ask Runtime
             // to build the construction. This answer does not promise completed loading.
-            Some(Request::ModelPrefetch(prefetch)) => self.model_prefetch(parent, frame.seq, prefetch),
+            // A hint: its failure fails nothing, and the Runtime ignores this code.
+            Some(Request::ModelPrefetch(prefetch)) => self.model_prefetch(parent, frame.seq, prefetch).map_err(|(code, why)| {
+                tracing::warn!("run {}: a model prefetch was not taken ({code}): {why}", parent.id);
+                ("model_prefetch_unsupported", why)
+            }),
             Some(Request::GpuRelease(_)) => {
                 let service = self.service.upgrade()
                     .ok_or_else(|| io::Error::other("the machine is stopping"))?;

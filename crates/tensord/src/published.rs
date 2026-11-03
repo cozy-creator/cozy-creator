@@ -1202,7 +1202,7 @@ impl Publisher {
             ))?;
         // The GPUs the call runs on (none for `accelerator=False`): what its models resolve for.
         let entry = protocol::interface::entrypoint(&interface, &request.entrypoint).cloned().unwrap_or_default();
-        let degree = gpu.degree(&entry, request.gpus).map_err(|e| ("model_preparation_failed", e.to_string()))?;
+        let degree = gpu.degree(&entry, request.gpus);
         let hardware = gpu.hardware(degree);
         let main = main_model(&slots);
         // One slot's grant, its Hub checkpoint and its warnings.

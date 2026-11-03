@@ -111,10 +111,8 @@ impl Grant {
         // This computer's machine listens on every interface once another computer's controller is
         // authorized (every call still needs an admitted key), else on loopback.
         let open = rental || authorized(home);
-        let listen_host: IpAddr = match get(&raw.listen_host).unwrap_or(if open { "0.0.0.0" } else { "127.0.0.1" }) {
-            host @ ("0.0.0.0" | "127.0.0.1") => host.parse().expect("literal address"),
-            _ => return Err(invalid("COZY_LISTEN_HOST must be 0.0.0.0 or 127.0.0.1")),
-        };
+        let listen_host: IpAddr = get(&raw.listen_host).unwrap_or(if open { "0.0.0.0" } else { "127.0.0.1" }).parse()
+            .map_err(|_| invalid("COZY_LISTEN_HOST must be an IP address"))?;
         let worker_id = get(&raw.worker_id).unwrap_or(if rental { "" } else { "local" }).to_owned();
         if worker_id.is_empty() || worker_id.len() > 256 || worker_id.trim() != worker_id {
             return Err(invalid("COZY_WORKER_ID must be one identifier of at most 256 bytes"));
