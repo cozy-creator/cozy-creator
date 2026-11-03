@@ -345,8 +345,8 @@ operations are optional compatibility tools.
 source metadata. Recognized source layouts use converter tables. A table whose layout headers cannot tell from
 another's (H3's fused Q/K/V LoRA rows) is chosen only for a file that declares a producer the table lists, by the
 keys and `__metadata__` that producer's code writes; `converter=` names it for any other. A layout no table
-recognizes is refused, unless `converter="as-is"` keeps its keys unconverted for code that reads them raw. A
-checkpoint's `source_format` says what was detected (`detected h3.lora (musubi-tuner)`). `materialize(checkpoint, local_dir=directory, format="safetensors")` writes ordinary Hugging Face filenames, configs and assets.
+recognizes keeps its keys unconverted, for code that reads them raw, and the import warns (`converter="as-is"`
+asks for this on any source). A checkpoint's `source_format` says what was detected (`detected h3.lora (musubi-tuner)`). `materialize(checkpoint, local_dir=directory, format="safetensors")` writes ordinary Hugging Face filenames, configs and assets.
 Encoded tensors retain their parts unless `dequantize=` requests ordinary values.
 
 ```python

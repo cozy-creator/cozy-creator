@@ -117,9 +117,9 @@ pub fn normalize(
         if !mine.iter().any(|i| peft_key(&planned[*i].key).is_some_and(|k| k.ends_with(A))) {
             continue;
         }
-        if let Some(key) = (mine.iter().map(|i| &planned[*i].key)).find(|k| KOHYA.iter().any(|p| k.starts_with(p))) {
-            let why = "a kohya module name no converter table maps; name one (sdxl.lora) to see which keys it lacks";
-            return refuse(Code::ADAPTER_TARGET_UNSUPPORTED, format!("{component}/{key}: {why}"));
+        // Kohya module names no converter table maps: not PEFT, so a layout no format reads.
+        if (mine.iter().map(|i| &planned[*i].key)).any(|k| KOHYA.iter().any(|p| k.starts_with(p))) {
+            continue;
         }
         let mut seen = BTreeSet::new();
         let (mut modules, mut kept) = (BTreeMap::new(), BTreeSet::new());

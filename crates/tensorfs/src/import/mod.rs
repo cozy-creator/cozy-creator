@@ -258,6 +258,8 @@ pub struct Imported {
     pub adapters: BTreeMap<String, crate::family::Adapter>,
     /// What the family check found, a line each.
     pub notes: Vec<String>,
+    /// What no format read, kept with its keys as they are: why, source by source.
+    pub unread: Vec<String>,
 }
 
 impl Imported {
@@ -295,6 +297,11 @@ impl Imported {
             };
             let by_component = (self.file_metadata.iter()).map(|(c, m)| (c.clone(), strings(m)));
             out.insert(FILE_METADATA.into(), Value::Map(by_component.collect()));
+        }
+        // What the loader reads to say why a construction cannot use it.
+        if self.format.formats.iter().any(|f| f == AS_IS) {
+            out.insert("normalized".into(), Value::Bool(false));
+            out.insert("converters".into(), texts(&self.unread));
         }
         if let Some(family) = &self.family {
             out.insert(crate::family::FAMILY.into(), family.value());
@@ -895,18 +902,22 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         }
         ggufs_planned.push((p.file, component, plan));
     }
+    // Paul, 09-28: a layout no format reads is stored as it is, never refused here. A package that
+    // reads its keys raw can use it; one that cannot says so when it loads.
     if !unknown.is_empty() && !as_is {
         let built_in: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-        return refuse(
-            Code::UNREGISTERED_FINGERPRINT,
-            format!(
-                "no format reads this layout, so the runtime could not use it: {}. Name a format to \
-                 see what the source lacks (--source-format <format>; built in: {}), or keep it \
-                 unconverted for code that reads its keys raw (--source-format {AS_IS})",
+        progress(
+            &format!(
+                "warning: no format reads this layout, so its keys are kept as they are, and only code that \
+                 reads them raw can use it: {}. Name a format to see what the source lacks (--source-format \
+                 <format>; built in: {})",
                 unknown.join("; "),
                 built_in.join(", ")
             ),
+            0,
+            0,
         );
+        formats.push(AS_IS.to_owned());
     }
     let mut tensored: Vec<String> = Vec::new();
     let names = (planned.iter().map(|p| &p.component)).chain(ggufs_planned.iter().map(|g| &g.1));
@@ -1037,6 +1048,7 @@ pub fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
         family: checked.family,
         adapters: checked.adapters,
         notes: checked.notes,
+        unread: unknown,
     };
     // Reports completed conversion before publication: even the final progress callback
     // can refuse without committing a header. This is the final cooperative cancellation
