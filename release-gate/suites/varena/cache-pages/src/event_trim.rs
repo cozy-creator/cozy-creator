@@ -56,7 +56,21 @@ fn capture(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> 
 
 pub(super) fn run(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<Value> {
     let control=probes::Stream::new(cuda)?;
+    let empty=snapshot(device)?;
+    require(empty["mapped"]==0 && empty["live"]==0,"isolated eager setup must start empty")?;
     let anchor=working::alloc(device,512,control.ptr as u64,None)?;
+    let slab=snapshot(device)?;
+    let slab_bytes=slab["mapped"].as_u64().ok_or("missing slab mapping fact")?;
+    require(slab_bytes>=1024 && slab_bytes%512==0,"unexpected native 512-byte slab layout")?;
+    // take() uses untouched free slots before poll(). Keep all but one measured
+    // slot live so each next stream must poll and reuse the historical block.
+    let mut holders=vec![anchor];
+    for _ in 0..slab_bytes/512-2 {
+        holders.push(working::alloc(device,512,control.ptr as u64,None)?);
+    }
+    let occupied=snapshot(device)?;
+    require(occupied["mapped"]==slab["mapped"] && occupied["memory_calls"]==slab["memory_calls"]
+        && occupied["capacity"].as_u64()==Some(slab_bytes-512),"setup did not leave exactly one slab slot")?;
     let output=working::alloc(device,1024,control.ptr as u64,None)?;
     check("anchor GPU fill",unsafe {(cuda.set)(anchor,47,512,control.ptr)})?;control.finish()?;
     let baseline=snapshot(device)?;
@@ -115,14 +129,16 @@ pub(super) fn run(cuda: &Cuda, peer: &cooperative::Peer, device: i32) -> Result<
     read(cuda,reused,512,123)?;working::free(device,reused,streams[0].ptr as u64)?;streams[0].finish()?;
     require(working::trim(device)?==0 && snapshot(device)?["events"]==0,"new free did not recreate/retire its event")?;
     read(cuda,anchor,512,47)?;
-    working::free(device,anchor,control.ptr as u64)?;working::free(device,output,control.ptr as u64)?;
+    for pointer in &holders {working::free(device,*pointer,control.ptr as u64)?;}
+    working::free(device,output,control.ptr as u64)?;
     control.finish()?;
     for stream in &streams {stream.finish()?;working::retire_stream(device,stream.ptr as u64)?;}
     working::retire_stream(device,pending.ptr as u64)?;working::retire_stream(device,control.ptr as u64)?;
     working::trim(device)?;let final_stats=snapshot(device)?;
     require(final_stats["live"]==0 && final_stats["mapped"]==0 && final_stats["events"]==0
         && final_stats["event_waits"]==baseline["event_waits"] && final_stats["context_joins"]==baseline["context_joins"],"final physical/event baseline")?;
-    Ok(json!({"baseline":baseline,"ordinary_cache_growth":rows,"cached":cached,
+    Ok(json!({"baseline":baseline,"slab_bytes":slab_bytes,"live_slab_holders":holders.len(),
+        "ordinary_cache_growth":rows,"cached":cached,
         "live_exclusion":live_before,"capture":captured,"before_explicit_trim":before_trim,
         "pending_after_trim":pending_after,"completed_after_trim":completed,"trim_returned_gpu_bytes":released,
         "full_live_anchor_and_pending_output_readback":true,"post_trim_new_owner_readback":true,
