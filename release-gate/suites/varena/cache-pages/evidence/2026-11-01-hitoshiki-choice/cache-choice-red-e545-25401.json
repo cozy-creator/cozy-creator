@@ -1,0 +1,263 @@
+{
+  "id": "run-599acb2bffd515e32f772a62",
+  "number": 25401,
+  "kind": "call",
+  "target": "local/ci-varena-cache-pages/split_choice",
+  "hub": "https://tensorhub.com",
+  "machine": "hitoshiki",
+  "status": "completed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "output": [],
+  "created_at_ms": 1793545360900,
+  "accepted_at_ms": 1793545361340,
+  "started_at_ms": 1793545363323,
+  "settled_at_ms": 1793545364452,
+  "result": {
+    "detail": "{\"child_exited\": true, \"command\": [\"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-6d321a5d4d5461b4828eadfd8315238ba169754ab3a249eab0917a2fe92e135c/tree/ci_varena_cache_pages/bin/varena-cache-pages\", \"choice\", \"/dev/shm/varena-cache-pages-47036cn2\", \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"0\"], \"driver_after_child\": {\"free\": 22387556352, \"total\": 25252724736}, \"error\": \"AssertionError: {'passed': False, 'mode': 'choice', 'provenance': {'input': {'source_sha': 'c7f1b214a67a3f400e176bbb717a3fcc32b1bf24', 'helper_sha256': 'a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf', 'native_extension_sha256': '070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6', 'gpu_uuid': 'GPU-18d960a8-2283-19c9-c060-ef8a22fabe35', 'timeout_s': 60.0}, 'manifest': {'source_sha': 'c7f1b214a67a3f400e176bbb717a3fcc32b1bf24', 'native_base': 'c3bf579ae82b42b254aa30fe54c609fc8e89afcb', 'native_source': 'e54525838aabe5ab3491cba5c03d50884198c0e4', 'mixed_sources': {'repository_base': 'e54525838aabe5ab3491cba5c03d50884198c0e4', 'crates/varena': 'e54525838aabe5ab3491cba5c03d50884198c0e4', 'release-gate/suites/varena/cache-pages': 'c7f1b214a67a3f400e176bbb717a3fcc32b1bf24'}, 'native_tree': '293b1e2dece4709171dc9b7f3d8c49649311ea08', 'binary_sha256': 'a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf', 'archive_sha256': '7e7482161aa7b08c461b4627446fd5bdb826ae7811bdc35b85e4aea538e9cd04', 'source_receipt_sha256': '246461ed443e2a15944541ffd34eaf02bf3084ca985f035633f6545bba284fae', 'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': ['libdl.so.2', 'libgcc_s.so.1', 'libpthread.so.0', 'libc.so.6', 'ld-linux-x86-64.so.2'], 'glibc_versions': [[2, 2], [2, 3], [2, 10], [2, 14], [2, 16], [2, 17], [2, 18], [2, 28]], 'glibc_max': [2, 28]}, 'scope': 'red-e545: identical actual Cache split-choice fixture; only native core differs; no callback bridge or GPU proof yet'}, 'controller_pid': 156947, 'request_id': '73', 'versions': {'tensorfs': '0.17.16+dev.ga96c7c3e', 'cozy-runtime': '0.36.22+dev.g7adc1e82', 'torch': '2.14.0'}, 'native_extension': '/var/lib/cozy/tensord/generations/d709a41a1e92a973ee43cd90580ea9b7/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so', 'parent_cache_binding_available': True, 'driver_before': {'free': 22467248128, 'total': 25252724736}}, 'command': ['/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-6d321a5d4d5461b4828eadfd8315238ba169754ab3a249eab0917a2fe92e135c/tree/ci_varena_cache_pages/bin/varena-cache-pages', 'choice', '/dev/shm/varena-cache-pages-47036cn2', 'GPU-18d960a8-2283-19c9-c060-ef8a22fabe35', '0'], 'pid': 156964, 'start_ticks': 80434738, 'stdout': [{'baseline': {'cache_live': 0, 'cache_mapped': 0, 'cache_pending': 0, 'cache_ready': 0, 'cache_reserved': 0, 'caches': 0, 'capacity': 0, 'events': 0, 'live': 0, 'mapped': 0, 'memory_calls': 1, 'pending': 0, 'physical_ooms': 0, 'pools': 0}, 'driver': {'free': 22021275648, 'total': 25252724736}, 'event': 'ready', 'gpu_uuid': 'GPU-18d960a8-2283-19c9-c060-ef8a22fabe35', 'libraries': {'cuda_loaded': True, 'python_loaded': False, 'torch_loaded': False}, 'mode': 'choice', 'pid': 156964, 'start_ticks': 80434738}, {'event': 'choices', 'live': {'available': 4194304, 'choice': 'half', 'required': 4194304}, 'managed_limit': 8388608, 'page': 2097152, 'pending': {'available': 4194304, 'choice': 'half', 'required': 4194304}, 'pending_accounting': {'cache_idle': 0, 'cache_live': 0, 'cache_pending': 4194304, 'pending_release': 4194304, 'physical': 4194304, 'reclaimable': 0, 'refreshed': True}, 'ready': {'available': 4194304, 'choice': 'half', 'required': 4194304}, 'ready_accounting': {'cache_idle': 4194304, 'cache_live': 0, 'cache_pending': 0, 'pending_release': 0, 'physical': 4194304, 'reclaimable': 4194304, 'refreshed': True}}, {'error': 'completed Cache pages did not admit the larger declared choice', 'event': 'result', 'passed': False, 'pid': 156964}], 'stderr': '', 'returncode': 1}\", \"mode\": \"choice\", \"passed\": false, \"pid\": 156964, \"pidfd_exit_observed\": true, \"provenance\": {\"controller_pid\": 156947, \"driver_before\": {\"free\": 22467248128, \"total\": 25252724736}, \"input\": {\"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"helper_sha256\": \"a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf\", \"native_extension_sha256\": \"070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6\", \"source_sha\": \"c7f1b214a67a3f400e176bbb717a3fcc32b1bf24\", \"timeout_s\": 60.0}, \"manifest\": {\"archive_sha256\": \"7e7482161aa7b08c461b4627446fd5bdb826ae7811bdc35b85e4aea538e9cd04\", \"binary_sha256\": \"a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf\", \"elf\": {\"class\": \"ELF64\", \"glibc_max\": [2, 28], \"glibc_versions\": [[2, 2], [2, 3], [2, 10], [2, 14], [2, 16], [2, 17], [2, 18], [2, 28]], \"machine\": \"x86_64\", \"needed\": [\"libdl.so.2\", \"libgcc_s.so.1\", \"libpthread.so.0\", \"libc.so.6\", \"ld-linux-x86-64.so.2\"]}, \"mixed_sources\": {\"crates/varena\": \"e54525838aabe5ab3491cba5c03d50884198c0e4\", \"release-gate/suites/varena/cache-pages\": \"c7f1b214a67a3f400e176bbb717a3fcc32b1bf24\", \"repository_base\": \"e54525838aabe5ab3491cba5c03d50884198c0e4\"}, \"native_base\": \"c3bf579ae82b42b254aa30fe54c609fc8e89afcb\", \"native_source\": \"e54525838aabe5ab3491cba5c03d50884198c0e4\", \"native_tree\": \"293b1e2dece4709171dc9b7f3d8c49649311ea08\", \"scope\": \"red-e545: identical actual Cache split-choice fixture; only native core differs; no callback bridge or GPU proof yet\", \"source_receipt_sha256\": \"246461ed443e2a15944541ffd34eaf02bf3084ca985f035633f6545bba284fae\", \"source_sha\": \"c7f1b214a67a3f400e176bbb717a3fcc32b1bf24\"}, \"native_extension\": \"/var/lib/cozy/tensord/generations/d709a41a1e92a973ee43cd90580ea9b7/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so\", \"parent_cache_binding_available\": true, \"request_id\": \"73\", \"versions\": {\"cozy-runtime\": \"0.36.22+dev.g7adc1e82\", \"tensorfs\": \"0.17.16+dev.ga96c7c3e\", \"torch\": \"2.14.0\"}}, \"returncode\": 1, \"start_ticks\": 80434738, \"stderr\": \"\", \"stdout\": [{\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"driver\": {\"free\": 22021275648, \"total\": 25252724736}, \"event\": \"ready\", \"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"choice\", \"pid\": 156964, \"start_ticks\": 80434738}, {\"event\": \"choices\", \"live\": {\"available\": 4194304, \"choice\": \"half\", \"required\": 4194304}, \"managed_limit\": 8388608, \"page\": 2097152, \"pending\": {\"available\": 4194304, \"choice\": \"half\", \"required\": 4194304}, \"pending_accounting\": {\"cache_idle\": 0, \"cache_live\": 0, \"cache_pending\": 4194304, \"pending_release\": 4194304, \"physical\": 4194304, \"reclaimable\": 0, \"refreshed\": true}, \"ready\": {\"available\": 4194304, \"choice\": \"half\", \"required\": 4194304}, \"ready_accounting\": {\"cache_idle\": 4194304, \"cache_live\": 0, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 4194304, \"reclaimable\": 4194304, \"refreshed\": true}}, {\"error\": \"completed Cache pages did not admit the larger declared choice\", \"event\": \"result\", \"passed\": false, \"pid\": 156964}], \"traceback\": \"Traceback (most recent call last):\\n  File \\\"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-6d321a5d4d5461b4828eadfd8315238ba169754ab3a249eab0917a2fe92e135c/tree/ci_varena_cache_pages/__init__.py\\\", line 111, in native\\n    assert len(reports) == 1 and reports[0]['passed'] and child.returncode == 0, result\\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\nAssertionError: {'passed': False, 'mode': 'choice', 'provenance': {'input': {'source_sha': 'c7f1b214a67a3f400e176bbb717a3fcc32b1bf24', 'helper_sha256': 'a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf', 'native_extension_sha256': '070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6', 'gpu_uuid': 'GPU-18d960a8-2283-19c9-c060-ef8a22fabe35', 'timeout_s': 60.0}, 'manifest': {'source_sha': 'c7f1b214a67a3f400e176bbb717a3fcc32b1bf24', 'native_base': 'c3bf579ae82b42b254aa30fe54c609fc8e89afcb', 'native_source': 'e54525838aabe5ab3491cba5c03d50884198c0e4', 'mixed_sources': {'repository_base': 'e54525838aabe5ab3491cba5c03d50884198c0e4', 'crates/varena': 'e54525838aabe5ab3491cba5c03d50884198c0e4', 'release-gate/suites/varena/cache-pages': 'c7f1b214a67a3f400e176bbb717a3fcc32b1bf24'}, 'native_tree': '293b1e2dece4709171dc9b7f3d8c49649311ea08', 'binary_sha256': 'a8c5eb4ef1427e9b049bcf9365d499d7ba4d617c4ea511bf18bb95c190a230bf', 'archive_sha256': '7e7482161aa7b08c461b4627446fd5bdb826ae7811bdc35b85e4aea538e9cd04', 'source_receipt_sha256': '246461ed443e2a15944541ffd34eaf02bf3084ca985f035633f6545bba284fae', 'elf': {'class': 'ELF64', 'machine': 'x86_64', 'needed': ['libdl.so.2', 'libgcc_s.so.1', 'libpthread.so.0', 'libc.so.6', 'ld-linux-x86-64.so.2'], 'glibc_versions': [[2, 2], [2, 3], [2, 10], [2, 14], [2, 16], [2, 17], [2, 18], [2, 28]], 'glibc_max': [2, 28]}, 'scope': 'red-e545: identical actual Cache split-choice fixture; only native core differs; no callback bridge or GPU proof yet'}, 'controller_pid': 156947, 'request_id': '73', 'versions': {'tensorfs': '0.17.16+dev.ga96c7c3e', 'cozy-runtime': '0.36.22+dev.g7adc1e82', 'torch': '2.14.0'}, 'native_extension': '/var/lib/cozy/tensord/generations/d709a41a1e92a973ee43cd90580ea9b7/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so', 'parent_cache_binding_available': True, 'driver_before': {'free': 22467248128, 'total': 25252724736}}, 'command': ['/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-6d321a5d4d5461b4828eadfd8315238ba169754ab3a249eab0917a2fe92e135c/tree/ci_varena_cache_pages/bin/varena-cache-pages', 'choice', '/dev/shm/varena-cache-pages-47036cn2', 'GPU-18d960a8-2283-19c9-c060-ef8a22fabe35', '0'], 'pid': 156964, 'start_ticks': 80434738, 'stdout': [{'baseline': {'cache_live': 0, 'cache_mapped': 0, 'cache_pending': 0, 'cache_ready': 0, 'cache_reserved': 0, 'caches': 0, 'capacity': 0, 'events': 0, 'live': 0, 'mapped': 0, 'memory_calls': 1, 'pending': 0, 'physical_ooms': 0, 'pools': 0}, 'driver': {'free': 22021275648, 'total': 25252724736}, 'event': 'ready', 'gpu_uuid': 'GPU-18d960a8-2283-19c9-c060-ef8a22fabe35', 'libraries': {'cuda_loaded': True, 'python_loaded': False, 'torch_loaded': False}, 'mode': 'choice', 'pid': 156964, 'start_ticks': 80434738}, {'event': 'choices', 'live': {'available': 4194304, 'choice': 'half', 'required': 4194304}, 'managed_limit': 8388608, 'page': 2097152, 'pending': {'available': 4194304, 'choice': 'half', 'required': 4194304}, 'pending_accounting': {'cache_idle': 0, 'cache_live': 0, 'cache_pending': 4194304, 'pending_release': 4194304, 'physical': 4194304, 'reclaimable': 0, 'refreshed': True}, 'ready': {'available': 4194304, 'choice': 'half', 'required': 4194304}, 'ready_accounting': {'cache_idle': 4194304, 'cache_live': 0, 'cache_pending': 0, 'pending_release': 0, 'physical': 4194304, 'reclaimable': 4194304, 'refreshed': True}}, {'error': 'completed Cache pages did not admit the larger declared choice', 'event': 'result', 'passed': False, 'pid': 156964}], 'stderr': '', 'returncode': 1}\\n\"}",
+    "passed": false
+  },
+  "execution_ms": 1019,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 783.4,
+          "package_import": 4.2,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 787.5,
+        "started_unix_ms": 1793545363326
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793545364320144,
+          "gpu": 0,
+          "pid": 156947,
+          "start_us": 1793545364145110,
+          "uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793545364335.1,
+      "reply_sent_unix_ms": 1793545364336.0,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 2266103808,
+          "gpu": 0,
+          "peak_bytes": 2875654144,
+          "power_max_w": 60,
+          "sm_mhz_limit": 3120,
+          "sm_mhz_low": 2535,
+          "sm_mhz_mean": 2535,
+          "temperature_max_c": 35,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 33223216,
+      "peak_reserved_bytes": 90177536,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 7.1694362957416535,
+              "h2d_gbps": 13.347251092972606
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 21561544,
+              "allocator": {
+                "allocations": 331,
+                "context_joins": 0,
+                "driver_memory_calls": 66,
+                "event_queries": 64,
+                "event_records": 57,
+                "event_waits": 0,
+                "frees": 319,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061370880,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "cooperation": {
+                "active": true,
+                "active_recoveries": 0,
+                "deferred": 0,
+                "demand_clear_pending": false,
+                "failed": null,
+                "last_donation": null,
+                "last_recovery": null,
+                "last_withdrawn_round": null,
+                "pending_withdrawals": 0,
+                "physical_bytes": 14680064,
+                "published": 4,
+                "recoveries": 0,
+                "retired": false,
+                "serviced": 4,
+                "stopping": false,
+                "withdrawn_rounds": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 33223216,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "73",
+              "reserved": 90177536,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "driver_physical_ooms": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 21561536,
+                "allocated_capacity": 27661824,
+                "allocated_peak": 33223216,
+                "allocations": 351,
+                "cache_live_bytes": 0,
+                "cache_mapped_bytes": 0,
+                "cache_pending_bytes": 0,
+                "cache_ready_bytes": 0,
+                "cache_reserved_bytes": 0,
+                "caches": 0,
+                "context_joins": 0,
+                "driver_memory_calls": 76,
+                "driver_physical_ooms": 0,
+                "event_handles": 42,
+                "event_queries": 69,
+                "event_records": 62,
+                "event_waits": 0,
+                "free_bytes": 42898432,
+                "frees": 337,
+                "mapped_bytes": 90177536,
+                "mapped_peak": 90177536,
+                "ooms": 0,
+                "pending_bytes": 17761280,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 31457280,
+                "unassigned_bytes": 1856000
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 33223216
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.22+dev.g7adc1e82",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.ga96c7c3e"
+    }
+  }
+}

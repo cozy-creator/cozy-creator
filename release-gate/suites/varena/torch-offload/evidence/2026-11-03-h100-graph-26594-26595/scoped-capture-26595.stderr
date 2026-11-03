@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "/var/lib/cozy/tensord/editable/71132adec952e4cb/ci-varena-offload/source-4c2a64829c177755be591ce9f56952674c5bfa12f014edacab9d906b7ff6c56b/tree/ci_varena_offload/runner.py", line 155, in <module>
+    retained_namespace = runpy.run_path(str(binaries / script), run_name="__main__")
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/var/lib/cozy/tensord/editable/71132adec952e4cb/ci-varena-offload/source-4c2a64829c177755be591ce9f56952674c5bfa12f014edacab9d906b7ff6c56b/tree/ci_varena_offload/bin/graph_capture_sync_gpu.py", line 246, in <module>
+    run(args.device, args.provider, args.provider_python, args.timeout_s)
+  File "/var/lib/cozy/tensord/editable/71132adec952e4cb/ci-varena-offload/source-4c2a64829c177755be591ce9f56952674c5bfa12f014edacab9d906b7ff6c56b/tree/ci_varena_offload/bin/graph_capture_sync_gpu.py", line 123, in run
+    ordering = preparation_ordering(
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/var/lib/cozy/tensord/editable/71132adec952e4cb/ci-varena-offload/source-4c2a64829c177755be591ce9f56952674c5bfa12f014edacab9d906b7ff6c56b/tree/ci_varena_offload/bin/graph_capture_sync_gpu.py", line 67, in preparation_ordering
+    raise result["error"]
+  File "/var/lib/cozy/tensord/editable/71132adec952e4cb/ci-varena-offload/source-4c2a64829c177755be591ce9f56952674c5bfa12f014edacab9d906b7ff6c56b/tree/ci_varena_offload/bin/graph_capture_sync_gpu.py", line 45, in attempt
+    output.copy_(value)
+RuntimeError: Inplace update to inference tensor outside InferenceMode is not allowed.You can make a clone to get a normal tensor before doing inplace update.See https://github.com/pytorch/rfcs/pull/17 for more details.

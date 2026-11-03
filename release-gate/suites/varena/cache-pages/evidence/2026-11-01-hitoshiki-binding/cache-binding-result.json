@@ -1,0 +1,190 @@
+{
+  "after": {
+    "allocated_bytes": 9046016,
+    "allocated_capacity": 11012096,
+    "allocated_peak": 9048064,
+    "allocations": 23,
+    "cache_live_bytes": 0,
+    "cache_mapped_bytes": 0,
+    "cache_pending_bytes": 0,
+    "cache_ready_bytes": 0,
+    "cache_reserved_bytes": 0,
+    "caches": 0,
+    "context_joins": 0,
+    "driver_memory_calls": 36,
+    "driver_physical_ooms": 0,
+    "event_handles": 4,
+    "event_queries": 6,
+    "event_records": 6,
+    "event_waits": 0,
+    "free_bytes": 7858176,
+    "frees": 20,
+    "mapped_bytes": 18874368,
+    "mapped_peak": 18874368,
+    "ooms": 0,
+    "pending_bytes": 2048,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 4194304,
+    "unassigned_bytes": 2048
+  },
+  "base": 12937330688,
+  "before": {
+    "allocated_bytes": 9046016,
+    "allocated_capacity": 11012096,
+    "allocated_peak": 9046016,
+    "allocations": 22,
+    "cache_live_bytes": 0,
+    "cache_mapped_bytes": 0,
+    "cache_pending_bytes": 0,
+    "cache_ready_bytes": 0,
+    "cache_reserved_bytes": 0,
+    "caches": 0,
+    "context_joins": 0,
+    "driver_memory_calls": 16,
+    "driver_physical_ooms": 0,
+    "event_handles": 4,
+    "event_queries": 4,
+    "event_records": 4,
+    "event_waits": 0,
+    "free_bytes": 7860224,
+    "frees": 19,
+    "mapped_bytes": 18874368,
+    "mapped_peak": 18874368,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 4194304,
+    "unassigned_bytes": 2048
+  },
+  "case": "python_binding",
+  "during": {
+    "allocated_bytes": 9048064,
+    "allocated_capacity": 11014144,
+    "allocated_peak": 9048064,
+    "allocations": 23,
+    "cache_live_bytes": 6291456,
+    "cache_mapped_bytes": 6291456,
+    "cache_pending_bytes": 0,
+    "cache_ready_bytes": 0,
+    "cache_reserved_bytes": 6291456,
+    "caches": 1,
+    "context_joins": 0,
+    "driver_memory_calls": 30,
+    "driver_physical_ooms": 0,
+    "event_handles": 4,
+    "event_queries": 5,
+    "event_records": 5,
+    "event_waits": 0,
+    "free_bytes": 7858176,
+    "frees": 19,
+    "mapped_bytes": 18874368,
+    "mapped_peak": 18874368,
+    "ooms": 0,
+    "pending_bytes": 0,
+    "pools": 0,
+    "pools_bytes": 0,
+    "prefetch_admissions": 0,
+    "prefetch_attempts": 0,
+    "prefetch_declines": 0,
+    "reclaimable_bytes": 4194304,
+    "unassigned_bytes": 2048
+  },
+  "full_readback": true,
+  "page": 2097152,
+  "passed": true,
+  "provenance": {
+    "controller_pid": 155942,
+    "driver_before": {
+      "free": 24729354240,
+      "total": 25252724736
+    },
+    "input": {
+      "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35",
+      "helper_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+      "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+      "timeout_s": 60.0
+    },
+    "manifest": {
+      "archive_sha256": "884efbe133b5645681bf34bc12b9c180df8d80dc9ecbab2054b875965972ed91",
+      "binary_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+      "elf": {
+        "class": "ELF64",
+        "glibc_max": [
+          2,
+          28
+        ],
+        "glibc_versions": [
+          [
+            2,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            2,
+            10
+          ],
+          [
+            2,
+            14
+          ],
+          [
+            2,
+            16
+          ],
+          [
+            2,
+            17
+          ],
+          [
+            2,
+            18
+          ],
+          [
+            2,
+            28
+          ]
+        ],
+        "machine": "x86_64",
+        "needed": [
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libpthread.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ]
+      },
+      "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+      "native_tree": "293b1e2dece4709171dc9b7f3d8c49649311ea08",
+      "scope": "native paged Cache primitive and thin bindings; asynchronous owner callbacks not implemented; GPU pending",
+      "source_receipt_sha256": "d733cd8054870eb9ea42a6d1011de7e7fb524cb48b820fd96da6e999f91a4a7c",
+      "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4"
+    },
+    "native_extension": "/var/lib/cozy/tensord/generations/016daabebcf406e217473c9df277ec7e/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so",
+    "parent_cache_binding_available": true,
+    "request_id": "46",
+    "versions": {
+      "cozy-runtime": "0.36.22+dev.g7adc1e82",
+      "tensorfs": "0.17.16+dev.ga96c7c3e",
+      "torch": "2.14.0"
+    }
+  },
+  "released": {
+    "live_bytes": 4194304,
+    "mapped_bytes": 4194304,
+    "pending_bytes": 0,
+    "ready_bytes": 0,
+    "reserved_bytes": 6291456
+  }
+}

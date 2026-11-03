@@ -1,0 +1,76 @@
+{
+  "manifest": {
+    "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+    "native_base": "c3bf579ae82b42b254aa30fe54c609fc8e89afcb",
+    "native_tree": "293b1e2dece4709171dc9b7f3d8c49649311ea08",
+    "binary_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+    "archive_sha256": "884efbe133b5645681bf34bc12b9c180df8d80dc9ecbab2054b875965972ed91",
+    "source_receipt_sha256": "d733cd8054870eb9ea42a6d1011de7e7fb524cb48b820fd96da6e999f91a4a7c",
+    "elf": {
+      "class": "ELF64",
+      "machine": "x86_64",
+      "needed": [
+        "libdl.so.2",
+        "libgcc_s.so.1",
+        "libpthread.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "glibc_versions": [
+        [
+          2,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          2,
+          10
+        ],
+        [
+          2,
+          14
+        ],
+        [
+          2,
+          16
+        ],
+        [
+          2,
+          17
+        ],
+        [
+          2,
+          18
+        ],
+        [
+          2,
+          28
+        ]
+      ],
+      "glibc_max": [
+        2,
+        28
+      ]
+    },
+    "scope": "native paged Cache primitive and thin bindings; asynchronous owner callbacks not implemented; GPU pending"
+  },
+  "project": "/home/fidika/cozy_v2/outputs/xs138-p3-cache/e54525838/controller-hitoshiki/project",
+  "files": {
+    "ci_varena_cache_pages/__init__.py": "c264589266a4313e28f6a30254472881328bad2f81cae0c3a4ddba10f8ce7408",
+    "ci_varena_cache_pages/bin/provenance.json": "8d29b34d65047e0b2497f3b13eb0fa450c9c507cca1d069dc439609a896d59c9",
+    "ci_varena_cache_pages/bin/varena-cache-pages": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+    "pyproject.toml": "b7ed2af66a12cd5d1ff21283219f6c1d3dea5b37840abcb80917860c48878cd2",
+    "uv.lock": "d8ff437c54f8215e4d07c9e5047d40d52c8a55d125648dd6f2969a37e0663370"
+  },
+  "input": {
+    "source_sha": "e54525838aabe5ab3491cba5c03d50884198c0e4",
+    "helper_sha256": "76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8",
+    "native_extension_sha256": "8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59",
+    "gpu_uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+  },
+  "gpu_uuid_bound": true,
+  "gpu_executed": false
+}

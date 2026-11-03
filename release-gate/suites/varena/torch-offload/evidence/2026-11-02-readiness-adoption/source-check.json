@@ -1,0 +1,8 @@
+{
+  "scope": "Source/cohort documentation only; no rebuilt native artifact or GPU execution",
+  "all_seven_implementation_blobs_equal": true,
+  "implementation_only_patch_clean_applies_to_canonical_1eb499475": true,
+  "current_helper_stream_local_contract": "pass",
+  "adapter_has_no_optout_or_signature_probe": true,
+  "runtime_external_consumer_compatibility": "bounded to caller audit exact heads; no universal claim"
+}

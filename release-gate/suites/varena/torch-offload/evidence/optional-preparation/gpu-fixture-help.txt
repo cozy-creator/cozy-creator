@@ -1,0 +1,5 @@
+usage: optional_pool_admission_gpu.py [-h] [--device DEVICE]
+
+options:
+  -h, --help       show this help message and exit
+  --device DEVICE

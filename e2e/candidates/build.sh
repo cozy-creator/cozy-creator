@@ -53,7 +53,15 @@ elif [ "$what" = cozy ]; then
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)
-  cp "$src/target/release/cozy$exe" "$out/cozy$exe"
+  bundler=(uv run -q --no-project)
+  case "${RUNNER_OS:-Linux}" in
+    Linux) bundler+=(--with patchelf) ;;
+    Windows) bundler+=(--with lief) ;;
+  esac
+  "${bundler[@]}" python "$src/scripts/bundle-native.py" \
+    --binary "$src/target/release/cozy$exe" --target "$src/target/release" \
+    --runtime-dir "$(cd "$src" && rustc --print target-libdir)" \
+    --out "$out" --archive "$out/cozy-native.tar.gz"
 elif [ "$what" = tensorfs ]; then
   # tfs resolved with the extension's features (tensorfs-py's default store), as maturin resolves them: TensorFS and
   # every dependency compile once for both.
@@ -73,10 +81,10 @@ else
     git checkout -- pyproject.toml)
 fi
 case $what in
-  cozy) file=$out/cozy$exe; chmod +x "$file" ;;
+  cozy) file=$out/cozy$exe; chmod +x "$file"; version=$("$file" --version) ;;
   tensorfs) file=$(ls "$out"/tensorfs-*.whl) ;;
   runtime) file=$(ls "$out"/cozy_runtime-*.whl) ;;
 esac
-echo "$what: $([ "$what" != cozy ] || "$file" --version) $(basename "$file") from $repo ${sha:0:12}" >&2
+echo "$what: ${version:-} $(basename "$file") from $repo ${sha:0:12}" >&2
 [ -z "${GITHUB_OUTPUT:-}" ] || echo "name=$name" >> "$GITHUB_OUTPUT"
 echo "$file"
