@@ -5,6 +5,14 @@ paths below. The preceding nn-only vertical6c7dffc71 remains independently
 qualifiable. Draft #2501 remains draft; GPU execution/performance qualification
 belongs to the coordinator and is unrun in this lane.
 
+The Linux RC composes this activation as `29566077d` with the ownerless graph
+resource payload (`5111318ca` + `b0d1c2d7f`) and required typed native overlap
+support. Public `vt.offload(pipe)` therefore selects this controller by default;
+there is no separate activation switch or caller reserve. Every selected epoch
+uses scoped readiness and existing checked exports/tails. The actual stock client
+below requires repeated automatic UNet replay rather than accepting eager output
+as automatic coverage.
+
 The inventory uses the four exact stock configs at SDXL base revision
 `462165984030d82259a11f4367a4eed129e94a7b`. It constructs real, full-width library
 models on the meta device without downloading weights or creating Sources/native
