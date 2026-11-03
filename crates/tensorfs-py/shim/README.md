@@ -42,3 +42,13 @@ The Linux RC admits exactly `2.15.0+cu132`, CUDA 13.2, with the actual build's C
 The shim uses the SDK's `c10::MempoolId_t` directly. The actual CUDA pluggable-allocator header supplies the reviewed allocation/free, record-stream, reset and pool callback signatures; `c10::Error`, `OutOfMemoryError` and `AcceleratorError` remain the direct exception API. No older-Torch fallback is selected.
 
 Header inspection, compile/link and host loading establish ABI-build evidence only. Actual CUDA allocator, capture/replay, lifetime and model execution remain separate integrated gates. Historical 2.14 qualification receipts remain preserved under their original source and artifact identities.
+
+The private `varena_torch_workspace_cache_enabled` export reads
+`at::cuda::isCUDABlasWorkspaceCachingEnabled()` through the existing contained-error
+ABI. It reports Torch's actual latched setting without initializing CUDA or allocating
+GPU memory. Managed graph frontends require this same-cohort export and refuse cached
+library workspaces; low-level graph owners retain their own workspace lifetime contract.
+`release-gate/suites/varena/torch-offload/workspace_cache_host.py` exercises the real
+accessor and shared eligibility check with unset/0/1 in fresh processes, then changes
+the environment to verify that the actual state remains latched. It creates no CUDA
+device and does not establish GPU capture/replay qualification.

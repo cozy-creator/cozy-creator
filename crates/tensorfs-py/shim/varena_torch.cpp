@@ -1,4 +1,5 @@
 // Torch's pool filter and exception ABI stay here; allocation policy stays in Rust.
+#include <ATen/cuda/CUDAContextLight.h>
 #include <c10/core/Allocator.h>
 #include <c10/util/Exception.h>
 #include <c10/util/ApproximateClock.h>
@@ -348,5 +349,15 @@ extern "C" VR_EXPORT int32_t varena_torch_install(Failure* failure) noexcept {
         core.observe(observe_working, &observed);
         check(observed);
         torch_allocator::changeCurrentAllocator(installed_allocator);
+    });
+}
+
+extern "C" VR_EXPORT int32_t varena_torch_workspace_cache_enabled(
+        int32_t* enabled, Failure* failure) noexcept {
+    return contain(failure, [&] {
+        TORCH_CHECK(enabled, "Varena workspace-cache query requires an output");
+        // This host-only accessor returns Torch's first-call-latched state. It
+        // neither initializes CUDA nor creates a library handle or workspace.
+        *enabled = at::cuda::isCUDABlasWorkspaceCachingEnabled() ? 1 : 0;
     });
 }

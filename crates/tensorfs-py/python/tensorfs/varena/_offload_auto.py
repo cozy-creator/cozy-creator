@@ -739,6 +739,7 @@ class _AutomaticGraphs:
 
     def dispatch(self, module, original, args, kwargs, scope):
         from . import _offload as adapter
+        from . import torch as vt
         from ._offload_graph import CaptureOwnershipUncertain, GraphSegment
 
         if (
@@ -755,7 +756,9 @@ class _AutomaticGraphs:
             state.reason = "eager_mode" if self.mode == "eager" else "cpu"
             state.eager_calls += 1
             return original(*args, **kwargs)
-        reason = self._reason(owner, state, original, args, kwargs)
+        reason = vt._managed_graph_refusal() or self._reason(
+            owner, state, original, args, kwargs
+        )
         if reason:
             state.reason = reason
             state.eager_calls += 1

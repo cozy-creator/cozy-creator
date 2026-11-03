@@ -48,6 +48,18 @@ working copies scheduled after the replay on its actual stream, so the next call
 cannot overwrite a retained result. Gradient/training/stateful module capture and
 unmanaged/custom pointer escapes need a separate explicit contract.
 
+Managed graph capture requires Torch's native BLAS workspace cache to be disabled,
+the default in the reviewed Torch 2.15 cohort. The frontend queries the actual
+first-call-latched native setting before warmup/capture; rereading the mutable
+`TORCH_CUBLAS_WORKSPACE_CACHE` environment variable is not sufficient. An enabled
+cache returns `cached_library_workspace`: resetting one same-stream graph can free
+the shared workspace still referenced by another graph. Default ATen cuBLAS and
+cuBLASLt operations instead allocate scratch within each graph's retained pool.
+Custom operators that directly borrow cached library workspace remain outside this
+managed contract even when the native flag is false. Low-level `vt.graph` retains
+its caller-owned library resource/lifetime contract, including Runtime's separate
+control and library streams.
+
 ## Definition ownership
 
 One `GraphSegment` retains:
