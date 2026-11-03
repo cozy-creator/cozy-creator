@@ -53,7 +53,7 @@ class Start(_Wire):
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
     memo: MemoSettings | None
-    cooperation: Cooperation | None
+    cooperation: list[Cooperation]
 
 class Adapter(_Wire):
     model_id: str
