@@ -755,6 +755,36 @@ impl Store {
         })
     }
 
+    /// Drops the measurements of the next runs past number `after` that settled before `before_ms`,
+    /// in one short write. The number to go on from; None: no run past `after` is that old.
+    pub fn drop_measurements(&self, after: i64, before_ms: i64) -> Result<Option<i64>> {
+        self.write(|tx| {
+            let mut next = tx.prepare("SELECT number, created_at FROM runs WHERE number > ?1 ORDER BY number LIMIT 64")?;
+            let next = next
+                .query_map([after], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // A run that settled before then was created before then, and numbers go up with time.
+            let Some(through) = next.iter().take_while(|(_, created)| *created < before_ms).last().map(|(n, _)| *n) else {
+                return Ok(None);
+            };
+            let ours = params![after, through, before_ms];
+            tx.execute(
+                "UPDATE runs SET outcome = CAST(json_remove(CAST(outcome AS TEXT), '$.measurements') AS BLOB)
+                 WHERE number > ?1 AND number <= ?2 AND settled_at < ?3 AND outcome IS NOT NULL
+                     AND CASE WHEN json_valid(CAST(outcome AS TEXT))
+                         THEN json_type(CAST(outcome AS TEXT), '$.measurements') IS NOT NULL ELSE 0 END",
+                ours,
+            )?;
+            tx.execute(
+                "UPDATE run_logs SET text = json_remove(text, '$.measurements')
+                 WHERE level = 'call' AND run IN (SELECT id FROM runs WHERE number > ?1 AND number <= ?2 AND settled_at < ?3)
+                     AND CASE WHEN json_valid(text) THEN json_type(text, '$.measurements') IS NOT NULL ELSE 0 END",
+                ours,
+            )?;
+            Ok(Some(through))
+        })
+    }
+
     /// Places an unplaced run on `machine`.
     pub fn place(&self, id: &str, machine: &str) -> Result<bool> {
         self.write(|tx| {

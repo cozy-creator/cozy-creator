@@ -7,6 +7,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     process::ExitCode,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -150,6 +151,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
     tokio::spawn(newest_releases(home.clone(), loaded.config.hub_url.clone()));
+    tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), address.port(), &token);
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
@@ -215,6 +217,32 @@ impl Steps {
     fn done(&mut self, step: &str) {
         info!(step, ms = self.0.elapsed().as_millis() as u64, "started");
         self.0 = Instant::now();
+    }
+}
+
+/// How long a settled run keeps its measurements, the timing `cozy run show` breaks down. They are
+/// most of what a run stores, about 70 MB a day on a busy computer. Nothing else of a run is ever
+/// dropped: its row, result, reason, outputs, logs and calls stay for good.
+const MEASURED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);
+
+/// Drops measurements past [`MEASURED_FOR`], now and daily. Each write is followed by a pause as long
+/// as it took, so the store's one writer is never held more than half the time.
+async fn drop_old_measurements(calcifer: Arc<Calcifer>) {
+    let mut after = 0;
+    loop {
+        let began = Instant::now();
+        let before_ms = crate::store::now_ms() - MEASURED_FOR.as_millis() as i64;
+        match calcifer.store().drop_measurements(after, before_ms) {
+            Ok(Some(next)) => {
+                after = next;
+                tokio::time::sleep(began.elapsed()).await;
+            }
+            Ok(None) => tokio::time::sleep(Duration::from_secs(24 * 3600)).await,
+            Err(e) => {
+                warn!("dropping old measurements: {e}");
+                tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
+            }
+        }
     }
 }
 

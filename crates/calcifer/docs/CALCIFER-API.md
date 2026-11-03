@@ -132,6 +132,8 @@ a spec.
   `done_fraction`, `bytes_per_s` and `eta_s`. `?detail=full` adds `measurements`, `calls` and `report` (each
   executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
   ceiling).
+  A run settled over 30 days ago has dropped `measurements` and each call's, so its `report` is gone. Nothing else
+  of a run is ever dropped: its row, `result`, reason, outputs, logs and `calls` stay for good.
 - `GET /v1/runs/{id}/events` (`Last-Event-ID` or `?starting_after=`): `run.*`, `output_item.*`, `run.log`,
   `run.call`, and the live `run.progress` and `run.waiting`. It ends after the terminal event once every output
   has landed here or failed to.
