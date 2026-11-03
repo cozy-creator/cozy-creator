@@ -15,8 +15,10 @@ only a successful destroy removes the entry. Driver errors retain the uncertain
 handle under existing poisoned ownership. Event cleanup grants zero GPU bytes.
 
 The `event_trim` ordinary controller entrypoint runs a real standalone native
-child. One live512-byte anchor and one live1024-byte output keep their eager
-segments alive. The child accumulates18 event handles across actual GPU fills
+child. Live512-byte holders occupy all but one slot in the actual first mapped
+slab; one holder is the readback anchor. The holder count comes from the native
+mapping fact, with exact capacity/no-new-mapping assertions. One live1024-byte
+output keeps its separate eager segment alive. The child accumulates18 event handles across actual GPU fills
 without explicit trim, proving ordinary allocation/poll/free retain event reuse.
 It reuses that block as a Live allocation and proves trim leaves it untouched.
 
@@ -28,6 +30,15 @@ and add no native event waits, context joins or physical memory calls. Opening
 the gate permits the pending event to retire. Full output/anchor readbacks and a
 new allocation/write/read cycle prove the ownership boundary and reusable state.
 Final physical/event counters must return exactly to baseline.
+
+The original RTX4090 control and candidate both stopped before trim with
+`cross-stream poll failed to reuse same block`. Ordinary allocation takes an
+untouched same-class slot before polling completed blocks; one anchor did not
+force historical-block reuse. Occupying the remaining slots makes that required
+precondition explicit. It does not alter allocation policy or remove the existing
+pointer,18-event,Live/pending/capture,physical-accounting or final-cleanup checks.
+The original failed receipts remain preserved; this corrected fixture needs a
+fresh matching-core GPU run on both control and candidate.
 
 Build the helper against the exact new core/std cohort, never a second static
 core or a historical binary. The helper lock records its already-required direct
