@@ -81,6 +81,15 @@ parents and changed shapes, then ordinary cached selection resuming after the
 caller closes its token. Quarantine may
 not increase. Python profiling observes real forward calls and installs no hooks.
 
+The pressure setup joins its actual stream and trims ready weights before asking
+for the unchanged native measured target. It requires zero resident weight bytes
+and unchanged owned graph pools, so ready weights cannot satisfy the request
+before cache callbacks. Retirement polling reads only Python segment presence;
+it never claims the idle entry's admission lock. Detailed cache facts are read
+after native request completion. That actual stream is joined again before the
+physical Working trim. This applies the causal primitive26785/26797/26799 findings;
+it does not turn those primitive results into a full-controller qualification.
+
 GPU mode is PREPARED/UNRUN by this lane. Actual source/epoch/reset/failure and stock
 SDXL selection/performance remain coordinator-owned gates. The framework profile
 is connected in the same SDK; the small nn app does not qualify stock execution.
