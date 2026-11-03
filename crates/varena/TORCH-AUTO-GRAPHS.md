@@ -101,6 +101,32 @@ or speculative per-op fence removal is introduced. Adoption provenance must reco
 the final composed owned wrapper and its actual original implementation, not infer
 approval from user-supplied __wrapped__ annotations.
 
+Required component-helper corrections before shared wiring:
+
+- An after-exit witness alone is insufficient for cold measurements at nested declared
+  boundaries sharing a still-open outer component scope: a device-wide native phase
+  must finish before its sibling starts. Provide a checkpoint witness over actual
+  currently tracked stream tails while the outer scope remains open, without closing
+  it or handing outputs to the original caller. Auto can wait that cold-only checkpoint;
+  ordinary steady eager execution does not add checkpoints. This remains a scoped
+  tracked-consumer proof, not arbitrary device/custom-consumer completion.
+- Reuse must receive ordinary operand values (or an equivalent observe-inputs seam),
+  not just owner/current stream. A hidden ordinary external tensor used in a managed
+  op may not appear in the outer inputs; if its last reference drops, skipping the
+  old record_stream would lose the S consumer. Register each newly observed ordinary
+  C10 Storage family once, or retain existing per-op records for unproven families.
+  Keep only weak family identities, never retain all intermediates/Storage owners;
+  do not deduplicate by data_ptr. Weight export Pins/fences are unchanged. A changed
+  actual stream still uses the existing safe per-op path and joins witness tracking.
+- scope.output returns the identical original result/objects and defers outer handoff
+  until its event is recorded; it does not reconstruct or clone aliases. Nested scopes
+  must not accumulate every intermediate result until outer exit. Ordinary output
+  records exclude managed _Weight wrappers, whose record_stream dispatch could force
+  materialization. Capture bindings provide no eager witness/joins/records.
+
+These exact corrections were routed to the local new-file helper owner through root;
+no helper file, native interface or shared _offload.py wiring was changed here.
+
 The state machine is cold -> measured -> prepared/cached; a changed key retires the old
 selection. No invocation executes eager as a retry after capture/replay has begun.
 
