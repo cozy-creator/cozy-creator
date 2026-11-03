@@ -11,6 +11,7 @@ members = [
     "crates/executor-protocol",
     "crates/hub-client",
     "crates/platform",
+    "crates/platform-signal",
     "crates/protocol",
     "crates/tensord",
     "crates/tensorfs",
@@ -36,6 +37,7 @@ cli = { path = "crates/cli" }
 executor-protocol = { path = "crates/executor-protocol" }
 hub-client = { path = "crates/hub-client" }
 platform = { path = "crates/platform" }
+platform-signal = { path = "crates/platform-signal" }
 protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }

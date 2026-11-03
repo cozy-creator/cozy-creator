@@ -2565,6 +2565,7 @@ dependencies = [
  "libc",
  "libloading 0.9.0",
  "nvml-wrapper",
+ "platform-signal",
  "rustix",
  "serde",
  "serde_json",
@@ -2576,6 +2577,14 @@ dependencies = [
  "tracing",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "platform-signal"
+version = "0.16.7"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4443,7 +4452,7 @@ dependencies = [
  "libloading 0.9.0",
  "nvml-wrapper",
  "nvml-wrapper-sys",
- "platform",
+ "platform-signal",
  "serde_json",
  "thiserror 2.0.21",
 ]
