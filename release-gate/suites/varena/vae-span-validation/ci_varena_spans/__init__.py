@@ -220,15 +220,43 @@ def exercise(request, vt, device):
     return result
 
 
+def require_native_ready(device):
+    """An explicit fixture prerequisite waits; cold nonblocking native() may be None."""
+    from functools import partial
+    from cozy_runtime.internal import int8_linear, kernel_ready, prebuilt
+
+    slot = f"{int8_linear.NATIVE} cuda:{device}"
+
+    def state():
+        pending = kernel_ready.pending()
+        failure = kernel_ready.failed(slot)
+        return {"state": pending.get(slot, "ready" if kernel_ready.served(slot) else "absent"),
+                "pending": pending,
+                "failure": None if failure is None else f"{type(failure).__name__}: {failure}"}
+
+    record = {"slot": slot, "before": state()}
+    print(json.dumps({"fixture.required_native": "before", **record}), flush=True)
+    try:
+        record["artifact"] = prebuilt.artifact()
+        kernel_ready.wait(slot, partial(int8_linear._library, torch, device))
+        assert int8_linear.native(torch, device) is not None
+    except BaseException as error:
+        record.update(after=state(), error=f"{type(error).__name__}: {error}")
+        print(json.dumps({"fixture.required_native": "failed", **record}), flush=True)
+        raise  # Preserve the actual artifact/verification error and traceback.
+    record.update(after=state(), family=int8_linear.library(device).family)
+    print(json.dumps({"fixture.required_native": "ready", **record}), flush=True)
+    return record
+
+
 @app.entrypoint(accelerator=True)
 def spans(payload: Probe, ctx: Context) -> Report:
     from cozy_runtime.graphs.domain import Domain
-    from cozy_runtime.internal import int8_linear
     torch.set_num_threads(1)
     request, vt, provenance = actual(payload, ctx)
     device = ctx.device.index or 0
     startup = vt.stats(device)
-    assert int8_linear.native(torch, device) is not None
+    native_readiness = require_native_ready(device)
     ready = torch.cuda.Event()
     ready.record(torch.cuda.current_stream(device))
     ready.synchronize()
@@ -244,7 +272,8 @@ def spans(payload: Probe, ctx: Context) -> Report:
     except Exception:
         result['error'] = traceback.format_exc()
     finally:
-        result.update(provenance=provenance, startup_before=startup, pre_domain=before)
+        result.update(provenance=provenance, startup_before=startup, pre_domain=before,
+                      native_readiness=native_readiness)
         try:
             domain.finish()
             vt.trim(device)
