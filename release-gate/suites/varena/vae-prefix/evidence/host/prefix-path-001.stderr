@@ -1,0 +1,14 @@
+USDT:2026-11-02 18:43:35 2706277:2706277 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-11-02 18:43:35 2706277:2706277 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-11-02 18:43:35 2706277:2706277 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-11-02 18:43:35 2706277:2706277 SyncActivityProfilerHandler.cpp:46] profiler_stop
+Traceback (most recent call last):
+  File "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p2-vae-prefix/release-gate/suites/varena/vae-prefix/host.py", line 47, in <module>
+    torch.testing.assert_close(separate, actual, rtol=0, atol=0)
+  File "/home/fidika/.cache/uv/archive-v0/ze1ma6eT_qRYunlo/torch/testing/_comparison.py", line 1689, in assert_close
+    raise error_metas[0].to_error(msg)
+AssertionError: Tensor-likes are not equal!
+
+Mismatched elements: 184 / 3670016 (0.0%)
+Greatest absolute difference: 6.103515625e-05 at index (0, 497, 1359)
+Greatest relative difference: 0.076904296875 at index (0, 1130, 681)
