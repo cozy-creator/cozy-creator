@@ -14,9 +14,9 @@ Run with the exact candidate Runtime/TensorFS installed and CPU Torch2.15.0
 
 ```sh
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  CUDA_VISIBLE_DEVICES='' nice -n19 taskset -c0 python host.py
+  CUDA_VISIBLE_DEVICES='' nice -n19 taskset -c 0 python host.py
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  CUDA_VISIBLE_DEVICES='' nice -n19 taskset -c0 python eager.py
+  CUDA_VISIBLE_DEVICES='' nice -n19 taskset -c 0 python eager.py
 ```
 
 These clients do not qualify CUDA, NCCL, peer copy engines, attention kernels,
