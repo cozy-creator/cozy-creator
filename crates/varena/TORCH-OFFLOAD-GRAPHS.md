@@ -82,8 +82,14 @@ view adds its member offset only after original-storage span validation.
    tensors. No Source work, typed export, native Plan activation, allocation recovery,
    event query/wait or new residency acquisition occurs inside capture. Nested declared
    forwards validate membership instead of switching the device-wide Plan.
-4. End capture through existing routing/footprint cleanup. Only afterward release all
-   temporary exports/Uses through normal consumer fencing. Reject hidden capture views
+4. End capture through existing routing/footprint cleanup. Only afterward close the
+   ended binding/guard, releasing its sanctioned strong prepared-tensor references.
+   Closing an active binding refuses; read-only coverage remains through capture.
+   Retire the known capture Plan via the epoch's owned intent state before any Storage
+   escape refusal. A deactivation failure retains exact epoch/native owners and marks
+   the enclosing owner failed, including when no parent Plan exists. Never deactivate
+   an unowned external Plan. Then release temporary exports/Uses through normal consumer
+   fencing. Reject hidden capture views
    or classify them explicitly as resident; never force-drop a Pin.
    Track the actual C10 Storage families across detached aliases. If any capture Storage
    still survives table release, retain that same Storage/export owner and the epoch,

@@ -18,7 +18,12 @@ import torch
 from tensorfs import _ext
 from tensorfs.varena import api
 from tensorfs.varena import torch as vt
-from tensorfs.varena._offload_graph import _UNPROVEN, GraphInvalidated
+from tensorfs.varena._offload import _GRAPH_BINDING
+from tensorfs.varena._offload_graph import (
+    _UNPROVEN,
+    CaptureOwnershipUncertain,
+    GraphInvalidated,
+)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=int, default=0)
@@ -26,7 +31,7 @@ parser.add_argument("--provider", type=Path, required=True)
 parser.add_argument("--provider-python", type=Path, required=True)
 parser.add_argument(
     "--mode",
-    choices=("tail", "reset", "source_failure", "capture_refusal"),
+    choices=("tail", "reset", "source_failure", "capture_refusal", "capture_escape"),
     required=True,
 )
 parser.add_argument("--timeout-s", type=float, default=60)
@@ -55,8 +60,15 @@ class BytesModel(torch.nn.Module):
         self.weight = torch.nn.Parameter(
             torch.full((32,), 73, dtype=torch.uint8), requires_grad=False
         )
+        self.capture_escapes = []
 
     def forward(self, value):
+        if args.mode == "capture_escape" and torch.cuda.is_current_stream_capturing():
+            # Explicit eligibility-negative fixture: expose the actual prebound
+            # ordinary storage as a detached alias, rather than a managed alias.
+            self.capture_escapes.append(
+                _GRAPH_BINDING.get().tensor(self.weight).detach()
+            )
         return self.weight + value
 
 
@@ -113,6 +125,33 @@ with torch.inference_mode(), torch.cuda.stream(stream):
         model.weight._version_owner.region = None
         finish_fixture(fixture)
         report["actual_source_failure_before_capture"] = True
+    elif args.mode == "capture_escape":
+        try:
+            owner.capture(model, (example,), stream=stream, reserve_bytes=2 << 20)
+        except CaptureOwnershipUncertain:
+            pass
+        else:
+            raise AssertionError("ordinary capture Storage escape was accepted")
+        assert len(_UNPROVEN) == 1 and model.capture_escapes
+        failed_segment, retained_epoch, _ = _UNPROVEN[0]
+        assert retained_epoch.intent_restored and not retained_epoch.intent_active
+        assert retained_epoch.retained_storages
+        assert not owner._intent_failed
+        # This enters the real model's distinct native Plan. A leaked active
+        # capture Plan would refuse it, even though the retained aliases stay safe.
+        output = model(example)
+        stream.synchronize()
+        assert torch.equal(output.cpu(), torch.full((32,), 75, dtype=torch.uint8))
+        assert any(entry["pins"] > 0 for entry in failed_segment._weight_entries())
+        model.capture_escapes.clear()
+        gc.collect()
+        assert retained_epoch.retained_storages
+        assert any(entry["pins"] > 0 for entry in failed_segment._weight_entries())
+        owner.close()
+        finish_fixture(fixture)
+        report["capture_alias_refused_with_native_custody_retained"] = True
+        report["capture_plan_deactivated_before_refusal_model_plan_reusable"] = True
+        report["intentional_unproven_owner_retained_until_child_exit"] = True
     else:
         segment = owner.capture(model, (example,), stream=stream, reserve_bytes=2 << 20)
         assert all(e["pins"] == 0 for e in segment._weight_entries())
@@ -215,5 +254,5 @@ with torch.inference_mode(), torch.cuda.stream(stream):
         gc.collect()
         finish_fixture(fixture)
 assert api.retirement_stats()["quarantined"] == quarantine
-assert not _UNPROVEN
+assert bool(_UNPROVEN) == (args.mode == "capture_escape")
 print(json.dumps(report))
