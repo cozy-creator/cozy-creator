@@ -950,7 +950,7 @@ impl Updates {
 
     /// The binary this update activates, with its release: the launch path's, when it is not this
     /// image. Refused before anything drains when it does not run, is not the release `cozy`
-    /// names, or has no previous binary beside it to roll back to.
+    /// names, or has no binary to roll back to (`rollback`).
     fn binary(&self, request: &Request) -> io::Result<Option<Binary>> {
         let coded = |code, message| io::Error::other(Coded { code, message });
         if let Some(choice) = &request.binary {
@@ -965,9 +965,7 @@ impl Updates {
                 _ => Ok(None),
             };
         };
-        if !super::binary::previous(&launch.path).is_file() {
-            return Err(self.unrecoverable(launch));
-        }
+        self.rollback(launch)?;
         let version = super::binary::version(&launch.path).map_err(|e| coded("binary_mismatch", e.to_string()))?;
         if let Some(named) = request.cozy.as_ref().filter(|named| **named != version) {
             return Err(coded("binary_mismatch", format!("{} is cozy {version}, not {named}", launch.path.display())));
@@ -975,10 +973,24 @@ impl Updates {
         Ok(Some(Binary { launch: launch.path.clone(), version, staged: None, dev: false }))
     }
 
-    /// The refusal of every update while the launch path holds a binary `cozy update` did not
-    /// place, with no `.cozy-previous` to roll back to: what becomes of this machine, and what to
-    /// do. Only an exec moves it: this computer's machine exits idle and its next use starts the
-    /// file there; a rental ends idle instead, so only a kept rollback lets an update through.
+    /// That the launch path, holding a binary `cozy update` did not place, has a binary to roll
+    /// back to. With none, Linux keeps this image, which `/proc/self/exe` still reads.
+    fn rollback(&self, launch: &super::binary::Launch) -> io::Result<()> {
+        let previous = super::binary::previous(&launch.path);
+        if previous.is_file() {
+            return Ok(());
+        }
+        if !cfg!(target_os = "linux") {
+            return Err(self.unrecoverable(launch));
+        }
+        super::binary::keep_running(&previous).map_err(|e| {
+            let message = format!("cannot keep this cozy {VERSION} at {} to roll back to: {e}", previous.display());
+            io::Error::other(Coded { code: "binary_unrecoverable", message })
+        })
+    }
+
+    /// The refusal of every update where this image cannot be kept (off Linux, so never a
+    /// rental): what becomes of this machine. It exits idle and its next use starts the file there.
     fn unrecoverable(&self, launch: &super::binary::Launch) -> io::Error {
         let (path, previous) = (launch.path.display(), super::binary::previous(&launch.path));
         let placed = super::binary::check(&launch.path);
@@ -986,22 +998,16 @@ impl Updates {
             Ok(version) => format!("cozy {version}"),
             Err(why) => format!("cannot run here: {why}"),
         };
-        let (rental, grace) = self.lifecycle.as_ref().map_or((false, super::lifecycle::IDLE_GRACE_MS), |l| (l.rental, l.grace));
+        let grace = self.lifecycle.as_ref().map_or(super::lifecycle::IDLE_GRACE_MS, |l| l.grace);
         let minutes = (grace / 60_000).max(1);
         let idle = match (self.running)().len() {
             0 => format!("after {minutes} minutes idle (`cozy machine ls` shows when)"),
             1 => format!("{minutes} minutes after its run in flight ends"),
             runs => format!("{minutes} minutes after its {runs} runs in flight end"),
         };
-        let remedy = match (rental, &placed) {
-            (false, Ok(_)) => format!("It moves by itself: it exits {idle}, its next use starts that binary, and updates work again"),
-            (false, Err(_)) => format!("Put a cozy that runs at that path (the installer does): it exits {idle}, and cannot start again until then"),
-            (true, placed) => format!(
-                "A rental ends when idle and never restarts onto it. To update this one now, keep what it runs as the rollback: run `cp /proc/{}/exe {}` on it, then update again{}",
-                std::process::id(),
-                previous.display(),
-                if placed.is_ok() { "" } else { " with `--tensord` naming a cozy that runs" },
-            ),
+        let remedy = match &placed {
+            Ok(_) => format!("It moves by itself: it exits {idle}, its next use starts that binary, and updates work again"),
+            Err(_) => format!("Put a cozy that runs at that path (the installer does): it exits {idle}, and cannot start again until then"),
         };
         io::Error::other(Coded {
             code: "binary_unrecoverable",
@@ -1021,9 +1027,7 @@ impl Updates {
         let launch = super::binary::launch()
             .ok_or_else(|| coded("binary_unsupported", "this machine was not started from a cozy binary".into()))?;
         if launch.swapped() {
-            if !super::binary::previous(&launch.path).is_file() {
-                return Err(self.unrecoverable(launch));
-            }
+            self.rollback(launch)?;
             let placed = super::binary::version(&launch.path).ok();
             let release = choice.file.is_empty() && choice.url.is_empty();
             if let Some(version) = placed.filter(|placed| release && *placed == choice.version) {
