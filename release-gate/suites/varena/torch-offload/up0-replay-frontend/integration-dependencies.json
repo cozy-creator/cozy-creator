@@ -1,0 +1,348 @@
+{
+  "scope": "complete frozen ordinary project lock inventory plus explicit original child candidates and diagnostic files; lock versions are parent/dependency context, not a substitute for candidate wheel identities",
+  "original_project": "/home/fidika/cozy_v2/outputs/xs138-rental-pressure-9d959e31-c059-20261103/fixture-001/project",
+  "original_files": {
+    "pyproject.toml": "c1e2bcc4825a5576efe4bc3fce80bcbc074e4b2810b7b295c97990e91c7c8134",
+    "uv.lock": "8541d155b62c943fdac4082583aaf257de8362295f80362e5e758175c39b2170",
+    "ci_xs138_rental_pressure_resume19/__init__.py": "69b0e52560f74f2022d4520bfe4bcb450caf412a206e8f4d5de8aef8fc18d911",
+    "ci_xs138_rental_pressure_resume19/_child.py": "ead6f596c27a954ae5e5f46ada5532d00da13fb33efee3f83d10ec1b4749810e",
+    "ci_xs138_rental_pressure_resume19/cpu_exec.py": "49db9083e355691dad568ffb8544d70ecc267ab3f246c1a93c7b6b733462b930",
+    "ci_xs138_rental_pressure_resume19/pressure/runner.py": "8a42d3d5aeff9dd171bffd28d174fe169b96960d863c5f676d0d45a2a81b0708",
+    "ci_xs138_rental_pressure_resume19/pressure/binding.json": "c6e7ef456e50216dd0ad86f3b50993e8e71527840e8b882ec50f71fb48834ece",
+    "ci_xs138_rental_pressure_resume19/pressure/bin/model-layout.json": "720a7556edda49ff7d1e195d58f24a8c3faf906dea0e0f299252a5c52ab1275f"
+  },
+  "original_binding": {
+    "source_sha": "9d959e31d6fc58a2d4c1f7371bc3a2b6b658c6de",
+    "native_source_sha": "9d959e31d6fc58a2d4c1f7371bc3a2b6b658c6de",
+    "runtime_source_sha": "c059294c874183499ddadba5becc1d255a4e0763",
+    "script_source_sha": "fb58131acaf151cebb089ec1339c03a1a2d84e58",
+    "tensorfs_version": "0.17.18+dev.g9d959e31",
+    "runtime_version": "0.37.9+dev.gc059294c",
+    "package_versions": {
+      "torch": "2.15.0+cu132",
+      "torchvision": "0.29.2+cu132",
+      "diffusers": "0.41.0",
+      "transformers": "5.22.1",
+      "numpy": "2.5.4",
+      "safetensors": "0.8.0",
+      "huggingface-hub": "1.33.0",
+      "pillow": "13.0.0"
+    },
+    "model_path": "/var/lib/cozy/xs138-stock-localcopy-462165984-fp16",
+    "guidance": 5.0,
+    "seed": 1150504160,
+    "prompt": "A lighthouse above a calm ocean at sunset",
+    "qualification_environment": {
+      "TORCH_CUBLAS_WORKSPACE_CACHE": "unset"
+    }
+  },
+  "lock_packages": [
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "dependency_names": []
+    },
+    {
+      "name": "anyio",
+      "version": "4.16.0",
+      "dependency_names": [
+        "idna",
+        "typing-extensions"
+      ]
+    },
+    {
+      "name": "certifi",
+      "version": "2026.10.23",
+      "dependency_names": []
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.2",
+      "dependency_names": []
+    },
+    {
+      "name": "ci-xs138-rental-pressure-9d959e31-c059-001",
+      "version": "0.1.0",
+      "dependency_names": [
+        "cozy-runtime",
+        "diffusers",
+        "huggingface-hub",
+        "msgspec",
+        "numpy",
+        "pillow",
+        "safetensors",
+        "transformers"
+      ]
+    },
+    {
+      "name": "click",
+      "version": "8.5.0",
+      "dependency_names": []
+    },
+    {
+      "name": "colorama",
+      "version": "0.4.6",
+      "dependency_names": []
+    },
+    {
+      "name": "cozy-runtime",
+      "version": "0.37.9",
+      "dependency_names": [
+        "msgspec",
+        "numpy",
+        "packaging",
+        "pillow",
+        "tensorfs"
+      ]
+    },
+    {
+      "name": "diffusers",
+      "version": "0.41.0",
+      "dependency_names": [
+        "filelock",
+        "huggingface-hub",
+        "importlib-metadata",
+        "numpy",
+        "pillow",
+        "regex",
+        "requests",
+        "safetensors"
+      ]
+    },
+    {
+      "name": "filelock",
+      "version": "4.2.7",
+      "dependency_names": []
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.9.0",
+      "dependency_names": []
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0",
+      "dependency_names": []
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.7.0",
+      "dependency_names": []
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9",
+      "dependency_names": [
+        "certifi",
+        "h11"
+      ]
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1",
+      "dependency_names": [
+        "anyio",
+        "certifi",
+        "httpcore",
+        "idna"
+      ]
+    },
+    {
+      "name": "huggingface-hub",
+      "version": "1.33.0",
+      "dependency_names": [
+        "click",
+        "filelock",
+        "fsspec",
+        "hf-xet",
+        "httpx",
+        "packaging",
+        "pyyaml",
+        "tqdm",
+        "typing-extensions"
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "3.20",
+      "dependency_names": []
+    },
+    {
+      "name": "importlib-metadata",
+      "version": "10.1.0",
+      "dependency_names": [
+        "zipp"
+      ]
+    },
+    {
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "dependency_names": [
+        "mdurl"
+      ]
+    },
+    {
+      "name": "mdurl",
+      "version": "0.1.2",
+      "dependency_names": []
+    },
+    {
+      "name": "msgspec",
+      "version": "0.22.0",
+      "dependency_names": []
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.4",
+      "dependency_names": []
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "dependency_names": []
+    },
+    {
+      "name": "pillow",
+      "version": "13.0.0",
+      "dependency_names": []
+    },
+    {
+      "name": "pygments",
+      "version": "2.21.0",
+      "dependency_names": []
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "dependency_names": []
+    },
+    {
+      "name": "regex",
+      "version": "2026.9.29",
+      "dependency_names": []
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2",
+      "dependency_names": [
+        "certifi",
+        "charset-normalizer",
+        "idna",
+        "urllib3"
+      ]
+    },
+    {
+      "name": "rich",
+      "version": "15.0.0",
+      "dependency_names": [
+        "markdown-it-py",
+        "pygments"
+      ]
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "dependency_names": []
+    },
+    {
+      "name": "shellingham",
+      "version": "1.5.4",
+      "dependency_names": []
+    },
+    {
+      "name": "tensorfs",
+      "version": "0.17.16",
+      "dependency_names": []
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.23.3",
+      "dependency_names": [
+        "huggingface-hub"
+      ]
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.1",
+      "dependency_names": [
+        "colorama"
+      ]
+    },
+    {
+      "name": "transformers",
+      "version": "5.22.1",
+      "dependency_names": [
+        "huggingface-hub",
+        "numpy",
+        "packaging",
+        "pyyaml",
+        "regex",
+        "safetensors",
+        "tokenizers",
+        "tqdm",
+        "typer"
+      ]
+    },
+    {
+      "name": "typer",
+      "version": "0.27.3",
+      "dependency_names": [
+        "annotated-doc",
+        "colorama",
+        "rich",
+        "shellingham"
+      ]
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "dependency_names": []
+    },
+    {
+      "name": "urllib3",
+      "version": "2.8.0",
+      "dependency_names": []
+    },
+    {
+      "name": "zipp",
+      "version": "4.1.2",
+      "dependency_names": []
+    }
+  ],
+  "sdk_wheel_sha256": "4e70c84668529633753bc4f14531be2e69d297283ba601fc21ec6e8418909073",
+  "runtime_wheel_sha256": "ca56fee0f92018d4bfc64f4b9c165f300781c3ed9afd805c4a43c7d4c7fd8f3d",
+  "diagnostic_files": {
+    "frontend_trace.py": "7155621c559a4ea17625afd719dc5bab6944e9b5dac8c4ffeed04495dd9450a6",
+    "automatic_sdxl_gpu.py": "f8775299c0fdab922458025f8a46d63916a7757bd867a2f8f8c1b37c590936c8",
+    "allocation_trace.so": "48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955",
+    "diagnostic_markers.h": "2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad",
+    "original_sdxl.py": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
+    "capture_pressure_evidence.py": "7653cb76fe29e96f7a6d8d6ef81bf4030aa57623136ef41ebaf007f816964cfb"
+  },
+  "frontend_manifest_sha256": "c4234347fcf1acdeffc9cf910d0333fc6d578407e6234db43c8ca7250db3aaea",
+  "helper_ELF_NEEDED": [
+    "libtorch_cuda.so",
+    "libtorch_cpu.so",
+    "libc10_cuda.so",
+    "libc10.so",
+    "libcudart.so.13",
+    "libstdc++.so.6",
+    "libm.so.6",
+    "libgcc_s.so.1",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+  ],
+  "runtime_scope": "preexisting exact Torch2.15/cu132 libraries; no boot download, install, shim or core build performed by frontend",
+  "helper_handoff": "/home/fidika/cozy_v2/outputs/xs138-27056-diagnostic-preparation-20261103/ORIGINAL9D-HANDOFF.json",
+  "model": {
+    "revision": "462165984030d82259a11f4367a4eed129e94a7b",
+    "variant": "fp16",
+    "files": 18,
+    "total_bytes": 6941187536,
+    "managed_cap_bytes": 6442450944,
+    "steps": 20,
+    "height": 1024,
+    "width": 1024,
+    "calls": 2
+  }
+}

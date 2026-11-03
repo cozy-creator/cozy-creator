@@ -89,8 +89,8 @@
     "status": "source checks only; GPU window execution unrun",
     "sha256": {
       "host_controls.py": "b3064739d4b317a4e18328ed5ace09bc8ac1ab918ed7f5984e542f6b0f173dfc",
-      "automatic_sdxl_gpu.py": "67c2507ff6625a76b17ccdcbf9862d343b89fdd26552d8e9990db8e8fc599e22",
-      "bind.py": "64a38420cacfb4bfaa86dc25d291a265ba2bbbec7628e1866791e003fc44f671",
+      "automatic_sdxl_gpu.py": "f8775299c0fdab922458025f8a46d63916a7757bd867a2f8f8c1b37c590936c8",
+      "bind.py": "d2a1da58bfc82a8feff1d419eda732e8f9c4a3e0382961f26b1f7274aab936cf",
       "frontend_trace.py": "7155621c559a4ea17625afd719dc5bab6944e9b5dac8c4ffeed04495dd9450a6",
       "host_window.py": "c162c93743fa82b6680574ae921b7d62456fec6babbaa2149a446d26ef578415"
     },
@@ -112,12 +112,55 @@
     ],
     "product_diff_since_context": "",
     "GLOSSARY_ADR_CodeGraph": "absent in owned relevant context",
-    "verified_head": "29ad9880464d1b6f44a21838b4925ee93fc1ff01"
+    "verified_head": "6d890ae23ee9426676dfbc7e91d75401a102b366",
+    "isolated_bootstrap_receipt": "/home/fidika/cozy_v2/outputs/xs138-27056-frontend-host-20261103/attempt-004/result.json"
   },
   "helper_header_sha256": "2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad",
   "original_client_sha256": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
   "return_evidence_sha256": "7653cb76fe29e96f7a6d8d6ef81bf4030aa57623136ef41ebaf007f816964cfb",
   "no_product_or_native_build": true,
-  "prepared_bundle": "/home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-001",
-  "prepared_manifest_sha256": "1f1b6c685a3c8516cd5f69f465f9317c1c57f10040145b4a604d4230e3bf30c9"
+  "prepared_bundle": "/home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-002",
+  "prepared_manifest_sha256": "c4234347fcf1acdeffc9cf910d0333fc6d578407e6234db43c8ca7250db3aaea",
+  "superseded_bundle": {
+    "path": "/home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-001",
+    "manifest_sha256": "1f1b6c685a3c8516cd5f69f465f9317c1c57f10040145b4a604d4230e3bf30c9",
+    "reason": "preserved; assumed sibling import path under isolated runpy and used default instead of actual frozen runner seed"
+  },
+  "isolated_bootstrap": {
+    "receipt_directory": "/home/fidika/cozy_v2/outputs/xs138-27056-frontend-host-20261103/attempt-004",
+    "result": {
+      "passed": true,
+      "scope": "real -I -B runpy bootstrap and original SDK/Runtime/Torch identities; no model inference",
+      "original_error_preserved": {
+        "type": "ModuleNotFoundError",
+        "name": "diffusers",
+        "message": "No module named 'diffusers'"
+      },
+      "sibling_imports_exact_file": true,
+      "diagnostic_bin_absent_from_sys_path": true,
+      "workspace": {
+        "actual_latched_workspace_cache": 0,
+        "cuda_initialized": false,
+        "execution_base": "original9d-c059"
+      },
+      "profile_released": true,
+      "buffered_trace_persisted": true,
+      "cuda_initialized": false,
+      "cuda_driver_loaded": false,
+      "full_model_dependencies": "UNQUALIFIED here; diffusers intentionally not installed; operator full-package check remains"
+    },
+    "container_exit": {
+      "returncode": 0,
+      "elapsed_s": 37.75649608299136,
+      "container_absent": true,
+      "helper_sha256": "48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955"
+    }
+  },
+  "control_source_scope": {
+    "attempt-002": "frontend_trace.py7155621c and host_controls.py; old wrapper was not executed",
+    "attempt-003": "frontend_trace.py7155621c and host_window.py; original CPU adopted dispatch/window; old wrapper was not executed",
+    "attempt-004": "actual bin002 wrapperf8775299 with isolated runpy; model dependencies absent; no inference"
+  },
+  "integration_instructions": "INTEGRATION.md",
+  "complete_dependencies": "integration-dependencies.json"
 }

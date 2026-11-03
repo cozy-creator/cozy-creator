@@ -71,7 +71,7 @@ python3 "$frontend_source/bind.py" \
   --runtime-wheel /home/fidika/cozy_v2/outputs/xs138-resume19-build-20261103/runtime-c059-001/source/dist/cozy_runtime-0.37.9+dev.gc059294c-cp312-abi3-manylinux_2_28_x86_64.whl \
   --frozen-bin /home/fidika/cozy_v2/outputs/xs138-rental-pressure-9d959e31-c059-20261103/fixture-001/project/ci_xs138_rental_pressure_resume19/pressure/bin \
   --helper-handoff /home/fidika/cozy_v2/outputs/xs138-27056-diagnostic-preparation-20261103/ORIGINAL9D-HANDOFF.json \
-  --out /home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-001
+  --out /home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-003
 ```
 
 The helper handoff must contain the updated workspace-getter header and its
@@ -85,7 +85,7 @@ model files/configs and ordinary parent/child invocation. Its child command is:
 ```bash
 python -B /path/to/new/bin/automatic_sdxl_gpu.py \
   --model /path/to/the/unchanged/model --output /path/to/new/evidence \
-  --graphs auto --steps 20 --height 1024 --width 1024
+  --graphs auto --steps 20 --height 1024 --width 1024 --seed 1150504160
 ```
 
 Use the explicitly installed/bound original SDK and Runtime artifacts; the
@@ -94,7 +94,7 @@ It checks exact Torch2.15/cu132 build identity, records only the two relevant
 child environment variables before Torch import, and obtains the actual native
 latched workspace flag before CUDA initialization. An unexpected true flag is
 reported and refused without changing the environment. Other original settings
-remain at pinned defaults (device0, seed777, guidance5.0, original prompt).
+remain at pinned defaults (device0, frozen runner seed1150504160, guidance5.0, original prompt).
 There is no extra managed-cap argument; the unchanged client itself sets6 GiB.
 
 Operator GPU/rental/release authority is separate. Never use this prepared
@@ -127,7 +127,18 @@ See `validation.json` and the durable receipt directory it names. The helper
 header is2551e703; the older helper002/header4ecd pair is preserved historical
 evidence. The host container exited0 and is independently confirmed absent.
 
-A prepared ORIGINAL9d bundle exists at
-`/home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-001`; manifest
-SHA256 `1f1b6c685a3c8516cd5f69f465f9317c1c57f10040145b4a604d4230e3bf30c9`.
+The current sealed ORIGINAL9d bundle is
+`/home/fidika/cozy_v2/outputs/xs138-27056-frontend-bind-20261103/bin-002`; manifest
+SHA256 `c4234347fcf1acdeffc9cf910d0333fc6d578407e6234db43c8ca7250db3aaea`.
 It is bound to immutable `ORIGINAL9D-HANDOFF.json` and remains GPU-unrun.
+Bin001 is preserved as superseded: its sibling imports assumed a non-isolated
+script launch and its seed check used the client default instead of the actual
+frozen runner seed. Bin002 exact-file loads its verified sibling modules under
+`python -I` and preserves the frozen runner seed. See `INTEGRATION.md` before
+copying this bin into an ordinary-Cozy successor package.
+
+The actual isolated `python -I -B` runpy bootstrap also passes its narrow
+control: exact original SDK/Runtime/Torch bytes, exact sibling files, native
+workspace0, no CUDA/driver, original missing-diffusers refusal preserved, and
+profile/trace cleanup. Full model dependencies are absent in that host container
+and remain operator-qualified; see `validation.json` attempt004.
