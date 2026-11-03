@@ -5,7 +5,9 @@ the same object is answered at full speed: TensorFS must re-ask a straggler rath
 With BURST, the first STRAGGLERS objects of at least 4 BURST bytes are cold, as a cold R2 object is (10-01, tfs-138):
 every ask of one sends BURST bytes at full speed, then drips at RATE until the client gives it up. TensorFS must keep
 re-asking such an object, however often it was re-asked before, rather than wait out a drip.
-    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst>]"""
+With MIN too, BURST is one 64 KiB and only objects of at least MIN bytes are cold, as R2's coldest are (tfs-141): each ask
+moves little however often it is asked, and TensorFS must read the object as parallel ranges.
+    straggler.py <port> <upstream> <stragglers> <rate> <log> [<burst> [<min>]]"""
 import http.client
 import json
 import sys
@@ -16,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT, UPSTREAM, STRAGGLERS, RATE, LOG = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 BURST = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+MIN = int(sys.argv[7]) if len(sys.argv) > 7 else 4 * BURST
 up = urllib.parse.urlsplit(UPSTREAM)
 lock = threading.Lock()
 slowed, asked = set(), {}
@@ -142,7 +145,7 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 asked[self.path] = asked.get(self.path, 0) + 1
                 if BURST:
-                    slow = self.path in slowed or (asked[self.path] == 1 and len(slowed) < STRAGGLERS and length >= 4 * BURST)
+                    slow = self.path in slowed or (asked[self.path] == 1 and len(slowed) < STRAGGLERS and length >= MIN)
                 else:
                     slow = self.path not in slowed and len(slowed) < STRAGGLERS
                 if slow:

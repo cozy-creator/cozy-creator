@@ -132,8 +132,10 @@ def check(gate):
                     'asks': max((r['ask'] for r in objs if r['path'] in slow), default=0),
                     'error': open(os.path.join(t, name + '.err')).read()[-300:] if code != '0' else ''}
     c = st.get('straggler-clean')
-    # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138).
-    for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects')):
+    # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
+    # crawling objects (every ask moves 64 KiB and drips, tfs-141).
+    for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects'),
+                             ('straggler-crawl', 'straggler-crawl', 'crawling objects')):
         sl = st.get(name)
         if not chosen('straggler'):
             break
@@ -144,7 +146,8 @@ def check(gate):
         elif not sl['slowed']:
             fails.append(f'tensorfs {case}: no object was slowed: the case tested nothing')
         else:
-            limit = 1.5 * c['seconds'] + 20
+            # Crawling objects pay their parts' drip through this proxy; crawled through, they take over 5 min.
+            limit = 2 * c['seconds'] + 60 if name == 'straggler-crawl' else 1.5 * c['seconds'] + 20
             (fails if sl['seconds'] > limit else notes).append(
                 f'tensorfs {case}: {sl["slowed"]} slow objects, {sl["reasked"]} re-asked, at most {sl["asks"]} asks of one; '
                 f'{sl["seconds"]:.1f} s vs clean {c["seconds"]:.1f} s (limit {limit:.1f})')

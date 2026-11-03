@@ -189,7 +189,8 @@ later call of the same model asks the Hub nothing, and a model the Hub has not i
     the same objects, a tenth of the time), and new weights cut part-way then resumed. The model is deleted after.
   - `straggler` (on the gate's host, where a client may dial): `tfs download` of BiRefNet clean and through
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
-    waited out (at most 1.5x clean + 20 s).
+    waited out, and a crawling object, each ask of which moves 64 KiB and drips, read as parallel ranges (each at
+    most 1.5x clean + 20 s, the crawling ones 2x clean + 60 s).
   - `lora-alpha` (on the gate's host): `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no
     `.alpha` tensors whose kohya metadata says `ss_network_alpha` 420 at rank 4. Its committed `lora_alpha` must be `r`, a scale of 1, as kohya's and ComfyUI's
     loaders apply it; metadata alpha scaled the Mystic XXX LoRAs 26x into colour noise (10-29).
