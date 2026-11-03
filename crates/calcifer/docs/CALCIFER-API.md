@@ -114,8 +114,10 @@ a spec.
     `sha256:<hex>`. Relative paths start at `cwd`; without one they are refused.
   - An omitted integer `seed` derives from the key, so a retried key rebuilds the same request. The same key
     again answers the recorded run without binding anything; another request under it is `409`.
-  - `notes` are what binding said, in order (`info`: a clip cut; `warning`: fields dropped, a machine with no
-    GPU). `preparing`: the run is local code's install; follow it, then send the same request under the same key.
+  - A value over a limit is no refusal: Runtime clamps a number and cuts text or a list, each in the run's
+    `adjustments`, and a list of files is cut here, before they go, with a warning.
+  - `notes` are what binding said, in order (`info`: a clip cut; `warning`: fields dropped, a list of files cut,
+    a machine with no GPU). `preparing`: the run is local code's install; follow it, then send the same request under the same key.
   - Refusals name the field: `function_unnamed` (with the commands that name one), `callable_unknown`,
     `callable_recipe`, `request_payload_invalid`, `asset_media_type`, `input_segment_invalid`, …. `local_unavailable`
     (`on: local` where this OS runs no models) comes once the target names a function, or at once for local code.

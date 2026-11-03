@@ -294,6 +294,7 @@ async fn call(
         None => {
             let mut bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
             notes.append(&mut bound.notes);
+            notes.extend(bound.cut.iter().map(|cut| Note { level: NoteLevel::Warning, message: cut.clone() }));
             if let Some(warning) = bound.warning(&target) {
                 notes.push(Note { level: NoteLevel::Warning, message: warning });
             }

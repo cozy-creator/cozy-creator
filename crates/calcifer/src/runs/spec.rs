@@ -142,7 +142,11 @@ impl Call<'_> {
             code: "input_cut".into(),
             message: cut.to_string(),
         });
-        let warnings = ignored.into_iter().chain(cuts).collect();
+        let limits = bound.into_iter().flat_map(|b| &b.cut).map(|cut| Warning {
+            code: "input_limit".into(),
+            message: cut.clone(),
+        });
+        let warnings = ignored.into_iter().chain(cuts).chain(limits).collect();
         SubmitRun {
             agreed: None,
             on,
