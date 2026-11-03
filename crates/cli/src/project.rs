@@ -15,6 +15,9 @@ use crate::{
     run::{follow, mint_key, settled},
 };
 
+/// A push or pull that moved all it could and left out a file.
+const PARTIAL: u8 = 3;
+
 const EXAMPLES: &str = "Examples:
   cozy project new garden
   cd garden && cozy project render all --on kiyui
@@ -78,10 +81,10 @@ enum Verb {
         to: String,
     },
     /// Send every file project.lock names that your Tensorhub account lacks, private to it.
-    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; assets/ stays out of git\n\nCtrl-C stops following, never the transfer.")]
+    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; assets/ stays out of git\n\nA file over the 5 GiB the Hub holds is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Push,
     /// Fetch every file project.lock names that assets/ lacks, as real files.
-    #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nCtrl-C stops following, never the transfer.")]
+    #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
 }
 
@@ -192,16 +195,31 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Push => {
             let done = transfer(ctx, args.path.as_ref(), "push", "sent").await?;
             let at = done.kept_in.as_deref().unwrap_or("the Hub");
-            let (files, moved, bytes) = (done.files, done.moved, output::bytes(done.bytes));
-            output::say(ctx, &format!("{files} files at {at}: {moved} sent ({bytes}), {} there already", files - moved));
+            let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
+            output::say(ctx, &format!("{} files at {at}: {moved} sent ({bytes}), {rest} there already", done.files));
+            return Ok(skipped(&done));
         }
         Verb::Pull => {
             let done = transfer(ctx, args.path.as_ref(), "pull", "fetched").await?;
-            let (files, moved, bytes) = (done.files, done.moved, output::bytes(done.bytes));
-            output::say(ctx, &format!("{files} files here: {moved} fetched ({bytes}), {} here already", files - moved));
+            let (moved, bytes, rest) = (done.moved, output::bytes(done.bytes), rest(&done));
+            output::say(ctx, &format!("{} files: {moved} fetched ({bytes}), {rest} here already", done.files));
+            return Ok(skipped(&done));
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The files a transfer had no need to move.
+fn rest(done: &Transferred) -> u64 {
+    done.files - done.moved - done.skipped.len() as u64
+}
+
+/// A warning for each file a transfer left out, and its exit: `PARTIAL` when it left out any.
+fn skipped(done: &Transferred) -> ExitCode {
+    for file in &done.skipped {
+        output::warn(&format!("skipped {}: {}", file.original.as_deref().unwrap_or(&file.path), file.why));
+    }
+    if done.skipped.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(PARTIAL) }
 }
 
 /// `POST /v1/projects/{id}/<verb>`, followed on the project's events to its end, which `--json` prints.

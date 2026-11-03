@@ -8,7 +8,7 @@ use std::{
     fs::File,
     future::Future,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -28,7 +28,7 @@ use protocol::{
     config::Origin,
     error::{Error, Kind},
     hub::At,
-    project::{Event, Opened, Transferred},
+    project::{Event, Opened, Skipped, Transferred},
 };
 use tensorfs::{
     err::{Code, Refusal as Failed},
@@ -108,6 +108,22 @@ fn hex(sha256: &str) -> &str {
 struct Tally {
     moved: AtomicU64,
     bytes: AtomicU64,
+    /// By path, why each was left out.
+    skipped: Mutex<Vec<(String, String)>>,
+}
+
+impl Tally {
+    fn skip(&self, path: String, why: String) {
+        self.skipped.lock().expect("skipped lock").push((path, why));
+    }
+
+    /// What it left out, each under the path project.yaml writes for it if it names it.
+    fn skipped(self, project: &Project) -> Result<Vec<Skipped>, Error> {
+        let lock = project.folder.lock()?;
+        let original = |path: &str| lock.inputs.iter().find(|(_, input)| input.path == path).map(|(file, _)| file.clone());
+        let skipped = self.skipped.into_inner().expect("skipped lock");
+        Ok(skipped.into_iter().map(|(path, why)| Skipped { original: original(&path), path, why }).collect())
+    }
 }
 
 /// The files `lock` names, by path, each with its sha256.
@@ -116,15 +132,20 @@ fn named(project: &Project) -> Result<Vec<(String, String)>, Error> {
     Ok(lock.assets().into_iter().map(|(path, sha256)| (path.to_owned(), sha256.to_owned())).collect())
 }
 
-/// One file sent unless the Hub holds it, a link read through; not on this computer, it need only be there.
-async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: String, sha256: String) -> Result<ObjectRef, Failed> {
+/// One file sent unless the Hub holds it, a link read through; not on this computer, it need only be
+/// there. None: it is left out, which stops nothing else.
+async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: String, sha256: String) -> Result<Option<ObjectRef>, Failed> {
     let file = project.folder.dir.join(&path);
     let Ok(meta) = std::fs::metadata(&file) else {
         let held = endpoint.object(&sha256).await?;
-        return held.ok_or_else(|| local(format!("{path} is neither on this computer nor at the Hub")));
+        if held.is_none() {
+            tally.skip(path, "it is neither on this computer nor at the Hub".into());
+        }
+        return Ok(held);
     };
     if meta.len() > MOST {
-        return Err(Failed { code: Code::SIZE_CAP, detail: format!("{path} is {} bytes: the Hub holds files up to 5 GiB", meta.len()) });
+        tally.skip(path, format!("it is {} bytes, and the Hub holds files up to {MOST} (5 GiB)", meta.len()));
+        return Ok(None);
     }
     let object = ObjectRef { sha256: hex(&sha256).to_owned(), length: meta.len() };
     let payload = || File::open(&file).map(Payload::File).map_err(|e| local(format!("{}: {e}", file.display())));
@@ -133,31 +154,32 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: Strin
         let bytes = tally.bytes.fetch_add(object.length, Ordering::Relaxed) + object.length;
         let _ = project.events.send(Event::Moved { file: Some(path), bytes });
     }
-    Ok(object)
+    Ok(Some(object))
 }
 
-/// Sends every file project.lock names that the Hub lacks, then records them all as a commit.
+/// Sends every file project.lock names that the Hub lacks, then records all it can as a commit.
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
     // A file changed at its path is taken in first: the lock names what the project reads now.
     Video::load(&project.folder)?;
-    let (tally, before) = (Tally::default(), endpoint.sent());
-    let sending = stream::iter(named(project)?)
+    let (assets, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
+    let files = assets.len() as u64;
+    let sending = stream::iter(assets)
         .map(|(path, sha256)| send(project, endpoint, &tally, path, sha256))
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();
     let objects = ticking(project, || endpoint.sent() - before, sending).await.map_err(failed)?;
-    let files = objects.len() as u64;
+    let objects: Vec<ObjectRef> = objects.into_iter().flatten().collect();
     let (mut kept_in, mut commit) = (None, None);
-    if files > 0 {
+    if !objects.is_empty() {
         let tree = objects.into_iter().map(|object| (format!("{}/{}", folder::ASSETS, object.sha256), object)).collect();
         let name = format!("{account}/{MODEL}");
         let kept = keep(endpoint, &name, &tree).await.map_err(failed)?;
         (kept_in, commit) = (Some(name), Some(kept.id()));
     }
-    let (moved, bytes) = (tally.moved.into_inner(), tally.bytes.into_inner());
-    Ok(Transferred { files, moved, bytes, kept_in, commit })
+    let (moved, bytes) = (tally.moved.load(Ordering::Relaxed), tally.bytes.load(Ordering::Relaxed));
+    Ok(Transferred { files, moved, bytes, skipped: tally.skipped(project)?, kept_in, commit })
 }
 
 /// `files` as a commit of model `name`, its header naming no tensors, sent and recorded.
@@ -178,7 +200,8 @@ async fn keep(endpoint: &Endpoint, name: &str, files: &std::collections::BTreeMa
 /// One file fetched as a real file: from the bytes an earlier pull left, held to its digest, then named.
 async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, path: String, sha256: String) -> Result<(), Failed> {
     let Some(object) = endpoint.object(&sha256).await? else {
-        return Err(local(format!("{path} is not at the Hub: cozy project push on the computer that has it")));
+        tally.skip(path, "it is not at the Hub: cozy project push on the computer that has it".into());
+        return Ok(());
     };
     let at = project.folder.dir.join(&path);
     let part = at.with_file_name(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
@@ -220,8 +243,8 @@ async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Err
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();
     ticking(project, || tally.bytes.load(Ordering::Relaxed), fetching).await.map_err(failed)?;
-    let (moved, bytes) = (tally.moved.into_inner(), tally.bytes.into_inner());
-    Ok(Transferred { files, moved, bytes, kept_in: None, commit: None })
+    let (moved, bytes) = (tally.moved.load(Ordering::Relaxed), tally.bytes.load(Ordering::Relaxed));
+    Ok(Transferred { files, moved, bytes, skipped: tally.skipped(project)?, kept_in: None, commit: None })
 }
 
 /// What a transfer asks for, refused now when this computer is not signed in.

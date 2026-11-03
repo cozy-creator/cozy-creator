@@ -6,12 +6,14 @@
 #     key, a pull killed mid-way goes on from the bytes it had: nothing missing, real files, the lock unchanged. On one CPU
 #     (the first has them all), an edit that joins with no encode is the same file, and one that encodes its edges has
 #     the same duration and frames, each with an SSIM of at least 0.99.
+#   A sparse file over the Hub's 5 GiB (cl-730): a push sends everything else, names it in a warning and exits 3, and so does
+#     a pull of that project on the second computer, which gets everything else.
 # Its commit is deleted after; the Hub's GC takes its bytes.
 . "$(dirname "$0")/lib.sh"
 command -v ffmpeg > /dev/null || sudo apt-get install -y -qq ffmpeg > /dev/null 2>&1 || fail "no ffmpeg"
 MODEL=$(cozy --json whoami | jq -r .account)/project-assets
-COMMIT=''
-tidy() { [ -z "$COMMIT" ] || cozy model delete "$MODEL@$COMMIT" -y >> "$OUT/delete.txt" 2>&1 || say "could not delete $MODEL@$COMMIT"; }
+COMMIT='' PARTIAL=''
+tidy() { local c; for c in $COMMIT $PARTIAL; do cozy model delete "$MODEL@$c" -y >> "$OUT/delete.txt" 2>&1 || say "could not delete $MODEL@$c"; done; }
 trap 'tidy; finish' EXIT
 J() { jq -e "$@" > /dev/null; }
 sha() { sha256sum "$1" | cut -c1-64; }
@@ -155,5 +157,29 @@ second --json project -p "$C" status > "$OUT/status-other.json" 2> "$OUT/status-
 J '.nodes[] | select(.name == "coast") | .path | test("^assets/")' "$OUT/status-other.json" || fail "no coast: $(head -c 300 "$OUT/status-other.json")"
 [ "$(jq -r '.nodes[] | select(.name == "coast") | .assets.image.sha256' "$OUT/status-other.json")" = "sha256:$(sha "$OUT/other.png")" ] \
   || fail "coast does not read the file now at its path: $(jq -c '.nodes[] | select(.name == "coast")' "$OUT/status-other.json")"
+
+say "a sparse file over the Hub's limit, and a new file beside it"
+truncate -s 5368709121 "$P/refs/huge.wav" && head -c 1M /dev/urandom > "$P/refs/fresh.wav" || fail "no sparse file"
+sed -i '/^shots:/i\  - name: huge\n    audio: refs/huge.wav\n  - name: fresh\n    audio: refs/fresh.wav' "$P/project.yaml"
+code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
+PARTIAL=$(jq -r '.commit // empty' "$OUT/push-huge.json"); say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/push-huge.err" | tee -a "$R" | cut -c1-200
+[ "$code" = 3 ] || fail "a push that skipped a file exited $code, not 3"
+J '.files == 17 and .moved == 1 and .bytes == 1048576 and (.skipped | length == 1) and .skipped[0].original == "refs/huge.wav" and (.skipped[0].why | test("5 GiB"))' "$OUT/push-huge.json" \
+  || fail "the push did not send everything else and name the file"
+grep -q 'warning: skipped refs/huge.wav' "$OUT/push-huge.err" || fail "no warning names refs/huge.wav: $(tail -3 "$OUT/push-huge.err")"
+cozy project -p "$P" push > "$OUT/push-huge-2.txt" 2>&1; code=$?
+[ "$code" = 3 ] && grep -q ': 0 sent' "$OUT/push-huge-2.txt" || fail "pushed again, exit $code: $(tail -3 "$OUT/push-huge-2.txt")"
+tail -2 "$OUT/push-huge-2.txt" | cut -c1-200 | tee -a "$R"
+C2=/home/$U/film-partial
+sudo rm -f "$H/art/coast.png"
+sudo install -d -o "$U" -m 700 "$C2" && sudo install -o "$U" -m 644 "$P/project.yaml" "$P/project.lock" "$C2/" || fail "no second copy"
+code=0; second --json project -p "$C2" pull > "$OUT/pull-huge.json" 2> "$OUT/pull-huge.err" || code=$?
+say "pull: exit $code, $(jq -c . "$OUT/pull-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/pull-huge.err" | tee -a "$R" | cut -c1-200
+[ "$code" = 3 ] || fail "a pull that skipped a file exited $code, not 3"
+J '.files == 17 and .moved == 16 and (.skipped | length == 1) and .skipped[0].original == "refs/huge.wav"' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-huge.err" || fail "status: $(tail -3 "$OUT/status-huge.err")"
+J '.absent == 1' "$OUT/status-huge.json" || fail "status does not count the one file: $(jq -c '{absent, missing}' "$OUT/status-huge.json")"
+second --json project -p "$C2" push > "$OUT/push-partial-copy.json" 2> "$OUT/push-partial-copy.err"; code=$?
+{ [ "$code" = 3 ] && J '.moved == 0 and .skipped[0].original == "refs/huge.wav"' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
 
 say "PROVEN"

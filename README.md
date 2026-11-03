@@ -97,7 +97,8 @@ On another computer: commit `project.yaml` and `project.lock`, keep `assets/` ou
 sends the files to your Tensorhub account, private to you. `cozy project pull` next to a clone fetches them as real
 files; the paths in `project.yaml` need not exist there, as the hash in `project.lock` is what counts. Both send only
 what is missing and go on after an interruption. What you pushed stays until you `cozy model delete
-<account>/project-assets`, the private model that holds it. One file can be at most 5 GiB.
+<account>/project-assets`, the private model that holds it. A file over 5 GiB is skipped with a warning: everything
+else goes, and the command exits 3. Pulling such a project does the same for what is not there.
 
 Rename a node in `project.yaml` (and its `<mentions>`), then `cozy project rename <old> <new>` keeps its
 versions; `status` suggests it.
