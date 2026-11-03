@@ -11,6 +11,7 @@ mod probes;
 mod multi_plan;
 mod arena_retirement;
 mod owner_retirement;
+mod working_deferred;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Ctx = *mut c_void;
 type Retain = unsafe extern "C" fn(*mut Ctx, i32) -> i32;
@@ -253,6 +254,14 @@ fn run() -> Result<Value> {
         "multi_plan_cross_device" => multi_plan::mismatched_device(device)?,
         "owners" => probes::owners(&cuda, &peer, device)?,
         "arena_concurrency" => probes::arena_concurrency(&peer, device)?,
+        "deferred_same_stream" => working_deferred::same_stream(&cuda, &peer, device)?,
+        "deferred_cross_stream" => working_deferred::cross_stream(&cuda, &peer, device, false)?,
+        "deferred_multi_stream" => working_deferred::cross_stream(&cuda, &peer, device, true)?,
+        "deferred_capture" => working_deferred::capture(&cuda, device)?,
+        "deferred_donation" => working_deferred::donation(&cuda, &peer, device)?,
+        "deferred_retire_destroy" => working_deferred::retire_destroy(&cuda, device)?,
+        "deferred_public_free" => working_deferred::public_borrowed(&cuda, device, false)?,
+        "deferred_public_retire" => working_deferred::public_borrowed(&cuda, device, true)?,
         _ => return Err(io::Error::other("unknown Cache proof mode").into()),
     };
     cuda.finish_setup()?;

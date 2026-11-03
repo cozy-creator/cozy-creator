@@ -269,6 +269,7 @@ dependencies = [
  "libc",
  "libloading 0.9.0",
  "nvml-wrapper",
+ "nvml-wrapper-sys",
  "thiserror 2.0.21",
 ]
 
@@ -280,7 +281,12 @@ dependencies = [
  "libloading 0.9.0",
  "serde_json",
  "varena",
+ "varena-client",
 ]
+
+[[package]]
+name = "varena-client"
+version = "0.1.0"
 
 [[package]]
 name = "windows-link"

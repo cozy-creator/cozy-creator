@@ -294,6 +294,46 @@ def pages(payload: Probe, ctx: Context) -> Report:
 
 
 @app.entrypoint(accelerator=True)
+def deferred_same_stream(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_same_stream')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_cross_stream(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_cross_stream')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_multi_stream(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_multi_stream')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_capture(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_capture')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_donation(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_donation')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_retire_destroy(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_retire_destroy')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_public_free(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_public_free')
+
+
+@app.entrypoint(accelerator=True)
+def deferred_public_retire(payload: Probe, ctx: Context) -> Report:
+    return native(payload, ctx, 'deferred_public_retire')
+
+
+@app.entrypoint(accelerator=True)
 def physical_rollback(payload: Probe, ctx: Context) -> Report:
     return native(payload, ctx, 'rollback')
 

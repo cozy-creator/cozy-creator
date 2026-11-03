@@ -38,6 +38,10 @@ behavior; explicit trim/donation only after a real fence; destroyed-stream
 retirement and later allocation. Existing frozen performance receipts motivate
 the work but do not qualify it. CPU cargo checks establish source/build only.
 
-No GPU cell, paired benchmark, install, release or speedup is claimed at this
-initial draft. Exact fixture commands and results follow in the release-gate
-suite; the GPU operator owns hardware execution.
+Host source checks pass for the workspace native helper, separate standalone
+helper manifest and current-master TensorD integration. Independent review covered
+the free transition, both public ABI routes and the real fixture's CUDA ownership.
+The unchanged memory-safety/advisory guard passes with89 exact unsafe-file entries.
+The eight GPU cells and exact unrun commands are documented in
+`release-gate/suites/varena/cache-pages/README.md`. No GPU pass, paired benchmark,
+install, release or speedup is claimed; the GPU operator owns hardware execution.

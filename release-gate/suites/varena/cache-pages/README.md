@@ -142,3 +142,107 @@ The six `async_*` entrypoints run the genuine native async-fill modes through th
 Cozy request path. Separate async input records bind the actual executable hash. GPU UUID,
 exact owned process identity, complete native result and checked child exit are required.
 There is no second native implementation or CUDA simulation in this controller.
+
+## Sole-explicit-stream eager free candidate (XS-138, draft #2492)
+
+`src/working_deferred.rs` adds eight standalone native cells to the existing
+`varena-cache-pages` helper and ordinary Cozy controller. They use actual
+nonblocking CUDA streams, submitted host-function gates, complete 4MiB readbacks,
+real capture/replay and the actual native cooperative ledger. They load neither
+Python nor Torch in the child. No unit test, mock allocator or synthetic completion
+is used. Every case retains the ordinary zero-live/mapped/pending/events footer.
+
+- `deferred_same_stream`: keep the actual producer gate closed through64 queued
+  memset/free/reuse iterations and a final copy to a live output. Require exact
+  pointer reuse, charged/pending but non-reclaimable backing, and no new native
+  Varena driver activity or memory/event calls. The fixture's deliberately queued
+  memset/copy/gate calls are outside those counters. Then open/drain and read every output byte.
+  The unchanged parent is expected to fail the zero-event assertion; that is not
+  a claimed observed red run until the operator executes it.
+- `deferred_cross_stream`: while the sole producer is actually blocked, a different
+  stream must take pre-completed alternate capacity, never the pending pointer.
+  Trim must seal a real event without releasing the pending mapping. The queued
+  copy is verified after completion; no new consumer reads a freed pointer.
+- `deferred_multi_stream`: declare a real delayed second consumer before freeing.
+  Require the existing immediate multi-stream fences, distinct allocation on
+  another stream, no premature trim and full output preservation.
+- `deferred_capture`: actual CUDA graph capture checks ordinary eager frees remain
+  unavailable during capture, prepared-pool same-stream reuse still works, and
+  native free/reuse/trim performs no memory/event operations. Instantiate/replay
+  the graph, read every result byte, then destroy graph and pool in order.
+- `deferred_donation`: a real Shared peer must publish the gated mapping as pending,
+  offer no reclaimable bytes and release nothing for device pressure/trim. After
+  completion, donate exactly the completed idle mapping while a live output stays
+  readable. Requested/pending bytes are never counted as released bytes.
+- `deferred_retire_destroy`: drain and retire an owned stream with both a live and
+  a Deferred allocation; destroy the actual handle, then free the surviving
+  allocation with its old origin handle. No event/memory operation may use that
+  destroyed origin. A newly created stream allocates and produces correct bytes;
+  numeric handle reuse is reported, not assumed.
+- `deferred_public_free` / `deferred_public_retire`: use the real public Rust client
+  over the same C ABI/core. Checked free or Rust Drop→ABI retirement must establish
+  the borrowed-stream fence. After all retaining Rust objects are dropped and the
+  queue drains, destroy the stream **without private retire_stream**, then public
+  trim and another stream's allocation/readback must succeed. This preserves the
+  public contract that is deliberately different from the internal retirement seam.
+
+The new FFI fixture boundary retains the loaded CUDA library/current primary
+context, its real stream handles and stable gate userdata until checked completion.
+Callbacks perform only atomic host operations. Ambiguous failed completion retains
+userdata instead of destroying it; failed capture-end exits the isolated child
+without pretending GPU-owning unwind completed. Graph addresses remain owned by
+the live prepared-pool reference through actual replay and readback. Public-client
+cases assert C-ABI/native core identity before use. Driver symbol signatures follow
+the [CUDA driver header](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/cuda_8h_source.html)
+and [graph API](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__GRAPH.html).
+
+### Build and unrun operator commands
+
+Build the helper in the **same private dependency cohort** as the matching
+TensorFS extension, as described in `../native-gpu/README.md`; the helper now also
+depends on the existing `varena-client` C-ABI binding. Do not overwrite an installed
+wheel/core or substitute the already running baseline. The existing `prepare.py`
+still checks exact parent extension/core/std hashes; this candidate does not waive
+that check. A matching operator-approved cohort is required before execution.
+
+Freeze a clean checkpoint using the existing script, supplying the actual
+prerequisite integration as the baseline:
+
+```sh
+uv run --no-project python release-gate/suites/varena/cache-pages/freeze.py \
+  --repository "$candidate_worktree" --native-base 2a3ff202a \
+  --output "$new_source_directory"
+```
+
+The build operator records the candidate and fixture commit, complete source hash,
+helper/core/std/extension hashes, compiler/toolkit and exact preparation command.
+For the parent control, apply the fixture-only commit to isolated prerequisite
+`2a3ff202a` and build that unchanged Working implementation; record both identities.
+Keep the expected failing parent receipt. The baseline and candidate are separate
+from metadata-rebind, Graph-adapter and component-stream changes.
+
+After `prepare.py` has produced a new immutable project/input for the exact matching
+cohort and actual owned GPU UUID, run each separate cell through ordinary Cozy:
+
+```sh
+for cell in deferred_same_stream deferred_cross_stream deferred_multi_stream \
+            deferred_capture deferred_donation deferred_retire_destroy \
+            deferred_public_free deferred_public_retire; do
+  cozy run "$prepared_project/$cell" --on "$owned_machine" --gpus=1 \
+    --input "$prepared_native_input" --json --out "$new_receipt_directory/$cell"
+done
+```
+
+These commands are **prepared, not executed** by the implementation task. Inspect
+the typed `passed` result and full child receipt, not merely the parent run state.
+Host cargo checks establish source/build only. All eight GPU cells and any paired
+end-user timing remain unqualified until the operator supplies their receipts.
+
+Source checkpoint: the workspace helper check passed after the borrowed-stream
+routing fix; the separate standalone manifest check also passed after adding its
+existing public-client dependency. The current-master TensorD integration check
+passed. The unchanged memory-safety guard reports `advisories ok` with89 exact
+unsafe-file entries; its earlier failure identified only this new reviewed fixture
+file and is preserved in the task receipt. Independent source review covered both
+ABI release paths and the fixture's borrowed-stream lifetime sequencing. None of
+these host/source results is a GPU ownership or performance pass.

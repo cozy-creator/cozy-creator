@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 varena = { path = "../../../../crates/varena" }
+varena-client = { path = "../../../../crates/varena-client" }
 libloading = "0.9"
 libc = "0.2"
 serde_json = "1"
