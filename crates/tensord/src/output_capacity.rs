@@ -1,15 +1,16 @@
-//! Retained byte allowance from the actual installed callable, not a caller's description.
+//! What a call may retain: the disk's room, which is the real limit, and never less than the
+//! ordinary working allowance or its installed callable's declared fixed output slots.
 use serde_json::Value;
 use std::io;
 
 pub const DEFAULT_BYTES: u64 = 256 << 20;
 
-/// Keep the ordinary working allowance, but honor larger declared fixed output slots.
-/// Model manifests use their separate weights grant and contribute no asset capacity.
-pub fn for_callable(interface: &Value, name: &str) -> io::Result<u64> {
+/// `room` is what a write may still take of the disk that holds the call's output. Model manifests
+/// use their separate weights grant and contribute no asset capacity.
+pub fn for_callable(interface: &Value, name: &str, room: u64) -> io::Result<u64> {
     let row = protocol::interface::entrypoint(interface, name)
         .ok_or_else(|| invalid("installed output callable is absent"))?;
-    Ok(capacity(protocol::interface::result(row).unwrap_or(&Value::Null), None)?.max(DEFAULT_BYTES))
+    Ok(capacity(protocol::interface::result(row).unwrap_or(&Value::Null), None)?.max(DEFAULT_BYTES).max(room))
 }
 
 fn invalid(detail: &str) -> io::Error {
