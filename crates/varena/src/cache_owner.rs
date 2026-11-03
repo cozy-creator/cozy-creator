@@ -1,6 +1,7 @@
 //! Nonwaiting requests to explicit cache owners. Allocators see host control only;
 //! callback/data ownership stays on a separate worker, never the cooperation thread.
 use crate::{Error, GlobalCaptureGuard, Result};
+use platform_signal::{Signal, wait_any};
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -32,6 +33,8 @@ pub enum Cause {
     Allocation,
     Cooperative,
     Foreign,
+    /// Explicit pre-body Use preparation only; allocator callers never wait on this pass.
+    Admission,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -192,28 +195,35 @@ pub struct RequestFacts {
     /// Actual global physical releases observed during this request, never owner attribution.
     pub observed_release_bytes: u64,
     pub requested_bytes: usize,
-    /// Cumulative capped donor service, supplied only by the cooperative adapter.
+    /// Cumulative capped native service, supplied by the donor/admission caller.
     pub serviced_bytes: usize,
     /// Completed owner actions that a native service pass must observe before advancing.
     pub action_epoch: u64,
+    /// Identity of the last entered owner callback, never physical-release attribution.
+    pub last_action_owner: u64,
 }
 
 struct JobState {
     wanted: usize,
     owners: VecDeque<u64>,
     facts: RequestFacts,
-    // Cooperative/foreign callers advance only after their ordinary capped native service.
+    // Non-allocation callers advance only after their actual native service pass.
     waiting_service: bool,
     cancelled: bool,
     collect_pending: bool,
     serviced: usize,
+    admission_failure: Option<Error>,
 }
 struct Job {
     key: RequestKey,
     start_release: u64,
     state: Mutex<JobState>,
+    admission_wake: Option<Signal>,
 }
 impl Job {
+    fn wake_admission(&self) {
+        if let Some(signal) = &self.admission_wake { signal.set(); }
+    }
     fn lock(&self) -> Result<MutexGuard<'_, JobState>> {
         self.state
             .lock()
@@ -520,13 +530,14 @@ impl ShrinkRequest {
         let mut job = self.job.lock()?;
         job.cancelled = true;
         job.facts.cancelled = true;
+        self.job.wake_admission();
         self.control.changed.notify_all();
         Ok(())
     }
 
     /// Report an actual capped pass for this exact request. The action epoch must have
     /// been read BEFORE that pass: a callback finishing during it needs a later pass.
-    /// Global process releases never settle a Cooperative/Foreign donor request.
+    /// Global process releases never settle Cooperative/Foreign/Admission requests.
     pub fn service_progress(&self, completed: usize, observed_action: u64) -> Result<()> {
         self.check()?;
         if self.job.key.cause == Cause::Allocation {
@@ -541,7 +552,64 @@ impl ShrinkRequest {
         if !job.facts.running && !job.waiting_service && job.owners.is_empty() {
             job.facts.finished = true;
         }
+        self.job.wake_admission();
         self.control.changed.notify_all();
+        Ok(())
+    }
+
+    /// Explicit pre-body callers only. No owner/native mutex is held while awaiting an action.
+    pub(crate) fn wait_admission_action(&self, observed_action: u64) -> Result<RequestFacts> {
+        self.check()?;
+        let signal = self.job.admission_wake.as_ref()
+            .ok_or(Error::Invalid("only explicit Use admission may await cache owners"))?;
+        loop {
+            signal.clear();
+            {
+                let held = self.job.lock()?;
+                if let Some(error) = &held.admission_failure { return Err(error.clone()); }
+                if held.facts.finished || held.cancelled || held.facts.action_epoch > observed_action {
+                    drop(held);
+                    return self.facts();
+                }
+            }
+            Self::wait_admission_signal(signal)?;
+        }
+    }
+
+    /// Cancel selection and prove any already-entered action has returned. Failure is uncertainty.
+    pub(crate) fn finish_admission(&self) -> Result<()> {
+        self.check()?;
+        let signal = self.job.admission_wake.as_ref()
+            .ok_or(Error::Invalid("only explicit Use admission may drain cache owners"))?;
+        self.cancel()?;
+        loop {
+            signal.clear();
+            {
+                let held = self.job.lock()?;
+                if !held.facts.running { return Ok(()); }
+                if let Some(error) = &held.admission_failure { return Err(error.clone()); }
+            }
+            Self::wait_admission_signal(signal)?;
+        }
+    }
+
+    pub(crate) fn admission_result(&self) -> Result<()> {
+        self.check()?;
+        if self.job.key.cause != Cause::Admission {
+            return Err(Error::Invalid("not an explicit Use admission request"));
+        }
+        match &self.job.lock()?.admission_failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn wait_admission_signal(signal: &Signal) -> Result<()> {
+        let events = wait_any(&[signal.waitable()])
+            .map_err(|error| Error::Unsupported(format!("Use admission wake: {error}")))?;
+        if events.iter().any(|event| event.broken) {
+            return Err(Error::Unsupported("Use admission wake closed".into()));
+        }
         Ok(())
     }
 }
@@ -622,6 +690,9 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
         let job = Arc::new(Job {
             key,
             start_release,
+            admission_wake: if key.cause == Cause::Admission {
+                Some(Signal::new().map_err(|error| Error::Unsupported(format!("Use admission wake: {error}")))?)
+            } else { None },
             state: Mutex::new(JobState {
                 wanted: bytes,
                 owners: owners.into_iter().map(|(_, id)| id).collect(),
@@ -634,6 +705,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
                 cancelled: false,
                 collect_pending: key.cause == Cause::Allocation,
                 serviced: 0,
+                admission_failure: None,
             }),
         });
         state.jobs.insert(key, Arc::clone(&job));
@@ -674,6 +746,14 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
             for registration in callbacks.values() {
                 if let Ok(mut owner) = registration.owner.lock() {
                     failed(&control, &mut owner, error.to_string(), true);
+                }
+            }
+            if let Ok(state) = control.lock() {
+                for job in state.jobs.values().filter(|job| job.key.cause == Cause::Admission) {
+                    if let Ok(mut held) = job.lock() {
+                        held.admission_failure.get_or_insert_with(|| error.clone());
+                    }
+                    job.wake_admission();
                 }
             }
             control.changed.notify_all();
@@ -781,6 +861,7 @@ fn worker_tick(
                 held.facts.finished = true;
             }
             if held.facts.finished {
+                job.wake_admission();
                 drop(held);
                 let mut state = control.lock()?;
                 state.jobs.remove(&job.key);
@@ -815,16 +896,19 @@ fn worker_tick(
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
             }
+            job.wake_admission();
             continue;
         };
         {
             let mut owner = registration.owner.lock()?;
             if owner.closing || !owner.facts.requestable || owner.facts.failed.is_some() {
                 job.lock()?.facts.running = false;
+                job.wake_admission();
                 continue;
             }
             owner.facts.running = true;
             owner.facts.callbacks += 1;
+            job.lock()?.facts.last_action_owner = id;
         }
         let scope = CallbackScope {
             control: Arc::clone(control),
@@ -857,7 +941,7 @@ fn worker_tick(
                 held.facts.action_epoch = held.facts.action_epoch.checked_add(1)
                     .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
-            Err(Error::CaptureActive) if capture_active => {
+            Err(Error::CaptureActive) if capture_active && job.key.cause != Cause::Admission => {
                 owner.facts.deferred += 1;
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
@@ -875,6 +959,9 @@ fn worker_tick(
                     .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
             Err(error) => {
+                if job.key.cause == Cause::Admission {
+                    held.admission_failure.get_or_insert_with(|| error.clone());
+                }
                 failed(control, &mut owner, error.to_string(), false);
                 held.facts.failed += 1;
                 held.waiting_service = job.key.cause != Cause::Allocation;
@@ -885,6 +972,7 @@ fn worker_tick(
         }
         drop(held);
         drop(owner);
+        job.wake_admission();
         control.changed.notify_all();
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
         crate::cooperative::wake_cache_actions(control.device)?;

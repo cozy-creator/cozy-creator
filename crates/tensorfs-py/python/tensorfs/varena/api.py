@@ -157,6 +157,7 @@ for _name, _args in {
     "region_ptr": [_u, _h],
     "region_close": [_u],
     "use": [_u, _h, C.c_size_t, _u, _h],
+    "use_prepare": [_u, _h, C.c_size_t, _u, _h],
     "use_ptr": [_u, C.c_size_t, _h],
     "use_wait_ready": [_u],
     "done": [_u],
@@ -297,6 +298,22 @@ class Gpu(_Owned):
         ids = (_u * len(regions))(*(region._handle for region in regions))
         return Use(
             _new("use", self._handle, ids, len(ids), _uint(stream)),
+            self,
+            list(regions),
+            stream,
+        )
+
+    def prepare_use(self, regions: Sequence[Region], stream: int) -> Use:
+        """Prepare before consumer submission, servicing one native cache-owner pass.
+
+        An active Plan must name exactly these Regions. Release callback-needed
+        locks before calling; callbacks must decline unavailable owners rather
+        than await this consumer. CDLL releases the GIL for the native operation.
+        Actual acquisition runs once. Ordinary use/allocation stays nonwaiting.
+        """
+        ids = (_u * len(regions))(*(region._handle for region in regions))
+        return Use(
+            _new("use_prepare", self._handle, ids, len(ids), _uint(stream)),
             self,
             list(regions),
             stream,

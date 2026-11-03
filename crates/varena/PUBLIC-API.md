@@ -127,6 +127,23 @@ Cache owner; no raw Python CFUNCTYPE callback survives interpreter shutdown. Bot
 and deferred close stop admission and drain that owner. Only its already-running callback
 may use the release/read borrow during queued retirement; new commits remain rejected.
 
+`Gpu.prepare_use(regions, stream)` / `vr_v1_use_prepare` is an explicit pre-body
+operation returning the existing Use. It may service one finite native cache-owner
+pass before acquiring the exact requested Regions once. It accepts no byte estimate
+or capacity ticket. With an active Plan the Region set must match that phase exactly.
+The caller must release the GIL and locks required by callbacks; eligible callbacks
+must decline unavailable owners rather than wait for this consumer. Ordinary `use`
+and allocation recovery retain their nonwaiting callback contract. Producer ordering
+and the separate `Use.wait_ready` completion boundary remain unchanged.
+
+Pressure preparation emits bounded `VARENA_USE_ADMISSION_V1` native records for its
+request, observed owner actions and terminal result. Native demand/headroom, request
+service and global release observations remain separate; callback returns are never
+physical capacity. Demand/headroom describe the last admission readback, not an atomic
+snapshot of a later allocation failure; `current_region` and `refused_bytes` identify
+that later actual acquisition refusal. Source qualification alone does not establish
+GPU success.
+
 Statuses preserve `Exhausted` (requested bytes available), `Capturing`, `SourceError`,
 `Fault`, `Invalid`, `Unsupported` and `Busy`. Python has matching exception classes;
 the separate Torch allocator retains its Torch OOM translation. CUDA faults require
