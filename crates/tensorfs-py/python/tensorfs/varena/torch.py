@@ -328,17 +328,26 @@ def capture_footprint(device: DeviceLike, pool: PoolId) -> _ext._VarenaGraphFoot
 
 @contextmanager
 def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None, footprint: _ext._VarenaGraphFootprint | None = None) -> Iterator[Any]:
-    """Prepare, capture and finish one graph. Shared-pool replay order remains the owner's contract."""
+    """Prepare and finish capture, joining only its explicit stream and the caller.
+
+    Other producer streams must already be joined by the caller. Native capture
+    admission still refuses unrelated producers; pool preparation may allocate/wait.
+    Shared-pool replay order remains the owner's contract.
+    """
     _installed()
     import torch
 
     device = _device(stream.device if stream is not None else None)
+    caller = torch.cuda.current_stream(device)
     stream = torch.cuda.Stream(device=device) if stream is None else stream
     pool = cast(PoolId, torch.cuda.graph_pool_handle()) if pool is None else pool
     try:
         prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
-        # Preparation is outside capture; native allocations during capture use this pool only.
-        torch.cuda.synchronize(device)
+        # Include caller preparation, but never drain unrelated device streams.
+        # Native allocations during capture use this already prepared pool only.
+        if stream != caller:
+            stream.wait_stream(caller)
+        stream.synchronize()
     except BaseException:
         cancel_preparation(pool, device)
         raise
@@ -398,6 +407,16 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
     cuda_graph._varena_owner = (_owner, device, cast(PoolId, tuple(pool)))
 
 
+@contextmanager
+def replay_scope(device: int) -> Iterator[None]:
+    """Exclude recovery around host launch only; acquire weight owners beforehand."""
+    guard = _ext._VarenaAllocatorCapture(device, replay=True)
+    try:
+        yield
+    finally:
+        guard.close()
+
+
 def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
     """Replay an owned graph and retain its pool through completion on the selected stream."""
     _installed()
@@ -449,11 +468,11 @@ def _bind_stats(torch: ModuleType) -> None:
             setattr(module, name, function)
 
 
-def offload(model_or_pipeline, device=0, *, source=None):
-    """Adopt immutable eager Torch/Diffusers weights; retain the returned owner.
+def offload(model_or_pipeline, device=0, *, source=None, graphs="auto"):
+    """Adopt immutable weights with automatic reviewed graph segments.
 
     See crates/varena/TORCH-OFFLOAD.md for inference, alias and stream contracts.
     """
     from ._offload import offload as adopt
 
-    return adopt(model_or_pipeline, device, source=source)
+    return adopt(model_or_pipeline, device, source=source, graphs=graphs)

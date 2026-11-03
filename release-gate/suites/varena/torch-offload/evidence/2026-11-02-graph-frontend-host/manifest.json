@@ -1,0 +1,46 @@
+{
+  "branch": "codex/xs138-p4-offload-graphs",
+  "base": "a0338b898060fcd16f8bb169a638afc89f08f080",
+  "product_dependency": "0af634eff39c1a28ea587e1b69516f9dc326d142",
+  "feature_commit": "5a4d51fde2a6df618cb608474adbd8337f66aa98",
+  "native_binding_dependency": "c2fea8e16905b81e1e95a723061123130fe17934",
+  "graph_frontend_gpu_guard_followup": "separate receipt commit; checks pending helper before CUDA",
+  "torch": "2.14.1+cpu",
+  "transformers": "5.22.1",
+  "diffusers": "0.41.0",
+  "commands": [
+    "nice -n 19 env PYTHONPATH=.task/ready-package CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 <TorchCPU python> release-gate/suites/varena/torch-offload/<client>.py",
+    "actual production Python Use.wait_ready handles0/u64MAX host refusal/core identity check",
+    "actual graph_frontend_gpu.py pending scoped-helper guard under CPU Torch, before CUDA",
+    "Ruff check/format, Python AST and git diff --check"
+  ],
+  "results": "8/8 CPU clients pass; exact binding-body Torch and tinyVAE values, no new residency materializations, mutation/signature/zero-view controls; actual new native readiness invalid-handle host boundary passes; missing scoped helper refuses before CUDA",
+  "qualification_boundary": "No native valid-Use waiting/GIL-concurrency proof, CUDA graphs, stable-VA eviction/refill, tail/reset/source GPU modes, whole-model fit, shared pools or performance proof. Host source overlay on verified copied native build, not wheel-install qualification. No native rebuild or other owner cache edits.",
+  "gpu_executed": false,
+  "explicit_remaining": [
+    "Root agreement/implementation of vt.graph(synchronize:bool=True), adapter usesFalse after scoped/stream readiness",
+    "Coordinator valid Use.wait_ready/source lifecycle GPU gates",
+    "Coordinator graph_frontend_gpu.py and graph_epochs_gpu.py all4 modes",
+    "Ordered shared pools, automatic boundary selection and derived-Version reuse across dtype roundtrips",
+    "Stock model and memory/quality/performance/platform/release qualification"
+  ],
+  "source_sha256": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload.py": "64edf924091bfa62f4a86b23af1c418fdf987a9f1fbbb31a5f14129f8a7a42be",
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py": "83e0d1d4ce302864b9bd5fef56f933fc18bf63b41cb9018c602b6c01d5167e79",
+    "crates/tensorfs-py/python/tensorfs/varena/api.py": "fbfdff99a026e58fd2ec6364c710b486f3ac500c01c4d2c64db9b93f7f255e0f",
+    "release-gate/suites/varena/torch-offload/graph_bindings_cpu.py": "956a8dea40b16b61311e62b59098ac38c5dc8ef36cc74cf5ec96d48094bb7a6a",
+    "release-gate/suites/varena/torch-offload/graph_frontend_gpu.py": "378aa7d844c19d1e2f957ac87f97497e483d7b8b10a0f35bccc35e36494d3280",
+    "release-gate/suites/varena/torch-offload/graph_epochs_gpu.py": "4439210b390e8f943c22d4bb94d8304fe92535db0c4b99d2026e30dc599c83b3"
+  },
+  "protected_sha256": {
+    "deny.toml": "9f34f6657d5f9db9ee7ab57239260df9a685b338dec58e81647e2c85c7025412",
+    "scripts/memory-safety.sh": "545038298fd5a3a0281f7b064435c7679b8840bb91172576898b6d7d69dbbc35",
+    "unsafe-boundaries.txt": "6bda445d6e0f5d5479914b75a9cca55e45ccc16df51d7c293ab013ad943e7e8c",
+    ".github/workflows/build.yaml": "be28f35fc7f7007673ba103975766ad7a55ca88c510afde7b692922fdc05cecb"
+  },
+  "integration_context": {
+    "a1251d2d2": "a1251d2d233fde6a9a588b146db3221dc89e1cd0",
+    "aaf805617": "aaf8056174e3f02a342a13481938015505e2ecec",
+    "2745eca69": "2745eca692f2839c22d54bcb918674cb58d414e9"
+  }
+}

@@ -1,0 +1,10 @@
+[transformers] `CLIPImageProcessor` requires torchvision (not installed); falling back to `CLIPImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `CLIPImageProcessorPil` directly to silence this warning.
+[transformers] `SiglipImageProcessor` requires torchvision (not installed); falling back to `SiglipImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `SiglipImageProcessorPil` directly to silence this warning.
+Traceback (most recent call last):
+  File "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-auto-graphs/release-gate/suites/varena/torch-offload/sdxl_components.py", line 285, in <module>
+    print(json.dumps(run(torch.device(args.device)), indent=2))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-auto-graphs/release-gate/suites/varena/torch-offload/sdxl_components.py", line 178, in run
+    assert reason is None, (type(child).__name__, reason, kwargs.keys())
+           ^^^^^^^^^^^^^^
+AssertionError: ('CLIPEncoderLayer', 'custom_module_hooks_require_adapter', dict_keys(['is_causal', 'output_hidden_states']))

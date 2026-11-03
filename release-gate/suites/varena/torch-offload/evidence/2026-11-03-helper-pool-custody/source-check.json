@@ -1,0 +1,19 @@
+{
+  "scope": "Fixture source/AST and syntax only; GPU UNRUN. No observed production pool reclamation bug.",
+  "baseline_head": "576ff99c4832b89f0f88db108ea33407ef116751",
+  "fixture_sha256": "b7dd3080c8a14b9bcd86c558e69ed5aa5756307869fc7bba11b0a2136ca543c5",
+  "old_warm_graph_captured_working_allocation": false,
+  "new_warm_graph_captured_working_allocation": true,
+  "checks": [
+    "actual captured temporary feeds existing graph output",
+    "footprint records exact pool allocation; facts explicitly metadata only",
+    "immediate post-refusal aggregate pool/mapping snapshots before any later prepare",
+    "captured pointer/contents checked, Python+C10 Storage owners expire before trim",
+    "outside-capture trim and same executable replay precede any later preparation",
+    "post-all-reset trim release positive control",
+    "product adapter/helper source unchanged"
+  ],
+  "execution": "Ruff/format, syntax and source checks only; no mocked resource, CPU pool simulation, native rebuild, device or hardware action.",
+  "feature_commit": "764afaaa311629c80574f91b6b3fbe64b142ba44",
+  "native_source_inspected": "b40f91f736a8a713229465c631e3b475428c6fb5 working.rs: footprint facts are recorded metadata; trim skips live/prepared/capturing pools; pool release is deferred; replay retain requires a live reference."
+}

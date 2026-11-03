@@ -1,0 +1,31 @@
+{
+  "source": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+  "command": [
+    "taskset",
+    "-c",
+    "0",
+    "nice",
+    "-n19",
+    "cargo",
+    "build",
+    "--locked",
+    "--offline",
+    "-p",
+    "tensorfs-py",
+    "--features",
+    "extension-module"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_TARGET_DIR": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-phase-overlap-error/.task/host-target",
+    "RUSTFLAGS": "-C prefer-dynamic",
+    "PYO3_PYTHON": "/usr/bin/python3"
+  },
+  "started_at": 1793679909.1503072,
+  "cpu_affinity": [
+    0
+  ],
+  "operator_cache_used": false,
+  "returncode": 0,
+  "elapsed_seconds": 263.67205238342285
+}

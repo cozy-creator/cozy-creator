@@ -7,7 +7,7 @@ import functools
 import threading
 import types
 import weakref
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 
 import torch
@@ -19,6 +19,7 @@ from ._offload_inventory import InventoryError, inspect_cpu_roots
 from .sources import Source
 
 _REBIND = contextvars.ContextVar("varena_offload_rebind", default=False)
+_GRAPH_BINDING = contextvars.ContextVar("varena_offload_graph_binding", default=None)
 
 
 class OffloadError(RuntimeError):
@@ -62,6 +63,30 @@ class _Device:
             ]
             if any(v.device != self.device for v in tensors):
                 raise OffloadError("cross-device operands need an explicit copy")
+            device_matches = torch.cuda.current_device() == self.device.index
+            if device_matches:
+                capturing = torch.cuda.is_current_stream_capturing()
+            else:
+                # Inspect the owner's actual stream, not an unrelated device's
+                # current stream. The safe old context still handles this case.
+                with torch.cuda.device(self.device):
+                    capturing = torch.cuda.is_current_stream_capturing()
+            if capturing:
+                raise OffloadError(
+                    "offload currently supports eager inference outside capture"
+                )
+            from ._offload_stream import reuse
+
+            reusable = reuse(self, caller)  # Observe changed streams even on fallback.
+            if device_matches and reusable:
+                try:
+                    yield caller
+                finally:
+                    # Scope reuse proves context/order, not operand lifetime:
+                    # internal ordinary out/alias operands may not be root inputs.
+                    for tensor in tensors:
+                        tensor.record_stream(caller)
+                return
             # A stream record protects lifetime only. This wait orders input contents.
             if stream != caller:
                 stream.wait_stream(caller)
@@ -304,14 +329,22 @@ class _Weight(torch.Tensor):
             return return_and_correct_aliasing(
                 func, args, kwargs, tree_map(alias, result)
             )
+        binding = _GRAPH_BINDING.get()
         caller = (
             torch.cuda.current_stream(owner.device)
-            if owner.stream is not None
+            if owner.stream is not None and binding is None
             else None
         )
-        with owner.execution(leaves) as stream:
+        execution = (
+            owner.execution(leaves) if binding is None else binding.execution(owner)
+        )
+        with execution as stream:
             materialized = {
-                id(w): w._version_owner.tensor(w._shape, w._strides, w._offset, stream)
+                id(w): (
+                    w._version_owner.tensor(w._shape, w._strides, w._offset, stream)
+                    if binding is None
+                    else binding.tensor(w)
+                )
                 for w in weights
             }
             try:
@@ -353,7 +386,7 @@ class _Weight(torch.Tensor):
 
                 result = tree_map(retain_alias, result)
             finally:
-                if stream is not None:
+                if stream is not None and binding is None:
                     for value in materialized.values():
                         value.record_stream(stream)
         if caller is not None:
@@ -414,7 +447,9 @@ class Offload:
     aliases retain their immutable Source/device owners and remain readable.
     """
 
-    def __init__(self, model, device=0, *, source=None):
+    def __init__(self, model, device=0, *, source=None, graphs="auto"):
+        if graphs not in ("auto", "eager"):
+            raise ValueError("graphs must be 'auto' or 'eager'")
         roots = _roots(model)
         inventory = inspect_cpu_roots(roots)
         if source is not None:
@@ -453,6 +488,11 @@ class Offload:
         self._roots = roots
         self._hooks = []
         self._overrides = []
+        self._forward_origins = {}
+        self._method_origins = {}
+        self._component_entries = {}
+        self._root_names = {id(module): name for name, module in roots.items()}
+        self._automatic = None
         self._intent_plan = None
         self._intent_dirty = True
         self._intent_failed = False
@@ -520,6 +560,9 @@ class Offload:
                 torch.utils.swap_tensors(parameter, candidate)
             raise
         self.facts = inventory.facts()
+        from ._offload_auto import _AutomaticGraphs
+
+        self._automatic = _AutomaticGraphs(self, graphs)
 
     def _check(self):
         if self.closed:
@@ -528,6 +571,8 @@ class Offload:
             raise OffloadError(
                 "native intent cleanup failed; close/retry the retained handle"
             )
+        if self._automatic is not None:
+            self._automatic.check()
 
     def _refresh_intent(self):
         if not self._intent_dirty:
@@ -586,6 +631,11 @@ class Offload:
     def _intent(self, module):
         with self._owner.lock:
             self._check()
+            binding = _GRAPH_BINDING.get()
+            if binding is not None:
+                binding.validate_module(self, module)
+                yield
+                return
             if not self._intent_frames:
                 self._refresh_intent()
             name = self._boundary_names[id(module)]
@@ -633,7 +683,45 @@ class Offload:
             result.record_stream(caller)
         return result
 
+    def _component_forward(self, module):
+        from ._offload_auto import _REVIEWED_FORWARDS, _function
+        from ._offload_sdxl import reviewed_component_forward, reviewed_forward
+
+        origin = self._forward_origins[id(module)]
+        if _function(module.forward) is not _function(origin.installed):
+            return False
+        if reviewed_component_forward(module, origin.original):
+            return True  # Eager root scope, never a graph-purity claim.
+        reviewed = _REVIEWED_FORWARDS.get(type(module)) or reviewed_forward(module)
+        if reviewed is None or _function(origin.original) is not reviewed:
+            return False
+        if type(module) in (nn.Sequential, nn.ModuleList, nn.ModuleDict):
+            # Unknown callable/output protocols keep the existing per-op path.
+            for child in module.modules():
+                previous = self._forward_origins.get(id(child))
+                if (
+                    previous is None
+                    or type(child) not in _REVIEWED_FORWARDS
+                    or _function(child.forward) is not _function(previous.installed)
+                    or _function(previous.original)
+                    is not _REVIEWED_FORWARDS[type(child)]
+                ):
+                    return False
+        return True
+
+    def component_facts(self):
+        """Host scope-entry counts only; no GPU completion/performance inference."""
+        with self._owner.lock:
+            return {
+                "entries": dict(self._component_entries),
+                "native": self._owner.gpu is not None,
+            }
+
     def _install(self, module):
+        from ._offload_auto import _ForwardOrigin
+        from ._offload_sdxl import vae_entry_supported
+
+        original_forward = module.forward
         reference = weakref.ref(self)
 
         def replace(name, function, *, bind=True):
@@ -669,16 +757,94 @@ class Offload:
 
         self._hooks.append(module.register_forward_pre_hook(before, with_kwargs=True))
 
-        if id(module) in self._boundary_names:
-            original = module.forward
+        boundary = id(module) in self._boundary_names
+        if boundary or id(module) in self._root_names:
+            original = original_forward
 
             @functools.wraps(original)
             def forward(*args, **kwargs):
                 before(module, args, kwargs)
-                with handle()._intent(module):
+                owner = handle()
+                component = owner._component_forward(module)
+                if not boundary and not component:
                     return original(*args, **kwargs)
+                with (
+                    owner._owner.lock,
+                    owner._intent(module) if boundary else nullcontext(),
+                ):
+                    owner._check()
+                    if not component:
+                        if owner._automatic is None:
+                            return original(*args, **kwargs)
+                        return owner._automatic.dispatch(
+                            module, original, args, kwargs, None
+                        )
+                    from ._offload_stream import component_scope
+
+                    with component_scope(
+                        owner._owner,
+                        tree_flatten((args, kwargs))[0],
+                        capture_bindings=_GRAPH_BINDING.get(),
+                    ) as scope:
+                        if id(module) in owner._root_names:
+                            name = owner._root_names[id(module)]
+                            owner._component_entries[name] = (
+                                owner._component_entries.get(name, 0) + 1
+                            )
+                        if owner._automatic is None:
+                            result = original(*args, **kwargs)
+                        else:
+                            result = owner._automatic.dispatch(
+                                module, original, args, kwargs, scope
+                            )
+                        return scope.output(result)
 
             replace("forward", forward, bind=False)
+
+        self._forward_origins[id(module)] = _ForwardOrigin(
+            module.forward, original_forward
+        )
+
+        if id(module) in self._root_names and vae_entry_supported(module):
+            originals = {name: getattr(module, name) for name in ("encode", "decode")}
+
+            def install_entry(name):
+                original = originals[name]
+
+                @functools.wraps(original)
+                def entry(*args, **kwargs):
+                    from ._offload_sdxl import vae_entry_leaves
+                    from ._offload_stream import component_scope
+
+                    owner = handle()
+                    if not vae_entry_supported(module, originals):
+                        return original(*args, **kwargs)
+                    with owner._owner.lock:
+                        owner._check()
+                        with component_scope(
+                            owner._owner,
+                            tree_flatten((args, kwargs))[0],
+                            capture_bindings=_GRAPH_BINDING.get(),
+                        ) as scope:
+                            key = owner._root_names[id(module)] + "." + name
+                            owner._component_entries[key] = (
+                                owner._component_entries.get(key, 0) + 1
+                            )
+                            result = original(*args, **kwargs)
+                            values = vae_entry_leaves(
+                                module, name, result, originals=originals
+                            )
+                            if values is None:
+                                raise OffloadError(
+                                    "reviewed VAE entry returned unsupported owners"
+                                )
+                            return scope.output(result, values=values)
+
+                replace(name, entry, bind=False)
+
+            for name in originals:
+                install_entry(name)
+            self._method_origins[id(module)] = originals
 
         def convert(current, *args, **kwargs):
             device, dtype, _nonblocking, memory_format = torch._C._nn._parse_to(
@@ -723,6 +889,10 @@ class Offload:
 
     def _convert(self, module, device, dtype, *, floating_only=False):
         self._check()
+        if _GRAPH_BINDING.get() is not None:
+            raise OffloadError(
+                "dtype conversion cannot change a frozen capture binding"
+            )
         if device is not None:
             device = torch.device(device)
             if device.type != self._owner.device.type or (
@@ -800,7 +970,34 @@ class Offload:
         self._check()
         return self.model(*args, **kwargs)
 
+    def capture(self, module, args, *, kwargs=None, stream, reserve_bytes, pool=None):
+        """Prepare one immutable module graph outside the application request."""
+        from ._offload_graph import GraphSegment
+
+        return GraphSegment(
+            self,
+            module,
+            args,
+            kwargs=kwargs,
+            stream=stream,
+            reserve_bytes=reserve_bytes,
+            pool=pool,
+        )
+
+    def graph_facts(self):
+        """Passive automatic selection/counter/native-measurement metadata."""
+        self._automatic.check_process()
+        with self._owner.lock:
+            return self._automatic.facts()
+
     def close(self):
+        # Drain callbacks outside model/entry locks after stopping host admission.
+        self._automatic.check_process()
+        with self._owner.lock:
+            if self._intent_frames and not self._intent_failed:
+                raise OffloadError("close outside an active declared module boundary")
+            self._automatic.stop()
+        self._automatic.close()
         with self._owner.lock:
             if self._intent_frames and not self._intent_failed:
                 raise OffloadError("close outside an active declared module boundary")
@@ -813,11 +1010,11 @@ class Offload:
             self.closed = True
 
 
-def offload(model_or_pipeline, device=0, *, source=None):
-    """Adopt ordinary materialized CPU eval weights for immutable eager inference.
+def offload(model_or_pipeline, device=0, *, source=None, graphs="auto"):
+    """Adopt CPU eval weights; automatically graph reviewed immutable boundaries.
 
     CUDA requires Varena installation before any CUDA initialization. Explicit
     device='cpu' runs the same Source/alias/conversion frontend on real host tensors
     for integration and inspection; it exercises no native residency or CUDA path.
     """
-    return Offload(model_or_pipeline, device, source=source)
+    return Offload(model_or_pipeline, device, source=source, graphs=graphs)
