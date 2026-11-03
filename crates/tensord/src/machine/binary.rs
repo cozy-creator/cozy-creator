@@ -46,9 +46,18 @@ impl Launch {
     }
 }
 
-/// The binary a rollback restores: the one `cozy update` replaced, beside the launch path.
+/// The binary a rollback restores, beside the launch path: the one `cozy update` replaced, or the
+/// image this machine ran when something else replaced it (`keep_running`).
 pub fn previous(launch: &Path) -> PathBuf {
     launch.with_file_name(".cozy-previous")
+}
+
+/// Writes this running image at `previous`, whole or not at all. Linux reads it through
+/// `/proc/self/exe` even once its file left the launch path.
+pub fn keep_running(previous: &Path) -> io::Result<()> {
+    let temp = previous.with_file_name(".cozy-keep");
+    std::fs::copy("/proc/self/exe", &temp)?;
+    std::fs::rename(&temp, previous).inspect_err(|_| drop(std::fs::remove_file(&temp)))
 }
 
 /// The release a dev binary (`cozy machine update --tensord <path>`) first replaced, beside the launch path.
