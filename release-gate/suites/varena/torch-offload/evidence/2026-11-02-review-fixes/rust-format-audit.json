@@ -1,0 +1,12 @@
+[
+  {
+    "source": "crates/varena/src/abi.rs",
+    "baseline_and_current_have_format_diffs": true,
+    "new_rust_lines_have_no_formatter_hunks": true
+  },
+  {
+    "source": "crates/varena-client/src/lib.rs",
+    "baseline_and_current_have_format_diffs": true,
+    "new_rust_lines_have_no_formatter_hunks": true
+  }
+]

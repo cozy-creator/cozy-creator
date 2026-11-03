@@ -1,0 +1,76 @@
+{
+  "baseline_head": "83e8407fdf85a61ace32311eba8c43e1204bdcb2",
+  "sdk": {
+    "preferred_native": "b40f91f736a8a713229465c631e3b475428c6fb5",
+    "features": [
+      "549f4915534c6f6d6840465b905d69038b07bbe7",
+      "12425d44ff3de33b791f79937a2645c827529b51"
+    ],
+    "approved_parent": "14e8f95dab4fff76f52b02616bdb453b62f94c8c",
+    "audited_master": "7626bc995a5d14bb81e7fd3712896c77b8f4ccdd",
+    "artifact_hashes": {
+      "core": "1d6b24dd4a32bd285daaa2f827f9dcd714ff96638080b78957d43c328ef854e0",
+      "extension": "cf0ec25f2c59c006a72f0e102632983ce9f4f4678a346b104d6ed5ba30ebff64"
+    },
+    "copy_source": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-graph-native-audited",
+    "owned_package": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-offload-graphs/.task/audited-source/crates/tensorfs-py/python/tensorfs",
+    "scope": "Read-only audited native/source copy plus feature-only Plan/graph Python overlay; no native/context snapshot imported into branch or cache writes."
+  },
+  "overlay_hashes": {
+    "_offload.py": "2597ec31cf680c57d070dbf017798f5249ed33121d09064269c1dfd0839925f7",
+    "_offload_graph.py": "478b29700276cc174fa6837747e5900a5e84e48e9cf989c1482808f631d13138",
+    "torch.py": "7fbb79e817798a7aa2f932268bf68fcf6ba0f925a0a9a326b8c34617266e3566"
+  },
+  "results": [
+    {
+      "client": "graph_guard_retirement_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "graph_bindings_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "shallow_copy_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "inference_alias_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "adapter_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "review_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "intent",
+      "exit_code": 0
+    },
+    {
+      "client": "plan_retirement_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "clip_inventory_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "replay_scope_host",
+      "exit_code": 0
+    }
+  ],
+  "source_checks": {
+    "actual_helper_context_exit_precedes_guard_close": true,
+    "capture_uses_epoch_select_and_restore_intent": true,
+    "known_intent_restored_before_release_and_escape_classification": true,
+    "deactivate_failure_marks_owner_failed_without_parent_requirement": true,
+    "native_capture_plan_cleanup": "Source review only; GPU unrun",
+    "alias_escape_gpu_mode": "Prepared/unrun"
+  },
+  "command": "nice -n19 CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=<owned audited SDK and current exact Python overlay> <torch-cpu>/bin/python <client>",
+  "scope": "CPU C10 Storage/read-only model bodies and native metadata only. No actual CUDA capture/intent cleanup/GPU failure qualification."
+}

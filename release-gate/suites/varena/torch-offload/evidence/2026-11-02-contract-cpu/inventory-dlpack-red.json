@@ -1,0 +1,8 @@
+{
+  "requires_grad": true,
+  "use_count_before": 2,
+  "inventory_accepted": true,
+  "swap": "RuntimeError: Expected use_count of t1 to be 1 or 2 with an AccumulateGrad node but got 2 make sure you are not holding references to the tensor in other places.",
+  "weights_unchanged": true,
+  "cuda": false
+}

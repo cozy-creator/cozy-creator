@@ -1,0 +1,20 @@
+     Locking 15 packages to highest Rust 1.99.1 compatible versions
+      Adding bitflags v2.13.2
+      Adding darling v0.20.11
+      Adding darling_core v0.20.11
+      Adding darling_macro v0.20.11
+      Adding fnv v1.0.7
+      Adding ident_case v1.0.1
+      Adding libloading v0.8.9
+      Adding nvml-wrapper v0.13.0
+      Adding nvml-wrapper-sys v0.10.0
+      Adding static_assertions v1.1.0
+      Adding strsim v0.11.1
+      Adding syn v2.0.119
+      Adding thiserror v1.0.69
+      Adding thiserror-impl v1.0.69
+      Adding wrapcenum-derive v0.4.1
+    Checking libc v0.2.191
+    Checking varena v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-multi-arena-plan/crates/varena)
+    Checking varena-cache-pages v0.1.0 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p3-multi-arena-plan/release-gate/suites/varena/cache-pages)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.74s

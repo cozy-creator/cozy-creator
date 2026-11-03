@@ -1,0 +1,34 @@
+{
+  "scope": "Actual CPU public offload/ReLU/error body-count path +CLI help only; native full-controller capacity/capture/replay GPU assertions prepared UNRUN",
+  "parent": "1686cfa58b822ccc6bda4f91f73b4469d56b711d",
+  "product_code_changed": false,
+  "checks": [
+    {
+      "client": "automatic_capacity.py --device cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "automatic_capacity.py --help",
+      "exit_code": 0
+    },
+    "Ruff check/format",
+    "git diff --check"
+  ],
+  "fixture_sha256": "248aa59570074a1bd4e11e690975b9e9712d657192e88ff4bec2e0abd59fef97",
+  "gpu_command": "automatic_capacity.py --device cuda:0",
+  "contract": "native observed mapped limit only in isolated fixture; native measured peak unchanged; exact typed pool refusal ->one eager body; later request capture/replay; actual unsupported operator error is not reexecuted",
+  "not_qualified": [
+    "native admission/refusal",
+    "mapped-page eager fit",
+    "capture/replay",
+    "GPU complex refusal",
+    "performance"
+  ],
+  "no_native_gpu_rental_machine_merge_release": true,
+  "receipts": {
+    "automatic-capacity-cpu.json": "6678abc2e4c51b4e76c8233ef41b730bd9583930aaa8a20db62138b6d993fdf5",
+    "automatic-capacity-help.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "automatic-capacity-help.txt": "249c302e9b1ec8a88ce8a8bd680139303d6ea68fad3e04fbafaea3d58b65cbc6",
+    "automatic-capacity-cpu.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}
