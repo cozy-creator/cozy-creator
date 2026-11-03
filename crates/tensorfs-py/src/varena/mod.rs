@@ -622,8 +622,8 @@ impl PyUse {
         })
         .map_err(|e| raise(py, e))
     }
-    /// Declare a CUDA stream handle that uses this storage. Releases of this Use and its
-    /// exports then record Varena events there instead of requiring a context join.
+    /// Declare a CUDA stream handle that uses this storage. The final shared owner
+    /// records live-stream events or consumes checked retirement witnesses.
     fn consume_on(&self, py: Python<'_>, stream: u64) -> PyResult<()> {
         if self.pid != std::process::id() {
             return Err(PyRuntimeError::new_err(

@@ -349,8 +349,9 @@ class PreparedRead:
 class Use:
     """Pinned storage. Fill every byte before commit when needs_fill is true.
 
-    The tensor and all its aliases retain their own native physical pin, even after this
-    object is destroyed. An abandoned fill stays unreadable to later prepares.
+    This Use and every independently exported Storage share one checked native Pin
+    owner. Storage references survive this Python object; an abandoned fill stays
+    unreadable to later prepares.
     """
 
     def __init__(self, native: _ext._VarenaUse) -> None:
@@ -367,10 +368,9 @@ class Use:
     def consume_on(self, stream: int) -> None:
         """Declare a CUDA stream (``torch.cuda.Stream.cuda_stream``) that uses this storage.
 
-        Once any stream is declared, releasing this Use or the last alias of its tensor records
-        a Varena event on every declared stream, and reclaim waits on those events instead of
-        joining the CUDA context. Declare every stream that touches this storage, including
-        through escaped aliases, before that last alias is released.
+        The final shared owner records events on live declared streams, or uses their
+        checked retirement witnesses. Declare every consumer, including escaped aliases,
+        before submission; finish declarations before retiring/destroying a stream.
         """
         self._native.consume_on(stream)
 

@@ -28,9 +28,9 @@ struct Family {
 
 /// Shared consumer declarations for one native tensor export family.
 ///
-/// This value does not own physical bytes: its one foreign storage separately owns
-/// a Pin. Clones share declarations for that same storage and do not create new
-/// physical owners. Independent exported storage must register a new family.
+/// This value does not own physical bytes: its physical-use owner separately holds
+/// a Pin. Storages that structurally share that owner may share this family;
+/// independently owned Pins register independent families.
 #[derive(Clone)]
 pub struct Consumers(Arc<Family>);
 
@@ -113,9 +113,9 @@ impl Consumers {
     /// # Safety
     /// Every consumer through this Pin and its storage aliases has submitted its
     /// work on a declared live stream (or joined it there) and submits nothing
-    /// after this call. Call exactly once for this family's one foreign storage,
-    /// after its final shared-storage alias is gone. Independent exported storage
-    /// retains its own Pin and family. The Pin must belong to this family's
+    /// after this call. Call exactly once for this family's physical-use owner,
+    /// after every Storage/Use ownership share is gone. Independent physical owners
+    /// retain their own Pin and family. The Pin must belong to this family's
     /// Region. Failure returns the exact Pin for explicit unproven custody; the
     /// caller must not drop that Pin or substitute a context synchronization.
     #[allow(unsafe_code)]
