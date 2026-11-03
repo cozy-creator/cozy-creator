@@ -2,7 +2,8 @@
 //! once and prepares inside itself: its code installs, its models resolve at the run's Hub and
 //! download, and each stage is the run's progress. Its Hub capability lives only in memory
 //! (`hub::Capability`), as do its provider tokens, for the run's life (its children prepare with
-//! them); a restart before it completes ends the run FAILED (`journal::PREPARING`).
+//! them). A restart before it completes prepares it again, from its kept spec or, sent with tokens,
+//! as its controller sends it again (`journal::interrupt_preparations`).
 use crate::{
     api::domain,
     call_memo::{self, Memo},

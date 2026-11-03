@@ -173,7 +173,8 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
         v1::RunKind::Remove => (false, true),
         v1::RunKind::Update => return Err(Error::validation("invalid_kind", "an update is not a run of code")),
     };
-    // Kept while it prepares, for a restart to prepare it again; provider tokens stay in memory.
+    // Kept while it prepares, for a restart to prepare it again. Tokens stay in memory: a run sent
+    // with them keeps nothing, and its controller sends it again (`interrupt_preparations`).
     let tokens = spec.providers.as_ref().is_some_and(|p| !p.huggingface.is_empty() || !p.civitai.is_empty())
         || spec.tensorfs.as_ref().is_some_and(|options| !options.token.is_empty())
         || spec.hub.as_ref().is_some_and(|hub| !hub.capability.is_empty());
