@@ -7,8 +7,9 @@
 #              "installs its own" warning, and no install takes 1 GiB of disk
 #   disk-held  a CPU SDXL call running while H3 int8 (68 GiB) and Qwen-Image int8 (17 GiB) land: none of SDXL is evicted,
 #              and each download holds its own commit (canceled after: a CPU step takes minutes)
-#   disk-lru   H3, Qwen, SDXL and H3 again all land on 100 GB: each eviction logged (lane, bytes, idle); the uv cache
-#              entries the removed environments alone linked are reclaimed (logged) before any model
+#   disk-lru   H3, Qwen, SDXL, more of H3's lanes until the store has evicted (a rental can hold more than was asked: its
+#              image's own disk, 120 GB for 100), and H3 again all land: each eviction logged (lane, bytes, idle); the uv
+#              cache entries the removed environments alone linked are reclaimed (logged) before any model
 T=$OUT/disk; mkdir -p "$T"
 use() { "$CLI" --json machine show "$M" 2>/dev/null | jq -r --arg s "$1" '.status | [$s, .disk_free_bytes, .disk_models_bytes,
   .disk_environments_bytes, .disk_runtime_bytes] | @tsv' >> "$T/use.tsv"; }
@@ -49,9 +50,12 @@ evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
   || expect disk-held FAIL "h3 $h3, qwen $qwen $(run_get "$T" qwen .reason.message), SDXL run $during, SDXL evicted $evicted_sdxl times"
 
 sdxl=$(step sdxl model download stabilityai/sdxl --lane int8 --on "$M" -y)
+for lane in fp8 nvfp4; do
+  [ "$(logs 'tensorfs: evicted')" = 0 ] && step "h3-$lane" model download minimaxai/minimax-h3 --lane "$lane" --on "$M" -y > /dev/null
+done
 again=$(step h3-again model download minimaxai/minimax-h3 --lane int8 --on "$M" -y)
 evictions=$(logs 'tensorfs: evicted'); garbage=$(grep -cE 'reclaimed .*(uv cache entries|package environments)' "$T/tensord.log")
 silent=$(grep -cE 'tensorfs: freed .* \(0 evicted' "$T/tensord.log")
 [ "$sdxl$again" = completedcompleted ] && [ "$evictions" -gt 0 ] \
   && expect disk-lru PASS "$evictions lanes evicted, $garbage garbage sweeps, $silent sweeps of unreferenced objects; $(grep -m3 'tensorfs: evicted' "$T/tensord.log" | sed 's/.*tensorfs: //' | paste -sd';')" \
-  || expect disk-lru FAIL "sdxl $sdxl, h3 again $again; $evictions evictions, $garbage garbage sweeps; $(run_get "$T" h3-again .reason.message)"
+  || expect disk-lru FAIL "sdxl $sdxl, h3 again $again; $evictions evictions, $garbage garbage sweeps; free $(tail -1 "$T/use.tsv" | cut -f2); $(run_get "$T" h3-again .reason.message)"

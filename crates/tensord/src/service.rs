@@ -55,6 +55,8 @@ pub struct Service {
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
+/// The disk's free bytes moved this far: what fills it is read again.
+const USAGE_MOVED: u64 = 64 << 20;
 
 /// Whether an executor this machine run does not supervise still fences GPU dispatch: it, or a
 /// member of its group born before `before`, is alive and not stuck in the kernel after its kill.
@@ -341,6 +343,7 @@ impl Service {
             platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
         }
         let mut swept: Option<std::time::Instant> = None;
+        let mut measured = 0;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
@@ -355,9 +358,23 @@ impl Service {
                         service.reclaim();
                         swept = Some(std::time::Instant::now());
                     }
+                    // What fills the disk follows the disk between sweeps: `machine show` on a machine
+                    // whose models landed since the last sweep said what it held before them.
+                    let free = crate::reclaim::measure(&service.engine.root).map_or(measured, |disk| disk.available);
+                    if due || free.abs_diff(measured) >= USAGE_MOVED {
+                        measured = free;
+                        service.measure_usage();
+                    }
                 }
                 _ => return,
             }
+        }
+    }
+    fn measure_usage(&self) {
+        let publisher = self.publisher.lock().unwrap().clone();
+        let generations = self.catalog.root();
+        if let Some(publisher) = publisher {
+            crate::reclaim::measure_usage(publisher.store().root(), generations.parent().unwrap_or(generations), Some(&publisher.uv_cache()));
         }
     }
     /// `actor`'s installations `named` leave the journal, their warm set members and the GPU
@@ -393,7 +410,7 @@ impl Service {
     }
 
     /// Caches manage themselves (`reclaim`): a TTL and a low disk, never a purge verb. Each
-    /// sweep logs what it freed and measures what fills the disk.
+    /// sweep logs what it freed.
     pub fn reclaim(&self) -> crate::reclaim::Swept {
         self.sweep(0, true)
     }
@@ -437,11 +454,7 @@ impl Service {
             swept.add(crate::reclaim::Kind::Object, objects.0, objects.1);
             Ok(swept)
         };
-        let swept = sweep();
-        if let Some(publisher) = publisher.as_ref().filter(|_| all) {
-            crate::reclaim::measure_usage(publisher.store().root(), engine, uv_cache.as_deref());
-        }
-        match swept {
+        match sweep() {
             Ok(swept) => {
                 if !swept.is_empty() {
                     tracing::info!("reclaimed {swept}");
