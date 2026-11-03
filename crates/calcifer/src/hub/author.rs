@@ -313,7 +313,7 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
     let (org, name, release) = (&account, &project.name, &project.version);
     let grants = client.begin_package_release(org, name, release, &declared).await.map_err(hub_error)?;
     result.uploaded_bytes = upload(&files, &grants.files, say).await?;
-    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full).await)
+    let mut state = (client.finalize_package_release(org, name, release, &grants.publication_id, &python.full, ask.yanked).await)
         .map_err(hub_error)?;
     // Finalization re-hashes every file on the Hub; its state ends the wait.
     while state.state != "committed" && state.state != "failed" {
@@ -332,10 +332,18 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
         }
         return Err(error);
     }
-    result.status = "published".into();
+    // A Hub from before finalize took `yanked` ignores it, and the release is its newest until this.
+    if ask.yanked && !state.yanked {
+        client.yank_package_release(org, name, release).await.map_err(|e| {
+            refuse("package_not_yanked", format!("{org}/{name}@{release} is published but not yanked: {}", hub_error(e)))
+                .remedy(format!("cozy package yank {org}/{name}@{release}"))
+        })?;
+    }
+    result.status = if ask.yanked { "published yanked" } else { "published" }.into();
     result.changed = true;
     result.warnings = state.warnings;
-    // This computer's next unversioned run takes the release just published, not one refresh later.
+    // This computer's next unversioned run takes the Hub's newest (never a yanked release) now, not
+    // one refresh later. It reads after any yank above: it keeps what it reads.
     if let Ok(reader) = reader(api, &hub) {
         let _ = hub_client::cards::fresh(&reader, api.machines.hubs.home().root(), &hub, &result.package).await;
     }

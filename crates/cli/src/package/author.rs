@@ -56,8 +56,8 @@ pub async fn lock(ctx: &Context, upgrade: &[String], root: bool) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-pub async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
-    let ask = PublishAsk { hub: Some(ctx.hub().to_string()), dir: here()?, root };
+pub async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
+    let ask = PublishAsk { hub: Some(ctx.hub().to_string()), dir: here()?, root, yanked };
     let done = authored(ctx, "/v1/package-publications", &ask).await?;
     let result = (done.published)
         .ok_or_else(|| Error::new(Kind::Internal, "untyped_answer", "a publication that ended with no release"))?;
