@@ -4,6 +4,8 @@ use protocol::{
     error::Error,
 };
 
+use tokio::task::JoinHandle;
+
 use super::{list, route};
 use crate::{
     Context,
@@ -71,19 +73,34 @@ impl Following {
 pub(crate) struct Machines {
     list: MachineList,
     watch: Watch<MachinesEvent>,
+    /// The Hubs' answer: until it comes, what is drawn is their last word.
+    asked: Option<JoinHandle<Result<MachineList, Error>>>,
 }
 
 impl Machines {
-    /// Subscribes, then lists (the Hubs asked once): a change in between is in the stream.
+    /// Subscribes, then lists what Calcifer holds, so a slow Hub holds up no draw, and asks the
+    /// Hubs once behind it. A change in between is in the stream.
     pub(crate) async fn open(ctx: &Context) -> Result<Self, Error> {
         let calcifer = ctx.calcifer().await?;
         let watch = calcifer.watch("/v1/machines/events").await?.quiet();
-        let list = calcifer.get("/v1/machines?refresh=true").await?;
-        Ok(Self { list, watch })
+        let list = calcifer.get("/v1/machines").await?;
+        let asked = tokio::spawn(async move { calcifer.get("/v1/machines?refresh=true").await });
+        Ok(Self { list, watch, asked: Some(asked) })
     }
 
     pub(crate) async fn changed(&mut self, ctx: &Context) -> Result<(), Error> {
-        match self.watch.next().await {
+        let (asked, watch) = (&mut self.asked, &mut self.watch);
+        let event = tokio::select! {
+            answer = async { match asked { Some(asked) => asked.await, None => std::future::pending().await } } => {
+                self.asked = None;
+                if let Ok(Ok(list)) = answer {
+                    self.list = list;
+                }
+                return Ok(());
+            }
+            event = watch.next() => event,
+        };
+        match event {
             Some(MachinesEvent::Updated { machine }) => {
                 let machines = &mut self.list.machines;
                 match machines.iter_mut().find(|m| m.name == machine.name) {

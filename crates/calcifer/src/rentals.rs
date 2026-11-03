@@ -1042,7 +1042,7 @@ impl Machines {
             lists.spawn(async move { me.list_hub(&origin).await });
         }
         lists.join_all().await;
-        self.hubs.learn().await;
+        let _ = tokio::time::timeout(HUB_READ, self.hubs.learn()).await;
         self.calcifer.machine_changed();
     }
 
@@ -1056,7 +1056,7 @@ impl Machines {
                 return;
             }
         };
-        let rentals = match client.list_rentals("live").await {
+        let rentals = match within(client.list_rentals("live")).await {
             Ok(listing) => listing.rentals,
             Err(e) => {
                 let error = hub_refusal(origin, e);
@@ -1310,7 +1310,7 @@ impl Hubs {
     /// One rental as its Hub says it now.
     async fn read(&self, origin: &str, id: &str) -> Result<types::Rental, Error> {
         let client = self.client(origin)?;
-        let rental = client.get_rental(id).await.map_err(|e| hub_refusal(origin, e))?;
+        let rental = within(client.get_rental(id)).await.map_err(|e| hub_refusal(origin, e))?;
         self.seen(origin, rental.clone());
         Ok(rental)
     }
@@ -1445,6 +1445,21 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
 }
 
 /// A Hub's failure as the API answers it, naming the Hub.
+/// How long a Hub may take over one read for `cozy machine ls`. A Hub working on an answer sends
+/// nothing, so there is no progress to measure: this is TensorFS's stall floor (`fetch::ask`), and
+/// what TensorD allows its own Hub calls.
+const HUB_READ: Duration = Duration::from_secs(30);
+
+/// `read`, unanswered as the Hub being unreachable once [`HUB_READ`] has passed.
+async fn within<T>(
+    read: impl Future<Output = Result<T, hub_client::Error>>,
+) -> Result<T, hub_client::Error> {
+    match tokio::time::timeout(HUB_READ, read).await {
+        Ok(answer) => answer,
+        Err(_) => Err(hub_client::Error::Call(format!("no answer in {} s", HUB_READ.as_secs()))),
+    }
+}
+
 pub(crate) fn hub_refusal(origin: &str, e: hub_client::Error) -> Error {
     let mut error = e.refusal(|| login(origin));
     error.message = format!("{origin}: {}", error.message);
