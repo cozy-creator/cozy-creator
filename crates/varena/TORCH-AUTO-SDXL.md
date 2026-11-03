@@ -125,8 +125,10 @@ epoch-failure/reset/escape GPU and stock performance gates remain explicit.
 
 ## Prepared real stock repeat gate
 
-`automatic_sdxl_gpu.py` runs an actual LOCAL stock SDXL pipeline,20 steps at
-1024x1024 by default, with explicit seed/prompt/guidance and no download. Run
+`automatic_sdxl_gpu.py` runs TWO complete calls on ONE actual LOCAL stock SDXL
+pipeline/Offload/native GPU handle in the same process. Each call uses20 steps at
+1024x1024 by default and a fresh CPU generator with the same seed/prompt/guidance.
+The fixed local `fp16` weight variant is loaded once; there is no download. Run
 separate matched ordinary-Cozy processes with --graphs eager and --graphs auto:
 
 ```sh
@@ -136,17 +138,26 @@ python release-gate/suites/varena/torch-offload/automatic_sdxl_gpu.py \
   --model /operator/local/sdxl --output /operator/results/auto --graphs auto
 ```
 
-Both runs save lossless output.npy, config hashes, numerical settings, native
+Each mode saves separate `call-1/output.npy` and `call-2/output.npy`, with a
+`result.json` beside each and a combined top-level result. Per-call records retain
+config hashes, numerical settings, native
 selection/decline facts, component entries and actual CUDA event timings from
 immediately before UNet through the scheduler callback. Total inference time
 includes prompt/VAE/postprocessing and excludes file writes. Host submission
 timings are separately labeled. An ancestor UNet timing hook executes once per
 step, outside every selected child definition. No child hook/method is substituted.
-Automatic mode MUST observe captures and repeated cached denoise reuse; returning
-an image eagerly cannot satisfy its gate. Output parity/quality and performance
+Each call records before/first-step/final facts, cumulative counters plus per-call
+capture/replay/entry deltas, and prior UNet definitions actually reused. Only the
+first call requires fresh captures; the second may reuse its existing definitions.
+Both require repeated cached denoise reuse in automatic mode; returning
+an image eagerly cannot satisfy its gate. The second call crosses the stock VAE
+upcast/downcast Version/intent changes with no owner close, reset, re-adoption or
+manual cache clearing between calls. Actual process/owner/native-handle IDs are
+recorded. The first complete result stays saved if the second fails, and failures
+are rethrown without repeating authored inference. Output parity/quality and performance
 comparison still require the paired receipts; a single mode claims neither.
-Inference failures preserve failure.json and rethrow without cleanup/re-execution
-that could discard uncertain owners.
+First and same-owner warm-call inference times are separate and exclude file writes;
+their sum excludes between-call receipt work. No speed pass follows from one pair.
 
 Stock txt2img exercises decode, not encode; its report states the actual encode0
 entry count. The separate real component client retains --graphs eager explicitly

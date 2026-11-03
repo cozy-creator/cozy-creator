@@ -1,6 +1,6 @@
 """Actual local stock SDXL repeated denoise; operator-only ordinary Cozy client.
 
-Run eager/auto separately with identical settings, then compare saved output.npy.
+Run two complete calls per owning process; compare eager/auto call-N/output.npy.
 No weights download, private reserve, budget estimate or inference retry.
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -21,30 +22,11 @@ from tensorfs.varena import api
 from tensorfs.varena import torch as vt
 
 
-def run(args):
-    output = args.output
+def run_call(args, pipe, owner, config_hashes, call_number):
+    output = args.output / f"call-{call_number}"
     output.mkdir(parents=True, exist_ok=True)
-    vt.install(args.device)  # Before model code can initialize CUDA.
-    pipe = StableDiffusionXLPipeline.from_pretrained(
-        args.model,
-        torch_dtype=torch.float16,
-        variant="fp16",
-        use_safetensors=True,
-        local_files_only=True,
-        add_watermarker=False,
-    )
-    for component in pipe.components.values():
-        if isinstance(component, torch.nn.Module):
-            component.eval()
-    pipe.set_progress_bar_config(disable=True)
-    owner = vt.offload(pipe, device=args.device, graphs=args.graphs)
-    config_hashes = {
-        name: hashlib.sha256(
-            (args.model / name / "config.json").read_bytes()
-        ).hexdigest()
-        for name in ("unet", "vae", "text_encoder", "text_encoder_2")
-    }
-    quarantine_before = api.retirement_stats()["quarantined"]
+    before = owner.graph_facts()
+    entries_before = owner.component_facts()["entries"]
     starts, ends, wall_starts, wall_ends = [], [], [], []
     first_step_facts = None
 
@@ -95,21 +77,54 @@ def run(args):
             for name, row in facts["boundaries"].items()
             if name.startswith("unet.")
         }
-        captures = sum(row["captures"] for row in denoise.values())
-        replays = sum(row["replays"] for row in denoise.values())
+        previous = {
+            name: row
+            for name, row in before["boundaries"].items()
+            if name.startswith("unet.")
+        }
+        assert denoise.keys() == previous.keys()
+        deltas = {
+            name: {
+                counter: row[counter] - previous[name][counter]
+                for counter in ("captures", "replays", "eager_calls")
+            }
+            for name, row in denoise.items()
+        }
+        captures = sum(row["captures"] for row in deltas.values())
+        replays = sum(row["replays"] for row in deltas.values())
         reused = [
-            name for name, row in denoise.items() if row["replays"] > row["captures"]
+            name for name, row in deltas.items() if row["replays"] > row["captures"]
+        ]
+        prior_definitions_reused = [
+            name
+            for name, row in deltas.items()
+            if previous[name]["cache"] is not None
+            and previous[name]["cache"]["has_definition"]
+            and row["captures"] == 0
+            and row["replays"] > 0
+            and previous[name]["native_key"] == denoise[name]["native_key"]
         ]
         if args.graphs == "auto":
-            assert captures > 0 and replays > captures and reused, facts
+            if call_number == 1:
+                assert captures > 0, facts
+            assert replays > captures and reused, facts
         else:
             assert captures == replays == 0
-        assert entries["entries"].get("vae.decode", 0) > 0
+        entry_deltas = {
+            name: count - entries_before.get(name, 0)
+            for name, count in entries["entries"].items()
+        }
+        assert entry_deltas.get("vae.decode", 0) > 0
         assert not owner._intent_frames and not owner._intent_failed
         stage_ms = [start.elapsed_time(end) for start, end in zip(starts, ends)]
         report = {
             "passed": True,
-            "scope": "one actual stock local SDXL mode; paired output/performance comparison still required",
+            "scope": "one complete stock pipeline call; paired output/performance comparison still required",
+            "pipeline_call": call_number,
+            "phase": "first" if call_number == 1 else "warm_same_owner",
+            "process_id": os.getpid(),
+            "offload_owner_id": id(owner),
+            "native_gpu_handle": owner._owner.gpu._handle,
             "graphs": args.graphs,
             "torch": torch.__version__,
             "diffusers": diffusers.__version__,
@@ -134,11 +149,15 @@ def run(args):
             "unet_captures": captures,
             "unet_replays": replays,
             "unet_reused_boundaries": reused,
+            "unet_boundary_deltas": deltas,
+            "unet_prior_definitions_reused": prior_definitions_reused,
             "component_entries": entries,
-            "vae_encode_entries": entries["entries"].get("vae.encode", 0),
-            "vae_decode_entries": entries["entries"].get("vae.decode", 0),
+            "component_entry_deltas": entry_deltas,
+            "vae_encode_entries": entry_deltas.get("vae.encode", 0),
+            "vae_decode_entries": entry_deltas.get("vae.decode", 0),
             "vae_encode_scope": "not exercised by stock txt2img; use real sdxl_components.py --device cuda:0 encode/decode gate",
             "first_step": first_step_facts,
+            "before_call": before,
             "final": facts,
             "output_shape": images.shape,
             "output_dtype": str(images.dtype),
@@ -152,6 +171,7 @@ def run(args):
             "type": type(error).__name__,
             "message": str(error),
             "graphs": args.graphs,
+            "pipeline_call": call_number,
             "elapsed_s": time.perf_counter() - begin,
         }
         try:
@@ -163,9 +183,63 @@ def run(args):
         raise  # Receipt only; never reset owners or repeat authored inference.
     finally:
         hook.remove()
-    owner.close()
-    assert api.retirement_stats()["quarantined"] == quarantine_before
     (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+    return report
+
+
+def run(args):
+    args.output.mkdir(parents=True, exist_ok=True)
+    vt.install(args.device)  # Before model code can initialize CUDA.
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        args.model,
+        torch_dtype=torch.float16,
+        variant="fp16",
+        use_safetensors=True,
+        local_files_only=True,
+        add_watermarker=False,
+    )
+    for component in pipe.components.values():
+        if isinstance(component, torch.nn.Module):
+            component.eval()
+    pipe.set_progress_bar_config(disable=True)
+    owner = vt.offload(pipe, device=args.device, graphs=args.graphs)
+    config_hashes = {
+        name: hashlib.sha256(
+            (args.model / name / "config.json").read_bytes()
+        ).hexdigest()
+        for name in ("unet", "vae", "text_encoder", "text_encoder_2")
+    }
+    quarantine_before = api.retirement_stats()["quarantined"]
+    calls = []
+    try:
+        for call_number in (1, 2):
+            calls.append(run_call(args, pipe, owner, config_hashes, call_number))
+        owner.close()  # Exactly once, after BOTH pipeline calls finish.
+        assert api.retirement_stats()["quarantined"] == quarantine_before
+    except BaseException as error:
+        failure = {
+            "type": type(error).__name__,
+            "message": str(error),
+            "completed_calls": calls,
+            "graphs": args.graphs,
+        }
+        (args.output / "failure.json").write_text(json.dumps(failure, indent=2) + "\n")
+        raise  # No close/reset/retry after an uncertain authored call.
+    report = {
+        "passed": True,
+        "scope": "two complete stock calls on ONE owning handle/process; paired mode comparison remains required, no speed pass from one pair",
+        "graphs": args.graphs,
+        "call_count": 2,
+        "steps": args.steps,
+        "height": args.height,
+        "width": args.width,
+        "seed": args.seed,
+        "weight_variant": "fp16",
+        "calls": calls,
+        "sum_inference_s": sum(call["elapsed_inference_s"] for call in calls),
+        "timing_boundary": "each call includes prompt/all configured denoise steps/VAE/postprocessing/completion; excludes load/adoption and output/facts writes; sum excludes between-call receipt work",
+    }
+    (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
 
