@@ -45,9 +45,9 @@ way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
    The candidate's cozy puts it on; its `machine update` fails unless the machine then runs it.
-3. Runs the chosen suites' cells, each once, with new prompts and seeds. Nothing here ends a slow or hung run (e2e/run.sh):
-   it bills until the workflow's 300-minute timeout or a cancel, so whoever dispatches watches it. A cancelled run still
-   ends its rental.
+3. Runs the chosen suites' cells, each once, with new prompts and seeds. A slow run goes on; a hung one stops: when no run
+   on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in 786 real cells was
+   7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the

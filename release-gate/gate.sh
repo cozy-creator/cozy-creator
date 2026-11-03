@@ -4,9 +4,10 @@
 # .github/workflows/release-gate.yaml on a runner signed in with `cozy login --key`.
 #   gate.sh <SKU> --suite name,... [--gpus N] [--out DIR] [--establish] [--publish] [--runtime F|URL] [--tensorfs F|URL]
 #           [--tensord BIN|URL] [--packages DIR] [--pins name@release,...] [--only cell,cell] [--before FILE]...
-#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX]
+#           [--cells FILE]... [--first pkg,...] [--cli BIN] [--disk GB] [--on MACHINE] [--image sha256:HEX] [--stall MIN]
 # --image boots that worker image (a staged candidate's digest; a Hub admin's choice) in place of the Hub's current one.
 # --on runs on that machine as it is (a dev proof on `local`): no rental, no --before, nothing ended.
+# --stall: how long no run on the machine may stand still before the gate calls its cell hung (`hold`; default 15 minutes).
 # --suite runs those suites (suites/<name>/: README.md says what each proves and costs); there is no default, the
 # release agent chooses. A suite's cells.sh runs once the candidate is on, and its check.py in analyze.py; the baseline
 # is gate-<SKU>-<suites>.json.
@@ -29,7 +30,7 @@ fi
 HERE=$2; shift 2
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE=
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15
 BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]; do
     --disk) DISK=$2;;
     --on) ON=$2;;
     --image) IMAGE=$2;;
+    --stall) STALL=$2;;
     --packages) PKGS=$(cd "$2" && pwd);;
     --pins) PINS=",$2,";;
     --runtime|--runtime-wheel) RW=$2;;
@@ -217,8 +219,32 @@ fi
 [ -n "$M" ] || { log "rent failed: $(cat acquisition.stuck 2>/dev/null) $(tail -c 300 rent.err) $(tail -c 300 rent.out)"; exit 1; }
 echo "$M" > machine
 log "${ON:+on }${ON:-rented} $M"
-# The gate holds the rental between runs too (fetches, uploads, analysis here): reset its 15-minute idle clock.
-[ -n "$ON" ] || { (while sleep 240; do "$CLI" machine keepalive "$M" >/dev/null 2>&1; done) & KEEP=$!; }
+# hold: every 240 s while this gate lives (a killed gate's loop ends at its next look), the runs' own clock decides.
+# A move within --stall minutes restarts the rental's 15-minute idle clock, which the gate's work between runs needs
+# (fetches, uploads, analysis). No move that long with a run open is a hung cell (the longest quiet in 786 real cells was
+# 7.2 min): its runs are canceled, and the gate fails and ends the rental. With none open, nothing renews.
+hold() {
+  local clock at active seen= moved=$SECONDS
+  while sleep 240 && kill -0 $$ 2> /dev/null; do
+    clock=$(run_clock "$M" "$CLI") || continue
+    read -r at active <<< "$clock"
+    [ "$at" = "$seen" ] || { seen=$at moved=$SECONDS; }
+    if (( SECONDS - moved < STALL * 60 )); then
+      [ -n "$ON" ] || "$CLI" machine keepalive "$M" > /dev/null 2>&1
+      continue
+    fi
+    # On a machine it did not rent, only its own runs (each cell's <name>.number).
+    [ -z "$ON" ] || active=$(find "$OUT" -name '*.number' -exec cat {} + | grep -xF -f <(tr ' ' '\n' <<< "$active") | paste -sd' ')
+    [ -n "$active" ] || continue
+    local why="no run on $M moved for $(( (SECONDS - moved) / 60 )) min; canceled $active"
+    expect cell-progress FAIL "$why"
+    for at in $active; do "$CLI" run cancel "$at" > /dev/null 2>&1; done
+    printf 'FAIL hung: %s\nVERDICT FAIL (hung)\n' "$why" | tee verdict.txt
+    kill -TERM $$
+    return
+  done
+}
+hold & KEEP=$!
 "$CLI" machine show "$M" > machine-fresh.txt 2>&1
 # reported: $M's cozy, Runtime and TensorFS into $v $rt $tfs once it reports them (a fresh pod does once up); empty
 # when it ends first, or Calcifer answers a typed error.

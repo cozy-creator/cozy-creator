@@ -142,7 +142,8 @@ jobs:
       group: release-gate-${{ matrix.sku }}-${{ matrix.key }}${{ !inputs.publish && format('-{0}', github.run_id) || '' }}
       cancel-in-progress: false
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The gate fails on the CLI's
-    # typed errors and exits, never on time; H3 at the product shape on a cold machine is the long cell.
+    # typed errors and exits, and on a run that stops moving (gate.sh `hold`), never on time; H3 at the product shape on a
+    # cold machine is the long cell.
     timeout-minutes: 300
     defaults:
       run:

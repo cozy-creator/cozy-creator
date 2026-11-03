@@ -16,3 +16,12 @@ listed() {
   local j; j=$(machines_json "${2:-cozy}") || return 0
   jq -e --arg r "$1" '.machines[] | select((.rental_id == $r or .name == $r) and .state != "ended")' <<<"$j" > /dev/null
 }
+
+# run_clock <machine> [cli]: that machine's runs by their own clock: the ms of their newest move (`.progress.at_ms`, which
+# stands still on a silent run; a run with none yet by its start or end), then the numbers of those not settled. Fails when
+# no listing answers.
+run_clock() {
+  timeout 60 "${2:-cozy}" --json run ls --on "$1" < /dev/null 2> /dev/null | jq -er '
+    ([.runs[] | .progress.at_ms, .settled_at_ms, .started_at_ms, .accepted_at_ms, .created_at_ms | numbers] | max // 0) as $at
+    | [$at, (.runs[] | select(.status == "queued" or .status == "in_progress") | .number)] | map(tostring) | join(" ")'
+}
