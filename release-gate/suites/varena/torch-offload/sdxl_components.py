@@ -161,7 +161,7 @@ def run(device):
     del baseline
     for model in models.values():
         model.to("cpu")
-    owner = vt.offload(pipeline, device=device)
+    owner = vt.offload(pipeline, device=device, graphs="eager")
     origins = {
         id(child): _ForwardOrigin(child.forward, originals[id(child)])
         for model in models.values()
@@ -198,6 +198,11 @@ def run(device):
             declined[reason] += 1
             continue
         assert reason is None, (type(child).__name__, reason, kwargs.keys())
+        state = owner._automatic._states[id(child)]
+        assert (
+            owner._automatic._reason(owner, state, originals[id(child)], args, kwargs)
+            is None
+        )
         # Exercise actual cold inputs against the immutable key/tree/alias rules,
         # not only the class/effect whitelist.
         _InvocationKey.from_call(owner, boundary_by_id[id(child)], args, kwargs)
@@ -323,6 +328,7 @@ def run(device):
         "frontier": len(frontier),
         "eligible_observed": len(qualified),
         "actual_candidate_input_keys_checked": len(qualified),
+        "actual_controller_framework_preflight_checked": len(qualified),
         "clip_hidden_state_tuples_and_none_preserved": [
             len(values) for values in expected_hidden
         ],

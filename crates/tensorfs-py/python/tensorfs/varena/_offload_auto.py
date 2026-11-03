@@ -604,18 +604,18 @@ class _Observation:
         self.close_started = True
         try:
             result = vt.phase_leave(self.device, self.token, completed=completed)
+            self.closed = True
+            return result
         except BaseException as error:
             self.error = error
             raise
-        self.closed = True
-        return result
 
 
 class _AutomaticGraphs:
     """One key per existing frontier, using native measurements and cache requests.
 
-    The initial executable profile is nn-only. Framework eligibility review is
-    recorded separately and cannot authorize this controller's first GPU gate.
+    Framework support is restricted to the exact reviewed immutable SDXL paths;
+    the preceding nn-only feature remains independently qualifiable.
     """
 
     def __init__(self, owner, mode):
@@ -686,6 +686,7 @@ class _AutomaticGraphs:
     def _reason(self, owner, state, original, args, kwargs):
         from ._offload import OffloadError
         from ._offload_graph import _tree_signature
+        from ._offload_sdxl import invocation_reason
 
         module = state.boundary.module
         reason = _module_preflight(
@@ -693,8 +694,9 @@ class _AutomaticGraphs:
         )
         if reason:
             return reason
-        if any(type(child) not in _REVIEWED_FORWARDS for child in module.modules()):
-            return "framework_dispatch_pending_qualification"
+        reason = invocation_reason(module, original, args, kwargs)
+        if reason:
+            return reason
         scalar_types = (str, int, float, bool, type(None), torch.dtype, torch.device)
         if any(
             not isinstance(value, torch.Tensor) and type(value) not in scalar_types
@@ -896,7 +898,7 @@ class _AutomaticGraphs:
     def facts(self):
         return {
             "mode": self.mode,
-            "profile": "reviewed_nn_only",
+            "profile": "reviewed_nn_sdxl",
             "closed": self._closed,
             "closing": self._closing,
             "failure": str(self._failure) if self._failure else None,
