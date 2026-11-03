@@ -1,0 +1,42 @@
+{
+  "command": [
+    "docker",
+    "run",
+    "--rm",
+    "--runtime=runc",
+    "--network=none",
+    "--cpus=1",
+    "--user",
+    "1000:1000",
+    "--name",
+    "xs138-p4-return-evidence-host-final002",
+    "-v",
+    "/home/fidika/cozy_v2/outputs/xs138-capture-26862-review-20261103/return-evidence-001/host-final-002:/out",
+    "-v",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-auto-graphs/release-gate/suites/varena/torch-offload:/fixture:ro",
+    "-v",
+    "/home/fidika/cozy/.worktrees/cozy-creator/xs138-rc-linux/.task/torch215-shim-env/lib/python3.12/site-packages:/torch-site:ro",
+    "-v",
+    "/home/fidika/cozy_v2/outputs/xs138-rc12h-native-20261103/stream-sdk-25798054-001/sdk/python:/sdk:ro",
+    "-e",
+    "PYTHONPATH=/torch-site:/sdk",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "NVIDIA_VISIBLE_DEVICES=void",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae",
+    "nice",
+    "-n",
+    "19",
+    "/opt/python/cp312-cp312/bin/python",
+    "/fixture/capture_pressure_evidence_host.py",
+    "--output",
+    "/out/host-result.json"
+  ],
+  "source_hashes": {
+    "capture_pressure_evidence.py": "ce287fe3013799404951f70a36fec6ed2fc49d407a43968af2a7d2fc092b67d8",
+    "capture_pressure_evidence_host.py": "e0827bcbd9e9fe6b11c478824dd3c047b5e17987bef42fb2270d547a8a0345e6"
+  }
+}

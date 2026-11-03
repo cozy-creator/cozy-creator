@@ -1,0 +1,23 @@
+{
+  "source_commit": "56324286249adbc374f5e8977dca7b65f5746072",
+  "freshly_fetched_origin_master": "60582a3d72cd8c4169690f19f7c9edc47980bac3",
+  "source_check": "PASS",
+  "patch_applies_without_fuzz": true,
+  "only_changed_parent_files": [
+    "trace_client.py",
+    "trace-manifest.json",
+    "seal_trace.py"
+  ],
+  "numeric_client_and_original_assertions_cap_seed_settings_byte_identical": true,
+  "original_tracer_binary_cpp_and_analyzer_byte_identical": true,
+  "trace_bind_stage_dispatch_binding_scope_capture_ASTs_unchanged": true,
+  "additional_preparation_calls": 0,
+  "python_syntax": "PASS",
+  "ruff_check_and_format": "PASS",
+  "diff_check": "PASS",
+  "conflict_markers": 0,
+  "CPU_scope": "actual public prepare_pool pre-install refusal observed without replacing it; actual phase_stats refusal; profile removed",
+  "successful_native_capacity_and_full_successful_observation": "UNRUN",
+  "GPU_model_capture": "UNRUN",
+  "hardware_actions": false
+}

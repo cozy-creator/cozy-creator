@@ -1,0 +1,54 @@
+{
+  "passed": true,
+  "torch": "2.15.0+cu132",
+  "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+  "cuda_initialized": false,
+  "scope": "actual public prepare_pool pre-install refusal observed without replacing it; actual phase_stats refusal; profile removed",
+  "refusal": {
+    "type": "RuntimeError",
+    "message": "install tensorfs.varena.torch in this child before using its allocator"
+  },
+  "evidence": {
+    "format_version": 1,
+    "scope": "actual Python returns on the selected inference host thread; metadata queried/serialized outside capture",
+    "events": [
+      {
+        "boundary": "host_refusal",
+        "attempt": 1,
+        "device": 0,
+        "stage": 4,
+        "thread": 134673342686208,
+        "kind": "prepare_pool_return",
+        "pool": [
+          0,
+          0
+        ],
+        "requested_device": 0,
+        "requested_bytes": 2097152,
+        "returned_capacity_bytes": null,
+        "returned_capacity_available": false,
+        "caller": "main"
+      }
+    ],
+    "stored_native_samples": [
+      {
+        "device": 0,
+        "native_key": "capture-pressure-host",
+        "sample_error": "RuntimeError"
+      }
+    ],
+    "errors": [],
+    "same_lock_fit_eligibility": {
+      "available": false,
+      "missing": [
+        "stream_usable_free_total",
+        "largest_usable_range",
+        "live_and_blocked_ranges_with_reasons"
+      ],
+      "snapshot_scope": "existing native allocator-exception snapshot is post-lock, not an atomic usable-fit report"
+    }
+  },
+  "successful_prepare_return": "UNRUN; requires actual CUDA pool",
+  "successful_phase_close_and_stored_sample": "UNRUN; requires actual CUDA observation",
+  "model_and_capture": "UNRUN"
+}
