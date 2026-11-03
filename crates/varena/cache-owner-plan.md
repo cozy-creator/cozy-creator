@@ -43,6 +43,17 @@ There is also no page-addressed KV reservation with interior release/recommit.
    return, GIL acquisition or future preemption. Actual returned pages may help its real
    retry; otherwise it can return Exhausted and a later request can use those pages.
    Submitted release fences are the only pending-release evidence, never callback asks.
+   The distinct explicit `Gpu.prepare_use(regions, stream)` operation may await one
+   finite owner pass before its first Region acquisition, with the GIL and all native
+   mutexes released. This exception applies only to pre-body preparation, never to
+   ordinary `Gpu.use`, malloc/free or Region allocation recovery. Its native Admission
+   request advances from its own ready-only service, not global release counters.
+   Requested Region identities are excluded from that service without pre-filling or
+   pinning them. Each owner is offered once and must decline unavailable owner locks
+   or unfinished tails rather than wait for the preparing consumer. The accepted
+   request is cancelled/quiesced before acquisition or error cleanup; unproven callback
+   quiescence retains the exact request/owners/exclusion. Changed Plan/inventory/fill
+   identities refuse, and actual acquisition is never retried by this operation.
 5. Retirement closes admission before draining queued/running callbacks. Explicit Python
    close detaches the GIL while draining; close from the callback itself refuses.
    Finalizers enqueue retirement rather than blocking. Callback leases and backing

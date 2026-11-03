@@ -7,6 +7,7 @@ mod host_source;
 mod host_parts;
 mod tensor_export;
 mod census;
+mod use_prepare;
 #[doc(hidden)]
 pub use census::residency_snapshot;
 pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
@@ -574,37 +575,64 @@ pub unsafe extern "C" fn vr_v1_use(
             return Err(invalid("use requires regions on this GPU"));
         }
         gpu.eager(stream)?;
-        let mut pins = Vec::with_capacity(n);
-        let acquired = (|| -> Result<()> {
-            for w in &weights {
-                let pin = match unsafe { w.region.prepare_on(stream)? } {
-                    crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
-                    crate::StreamPreparation::Fill(fill) => match &w.bytes {
-                        Bytes::Host(bytes) => host_source::acquire(w, bytes.clone(), fill, stream)?,
-                        Bytes::Foreign(provider) => source::acquire(w, provider, fill, stream)?,
-                    },
-                };
-                pins.push(pin);
-            }
-            Ok(())
-        })();
-        if let Err(error) = acquired {
-            for pin in pins {
-                // No consumer pointer/Use was exposed. Producer work retains its own Pin;
-                // these unpublished consumer Pins issued only ordering, never reads.
-                unsafe { drop(pin.into_completed_region()); }
-            }
-            return Err(error);
-        }
         unsafe {
-            out.write(insert(Handle::Use(Arc::new(Use {
-                _weights: weights.iter().map(|w| Arc::clone(w)).collect(),
-                pins: Mutex::new(Some(pins)),
-                stream,
-            })))?);
+            out.write(acquire_use(&weights, stream, None)?);
         }
         Ok(())
     })
+}
+
+/// Explicit pre-body service; unlike ordinary Use, may await a finite cache-owner pass.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vr_v1_use_prepare(
+    g: u64, ids: *const u64, n: usize, stream: u64, out: *mut u64,
+) -> i32 {
+    boundary(|| {
+        unsafe { output(out)?; }
+        let gpu = gpu(g)?;
+        let weights = unsafe { slice(ids, n)? }.iter().map(|id| weight(*id))
+            .collect::<Result<Vec<_>>>()?;
+        if weights.is_empty() || weights.iter().any(|weight| gpu.device() != weight.gpu.device()) {
+            return Err(invalid("use requires regions on this GPU"));
+        }
+        gpu.eager(stream)?;
+        let mut admission = use_prepare::Admission::prepare(gpu, &weights)?;
+        let result = acquire_use(&weights, stream, Some(&mut admission));
+        admission.completed(&result);
+        unsafe { out.write(result?); }
+        Ok(())
+    })
+}
+
+fn acquire_use(weights: &[Arc<Weight>], stream: u64,
+               mut admission: Option<&mut use_prepare::Admission>) -> Result<u64> {
+    let mut pins = Vec::with_capacity(weights.len());
+    let acquired = (|| -> Result<()> {
+        for weight in weights {
+            if let Some(admission) = &mut admission { admission.begin_region(weight)?; }
+            let pin = match unsafe { weight.region.prepare_on(stream)? } {
+                crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
+                crate::StreamPreparation::Fill(fill) => match &weight.bytes {
+                    Bytes::Host(bytes) => host_source::acquire(weight, bytes.clone(), fill, stream)?,
+                    Bytes::Foreign(provider) => source::acquire(weight, provider, fill, stream)?,
+                },
+            };
+            pins.push(pin);
+            if let Some(admission) = &mut admission { admission.acquired(weight); }
+        }
+        Ok(())
+    })();
+    if let Err(error) = acquired {
+        for pin in pins {
+            // No consumer pointer/Use was exposed. Producer work retains its own Pin;
+            // these unpublished consumer Pins issued only ordering, never reads.
+            unsafe { drop(pin.into_completed_region()); }
+        }
+        return Err(error);
+    }
+    insert(Handle::Use(Arc::new(Use {
+        _weights: weights.to_vec(), pins: Mutex::new(Some(pins)), stream,
+    })))
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vr_v1_use_ptr(id: u64, index: usize, out: *mut u64) -> i32 {

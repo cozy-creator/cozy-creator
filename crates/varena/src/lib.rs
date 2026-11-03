@@ -1018,6 +1018,15 @@ impl Arena {
     fn reclaim_ready_counted(&self, captures: &BTreeMap<i32, DeviceActivity>, wanted: usize,
                             maximum: usize, reason: ReclaimReason, completed: &mut usize)
         -> Result<ReclaimReport> {
+        self.reclaim_ready_excluding_counted(captures, wanted, maximum, reason, completed,
+            &std::collections::BTreeSet::new())
+    }
+
+    // Explicit Use admission protects demand by identity, without manufacturing physical Pins.
+    fn reclaim_ready_excluding_counted(&self, captures: &BTreeMap<i32, DeviceActivity>, wanted: usize,
+                            maximum: usize, reason: ReclaimReason, completed: &mut usize,
+                            excluded: &std::collections::BTreeSet<u64>)
+        -> Result<ReclaimReport> {
         ensure_recovery_allowed(captures, self.device)?;
         let mut state = self.lock()?;
         let result = (|| {
@@ -1027,6 +1036,7 @@ impl Arena {
             let candidates = state.reclaim_candidates(true, None, reason);
             for id in &contentless {
                 if report.reclaimed_bytes >= wanted { break; }
+                if excluded.contains(id) { continue; }
                 if state.entries[id].bytes <= maximum.saturating_sub(report.reclaimed_bytes)
                     && self.completion(&mut state, *id)? == Completion::Done {
                     self.evict_counted(&mut state, *id, reason, &mut report, completed)?;
@@ -1034,6 +1044,7 @@ impl Arena {
             }
             for (id, preferred, _) in candidates {
                 if report.reclaimed_bytes >= wanted { break; }
+                if excluded.contains(&id) { continue; }
                 if contentless.contains(&id) { continue; }
                 if state.entries[&id].bytes > maximum.saturating_sub(report.reclaimed_bytes) { continue; }
                 if self.completion(&mut state, id)? == Completion::Done {

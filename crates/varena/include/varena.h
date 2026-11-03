@@ -110,6 +110,12 @@ VR_API vr_status vr_v1_region_close(vr_handle);
 /* Success orders consumer stream work after Published producers. It is not host GPU
  * completion; each Region publishes only whole contents, but the group is not atomic. */
 VR_API vr_status vr_v1_use(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
+/* Explicit pre-body admission, before this consumer submits work. May service one
+ * finite cache-owner pass with no GIL or callback-needed locks held by the caller.
+ * Active Plan, when present, must name exactly these Regions. Preserves Use indexing
+ * and producer-ordering semantics. No byte target or capacity ticket; actual acquisition
+ * occurs once after native service. Ordinary use and malloc/free remain nonwaiting. */
+VR_API vr_status vr_v1_use_prepare(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_use_ptr(vr_handle use, size_t index, uint64_t *out);
 /* Outside capture/replay, await only this retained Use's current fill producers
  * and checked resource retirement. Refusal/failure retains ownership. This is

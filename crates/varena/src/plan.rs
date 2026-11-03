@@ -139,6 +139,21 @@ pub(crate) struct Lease {
 }
 
 impl Lease {
+    pub(crate) fn arenas(&self) -> &[Arc<Arena>] { &self.arenas }
+    pub(crate) fn identity(&self) -> (u64, u64, Option<(u64, usize)>) {
+        (self.generation, self.inventory_generation,
+            self.active.as_ref().map(|(plan, phase)| (plan.id, *phase)))
+    }
+
+    pub(crate) fn validate_use(&self, ids: &BTreeSet<u64>) -> Result<()> {
+        if let Some((plan, phase)) = self.planned()? {
+            if &plan.phases[phase].ids != ids {
+                return Err(Error::Invalid("prepared Use must name the active Plan's exact Region set"));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn acquire(device: i32) -> Result<Self> {
         let (generation, inventory_generation, active) = {
             let mut registry = registry()?;

@@ -190,6 +190,19 @@ impl Gpu {
             _stream: stream.clone(),
         })
     }
+    /// Explicit pre-body admission. May await one finite cache-owner pass; the caller
+    /// must not hold locks needed by those callbacks. Ordinary use_regions never waits
+    /// for owner callbacks. The active Plan, if any, must name exactly these Regions.
+    pub fn prepare_use(&self, regions: &[&Region], stream: &Stream) -> Result<Use> {
+        self.stream(stream)?;
+        let ids = regions.iter().map(|region| region.0.handle).collect::<Vec<_>>();
+        let mut handle = 0;
+        check(unsafe {
+            ffi::vr_v1_use_prepare(self.0.handle, ids.as_ptr(), ids.len(), stream.raw, &mut handle)
+        })?;
+        Ok(Use { handle, _stream: stream.clone() })
+    }
+
     pub fn alloc(&self, bytes: u64, stream: &Stream) -> Result<Allocation> {
         self.stream(stream)?;
         let mut handle = 0;
@@ -593,6 +606,8 @@ mod ffi {
         pub fn vr_v1_region_from_host_parts(gpu: u64, parts: *const HostPart, count: usize,
             offsets: *mut u64, out: *mut u64) -> i32;
         pub fn vr_v1_use_ptr(used: u64, index: usize, out: *mut u64) -> i32;
+        pub fn vr_v1_use_prepare(gpu: u64, regions: *const u64, n: usize,
+                               stream: u64, out: *mut u64) -> i32;
         pub fn vr_v1_use(
             gpu: u64,
             regions: *const u64,
