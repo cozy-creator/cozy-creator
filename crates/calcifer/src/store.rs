@@ -572,7 +572,7 @@ impl Store {
     pub fn queued_ahead(&self, machine: Option<&str>, number: u64) -> Result<u32> {
         self.read(|db| {
             Ok(db.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine IS ?1 AND number < ?2
+                "SELECT COUNT(*) FROM runs WHERE machine IS ?1 AND state <> 'settled' AND number < ?2
                      AND (state = 'queued' OR (state = 'accepted' AND machine_state = 'queued'))",
                 params![machine, number as i64],
                 |r| r.get(0),
