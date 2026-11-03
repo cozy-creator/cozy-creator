@@ -439,6 +439,7 @@ fn item_name(item: &OutputItem) -> String {
 /// The live view: one line redrawn in place on a terminal; sparse appended lines elsewhere.
 struct View {
     bar: Option<ProgressBar>,
+    term: output::Term,
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
     shown: (String, i64, i64),
@@ -473,6 +474,7 @@ impl View {
             bar
         });
         let mut view = Self {
+            term: ctx.term,
             bar,
             shown: (String::new(), -1, 0),
             number: run.number,
@@ -517,7 +519,7 @@ impl View {
             Event::OutputLanded { item, .. } => {
                 match (item.path.as_ref(), self.named.insert(item.id.clone())) {
                     (Some(path), true) => {
-                        self.line(&format!("  {}  {}", item_name(item), path.display()))
+                        self.line(&format!("  {}  {}", item_name(item), output::link_on(self.term, path)))
                     }
                     (Some(_), false) if self.bar.is_none() => {
                         self.line(&format!(
@@ -549,7 +551,8 @@ impl View {
                 if !call.label.is_empty() {
                     let _ = write!(line, " ({})", call.label);
                 }
-                let _ = write!(line, ": {}", call.status);
+                let took = call.finished_at_ms.saturating_sub(call.called_at_ms).max(0) as u64;
+                let _ = write!(line, ": {} in {}", call.status, output::span(((took + 500) / 1000) as i64));
                 self.line(&line);
             }
             _ => {}
