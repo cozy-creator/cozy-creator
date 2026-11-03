@@ -93,6 +93,17 @@ and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assert
   body exception checks capture/routing cleanup before the gated admission control.
   This is a helper
   regression, not a claim that fresh high-level capture preparation cannot wait.
+  Pool custody uses real Working storage allocated inside the existing warm graph:
+  copy weight -> captured temporary -> add -> external output. Its footprint must
+  record a nonzero allocation in the exact pool. Aggregate native Working pool/mapped
+  counters are sampled immediately after refusal, before any further preparation. The cell
+  checks the captured Tensor's address/contents, drops it, verifies both Python and
+  C10 Storage weak ownership expire, completes its stream tail, then runs existing
+  outside-capture Working trim. Pool mapping must remain charged and the same graph
+  must replay its captured pointer correctly before another prepare call. Resetting
+  all graph owners followed by trim must then release at least the reserved pool
+  bytes. This separates graph custody from a live Tensor or unused cached backing.
+  Footprint facts alone are capture metadata, not current mapping/refcount evidence.
 
 Native pool preparation can still allocate/recover/trim/wait. Callers must prepare/order
 Working inputs, buffers, RNG/library/workspace and dependencies, in addition to selected
