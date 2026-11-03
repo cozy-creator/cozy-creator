@@ -268,12 +268,14 @@ impl Machines {
                 continue;
             }
             let ended_at_ms = r.ended_at.as_deref().map(instant).transpose()?;
+            // The name its machine went by, as `machine ls` showed it; the alias it was asked under before that.
+            let named = hub_name(&r);
             rentals.push(RentalRow {
                 ran_s: (ended_at_ms.unwrap_or(now) - started_at_ms) / 1000,
                 sku: r.sku.unwrap_or(r.requested_accelerator_model),
                 gpus: u32::try_from(r.accelerator_count).unwrap_or_default(),
                 rental_id: r.rental_id,
-                name: r.name,
+                name: named.unwrap_or(r.name),
                 state: r.state,
                 started_at_ms,
                 ended_at_ms,

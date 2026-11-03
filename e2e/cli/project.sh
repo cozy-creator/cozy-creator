@@ -343,6 +343,7 @@ plate "$R/clip.mp4" smptebars 330 300; still "$R/look.png" teal
 ffmpeg -v error -y -f lavfi -i "sine=frequency=220:sample_rate=32000:duration=2" "$R/voice.wav"
 local ONE TWO THREE
 cat > "$R/project.yaml" <<YAML
+version: 1
 defaults:
   shot:
     with: ./shoot.py/shoot
@@ -390,7 +391,8 @@ ONE=$(given mentions) TWO=$(given again) THREE=$(given plain)
 J '.nodes.mentions.versions[-1].upstream | any(.node == "clip" and .asset == "sha256:'"$CLIP"'")' "$R/project.lock" \
   || check "references: the take does not record what it read: $(jq -c '.nodes.mentions.versions[-1].upstream' "$R/project.lock")"
 cozy --json project -p "$R" status > "$OUT/refs-status.json" 2> /dev/null || check "references: status failed"
-J '(.stale | length == 0) and (.warnings | length == 0) and (.nodes[] | select(.name == "clip") | .kind == "reference" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
+# ./shoot.py has no project adapter (xs-146), which status rightly says: any other warning is this project's fault.
+J '(.stale | length == 0) and (.warnings | all(contains("has no project adapter"))) and (.nodes[] | select(.name == "clip") | .kind == "reference" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
   || check "references: after render all: $(jq -c '{stale, warnings, clip: (.nodes[]? | select(.name == "clip"))}' "$OUT/refs-status.json")"
 
 step "a project: another file for a reference puts only what mentions it out of date"

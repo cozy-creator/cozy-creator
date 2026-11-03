@@ -43,7 +43,8 @@ trap cleanup EXIT
 # A runner's cancel or timeout signals the script: it exits, so the trap ends the rental.
 trap 'exit 1' INT TERM HUP
 usd() { awk -v m="$1" 'BEGIN { printf "%.2f", m / 1e6 }'; }
-# The rental's GPU time so far at its quoted rate, from the order on (boot included).
+# The rental's GPU time so far at its quoted rate, from when it is ready: a rental is billed from then, and an order can
+# wait an hour for a card (cli-release windows-2025, run 41586979774).
 rented_at='' hourly=0
 spent() { awk -v h="$hourly" -v s="$(( $(date +%s) - ${rented_at:-$(date +%s)} ))" 'BEGIN { printf "%.3f", h / 1e6 * s / 3600 }'; }
 # Every step after the order first holds the rental to --max-usd: past it the suite fails and the trap ends the pod.
@@ -93,8 +94,8 @@ step rental
 before=$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
 [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
-rented_at=$(date +%s)
 cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
+rented_at=$(date +%s)
 M=$(rented "$OUT/rent.ndjson") || true
 [ -n "$M" ] || fail "machine rent: no machine named"
 echo "rented $M ($SKU)"
@@ -218,7 +219,7 @@ wait "$going" || true
 step "the rental in its history"
 # Ended, it stays in the Hub's history with what it cost (cl-693).
 cozy --json machine ls --since 1h > "$OUT/history.json" || check "machine ls --since 1h failed"
-J --arg m "$ended" '.rentals | any(.name == $m and .ended_at != null and .spend_usd_micros >= 0)' "$OUT/history.json" \
+J --arg m "$ended" '.rentals | any(.name == $m and .ended_at_ms != null and .spend_usd_micros >= 0)' "$OUT/history.json" \
   || check "machine ls --since 1h: $ended is not in its history as ended"
 cozy machine ls --history --since 1h > "$OUT/history.txt" && grep -q "^Total since" "$OUT/history.txt" \
   || check "machine ls --history --since 1h printed no total"
