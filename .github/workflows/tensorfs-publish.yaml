@@ -116,10 +116,14 @@ jobs:
           working-directory: crates/tensorfs-py
           target: ${{ matrix.target }}
           args: --release --locked --out dist -i python3.10 python3.11
-          manylinux: auto
+          manylinux: ${{ matrix.target == 'x86_64' && '2_28' || 'auto' }}
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
             triple=$(rustc -vV | sed -n "s/^host: //p")
+            if [ "$triple" = x86_64-unknown-linux-gnu ]; then
+              export PATH="/opt/python/cp312-cp312/bin:$PATH"
+              /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
+            fi
             /opt/python/cp310-cp310/bin/python backend/stage_cli.py --release --target "$triple" \
               -i /opt/python/cp310-cp310/bin/python /opt/python/cp311-cp311/bin/python
       - if: runner.os != 'Linux'
@@ -141,7 +145,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Verify and tag the complete Linux wheel
         if: runner.os == 'Linux'
-        run: uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_2_17_$(uname -m)"
+        run: |
+          floor=2_17
+          if [ "$(uname -m)" = x86_64 ]; then floor=2_28; fi
+          uv run --no-project --with auditwheel --with patchelf python backend/portable_wheels.py dist --platform "manylinux_${floor}_$(uname -m)"
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.name }}

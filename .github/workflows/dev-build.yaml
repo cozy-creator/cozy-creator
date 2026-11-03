@@ -147,18 +147,20 @@ jobs:
         with:
           maturin-version: v1.16.0
           target: x86_64
-          manylinux: auto
+          manylinux: 2_28
           working-directory: crates/tensorfs-py
-          args: --release --locked --target-dir ../../target/manylinux2014 --out dist -i python3.11
+          args: --release --locked --target-dir ../../target/manylinux2_28 --out dist -i python3.11
           docker-options: -e TENSORFS_REQUIRE_AOT=1
           before-script-linux: |
+            export PATH="/opt/python/cp312-cp312/bin:$PATH"
+            /opt/python/cp312-cp312/bin/python -m pip install 'uv==0.12.7'
             # Match maturin's target, interpreter and feature graph through the canonical helper.
             /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release \
-              --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2014 \
+              --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2_28 \
               -i /opt/python/cp311-cp311/bin/python
       - name: Verify and tag the complete Linux wheel
         if: contains(inputs.build, 'tensorfs')
-        run: uv run --no-project --with auditwheel --with patchelf python crates/tensorfs-py/backend/portable_wheels.py crates/tensorfs-py/dist --platform manylinux_2_17_x86_64
+        run: uv run --no-project --with auditwheel --with patchelf python crates/tensorfs-py/backend/portable_wheels.py crates/tensorfs-py/dist --platform manylinux_2_28_x86_64
       # The container leaves root-owned files the cache post-step writes.
       - name: Import the complete TensorFS wheel
         if: contains(inputs.build, 'tensorfs')

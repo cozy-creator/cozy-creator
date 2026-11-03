@@ -129,6 +129,9 @@ def build_command(
 
 def stage(args: list[str], default_profile: str = "release") -> Path:
     root, command, environment = build_command(args, default_profile)
+    from stage_shim import stage as stage_shim
+
+    stage_shim(root, command, environment)
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, text=True, env=environment
     )

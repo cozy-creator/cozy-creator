@@ -16,6 +16,12 @@ parser.add_argument("directory", type=Path)
 parser.add_argument("--platform", required=True)
 args = parser.parse_args()
 for wheel in list(args.directory.glob("*.whl")):
+    with zipfile.ZipFile(wheel) as archive:
+        has_shim = "tensorfs/_varena_torch.so" in archive.namelist()
+    # Torch/CUDA belong to the explicitly matched external framework profile.
+    # Never copy a second framework implementation into the TensorFS wheel.
+    external = ["libtorch_cuda.so", "libc10_cuda.so", "libc10.so", "libcudart.so.13"] if has_shim else []
+    excludes = [arg for name in external for arg in ("--exclude", name)]
     with tempfile.TemporaryDirectory(
         prefix="portable-", dir=args.directory
     ) as temporary:
@@ -23,6 +29,7 @@ for wheel in list(args.directory.glob("*.whl")):
             [
                 "auditwheel",
                 "repair",
+                *excludes,
                 "--only-plat",
                 "--plat",
                 args.platform,
