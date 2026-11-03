@@ -105,8 +105,9 @@ recording alone is not an ordering/completion witness. Never redirect an explici
 stream change back to an assumed owner stream. Capture bindings bypass eager helper
 joins/records; their frozen exports/stream ownership remain authoritative. VAE
 decode/encode entry coverage is separate from a root.forward-only wrapper. Exact
-minimal `_Device.execution` reuse wiring24bf43e3f is composed in this lane; automatic
-dispatch/method wrappers remain unwired. Inactive Agent2 review is not a blocker. No second stream helper
+minimal `_Device.execution` reuse wiring24bf43e3f and reviewed default root/method
+wrappers are composed. Automatic dispatch is wired in6c7d; GPU automatic/performance
+qualification remains pending. No second stream helper
 or speculative per-op fence removal is introduced. Adoption provenance must record
 the final composed owned wrapper and its actual original implementation, not infer
 approval from user-supplied __wrapped__ annotations.
@@ -139,7 +140,7 @@ Owned shared reuse wiring24bf43e3f retains ordinary/materialized records and val
 the actual owner device/capture state before fast reuse. Both helper/wired source
 hashes must ship together. The subsequent COMPONENT-ENTRIES.md delta wires reviewed
 root-forward/VAE method stream scopes with actual provenance; default graph dispatch
-remains unwired. Actual host/binding/
+is wired by the separate6c7d feature. Actual host/binding/
 tiny-VAE explicit-method CPU checks pass; CUDA fast-path/events/performance are unrun.
 The helper owner's final committed clients/diagnostic are now composed; no WIP file was
 imported. Prefix witnesses are independently owned completed-prefix proofs, not stored

@@ -46,6 +46,8 @@ python release-gate/suites/varena/torch-offload/sdxl_components.py --device cuda
 GPU event/dependency/tail lifetime controls from the helper owner, actual capture
 and repeated stock-model timing still require the coordinator's matched cohort.
 The GPU mode above is an eager component gate, not automatic replay/performance.
-Native phase-overlap refusal currently lacks a structured Python error; the
-coordinator has the concrete request. Automatic selection will not classify a
-generic RuntimeError or infer overlap from its message.
+Native typed refusal dcbc141b2 is source-composed by root as2bf8fd329/current83eb;
+the locked offline source check passes. Matching built-extension dispatch and
+actual overlap GPU matrix remain pending with their assigned owner. This is no
+longer an unimplemented seam. The adapter catches exact public vt.PhaseOverlapError
+only at entry; unrelated errors propagate unchanged, with no text/stats inference.
