@@ -215,9 +215,10 @@ another, as `git -C` does. Each take or version is sent as soon as what it reads
 ones render at once and the machine's scheduler places them. `--on a,b` spreads them over machines (the
 least busy, one that holds the models first), and a render asked while another goes joins it.
 
-A shot is a `summary`, the scene, sent with every part of it, and `beats`, each from `at` seconds. A cut is a new shot, and a
-one-action shot is one beat. Say the scene in the summary, not the sequence: a part can act on what it reads, and a camera move there runs again in every part, so camera moves go in beats. `soundscape:`
-and `music:` go with every part, and a sound of one moment goes in its beat's `description`. An `at` is approximate: H3 lands
+A shot is a `summary`, the scene, sent with every part of it, and `beats`, each with its own `duration:` in seconds. A beat
+starts where the one before it ended, and a shot is as long as its beats. A beat with no `duration:` lasts 5 s, with a warning;
+a shot with no beats is as long as its attached `video:`, else 15 s. A cut is a new shot, and a one-action shot is one beat. Say the scene in the summary, not the sequence: a part can act on what it reads, and a camera move there runs again in every part, so camera moves go in beats. `soundscape:`
+and `music:` go with every part, and a sound of one moment goes in its beat's `description`. A beat's timing is approximate: H3 lands
 an action about 2 s late even when a part opens on it.
 
 Each package turns a node into its own call with a project adapter (`@app.project_adapter("shot")`), so `defaults:` can name
@@ -228,9 +229,6 @@ description, with a warning. Adapter and package updates never put anything out 
 `version: 1` names the format of `project.yaml`. A file with none reads as 1, with a warning. Nothing you write is refused: a
 shot with no text gets a warning and renders anyway.
 
-A beat has its own `duration:` in seconds and starts where the one before it ended, and a shot is as long as its beats. A
-beat with none lasts 5 s, with a warning; a shot with no beats is as long as its attached `video:`, else 15 s.
-
 A take can be shorter than its shot: `minimax-h3` renders 15 s of a longer shot with one beat. The edit cuts
 the take's real length, a write or `frame:` past its end takes its last frame, and `status` shows what the function said.
 
@@ -238,7 +236,7 @@ the take's real length, a write or `frame:` past its end takes its last frame, a
 screen terms (what is near or far, left or right). A shot reads only what its text names: a mention in its `summary` reaches
 every segment, and one in a beat only the segment holding that beat. `<coast.wide>` names a setup; `<coast>` alone is the
 setup of it the shot names, else its first. A shot reads a world state it
-names and changes the ones it `writes` (each a `state`, and `at`, by default its end). A shot that mentions a state it
+names and changes the ones it `writes` (each a `state`, and `at`, seconds into the shot, by default its end). A shot that mentions a state it
 writes partway renders as consecutive calls split there (`continue_from`), the later one reading its own frame. A
 renderer that cannot continue, or a call under its shortest piece, renders on through: the shot reads the state as it
 stood before, and `status` says so. A clip or sound mentioned by anything but a shot, or a mention that would make
