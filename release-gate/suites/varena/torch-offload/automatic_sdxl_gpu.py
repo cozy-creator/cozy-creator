@@ -28,6 +28,7 @@ def run(args):
     pipe = StableDiffusionXLPipeline.from_pretrained(
         args.model,
         torch_dtype=torch.float16,
+        variant="fp16",
         use_safetensors=True,
         local_files_only=True,
         add_watermarker=False,
@@ -122,6 +123,7 @@ def run(args):
             "steps": args.steps,
             "guidance": args.guidance,
             "weight_dtype": "float16",
+            "weight_variant": "fp16",
             "inference_mode": True,
             "elapsed_inference_s": elapsed,
             "unet_plus_scheduler_ms": stage_ms,
