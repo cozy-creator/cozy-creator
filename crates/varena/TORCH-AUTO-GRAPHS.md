@@ -7,6 +7,11 @@ native measurement/cache-owner implementation. No old native snapshots are adopt
 GPU qualification, byte policy, native interfaces and canonical integration remain
 separately owned. This document is a concrete implementation proposal, not GPU proof.
 
+Implementation update: the nn-only cold/admission/capture/replay/native-cache flow
+is now wired. See release-gate/suites/varena/torch-offload/AUTOMATIC-VERTICAL.md and
+automatic_two_block.py. CPU is exercised; the actual GPU vertical remains unrun.
+Statements below about unwired dispatch describe earlier development stages.
+
 ## Entry points and boundary selection
 
 `vt.offload(model_or_pipeline, device=0, *, source=None, graphs="auto")` enables

@@ -354,13 +354,25 @@ class GraphSegment:
     """One fixed module graph; model rebinding invalidates new replay selection."""
 
     def __init__(
-        self, owner, module, args, *, kwargs=None, stream, reserve_bytes, pool=None
+        self,
+        owner,
+        module,
+        args,
+        *,
+        kwargs=None,
+        stream,
+        reserve_bytes,
+        pool=None,
+        _preparation=None,
+        _output_inference=None,
     ):
         self._pid = os.getpid()
         self._lock = threading.RLock()
         self._closed, self._busy, self._failure = False, False, None
         self._closing, self._closed_facts = False, None
         self._graph, self._definition, self._tail = None, None, None
+        self._preparation = _preparation
+        self._output_inference = _output_inference
         if (
             _ACTIVE_EXECUTION.get() is not None
             or adapter._GRAPH_BINDING.get() is not None
@@ -399,6 +411,17 @@ class GraphSegment:
             raise adapter.OffloadError(
                 "shared pools require an ordered graph group; this adapter creates a private pool"
             )
+        if _preparation is not None and (
+            _preparation.pool is None
+            or _preparation.device != owner._owner.device.index
+            or _preparation.native_peak != reserve_bytes
+            or _preparation.failure is not None
+            or _preparation.capacity_refused
+            or _preparation.body_started
+        ):
+            raise adapter.OffloadError(
+                "automatic capture requires its unconsumed native admission"
+            )
         tree = (tuple(args), dict(kwargs or {}))
         signature = _tree_signature(tree)
         if any(
@@ -410,9 +433,15 @@ class GraphSegment:
             )
         with owner._owner.lock, self._lock, torch.inference_mode():
             owner._check()
-            if owner._intent_frames:
+            if owner._intent_frames and _preparation is None:
                 raise adapter.OffloadError(
                     "prepare a graph outside an active declared forward"
+                )
+            if owner._intent_frames and (
+                owner._intent_dirty or owner._intent_plan is None
+            ):
+                raise adapter.OffloadError(
+                    "automatic capture cannot replace an unknown or dirty parent Plan"
                 )
             owner._refresh_intent()
             versions = tuple(
@@ -426,7 +455,9 @@ class GraphSegment:
             regions = tuple(dict.fromkeys(v.reservation() for v in leased))
             phase = f"graph:{id(self)}"
             pool = (
-                tuple(torch.cuda.graph_pool_handle()) if pool is None else tuple(pool)
+                tuple(torch.cuda.graph_pool_handle())
+                if _preparation is None
+                else _preparation.pool
             )
             plan = owner._owner.gpu.plan({phase: regions})
             definition = _Definition(
@@ -469,6 +500,8 @@ class GraphSegment:
                     binding = _CaptureBindings(
                         owner, module, epoch.prepared, stream, definition.static_tree
                     )
+                    if _preparation is not None:
+                        _preparation.mark_body_started()
                     with binding.scope():
                         module(*definition.static_tree[0], **definition.static_tree[1])
                     self._validate_model()
@@ -526,6 +559,8 @@ class GraphSegment:
                 # Resource does not reference graph/segment. Native pool/weight
                 # tails protect submitted GPU work if this definition is dropped.
                 graph.retain_object(definition, synchronize_before_release=False)
+                if _preparation is not None:
+                    _preparation.pool = None  # Definition now owns the captured pool.
             except BaseException as error:
                 if (
                     epoch.intent_error is not None
@@ -545,11 +580,29 @@ class GraphSegment:
                     epoch.release()
                     epoch.restore_intent()
                     plan.close()
+                    if _preparation is not None:
+                        _preparation.cancel()
                 except BaseException as cleanup:
                     self._retain_failure(epoch, cleanup)
                     raise cleanup from error
                 self._closed = True
                 raise
+
+    @classmethod
+    def _from_prepared(
+        cls, owner, module, args, *, kwargs, stream, preparation, output_inference
+    ):
+        """Private automatic path consumes the exact pre-body admitted pool."""
+        return cls(
+            owner,
+            module,
+            args,
+            kwargs=kwargs,
+            stream=stream,
+            reserve_bytes=preparation.native_peak,
+            _preparation=preparation,
+            _output_inference=output_inference,
+        )
 
     @staticmethod
     def _parameters(module):
@@ -668,6 +721,8 @@ class GraphSegment:
 
     def _retain_failure(self, epoch, error):
         self._failure = str(error)
+        if self._preparation is not None:
+            self._preparation.failure = error
         if epoch.parent_suspended or epoch.intent_active:
             epoch.definition.owner._intent_failed = True
         _UNPROVEN.append((self, epoch, error))
@@ -763,7 +818,21 @@ class GraphSegment:
                             target.copy_(source)
                     with vt.replay_scope(definition.owner._owner.device.index):
                         vt.replay(self._graph, stream=stream)
-                    result = tree_map(lambda tensor: tensor.clone(), definition.outputs)
+                    if self._output_inference is None:
+                        result = tree_map(
+                            lambda tensor: tensor.clone(), definition.outputs
+                        )
+                    else:
+                        # Automatic dispatch preserves ordinary vs inference Tensor
+                        # semantics of the caller's cold eager key. Explicit API
+                        # keeps its existing inference-output contract.
+                        with (
+                            torch.inference_mode(self._output_inference),
+                            torch.no_grad(),
+                        ):
+                            result = tree_map(
+                                lambda tensor: tensor.clone(), definition.outputs
+                            )
                     epoch.outputs = result
                     self._finish_epoch(epoch)
                 epoch.restore_intent()
