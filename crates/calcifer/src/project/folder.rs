@@ -113,6 +113,9 @@ pub struct Made {
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The start of another take that it keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<protocol::project::Kept>,
     /// A picture's clean, which is never cleaned again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleaned: bool,
@@ -195,6 +198,16 @@ pub struct Call {
     pub writes: Vec<(String, f64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<(Asset, Option<Asset>)>,
+    /// The first call of a take keeping another's start: where on the shot it starts (0 otherwise), and whether that cuts
+    /// `from` there. Otherwise it goes on from `from`'s end.
+    #[serde(default, skip_serializing_if = "is_zero_s")]
+    pub start_s: f64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
+}
+
+fn is_zero_s(s: &f64) -> bool {
+    *s == 0.0
 }
 
 /// What becomes of a run's file once it lands.
@@ -329,6 +342,17 @@ pub struct Take {
     /// Approved when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
+    /// It keeps the start of an earlier take (`--take`, `--in`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeps: Option<Keeps>,
+}
+
+/// The take a new take keeps the start of, and where it stops keeping it: None is its end.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Keeps {
+    pub take: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_s: Option<f64>,
 }
 
 impl Lock {

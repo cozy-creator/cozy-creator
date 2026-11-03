@@ -8,13 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use protocol::error::{Error, Kind};
+use protocol::{
+    error::{Error, Kind},
+    project::Kept,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::{self, Asset, Call, Folder, Lock, Made, Shape, Target, Upstream},
+    folder::{self, Asset, Call, Folder, Keeps, Lock, Made, Shape, Target, Upstream},
     graph::{Edge, Graph, Node, mentions, name_key},
     host::{Accepts, Renderer},
 };
@@ -551,6 +554,29 @@ impl Canvas {
         }
     }
 }
+
+/// What a new take keeping another's start comes to (`Video::keeping`).
+pub enum Keeping {
+    /// It does, and what to say.
+    Start(KeptStart, Vec<String>),
+    /// It can't: the whole shot, and why.
+    Whole(String),
+    /// Nothing is made, and why.
+    Nothing(String),
+}
+
+/// The take a new one starts from: its number, its video and latents, where the new take starts on the shot, whether that cuts
+/// the video (else it goes on from its end), and the frames it wrote before there, by state.
+pub struct KeptStart {
+    take: u32,
+    from: (Asset, Option<Asset>),
+    start_s: f64,
+    cut: bool,
+    own: BTreeMap<String, Asset>,
+}
+
+/// A take within this of its shot's end reaches it: a renderer's grid can land that short, and no piece is so small.
+const REACHES_S: f64 = 1.0;
 
 /// A version's request, and what to record of it.
 pub struct Request {
@@ -1125,17 +1151,100 @@ impl Video {
     }
 
     /// The request that makes a version of node `i`, from what it reads now, as its function
-    /// (`renderer`) takes it; a shot's is its first call.
-    pub fn request(&self, folder: &Folder, lock: &Lock, i: usize, renderer: &Renderer) -> Result<Request, Error> {
+    /// (`renderer`) takes it; a shot's is its first call, which goes on from `kept` when its take keeps another's start.
+    pub fn request(&self, folder: &Folder, lock: &Lock, i: usize, renderer: &Renderer, kept: Option<KeptStart>) -> Result<Request, Error> {
         let mut said = vec![];
+        let start_s = kept.as_ref().map_or(0.0, |kept| kept.start_s);
         let call = match self.items[i] {
-            Item::Shot(k) => Some(Call { ends: self.ends(k, &renderer.accepts, &mut said), ..Default::default() }),
+            Item::Shot(k) => Some(Call {
+                ends: self.ends(k, &renderer.accepts, start_s, &mut said),
+                from: kept.as_ref().map(|kept| kept.from.clone()),
+                start_s,
+                cut: kept.as_ref().is_some_and(|kept| kept.cut),
+                ..Default::default()
+            }),
             _ => None,
         };
-        let mut request = self.compile(folder, lock, i, renderer, call, &BTreeMap::new())?;
+        let own = kept.as_ref().map(|kept| kept.own.clone()).unwrap_or_default();
+        let mut request = self.compile(folder, lock, i, renderer, call, &own)?;
+        request.made.kept = kept.map(|kept| Kept { take: kept.take, until_s: kept.start_s });
         request.made.warnings.extend(said.iter().cloned());
         request.warnings.extend(said);
         Ok(request)
+    }
+
+    /// What `--take` and `--in` ask of node `i`: the take a new one keeps the start of, the one in use if not named, or None
+    /// when there's nothing to keep, which is said to the plain rule: it isn't a shot, or has no take. A named take it doesn't
+    /// have is an error.
+    pub fn keeps(&self, lock: &Lock, i: usize, take: Option<u32>, in_s: Option<f64>) -> Result<Option<Keeps>, Error> {
+        let node = &self.graph.nodes[i];
+        let versions = lock.node(&node.id).map(|node| node.versions.as_slice()).unwrap_or_default();
+        if !matches!(self.items[i], Item::Shot(_)) {
+            return Ok(None);
+        }
+        match take {
+            Some(take) if versions.iter().any(|made| made.number == take) => Ok(Some(Keeps { take, in_s })),
+            Some(take) if versions.is_empty() => Err(Error::new(Kind::Usage, "take_unknown", format!("{} has no take {take}: it has none yet", node.id))),
+            Some(take) => {
+                let numbers: Vec<String> = versions.iter().map(|made| made.number.to_string()).collect();
+                Err(Error::new(Kind::Usage, "take_unknown", format!("{} has no take {take}: it has {}", node.id, numbers.join(", "))))
+            }
+            None => Ok(lock.node(&node.id).and_then(|node| node.versions.get(node.current_at()?)).map(|made| Keeps { take: made.number, in_s })),
+        }
+    }
+
+    /// What `keeps`, a new take of shot `i`, comes to on this `renderer`; the take's video is `end_s` long.
+    pub fn keeping(&self, lock: &Lock, i: usize, keeps: Keeps, renderer: &Renderer, end_s: f64) -> Keeping {
+        let (Item::Shot(k), node) = (self.items[i], &self.graph.nodes[i]) else {
+            return Keeping::Whole(format!("{} is no shot: it renders whole", self.graph.nodes[i].id));
+        };
+        let (shot, accepts, take) = (&self.project.shots[k], &renderer.accepts, keeps.take);
+        let Some(made) = lock.node(&node.id).and_then(|node| node.versions.iter().find(|made| made.number == take)) else {
+            return Keeping::Whole(format!("{} has no take {take} now: it renders whole", node.id));
+        };
+        let (name, least) = (&node.id, accepts.min_piece_s.unwrap_or(0.0));
+        if let Some(at) = keeps.in_s.filter(|&at| at <= 0.0 || at < least) {
+            return Keeping::Whole(format!("{name}: --in {at} s is under its renderer's shortest piece, {least} s: the whole shot renders"));
+        }
+        let nothing = |why: String| Keeping::Nothing(format!("{name}: {why}: nothing is made; --new renders the whole shot"));
+        let target = self.render(i);
+        if !accepts.fields.contains("continue_from") || (keeps.in_s.is_some() && !accepts.continues.contains("at_s")) {
+            let how = if keeps.in_s.is_some() { "cut a video and continue it" } else { "continue a video" };
+            return nothing(format!("{} cannot {how}, so it can't keep take {take}'s start", target.target()));
+        }
+        // Latents are a package's own: another package's can't be read.
+        let named = |target: &str| target.split('@').next().and_then(|path| path.rsplit('/').nth(1)).map(str::to_owned);
+        let ours = made.made_by.as_ref().and_then(|by| named(&by.with)) == named(&format!("{}/{}", renderer.package, renderer.function));
+        let latents = made.assets.get("latents").filter(|_| ours).cloned();
+        if accepts.continues.contains("latents") && latents.is_none() {
+            return nothing(format!("take {take} has no latents {} can read, so it can't continue it", target.target()));
+        }
+        let Some(video) = made.assets.get("video").cloned() else {
+            return nothing(format!("take {take} has no video"));
+        };
+        let stop = end_s.min(shot.length_s);
+        let past = keeps.in_s.filter(|&at| at >= stop).map(|at| {
+            let ends = if shot.length_s <= end_s { "its shot's end" } else { "that take's end" };
+            format!("{name}: --in {at} s is at or past {ends}, {stop:.2} s")
+        });
+        let reaches = format!("take {take} already reaches the shot's end ({end_s:.2} s of {} s)", shot.length_s);
+        let (start_s, cut) = match keeps.in_s.filter(|&at| at < stop) {
+            Some(at) => (at, true),
+            None if shot.length_s - end_s < REACHES_S => {
+                return Keeping::Nothing(match past {
+                    Some(past) => format!("{past}, and {reaches}: nothing is made"),
+                    None => format!("{name}: {reaches}: nothing is made"),
+                });
+            }
+            None => (end_s, false),
+        };
+        let said = past.map(|past| format!("{past}: it goes on from take {take}'s end")).into_iter().collect();
+        let written: BTreeMap<&str, f64> = shot.written().collect();
+        let own = (made.writes.iter())
+            .filter(|(state, _)| written.get(state.as_str()).is_some_and(|&at| at <= start_s))
+            .map(|(state, frame)| (state.clone(), frame.clone()))
+            .collect();
+        Keeping::Start(KeptStart { take, from: (video, latents), start_s, cut, own }, said)
     }
 
     /// Shot `i`'s next call (`call`, which continues `call.from`), with the frames the shot wrote
@@ -1319,16 +1428,16 @@ impl Video {
     /// Where shot `k`'s consecutive calls end: at each time it writes a state its text mentions (a
     /// read of its own write, so the call after it reads the frame), and at its end. A renderer that cannot continue a video, or whose
     /// shortest piece the split would go under, renders on through: the state reads as it stood
-    /// before, and it is said.
-    fn ends(&self, k: usize, accepts: &Accepts, said: &mut Vec<String>) -> Vec<f64> {
+    /// before, and it is said. A take keeping another's start starts at `start_s`.
+    fn ends(&self, k: usize, accepts: &Accepts, start_s: f64, said: &mut Vec<String>) -> Vec<f64> {
         let shot = &self.project.shots[k];
         let texts = shot.texts();
         let read: Vec<&str> = texts.iter().flat_map(|text| mentions(text)).collect();
         let mut splits: Vec<(&str, f64)> = (shot.written())
-            .filter(|&(state, at)| at > 0.0 && at < shot.length_s && read.iter().any(|m| name_key(m) == name_key(state)))
+            .filter(|&(state, at)| at > start_s && at < shot.length_s && read.iter().any(|m| name_key(m) == name_key(state)))
             .collect();
         splits.sort_by(|a, b| a.1.total_cmp(&b.1));
-        let (mut ends, mut from) = (vec![], 0.0);
+        let (mut ends, mut from) = (vec![], start_s);
         for (state, at) in splits {
             if ends.last() == Some(&at) {
                 continue;
@@ -1372,7 +1481,7 @@ impl Video {
         let accepts = &renderer.accepts;
         let shot = &self.project.shots[k];
         let (index, last) = (call.index, call.index + 1 == call.ends.len());
-        let (start, end) = (if index == 0 { 0.0 } else { call.ends[index - 1] }, call.ends[index]);
+        let (start, end) = (if index == 0 { call.start_s } else { call.ends[index - 1] }, call.ends[index]);
         let takes = |field: &str| accepts.fields.contains(field);
         let framed: BTreeSet<usize> = (reads.iter())
             .filter_map(|read| match self.items[read.edge.node] {
@@ -1460,16 +1569,19 @@ impl Video {
             }
             node["plate"] = Value::Object(plate);
         }
-        for (field, path, here) in [("first_frame", &shot.first_frame, index == 0), ("last_frame", &shot.last_frame, last)] {
+        for (field, path, here) in [("first_frame", &shot.first_frame, call.from.is_none()), ("last_frame", &shot.last_frame, last)] {
             let Some(path) = path.as_ref().filter(|_| here) else { continue };
             let (path, digest) = file(path)?;
             node[field] = keep(path, &digest, files);
         }
-        if let Some((video, latents)) = call.from.as_ref().filter(|_| index > 0) {
+        if let Some((video, latents)) = call.from.as_ref() {
             let mut from = Map::new();
             for (field, file) in std::iter::once(("video", Some(video))).chain([("latents", latents.as_ref())]) {
                 let Some(file) = file else { continue };
                 from.insert(field.into(), keep(folder.path(&file.path), &file.sha256, files));
+            }
+            if call.cut && index == 0 {
+                from.insert("at_s".into(), json!(start));
             }
             node["continues"] = Value::Object(from);
         }
@@ -1538,8 +1650,10 @@ impl Video {
         if let Some(from) = node.get("continues") {
             payload.insert("continue_from".into(), from.clone());
         }
+        // What a take keeps of another is in its first call's video too, so its writes are that call's.
+        let from = if index == 0 { 0.0 } else { start };
         call.writes = (shot.written())
-            .filter(|(_, at)| *at >= start && (*at < end || last))
+            .filter(|(_, at)| *at >= from && (*at < end || last))
             .map(|(state, at)| (state.to_owned(), at))
             .collect();
         Ok((Value::Object(payload), node, call))

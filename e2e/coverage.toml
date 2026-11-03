@@ -188,6 +188,8 @@ test = "pr: projects: render all from a subfolder, versions by local code, re-cu
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
 "--new" = "pr: projects: a current node stays without it; new takes, approved or not, with -n"
+"--take" = "pr: projects: keeps: the take a new take keeps the start of, one it doesn't have refused"
+"--in" = "pr: projects: keeps: where it lands, the whole shot under the shortest piece, the end past it, ignored with all"
 "--preview" = "gate: project (release-gate/suites/project/cells.sh): render all --preview"
 
 ["project import"]

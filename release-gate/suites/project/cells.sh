@@ -3,6 +3,8 @@
 # - project-split: a 10 s shot whose beats read a state it writes at 5 s: two calls, the second continuing the first
 #   (`continue_from`, the first's latents), the written frame kept, the join smooth; project-upscale: its upscale from
 #   those latents, at 1080p and the shot's aspect, and edit.mp4 at the 1920x1080 canvas.
+# - project-in: a new take that keeps take 1 up to `--in` and renders the rest from edited text: one run, the kept frames as
+#   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
 # - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's sheet at 16:9,
@@ -94,6 +96,44 @@ YAML
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
     fi
+  fi
+fi
+
+if want project-in; then
+  P=$(project project-in <<YAML
+aspect_ratio: "16:9"
+defaults: {shot: {with: $H3GEN}}
+entities:
+  - {name: yard, kind: environment, description: "$SCENE", image: place.png}
+shots:
+  - name: look
+    summary: |
+      A slow look around <yard>.
+    soundscape: A quiet street, distant traffic and birds.
+    beats:
+      - duration: 6
+        description: |
+          The camera drifts slowly right along <yard>.
+      - duration: 5
+        description: |
+          The camera keeps drifting right, past the far wall.
+    render: {options: {seed: $((R + 305))}}
+YAML
+)
+  imported "$P" place.png
+  render project-in-first "$P" look || expect project-in FAIL "first take: $(tail -c 300 project-in-first.log)"
+  sed -i 's/past the far wall/and tilts up toward the sky/' "$P/project.yaml"
+  render project-in "$P" look --take 1 --in 6 || expect project-in FAIL "--in: $(tail -c 300 project-in.log)"
+  v=$(approved "$P" look); f=$(jq -r "$PRIMARY" <<< "$v"); until_s=$(jq -r '.kept.until_s // empty' <<< "$v")
+  old=$(lockq "$P" "lock['nodes']['look']['versions'][0]['assets']['video']['path']")
+  expect project-in "$(jq -r 'if .number == 2 and .kept.take == 1 and (.kept.until_s - 6 | fabs) <= 0.36 and (.runs | length) == 1 and .assets.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
+    "take $(jq -r .number <<< "$v"), kept $(jq -c .kept <<< "$v"), runs $(jq -c .runs <<< "$v"): $(grep -o 'look: take 2 is .*' project-in.log | head -1)"
+  if [ -n "$until_s" ] && [ -n "$f" ]; then
+    r=$("${FR[@]}" seams "$P/$f" --at "$until_s" 2>&1 | tail -1)
+    expect project-in-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at $until_s s: $r"
+    # The same latents, decoded again: the kept part up to its last second is the same picture.
+    s=$(nice -n 19 ffmpeg -nostdin -v info -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$old" -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$f" -lavfi ssim -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)
+    expect project-in-kept "$(awk -v s="${s:-0}" 'BEGIN { print s >= 0.95 ? "PASS" : "FAIL" }')" "SSIM of the kept part to take 1: ${s:-none}"
   fi
 fi
 

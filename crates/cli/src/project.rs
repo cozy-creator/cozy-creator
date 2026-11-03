@@ -38,6 +38,9 @@ const RENDER_EXAMPLES: &str = "Examples:
   cozy project render fight --new -n 3 --on kiyui  three new takes of fight
   cozy project render fight --new --approve --on kiyui
   cozy project render all --new --on kiyui         every node again
+  cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
+  cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
+  cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
 
 A node reads as what `approve` or --approve chose, else its newest. A file in its image: or video: pins it: nothing is made.
 
@@ -139,6 +142,17 @@ struct Render {
     /// With `all`: no upscales; cut only the native preview (`preview.mp4`).
     #[arg(long)]
     preview: bool,
+    /// One shot: a new take keeping this take's start, not the one in use. Without --in, it goes on from this take's end.
+    #[arg(long, value_name = "N")]
+    take: Option<u32>,
+    /// One shot: a new take keeping that take up to about here, and rendering what follows with the shot's current text.
+    #[arg(long = "in", value_name = "SECONDS", allow_negative_numbers = true, value_parser = seconds)]
+    in_s: Option<f64>,
+}
+
+/// A time in seconds, any finite number: Calcifer says what it comes to.
+fn seconds(text: &str) -> Result<f64, String> {
+    text.parse().ok().filter(|at: &f64| at.is_finite()).ok_or_else(|| format!("{text} is not a time in seconds"))
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
@@ -348,6 +362,8 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         preview: args.preview,
         approve: args.approve,
         new: args.new,
+        take: args.take,
+        in_s: args.in_s,
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
     let _: Opened = calcifer.post(&path, &runs, Some(&mint_key())).await?;
@@ -415,6 +431,11 @@ fn summary(ctx: &Context, state: &State) {
     for node in state.nodes.iter().filter(|node| !node.prefixes.is_empty()) {
         let made: Vec<String> = node.prefixes.iter().map(|made| format!("{} {} {}", node.noun, made.number, made.prefix)).collect();
         output::say(ctx, &format!("{}: {}", node.name, made.join(", ")));
+        for made in &node.prefixes {
+            if let Some(kept) = made.kept {
+                output::say(ctx, &kept.said(&node.name, made.number));
+            }
+        }
     }
     if !state.missing.is_empty() {
         output::say(ctx, &format!("missing: {}", state.missing.join(", ")));

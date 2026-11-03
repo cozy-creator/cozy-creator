@@ -209,6 +209,12 @@ cozy project render kyogre --new --approve --on <machine>
                                            # a new version of kyogre, approved when it lands
 cozy project render all --new --on <machine>
                                            # every node that is not pinned, again
+cozy project render clash --in 15 --on <machine>
+                                           # a new take: the take in use up to about 15 s, the rest new
+cozy project render clash --take 2 --in 15 --on <machine>
+                                           # the same, keeping take 2
+cozy project render clash --take 2 --on <machine>
+                                           # a new take: take 2, continued from its end
 cozy project status                        # what is missing, out of date and why, and the cuts
 cozy project ls                            # every project this computer has opened
 ```
@@ -224,6 +230,13 @@ included, and a render says so and makes nothing: `kyogre is pinned by its image
 approve` or `--approve`, else its newest, and a new newest puts what reads it out of date, which nothing renders until you ask.
 A render that brings an out-of-date node up to date clears its approval, so the new take is used; `--new` on a current node
 leaves it, and says so: `clash: the edit keeps take 1, approved; cozy project approve clash 2 uses this one`.
+
+`--in` is the in point of one shot: a new take keeps a take up to there, and what follows is rendered with the shot's current
+text, the beat it falls in whole, at the cost of what follows alone. `--take` names the take to keep, by default the one in use.
+It lands on the renderer's nearest join, and says where, as `status` does: `clash: take 3 is take 2 to 15.08 s, then new`. With
+no `--in` it goes on from that take's end, or makes nothing if that reaches the shot's end. Before the renderer's shortest piece
+the whole shot renders, and a renderer that can't continue a video makes nothing; each says so. With `all` or several names
+both are ignored, and that is said.
 
 The project is the folder holding `project.yaml`, found from where you are or above it; `-p <path>` names
 another, as `git -C` does. Each take or version is sent as soon as what it reads is made, so independent

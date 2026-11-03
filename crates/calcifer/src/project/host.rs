@@ -59,6 +59,8 @@ pub struct Accepts {
     pub kinds: BTreeMap<String, BTreeSet<String>>,
     /// A shot renderer's shortest piece (its `duration_s` schema extra).
     pub min_piece_s: Option<f64>,
+    /// `continue_from`'s fields.
+    pub continues: BTreeSet<String>,
 }
 
 impl Accepts {
@@ -71,12 +73,15 @@ impl Accepts {
         let kinds = (union.as_array().into_iter().flatten())
             .filter_map(|member| Some((member["tag"].as_str()?.to_owned(), named(member))))
             .collect();
+        let continues = field("continue_from").map(|f| f["type"].clone()).unwrap_or_default();
+        let continues = continues["union"].as_array().cloned().unwrap_or_else(|| vec![continues]).iter().flat_map(named).collect();
         // A list with no room for anything is not taken.
         let taken = fields(request).iter().filter(|f| f["constraints"]["max_length"].as_u64() != Some(0)).filter_map(|f| f["name"].as_str().map(str::to_owned)).collect();
         Self {
             fields: taken,
             kinds,
             min_piece_s: extra("min_piece_s"),
+            continues,
         }
     }
 }

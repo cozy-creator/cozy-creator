@@ -158,6 +158,7 @@ references
 imports
 setups
 text_changes
+keeps
 never_refuse
 frames_otio
 take_size
@@ -465,6 +466,90 @@ cozy --json project -p "$R" status > "$OUT/refs-old.json" 2> "$OUT/refs-old.err"
 J '.warnings | any(test("cozy reads no field shots\\.2\\.references; it is ignored"))' "$OUT/refs-old.json" \
   || check "references: a shot's references: did not warn: $(jq -c .warnings "$OUT/refs-old.json")"
 J '[.nodes[].name] | index("old") == null' "$OUT/refs-old.json" || check "references: a shot's references: was read: $(jq -c '[.nodes[].name]' "$OUT/refs-old.json")"
+}
+
+# A new take keeping a take's start (`--take`, `--in`), on shoot.py's weightless `cuts`, with what it comes to: where it lands,
+# said and kept; a take it doesn't have, one line; under the shortest piece, the whole shot; at or past the end, from that end,
+# or nothing if that reaches the shot's end; a renderer that can't, a pin, `all` and several names, nothing and said.
+keeps() {
+step "a project: a new take keeps a take's start"
+local K=$OUT/keeps
+mkdir -p "$K"; cp "$here/project/shoot.py" "$K/"
+plate "$K/plate.mp4" testsrc2 440 300
+cat > "$K/project.yaml" <<YAML
+version: 1
+defaults:
+  shot:
+    with: ./shoot.py/cuts
+assets:
+  - name: clip
+    video: plate.mp4
+shots:
+  - name: long
+    summary: |
+      Twice the plate.
+    beats:
+      - {duration: 6, description: First.}
+      - {duration: 6, description: Second.}
+    plate: {video: plate.mp4}
+  - name: full
+    summary: |
+      As long as the plate.
+    beats:
+      - {duration: 6, description: Only.}
+    plate: {video: plate.mp4}
+  - name: nocut
+    summary: |
+      Continues, but not from a time.
+    beats:
+      - {duration: 6, description: Only.}
+    plate: {video: plate.mp4}
+    render: {with: ./shoot.py/pieces}
+  - name: pinned
+    summary: |
+      A file.
+    beats:
+      - {duration: 6, description: Only.}
+    video: plate.mp4
+YAML
+imported "$K" plate.mp4
+go() { cozy project -p "$K" render "$@" --on local > "$OUT/keeps.txt" 2>&1; }
+says() { grep -qF -- "$1" "$OUT/keeps.txt" || check "keeps: render does not say '$1': $(tail -c 300 "$OUT/keeps.txt")"; }
+last() { jq -c --arg s "$1" ".nodes[\$s].versions[-1] | $2" "$K/project.lock"; }
+count() { [ "$(jq --arg s "$1" '.nodes[$s].versions | length' "$K/project.lock")" = "$2" ] || check "keeps: $1 has $(jq --arg s "$1" '.nodes[$s].versions | length' "$K/project.lock") takes, not $2"; }
+go all || check "keeps: render all: $(tail -c 300 "$OUT/keeps.txt")"
+count long 1
+go long --take 9 && check "keeps: --take 9 succeeded"
+says "long has no take 9: it has 1"
+go long --take 1 --in 5.6 || check "keeps: --in: $(tail -c 300 "$OUT/keeps.txt")"
+says "long: take 2 is take 1 to 5.50 s, then new"
+[ "$(last long .kept)" = '{"take":1,"until_s":5.5}' ] || check "keeps: the lock says $(last long .kept)"
+[ "$(last long '.invocations[0].input.continue_from.at_s')" = 5.6 ] || check "keeps: the renderer was told $(last long '.invocations[0].input.continue_from')"
+cozy project -p "$K" status 2>&1 | grep -qF "long: take 2 is take 1 to 5.50 s, then new" || check "keeps: status does not say what take 2 keeps"
+go long --in 5.6 || check "keeps: --in alone: $(tail -c 300 "$OUT/keeps.txt")"
+[ "$(last long .kept.take)" = 2 ] || check "keeps: --in alone kept take $(last long .kept.take), not the newest"
+go long --take 1 --in 1 || check "keeps: --in 1: $(tail -c 300 "$OUT/keeps.txt")"
+says "the whole shot renders"
+[ "$(last long '[.kept, .invocations[0].input.continue_from]')" = '[null,null]' ] || check "keeps: --in 1 kept something: $(last long .kept)"
+go long --take 1 --in 99 || check "keeps: --in 99: $(tail -c 300 "$OUT/keeps.txt")"
+says "--in 99 s is at or past that take's end"
+[ "$(last long '.kept.until_s == 6 and .invocations[0].input.continue_from != null and .invocations[0].input.continue_from.at_s == null')" = true ] \
+  || check "keeps: --in 99 did not go on from take 1's end: $(last long .kept)"
+count long 5
+go full --take 1 || check "keeps: full --take 1: $(tail -c 300 "$OUT/keeps.txt")"
+says "take 1 already reaches the shot's end"
+count full 1
+go nocut --in 5.5 || check "keeps: nocut --in: $(tail -c 300 "$OUT/keeps.txt")"
+says "so it can't keep take 1's start"
+count nocut 1
+go pinned --in 5.5 || check "keeps: pinned --in: $(tail -c 300 "$OUT/keeps.txt")"
+says "pinned is pinned by its video:"
+go long full --in 5.5 || check "keeps: several names: $(tail -c 300 "$OUT/keeps.txt")"
+says "with several names they are ignored"
+count long 5; count full 1
+go all --in 5.5 || check "keeps: all: $(tail -c 300 "$OUT/keeps.txt")"
+says "with all they are ignored"
+count long 5
 }
 
 # setups: a shot reads only what its text names. <coast.wide> is that setup, as <coast wide> to the renderer, and <coast> beside

@@ -391,17 +391,19 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, frames?, retimed?, skips}], warnings}`. `fps` is the
   edit's frame rate; a cut's `frames` its length at it and `retimed` the takes in it at another rate
   (`<node> (<fps> fps)`), both from the shapes project.lock records. Each node is `{name, kind, noun,
-  versions, prefixes?, approved?, assets, path?, made_by?, status}`: `versions` counts them, `prefixes` gives each one's `{number, prefix}` for project.yaml, `approved` is the number of the one chosen by `approve` or `--approve`, `pinned` says a file in project.yaml is its result, `assets` what the node reads as now by output name,
+  versions, prefixes?, approved?, assets, path?, made_by?, status}`: `versions` counts them, `prefixes` gives each one's `{number, prefix, kept?}` for project.yaml (`kept: {take, until_s}`: the take whose start it keeps, and up to where), `approved` is the number of the one chosen by `approve` or `--approve`, `pinned` says a file in project.yaml is its result, `assets` what the node reads as now by output name,
   `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
   keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none. A
   file under `assets:` is a node of kind `asset`: shots read it by mention, and it has no versions.
   `warnings` holds what project.yaml's reading said and what each node's current version says: its function's
   warnings and what was left out of its request. A cut past a take's end is left out and said here.
-- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?}]}`.
-- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?, new?}` (`Idempotency-Key`): each name, or
+- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?, kept?}]}`.
+- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or
   `names: ["all"]`, brought up to date with what it reads: what is missing or out of date gets `n` new takes or versions, any
   approval it had goes, and `all` ends with the cuts. A current name is left, with a `said` event; a pinned one too. With `new`,
   what is current gets them as well, its approval kept, and what a named node reads with no version yet is made first.
+  With `take` or `in_s` and one shot's name, each new take keeps a take's start (`take`, else the one in use) up to `in_s` (else
+  that take's end), and what follows is made; it is warned of what it comes to instead (`400 take_unknown`: no such take).
   `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). A name that is no node, or a reference, is warned of and the rest go on; only an ask with
   nothing left is refused (`node_unknown`, `400 asset_file`). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.

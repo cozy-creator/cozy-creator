@@ -150,6 +150,23 @@ pub enum Clean {
 pub struct VersionPrefix {
     pub number: u32,
     pub prefix: String,
+    /// What it keeps of another take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
+}
+
+/// The start of another take that a take keeps (`render --take --in`): which, and up to where. What follows is new.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    pub take: u32,
+    pub until_s: f64,
+}
+
+impl Kept {
+    /// `clash: take 3 is take 2 to 15.08 s, then new`.
+    pub fn said(&self, name: &str, number: u32) -> String {
+        format!("{name}: take {number} is take {} to {:.2} s, then new", self.take, self.until_s)
+    }
 }
 
 /// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`; its timeline beside it,
@@ -227,6 +244,9 @@ pub struct Version {
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// What it keeps of another take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
 }
 
 /// `POST /v1/projects/{id}/runs`: `names`, or `all`, brought up to date, with what they read: what is missing or out of date
@@ -251,6 +271,12 @@ pub struct Runs {
     /// Render what is current too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub new: bool,
+    /// One shot's new take keeps the start of this take, not the one in use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<u32>,
+    /// One shot's new take keeps that take up to here, in seconds, and regenerates what follows: not from its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_s: Option<f64>,
 }
 
 fn one() -> u32 {

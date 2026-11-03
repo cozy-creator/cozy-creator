@@ -54,7 +54,7 @@ use crate::api::{Api, Refusal, parse};
 use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
 use host::{Host, Renderer};
-use video::{ALL, Canvas, Render, Request, Video};
+use video::{ALL, Canvas, Keeping, Render, Request, Video};
 
 /// A picture with at least this share of fully transparent pixels needs no clean (cl-726's sheets are 59-73%).
 const TRANSPARENT: f64 = 0.05;
@@ -428,7 +428,7 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
         noun: node.noun.into(),
         versions: node.versions.len() as u32,
         prefixes: (lock.node(&node.id).into_iter().flat_map(|n| &n.versions))
-            .filter_map(|made| Some(VersionPrefix { number: made.number, prefix: folder::prefix_of(&made.primary()?.sha256).to_owned() }))
+            .filter_map(|made| Some(VersionPrefix { number: made.number, prefix: folder::prefix_of(&made.primary()?.sha256).to_owned(), kept: made.kept }))
             .collect(),
         approved,
         pinned: node.pinned,
@@ -468,6 +468,7 @@ async fn node(
             runs: made.runs.clone(),
             approved: made.primary().is_some_and(|asset| Some(&asset.path) == approved.as_ref()),
             warnings: made.warnings.clone(),
+            kept: made.kept,
         })
         .collect();
     Ok(Json(NodeVersions { node, versions }))
@@ -632,6 +633,10 @@ async fn runs(
     let status = video.graph.status(&lock);
     let n = asked.n.max(1);
     let (mut takes, mut first, mut first_made, mut only) = (vec![], None, BTreeSet::new(), BTreeSet::new());
+    let keeping = asked.take.is_some() || asked.in_s.is_some();
+    if keeping && (all || asked.names.len() != 1) {
+        say(format!("--take and --in keep the start of one shot: with {} they are ignored", if all { "all" } else { "several names" }));
+    }
     for name in asked.names.iter().filter(|_| !all) {
         // A name that is nothing to render is said; the rest go on.
         let found = find(&video, name).and_then(|i| match video.is_asset(i) {
@@ -655,8 +660,17 @@ async fn runs(
             }
             continue;
         }
+        let keeps = match (keeping && asked.names.len() == 1).then(|| video.keeps(&lock, i, asked.take, asked.in_s)) {
+            None => None,
+            Some(Err(error)) => return Err(Refusal(error)),
+            Some(Ok(None)) => {
+                say(format!("{node} has no take to keep the start of: --take and --in are ignored"));
+                None
+            }
+            Some(Ok(keeps)) => keeps,
+        };
         // Up to date, with what it reads; a current one stays as it is.
-        if !asked.new {
+        if !asked.new && keeps.is_none() {
             if !current || !video.unclean(i).is_empty() {
                 only.extend(video.with_upstream(i));
             } else {
@@ -665,14 +679,14 @@ async fn runs(
             }
             continue;
         }
-        let take = |_| Take { key: new_key(), node: node.clone(), target: target.clone(), approve: asked.approve };
+        let take = |_| Take { key: new_key(), node: node.clone(), target: target.clone(), approve: asked.approve, keeps };
         takes.extend((0..n).map(take));
         // What it reads with no version yet is made first, and stands as that node's.
         for j in unmade(&video, &lock, i) {
             let up = video.graph.nodes[j].id.clone();
             if first_made.insert(j) {
                 say(format!("{node} reads {up}, which has no version yet: making it first"));
-                takes.push(Take { key: new_key(), node: up, target: target.clone(), approve: false });
+                takes.push(Take { key: new_key(), node: up, target: target.clone(), approve: false, keeps: None });
             }
         }
     }
@@ -1142,7 +1156,24 @@ impl Walk {
             let renderer = (self.host)
                 .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on)
                 .await?;
-            let mut request = video.request(self.folder(), lock, i, &renderer)?;
+            let kept = match next.take.as_ref().and_then(|take| take.keeps) {
+                None => None,
+                Some(keeps) => match video.keeping(lock, i, keeps, &renderer, self.take_end(&id, keeps.take).await?) {
+                    Keeping::Start(kept, said) => {
+                        said.into_iter().for_each(|message| self.say(Event::Warning { message }));
+                        Some(kept)
+                    }
+                    Keeping::Whole(message) => {
+                        self.say(Event::Warning { message });
+                        None
+                    }
+                    Keeping::Nothing(message) => {
+                        self.say(Event::Warning { message });
+                        return self.folder().update_lock(settle);
+                    }
+                },
+            };
+            let mut request = video.request(self.folder(), lock, i, &renderer, kept)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let then = match video.cleans(i) {
                 true => Then::Clean { approve, clears },
@@ -1176,6 +1207,18 @@ impl Walk {
             self.folder().update_lock(settle)?;
         }
         sent
+    }
+
+    /// How long take `number` of `node` runs, in seconds, its video probed if nothing has yet; 0 with none to probe.
+    async fn take_end(&self, node: &str, number: u32) -> Result<f64, Error> {
+        let lock = self.folder().lock()?;
+        let made = lock.node(node).and_then(|node| node.versions.iter().find(|made| made.number == number));
+        let Some(asset) = made.and_then(|made| made.assets.get("video")) else { return Ok(0.0) };
+        let shape = match asset.video {
+            Some(shape) => Some(shape),
+            None => video::shape(&self.host.ffmpeg().await?.1, &self.folder().path(&asset.path)),
+        };
+        Ok(shape.map_or(0.0, |shape| shape.frames as f64 / shape.fps))
     }
 
     /// The cuts again here from the approved assets (fast join: only what changed is encoded), each
@@ -1299,6 +1342,7 @@ impl Walk {
                 ends: call.ends.clone(),
                 writes: vec![],
                 from: Some((video_asset, made.assets.get("latents").cloned())),
+                ..Default::default()
             };
             let lock = folder.lock()?;
             let renderer = self.host.renderer(hub, video.render(i).target(), &folder.dir, on).await?;
@@ -1315,6 +1359,7 @@ impl Walk {
                 runs: made.runs.clone(),
                 invocations: made.invocations.iter().chain(&request.made.invocations).cloned().collect(),
                 warnings: made.warnings.clone(),
+                kept: made.kept,
                 ..Default::default()
             };
             let then = Then::List { approve, clears };
@@ -1590,6 +1635,10 @@ impl Walk {
             number => number,
         };
         let mut made = Made { number, ..pending.made.clone() };
+        // Where its function kept the other take up to, exactly: the time asked lands on its own grid.
+        if let (Some(kept), [], Some(until_s)) = (&mut made.kept, made.runs.as_slice(), run.result.as_ref().and_then(|result| result["kept_s"].as_f64())) {
+            kept.until_s = until_s;
+        }
         made.runs.push(run.number);
         made.execution_ms += run.execution_ms.unwrap_or(0);
         for said in said_by(run) {
@@ -1700,7 +1749,11 @@ impl Walk {
         let execution_ms = (made.execution_ms > 0).then_some(made.execution_ms);
         let kept = kept.get().filter(|kept| *kept != number && matches!(kind, "shot" | "upscale"));
         let keeps = kept.map(|kept| format!("{name}: the edit keeps {noun} {kept}, approved; cozy project approve {name} {number} uses this one"));
+        let kept_said = made.kept.map(|kept| kept.said(&name, number));
         self.say(Event::Landed { name, noun: noun.into(), number, assets, path, execution_ms });
+        if let Some(message) = kept_said {
+            self.say(Event::Said { message });
+        }
         if let Some(message) = keeps {
             self.say(Event::Said { message });
         }
