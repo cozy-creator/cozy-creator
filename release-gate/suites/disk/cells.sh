@@ -50,7 +50,8 @@ evicted_sdxl=$(logs 'tensorfs: evicted stabilityai/sdxl')
   || expect disk-held FAIL "h3 $h3, qwen $qwen $(run_get "$T" qwen .reason.message), SDXL run $during, SDXL evicted $evicted_sdxl times"
 
 sdxl=$(step sdxl model download stabilityai/sdxl --lane int8 --on "$M" -y)
-for lane in fp8 nvfp4 bf16; do
+# Not fp8: a lane few runs read has cold objects in R2, and one dripped at 52 KB/s here for as long as we watched (tfs-138).
+for lane in nvfp4 bf16; do
   [ "$(logs 'tensorfs: evicted')" = 0 ] && step "h3-$lane" model download minimaxai/minimax-h3 --lane "$lane" --on "$M" -y > /dev/null
 done
 again=$(step h3-again model download minimaxai/minimax-h3 --lane int8 --on "$M" -y)
