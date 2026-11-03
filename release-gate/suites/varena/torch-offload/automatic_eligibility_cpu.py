@@ -258,6 +258,53 @@ with torch.inference_mode():
 assert replacement_effects == ["body"]
 owner.close()
 assert storage_queries and not materializations, materializations
+
+
+class Random(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.generator = torch.Generator().manual_seed(19)
+        self.calls = 0
+
+    def forward(self, value):
+        self.calls += 1
+        return torch.rand(value.shape, generator=self.generator)
+
+
+random = Random()
+owner, origins = adopt(random)
+initial_rng = random.generator.get_state()
+assert (
+    _module_preflight(owner, random, forward_origins=origins)
+    == "unreviewed_module_effects"
+)
+assert random.calls == 0 and torch.equal(random.generator.get_state(), initial_rng)
+control_generator = torch.Generator().manual_seed(19)
+with torch.inference_mode():
+    result = random(value)
+    expected_random = torch.rand(value.shape, generator=control_generator)
+    torch.testing.assert_close(result, expected_random, rtol=0, atol=0)
+    assert (
+        _promotion_reason(owner, random, (value,), {}, result, forward_origins=origins)
+        is not None
+    )
+assert random.calls == 1
+assert torch.equal(random.generator.get_state(), control_generator.get_state())
+owner.close()
+
+deterministic = torch.nn.Sequential(
+    torch.nn.Linear(4, 4), torch.nn.Dropout(0.5), torch.nn.ReLU()
+).eval()
+owner, origins = adopt(deterministic)
+assert _module_preflight(owner, deterministic, forward_origins=origins) is None
+rng_before = torch.random.get_rng_state()
+with torch.inference_mode():
+    first = deterministic(value)
+    second = deterministic(value)
+torch.testing.assert_close(first, second, rtol=0, atol=0)
+assert torch.equal(torch.random.get_rng_state(), rng_before)
+owner.close()
+
 assert not torch.cuda.is_initialized()
 assert "libcuda.so" not in Path("/proc/self/maps").read_text()
 print(
@@ -272,6 +319,8 @@ print(
             "classification_materializations": materializations,
             "actual_storage_metadata_queries": len(storage_queries),
             "classification_retains_no_output_tensors": True,
+            "unknown_rng_module_has_exactly_one_cold_state_advance": True,
+            "reviewed_eval_forward_repetition_preserves_rng_state_and_values": True,
             "automatic_execution_wiring_cuda_or_alias_reconstruction": "not implemented/qualified here",
         }
     )
