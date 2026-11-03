@@ -660,19 +660,18 @@ class _AutomaticGraphs:
 
     @contextmanager
     def _observe(self, key, mode):
-        from .. import _ext
+        from .._ext import PhaseOverlapError
 
         owner = self._owner_ref()
         try:
             observation = _Observation(owner._owner.device.index, key, mode)
-        except getattr(_ext, "PhaseOverlapError", ()):
+        except PhaseOverlapError:
             # Only the structured native entry refusal leaves another owned
             # token/sample untouched. Never classify a body error or its text.
             yield None
             return
-        # Native1a exposes several unrelated failures as RuntimeError. They
-        # propagate from the constructor above BEFORE yield/body; no phase_stats
-        # or split_context query can safely relabel them as observation overlap.
+        # The typed native SDK is required, not capability-probed. Every other
+        # admission error still propagates before yield/body without relabeling.
         try:
             yield observation
         finally:
