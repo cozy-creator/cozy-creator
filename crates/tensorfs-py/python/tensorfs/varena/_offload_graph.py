@@ -143,11 +143,19 @@ class _CaptureBindings:
             stream,
         )
         self.modules = {id(child) for child in module.modules()}
+        self._closed = False
         self.buffers = (
             tuple(module.buffers())
             + tuple(prepared.values())
             + tuple(v for v in tree_flatten(inputs)[0] if type(v) is torch.Tensor)
         )
+
+    def close(self):
+        if adapter._GRAPH_BINDING.get() is self:
+            raise adapter.OffloadError("cannot close active capture bindings")
+        self.buffers = ()
+        self.prepared = {}
+        self._closed = True
 
     def validate_module(self, owner, module):
         if owner is not self.owner or id(module) not in self.modules:
@@ -174,6 +182,8 @@ class _CaptureBindings:
 
     @contextmanager
     def scope(self):
+        if self._closed:
+            raise adapter.OffloadError("capture bindings are closed")
         if adapter._GRAPH_BINDING.get() is not None:
             raise adapter.OffloadError("graph binding scopes cannot nest")
         token = adapter._GRAPH_BINDING.set(self)
@@ -259,8 +269,7 @@ class _Epoch:
                 self.parent_suspended = False
         except BaseException as error:
             self.intent_error = error
-            if self.parent_plan is not None:
-                self.definition.owner._intent_failed = True
+            self.definition.owner._intent_failed = True
             raise
         self.intent_restored = True
 
@@ -447,10 +456,9 @@ class GraphSegment:
             self._definition = definition
             graph = self._graph = torch.cuda.CUDAGraph()
             epoch = _Epoch(definition, stream, inputs=tree)
-            activated = False
+            binding = None
             try:
-                plan.activate(phase)
-                activated = True
+                epoch.select_intent()
                 caller = torch.cuda.current_stream(owner._owner.device)
                 with torch.cuda.stream(stream):
                     if caller != stream:
@@ -495,6 +503,12 @@ class GraphSegment:
                         raise adapter.OffloadError(
                             "captured weight aliases cannot become ordinary graph outputs"
                         )
+                    # Both binding scopes AND actual capture/routing have ended.
+                    # Retire our guard references before detecting external aliases.
+                    binding.close()
+                    # Known capture intent retires before any escape refusal. A
+                    # failed deactivation keeps exact epoch owners and poisons owner.
+                    epoch.restore_intent()
                     epoch.release()
                     # Track C10 Storage families, not one Tensor's Python weakref.
                     # Reacquiring the same live Storage preserves its actual
@@ -504,8 +518,6 @@ class GraphSegment:
                         raise CaptureOwnershipUncertain(
                             "capture storage aliases remain; exact exports retained, streamed classification refused"
                         )
-                plan.deactivate()
-                activated = False
                 observed = self._weight_entries()
                 if any(row["pins"] or row["unjoined"] for row in observed):
                     raise CaptureOwnershipUncertain(
@@ -515,8 +527,10 @@ class GraphSegment:
                 # tails protect submitted GPU work if this definition is dropped.
                 graph.retain_object(definition, synchronize_before_release=False)
             except BaseException as error:
-                if isinstance(error, CaptureOwnershipUncertain) or (
-                    epoch.release_attempted and not epoch.released
+                if (
+                    epoch.intent_error is not None
+                    or isinstance(error, CaptureOwnershipUncertain)
+                    or (epoch.release_attempted and not epoch.released)
                 ):
                     self._retain_failure(epoch, error)
                     raise
@@ -526,9 +540,10 @@ class GraphSegment:
                             "capture did not end; exact epoch retained"
                         )
                     graph.reset()
+                    if binding is not None:
+                        binding.close()
                     epoch.release()
-                    if activated:
-                        plan.deactivate()
+                    epoch.restore_intent()
                     plan.close()
                 except BaseException as cleanup:
                     self._retain_failure(epoch, cleanup)
@@ -649,9 +664,7 @@ class GraphSegment:
 
     def _retain_failure(self, epoch, error):
         self._failure = str(error)
-        if epoch.parent_plan is not None and (
-            epoch.parent_suspended or epoch.intent_active
-        ):
+        if epoch.parent_suspended or epoch.intent_active:
             epoch.definition.owner._intent_failed = True
         _UNPROVEN.append((self, epoch, error))
 

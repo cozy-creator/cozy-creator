@@ -18,6 +18,7 @@ Host frontend client, using a matching built SDK plus the exact Python feature o
 CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
   python graph_bindings_cpu.py
 CUDA_VISIBLE_DEVICES='' python replay_scope_host.py
+CUDA_VISIBLE_DEVICES='' python graph_guard_retirement_cpu.py
 ```
 
 This runs actual tied/strided Torch and tiny Diffusers VAE computation through the
@@ -26,6 +27,11 @@ read-only weight/buffer/input behavior, signatures, old aliases and empty interi
 It uses no graph/native allocator substitute and makes no CUDA claim.
 The replay-scope host client exercises actual native metadata guards, including nesting,
 exception cleanup and opposite-guard refusal, without constructing a CUDA graph or Pin.
+The guard-retirement client runs real read-only model computation and C10 Storage
+controls: an ended binding remains alive but releases its sanctioned strong references;
+no-user-escape storage expires, while a true detached alias is detected and strongly
+retained until its final owner drops. Active binding close refuses and read-only
+coverage stays intact. This is CPU/source evidence, not native capture/Plan cleanup.
 
 The coordinator must bind the exact native SDK, Python files, helper/Runtime hashes,
 GPU UUID and ordinary-Cozy caller before running isolated GPU children. No script
@@ -38,7 +44,8 @@ python graph_epochs_gpu.py --device 0 --provider "$matched_source_helper" \
   --provider-python "$matched_provider_python" --mode tail --timeout-s 60
 ```
 
-Run separate fresh children for epoch modes `reset`, `source_failure`, `capture_refusal`.
+Run separate fresh children for epoch modes `reset`, `source_failure`, `capture_refusal`
+and `capture_escape`.
 The helper is the existing real C public-Source provider; use its matched `provider.py`
 and library, including the new readiness controls. The gate is mapped HOST memory,
 not a timed CUDA sleep or a fabricated resource. The coordinator owns the child deadline
@@ -58,6 +65,14 @@ and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assert
   recipe to the existing real foreign Source Region. Its native preparation error must
   propagate before capture, with one attempt and no unproven ownership. This does not
   implement general public Source-map adoption.
+- Capture escape: an explicit eligibility-negative module retains a real detached
+  prebound ordinary weight Storage during actual capture. Classification must refuse,
+  keep exact native Storage/Pin/Version/Region/Plan/graph owners, and deactivate the
+  known capture Plan before refusal. A subsequent real eager call must activate its
+  own Plan successfully. Clearing the module alias does not force the retained native
+  custody away. This isolated child intentionally retains an unproven owner until exit;
+  it does not qualify physical reclamation. Failed intent retirement must instead mark
+  the owner failed and retain exact epoch custody; that failure path is not CPU-qualified.
 - Capture refusal: keep an unrelated actual producer pending. Scoped readiness must
   settle only the selected Sources. `graph_epochs_gpu.py --mode capture_refusal`
   delegates to `graph_capture_sync_gpu.py`; ship both files. The helper cell creates
