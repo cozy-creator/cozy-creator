@@ -1,0 +1,16 @@
+   Compiling serde_core v1.0.229
+   Compiling serde_json v1.0.154
+   Compiling thiserror v1.0.69
+   Compiling bitflags v2.13.2
+   Compiling nvml-wrapper v0.13.0
+   Compiling thiserror v2.0.21
+   Compiling varena v0.17.16 (/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-residency-census/crates/varena)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.11s
+     Running unittests src/lib.rs (/home/fidika/cozy/.worktrees/cozy-creator/xs138-multi-gpu-start/.task/target/debug/deps/varena-330573cf9303772a)
+
+running 2 tests
+test abi::census::tests::invalid_handle_refuses_without_opening_cuda ... ok
+test census::tests::retired_mapping_keeps_logical_size_without_a_region_owner ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

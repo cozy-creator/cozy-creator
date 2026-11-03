@@ -1,0 +1,38 @@
+{
+  "pr": 2397,
+  "master": "7a4a0407a095ff79c5344c8bffa3357a1355934f",
+  "source_head": "16fe7e2fecea7c5a162ebafa632a118663e285b2",
+  "unsafe_files": 89,
+  "new_reviewed_files": 40,
+  "retired_files": [
+    "crates/tensorfs-py/src/varena/allocator.rs",
+    "crates/tensorfs-py/src/varena/elf.rs",
+    "crates/tensorfs-py/src/varena/iat.rs"
+  ],
+  "checks": [
+    {
+      "command": "cargo check --locked -p varena -p varena-client -p tensorfs-py -p tensord -p cli -p calcifer -p varena-mixed-client",
+      "status": "passed",
+      "log": "current-master-check-7a4.log.gz",
+      "sha256": "e4036b0102340098be1ad628b1bdf4e4c9fb2b1eac560543f3f60d68da30c377"
+    },
+    {
+      "command": "cargo check --locked -p tensorfs-py",
+      "status": "passed",
+      "log": "zero-span-integrated-check.log.gz",
+      "sha256": "11415eda76f11cff5c3fffb4815da4a4381c3110a981ddbad457f2e1678bb267"
+    },
+    {
+      "command": "bash scripts/memory-safety.sh",
+      "status": "passed",
+      "log": "memory-safety-zero-span.log.gz",
+      "sha256": "799fc05e6513bf365cc7565ea51cc5cb9ca6690b1cd1fe7777339be83437131b"
+    }
+  ],
+  "limits": [
+    "Source/build and dependency-advisory evidence only; no current-head GPU qualification.",
+    "Native-library artifacts and GPU receipts remain tied to their exact older cohorts.",
+    "Tracked build-input mtimes were refreshed when switching worktrees to prevent stale shared-target metadata; contents verified unchanged.",
+    "Raw historical receipt whitespace and failed attempts are preserved."
+  ]
+}

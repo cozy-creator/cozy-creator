@@ -1,0 +1,237 @@
+{
+  "id": "run-2770a890f20df1af903b536c",
+  "number": 25359,
+  "kind": "call",
+  "target": "local/ci-varena-cache-pages/physical_rollback",
+  "hub": "https://tensorhub.com",
+  "machine": "hitoshiki",
+  "status": "completed",
+  "cancel_requested": false,
+  "machine_state": "running",
+  "output": [],
+  "created_at_ms": 1793545062258,
+  "accepted_at_ms": 1793545062616,
+  "started_at_ms": 1793545062523,
+  "settled_at_ms": 1793545069250,
+  "result": {
+    "detail": "{\"child_exited\": true, \"command\": [\"/var/lib/cozy/tensord/editable/ccfc2b9296e5e470/ci-varena-cache-pages/source-fe52a3346ed9d903a0f6c2e00ec34105bf350ea7e6d3646227f6b978a0942082/tree/ci_varena_cache_pages/bin/varena-cache-pages\", \"rollback\", \"/dev/shm/varena-cache-pages-wxda90wc\", \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"0\"], \"driver_after_child\": {\"free\": 24067309568, \"total\": 25252724736}, \"mode\": \"rollback\", \"passed\": true, \"pid\": 155475, \"pidfd_exit_observed\": true, \"provenance\": {\"controller_pid\": 155449, \"driver_before\": {\"free\": 24067309568, \"total\": 25252724736}, \"input\": {\"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"helper_sha256\": \"76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8\", \"native_extension_sha256\": \"8703a6cdeaf452aa0a7829526d65c60032459a9b41f02b0ee46baa97103a5c59\", \"source_sha\": \"e54525838aabe5ab3491cba5c03d50884198c0e4\", \"timeout_s\": 60.0}, \"manifest\": {\"archive_sha256\": \"884efbe133b5645681bf34bc12b9c180df8d80dc9ecbab2054b875965972ed91\", \"binary_sha256\": \"76e0bcd23b48514b6ac8bebf836b19c2f53b2002206ab5a2e2bcd0de2a623ba8\", \"elf\": {\"class\": \"ELF64\", \"glibc_max\": [2, 28], \"glibc_versions\": [[2, 2], [2, 3], [2, 10], [2, 14], [2, 16], [2, 17], [2, 18], [2, 28]], \"machine\": \"x86_64\", \"needed\": [\"libdl.so.2\", \"libgcc_s.so.1\", \"libpthread.so.0\", \"libc.so.6\", \"ld-linux-x86-64.so.2\"]}, \"native_base\": \"c3bf579ae82b42b254aa30fe54c609fc8e89afcb\", \"native_tree\": \"293b1e2dece4709171dc9b7f3d8c49649311ea08\", \"scope\": \"native paged Cache primitive and thin bindings; asynchronous owner callbacks not implemented; GPU pending\", \"source_receipt_sha256\": \"d733cd8054870eb9ea42a6d1011de7e7fb524cb48b820fd96da6e999f91a4a7c\", \"source_sha\": \"e54525838aabe5ab3491cba5c03d50884198c0e4\"}, \"native_extension\": \"/var/lib/cozy/tensord/generations/fa477ec4be93295ccfbf9cada3e8b60f/env/lib/python3.12/site-packages/tensorfs/_ext.abi3.so\", \"parent_cache_binding_available\": false, \"request_id\": \"38\", \"versions\": {\"cozy-runtime\": \"0.36.22+dev.g3daaaeda\", \"tensorfs\": \"0.17.16+dev.g4dcf2618\", \"torch\": \"2.14.0\"}}, \"report\": {\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"detail\": {\"accounting\": {\"cache_idle\": 0, \"cache_live\": 4194304, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 23521656832, \"reclaimable\": 0, \"refreshed\": true}, \"after\": {\"cache_live\": 4194304, \"cache_mapped\": 4194304, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 25262292992, \"caches\": 1, \"capacity\": 23517462528, \"events\": 0, \"live\": 23517462528, \"mapped\": 23517462528, \"memory_calls\": 973, \"pending\": 0, \"physical_ooms\": 3, \"pools\": 0}, \"before\": {\"cache_live\": 4194304, \"cache_mapped\": 4194304, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 25262292992, \"caches\": 1, \"capacity\": 23517462528, \"events\": 0, \"live\": 23517462528, \"mapped\": 23517462528, \"memory_calls\": 10, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"cache_after\": {\"live\": 4194304, \"mapped\": 4194304, \"pending\": 0, \"ready\": 0, \"reserved\": 25262292992}, \"cache_before\": {\"live\": 4194304, \"mapped\": 4194304, \"pending\": 0, \"ready\": 0, \"reserved\": 25262292992}, \"explicit_margin\": 134217728, \"filler_bytes\": 23517462528, \"filler_full_readback\": true, \"memory_call_delta\": 963, \"observed_free_before_commit\": 135331840, \"observed_mapped_rollback_pages\": 192, \"old_ranges_full_readback\": true, \"page\": 2097152, \"physical_ooms\": 3, \"requested_commit\": 25253904384, \"same_base\": true}, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"event\": \"result\", \"final\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 979, \"pending\": 0, \"physical_ooms\": 3, \"pools\": 0}, \"final_accounting\": {\"cache_idle\": 0, \"cache_live\": 0, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 0, \"reclaimable\": 0, \"refreshed\": true}, \"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"rollback\", \"passed\": true, \"pid\": 155475}, \"returncode\": 0, \"start_ticks\": 80404576, \"stderr\": \"\", \"stdout\": [{\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"event\": \"ready\", \"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"rollback\", \"pid\": 155475, \"start_ticks\": 80404576}, {\"baseline\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 1, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"detail\": {\"accounting\": {\"cache_idle\": 0, \"cache_live\": 4194304, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 23521656832, \"reclaimable\": 0, \"refreshed\": true}, \"after\": {\"cache_live\": 4194304, \"cache_mapped\": 4194304, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 25262292992, \"caches\": 1, \"capacity\": 23517462528, \"events\": 0, \"live\": 23517462528, \"mapped\": 23517462528, \"memory_calls\": 973, \"pending\": 0, \"physical_ooms\": 3, \"pools\": 0}, \"before\": {\"cache_live\": 4194304, \"cache_mapped\": 4194304, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 25262292992, \"caches\": 1, \"capacity\": 23517462528, \"events\": 0, \"live\": 23517462528, \"mapped\": 23517462528, \"memory_calls\": 10, \"pending\": 0, \"physical_ooms\": 0, \"pools\": 0}, \"cache_after\": {\"live\": 4194304, \"mapped\": 4194304, \"pending\": 0, \"ready\": 0, \"reserved\": 25262292992}, \"cache_before\": {\"live\": 4194304, \"mapped\": 4194304, \"pending\": 0, \"ready\": 0, \"reserved\": 25262292992}, \"explicit_margin\": 134217728, \"filler_bytes\": 23517462528, \"filler_full_readback\": true, \"memory_call_delta\": 963, \"observed_free_before_commit\": 135331840, \"observed_mapped_rollback_pages\": 192, \"old_ranges_full_readback\": true, \"page\": 2097152, \"physical_ooms\": 3, \"requested_commit\": 25253904384, \"same_base\": true}, \"driver\": {\"free\": 23656988672, \"total\": 25252724736}, \"event\": \"result\", \"final\": {\"cache_live\": 0, \"cache_mapped\": 0, \"cache_pending\": 0, \"cache_ready\": 0, \"cache_reserved\": 0, \"caches\": 0, \"capacity\": 0, \"events\": 0, \"live\": 0, \"mapped\": 0, \"memory_calls\": 979, \"pending\": 0, \"physical_ooms\": 3, \"pools\": 0}, \"final_accounting\": {\"cache_idle\": 0, \"cache_live\": 0, \"cache_pending\": 0, \"pending_release\": 0, \"physical\": 0, \"reclaimable\": 0, \"refreshed\": true}, \"gpu_uuid\": \"GPU-18d960a8-2283-19c9-c060-ef8a22fabe35\", \"libraries\": {\"cuda_loaded\": true, \"python_loaded\": false, \"torch_loaded\": false}, \"mode\": \"rollback\", \"passed\": true, \"pid\": 155475}]}",
+    "passed": true
+  },
+  "execution_ms": 6649,
+  "measurements": {
+    "attribution": {
+      "folded_names": 0,
+      "method": "perf_counter deltas accumulated in place: count/total/min/max/first/last and wall bounds per named span; step tracks keep up to 512 [end_unix_ms, ms] points",
+      "stages": {},
+      "steps": {}
+    },
+    "execution": {
+      "construction": {
+        "fill_ms": 0.0,
+        "legs_ms": {},
+        "prepare_ms": 0.0,
+        "prepared_unix_ms": 0,
+        "warm_ms": 0.0
+      },
+      "cuts": {
+        "levels": {},
+        "oom_floor": 0,
+        "sites": []
+      },
+      "degree": 1,
+      "executor": {
+        "legs_ms": {
+          "cuda_init": 787.8,
+          "package_import": 4.1,
+          "package_warmup": 0.0,
+          "torch_import": 0.0
+        },
+        "ms": 791.9,
+        "started_unix_ms": 1793545060740
+      },
+      "gpus": [
+        {
+          "arch": "sm_89",
+          "attention": {
+            "impl": "",
+            "observed": "",
+            "requested": ""
+          },
+          "end_us": 1793545069157690,
+          "gpu": 0,
+          "pid": 155449,
+          "start_us": 1793545062525390,
+          "uuid": "GPU-18d960a8-2283-19c9-c060-ef8a22fabe35"
+        }
+      ],
+      "loops": [],
+      "on_demand": {},
+      "plan": {},
+      "plan_reports": {},
+      "reply_built_unix_ms": 1793545069158.5,
+      "reply_sent_unix_ms": 1793545069159.0,
+      "spread": {}
+    },
+    "memory": {
+      "driver": [
+        {
+          "before_bytes": 1185415168,
+          "gpu": 0,
+          "peak_bytes": 25117392896,
+          "power_max_w": 82,
+          "sm_mhz_limit": 3120,
+          "sm_mhz_low": 2535,
+          "sm_mhz_mean": 2535,
+          "temperature_max_c": 42,
+          "throttled_share": 0.0,
+          "throttles": []
+        }
+      ],
+      "peak_allocated_bytes": 17039360,
+      "peak_reserved_bytes": 117440512,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 7.1694362957416535,
+              "h2d_gbps": 13.347251092972606
+            },
+            "gpu": 0,
+            "stats": {
+              "allocated": 17039360,
+              "allocator": {
+                "allocations": 0,
+                "context_joins": 0,
+                "driver_memory_calls": 0,
+                "event_queries": 0,
+                "event_records": 0,
+                "event_waits": 0,
+                "frees": 0,
+                "ooms": 0
+              },
+              "allocator_scope": "process",
+              "baked_pages": {
+                "bytes": 0,
+                "cap": 67061370880,
+                "pages": 0,
+                "pinned": true,
+                "room": -1,
+                "scope": "the host tier: every streamed page's bytes, pinned",
+                "wanted": 0
+              },
+              "final_bindings": {
+                "fallback_blocks": 0,
+                "fills": 0,
+                "final_resident_bytes": 0,
+                "hits": 0,
+                "native_prefetch": true,
+                "raw_resident_bytes": 0,
+                "resident_scope": "process"
+              },
+              "gathered": 0,
+              "host": null,
+              "moved": {
+                "baked": {
+                  "bytes": 0,
+                  "fills": 0,
+                  "ns": 0
+                },
+                "store": {
+                  "bytes": 0,
+                  "ns": 0
+                }
+              },
+              "overlapping": false,
+              "peak": 17039360,
+              "peak_window": "Working high-water plus sampled native backing, carried across resets; other constructions' resident sets left out",
+              "phase_policy_supported": true,
+              "phases": [],
+              "prefetch": {
+                "canceled": 0,
+                "completed": 0,
+                "declined_native": 0,
+                "failed": 0,
+                "queued": [],
+                "scope": "immutable stored RAW; native measured admission; unknown keys decline",
+                "started": 0,
+                "unsupported_sources": {},
+                "wait_ns": 0
+              },
+              "request": "38",
+              "reserved": 117440512,
+              "room_first_pass": null,
+              "sets": {},
+              "trace": [],
+              "trace_scope": "fills",
+              "weight_residency": {
+                "context_joins": 0,
+                "event_waits": 0,
+                "evictions": 0,
+                "fills": 0,
+                "hits": 0,
+                "pinned_bytes": 0,
+                "poisoned": false,
+                "preferred_bytes": 0,
+                "ready_bytes": 0,
+                "reclaimable_bytes": 0,
+                "reclaimed_by_reason": {
+                  "allocator": 0,
+                  "requested": 0,
+                  "room": 0,
+                  "streaming_limit": 0,
+                  "weight_allocation": 0
+                },
+                "reclaimed_bytes": 0,
+                "regions": 0,
+                "reserved_bytes": 0,
+                "resident_bytes": 0,
+                "streaming_limit_bytes": 18446744073709551615
+              },
+              "working_allocator": {
+                "allocated_bytes": 17039360,
+                "allocated_capacity": 20971520,
+                "allocated_peak": 17039360,
+                "allocations": 1735,
+                "context_joins": 0,
+                "driver_memory_calls": 106,
+                "event_handles": 83,
+                "event_queries": 261,
+                "event_records": 223,
+                "event_waits": 0,
+                "free_bytes": 57561600,
+                "frees": 1733,
+                "mapped_bytes": 117440512,
+                "mapped_peak": 117440512,
+                "ooms": 0,
+                "pending_bytes": 37018624,
+                "pools": 0,
+                "pools_bytes": 0,
+                "prefetch_admissions": 0,
+                "prefetch_attempts": 0,
+                "prefetch_declines": 0,
+                "reclaimable_bytes": 23068672,
+                "unassigned_bytes": 1888768
+              },
+              "working_phases": [],
+              "working_splits": []
+            },
+            "torch_peak": 17039360
+          }
+        ]
+      }
+    },
+    "models": [],
+    "observations": [],
+    "residency": {
+      "graphs": {},
+      "notes": {}
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.36.22+dev.g3daaaeda",
+      "tensord": "0.15.4+dev.gafa6f922",
+      "tensord_commit": "afa6f9229153d1a7e93bbf72fc86f5543a4ac21c",
+      "tensorfs": "0.17.16+dev.g4dcf2618"
+    }
+  }
+}

@@ -1,0 +1,251 @@
+{
+  "passed": true,
+  "fixed": true,
+  "obsolete_round_reproduced": false,
+  "first_round": 9,
+  "second_round": 16,
+  "a_stopped_alive": 1725319,
+  "a": {
+    "incarnation": 2,
+    "path": "/dev/shm/xs138-round-65xgs30i/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+    "pid": 1725319,
+    "ready": true,
+    "slot": 1,
+    "snapshot": {
+      "capacity_epoch": 3,
+      "device": 29,
+      "generation": 3,
+      "inode": 2304903,
+      "round": null,
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 1,
+          "live": 0,
+          "pending": 0,
+          "pid": 1725318,
+          "priority": 0,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 0,
+          "start_ticks": 55962744,
+          "want": 0
+        },
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 1725319,
+          "priority": -10,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 1,
+          "start_ticks": 55962744,
+          "want": 0
+        }
+      ],
+      "sample": null
+    }
+  },
+  "b": {
+    "incarnation": 3,
+    "path": "/dev/shm/xs138-round-65xgs30i/varena-v3-1000-4eb76344abcc4e2f94a8a439981b02bd-gpu-13800000000000000000000000000003",
+    "pid": 1725320,
+    "ready": true,
+    "slot": 2,
+    "snapshot": {
+      "capacity_epoch": 4,
+      "device": 29,
+      "generation": 4,
+      "inode": 2304903,
+      "round": null,
+      "rows": [
+        {
+          "idle": 0,
+          "incarnation": 1,
+          "live": 0,
+          "pending": 0,
+          "pid": 1725318,
+          "priority": 0,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 0,
+          "start_ticks": 55962744,
+          "want": 0
+        },
+        {
+          "idle": 0,
+          "incarnation": 2,
+          "live": 0,
+          "pending": 0,
+          "pid": 1725319,
+          "priority": -10,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 1,
+          "start_ticks": 55962744,
+          "want": 0
+        },
+        {
+          "idle": 0,
+          "incarnation": 3,
+          "live": 0,
+          "pending": 0,
+          "pid": 1725320,
+          "priority": -20,
+          "reclaimable": 0,
+          "sharing": "Shared",
+          "slot": 2,
+          "start_ticks": 55962744,
+          "want": 0
+        }
+      ],
+      "sample": null
+    }
+  },
+  "before": {
+    "capacity_epoch": 6,
+    "device": 29,
+    "generation": 10,
+    "inode": 2304903,
+    "round": {
+      "aborted": false,
+      "completed": 0,
+      "donors": [
+        {
+          "answer": "Waiting",
+          "completed": 0,
+          "incarnation": 2,
+          "pending": 0,
+          "requested": 64,
+          "slot": 1
+        }
+      ],
+      "finished": false,
+      "id": 9,
+      "requested": 64,
+      "sample": 8
+    },
+    "rows": [
+      {
+        "idle": 0,
+        "incarnation": 1,
+        "live": 0,
+        "pending": 0,
+        "pid": 1725318,
+        "priority": 0,
+        "reclaimable": 0,
+        "sharing": "Shared",
+        "slot": 0,
+        "start_ticks": 55962744,
+        "want": 64
+      },
+      {
+        "idle": 64,
+        "incarnation": 2,
+        "live": 0,
+        "pending": 0,
+        "pid": 1725319,
+        "priority": -10,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 1,
+        "start_ticks": 55962744,
+        "want": 0
+      },
+      {
+        "idle": 64,
+        "incarnation": 3,
+        "live": 0,
+        "pending": 0,
+        "pid": 1725320,
+        "priority": -20,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 2,
+        "start_ticks": 55962744,
+        "want": 0
+      }
+    ],
+    "sample": {
+      "capacity_epoch": 6,
+      "id": 8,
+      "total": 256,
+      "used": 128
+    }
+  },
+  "after": {
+    "capacity_epoch": 6,
+    "device": 29,
+    "generation": 16,
+    "inode": 2304903,
+    "round": {
+      "aborted": false,
+      "completed": 0,
+      "donors": [
+        {
+          "answer": "Waiting",
+          "completed": 0,
+          "incarnation": 3,
+          "pending": 0,
+          "requested": 64,
+          "slot": 2
+        }
+      ],
+      "finished": false,
+      "id": 16,
+      "requested": 64,
+      "sample": 15
+    },
+    "rows": [
+      {
+        "idle": 0,
+        "incarnation": 1,
+        "live": 0,
+        "pending": 0,
+        "pid": 1725318,
+        "priority": 0,
+        "reclaimable": 0,
+        "sharing": "Shared",
+        "slot": 0,
+        "start_ticks": 55962744,
+        "want": 64
+      },
+      {
+        "idle": 64,
+        "incarnation": 2,
+        "live": 0,
+        "pending": 0,
+        "pid": 1725319,
+        "priority": -10,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 1,
+        "start_ticks": 55962744,
+        "want": 0
+      },
+      {
+        "idle": 64,
+        "incarnation": 3,
+        "live": 0,
+        "pending": 0,
+        "pid": 1725320,
+        "priority": -20,
+        "reclaimable": 64,
+        "sharing": "Shared",
+        "slot": 2,
+        "start_ticks": 55962744,
+        "want": 0
+      }
+    ],
+    "sample": {
+      "capacity_epoch": 6,
+      "id": 15,
+      "total": 256,
+      "used": 128
+    }
+  },
+  "gpu_or_allocator_execution": false,
+  "scope": "real OS participants/row locks and ledger transitions; supplied byte metadata only"
+}
