@@ -1,0 +1,16 @@
+{
+  "review_source": "4519f9e17037291dde0176801ab1500f2739db20",
+  "source_hashes": {
+    "crates/tensorfs-py/python/tensorfs/varena/_offload_graph.py": "1462072e298e8d2d7639dfc502ea4d0ad586a76634c2c132f5d846441e4ba452",
+    "crates/tensorfs-py/python/tensorfs/varena/torch.py": "7fbb79e817798a7aa2f932268bf68fcf6ba0f925a0a9a326b8c34617266e3566"
+  },
+  "implemented_contract": "Conservative selected same-generation producer completion AND checked resource retirement before every epoch acquiring Use; no overlap claim.",
+  "source_checks": [
+    "wait_ready is direct final acquire statement for both capture/replay paths",
+    "acquire precedes actual capture and replay exclusion/launch",
+    "ended binding close and intent restoration precede export release and Storage probe",
+    "helper is stream-local without old keyword/probe/global fallback"
+  ],
+  "new_execution_scope": "Source AST/order and documentation only; no CPU/native build/model/GPU reruns. Existing host receipts retain their original scope.",
+  "gpu_qualification": "Open, including full capture construction/refusal, valid readiness, native Plan cleanup, parent restoration and stale Conv replay."
+}
