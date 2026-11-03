@@ -281,7 +281,26 @@ def exercise(payload, ctx, request, vt):
                             def minimum(i, marker, x):
                                 del i, marker, x
                                 settle(vt, device)
-                                probe = vt.split_select(device, key, [('whole', allocations)], preferred='whole', stream=stream.cuda_stream)
+                                # Compatible free slots can survive trim inside a partly-live
+                                # segment. Hold real matching allocations until native reports
+                                # fresh backing demand; this is fixture setup, never model work.
+                                cache_holders = []
+                                setup = []
+                                payload = sum(allocations)
+                                maximum_sets = vt.stats(device)['mapped_bytes'] // payload + 1
+                                for _ in range(maximum_sets):
+                                    probe = vt.split_select(device, key, [('whole', allocations)], preferred='whole', stream=stream.cuda_stream)
+                                    if probe['required_bytes'] > 0:
+                                        break
+                                    before_hold = vt.stats(device)
+                                    cache_holders.append(tuple(torch.empty(size, dtype=torch.uint8, device=on)
+                                                               for size in allocations))
+                                    after_hold = vt.stats(device)
+                                    setup.append({'probe': probe, 'before': before_hold, 'after': after_hold})
+                                    assert after_hold['mapped_bytes'] == before_hold['mapped_bytes'], 'zero-fresh-demand setup mapped new backing'
+                                refused['capacity_setup'] = {'held_sets': len(cache_holders), 'steps': setup,
+                                                             'bound_from_actual_mapped_bytes': maximum_sets}
+                                refused['probe'] = probe
                                 assert probe['required_bytes'] > 0
                                 before = vt.stats(device)
                                 cap = before['mapped_bytes'] + request.memory.native.stats()['resident_bytes'] + probe['required_bytes'] - 1
