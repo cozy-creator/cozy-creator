@@ -1,0 +1,9 @@
+{
+  "owner": "/root/frontend_trace_resume23",
+  "purpose": "Fixture-only frontend host-stage/window diagnostic for run27056",
+  "branch": "codex/xs138-27056-frontend-diagnostic",
+  "base_sha": "500b6de76d6e19e0e432ece04be81d6ee31ca268",
+  "context_rc": "627f6978f3469332312a53918fe5a68a48f7e0ec",
+  "context_merge": "7fabe52441f2421c482990bd2646d6d40dd7c6d3",
+  "execution_base": "separately bound original9d959e31/c059 or controlled9d+b91; development context is not execution identity"
+}
