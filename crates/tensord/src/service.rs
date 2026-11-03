@@ -501,30 +501,28 @@ impl Service {
         // once it returns, admit no more until CPU work advances.
         // A run whose plan cannot be read is its own model; its offer reports why.
         let model = |r: &Execution| self.plan(&pool, r).map_or_else(|_| r.id.clone(), |plan| plan.construction);
-        // Missing required inputs have no runnable GPU work yet. Leave them out of lane
-        // claims and model-turn barriers, so another ready request can use the device.
+        // Missing required inputs have no runnable work yet. Leave them out of lane claims and
+        // model-turn barriers, so another ready request can use the device.
         // The existing fetch completion callback wakes this same event-driven loop.
         let mut source_ready = vec![];
         for record in self.engine.ready()? {
-            if record.invocation.degree > 0 {
-                match calls.as_ref().map_or(crate::access::Ready::Yes, |calls| calls.source_ready(&record.id)) {
-                    crate::access::Ready::Yes => (),
-                    crate::access::Ready::Waiting(on) => {
-                        // Preserve an active parent's registered family lane; an awaited
-                        // child must be able to reenter it once its required source arrives.
-                        pool.release_for_fetch(&self.engine, record.root_seq());
-                        let reason = match on.is_empty() {
-                            true => "waiting for required model inputs".to_owned(),
-                            false => format!("waiting for required model inputs: {on}"),
-                        };
-                        self.engine.waiting(&record.id, Some(reason))?;
-                        continue;
-                    }
-                    crate::access::Ready::Failed(error) => {
-                        self.engine.fail_unstarted(&record.id, "model_fetch_failed", error)?;
-                        if let Some(calls) = &calls { calls.ended(&record.id); }
-                        continue;
-                    }
+            match calls.as_ref().map_or(crate::access::Ready::Yes, |calls| calls.source_ready(&record.id)) {
+                crate::access::Ready::Yes => (),
+                crate::access::Ready::Waiting(on) => {
+                    // Preserve an active parent's registered family lane; an awaited
+                    // child must be able to reenter it once its required source arrives.
+                    pool.release_for_fetch(&self.engine, record.root_seq());
+                    let reason = match on.is_empty() {
+                        true => "waiting for required model inputs".to_owned(),
+                        false => format!("waiting for required model inputs: {on}"),
+                    };
+                    self.engine.waiting(&record.id, Some(reason))?;
+                    continue;
+                }
+                crate::access::Ready::Failed(error) => {
+                    self.engine.fail_unstarted(&record.id, "model_fetch_failed", error)?;
+                    if let Some(calls) = &calls { calls.ended(&record.id); }
+                    continue;
                 }
             }
             source_ready.push(record);
