@@ -217,6 +217,7 @@ later call of the same model asks the Hub nothing, and a model the Hub has not i
     in sha256-checked chunks, a full `pg_restore -f /dev/null`), restore it into a scratch Postgres, start the
     candidate image against it (it migrates on start) and wait for `/healthz` 204. Record the dump and the result
     with the gate.
+- **Rent:** an order that a moved price holds gets a new order at the new price, at most 5; 20 min with no pod bought fails the gate, a not-run and not a verdict.
 - **Quality** (`quality.py`, every gate): CLIP prompt adherence of every render against its prompt (floor 0.25; 0.20 for varena's 4-step CPU `host-sdxl`), and
   the gate's median CLIP-IQA sharpness against the last passed gates. Never a same-seed pixel diff.
 - **Checks:** `analyze.py` runs every `check(gate) -> (fails, notes)` in `CHECKS` (quality, lm, swap, and a suite's).
