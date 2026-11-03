@@ -583,14 +583,18 @@ class GraphSegment:
 
     @staticmethod
     def _configuration(module):
+        scalar_types = (str, int, float, bool, type(None), torch.dtype, torch.device)
         rows = []
         for child in module.modules():
             values = tuple(
                 sorted(
                     (key, value)
                     for key, value in child.__dict__.items()
-                    if type(value)
-                    in (str, int, float, bool, type(None), torch.dtype, torch.device)
+                    if type(value) in scalar_types
+                    or (
+                        type(value) is tuple
+                        and all(type(item) in scalar_types for item in value)
+                    )
                 )
             )
             forward = child.forward

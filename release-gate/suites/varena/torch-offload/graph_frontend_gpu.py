@@ -55,6 +55,55 @@ def observe(segment):
     return {"facts": facts, "addresses": addresses, "entries": list(entries.values())}
 
 
+def convolution_configuration_controls(device, capture_stream):
+    checks = []
+    with torch.inference_mode(), torch.cuda.stream(capture_stream):
+        for attribute, replacement in (
+            ("stride", (2, 2)),
+            ("padding", (1, 1)),
+            ("dilation", (2, 2)),
+        ):
+            conv = torch.nn.Conv2d(1, 1, 3, bias=False).eval()
+            conv.weight.fill_(0.125)
+            expected = torch.nn.functional.conv2d(
+                torch.arange(64.0).reshape(1, 1, 8, 8), conv.weight
+            )
+            conv_owner = vt.offload(conv, device=device)
+            value = torch.arange(64.0, device=device).reshape(1, 1, 8, 8)
+            segment = conv_owner.capture(
+                conv, (value,), stream=capture_stream, reserve_bytes=8 << 20
+            )
+            launches = []
+            hook = segment._graph.register_replay_end_hook(
+                lambda graph, calls=launches: calls.append(True)
+            )
+            try:
+                pending = segment(value, stream=capture_stream)
+                assert len(launches) == 1
+                original = getattr(conv, attribute)
+                setattr(conv, attribute, replacement)
+                try:
+                    segment(value, stream=capture_stream)
+                except GraphInvalidated as error:
+                    assert "configuration" in str(error)
+                else:
+                    raise AssertionError(f"stale Conv2d {attribute} graph replayed")
+                assert len(launches) == 1, "stale selection reached actual replay"
+                capture_stream.synchronize()
+                torch.testing.assert_close(pending.cpu(), expected, rtol=0, atol=0)
+                setattr(conv, attribute, original)
+                restored = segment(value, stream=capture_stream)
+                capture_stream.synchronize()
+                torch.testing.assert_close(restored.cpu(), expected, rtol=0, atol=0)
+                assert len(launches) == 2
+                checks.append(attribute)
+            finally:
+                hook.remove()
+                segment.close()
+                conv_owner.close()
+    return checks
+
+
 with torch.inference_mode(), torch.cuda.stream(stream):
     example = torch.ones(1, 32, device=args.device)
     for block in model:
@@ -164,6 +213,7 @@ with torch.inference_mode(), torch.cuda.stream(stream):
         segment.close()
         assert segment.facts()["closed"]
 owner.close()
+configuration_checks = convolution_configuration_controls(args.device, stream)
 print(
     json.dumps(
         {
@@ -174,6 +224,8 @@ print(
             "independent_outputs": True,
             "enclosing_plan_restored": True,
             "old_dtype_definitions": True,
+            "conv_tuple_configuration_invalidations": configuration_checks,
+            "config_refusal_preserves_prior_output_and_restoring_tuple_reuses_definition": True,
             "observations": observations,
         }
     )

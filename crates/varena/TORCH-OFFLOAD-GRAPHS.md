@@ -72,6 +72,12 @@ view adds its member offset only after original-storage span validation.
 
 ## Capture transaction
 
+Model configuration includes supported scalar attributes and flat immutable tuples
+of those scalars, including Conv2d stride/padding/dilation/kernel_size. Changing these
+invalidates new replay selection even when Parameters, buffers and inputs are unchanged.
+Tuple contents that include Tensor/storage owners or mutable objects are excluded from
+this metadata key; arbitrary Python globals/configuration are not generally capturable.
+
 1. Freeze the segment's immutable versions and prepare its Region Plan outside capture.
    Establish exclusive adapter access; dtype conversion cannot mutate a live definition.
 2. Prepare/warm supported compute and working pool outside capture. Acquire a public Use
