@@ -133,7 +133,7 @@ try:
     snapshot("after-adoption")
     try:
         sampler_file = (args.output / "nvml-samples.csv").open("w")
-        sampler = subprocess.Popen(["nvidia-smi", "--query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits", "-i", str(args.device), "-lms", "200"], stdout=sampler_file, stderr=subprocess.DEVNULL)
+        sampler = subprocess.Popen(["nvidia-smi", "--query-gpu=timestamp,uuid,memory.used,memory.total,utilization.gpu", "--format=csv,noheader,nounits", "-i", args.gpu_uuid, "-lms", "200"], stdout=sampler_file, stderr=subprocess.DEVNULL)
     except OSError as error:
         report["nvml_sampler_error"] = repr(error)
     for index in range(2):

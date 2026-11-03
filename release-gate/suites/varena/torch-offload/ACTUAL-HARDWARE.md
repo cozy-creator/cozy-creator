@@ -16,7 +16,7 @@ explicitly distinguished from CUDA's actual hardware identity.
 Model construction remains CPU-only until `vt.offload`. There is no full-GPU
 baseline preload, application retry, tiling substitution, reduced step count or
 precision change. One existing18-file local SDXL directory is verified and reused;
-no model download occurs in the client. Its13MiB external reference array is
+no model download occurs in the client. Its external reference array is
 hashed before inference. Both complete outputs are compared with `rtol=atol=1e-3`.
 
 The client records hardware, first/warm generation-to-NumPy times, native Working
