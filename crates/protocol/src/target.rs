@@ -72,7 +72,8 @@ impl Published {
         if parts.len() > 3 || !parts.iter().all(|p| valid(p)) || !release.is_none_or(valid) {
             return Err(malformed());
         }
-        let release = release.map(str::to_owned);
+        // `@latest` is what naming no release means.
+        let release = release.filter(|release| !release.eq_ignore_ascii_case("latest")).map(str::to_owned);
         let lower = |s: &str| s.to_ascii_lowercase();
         Ok(match parts[..] {
             [name] => Published { package: format!("{ROOT}/{}", lower(name)), function: None, release, owned: None },

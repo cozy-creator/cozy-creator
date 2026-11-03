@@ -1457,6 +1457,8 @@ pub fn local_usable(machine: &str) -> Result<(), crate::error::Error> {
 
 impl From<String> for On {
     fn from(text: String) -> Self {
+        // Machine names and products are never case-sensitive.
+        let text = text.trim().to_ascii_lowercase();
         match text.as_str() {
             "any" => On::Any,
             "new" => On::New(None),

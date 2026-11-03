@@ -225,6 +225,18 @@ impl Machines {
         Ok(RentalSkus { rental_skus: skus })
     }
 
+    /// `sku` as `hub`'s catalog spells it, in any case, with or without its hyphens (`RTX 4090`,
+    /// `rtx4090`); as written when the catalog has no such product, for the Hub to refuse by name.
+    pub(crate) async fn spelled_sku(&self, hub: &str, sku: &str) -> String {
+        let plain = |text: &str| text.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase();
+        let listed = match self.hubs.anonymous(hub) {
+            Ok(reader) => reader.list_rental_skus().await.unwrap_or_default(),
+            Err(_) => vec![],
+        };
+        let same = listed.into_iter().find(|listed| plain(&listed.name) == plain(sku));
+        same.map_or_else(|| sku.to_owned(), |listed| listed.name)
+    }
+
     /// An explicit ask for `gpus` of `sku` is honoured or refused, never widened to another card
     /// or count; the refusal names which absence it hit. A product the Hub cannot sell, for
     /// whatever reason, reads as out of stock.
@@ -289,7 +301,8 @@ impl Machines {
         sku: &str,
         shape: Shape,
     ) -> Result<Rented, Error> {
-        let (ask, fresh) = self.ask_rent(key, hub, sku, shape, None).await?;
+        let sku = self.spelled_sku(hub, sku).await;
+        let (ask, fresh) = self.ask_rent(key, hub, &sku, shape, None).await?;
         let quote = quote_of(&RentBody::of(&ask)?.quote);
         let row = match ask.state {
             AskState::Done => {
@@ -687,11 +700,15 @@ impl Machines {
                 if let Some(ask) = me.store().ask(&key).map_err(internal)? {
                     return Ok(ask);
                 }
+                let hub = run.hub.as_deref().unwrap_or_default();
+                let sku = match sku {
+                    Some(sku) => Some(me.spelled_sku(hub, &sku).await),
+                    None => None,
+                };
                 let (sku, gpus, disk_gb, fallbacks) = match sku {
                     Some(sku) if gpus > 0 => (sku, Some(gpus), None, vec![]),
                     sku => me.placed(&run, sku.as_deref()).await?,
                 };
-                let hub = run.hub.as_deref().unwrap_or_default();
                 let shape = Shape {
                     gpus,
                     disk_gb,
@@ -849,7 +866,11 @@ impl Machines {
             return Err(Error::new(Kind::Usage, "quote_needs_new", "only a run with `--on new` rents"));
         };
         let gpus = (submit.spec.gpus > 0).then_some(submit.spec.gpus);
-        let placed = match (sku, gpus) {
+        let sku = match sku {
+            Some(sku) => Some(self.spelled_sku(&submit.hub, sku).await),
+            None => None,
+        };
+        let placed = match (&sku, gpus) {
             (Some(sku), Some(_)) => {
                 Placed { sku: sku.clone(), gpus, disk_gb: None, fallbacks: vec![], why: String::new(), alternatives: vec![] }
             }
@@ -1795,7 +1816,7 @@ fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
 
 /// Whether `text` names the rental: its id, its Hub name, or the name it was asked under.
 fn names(rental: &types::Rental, text: &str) -> bool {
-    rental.rental_id == text
+    rental.rental_id.eq_ignore_ascii_case(text)
         || rental.name.eq_ignore_ascii_case(text)
         || rental
             .machine_name

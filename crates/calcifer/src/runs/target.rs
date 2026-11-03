@@ -167,5 +167,10 @@ pub async fn release_of(
         Some(release) => (release.to_owned(), ReleaseFrom::Asked),
         None => (cards::latest(client, root, hub, package).await?, ReleaseFrom::Latest),
     };
-    Ok((cards::card(client, root, hub, package, &release).await?, from))
+    let card = match (cards::card(client, root, hub, package, &release).await, release.strip_prefix('v')) {
+        // `v0.2.0` for the release named `0.2.0`.
+        (Err(e), Some(bare)) if e.kind == Kind::NotFound => cards::card(client, root, hub, package, bare).await?,
+        (card, _) => card?,
+    };
+    Ok((card, from))
 }

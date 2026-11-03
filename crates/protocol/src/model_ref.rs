@@ -150,7 +150,8 @@ impl ModelRef {
         if let Some(id) = pin.filter(|pin| pin.starts_with("sha256:")) {
             return Ok(ModelRef::Commit { repo, commit: commit(id)? });
         }
-        let release = pin.map(|release| label("release", release)).transpose()?;
+        // `@latest` is what naming no release means.
+        let release = pin.filter(|pin| !pin.eq_ignore_ascii_case("latest")).map(|release| label("release", release)).transpose()?;
         Ok(ModelRef::Hub { repo, release })
     }
 

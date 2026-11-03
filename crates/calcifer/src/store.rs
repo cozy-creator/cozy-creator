@@ -382,8 +382,9 @@ impl Store {
     pub fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {MACHINE_COLUMNS} FROM machines WHERE name = ?1 OR alias = ?1 OR rental_id = ?1
-                 ORDER BY name = ?1 DESC"
+                "SELECT {MACHINE_COLUMNS} FROM machines
+                 WHERE name = ?1 COLLATE NOCASE OR alias = ?1 COLLATE NOCASE OR rental_id = ?1 COLLATE NOCASE
+                 ORDER BY name = ?1 COLLATE NOCASE DESC, rowid DESC"
             ))?;
             let rows = statement
                 .query_map([text], machine_row)?

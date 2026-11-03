@@ -236,9 +236,15 @@ impl Machines {
         if let Some(order) = self.order_named(text)? {
             return Ok(self.order(&order));
         }
-        let row = match self.named_now(text).await? {
-            Named::Here(row) => row,
-            Named::Other(machine) => return Ok(*machine),
+        let row = match self.named_now(text).await {
+            Ok(Named::Here(row)) => row,
+            Ok(Named::Other(machine)) => return Ok(*machine),
+            // To read, a name only ended machines had is the newest of them.
+            Err(e) if e.code == "machine_name_ended" => match self.store().machines_named(text).map_err(internal)?.into_iter().next() {
+                Some(row) => row,
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
         };
         if row.state != MachineState::Ended
             && self.offline(&row.name).is_none()
@@ -271,6 +277,7 @@ impl Machines {
         address: &str,
         fingerprint: &Digest,
     ) -> Result<Machine, Error> {
+        let name = &name.to_ascii_lowercase();
         valid_name(name)?;
         let rows = self.store().machines_named(name).map_err(internal)?;
         if (rows.iter()).any(|row| row.state != MachineState::Ended || row.kind != MachineKind::Added) {
@@ -437,7 +444,7 @@ impl Machines {
     pub(crate) fn named(&self, text: &str) -> Result<Option<Named>, Error> {
         let store = self.store();
         let rows = store.machines_named(text).map_err(internal)?;
-        if let Some(row) = rows.iter().find(|row| row.rental_id.as_deref() == Some(text)) {
+        if let Some(row) = rows.iter().find(|row| row.rental_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(text))) {
             return Ok(Some(Named::Here(row.clone())));
         }
         let ours = |id: &str| store.machines_named(id).is_ok_and(|rows| !rows.is_empty());
@@ -460,7 +467,7 @@ impl Machines {
     /// controller's rental is never answered from a listing it may have ended since. `local`
     /// starts for it.
     async fn named_now(self: &Arc<Self>, text: &str) -> Result<Named, Error> {
-        if text == "local" {
+        if text.eq_ignore_ascii_case("local") {
             self.local_row()?;
             self.local_up().await?;
         }
@@ -510,7 +517,7 @@ impl Machines {
     /// at once and carried out then (`end_here`). `force` ends it now and names the outputs given
     /// up. `local` is never ended.
     pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
-        if text == "local" {
+        if text.eq_ignore_ascii_case("local") {
             return Err(local_refusal());
         }
         if let Some(order) = self.order_named(text)? {
@@ -870,8 +877,8 @@ impl Machines {
     /// recorded when the run could not reach it.
     async fn reach(self: &Arc<Self>, text: &str) -> Result<String, Error> {
         // This computer's machine starts for the run.
-        if text == "local" {
-            return self.local_row().map(|_| text.to_owned());
+        if text.eq_ignore_ascii_case("local") {
+            return self.local_row().map(|_| "local".to_owned());
         }
         let Some(row) = self.here(text)? else {
             return Ok(text.to_owned());
@@ -1279,6 +1286,7 @@ pub(crate) async fn quote(
         )));
     };
     // The product asked for is honoured or refused, never widened to another.
+    let sku = api.machines.spelled_sku(&hub, &sku).await;
     api.machines.admit_sku(&hub, &sku, gpus.unwrap_or(1)).await.map_err(Refusal)?;
     let shape = Shape {
         gpus,

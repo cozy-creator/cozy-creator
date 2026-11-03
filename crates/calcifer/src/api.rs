@@ -472,7 +472,7 @@ async fn list(
         Some(text) => Some(match api.machines.here(&text).map_err(Refusal)? {
             Some(row) => row.name,
             // Its runs are listed while it is off.
-            None if text == "local" => text,
+            None if text.eq_ignore_ascii_case("local") => "local".to_owned(),
             None => return Err(Refusal(machines::not_found(&text))),
         }),
         None => None,
