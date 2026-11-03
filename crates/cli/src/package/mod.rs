@@ -74,6 +74,10 @@ enum Command {
         /// At the root namespace: first-party, Hub admins only.
         #[arg(long)]
         root: bool,
+        /// Published yanked (a gated candidate): only an exact pin installs it, and it is never the
+        /// newest release, until `cozy package yank --undo`.
+        #[arg(long)]
+        yanked: bool,
     },
     /// Delete a package from the Hub with every release, for good: its name and versions are free
     /// again. Machines that installed it keep their copies.
@@ -120,7 +124,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             placement,
         } => machine::remove(ctx, &names(&packages)?, placement.on()?).await,
         Command::Lock { upgrade, root } => author::lock(ctx, &upgrade, root).await,
-        Command::Publish { root } => author::publish(ctx, root).await,
+        Command::Publish { root, yanked } => author::publish(ctx, root, yanked).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {
             author::yank(ctx, &PackageRef::parse(&release)?, undo).await

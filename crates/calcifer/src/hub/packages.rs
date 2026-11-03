@@ -133,6 +133,14 @@ fn missing(error: Error, package: &str, name: &str, hub: &Origin) -> Refusal {
     )
 }
 
+/// A yank or un-yank moves the Hub's newest: this computer's next unversioned run takes it now, not
+/// one refresh later. One that cannot be read is the next refresh's.
+async fn newest_changed(api: &Api, hub: &protocol::config::Origin, org: &str, name: &str) {
+    if let Ok(reader) = reader(api, hub) {
+        let _ = hub_client::cards::fresh(&reader, api.machines.hubs.home().root(), hub, &format!("{org}/{name}")).await;
+    }
+}
+
 /// `POST /v1/packages/{org}/{name}/releases/{release}/yank`.
 pub(super) async fn yank(
     State(api): State<Arc<Api>>,
@@ -143,6 +151,7 @@ pub(super) async fn yank(
     let hub = origin(&api, hub.as_deref())?;
     let yanked = (signed_in(&api, &hub)?.yank_package_release(&org, &name, &release).await)
         .map_err(|e| refusal(&hub, e))?;
+    newest_changed(&api, &hub, &org, &name).await;
     Ok(Json(PackageYanked {
         package: format!("{org}/{name}"),
         release: yanked.release,
@@ -161,6 +170,7 @@ pub(super) async fn unyank(
     let hub = origin(&api, query?.0.hub.as_deref())?;
     let unyanked = (signed_in(&api, &hub)?.unyank_package_release(&org, &name, &release).await)
         .map_err(|e| refusal(&hub, e))?;
+    newest_changed(&api, &hub, &org, &name).await;
     Ok(Json(PackageUnyanked { package: format!("{org}/{name}"), release: unyanked.release, changed: unyanked.changed }))
 }
 

@@ -292,9 +292,10 @@ torch, torchvision, torchaudio, triton; a cap or exact pin on one is a notice). 
 runs; asking again after a restart is safe.
 - `POST /v1/package-locks` `{hub, dir, root, upgrade}`: locks for the Hub and account it publishes to
   (`root`: the root namespace) and writes back only `uv.lock`; ends `locked`.
-- `POST /v1/package-publications` `{hub, dir, root}`: stages, relocks for this Hub's account index,
-  builds, carries its git dependencies' wheels, describes, uploads what the Hub lacks and finalizes;
-  ends `published` (`status: already published` for a version the Hub holds).
+- `POST /v1/package-publications` `{hub, dir, root, yanked}`: stages, relocks for this Hub's account
+  index, builds, carries its git dependencies' wheels, describes, uploads what the Hub lacks and
+  finalizes (`yanked`: committed yanked, never the newest release); ends `published`
+  (`status: already published` for a version the Hub holds).
 - `GET /v1/package-locks/{id}`, `GET /v1/package-publications/{id}`: the work as it stands.
 - `GET …/{id}/events`: `notice {message}` events (uv's warnings, an upload sent again), then one of
   `locked`, `published` or `failed {error}`; each with its number as its `id:`.

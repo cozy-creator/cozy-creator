@@ -456,6 +456,8 @@ pub struct PackageFinalization {
     pub error: Option<Value>,
     #[serde(deserialize_with = "null_is_empty")]
     pub warnings: Vec<String>,
+    /// The committed release is yanked. A Hub from before finalize took `yanked` never says so.
+    pub yanked: bool,
 }
 
 /// A yank or un-yank: `changed` false when the release already was.

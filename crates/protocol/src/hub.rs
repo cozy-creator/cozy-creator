@@ -615,6 +615,9 @@ pub struct PublishAsk {
     pub dir: std::path::PathBuf,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
+    /// Published yanked: a gated candidate, never the package's newest release.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub yanked: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -669,7 +672,7 @@ pub struct Locked {
 pub struct Published {
     pub package: String,
     pub release: String,
-    /// `published`, or `already published`.
+    /// `published`, `published yanked`, or `already published`.
     pub status: String,
     pub changed: bool,
     pub uploaded_bytes: u64,
