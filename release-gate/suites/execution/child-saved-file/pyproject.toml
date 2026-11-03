@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "ci-child-saved-file"
+version = "0.1.0"
+description = "A parent's saved file passed to its child (cr-251)"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime[media]>=0.37.0", "msgspec>=0.19", "pillow>=10"]
+
+[project.entry-points."cozy.application"]
+default = "ci_child_saved_file:app"
+
+[tool.uv.build-backend]
+module-name = "ci_child_saved_file"
+module-root = ""

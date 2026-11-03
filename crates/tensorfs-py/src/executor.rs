@@ -7,7 +7,7 @@ use executor_protocol::{
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
     ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork, Room,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
-    PreparedUse, PrepareRequest, Probe, Publish, PublishPart, Start, StageMemoLookup, StageMemoStore, Unload, View,
+    PreparedUse, PrepareRequest, Probe, Publish, PublishPart, SavedFile, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
 
@@ -98,6 +98,7 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ModelPrefetch>()?;
     m.add_class::<Publish>()?;
     m.add_class::<PublishPart>()?;
+    m.add_class::<SavedFile>()?;
     m.add_class::<CheckpointItem>()?;
     m.add_class::<StageMemoLookup>()?;
     m.add_class::<StageMemoStore>()?;

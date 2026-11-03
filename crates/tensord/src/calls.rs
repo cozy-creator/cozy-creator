@@ -122,7 +122,8 @@ struct CallTable {
     /// The parent's nudge socket (`child_events`): a byte when one of its calls may have moved.
     watcher: Option<platform::ipc::LocalStream>,
     by_index: HashMap<u64, ChildCall>,
-    /// Child files granted to the parent, by digest: later children may be handed them.
+    /// Files the parent holds beyond its inputs, by digest, which its children may be handed:
+    /// what earlier children returned, and what it saved and proved (`products::saved`).
     received: HashMap<String, Received>,
 }
 
@@ -298,6 +299,25 @@ impl Calls {
                 ),
             ));
         }
+        let runs = self
+            .runs
+            .upgrade()
+            .ok_or(("child_call_refused", "machine is stopping".into()))?;
+        // A file the parent saved is its to give, once its bytes prove it (`products::saved`).
+        for file in &call.saved {
+            if parent.calls.lock().unwrap().received.contains_key(&file.digest) {
+                continue;
+            }
+            let (path, object) = crate::products::saved(&parent.spool, file)
+                .map_err(|e| ("child.asset_ungranted", e.to_string()))?;
+            runs.objects
+                .adopt(&parent.actor, &parent.id, &path, &object)
+                .map_err(|e| ("child_call_refused", e.to_string()))?;
+            parent.calls.lock().unwrap().received.insert(
+                file.digest.clone(),
+                Received { length: object.length, media_type: file.media_type.clone() },
+            );
+        }
         let input: Value = crate::boundary_json::parse(call.payload.as_bytes()).map_err(|e| {
             (
                 "child_call_refused",
@@ -307,10 +327,6 @@ impl Calls {
         // Every call is a serving call: its request, and the models it passes by value to the
         // callee's slots (null leaves a slot to the choice its parent carries for it).
         let (request_input, choices) = serving_call(&input, entrypoint)?;
-        let runs = self
-            .runs
-            .upgrade()
-            .ok_or(("child_call_refused", "machine is stopping".into()))?;
         let mut calls = parent.calls.lock().unwrap();
         let inputs = child_inputs(&request_input, parent, &calls.received);
         let request = format!("{}/{}", parent.request, call.call_index);
@@ -731,7 +747,8 @@ fn model_choices(
 }
 
 /// The child's file inputs: every string of its request naming a file the parent holds (its
-/// own inputs, or files its earlier children returned), by field path, as the SDK names them.
+/// own inputs, files its earlier children returned, or files it saved), by field path, as the
+/// SDK names them.
 fn child_inputs(
     input: &Value,
     parent: &Parent,

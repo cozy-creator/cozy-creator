@@ -802,6 +802,17 @@ pub enum Request {
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildEvents {}
 
+/// A file the caller saved in this attempt and passes to its child: its spool handle, and the
+/// digest `payload` names it by, which its bytes must have.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+#[serde(default)]
+pub struct SavedFile {
+    pub asset_ref: String,
+    pub digest: String,
+    pub media_type: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct ChildCall {
@@ -812,6 +823,8 @@ pub struct ChildCall {
     pub payload: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub progress_label: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub saved: Vec<SavedFile>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1256,7 +1269,7 @@ mod python {
     }
     methods!(
         Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
-        ByteGrant, CallProgress, Answer, PublishPart
+        ByteGrant, CallProgress, Answer, PublishPart, SavedFile
     );
 
     macro_rules! request_methods {
