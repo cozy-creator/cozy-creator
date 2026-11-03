@@ -2090,10 +2090,7 @@ impl Failure {
             _ => (3, 7, 3),
         };
         let (code, message) = if code == "device_out_of_memory" && status != 2 {
-            (
-                "accepted_envelope_breach".to_string(),
-                format!("device_out_of_memory: {message}"),
-            )
+            ("accepted_envelope_breach".to_string(), message.to_string())
         } else {
             (code.to_string(), message.to_string())
         };
