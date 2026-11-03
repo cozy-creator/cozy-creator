@@ -77,13 +77,18 @@ selection. No invocation executes eager as a retry after capture/replay has begu
    never weight exports or permanent physical Pins.
 
 Native phase observations are device-wide/nonoverlapping. split_context does not prove
-that no eager parent observation exists. A phase_enter overlap refusal must be handled
-before body: preserve the parent observation, execute this invocation only once through
-the ordinary eager/intent path with an explicit no-sample reason, and do not invent a
-child sample or train the parent as the child's demand. Do not catch other native errors
-under that exception. Root may prefer explicit refusal here; either choice is visible
-before execution, not a late silent fallback. Capture/replay during a parent eager
-observation invalidates that native observation under existing semantics.
+that no eager parent observation exists. Measurement uses phase_enter(mode="eager");
+automatic graph preparation/replay instead holds its OWN existing native preparation
+observation (key=None, mode="preparation") until host preparation/launch/copy-tail
+submission ends, then phase_leave(completed=False) without publishing a demand sample.
+This atomically refuses an already active parent observation BEFORE body and prevents
+mistaking an enclosing eager observation for a child's measured demand. Native eager
+phase-overlap refusal chooses the ordinary eager/intent path once with an explicit
+pre-body no-automatic reason; it does not clear/relabel the parent's observation.
+Unexpected active-Plan/native errors propagate before body. No other native exception
+is caught under that overlap case. If a preparation token cannot retire, retain the
+execution owner and fail closed; never start a replacement body. No sample is promised
+for capture/replay merely by holding this metadata-only preparation observation.
 
 ## Cache ownership and native pressure
 
