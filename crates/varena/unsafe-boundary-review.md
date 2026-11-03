@@ -130,6 +130,10 @@ free_completed requires exclusive eager allocation and proven completion of ever
 
 Event/stream/graph signatures retain CUDA library/context. Completed eager frees and pin releases follow actual readback or event fences; observation drops exact owned Arena roots. Event failures must not be reported as retired ownership. Repeated capture loader is a consolidation candidate.
 
+## `release-gate/suites/varena/cache-pages/src/event_trim.rs`
+
+CUDA Driver function signatures match the loaded library held by Cuda. Allocations and full-byte readbacks use exact still-owned ranges. The CPU gate remains boxed and stream-owned until completion; it performs no CUDA calls. Actual capture keeps the stream, event and context alive, ends capture before destroying its graph/event, and exits without GPU teardown if capture end is unproven. Private event cleanup is performed by Working under its existing mutex/capture exclusion; this fixture never manipulates allocator-owned event handles.
+
 ## `release-gate/suites/varena/cache-pages/src/main.rs`
 
 One context and owned setup stream back fill/full-readback helpers. Exact allocated ranges bound memory calls; setup sync must not synchronize independent gated consumers. Close is attempted once after ambiguous errors; teardown does not certify failed work.

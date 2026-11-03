@@ -1206,6 +1206,30 @@ impl Working {
         Some(ptr)
     }
 
+    // Explicit reclamation only: ordinary allocation/free/poll keep their event cache.
+    // These private handles no longer protect a physical use. Pool/replay owners,
+    // live blocks and stream-ordered pending reuse retain every event unchanged.
+    fn trim_idle_events(&self, state: &mut State) -> Result<()> {
+        for block in state.blocks.values_mut() {
+            if state.segments[&block.segment].pool.is_some()
+                || block.life != Life::Ready
+                || block.reusable_on.is_some()
+            {
+                continue;
+            }
+            let streams = block.events.keys().copied().collect::<Vec<_>>();
+            for stream in streams {
+                let event = block.events[&stream];
+                if self.driver.query(event)? {
+                    self.driver.destroy_event(event)?;
+                    // A failed/ambiguous destroy keeps the handle in poisoned custody.
+                    block.events.remove(&stream);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn trim(&self, state: &mut State, limit: usize, exclude: Option<PoolId>) -> Result<usize> {
         self.poll(state)?;
         self.trim_ready(state, limit, exclude, &BTreeSet::new())
@@ -1910,9 +1934,12 @@ pub fn trim(device: i32) -> Result<usize> {
     }
     let mut state = owner.lock()?;
     let _context = owner.driver.enter()?;
-    owner
-        .trim(&mut state, usize::MAX, None)
-        .map_err(|error| owner.fail(&mut state, error))
+    let result = (|| {
+        let released = owner.trim(&mut state, usize::MAX, None)?;
+        owner.trim_idle_events(&mut state)?;
+        Ok(released) // Only actual released GPU bytes, never event-metadata credit.
+    })();
+    result.map_err(|error| owner.fail(&mut state, error))
 }
 
 /// A cache-owner action has returned. Reclaim only known completed native backing;

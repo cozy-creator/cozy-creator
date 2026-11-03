@@ -543,3 +543,9 @@ def tensor_export_capture_refusal(payload: Probe, ctx: Context) -> Report:
 @app.entrypoint(accelerator=True)
 def tensor_export_failed_tail(payload: Probe, ctx: Context) -> Report:
     return typed_export(payload, ctx, 'failed_tail')
+
+
+@app.entrypoint(accelerator=True)
+def event_trim(payload: Probe, ctx: Context) -> Report:
+    """Explicit event-cache trim with live-anchor, real pending work and capture exclusions."""
+    return native(payload, ctx, 'event_trim')
