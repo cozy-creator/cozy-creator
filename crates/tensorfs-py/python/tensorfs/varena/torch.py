@@ -34,6 +34,14 @@ _library: ctypes.CDLL | None = None
 _CAPTURE_CAPACITY_PREFIX = "[tensorfs.varena.capture_capacity.v1] "
 
 
+class _Failure(ctypes.Structure):
+    _fields_ = [
+        ("kind", ctypes.c_int32),
+        ("cuda", ctypes.c_int32),
+        ("message", ctypes.c_char * 512),
+    ]
+
+
 def _installed() -> None:
     if _owner != os.getpid():
         raise RuntimeError("install tensorfs.varena.torch in this child before using its allocator")
@@ -117,20 +125,38 @@ def _bind_allocator() -> None:
             native.varena_torch_bind.restype = ctypes.c_int
             native.varena_torch_abort_routing.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64]
             native.varena_torch_abort_routing.restype = ctypes.c_int
+            native.varena_torch_workspace_cache_enabled.argtypes = [
+                ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(_Failure)
+            ]
+            native.varena_torch_workspace_cache_enabled.restype = ctypes.c_int32
             bindings = _ext._varena_working_bindings()
             if native.varena_torch_bind(bindings) != 0:
                 raise RuntimeError("Varena Torch shim refused its native function table")
 
-            class Failure(ctypes.Structure):
-                _fields_ = [("kind", ctypes.c_int32), ("cuda", ctypes.c_int32), ("message", ctypes.c_char * 512)]
-
-            native.varena_torch_install.argtypes = [ctypes.POINTER(Failure)]
+            native.varena_torch_install.argtypes = [ctypes.POINTER(_Failure)]
             native.varena_torch_install.restype = ctypes.c_int32
-            failure = Failure()
+            failure = _Failure()
             if native.varena_torch_install(ctypes.byref(failure)) != 1 or failure.kind:
                 raise RuntimeError(bytes(failure.message).decode("utf-8", errors="replace"))
             _library, _owner = native, os.getpid()
             _bind_stats(torch)
+
+
+def _workspace_cache_enabled() -> bool:
+    """Read Torch's actual latched flag without activating a CUDA device."""
+    _installed()
+    enabled, failure = ctypes.c_int32(), _Failure()
+    status = cast(ctypes.CDLL, _library).varena_torch_workspace_cache_enabled(
+        ctypes.byref(enabled), ctypes.byref(failure)
+    )
+    if status != 1 or failure.kind:
+        raise RuntimeError(bytes(failure.message).decode("utf-8", errors="replace"))
+    return bool(enabled.value)
+
+
+def _managed_graph_refusal() -> str | None:
+    """Shared managed-graph eligibility; low-level graph owners keep their contract."""
+    return "cached_library_workspace" if _workspace_cache_enabled() else None
 
 
 def initialize(device: _ExplicitDevice = 0) -> None:

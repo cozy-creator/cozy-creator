@@ -48,6 +48,10 @@ Inputs must satisfy the existing GraphSegment ordinary/nonoverlap/immutable-scal
 contract. BEFORE any capture attempt, require reviewed module effects and the actual
 recorded original/installed forward identities. The initial reviewed set is deliberately
 small: standard unmodified Torch Linear/Conv/normalization/activation/container forwards.
+An enabled native Torch BLAS workspace cache makes automatic selection eager with
+reason `cached_library_workspace`, before measurement, preparation or extra body
+execution. The shared native-state check and custom cached-workspace limitation
+are documented in TORCH-OFFLOAD-GRAPHS.md; default cache-disabled behavior is unchanged.
 The reviewed stock SDXL extension and exact candidate/eager inventory are in
 TORCH-AUTO-SDXL.md. It adds 39 stock-call candidates, including all 25 UNet
 frontier boundaries; 44 CLIP layers remain eager for real output-collector effects.

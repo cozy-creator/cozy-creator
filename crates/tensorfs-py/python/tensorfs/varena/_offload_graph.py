@@ -427,6 +427,8 @@ class GraphSegment:
         if owner._owner.device.type != "cuda":
             raise adapter.OffloadError("graph capture requires a CUDA offload owner")
         vt._installed()  # Reject inherited owners before any Python/native lock.
+        if reason := vt._managed_graph_refusal():
+            raise adapter.OffloadError(f"managed graph capture is unavailable: {reason}")
         if not isinstance(module, nn.Module) or not any(
             module is child
             for root in owner._roots.values()
