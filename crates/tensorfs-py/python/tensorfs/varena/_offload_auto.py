@@ -1,4 +1,4 @@
-"""Metadata for automatic offload boundary selection; execution is not wired yet."""
+"""Automatic selection/preparation primitives; dispatcher is not wired yet."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
-# Initial reviewed effect boundary, not a graph-capturability promise. Unknown
-# Python forwards require a separately reviewed adapter, even after a cold pass.
+# Initial immutable, RNG-free eval effect boundary, not a capture/fit promise.
+# Unknown Python/random/mutable forwards require a reviewed adapter even after
+# a cold pass. Eval Dropout is identity; output aliases still prevent promotion.
 _REVIEWED_MODULES = (
     nn.Sequential,
     nn.ModuleList,
@@ -35,6 +36,75 @@ _REVIEWED_MODULES = (
 )
 _REVIEWED_FORWARDS = {kind: kind.forward for kind in _REVIEWED_MODULES}
 _UNSUPPORTED_TREE = object()
+
+
+@dataclass
+class _Preparation:
+    """One optional native pool admission, before any authored body/launch.
+
+    Admission target is an opaque native measured peak. Cancellation changes
+    preparation ownership, never claims that backing bytes were physically freed.
+    """
+
+    body_started: bool = False
+    admission_attempted: bool = False
+    capacity_refused: bool = False
+    pool: tuple | None = None
+    device: int | None = None
+    failure: BaseException | None = field(default=None, repr=False)
+
+    @property
+    def can_choose_eager(self):
+        return self.capacity_refused and not self.body_started and self.failure is None
+
+    def prepare(self, device, pool, native_peak):
+        from ._offload import OffloadError
+
+        if self.body_started:
+            raise OffloadError(
+                "optional pool admission must precede authored execution"
+            )
+        if self.admission_attempted:
+            raise OffloadError("automatic pool admission is one-shot")
+        from . import torch as vt
+
+        self.admission_attempted = True
+        self.device, self.pool = device, tuple(pool)
+        try:
+            vt.prepare_pool(self.pool, native_peak, device)
+        except torch.OutOfMemoryError:
+            # This catch covers ONLY the pre-body native reserve call, never
+            # source/body/capture/launch errors. Cleanup refusal must propagate.
+            self.cancel()
+            self.capacity_refused = True
+            return False
+        except BaseException as error:
+            # Cleanup only, never a broad RuntimeError-to-eager classification.
+            self.failure = error
+            self.cancel()
+            raise
+        return True
+
+    def mark_body_started(self):
+        from ._offload import OffloadError
+
+        if self.failure is not None:
+            raise OffloadError(
+                "failed preparation cannot choose eager"
+            ) from self.failure
+        self.body_started = True
+
+    def cancel(self):
+        if self.pool is None:
+            return
+        from . import torch as vt
+
+        try:
+            vt.cancel_preparation(self.pool, self.device)
+        except BaseException as error:
+            self.failure = error
+            raise  # Keep exact pool/device custody for fail-closed retirement.
+        self.pool = None
 
 
 def _function(value):
@@ -237,6 +307,8 @@ def _environment(device):
         torch.is_autocast_enabled(device.type),
         torch.get_autocast_dtype(device.type),
         torch.get_float32_matmul_precision(),
+        torch.are_deterministic_algorithms_enabled(),
+        torch.is_deterministic_algorithms_warn_only_enabled(),
     )
     if device.type != "cuda":
         return values

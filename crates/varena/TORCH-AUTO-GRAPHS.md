@@ -43,6 +43,12 @@ Inputs must satisfy the existing GraphSegment ordinary/nonoverlap/immutable-scal
 contract. BEFORE any capture attempt, require reviewed module effects and the actual
 recorded original/installed forward identities. The initial reviewed set is deliberately
 small: standard unmodified Torch Linear/Conv/normalization/activation/container forwards.
+Only their declared immutable deterministic eval paths are eligible initially: no
+model RNG use or mutable Python/buffer state is authorized by a measured sample.
+Eval Dropout's identity path consumes no RNG (and standalone output aliases still
+decline). Random/custom modules need separate reviewed support; never save/rewind or
+reseed RNG to conceal extra authored warmup. Deterministic-algorithm/warn-only flags
+join the existing library/config key; numeric GPU parity still requires actual proof.
 Reject inplace=True, training, unknown custom/side-effect/buffer-mutating module classes,
 new/replaced forwards, custom module/global hooks and unadapted Tensor/call access before
 a warmup/capture body could execute again. Adoption must record actual forward origins;
@@ -110,15 +116,37 @@ selection. No invocation executes eager as a retry after capture/replay has begu
    weight budget. Existing native prepare_pool rounds/adopts/refuses capacity.
    The eager sample is an observation, not a fit promise or a current closed allocation
    declaration; do not mislabel it as commit_execution capability.
+   FIRST perform private pool admission/preflight through `_Preparation.prepare`,
+   before any authored warm/capture/compute body. A typed native capacity refusal
+   from this EXACT prepare_pool call can cancel the unconsumed preparation and choose
+   ordinary eager ONCE for this request. This is pre-body strategy selection, not
+   OOM re-execution; no byte arithmetic, resizing or Python retry loop. On success,
+   the private auto GraphSegment path must consume that SAME admitted pool/target
+   before warmup rather than allocate a different pool. Explicit owner.capture stays
+   separate and unchanged. Until that private integration is wired, this is not a
+   claim that current default vt.offload already implements optional capture.
 4. Prepare static inputs and selected weights, Use+typed exports+wait_ready outside
    capture; use existing GraphSegment read-only warmup/capture and error cleanup. If
    preparation/capture executes and fails, propagate the original failure; do not
-   re-execute the request eager or adjust the target and try again. A native pool
-   shortfall remains visible instead of becoming Python OOM policy.
+   re-execute the request eager or adjust the target and try again. Mark authored
+   execution started BEFORE the first warm/capture/body/launch. No handler around
+   those executions chooses fallback, including a later native capacity error. A
+   cancellation/retirement failure retains exact ownership and fails closed; it
+   cannot authorize eager fallback even when the original pool refusal was pre-body.
 5. A published cached entry replays using fresh selected weight exports, per-Use scoped
    readiness, host replay guard, extra pool ref through output-copy tails, independent
    outputs and checked release. Definition owns descriptors/VA/Plan/static Working,
    never weight exports or permanent physical Pins.
+
+Concrete existing error boundary: private Working pool_reserve maps native
+OutOfMemory/Exhausted to torch.OutOfMemoryError. `_Preparation` catches that typed
+error ONLY around the pre-body reserve call; every other exception is cleanup-and-
+rethrow. Native Unsupported is currently folded into ordinary RuntimeError without
+a structured type/status by tensorfs-py's raise(). It therefore cannot safely be
+classified for eager selection: report/propagate it until a native-owned structured
+tag exists, rather than catching RuntimeError broadly or parsing its text. Known
+Python capability/eligibility refusals can already select eager before any body.
+No new native callable/error mapping change is implemented in this lane.
 
 Native phase observations are device-wide/nonoverlapping. split_context does not prove
 that no eager parent observation exists. Measurement uses phase_enter(mode="eager");

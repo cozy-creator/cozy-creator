@@ -119,6 +119,14 @@ with torch.inference_mode():
     assert original != _InvocationKey.from_call(conv_owner, conv_boundary, (x,), {})
     conv.stride = (1, 1)
     assert original == _InvocationKey.from_call(conv_owner, conv_boundary, (x,), {})
+    prior_deterministic = torch.are_deterministic_algorithms_enabled()
+    prior_warn = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        torch.use_deterministic_algorithms(not prior_deterministic)
+        assert original != _InvocationKey.from_call(conv_owner, conv_boundary, (x,), {})
+    finally:
+        torch.use_deterministic_algorithms(prior_deterministic, warn_only=prior_warn)
+    assert original == _InvocationKey.from_call(conv_owner, conv_boundary, (x,), {})
 conv_owner.close()
 assert not torch.cuda.is_initialized()
 assert "libcuda.so" not in Path("/proc/self/maps").read_text()
@@ -131,6 +139,7 @@ print(
             "composite_root_not_promoted_to_full_model_graph": True,
             "shared_module_has_one_boundary_and_exact_eager_values": True,
             "immutable_shape_dtype_config_and_inference_keys": True,
+            "deterministic_algorithm_flags_invalidate_and_restore_key": True,
             "transient_input_not_retained": True,
             "tensor_mapping_key_refused_without_hidden_treespec_ownership": True,
             "old_versions_alias_values_preserved_without_reservation": True,
