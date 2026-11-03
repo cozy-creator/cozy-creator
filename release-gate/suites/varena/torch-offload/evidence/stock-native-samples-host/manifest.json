@@ -1,0 +1,21 @@
+{
+  "scope": "Diagnostic fixture evidence only for red managed6GiB26862; NOT a pool sizing fix",
+  "parent": "f89df37318cd0095c18f36e5f4bba965c1aa131b",
+  "source_sha256": "8205487743cc57120006875604284e33ecf871bb059a0357f36fedf87f5c3352",
+  "change": "save full public vt.phase_stats(native_key) rows after first complete denoise step and after failure, plus failure Working stats; retain native owned/backing peaks and aborted metadata",
+  "no_product_native_policy_target_change": true,
+  "settings": "same two complete calls/fp16/local-only/20steps/1024/seed; original error rethrown, no model retry",
+  "checks": {
+    "ruff": "PASS",
+    "syntax": "PASS",
+    "git_diff_check": "PASS",
+    "actual_cli_help_exit": 0
+  },
+  "measurement_limits": "new extra first-step metadata reads; do not compare its timings as the frozen26857 A/B without matched controls",
+  "gpu_model_loading_status": "UNRUN here; operator must bind new diagnostic fixture hash for a fresh controlled managed6GiB child",
+  "causal_limit": "this obtains stored native backing sample, NOT a per-pool largest usable range; native fit-failure snapshot still needed if ambiguous",
+  "receipts": {
+    "stock-native-samples-help.stderr": "d5215ea0f332bfe891721d239eefbc181858202cc62889c28beabcc0fa5af7e7",
+    "stock-native-samples-help.txt": "24d8dd66528782c2ae5c13296e0124f1eb2e1705adbcd4f34ccd610a085a1c23"
+  }
+}

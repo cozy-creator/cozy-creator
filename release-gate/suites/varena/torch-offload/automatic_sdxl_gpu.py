@@ -22,6 +22,14 @@ from tensorfs.varena import api
 from tensorfs.varena import torch as vt
 
 
+def phase_samples(facts, device):
+    return {
+        name: vt.phase_stats(device, row["native_key"])
+        for name, row in facts["boundaries"].items()
+        if row["native_key"] is not None
+    }
+
+
 def run_call(args, pipe, owner, config_hashes, call_number):
     output = args.output / f"call-{call_number}"
     output.mkdir(parents=True, exist_ok=True)
@@ -29,6 +37,7 @@ def run_call(args, pipe, owner, config_hashes, call_number):
     entries_before = owner.component_facts()["entries"]
     starts, ends, wall_starts, wall_ends = [], [], [], []
     first_step_facts = None
+    first_step_samples = None
 
     def denoise_start(module, inputs):
         event = torch.cuda.Event(enable_timing=True)
@@ -37,13 +46,14 @@ def run_call(args, pipe, owner, config_hashes, call_number):
         wall_starts.append(time.perf_counter())
 
     def step_end(pipeline, step, timestep, callback_kwargs):
-        nonlocal first_step_facts
+        nonlocal first_step_facts, first_step_samples
         event = torch.cuda.Event(enable_timing=True)
         event.record(torch.cuda.current_stream(args.device))
         ends.append(event)
         wall_ends.append(time.perf_counter())
         if step == 0:
             first_step_facts = owner.graph_facts()
+            first_step_samples = phase_samples(first_step_facts, args.device)
         return callback_kwargs  # Exact original objects/aliases.
 
     # Ancestor timing hook executes once per UNet call. It is outside every
@@ -157,6 +167,7 @@ def run_call(args, pipe, owner, config_hashes, call_number):
             "vae_decode_entries": entry_deltas.get("vae.decode", 0),
             "vae_encode_scope": "not exercised by stock txt2img; use real sdxl_components.py --device cuda:0 encode/decode gate",
             "first_step": first_step_facts,
+            "first_step_native_samples": first_step_samples,
             "before_call": before,
             "final": facts,
             "output_shape": images.shape,
@@ -173,10 +184,16 @@ def run_call(args, pipe, owner, config_hashes, call_number):
             "graphs": args.graphs,
             "pipeline_call": call_number,
             "elapsed_s": time.perf_counter() - begin,
+            "first_step": first_step_facts,
+            "first_step_native_samples": first_step_samples,
         }
         try:
             failure["facts"] = owner.graph_facts()
             failure["entries"] = owner.component_facts()
+            failure["native_phase_samples"] = phase_samples(
+                failure["facts"], args.device
+            )
+            failure["working_stats"] = vt.stats(args.device)
         except RuntimeError as facts_error:
             failure["facts_error"] = str(facts_error)
         (output / "failure.json").write_text(json.dumps(failure, indent=2) + "\n")
