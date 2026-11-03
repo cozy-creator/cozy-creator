@@ -146,10 +146,8 @@ impl Lease {
     }
 
     pub(crate) fn validate_use(&self, ids: &BTreeSet<u64>) -> Result<()> {
-        if let Some((plan, phase)) = self.planned()? {
-            if &plan.phases[phase].ids != ids {
-                return Err(Error::Invalid("prepared Use must name the active Plan's exact Region set"));
-            }
+        if let Some((plan, phase)) = self.planned()? && &plan.phases[phase].ids != ids {
+            return Err(Error::Invalid("prepared Use must name the active Plan's exact Region set"));
         }
         Ok(())
     }
