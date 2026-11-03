@@ -32,9 +32,8 @@ imported() {
 render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
 # lockq <folder> <python expression of lock>
 lockq() { python3 -c "import json, sys; lock = json.load(open(sys.argv[1] + '/project.lock')); print($2)" "$1" 2>/dev/null; }
-# approved <folder> <node>: the approved take's or version's record, as JSON; its primary asset (`.assets.video`,
-# `.clean` or `.image`) is the one project.lock approves.
-approved() { lockq "$1" "json.dumps(next((v for v in lock['nodes'].get('$2', {}).get('versions', []) if (v['assets'].get('video') or v['assets'].get('clean') or v['assets'].get('image'))['path'] == lock['nodes']['$2'].get('approved')), {}))"; }
+# approved <folder> <node>: the record of the take or version it reads as, as JSON: the one approved, else the newest.
+approved() { lockq "$1" "json.dumps(next((v for v in reversed(lock['nodes'].get('$2', {}).get('versions', [])) if lock['nodes']['$2'].get('approved') in (None, (v['assets'].get('video') or v['assets'].get('clean') or v['assets'].get('image'))['path'])), {}))"; }
 PRIMARY='.assets.video.path // .assets.clean.path // .assets.image.path // empty' 
 aspect() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1" | awk -F, '{ printf "%.4f", $1 / $2 }'; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a / b - 1; print (d < 0 ? -d : d) <= 0.03 ? "PASS" : "FAIL" }'; }
@@ -169,7 +168,7 @@ YAML
   expect project-stills-transparent "$(lockq "$P" "'FAIL' if any(v.get('cleaned') for v in lock['nodes']['cook']['versions']) else 'PASS'" || echo FAIL)" "cook's sheet not cleaned"
   expect project-stills-alpha "$([ "$ymin" = YMIN=0 ] && echo PASS || echo FAIL)" "cook's sheet has transparent pixels: $ymin"
   sed -i 's/aspect_ratio: "16:9"/aspect_ratio: "9:16"/' "$P/project.yaml"
-  render project-stills-916 "$P" kitchen
+  render project-stills-916 "$P" kitchen --new
   f=$(lockq "$P" "lock['nodes']['kitchen']['versions'][-1]['assets']['image']['path']")
   expect project-stills-916 "$([ -n "$f" ] && near "$(aspect "$P/$f")" 0.5625 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 9:16"
 fi

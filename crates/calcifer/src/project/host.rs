@@ -40,6 +40,8 @@ pub struct Renderer {
     pub accepts: Accepts,
     /// Its package's project adapters: by node kind, the format versions each reads.
     pub adapters: BTreeMap<String, Vec<u64>>,
+    /// And by node kind, the fields each one's record has.
+    pub adapter_fields: BTreeMap<String, BTreeSet<String>>,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
     pub calls: Vec<Slot>,
@@ -86,6 +88,11 @@ impl Renderer {
         reads.then(|| format!("{ADAPTER}{kind}"))
     }
 
+    /// Whether its adapter for `kind` reads `field` of the record.
+    pub fn adapter_reads(&self, kind: &str, field: &str) -> bool {
+        self.adapter_fields.get(kind).is_some_and(|fields| fields.contains(field))
+    }
+
     /// `function` of the package interface `document`.
     fn read(
         package: &str,
@@ -111,6 +118,13 @@ impl Renderer {
                     let version = fields.iter().find(|field| field["name"] == "version")?;
                     let reads = version["type"]["literal"].as_array()?.iter().filter_map(Value::as_u64).collect();
                     Some((kind.to_owned(), reads))
+                })
+                .collect(),
+            adapter_fields: interface::entrypoints(document)
+                .filter_map(|entry| {
+                    let kind = interface::name(entry)?.strip_prefix(ADAPTER)?;
+                    let fields = entry["request"]["fields"].as_array()?;
+                    Some((kind.to_owned(), fields.iter().filter_map(|field| field["name"].as_str().map(str::to_owned)).collect()))
                 })
                 .collect(),
             slots: read(interface::models(entry).iter().collect()),

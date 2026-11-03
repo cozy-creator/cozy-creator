@@ -90,15 +90,23 @@ pub struct Made {
     /// The function, models, LoRAs and options that made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<MadeBy>,
-    /// What it was made from.
+    /// What it was made from, or what it read when it was approved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<Vec<Upstream>>,
+    /// What the author had written of it when it was made or approved: by field, each a digest of the words as written. None
+    /// for a version made before cozy recorded this. A cozy update must never put anything out of date, so a field's meaning
+    /// never changes (new text is a new field), and only fields both sides have are compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<BTreeMap<String, String>>,
     /// The frames it wrote for world states, by state.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub writes: BTreeMap<String, Asset>,
     /// The runs that made it, in order: one per call of a shot made in consecutive calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<u64>,
+    /// Those runs' execution time, and its clean's.
+    #[serde(default, skip_serializing_if = "is_zero_ms")]
+    pub execution_ms: u64,
     /// What each of those runs was asked: a function and its exact input. Never read to say what is out of date.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invocations: Vec<Value>,
@@ -130,6 +138,11 @@ impl Made {
     /// The asset its node reads as (`PRIMARY`).
     pub fn primary(&self) -> Option<&Asset> {
         PRIMARY.iter().find_map(|name| self.assets.get(*name))
+    }
+
+    /// Whether `now` says something else than it recorded, in a field both have.
+    pub fn text_changed(&self, now: &BTreeMap<String, String>) -> bool {
+        self.text.iter().flatten().any(|(field, digest)| now.get(field).is_some_and(|now| now != digest))
     }
 
     /// Its assets and writes.
@@ -188,15 +201,24 @@ pub struct Call {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Then {
-    /// Listed as a version; approved when `approve`, or when the node has nothing else.
-    List { approve: bool },
+    /// Listed as a version: approved when `approve` (`--approve`), and with `clears`, which brings an out-of-date node up to
+    /// date, the approval it had goes, so it reads as the newest.
+    List {
+        approve: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clears: bool,
+    },
     /// Cleaned first, and its clean listed.
-    Clean { approve: bool },
+    Clean {
+        approve: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clears: bool,
+    },
     /// The clean of an imported picture: from then on what its hash resolves to.
     Imported,
 }
 
-/// A node's kind, its versions by number, the approved one's primary asset's path, and the last
+/// A node's kind, its versions by number, the primary asset's path of the one chosen by `approve` or `--approve`, and the last
 /// number given (numbers are never given again).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Node {
@@ -208,6 +230,15 @@ pub struct Node {
     pub versions: Vec<Made>,
     #[serde(default)]
     pub numbered: u32,
+}
+
+impl Node {
+    /// Where the version it reads as is with no file pinned in project.yaml: the approved one, else the newest.
+    pub fn current_at(&self) -> Option<usize> {
+        let approved = self.approved.as_ref();
+        let chosen = approved.and_then(|path| self.versions.iter().position(|made| made.primary().is_some_and(|asset| asset.path == *path)));
+        chosen.or_else(|| self.versions.iter().rposition(|made| made.primary().is_some()))
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -222,6 +253,9 @@ pub struct Lock {
     /// By idempotency key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
+    /// What each cut holds as last made (`video::holds`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cuts: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
 }
@@ -241,9 +275,18 @@ pub struct Import {
 /// What a render asked that the project's walk has not sent yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Owed {
-    /// `render all`: every node up to date, then the edit.
+    /// A render bringing nodes up to date: every node, then the edit, or only `only`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all: Option<Target>,
+    /// The nodes it covers, by name key, with what they read; empty for every node.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub only: BTreeSet<String>,
+    /// `render all --new`: what is current too, but for a file attached by hand.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
+    /// How many versions of each it makes; 0 is 1.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub n: u32,
     /// `render all --preview`: no upscales, and only the native cut.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub preview: bool,
@@ -253,6 +296,14 @@ pub struct Owed {
     /// New versions of named nodes, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<Take>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_ms(ms: &u64) -> bool {
+    *ms == 0
 }
 
 impl Owed {
@@ -275,7 +326,7 @@ pub struct Take {
     pub node: String,
     #[serde(flatten)]
     pub target: Target,
-    /// Approved when it lands.
+    /// Approved when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
 }
@@ -339,17 +390,29 @@ impl Lock {
     /// approved when `approve`.
     /// A version whose primary asset one already has (a render that came back the same, such as a fixed
     /// seed's) is that version: its number is the one given back, and no second version is listed.
-    pub fn record(&mut self, made: Made, kind: &str, approve: bool) -> u32 {
+    pub fn record(&mut self, made: Made, kind: &str, approve: bool, clears: bool) -> u32 {
         let node = self.nodes.entry(name_key(&made.node)).or_default();
         node.kind = kind.into();
         if approve {
             node.approved = made.primary().map(|asset| asset.path.clone());
+        } else if clears {
+            node.approved = None;
         }
         // The same content (its path is its sha256), whatever has been probed of it yet.
         let path = |made: &Made| made.primary().map(|asset| asset.path.clone());
-        let same = node.versions.iter().find(|version| version.number != made.number && path(version) == path(&made));
+        let same = node.versions.iter().position(|version| version.number != made.number && path(version) == path(&made));
         if let Some(same) = same {
-            return same.number;
+            // What it stands on now, and the newest, or it would stay out of date and be made again.
+            let number = node.versions[same].number;
+            let newest = node.versions.iter().all(|version| version.number <= number);
+            let version = &mut node.versions[same];
+            (version.text, version.upstream) = (made.text, made.upstream);
+            if !newest && made.number > 0 {
+                version.number = made.number;
+                node.versions.sort_by_key(|made| made.number);
+                return made.number;
+            }
+            return number;
         }
         let number = made.number;
         node.versions.retain(|version| version.number != number);
@@ -470,10 +533,11 @@ impl Folder {
         Ok(Kept { asset, field, already, unmarked })
     }
 
-    /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there. Whether it wrote it.
+    /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there, as a real file: a link an
+    /// older cozy left is replaced. Whether it wrote it.
     fn store(&self, path: &str, write: impl Fn(&Path) -> std::io::Result<()>) -> Result<bool, Error> {
         let at = self.dir.join(path);
-        if at.is_file() {
+        if at.symlink_metadata().is_ok_and(|meta| meta.is_file()) {
             return Ok(false);
         }
         let dir = self.dir.join(ASSETS);
@@ -482,6 +546,28 @@ impl Folder {
         let _ = std::fs::remove_file(&part);
         write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))?;
         Ok(true)
+    }
+
+    /// Each asset project.lock names that an older cozy left as a link, made a real file, so what it links to can go. With its
+    /// target gone it stays, and what reads it says so; a target that is another file now isn't that asset, so the link goes.
+    pub fn real_files(&self) -> Result<(), Error> {
+        let entries = std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten();
+        let links: Vec<_> = entries.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_symlink())).collect();
+        if links.is_empty() {
+            return Ok(());
+        }
+        let lock = self.lock()?;
+        let named = lock.assets();
+        for link in links {
+            let (from, path) = (link.path(), format!("{ASSETS}/{}", link.file_name().to_string_lossy()));
+            let Some(sha256) = named.get(path.as_str()) else { continue };
+            match hash(&from) {
+                Ok(now) if now == *sha256 => drop(self.store(&path, |part| std::fs::copy(&from, part).map(drop))?),
+                Ok(_) => std::fs::remove_file(&from).map_err(|e| io_at(&from, e))?,
+                Err(_) => {}
+            }
+        }
+        Ok(())
     }
 
     /// An asset's path, as the lock writes it, on this computer.

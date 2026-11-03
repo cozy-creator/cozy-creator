@@ -40,7 +40,7 @@ entities:
     description: |
       A grey coast.
     image: $(hash_of "$F/coast.png")
-references:
+assets:
 YAML
   # Bulk that moves for seconds, so a kill lands mid-way; never seen before, so it moves at all.
   for i in $(seq 1 12); do

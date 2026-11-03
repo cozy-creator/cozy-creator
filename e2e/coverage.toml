@@ -187,7 +187,13 @@ test = "pr: projects: by -p from elsewhere; references changed and missing; a re
 test = "pr: projects: render all from a subfolder, versions by local code, re-cuts from the cut cache"
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
+"--new" = "pr: projects: a current node stays without it; new takes, approved or not, with -n"
 "--preview" = "gate: project (release-gate/suites/project/cells.sh): render all --preview"
+
+["project import"]
+test = "pr: projects: a path and a URL as real assets, a type refused, what it says when it copies nothing"
+"--character" = "pr: projects: cleaned here, what reads the hash gets it, reused on a second import"
+"--prop" = "pr: projects: cleaned here, as --character"
 
 ["project approve"]
 test = "pr: projects: version 2 approved, only in project.lock"
