@@ -133,7 +133,7 @@ test = "gate: cli cells, the throwaway model's int8 and fp8 lanes"
 "--on" = "gate: cli cells"
 
 ["org edit"]
-test = "manual: a platform admin edits a parked org's name, links and handles on tensorhub.com (xs-131); CI holds no admin key"
+test = "manual: a platform admin edits a parked org's name, links and handles on tensorhub.com (xs-131); a CI edit would change a real parked org"
 "--name" = "manual: as the command"
 "--link" = "manual: as the command"
 "--handle" = "manual: as the command"

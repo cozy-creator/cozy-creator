@@ -409,7 +409,7 @@ J '.nodes.mentions.versions[-1].upstream | any(.node == "clip" and .asset == "sh
   || check "references: the take does not record what it read: $(jq -c '.nodes.mentions.versions[-1].upstream' "$R/project.lock")"
 cozy --json project -p "$R" status > "$OUT/refs-status.json" 2> /dev/null || check "references: status failed"
 # ./shoot.py has no project adapter (xs-146), which status rightly says: any other warning is this project's fault.
-J '(.stale | length == 0) and (.warnings | all(contains("has no project adapter"))) and (.nodes[] | select(.name == "clip") | .kind == "asset" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
+J '(.stale | length == 0) and (.warnings // [] | all(contains("has no project adapter"))) and (.nodes[] | select(.name == "clip") | .kind == "asset" and .versions == 0 and .assets.video.sha256 == "sha256:'"$CLIP"'")' "$OUT/refs-status.json" \
   || check "references: after render all: $(jq -c '{stale, warnings, clip: (.nodes[]? | select(.name == "clip"))}' "$OUT/refs-status.json")"
 
 step "a project: another file for a reference puts only what mentions it out of date"
