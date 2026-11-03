@@ -1,8 +1,9 @@
 # Reviewed stock SDXL automatic frontier
 
-This is eligibility source and real component proof, not a claim that automatic
-dispatch/replay or performance is implemented. Draft #2501 remains draft. GPU
-execution belongs to the coordinator. The automatic controller is still unwired.
+The controller is now wired and this follow-up enables only the reviewed framework
+paths below. The preceding nn-only vertical6c7dffc71 remains independently
+qualifiable. Draft #2501 remains draft; GPU execution/performance qualification
+belongs to the coordinator and is unrun in this lane.
 
 The inventory uses the four exact stock configs at SDXL base revision
 `462165984030d82259a11f4367a4eed129e94a7b`. It constructs real, full-width library
@@ -82,6 +83,8 @@ explicit entry scopes were exercised by the first client. The subsequent
 COMPONENT-ENTRIES.md delta wires reviewed UNet/text outer scopes and explicit
 VAE encode/decode method scopes by default, independently of the still-unwired
 automatic graph controller. Host scope counts are not graph-selection evidence.
+The current follow-up now connects the reviewed invocation predicates to that
+controller; it does not change alias/RNG/ownership or native byte policy.
 
 ## Runnable gates and remaining automatic proof
 
@@ -104,10 +107,41 @@ tests actual processor/backend/config refusals and opaque VAE handoffs. CPU
 does not initialize CUDA. GPU mode is a real eager component gate, not graph or
 performance qualification. No native resource is mocked.
 
-The remaining automatic frontend gate must run actual stock repeated denoising
-after controller wiring: original cold call once, native measured preparation,
+The remaining automatic frontend gate must run actual stock repeated denoising:
+original cold call once, native measured preparation,
 private bounded segment cache, observed repeated selection/replay counts per
 UNet boundary, independent request outputs, exact parity, cache pressure and
 weight pins/residency. Report matching settings and cold/steady timings against
 eager. Component eligibility alone does not prove any of these. All source,
 epoch-failure/reset/escape GPU and stock performance gates remain explicit.
+
+## Prepared real stock repeat gate
+
+`automatic_sdxl_gpu.py` runs an actual LOCAL stock SDXL pipeline,20 steps at
+1024x1024 by default, with explicit seed/prompt/guidance and no download. Run
+separate matched ordinary-Cozy processes with --graphs eager and --graphs auto:
+
+```sh
+python release-gate/suites/varena/torch-offload/automatic_sdxl_gpu.py \
+  --model /operator/local/sdxl --output /operator/results/eager --graphs eager
+python release-gate/suites/varena/torch-offload/automatic_sdxl_gpu.py \
+  --model /operator/local/sdxl --output /operator/results/auto --graphs auto
+```
+
+Both runs save lossless output.npy, config hashes, numerical settings, native
+selection/decline facts, component entries and actual CUDA event timings from
+immediately before UNet through the scheduler callback. Total inference time
+includes prompt/VAE/postprocessing and excludes file writes. Host submission
+timings are separately labeled. An ancestor UNet timing hook executes once per
+step, outside every selected child definition. No child hook/method is substituted.
+Automatic mode MUST observe captures and repeated cached denoise reuse; returning
+an image eagerly cannot satisfy its gate. Output parity/quality and performance
+comparison still require the paired receipts; a single mode claims neither.
+Inference failures preserve failure.json and rethrow without cleanup/re-execution
+that could discard uncertain owners.
+
+Stock txt2img exercises decode, not encode; its report states the actual encode0
+entry count. The separate real component client retains --graphs eager explicitly
+for its parity/eligibility gate and exercises BOTH encode/decode without claiming
+automatic graph execution. It now also checks the actual controller preflight on
+all39 observed candidate calls/keys. Both CUDA clients remain prepared/unrun here.

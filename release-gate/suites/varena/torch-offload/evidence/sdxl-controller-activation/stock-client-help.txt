@@ -1,0 +1,23 @@
+usage: automatic_sdxl_gpu.py [-h] --model MODEL --output OUTPUT
+                             [--device DEVICE] [--graphs {eager,auto}]
+                             [--steps STEPS] [--height HEIGHT] [--width WIDTH]
+                             [--guidance GUIDANCE] [--seed SEED]
+                             [--prompt PROMPT]
+
+Actual local stock SDXL repeated denoise; operator-only ordinary Cozy client.
+Run eager/auto separately with identical settings, then compare saved
+output.npy. No weights download, private reserve, budget estimate or inference
+retry.
+
+options:
+  -h, --help            show this help message and exit
+  --model MODEL
+  --output OUTPUT
+  --device DEVICE
+  --graphs {eager,auto}
+  --steps STEPS
+  --height HEIGHT
+  --width WIDTH
+  --guidance GUIDANCE
+  --seed SEED
+  --prompt PROMPT
