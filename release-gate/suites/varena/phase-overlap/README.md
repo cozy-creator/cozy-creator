@@ -35,3 +35,20 @@ Committed-generation and active-split refusal source paths are unchanged; this
 bounded client does not add another plan/split harness. Existing real execution
 clients remain their separate gates. GPU execution and automatic-controller
 integration are operator-owned and unqualified until actually run.
+
+## Recorded host/source result
+
+Product `dcbc141b22c054efc56ee092bf3782a0050bbfc0` and client
+`21872669f79a84c4c9f7a063b6be09cf046f94d0` have a real task-private full native
+extension build (263.67s, one affinity CPU, nice19, offline). The installed-source
+host package imports the new class through the actual public facade and passes
+host mode. Extension/core/std hashes and exact commands are in adjacent evidence.
+No shim or CUDA AOT catalog was built; these are host artifacts, not portable/GPU
+release artifacts. The unchanged safety/advisory guard passes.
+
+All six product preimages are byte-identical on audited989 and graph771. Review
+confirms one constructing site, unchanged entry ordering/token mutations, unchanged
+execution/split refusal source, nonpoisoning behavior and C ABI INVALID5. Root also
+integrated the feature into graph2bf8fd329 and paired83ebdad55; those integrations
+are separate artifact/GPU gates. No old SDK fake class or source-unit state hook
+was used. The actual four-pair overlap matrix remains prepared/unrun here.

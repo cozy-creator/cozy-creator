@@ -1,0 +1,145 @@
+{
+  "product_commit": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+  "client_commit": "21872669f79a84c4c9f7a063b6be09cf046f94d0",
+  "worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-phase-overlap-error",
+  "branch": "codex/xs138-phase-overlap-error",
+  "actual_host_extension_build": {
+    "source": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+    "command": [
+      "taskset",
+      "-c",
+      "0",
+      "nice",
+      "-n19",
+      "cargo",
+      "build",
+      "--locked",
+      "--offline",
+      "-p",
+      "tensorfs-py",
+      "--features",
+      "extension-module"
+    ],
+    "environment": {
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_TARGET_DIR": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-phase-overlap-error/.task/host-target",
+      "RUSTFLAGS": "-C prefer-dynamic",
+      "PYO3_PYTHON": "/usr/bin/python3"
+    },
+    "started_at": 1793679909.1503072,
+    "cpu_affinity": [
+      0
+    ],
+    "operator_cache_used": false,
+    "returncode": 0,
+    "elapsed_seconds": 263.67205238342285
+  },
+  "actual_host_result": {
+    "passed": true,
+    "mode": "host",
+    "native_class": "PhaseOverlapError",
+    "native_module": "tensorfs._ext",
+    "public_alias_identity": true,
+    "gpu_overlap_qualified": false,
+    "cases": [
+      {
+        "requested_mode": "eager",
+        "refusal": {
+          "type": "RuntimeError",
+          "message": "invalid residency operation: Torch allocator is not installed in this process"
+        }
+      },
+      {
+        "requested_mode": "preparation",
+        "refusal": {
+          "type": "RuntimeError",
+          "message": "invalid residency operation: Torch allocator is not installed in this process"
+        }
+      }
+    ],
+    "uninstalled": {
+      "type": "RuntimeError",
+      "message": "invalid residency operation: Torch allocator is not installed in this process"
+    },
+    "unknown_mode": {
+      "type": "ValueError",
+      "message": "unknown execution phase mode"
+    },
+    "gpu_executed": false,
+    "scope": "real native class/alias and pre-install refusal mapping only; no active-phase simulation"
+  },
+  "source_application_review": {
+    "feature": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+    "preimage_comparisons": [
+      {
+        "path": "crates/tensorfs-py/python/tensorfs/_ext.pyi",
+        "preimage_sha256": "be3e045020c11f83476a54a5dfc24d52f1fc881beffb3cc9499abef5c7ed97d2",
+        "matches_989": true,
+        "matches_771": true
+      },
+      {
+        "path": "crates/tensorfs-py/python/tensorfs/varena/torch.py",
+        "preimage_sha256": "5ddda2bdafaa4ce7b55dc24d6e3c421b575509aac51311d0ac08ef3adbb69d99",
+        "matches_989": true,
+        "matches_771": true
+      },
+      {
+        "path": "crates/tensorfs-py/src/varena/mod.rs",
+        "preimage_sha256": "f8010088752571c1f5d409006fc8aee83c839490e43f5568047c540a31527b84",
+        "matches_989": true,
+        "matches_771": true
+      },
+      {
+        "path": "crates/varena/src/abi.rs",
+        "preimage_sha256": "d6ecb2f0c9b3239593296b2b3e3f55c0e838e9b54d743da773dcc23da7b970f4",
+        "matches_989": true,
+        "matches_771": true
+      },
+      {
+        "path": "crates/varena/src/lib.rs",
+        "preimage_sha256": "b871932d96f265e32f722b98a66aadeb91baba1d9760662bc67e44be46771085",
+        "matches_989": true,
+        "matches_771": true
+      },
+      {
+        "path": "crates/varena/src/working.rs",
+        "preimage_sha256": "ed547c72e6763c3d5169d708aca4aa7ae7c98cb049319a82d357f461e9946968",
+        "matches_989": true,
+        "matches_771": true
+      }
+    ],
+    "one_constructing_site": true,
+    "admission_order_and_mutations_unchanged": true,
+    "execution_and_split_refusals_byte_identical": true,
+    "abi_status_preserved": 5,
+    "graph_integration": "2bf8fd329e73204fdd3ddfc3962f25bd8ce643cf",
+    "paired_integration": "83ebdad5506b4e7e50e0fc2a42d134d3d7dc4871",
+    "gpu_executed": false
+  },
+  "artifact_hashes": {
+    "source_feature": "dcbc141b22c054efc56ee092bf3782a0050bbfc0",
+    "package": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-phase-overlap-error/.task/host-package/tensorfs",
+    "files": {
+      "_ext.so": "5764f77b786387c2cc26985ce642505fbb2572fc1204985509dcdd20d65385d0",
+      ".native/libvarena.so": "fdf0c565cae39e8e4a894498871322db9138a49dffcdf548ab0f51b372c95442",
+      ".native/libstd-7e719de9c4abc98f.so": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c"
+    },
+    "gpu_shim_built": false,
+    "aot_cuda_catalog_built": false,
+    "qualification": "task-private host extension only; no GPU/release portability claim"
+  },
+  "memory_safety_advisories": "pass",
+  "gpu_executed": false,
+  "gpu_overlap_qualified": false,
+  "scope": "actual compiled native Python class/public alias + pre-install/unknown-mode dispatch only; no active-phase simulation or GPU qualification",
+  "files": {
+    "host-artifacts.json": "5894c45d1f052b5ec8d2153d349b26db210fb2f2e201eb014204141bf23dac92",
+    "host-build-intent.json": "fb4eb6e596eef73add8f465e6a7e273249cfd03290b199281150c83fe3fecc39",
+    "host-build.log.gz": "bb5bbb21a8bd2e8bd079a2782f7094a5811f31282810bb9c374b47671a7a03d2",
+    "memory-safety.log.gz": "4866826161c4132d1ef94709f7daf2445de824f6ba6bc076e899df28eacd761b",
+    "source-review.json": "377103247a0a8e5844d47799145b3b3a25e9ec4eac7a6376c41db69464abe771",
+    "host-result.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "host-build-result.json": "befb6e64c561a9f2bfb47fffa3f0547e1b5833fb118e6d026c820fed2246765b",
+    "host-result.json": "e493091ceab34a7428af09a80ab2907b57a70488bc8b2b743d40c0d2ba822fab"
+  }
+}
