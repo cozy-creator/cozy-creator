@@ -11,6 +11,13 @@ from tensorfs.varena._offload import OffloadError
 from tensorfs.varena._offload_stream import component_scope, reuse
 
 assert not torch.cuda.is_initialized()
+def driver_paths():
+    return sorted({line.split()[-1] for line in Path("/proc/self/maps").read_text().splitlines()
+                   if "libcuda.so" in line})
+
+# CUDA-enabled Torch can load the driver library during import without initializing
+# CUDA. The separate import-stage control records that boundary; do not claim absence.
+driver_before = driver_paths()
 model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.ReLU(), torch.nn.Linear(4, 2)).eval()
 with torch.no_grad():
     for index, parameter in enumerate(model.parameters()):
@@ -83,8 +90,10 @@ with torch.inference_mode():
     assert copied.shape == (4, 4) and not reuse(owner, None)
 handle.close()
 assert not torch.cuda.is_initialized()
-assert "libcuda.so" not in Path("/proc/self/maps").read_text()
+assert driver_paths() == driver_before
+assert x.device.type == result["value"].device.type == copied.device.type == "cpu"
 print(json.dumps({"passed": True, "real_host_model": True, "nested_reuse": True,
                   "output_alias_preserved": True, "exception_context_restored": True,
                   "open_checkpoint_keeps_scope_active": True, "failed_witness_refused": True, "direct_weight_read": True,
-                  "cuda_initialized": False, "native_cuda_library_loaded": False, "gpu_qualified": False}))
+                  "torch_cuda_initialized": False, "cuda_driver_paths": driver_before,
+                  "driver_mapping_unchanged": True, "tensor_execution_device": "cpu", "gpu_qualified": False}))
