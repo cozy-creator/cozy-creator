@@ -114,8 +114,9 @@ func main() {
 	// Straight to the Hub: hubcheck reports any route its document lacks, and this one is gone on purpose.
 	expect("minted-route-gone", status("minted-route-gone", "POST", origin+"/v1/capabilities", "Bearer "+bearer, ""), 404, "")
 
+	// The CI key's account is a platform admin, who may write any org, audited (xs-131).
 	foreign := capability([]map[string]any{read, {"type": "tensorhub_write", "model": account.Name + "-e2e-not-yours/x"}}, time.Hour, nil)
-	expectRefused("foreign-repository", redeem(key, token, foreign), "refused")
+	expect("foreign-repository", redeem(key, token, foreign).status, 200, "")
 	// A read-only capability given a write after it was signed.
 	parts := strings.Split(capability([]map[string]any{read}, time.Hour, nil), ".")
 	var claims map[string]any

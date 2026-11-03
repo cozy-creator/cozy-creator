@@ -57,7 +57,7 @@ fi
 # renders on $M and its pictures' cleans and the edit on this computer. The project is found from a folder inside it
 # and named with -p from elsewhere, and `ls` lists it; a node renamed in project.yaml keeps its versions through
 # `rename`, which status suggests. Two entities that mention each other warn and both render.
-# `--approve` with -n 2 is refused before anything runs; a re-rolled character, once approved, puts what reads it out of
+# `--approve` with -n 2 is refused before anything runs; a re-rolled character, as the newest, puts what reads it out of
 # date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
 # only project.lock); the re-cut is timed; the edit cuts by frame and writes edit.otio beside edit.mp4.
 project_cell() {
@@ -77,8 +77,8 @@ entities:
 world_states:
   - {name: start, init: "<lead> stands in <place>.", blocking: "lead in the middle, facing the camera."}
 shots:
-  - {name: one, setup: place.a, summary: "<lead> in <place>. $MOTION", duration_s: 5, writes: [{state: start}]}
-  - {name: two, summary: "<lead> looks back over one shoulder, after <start>.", duration_s: 5}
+  - {name: one, summary: "<lead> in <place.a>. $MOTION", beats: [{duration: 5}], writes: [{state: start}]}
+  - {name: two, summary: "<lead> looks back over one shoulder, after <start>.", beats: [{duration: 5}]}
 edit: [{shot: one, end: 96}, {shot: two, start: 24}]
 YAML
   # Two entities that mention each other: the mention that closes the cycle stays plain text, said, and both render.
@@ -116,16 +116,17 @@ YAML
   "$CLI" --json project ls > project-ls.json 2>&1
   jq -e --arg p "$P" '.projects | any(.path == $p and (.missing | not))' project-ls.json > /dev/null \
     || cli_fail "project ls does not list $P: $(tail -c 300 project-ls.json)"
-  "$CLI" project -p "$P" render lead --on "$M" > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
+  "$CLI" project -p "$P" render lead --new --on "$M" > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
+  "$CLI" --json project -p "$P" status 2> /dev/null > project-newest.json
+  jq -e '[.stale[].name] | sort == ["one", "start", "two"]' project-newest.json > /dev/null \
+    || cli_fail "a new newest lead put out of date other than one, start, two: $(jq -c .stale project-newest.json)"
   "$CLI" project -p "$P" approve lead 2 > project-approve.log 2>&1 || cli_fail "project approve lead 2: $(tail -c 300 project-approve.log)"
-  grep -q "out of date now: one, start, two$" project-approve.log \
-    || cli_fail "approving lead put out of date other than one, start, two: $(tail -c 300 project-approve.log)"
-  "$CLI" project -p "$P" render place --approve --on "$M" > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
+  "$CLI" project -p "$P" render place --new --approve --on "$M" > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
   "$CLI" --json project -p "$P" status 2> /dev/null > project-status-2.json
   jq -e '.nodes[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
     || cli_fail "render place --approve did not approve version 2: $(jq -c '.nodes[] | select(.name == "place")' project-status-2.json)"
   # place renamed yard in project.yaml (and its mentions): status suggests the rename, which keeps its versions.
-  sed -i 's/name: place$/name: yard/; s/<place>/<yard>/g; s/setup: place\.a/setup: yard.a/' "$P/project.yaml"
+  sed -i 's/name: place$/name: yard/; s/<place>/<yard>/g; s/<place\.a>/<yard.a>/g' "$P/project.yaml"
   "$CLI" project -p "$P" status > project-orphan.log 2>&1
   grep -q "cozy project rename place yard" project-orphan.log || cli_fail "status did not suggest the rename: $(tail -c 300 project-orphan.log)"
   "$CLI" project -p "$P" rename place yard > project-rename.log 2>&1 || cli_fail "project rename: $(tail -c 300 project-rename.log)"

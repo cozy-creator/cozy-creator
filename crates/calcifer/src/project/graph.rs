@@ -55,11 +55,15 @@ pub struct Node {
     /// Files it reads that are no node's (a shot's plate, a character's voice), by a key and
     /// their digest: a version made from another file is out of date.
     pub inputs: Vec<(String, String)>,
-    /// The file it reads as now (relative to the project) and its digest: the approved version's
-    /// primary asset, else the asset attached in project.yaml; None before the first version.
+    /// The file it reads as now (relative to the project) and its digest: the asset project.yaml pins it to, else the approved
+    /// version's primary asset, else the newest's; None before the first version.
     pub file: Option<(String, String)>,
     /// Its versions' primary assets, in the order they were made.
     pub versions: Vec<String>,
+    /// What the author wrote that reaches it, by field, each a digest (`Made::text`).
+    pub text: BTreeMap<String, String>,
+    /// Its own result is a file project.yaml names: that is what it reads, and nothing is made of it.
+    pub pinned: bool,
 }
 
 /// What a node reads from another: its current file, or the frame one of its versions wrote for a state.
@@ -188,9 +192,8 @@ impl Graph {
         }
     }
 
-    /// Each node's status. Only files make a node out of date, never text: a made one is out of
-    /// date when it read another file than its upstream holds now, or something it reads is out of
-    /// date. A file attached by hand never is.
+    /// Each node's status. A made one is out of date when its text changed since it was made or approved (`Made::text`), when
+    /// it read another file than its upstream holds now, or when something it reads is out of date. A pinned one never is.
     pub fn status(&self, lock: &Lock) -> Vec<Status> {
         let mut status = vec![Status::Empty; self.nodes.len()];
         for &i in &self.order {
@@ -198,11 +201,19 @@ impl Graph {
             let Some((path, _)) = &node.file else {
                 continue;
             };
-            let Some(upstream) = lock.made(&node.id, path).and_then(|made| made.upstream.as_ref()) else {
+            if node.pinned {
+                status[i] = Status::Current;
+                continue;
+            }
+            let Some(made) = lock.made(&node.id, path) else {
                 status[i] = Status::Current;
                 continue;
             };
-            let mut cause = None;
+            let Some(upstream) = made.upstream.as_ref() else {
+                status[i] = Status::Current;
+                continue;
+            };
+            let mut cause = made.text_changed(&node.text).then(|| "its text changed".to_owned());
             for edge in &self.upstream[i] {
                 let (up, noun) = (&self.nodes[edge.node].id, self.nodes[edge.node].noun);
                 let read = self.read(lock, edge);

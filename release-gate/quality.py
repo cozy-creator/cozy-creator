@@ -21,6 +21,8 @@ from runs import Run  # noqa: E402
 
 MODEL = 'openai/clip-vit-base-patch16'
 FLOOR = 0.25
+# varena's CPU cell takes 4 Euler steps: a coherent, smeared forest scored 0.239, noise and grey 0.16-0.18.
+FLOORS = {'host-sdxl': 0.20}
 # A video may score this far under the last passed gate's on the same prompt and seed.
 MARGIN = 0.03
 # The sharpness median may fall this far under the lowest of the last KEEP passed medians.
@@ -95,8 +97,9 @@ def check(gate):
         cells[name] = judge(ims, prompts[name])
         worst = min(a for a, _ in cells[name])
         if not any(f.endswith('.mp4') for f in files):
-            if worst < FLOOR:
-                fails.append(f'quality {name}: adherence {worst:.3f} under {FLOOR}: not what its prompt asked for (noise, flat, broken)')
+            floor = FLOORS.get(name, FLOOR)
+            if worst < floor:
+                fails.append(f'quality {name}: adherence {worst:.3f} under {floor}: not what its prompt asked for (noise, flat, broken)')
             continue
         key = hashlib.sha256(f'{prompts[name]}\t{seeds.get(name, "")}'.encode()).hexdigest()[:16]
         ref = refs.get(name) or {}

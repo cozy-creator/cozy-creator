@@ -3,10 +3,12 @@
 # - project-split: a 10 s shot whose beats read a state it writes at 5 s: two calls, the second continuing the first
 #   (`continue_from`, the first's latents), the written frame kept, the join smooth; project-upscale: its upscale from
 #   those latents, at 1080p and the shot's aspect, and edit.mp4 at the 1920x1080 canvas.
+# - project-in: a new take that keeps take 1 up to `--in` and renders the rest from edited text: one run, the kept frames as
+#   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
-# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's sheet at 16:9,
-#   transparent with no clean.
+# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's picture at 16:9,
+#   kept as drawn at 5% fully transparent or more, else cleaned (BiRefNet composites on white by design).
 # - project-local: a node rendered `with: ./still.py/draw`, local code made ready by Calcifer.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg/fn names the gate's folder; a project reads `with:` from its own.
@@ -32,12 +34,13 @@ imported() {
 render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
 # lockq <folder> <python expression of lock>
 lockq() { python3 -c "import json, sys; lock = json.load(open(sys.argv[1] + '/project.lock')); print($2)" "$1" 2>/dev/null; }
-# approved <folder> <node>: the approved take's or version's record, as JSON; its primary asset (`.assets.video`,
-# `.clean` or `.image`) is the one project.lock approves.
-approved() { lockq "$1" "json.dumps(next((v for v in lock['nodes'].get('$2', {}).get('versions', []) if (v['assets'].get('video') or v['assets'].get('clean') or v['assets'].get('image'))['path'] == lock['nodes']['$2'].get('approved')), {}))"; }
+# approved <folder> <node>: the record of the take or version it reads as, as JSON: the one approved, else the newest.
+approved() { lockq "$1" "json.dumps(next((v for v in reversed(lock['nodes'].get('$2', {}).get('versions', [])) if lock['nodes']['$2'].get('approved') in (None, (v['assets'].get('video') or v['assets'].get('clean') or v['assets'].get('image'))['path'])), {}))"; }
 PRIMARY='.assets.video.path // .assets.clean.path // .assets.image.path // empty' 
 aspect() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1" | awk -F, '{ printf "%.4f", $1 / $2 }'; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a / b - 1; print (d < 0 ? -d : d) <= 0.03 ? "PASS" : "FAIL" }'; }
+# transparent_share <picture>: its share of fully transparent pixels, as Calcifer's clean rule reads it.
+transparent_share() { ffmpeg -v error -i "$1" -frames:v 1 -vf format=rgba,alphaextract -f rawvideo -pix_fmt gray - | python3 -c 'import sys; b = sys.stdin.buffer.read(); print(round(b.count(0) / len(b), 4))'; }
 SEAMBAR='if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end'
 
 if want project-split || want project-upscale; then
@@ -95,6 +98,44 @@ YAML
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
     fi
+  fi
+fi
+
+if want project-in; then
+  P=$(project project-in <<YAML
+aspect_ratio: "16:9"
+defaults: {shot: {with: $H3GEN}}
+entities:
+  - {name: yard, kind: environment, description: "$SCENE", image: place.png}
+shots:
+  - name: look
+    summary: |
+      A slow look around <yard>.
+    soundscape: A quiet street, distant traffic and birds.
+    beats:
+      - duration: 6
+        description: |
+          The camera drifts slowly right along <yard>.
+      - duration: 5
+        description: |
+          The camera keeps drifting right, past the far wall.
+    render: {options: {seed: $((R + 305))}}
+YAML
+)
+  imported "$P" place.png
+  render project-in-first "$P" look || expect project-in FAIL "first take: $(tail -c 300 project-in-first.log)"
+  sed -i 's/past the far wall/and tilts up toward the sky/' "$P/project.yaml"
+  render project-in "$P" look --take 1 --in 6 || expect project-in FAIL "--in: $(tail -c 300 project-in.log)"
+  v=$(approved "$P" look); f=$(jq -r "$PRIMARY" <<< "$v"); until_s=$(jq -r '.kept.until_s // empty' <<< "$v")
+  old=$(lockq "$P" "lock['nodes']['look']['versions'][0]['assets']['video']['path']")
+  expect project-in "$(jq -r 'if .number == 2 and .kept.take == 1 and (.kept.until_s - 6 | fabs) <= 0.36 and (.runs | length) == 1 and .assets.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
+    "take $(jq -r .number <<< "$v"), kept $(jq -c .kept <<< "$v"), runs $(jq -c .runs <<< "$v"): $(grep -o 'look: take 2 is .*' project-in.log | head -1)"
+  if [ -n "$until_s" ] && [ -n "$f" ]; then
+    r=$("${FR[@]}" seams "$P/$f" --at "$until_s" 2>&1 | tail -1)
+    expect project-in-seam "$(jq -r "$SEAMBAR" <<< "$r" 2>/dev/null || echo FAIL)" "join at $until_s s: $r"
+    # The same latents, decoded again: the kept part up to its last second is the same picture.
+    s=$(nice -n 19 ffmpeg -nostdin -v info -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$old" -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$f" -lavfi ssim -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)
+    expect project-in-kept "$(awk -v s="${s:-0}" 'BEGIN { print s >= 0.95 ? "PASS" : "FAIL" }')" "SSIM of the kept part to take 1: ${s:-none}"
   fi
 fi
 
@@ -165,11 +206,12 @@ YAML
   done
   f=$(jq -r "$PRIMARY" <<< "$(approved "$P" cook)")
   expect project-stills-sheet "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"
-  ymin=$([ -n "$f" ] && ffmpeg -v error -i "$P/$f" -vf alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=- -f null - | grep -oE 'YMIN=[0-9]+' | head -1)
-  expect project-stills-transparent "$(lockq "$P" "'FAIL' if any(v.get('cleaned') for v in lock['nodes']['cook']['versions']) else 'PASS'" || echo FAIL)" "cook's sheet not cleaned"
-  expect project-stills-alpha "$([ "$ymin" = YMIN=0 ] && echo PASS || echo FAIL)" "cook's sheet has transparent pixels: $ymin"
+  drawn=$(lockq "$P" "lock['nodes']['cook']['versions'][-1]['assets']['image']['path']")
+  share=$([ -n "$drawn" ] && transparent_share "$P/$drawn")
+  cleaned=$(lockq "$P" "any(v.get('cleaned') for v in lock['nodes']['cook']['versions'])")
+  expect project-stills-transparent "$(awk -v s="${share:-x}" -v c="$cleaned" 'BEGIN { print (s != "x" && (s < 0.05 ? "True" : "False") == c) ? "PASS" : "FAIL" }')" "cook's picture ${share:-unread} fully transparent, cleaned: ${cleaned:-unread}"
   sed -i 's/aspect_ratio: "16:9"/aspect_ratio: "9:16"/' "$P/project.yaml"
-  render project-stills-916 "$P" kitchen
+  render project-stills-916 "$P" kitchen --new
   f=$(lockq "$P" "lock['nodes']['kitchen']['versions'][-1]['assets']['image']['path']")
   expect project-stills-916 "$([ -n "$f" ] && near "$(aspect "$P/$f")" 0.5625 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 9:16"
 fi

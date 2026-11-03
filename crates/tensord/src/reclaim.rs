@@ -12,7 +12,8 @@
 //! writes are skipped on a low disk. Never evicted: uncollected results (durable outputs),
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
 //! links, a kernel namespace a live executor or kernel boot holds. Each sweep logs what it
-//! freed and its bytes, and measures what fills the disk by kind (`usage`).
+//! freed and its bytes; what fills the disk by kind is measured with each sweep and whenever
+//! the disk moves (`usage`).
 use crate::{catalog::Catalog, execution::Engine};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -797,7 +798,7 @@ fn label(generation: &Path) -> String {
     }
 }
 
-/// What fills the machine's disk, by kind, as the last sweep measured it (`measure_usage`).
+/// What fills the machine's disk, by kind, as last measured (`measure_usage`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
     pub models: u64,
@@ -807,7 +808,7 @@ pub struct Usage {
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
 
-/// The last measure of what fills the disk; none before the first sweep.
+/// The last measure of what fills the disk; none before the first.
 pub fn usage() -> Option<Usage> {
     *USAGE.lock().unwrap()
 }

@@ -736,16 +736,18 @@ impl Runs {
         // A call's weights come from here on, in the Start pass's order, until its executor
         // asks for them itself; its import-only parent starts now unless it already did.
         let mut ahead = None;
-        if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
+        if let (false, Some(pool)) = (spec.warm, self.service.pool()) {
             ahead = plan.as_ref().map(|plan| {
                 let order = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), order);
-                match fetch.ahead(&plan.upfront(), &plan.on_demand(), !gpu.loaded(plan), &self.service.engine) {
+                match fetch.ahead(&plan.upfront(), &plan.on_demand(), !pool.loaded(plan), &self.service.engine) {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => tracing::warn!("run {id}: its weights' early fetch: {error}"),
                 }
                 fetch
             });
+        }
+        if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
             gpu.prespawn(generation.clone());
             // A pipeline's next packages: a root's calls go to the other packages' Apps its
             // environment holds, so their parents start now too, under the same budget.

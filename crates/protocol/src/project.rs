@@ -125,12 +125,15 @@ pub struct Imported {
     pub prefix: String,
     /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is.
     pub line: String,
+    /// Its bytes were in `assets/` already, so nothing was copied.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
     pub clean: Clean,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
-/// An imported picture's background: not to be removed; removed; being removed by run `run` (which
+/// An imported picture's background: not to be removed; removed by an earlier run, so none was sent; being removed by run `run` (which
 /// `GET /v1/runs/{id}/events` follows; `cleaned` on the project's events says it landed); or to be removed
 /// by the first machine that renders something that reads it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,6 +150,23 @@ pub enum Clean {
 pub struct VersionPrefix {
     pub number: u32,
     pub prefix: String,
+    /// What it keeps of another take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
+}
+
+/// The start of another take that a take keeps (`render --take --in`): which, and up to where. What follows is new.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    pub take: u32,
+    pub until_s: f64,
+}
+
+impl Kept {
+    /// `clash: take 3 is take 2 to 15.08 s, then new`.
+    pub fn said(&self, name: &str, number: u32) -> String {
+        format!("{name}: take {number} is take {} to {:.2} s, then new", self.take, self.until_s)
+    }
 }
 
 /// A cut, made here: its name (`GET /v1/projects/{id}/cuts/{cut}`; its timeline beside it,
@@ -180,12 +200,15 @@ pub struct Node {
     /// Each one's hash prefix, to name it in project.yaml.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefixes: Vec<VersionPrefix>,
-    /// The approved one's number (1 first, never reused); None when it reads a file attached by
-    /// hand, or has none yet.
+    /// The number (1 first, never reused) of the one chosen by `approve` or `--approve`; None when none was, and it reads as
+    /// the newest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<u32>,
-    /// What it reads as now, by output name (`video`, `image`, `clean`, `latents`): the approved
-    /// one's assets, else the file attached in project.yaml.
+    /// Its own result is a file project.yaml names: that is what it reads, whatever is approved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// What it reads as now, by output name (`video`, `image`, `clean`, `latents`): the file project.yaml pins it to, else the
+    /// approved or newest one's assets.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assets: BTreeMap<String, Asset>,
     /// The file it reads as now (its primary asset's path), for people who want it.
@@ -221,11 +244,15 @@ pub struct Version {
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// What it keeps of another take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<Kept>,
 }
 
-/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, or with `all` every node
-/// brought up to date, each new version approved, then the cuts. It joins the project's walk,
-/// which sends each version once what it reads is settled; `on` lists the machines they may go to.
+/// `POST /v1/projects/{id}/runs`: `names`, or `all`, brought up to date, with what they read: what is missing or out of date
+/// gets `n` new versions, and any approval it had goes. With `new` what is current gets them too, its approval kept. A pinned
+/// node gets none. It joins the project's walk, which sends each version once what it reads is settled; `on` lists the machines
+/// they may go to. `all` ends with the cuts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
     #[serde(default)]
@@ -241,6 +268,15 @@ pub struct Runs {
     /// The new version is approved when it lands; only with `n` 1.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
+    /// Render what is current too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
+    /// One shot's new take keeps the start of this take, not the one in use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<u32>,
+    /// One shot's new take keeps that take up to here, in seconds, and regenerates what follows: not from its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_s: Option<f64>,
 }
 
 fn one() -> u32 {
@@ -310,6 +346,16 @@ pub struct Skipped {
     pub why: String,
 }
 
+/// What a walk landed: how many takes and versions, how long it took, and its runs' execution time summed, which is more
+/// than that when they ran at once.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Rendered {
+    pub takes: u32,
+    pub versions: u32,
+    pub elapsed_ms: u64,
+    pub execution_ms: u64,
+}
+
 /// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -327,6 +373,9 @@ pub enum Event {
         number: u32,
         assets: BTreeMap<String, Asset>,
         path: String,
+        /// Its runs' execution time, its clean's too.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_ms: Option<u64>,
     },
     Said {
         message: String,
@@ -360,7 +409,7 @@ pub enum Event {
         error: Option<String>,
     },
     /// A cut (`edit.mp4`, `preview.mp4`, and its `.otio`) was made again here, in `took_s`: `frames`
-    /// long at `fps`, the takes in `retimed` retimed to it.
+    /// long at `fps`, the takes in `retimed` retimed to it. `unchanged`: what it holds did not change, so it was left.
     Cut {
         cut: String,
         frames: u64,
@@ -368,11 +417,16 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         retimed: Vec<String>,
         took_s: f64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unchanged: bool,
     },
     /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
     /// that failed (`Failed` said it already, unless the walk itself stopped).
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,
+        /// What this walk landed, if it landed anything.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rendered: Option<Rendered>,
     },
 }

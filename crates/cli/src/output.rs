@@ -134,8 +134,13 @@ pub fn next(ctx: &Context, commands: &[&str]) {
 
 /// A local path, as an OSC 8 link on a terminal that opens them; the bare path anywhere else.
 pub fn link(ctx: &Context, path: &Path) -> String {
+    link_on(ctx.term, path)
+}
+
+/// `path` as `term` can show it: a link where it can.
+pub fn link_on(term: Term, path: &Path) -> String {
     let shown = path.display().to_string();
-    if !ctx.term.hyperlinks || !path.is_absolute() {
+    if !term.hyperlinks || !path.is_absolute() {
         return shown;
     }
     match url::Url::from_file_path(path) {

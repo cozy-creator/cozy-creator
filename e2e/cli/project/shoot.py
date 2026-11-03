@@ -3,9 +3,9 @@
 # dependencies = ["cozy-runtime[media]>=0.37", "msgspec>=0.19"]
 # ///
 """The project cell's shot renderers: weightless, and each says what it was given. `shoot` makes its
-video from its plate, `pieces` too, with a shortest piece of 5 s, and `bare`, which takes no plate and
-cannot continue, from its first reference. A shot longer than the cell's plates comes back at their
-length, and says so."""
+video from its plate, `pieces` too, with a shortest piece of 5 s, `cuts` too, which also keeps a video
+up to a time, on a quarter-second grid, and `bare`, which takes no plate and cannot continue, from its
+first reference. A shot longer than the cell's plates comes back at their length, and says so."""
 
 import hashlib
 import json
@@ -13,7 +13,7 @@ import os
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, AudioReference, File, Outputs, ShotRequest, VideoReference
+from cozy_runtime.author import App, AudioReference, ContinueFrom, File, Outputs, ShotRequest, VideoReference
 
 app = App()
 PLATE_S = 6
@@ -21,6 +21,14 @@ PLATE_S = 6
 
 class Pieces(ShotRequest, kw_only=True):
     duration_s: Annotated[float, msgspec.Meta(gt=0, extra={"min_piece_s": 5})]
+
+
+class Cut(ContinueFrom, kw_only=True):
+    at_s: float | None = None
+
+
+class Cuts(Pieces, kw_only=True):
+    continue_from: Cut | None = None
 
 
 class Bare(msgspec.Struct, kw_only=True):
@@ -33,6 +41,11 @@ class Take(msgspec.Struct):
     video: File
     given: File
     warnings: list[str]
+
+
+class Kept(Take):
+    latents: File
+    kept_s: float | None
 
 
 def reference(ref) -> dict:
@@ -70,6 +83,14 @@ def shoot(payload: ShotRequest, out: Outputs) -> Take:
 @app.entrypoint()
 def pieces(payload: Pieces, out: Outputs) -> Take:
     return take(payload, payload.plate.video, out)
+
+
+@app.entrypoint()
+def cuts(payload: Cuts, out: Outputs) -> Kept:
+    made = take(payload, payload.plate.video, out)
+    at = payload.continue_from.at_s if payload.continue_from else None
+    latents = out.save_bytes(os.urandom(16), media_type="application/octet-stream")
+    return Kept(made.video, made.given, made.warnings, latents, None if at is None else round(at * 4) / 4)
 
 
 @app.entrypoint()

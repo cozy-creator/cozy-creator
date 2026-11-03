@@ -2,7 +2,7 @@
 //! opens a project by its path (and keeps every folder it opened in its index) and walks it: each
 //! version is an ordinary run, sent through its own submit as soon as what it reads is settled, so
 //! independent ones run at once and the machines' schedulers place them. Each lands in its node's
-//! folder (renders/ or references/, `folder`) and project.lock (people write project.yaml; cozy never
+//! folder (`assets/`, `folder`) and project.lock (people write project.yaml; cozy never
 //! does), and the cuts are made here. One walker
 //! per project takes every render asked of it, and what it owes is kept in project.lock, so a
 //! restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
@@ -41,7 +41,7 @@ use protocol::{
     machine as v1,
     project::{
         Approve, Approved, Asset as Listing, Clean, Cut, Event, Import, Imported, Known, Node as Row, NodeVersions, Open, Opened,
-        Orphan, Projects as Listed, Rename, Renamed, Runs, Stale, State as ProjectState, Version, VersionPrefix,
+        Orphan, Projects as Listed, Rename, Renamed, Rendered, Runs, Stale, State as ProjectState, Version, VersionPrefix,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ use crate::api::{Api, Refusal, parse};
 use folder::{Call, Folder, Lock, Made, MadeBy, Pending, Take, Target, Then};
 use graph::{Status, name_key};
 use host::{Host, Renderer};
-use video::{ALL, Canvas, Render, Request, Video};
+use video::{ALL, Canvas, Keeping, Render, Request, Video};
 
 /// A picture with at least this share of fully transparent pixels needs no clean (cl-726's sheets are 59-73%).
 const TRANSPARENT: f64 = 0.05;
@@ -136,6 +136,11 @@ impl Projects {
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
         let folder = Folder::open(dir, api.machines.hubs.home())?;
         let id = project_id(dir);
+        if !self.open.lock().expect("projects lock").contains_key(&id)
+            && let Err(error) = folder.real_files()
+        {
+            warn!("{}: {}", dir.display(), error.message);
+        }
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
             .or_insert_with(|| {
                 let (events, asked) = (broadcast::channel(256).0, Notify::new());
@@ -198,7 +203,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
     if std::mem::replace(&mut *project.walking.lock().expect("walking lock"), true) {
         return project.asked.notify_one();
     }
-    let walk = Walk { host: Host::new(api), project: project.clone() };
+    let walk = Walk::new(api, project);
     let api = api.clone();
     tokio::spawn(async move {
         remember(&api);
@@ -210,7 +215,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             }
         };
         remember(&api);
-        walk.say(Event::Ended { error });
+        walk.say(Event::Ended { error, rendered: walk.rendered() });
     });
 }
 
@@ -394,7 +399,7 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
         .map(|p| p.run.to_string())
         .collect();
     let made = node.file.as_ref().and_then(|(path, _)| lock.made(&node.id, path));
-    // The version project.lock approves; a file attached by hand is none.
+    // The version chosen by `approve` or `--approve`, if one was.
     let approved = (lock.node(&node.id).and_then(|n| n.approved.as_ref()))
         .and_then(|path| lock.made(&node.id, path))
         .map(|made| made.number);
@@ -409,6 +414,7 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
         ([], _) if !gone.is_empty() => (format!("not on this computer: {}: cozy project pull", gone.join(", ")), Standing::Missing),
         (runs @ [_, ..], _) => (format!("making (runs {})", runs.join(", ")), Standing::Other),
         ([], Status::Current) if video.own_unclean(i) => ("picture not cleaned yet".into(), Standing::Missing),
+        ([], Status::Current) if node.pinned => ("pinned".into(), Standing::Other),
         ([], Status::Empty) if !video.wanted(i) => {
             ("not needed: no resolution, or its shot meets it".into(), Standing::Other)
         }
@@ -422,9 +428,10 @@ fn row(video: &Video, lock: &Lock, status: &[Status], i: usize) -> (Row, Standin
         noun: node.noun.into(),
         versions: node.versions.len() as u32,
         prefixes: (lock.node(&node.id).into_iter().flat_map(|n| &n.versions))
-            .filter_map(|made| Some(VersionPrefix { number: made.number, prefix: folder::prefix_of(&made.primary()?.sha256).to_owned() }))
+            .filter_map(|made| Some(VersionPrefix { number: made.number, prefix: folder::prefix_of(&made.primary()?.sha256).to_owned(), kept: made.kept }))
             .collect(),
         approved,
+        pinned: node.pinned,
         assets,
         path: node.file.as_ref().map(|(path, _)| path.clone()),
         made_by: made.and_then(|made| made.made_by.as_ref()).map(|made_by| made_by.with.clone()),
@@ -461,6 +468,7 @@ async fn node(
             runs: made.runs.clone(),
             approved: made.primary().is_some_and(|asset| Some(&asset.path) == approved.as_ref()),
             warnings: made.warnings.clone(),
+            kept: made.kept,
         })
         .collect();
     Ok(Json(NodeVersions { node, versions }))
@@ -531,7 +539,22 @@ async fn rename(
         return Err(refuse(Kind::Usage, "rename_kind", said));
     }
     let (from, to, versions) = (asked.from.clone(), new.id.clone(), old.versions.len() as u32);
-    folder.update_lock(|lock| renamed(lock, &from, &to)).map_err(Refusal)?;
+    // A rename rewrites the mentions of it: that is no new text, so what reads it stays as it stood.
+    let readers: Vec<(String, BTreeMap<String, String>)> = (0..video.graph.nodes.len())
+        .filter(|&j| j == i || video.graph.upstream[j].iter().any(|edge| edge.node == i))
+        .map(|j| (name_key(&video.graph.nodes[j].id), video.graph.nodes[j].text.clone()))
+        .collect();
+    folder
+        .update_lock(|lock| {
+            renamed(lock, &from, &to);
+            for (key, text) in &readers {
+                let Some(node) = lock.nodes.get_mut(key) else { continue };
+                if let Some(at) = node.current_at() {
+                    node.versions[at].text = Some(text.clone());
+                }
+            }
+        })
+        .map_err(Refusal)?;
     Ok(Json(Renamed { from, to, versions }))
 }
 
@@ -607,11 +630,17 @@ async fn runs(
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let lock = project.folder.lock().map_err(Refusal)?;
     let say = |message: String| drop(project.events.send(Event::Warning { message }));
-    let (mut takes, mut first, mut first_made) = (vec![], None, BTreeSet::new());
+    let status = video.graph.status(&lock);
+    let n = asked.n.max(1);
+    let (mut takes, mut first, mut first_made, mut only) = (vec![], None, BTreeSet::new(), BTreeSet::new());
+    let keeping = asked.take.is_some() || asked.in_s.is_some();
+    if keeping && (all || asked.names.len() != 1) {
+        say(format!("--take and --in keep the start of one shot: with {} they are ignored", if all { "all" } else { "several names" }));
+    }
     for name in asked.names.iter().filter(|_| !all) {
         // A name that is nothing to render is said; the rest go on.
-        let found = find(&video, name).and_then(|i| match video.is_reference(i) {
-            true => Err(video::reference_made(&video.graph.nodes[i].id)),
+        let found = find(&video, name).and_then(|i| match video.is_asset(i) {
+            true => Err(video::asset_made(&video.graph.nodes[i].id)),
             false => Ok(i),
         });
         let i = match found {
@@ -623,14 +652,41 @@ async fn runs(
             }
         };
         let node = video.graph.nodes[i].id.clone();
-        let take = || Take { key: new_key(), node: node.clone(), target: target.clone(), approve: asked.approve };
-        takes.extend((0..asked.n.max(1)).map(|_| take()));
+        let current = status[i] == Status::Current;
+        if let Some(field) = video.pinned_by(i) {
+            drop(project.events.send(Event::Said { message: format!("{node} is pinned by its {field}:; remove it to generate") }));
+            if !video.unclean(i).is_empty() {
+                only.extend(video.with_upstream(i));
+            }
+            continue;
+        }
+        let keeps = match (keeping && asked.names.len() == 1).then(|| video.keeps(&lock, i, asked.take, asked.in_s)) {
+            None => None,
+            Some(Err(error)) => return Err(Refusal(error)),
+            Some(Ok(None)) => {
+                say(format!("{node} has no take to keep the start of: --take and --in are ignored"));
+                None
+            }
+            Some(Ok(keeps)) => keeps,
+        };
+        // Up to date, with what it reads; a current one stays as it is.
+        if !asked.new && keeps.is_none() {
+            if !current || !video.unclean(i).is_empty() {
+                only.extend(video.with_upstream(i));
+            } else {
+                let (noun, another) = (video.graph.nodes[i].noun, if video.graph.nodes[i].versions.is_empty() { "a" } else { "another" });
+                drop(project.events.send(Event::Said { message: format!("{node} is current; --new makes {another} {noun}") }));
+            }
+            continue;
+        }
+        let take = |_| Take { key: new_key(), node: node.clone(), target: target.clone(), approve: asked.approve, keeps };
+        takes.extend((0..n).map(take));
         // What it reads with no version yet is made first, and stands as that node's.
         for j in unmade(&video, &lock, i) {
             let up = video.graph.nodes[j].id.clone();
             if first_made.insert(j) {
                 say(format!("{node} reads {up}, which has no version yet: making it first"));
-                takes.push(Take { key: new_key(), node: up, target: target.clone(), approve: true });
+                takes.push(Take { key: new_key(), node: up, target: target.clone(), approve: false, keeps: None });
             }
         }
     }
@@ -641,6 +697,16 @@ async fn runs(
         if all {
             lock.walk.all = Some(target.clone());
             lock.walk.preview = asked.preview;
+            lock.walk.only.clear();
+            lock.walk.new |= asked.new;
+            lock.walk.n = lock.walk.n.max(n);
+        } else if !only.is_empty() {
+            // Every node asked already stays asked.
+            if lock.walk.all.is_none() || !lock.walk.only.is_empty() {
+                lock.walk.only.extend(only.iter().cloned());
+            }
+            lock.walk.all = Some(target.clone());
+            lock.walk.n = lock.walk.n.max(n);
         }
         lock.walk.takes.extend(takes.iter().cloned());
     }))
@@ -662,7 +728,7 @@ async fn import(
     Origin::parse(&asked.hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let (asset, field) = folder.import(&asked.source, asked.clean).await.map_err(|why| {
+    let folder::Kept { asset, field, already, unmarked } = folder.import(&asked.source, asked.clean).await.map_err(|why| {
         let said = format!("{}: {why}", asked.source);
         Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
     })?;
@@ -670,6 +736,9 @@ async fn import(
     let mut warnings = vec![];
     if asked.clean && !mark {
         warnings.push(format!("a{} {field} has no background to remove: it is imported as it is", if field == "audio" { "n" } else { "" }));
+    }
+    if unmarked {
+        warnings.push("it was marked to have its background removed, and is used as it is from now on: import it with --character or --prop to mark it again".into());
     }
     let lock = folder.lock().map_err(Refusal)?;
     let cleaned = lock.imports.get(&asset.sha256).is_some_and(|import| import.clean.is_some());
@@ -679,7 +748,7 @@ async fn import(
         (true, false, Some(run)) if run > 0 => Clean::Removing { run: run.to_string() },
         _ if local_usable("local").is_err() => Clean::Later,
         _ => {
-            let sender = Walk { host: Host::new(&api), project: project.clone() };
+            let sender = Walk::new(&api, &project);
             let target = Target { on: vec![On::Machine("local".into())], hub: asked.hub.clone() };
             match sender.clean_import(&asset.sha256, &target).await {
                 Ok(run) => {
@@ -695,7 +764,7 @@ async fn import(
     };
     let prefix = folder::prefix_of(&asset.sha256).to_owned();
     let line = format!("{field}: {}", video::yaml_scalar(&prefix));
-    Ok(Json(Imported { path: asset.path, sha256: asset.sha256, prefix, line, clean, warnings }))
+    Ok(Json(Imported { path: asset.path, sha256: asset.sha256, prefix, line, already, clean, warnings }))
 }
 
 /// What node `i` reads, near or far, with no version yet and none on its way.
@@ -709,7 +778,7 @@ fn unmade(video: &Video, lock: &Lock, i: usize) -> Vec<usize> {
         next.extend(graph.upstream[j].iter().map(|edge| edge.node));
         let on_its_way = (lock.pending.values().any(|pending| name_key(&pending.made.node) == name_key(&graph.nodes[j].id)))
             || lock.walk.takes.iter().any(|take| name_key(&take.node) == name_key(&graph.nodes[j].id));
-        if graph.nodes[j].file.is_none() && !video.is_reference(j) && !on_its_way {
+        if graph.nodes[j].file.is_none() && !video.is_asset(j) && !on_its_way {
             found.push(j);
         }
     }
@@ -739,7 +808,16 @@ async fn approve(
     })?;
     let before = video.graph.by_id(&video.graph.status(&lock));
     let key = name_key(&node.id);
-    folder.update_lock(|lock| lock.nodes.entry(key.clone()).or_default().approved = Some(file.clone())).map_err(Refusal)?;
+    // "This one": it is current until what it reads, or its text, changes from here.
+    let (text, reading) = (node.text.clone(), video.reading(&lock, i));
+    let chosen = |lock: &mut Lock| {
+        let entry = lock.nodes.entry(key.clone()).or_default();
+        entry.approved = Some(file.clone());
+        if let Some(made) = entry.versions.iter_mut().find(|made| made.number == asked.version) {
+            (made.text, made.upstream) = (Some(text.clone()), Some(reading.clone()));
+        }
+    };
+    folder.update_lock(chosen).map_err(Refusal)?;
     let (after, lock) = (Video::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let stale = (after.graph.by_id(&after.graph.status(&lock)).into_iter())
         .filter(|(id, status)| matches!(status, Status::Stale(_)) && !matches!(before.get(id), Some(Status::Stale(_))))
@@ -750,11 +828,14 @@ async fn approve(
         garbage(folder).map_err(Refusal)?;
     }
     if video.cut_reads(i) {
-        Walk { host: Host::new(&api), project: project.clone() }.recut().await.map_err(Refusal)?;
+        Walk::new(&api, &project).recut().await.map_err(Refusal)?;
     }
     let assets = lock.made(&node.id, &file).map(listed).unwrap_or_default();
     let (name, noun) = (node.id.clone(), node.noun.to_owned());
-    Ok(Json(Approved { name, noun, number: asked.version, assets, path: file, stale, warnings: vec![] }))
+    let warnings = (video.pinned_by(i).into_iter())
+        .map(|field| format!("{name} is pinned by its {field}:, which it reads until that is removed"))
+        .collect();
+    Ok(Json(Approved { name, noun, number: asked.version, assets, path: file, stale, warnings }))
 }
 
 async fn events(
@@ -840,6 +921,7 @@ enum Landed {
         made: Box<Made>,
         picture: PathBuf,
         approve: bool,
+        clears: bool,
         hub: String,
         on: Vec<On>,
     },
@@ -849,15 +931,17 @@ enum Landed {
         made: Box<Made>,
         call: Call,
         approve: bool,
+        clears: bool,
         hub: String,
         on: Vec<On>,
     },
 }
 
-/// A version to send now: entity `i`'s for `all` (take None), or a take's.
+/// A version to send now: node `i`'s for `all` (take None), the `nth` of its versions this walk, or a take's.
 struct Next {
     i: usize,
     take: Option<Take>,
+    nth: u32,
 }
 
 /// A project's one walker: what versions.lock owes, each version sent once what it reads is
@@ -865,9 +949,22 @@ struct Next {
 struct Walk {
     host: Host,
     project: Arc<Project>,
+    began: Instant,
+    /// What it landed, for its last word.
+    tally: Mutex<Rendered>,
 }
 
 impl Walk {
+    fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
+        Self { host: Host::new(api), project: project.clone(), began: Instant::now(), tally: Mutex::default() }
+    }
+
+    /// What it landed and how long it took, if it landed anything.
+    fn rendered(&self) -> Option<Rendered> {
+        let tally = self.tally.lock().expect("tally lock").clone();
+        (tally.takes + tally.versions > 0).then(|| Rendered { elapsed_ms: self.began.elapsed().as_millis() as u64, ..tally })
+    }
+
     fn folder(&self) -> &Folder {
         &self.project.folder
     }
@@ -967,15 +1064,35 @@ impl Walk {
                 }
             }
             if following.is_empty() {
-                if self.folder().lock()?.walk.all.is_some() {
+                let owed = self.folder().lock()?;
+                if owed.walk.all.is_some() {
                     garbage(self.folder())?;
-                    if let Err(error) = self.recut().await {
-                        self.failed(error, &mut first);
+                    // A named node it could not make is said; the edit is cut only for the whole project, as a shot's landing cuts it.
+                    if owed.walk.only.is_empty() {
+                        if let Err(error) = self.recut().await {
+                            self.failed(error, &mut first);
+                        }
+                    }
+                    let video = self.video()?;
+                    let status = video.graph.status(&owed);
+                    for &i in video.graph.order.iter().filter(|&&i| status[i] != Status::Current) {
+                        let (id, key) = (&video.graph.nodes[i].id, name_key(&video.graph.nodes[i].id));
+                        if owed.walk.only.contains(&key) && !owed.walk.sent.contains(&key) {
+                            let why = match (video.missing(i).as_slice(), video.unclean(i).is_empty()) {
+                                ([], true) => "what it reads was not made".to_owned(),
+                                ([], false) => "its picture's background could not be removed".to_owned(),
+                                (gone, _) => format!("{} not on this computer: cozy project pull", gone.join(", ")),
+                            };
+                            self.failed(Error::new(Kind::NotFound, "file_missing", format!("{id} cannot render: {why}")), &mut first);
+                        }
                     }
                     self.folder().update_lock(|lock| {
                         lock.walk.all = None;
                         lock.walk.preview = false;
                         lock.walk.sent.clear();
+                        lock.walk.only.clear();
+                        lock.walk.new = false;
+                        lock.walk.n = 0;
                     })?;
                 } else if self.over()? {
                     garbage(self.folder())?;
@@ -1025,21 +1142,42 @@ impl Walk {
         };
         let status = &video.graph.status(lock)[i];
         let (target, approve) = match &next.take {
-            None => (lock.walk.all.clone().expect("all is owed"), true),
+            None => (lock.walk.all.clone().expect("all is owed"), false),
             Some(take) => (take.target.clone(), take.approve),
         };
-        if next.take.is_none() {
-            self.say(Event::Said { message: format!("{id}: {}", shown(status, video.graph.nodes[i].noun)) });
+        // What brings an out-of-date node up to date is what it reads from now on.
+        let clears = *status != Status::Current;
+        if next.take.is_none() && next.nth == 0 {
+            let noun = video.graph.nodes[i].noun;
+            let said = if *status == Status::Current { format!("a new {noun}") } else { shown(status, noun) };
+            self.say(Event::Said { message: format!("{id}: {said}") });
         }
         let sent = async {
             let renderer = (self.host)
                 .renderer(&target.hub, video.render(i).target(), &self.folder().dir, &target.on)
                 .await?;
-            let mut request = video.request(self.folder(), lock, i, &renderer)?;
+            let kept = match next.take.as_ref().and_then(|take| take.keeps) {
+                None => None,
+                Some(keeps) => match video.keeping(lock, i, keeps, &renderer, self.take_end(&id, keeps.take).await?) {
+                    Keeping::Start(kept, said) => {
+                        said.into_iter().for_each(|message| self.say(Event::Warning { message }));
+                        Some(kept)
+                    }
+                    Keeping::Whole(message) => {
+                        self.say(Event::Warning { message });
+                        None
+                    }
+                    Keeping::Nothing(message) => {
+                        self.say(Event::Warning { message });
+                        return self.folder().update_lock(settle);
+                    }
+                },
+            };
+            let mut request = video.request(self.folder(), lock, i, &renderer, kept)?;
             request.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let then = match video.cleans(i) {
-                true => Then::Clean { approve },
-                false => Then::List { approve },
+                true => Then::Clean { approve, clears },
+                false => Then::List { approve, clears },
             };
             let (mut frames, mut said) = (vec![], vec![]);
             for input in &mut request.files {
@@ -1057,6 +1195,10 @@ impl Walk {
             let (mut made, field, call, hub) =
                 (request.made.clone(), request.field.into(), request.call.clone(), target.hub.clone());
             made.warnings.extend(said);
+            // Its number now, so the first of several sent is the lowest, whichever lands first.
+            let number = std::cell::Cell::new(0);
+            self.folder().update_lock(|lock| number.set(lock.number(&id)))?;
+            made.number = number.get();
             let pending = Pending { made, run: 0, hub, field, on: vec![], call, then };
             self.submit(&key, &payload, files, &request.render, &target.on, pending, &settle).await
         };
@@ -1065,6 +1207,18 @@ impl Walk {
             self.folder().update_lock(settle)?;
         }
         sent
+    }
+
+    /// How long take `number` of `node` runs, in seconds, its video probed if nothing has yet; 0 with none to probe.
+    async fn take_end(&self, node: &str, number: u32) -> Result<f64, Error> {
+        let lock = self.folder().lock()?;
+        let made = lock.node(node).and_then(|node| node.versions.iter().find(|made| made.number == number));
+        let Some(asset) = made.and_then(|made| made.assets.get("video")) else { return Ok(0.0) };
+        let shape = match asset.video {
+            Some(shape) => Some(shape),
+            None => video::shape(&self.host.ffmpeg().await?.1, &self.folder().path(&asset.path)),
+        };
+        Ok(shape.map_or(0.0, |shape| shape.frames as f64 / shape.fps))
     }
 
     /// The cuts again here from the approved assets (fast join: only what changed is encoded), each
@@ -1093,8 +1247,17 @@ impl Walk {
             if pieces.is_empty() {
                 continue;
             }
-            let (project, cutting, began) = (self.project.clone(), self.project.cutting.clone(), Instant::now());
             let canvas = Canvas { short: if preview { None } else { video.canvas.short }, ..video.canvas.clone() };
+            // What it holds, which unchanged and still there is not cut again.
+            let holds = video::holds(&pieces, &canvas);
+            let fps = video.canvas.fps;
+            if self.folder().lock()?.cuts.get(name) == Some(&holds) && self.folder().dir.join(name).is_file()
+                && let Some(made) = video::measure(&pieces, fps)
+            {
+                self.say(Event::Cut { cut: name.into(), frames: made.frames, fps, retimed: made.retimed, took_s: 0.0, unchanged: true });
+                continue;
+            }
+            let (project, cutting, began) = (self.project.clone(), self.project.cutting.clone(), Instant::now());
             let cache = self.host.cache().join("cuts");
             let made = tokio::task::spawn_blocking(move || {
                 let _held = cutting.lock().expect("cutting lock");
@@ -1102,8 +1265,9 @@ impl Walk {
             })
             .await
             .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
-            let (frames, fps, retimed, took_s) = (made.frames, video.canvas.fps, made.retimed, began.elapsed().as_secs_f64());
-            self.say(Event::Cut { cut: name.into(), frames, fps, retimed, took_s });
+            self.folder().update_lock(|lock| drop(lock.cuts.insert(name.to_owned(), holds.clone())))?;
+            let (frames, retimed, took_s) = (made.frames, made.retimed, began.elapsed().as_secs_f64());
+            self.say(Event::Cut { cut: name.into(), frames, fps, retimed, took_s, unchanged: false });
         }
         Ok(())
     }
@@ -1117,17 +1281,17 @@ impl Walk {
             let Some(run) = self.host.sent(&key)? else { return Ok(None) };
             let run = self.host.wait(&run.id).await?;
             let node = self.folder().lock()?.pending.get(&key).map(|pending| pending.made.node.clone());
-            let (made, picture, approve, hub, on) = match self.land(&key, &run).await? {
+            let (made, picture, approve, clears, hub, on) = match self.land(&key, &run).await? {
                 Landed::Done => return Ok(node),
-                Landed::Call { made, call, approve, hub, on } => {
-                    return self.called(&key, *made, call, approve, &hub, &on).await;
+                Landed::Call { made, call, approve, clears, hub, on } => {
+                    return self.called(&key, *made, call, (approve, clears), &hub, &on).await;
                 }
-                Landed::Clean { made, picture, approve, hub, on } => (made, picture, approve, hub, on),
+                Landed::Clean { made, picture, approve, clears, hub, on } => (made, picture, approve, clears, hub, on),
             };
             let cleaner = self.video()?.clean_render();
             let picture = (picture.clone(), folder::hash(&picture)?);
             let settle = |lock: &mut Lock| drop(lock.pending.remove(&key));
-            self.clean(&new_key(), &hub, &cleaner, picture, *made, Then::List { approve }, &on, &settle).await?;
+            self.clean(&new_key(), &hub, &cleaner, picture, *made, Then::List { approve, clears }, &on, &settle).await?;
             Ok(None)
         };
         let landed = landed.await;
@@ -1154,7 +1318,7 @@ impl Walk {
         key: &str,
         mut made: Made,
         call: Call,
-        approve: bool,
+        (approve, clears): (bool, bool),
         hub: &str,
         on: &[On],
     ) -> Result<Option<String>, Error> {
@@ -1178,6 +1342,7 @@ impl Walk {
                 ends: call.ends.clone(),
                 writes: vec![],
                 from: Some((video_asset, made.assets.get("latents").cloned())),
+                ..Default::default()
             };
             let lock = folder.lock()?;
             let renderer = self.host.renderer(hub, video.render(i).target(), &folder.dir, on).await?;
@@ -1188,21 +1353,23 @@ impl Walk {
                 node: node.clone(),
                 number: made.number,
                 upstream: made.upstream.clone(),
+                text: made.text.clone(),
+                execution_ms: made.execution_ms,
                 writes: made.writes.clone(),
                 runs: made.runs.clone(),
                 invocations: made.invocations.iter().chain(&request.made.invocations).cloned().collect(),
                 warnings: made.warnings.clone(),
+                kept: made.kept,
                 ..Default::default()
             };
-            let then = Then::List { approve };
+            let then = Then::List { approve, clears };
             let field = "video".into();
             let pending = Pending { made: carried, run: 0, hub: hub.into(), field, on: vec![], call: request.call, then };
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
             self.submit(&new_key(), &payload, files, &request.render, on, pending, &settle).await?;
             return Ok(None);
         }
-        let approve = approve || video.graph.nodes[i].file.is_none();
-        self.record(Some(key), &made, approve, video.graph.nodes[i].kind, noun)?;
+        self.record(Some(key), &made, (approve, clears), video.graph.nodes[i].kind, noun)?;
         Ok(Some(node))
     }
 
@@ -1424,8 +1591,7 @@ impl Walk {
     }
 
     /// The run sent under `key`, once it ended, into the project: its outputs kept as assets and
-    /// listed as its node's newest version in project.lock, approved as its `then` says (or when the
-    /// node has nothing else). A run that did not complete is dropped with its reason and never run
+    /// listed as its node's newest version in project.lock, approved or its approval cleared as its `then` says. A run that did not complete is dropped with its reason and never run
     /// again.
     async fn land(&self, key: &str, run: &Run) -> Result<Landed, Error> {
         let folder = self.folder();
@@ -1469,7 +1635,12 @@ impl Walk {
             number => number,
         };
         let mut made = Made { number, ..pending.made.clone() };
+        // Where its function kept the other take up to, exactly: the time asked lands on its own grid.
+        if let (Some(kept), [], Some(until_s)) = (&mut made.kept, made.runs.as_slice(), run.result.as_ref().and_then(|result| result["kept_s"].as_f64())) {
+            kept.until_s = until_s;
+        }
         made.runs.push(run.number);
+        made.execution_ms += run.execution_ms.unwrap_or(0);
         for said in said_by(run) {
             let message = format!("{node}: {said}");
             self.say(Event::Warning { message: message.clone() });
@@ -1485,11 +1656,10 @@ impl Walk {
             }
             _ => true,
         };
-        if let (Then::Clean { approve }, true) = (&pending.then, opaque) {
-            let approve = *approve;
+        if let (Then::Clean { approve, clears }, true) = (pending.then, opaque) {
             // Listed once cleaned, made by both runs: the render as its `image`, and its `clean`.
             made.assets.insert(pending.field.clone(), folder.keep(&picture)?);
-            return Ok(Landed::Clean { made: Box::new(made), picture, approve, hub: pending.hub, on: pending.on });
+            return Ok(Landed::Clean { made: Box::new(made), picture, approve, clears, hub: pending.hub, on: pending.on });
         }
         if made.cleaned {
             made.assets.insert("clean".into(), folder.keep(&picture)?);
@@ -1509,16 +1679,15 @@ impl Walk {
             let (_, ffprobe) = self.host.ffmpeg().await?;
             asset.video = video::shape(&ffprobe, &folder.path(&asset.path));
         }
-        let approve = matches!(pending.then, Then::List { approve: true } | Then::Clean { approve: true });
+        let (approve, clears) = match pending.then {
+            Then::List { approve, clears } | Then::Clean { approve, clears } => (approve, clears),
+            Then::Imported => (false, false),
+        };
         if let Some(call) = pending.call.clone() {
             let (hub, on) = (pending.hub.clone(), pending.on.clone());
-            return Ok(Landed::Call { made: Box::new(made), call, approve, hub, on });
+            return Ok(Landed::Call { made: Box::new(made), call, approve, clears, hub, on });
         }
-        let approve = match pending.then {
-            Then::List { approve } | Then::Clean { approve } => approve || video.graph.nodes[i].file.is_none(),
-            Then::Imported => false,
-        };
-        self.record(Some(key), &made, approve, video.graph.nodes[i].kind, noun)?;
+        self.record(Some(key), &made, (approve, clears), video.graph.nodes[i].kind, noun)?;
         Ok(Landed::Done)
     }
 
@@ -1556,17 +1725,38 @@ impl Walk {
 
     /// Lists `made` as its node's newest version (dropping the pending run under `key` in the same
     /// write), approved when `approve`, and says it landed.
-    fn record(&self, key: Option<&str>, made: &Made, approve: bool, kind: &str, noun: &str) -> Result<(), Error> {
+    fn record(&self, key: Option<&str>, made: &Made, (approve, clears): (bool, bool), kind: &str, noun: &str) -> Result<(), Error> {
         let number = std::cell::Cell::new(made.number);
+        let kept = std::cell::Cell::new(None);
         self.folder().update_lock(|lock| {
             if let Some(key) = key {
                 lock.pending.remove(key);
             }
-            number.set(lock.record(made.clone(), kind, approve));
+            number.set(lock.record(made.clone(), kind, approve, clears));
+            let node = lock.node(&made.node);
+            kept.set(node.and_then(|node| node.versions.get(node.current_at()?)).map(|made| made.number));
         })?;
         let (name, number, assets) = (made.node.clone(), number.get(), listed(made));
         let path = made.primary().map(|asset| asset.path.clone()).unwrap_or_default();
-        self.say(Event::Landed { name, noun: noun.into(), number, assets, path });
+        {
+            let mut tally = self.tally.lock().expect("tally lock");
+            match noun {
+                "take" => tally.takes += 1,
+                _ => tally.versions += 1,
+            }
+            tally.execution_ms += made.execution_ms;
+        }
+        let execution_ms = (made.execution_ms > 0).then_some(made.execution_ms);
+        let kept = kept.get().filter(|kept| *kept != number && matches!(kind, "shot" | "upscale"));
+        let keeps = kept.map(|kept| format!("{name}: the edit keeps {noun} {kept}, approved; cozy project approve {name} {number} uses this one"));
+        let kept_said = made.kept.map(|kept| kept.said(&name, number));
+        self.say(Event::Landed { name, noun: noun.into(), number, assets, path, execution_ms });
+        if let Some(message) = kept_said {
+            self.say(Event::Said { message });
+        }
+        if let Some(message) = keeps {
+            self.say(Event::Said { message });
+        }
         Ok(())
     }
 
@@ -1612,8 +1802,8 @@ impl Walk {
     }
 }
 
-/// What can be sent now, in project order. What `all` owes (a version out of date or missing) once
-/// everything it reads is made, cleaned and settled: nothing upstream, however far, still owed or being
+/// What can be sent now, in project order. What `all` owes (a version out of date or missing, of what it covers; with `new`,
+/// any version it reads as) once everything it reads is made, cleaned and settled: nothing upstream, however far, still owed or being
 /// made into its chosen file (a take that will not be chosen holds nothing up). A take once nothing
 /// upstream is unsettled.
 fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
@@ -1623,32 +1813,35 @@ fn plan(video: &Video, lock: &Lock) -> Vec<Next> {
     let mut next = vec![];
     for &i in &graph.order {
         let id = name_key(&graph.nodes[i].id);
+        // What lands becomes what it reads, unless a version stays chosen over it.
+        let adopts = lock.node(&graph.nodes[i].id).is_none_or(|node| node.approved.is_none());
         let busy = lock.pending.values().any(|pending| {
             let chosen = match pending.then {
                 Then::Imported => false,
-                Then::List { approve } | Then::Clean { approve } => approve,
+                Then::List { approve, clears } | Then::Clean { approve, clears } => approve || clears,
             };
-            name_key(&pending.made.node) == id && (chosen || graph.nodes[i].file.is_none())
+            name_key(&pending.made.node) == id && (chosen || adopts)
         });
+        let covered = if walk.only.is_empty() { video.wanted(i) } else { walk.only.contains(&id) };
         let owed = walk.all.is_some()
-            && video.wanted(i)
+            && covered
             && !(walk.preview && video.is_upscale(i))
-            && status[i] != Status::Current
+            && (status[i] != Status::Current || (walk.new && video.reads_made(lock, i)))
             && !walk.sent.contains(&id);
         let up = graph.upstream[i].iter().any(|edge| unsettled[edge.node]);
         // A node reading a file not here, or a picture waiting for its clean, is not made yet, nor is what reads it.
         let gone = !video.missing(i).is_empty() || !video.unclean(i).is_empty();
         // A take of a node with no version yet: what reads it waits for it.
-        let taken = graph.nodes[i].file.is_none() && walk.takes.iter().any(|take| name_key(&take.node) == id);
+        let taken = walk.takes.iter().any(|take| name_key(&take.node) == id && (adopts || take.approve));
         unsettled[i] = busy || owed || up || gone || taken;
         if up || gone {
             continue;
         }
         let made = graph.upstream[i].iter().all(|edge| status[edge.node] == Status::Current);
         if owed && !busy && made {
-            next.push(Next { i, take: None });
+            next.extend((0..walk.n.max(1)).map(|nth| Next { i, take: None, nth }));
         }
-        next.extend(walk.takes.iter().filter(|take| name_key(&take.node) == id).map(|take| Next { i, take: Some(take.clone()) }));
+        next.extend(walk.takes.iter().filter(|take| name_key(&take.node) == id).map(|take| Next { i, take: Some(take.clone()), nth: 0 }));
     }
     next
 }

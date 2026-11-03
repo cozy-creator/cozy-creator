@@ -42,7 +42,8 @@ ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
 
 if ! grep -q '^GPU 0' machine.txt; then
   vcell host-cap ./host-cap.py
-  vcell host-sdxl "$SDXL" prompt="$SCENE, photo" seed:=$((R + 51))
+  # A CPU step is about 2 min on a busy host: four show its memory, twenty cost $0.60.
+  vcell host-sdxl "$SDXL" prompt="$SCENE, photo" seed:=$((R + 51)) steps:=4
   vcell host-klein "$KLEIN" prompt="$CHAR, studio portrait" seed:=$((R + 52))
   return 0
 fi

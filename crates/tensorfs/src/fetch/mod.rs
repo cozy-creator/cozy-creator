@@ -16,6 +16,7 @@ pub mod policy;
 pub mod token;
 mod volume;
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,7 +36,7 @@ pub use volume::VolumeOrigin;
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
 pub use download::{Fetching, Phase};
-use download::Shared;
+use download::{Shared, Task};
 
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host,
 /// redirects followed. A weather answer or a transport failure is asked again from the byte reached,
@@ -146,11 +147,28 @@ pub struct Want<'a> {
     pub progress: Option<&'a Progress>,
 }
 
-/// A pull's bytes: all it needs, and those held so far.
-#[derive(Debug, Default)]
+/// A pull's bytes: all it needs, and those here so far ([`Progress::done`]).
+#[derive(Default)]
 pub struct Progress {
     pub total: AtomicU64,
-    pub held: AtomicU64,
+    held: AtomicU64,
+    /// Objects on their way: their bytes count as they arrive, not only once whole.
+    arriving: Mutex<HashMap<String, Arc<Task>>>,
+}
+
+impl Progress {
+    /// The bytes here, an object still arriving counted to the byte it reached.
+    pub fn done(&self) -> u64 {
+        let arriving = self.arriving.lock().unwrap();
+        self.held.load(Ordering::Relaxed) + arriving.values().map(|task| task.received()).sum::<u64>()
+    }
+
+    /// An object that landed counts whole, in one step with no longer counting as arriving.
+    fn landed(&self, object: &ObjectRef) {
+        let mut arriving = self.arriving.lock().unwrap();
+        arriving.remove(&object.sha256);
+        self.held.fetch_add(object.length, Ordering::Relaxed);
+    }
 }
 
 /// What a pull took: the tree (when it walked one), its header, and its objects.
@@ -280,13 +298,16 @@ impl Fetcher {
                 true => {
                     landed.add(Tier::Local, object.length);
                     if let Some(progress) = want.progress {
-                        progress.held.fetch_add(object.length, Ordering::Relaxed);
+                        progress.landed(object);
                     }
                 }
-                false => waiting.push((
-                    object.length,
-                    self.shared.want(object, origin, want.priority),
-                )),
+                false => {
+                    let waiter = self.shared.want(object, origin, want.priority);
+                    if let Some(progress) = want.progress {
+                        progress.arriving.lock().unwrap().insert(object.sha256.clone(), waiter.task());
+                    }
+                    waiting.push((object, waiter));
+                }
             }
         }
         let landed = Mutex::new(landed);
@@ -294,13 +315,13 @@ impl Fetcher {
         // before it has landed (try_join_all of more than 30 is ordered).
         let waits: FuturesUnordered<_> = waiting
             .into_iter()
-            .map(|(length, waiter)| {
+            .map(|(object, waiter)| {
                 let landed = &landed;
                 async move {
                     let tier = waiter.wait().await?;
-                    landed.lock().unwrap().add(tier, length);
+                    landed.lock().unwrap().add(tier, object.length);
                     if let Some(progress) = want.progress {
-                        progress.held.fetch_add(length, Ordering::Relaxed);
+                        progress.landed(object);
                     }
                     Ok::<(), Refusal>(())
                 }

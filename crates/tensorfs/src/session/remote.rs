@@ -86,7 +86,7 @@ impl Remote {
                 result = &mut work => break result.map_err(from_native)?,
                 _ = tick.tick(), if want.progress.is_some() => {
                     if let Some(report) = want.progress {
-                        report(progress.held.load(Ordering::Relaxed), total)?;
+                        report(progress.done(), total)?;
                     }
                 }
             }

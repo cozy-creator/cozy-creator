@@ -439,6 +439,7 @@ fn item_name(item: &OutputItem) -> String {
 /// The live view: one line redrawn in place on a terminal; sparse appended lines elsewhere.
 struct View {
     bar: Option<ProgressBar>,
+    term: output::Term,
     /// Off a terminal, what was last written: the status or stage, the tenth reached, and the
     /// minutes it had made no progress.
     shown: (String, i64, i64),
@@ -452,6 +453,8 @@ struct View {
     status: Option<Status>,
     /// The output items already named.
     named: HashSet<String>,
+    /// The log's warnings already said: each once.
+    warned: HashSet<String>,
     /// The progress last shown, and when its step count last moved: a step running far past its
     /// stage's pace says so.
     last: Option<(Progress, Instant)>,
@@ -473,6 +476,7 @@ impl View {
             bar
         });
         let mut view = Self {
+            term: ctx.term,
             bar,
             shown: (String::new(), -1, 0),
             number: run.number,
@@ -481,6 +485,7 @@ impl View {
             waiting: None,
             status: None,
             named: HashSet::new(),
+            warned: HashSet::new(),
             last: None,
             stalled: None,
         };
@@ -517,7 +522,7 @@ impl View {
             Event::OutputLanded { item, .. } => {
                 match (item.path.as_ref(), self.named.insert(item.id.clone())) {
                     (Some(path), true) => {
-                        self.line(&format!("  {}  {}", item_name(item), path.display()))
+                        self.line(&format!("  {}  {}", item_name(item), output::link_on(self.term, path)))
                     }
                     (Some(_), false) if self.bar.is_none() => {
                         self.line(&format!(
@@ -541,7 +546,9 @@ impl View {
             }
             // A stage the run entered shows in its progress line as it goes.
             Event::Log { level, text, .. } if !matches!(level.as_str(), "info" | "debug" | "stage") => {
-                self.line(&format!("  {level}: {text}"));
+                if self.warned.insert(text.clone()) {
+                    self.line(&format!("  {level}: {text}"));
+                }
             }
             // A call that failed is told by its run's reason, or by `cozy run show` when its run went on.
             Event::Call { call, .. } if call.reason.is_none() => {
@@ -549,7 +556,8 @@ impl View {
                 if !call.label.is_empty() {
                     let _ = write!(line, " ({})", call.label);
                 }
-                let _ = write!(line, ": {}", call.status);
+                let took = call.finished_at_ms.saturating_sub(call.called_at_ms).max(0) as u64;
+                let _ = write!(line, ": {} in {}", call.status, output::span(((took + 500) / 1000) as i64));
                 self.line(&line);
             }
             _ => {}

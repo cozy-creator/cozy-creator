@@ -131,9 +131,9 @@ pub struct Fetch {
     held: Mutex<Vec<Checkpoint>>,
     /// What fetched for this call before it started: ended with it.
     replaced: Mutex<Option<Arc<Fetch>>>,
-    /// Each wanted checkpoint not all here when it was wanted: its repository, its bytes, and
-    /// its objects still absent.
-    arriving: Mutex<Vec<(String, u64, Vec<ObjectRef>)>>,
+    /// Each wanted checkpoint not all here when it was wanted: its repository and where it comes
+    /// from, its bytes, and its objects still absent.
+    arriving: Mutex<Vec<(String, Remote, u64, Vec<ObjectRef>)>>,
     required: Mutex<Required>,
 }
 
@@ -383,7 +383,7 @@ impl Fetch {
                 wanted.push(Wanted { bytes, remote: remote.clone(), objects: absent, label: format!("{repository} {component}") });
             }
             if let (true, false, Some(pulled)) = (metered, absent_all.is_empty(), pulled) {
-                self.arriving.lock().unwrap().push((pulled.repository, bytes_all, absent_all));
+                self.arriving.lock().unwrap().push((pulled.repository, remote.clone(), bytes_all, absent_all));
             }
             self.held.lock().unwrap().push(checkpoint);
         }
@@ -429,14 +429,24 @@ impl Fetch {
     }
 
     /// The weights it wants that are not all here yet, while any are not: their repositories,
-    /// and the bytes here of all it found absent. An object here stays: its checkpoint is held.
+    /// and the bytes here of all it found absent, an object still arriving counted to the byte it
+    /// reached. An object here stays: its checkpoint is held.
     pub fn arriving(&self) -> Option<Weights> {
         let mut arriving = self.arriving.lock().unwrap();
         let (mut models, mut done, mut total) = (vec![], 0, 0);
-        for (repository, bytes, absent) in arriving.iter_mut() {
-            absent.retain(|object| !self.store().holds(object));
-            let missing: u64 = absent.iter().map(|o| o.length).sum();
-            if missing > 0 && !models.contains(repository) {
+        for (repository, remote, bytes, absent) in arriving.iter_mut() {
+            // Each download as it stands, read before the store: one landing meanwhile counts whole.
+            let mut states = self.machine.fetching(remote, absent).into_iter();
+            let mut missing = 0;
+            absent.retain(|object| {
+                let reached = states.next().flatten().map_or(0, |state| state.reached);
+                let here = self.store().holds(object);
+                if !here {
+                    missing += object.length - reached.min(object.length);
+                }
+                !here
+            });
+            if !absent.is_empty() && !models.contains(repository) {
                 models.push(repository.clone());
             }
             (done, total) = (done + *bytes - missing, total + *bytes);

@@ -331,7 +331,7 @@ fixed by its folder. Every file the project uses
 is a real file in `assets/<sha256>.<ext>`, flat: what cozy makes, and what `POST /v1/projects/{id}/imports` brought in.
 project.lock records each import under its sha256 (`{path, sha256, video?, mark?, clean?}`), and with every video asset
 its shape, probed once: `{width, height, fps, frames}`. It names nothing of this computer, so it travels with project.yaml.
-A file field (an entity's `image`, `voice`, a setup's or world state's `image`, a reference's `image`, `video`, `audio`,
+A file field (an entity's `image`, `voice`, a setup's or world state's `image`, an asset's `image`, `video`, `audio`,
 a shot's `plate.video`, `first_frame`, `last_frame`, `video`) holds a hex prefix of an asset's hash: any file project.lock
 names, imported or made. A value that is no prefix (a path, a URL), one that fits no asset, and one that fits several
 each give a warning, and that node renders without the file. An asset project.lock names that is not on this computer
@@ -359,6 +359,17 @@ shots:
 A shot is as long as its beats. An adapter's record gives it as `duration_s`, and each beat's start, the sum of the
 durations before it, as `at`.
 
+A made version is out of date when what the author wrote that reaches it changed since it was made or approved. project.lock
+keeps that as `text`: by field, a digest of the words, trimmed. The fields are a shot's `summary`, `beats` (each `duration` and
+`description`), `soundscape`, `music` and `style`, and `<name>` for each description of what it reads; an entity's `description`,
+its own `render: instructions:` and `style`; a setup's `camera`, its environment's `description` and `style`; a world state's `init`, `blocking` and `style`. Only
+fields both sides have are compared and a field's meaning never changes, so a cozy update never puts anything out of date. A
+version with no `text`, made before this, has what it says now recorded the first time it is read. A file in a node's own
+`image` or `video` pins it: that is what it reads, whatever is approved, and nothing is made of it. Otherwise it reads as what
+`approve` or `--approve` chose, else its newest, which is the only way approval is written. A cut holding what it held is not
+made again (`cuts` in project.lock). `approve` records the text
+and files as they stand, and `rename` the text of what reads the node, since it rewrites the mentions.
+
 A shot's and an upscale's alternatives are takes, every other node's versions: records carry one generic
 field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reused) and is a set of assets
 (`{path, sha256}`).
@@ -366,11 +377,11 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
   records it in the index as used now. `404 project_not_found` when no folder up from `path` is a project.
-- `POST /v1/projects/{id}/imports` `{source, clean?, hub}`: `{path, sha256, prefix, line, clean, warnings?}`. Keeps the
+- `POST /v1/projects/{id}/imports` `{source, clean?, hub}`: `{path, sha256, prefix, line, already?, clean, warnings?}`. `already`: its bytes were in `assets/`, so nothing was copied. Keeps the
   file at `source` (an absolute path, or an `http(s)` URL) as a real asset, its type read from its bytes; `line` is what to
   paste into project.yaml (`image: ab12cd34ef56`, or `video:`, `audio:`). A URL: 64 MiB at most, public addresses only at
   every redirect. `400 import_failed` says why not. `clean` marks a picture (a later import of it says again): `clean` answers `{state:
-  "untouched"}`, `"removed"`, `"removing", run` (a run sent to this computer's machine; follow it, then `cleaned` on the events)
+  "untouched"}`, `"removed"` (an earlier clean stands, and no run was sent), `"removing", run` (a run sent to this computer's machine; follow it, then `cleaned` on the events)
   or `"later"` (this computer runs no models, or the run could not be sent: the first machine to render a reader cleans it).
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms,
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
@@ -380,19 +391,21 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   renamed_to?}], busy, cuts: [{cut, path, cut_at_ms?, frames?, retimed?, skips}], warnings}`. `fps` is the
   edit's frame rate; a cut's `frames` its length at it and `retimed` the takes in it at another rate
   (`<node> (<fps> fps)`), both from the shapes project.lock records. Each node is `{name, kind, noun,
-  versions, prefixes?, approved?, assets, path?, made_by?, status}`: `versions` counts them, `prefixes` gives each one's `{number, prefix}` for project.yaml, `approved` is the approved
-  one's number (absent for a file attached by hand), `assets` what the node reads as now by output name,
+  versions, prefixes?, approved?, assets, path?, made_by?, status}`: `versions` counts them, `prefixes` gives each one's `{number, prefix, kept?}` for project.yaml (`kept: {take, until_s}`: the take whose start it keeps, and up to where), `approved` is the number of the one chosen by `approve` or `--approve`, `pinned` says a file in project.yaml is its result, `assets` what the node reads as now by output name,
   `path` its primary file, and `status` is for people, in the node's noun. An orphan is a node project.lock
   keeps versions of that project.yaml no longer names; `renamed_to` the one new node of its kind with none. A
-  file under `references:` is a node of kind `reference`: shots read it by mention, and it has no versions.
+  file under `assets:` is a node of kind `asset`: shots read it by mention, and it has no versions.
   `warnings` holds what project.yaml's reading said and what each node's current version says: its function's
   warnings and what was left out of its request. A cut past a take's end is left out and said here.
-- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?}]}`.
-- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?}` (`Idempotency-Key`): `n` new takes
-  or versions of each name, or `names: ["all"]`, everything missing or out of date, each approved, then the
-  cuts. `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). What a node reads with no
-  version yet is made first. A name that is no node, or a reference, is warned of and the rest go on; only an ask with
-  nothing left is refused (`node_unknown`, `400 reference_file`). `202 {id, path}`; the
+- `GET /v1/projects/{id}/nodes/{name}`: `{node, versions: [{number, assets, made_by?, runs, approved?, warnings?, kept?}]}`.
+- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, preview?, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or
+  `names: ["all"]`, brought up to date with what it reads: what is missing or out of date gets `n` new takes or versions, any
+  approval it had goes, and `all` ends with the cuts. A current name is left, with a `said` event; a pinned one too. With `new`,
+  what is current gets them as well, its approval kept, and what a named node reads with no version yet is made first.
+  With `take` or `in_s` and one shot's name, each new take keeps a take's start (`take`, else the one in use) up to `in_s` (else
+  that take's end), and what follows is made; it is warned of what it comes to instead (`400 take_unknown`: no such take).
+  `approve` approves the new one when it lands (`400 approve_one` with `n` > 1). A name that is no node, or a reference, is warned of and the rest go on; only an ask with
+  nothing left is refused (`node_unknown`, `400 asset_file`). `202 {id, path}`; the
   work goes on in the project's walk and is followed on its events.
 - `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from`
   (versions, approval, what other versions read of it, what is owed) is kept as `to`, a node project.yaml names
@@ -412,9 +425,9 @@ field (`versions`, `version`) and a `noun`. Each is numbered (1 first, never reu
   stale, warnings}`. `path` is its primary asset; `stale` names what this put out of date; the cuts are made
   again when a shot's take changed.
 - `GET /v1/projects/{id}/events`: `started {name, run, number}` (follow the run on `GET /v1/runs/{id}/events`),
-  `landed {name, noun, number, assets, path}`, `said {message}`, `warning {message}`, `failed {error}` (one version failed, said once; the walk goes on), `cut {cut, frames, fps, retimed?, took_s}` and
+  `landed {name, noun, number, assets, path, execution_ms?}`, `said {message}`, `warning {message}`, `failed {error}` (one version failed, said once; the walk goes on), `cut {cut, frames, fps, retimed?, took_s, unchanged?}` and
   `moved {file?, bytes}` (a push or pull landed `file`, or is under way), `transferred {done?: {files, moved, bytes,
-  skipped?: [{path, why}], kept_in?, commit?}, error?}` when it ends, `cleaned {sha256, error?}` when the run cleaning an import ended, `ended {error?}` (the first failure) when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
+  skipped?: [{path, why}], kept_in?, commit?}, error?}` when it ends, `cleaned {sha256, error?}` when the run cleaning an import ended, `ended {error?, rendered?: {takes, versions, elapsed_ms, execution_ms}}` (the first failure) when the walk owes nothing more. Not resumable: a client reads `GET /v1/projects/{id}`
   after reconnecting.
 - `GET|HEAD /v1/projects/{id}/assets/{sha256}.{ext}`: the asset (Files). Its ETag is its sha256.
 - `GET|HEAD /v1/projects/{id}/cuts/{cut}` (`edit.mp4`, `preview.mp4`, and each one's `.otio`): the cut or its

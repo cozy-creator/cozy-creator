@@ -173,12 +173,15 @@ impl Layer {
         for (name, dist) in self.dists.iter().filter(|(name, _)| !held.contains(*name)) {
             let mut record = String::new();
             for link in &dist.links {
-                let at = site.join(link);
-                if at.symlink_metadata().is_ok() {
-                    continue; // another distribution's file of the same name: the environment's
+                let (at, target) = (site.join(link), self.site.join(link));
+                // Another distribution's file of the same name is the environment's. A RECORD can name
+                // what the base no longer holds: an image's software layer replaces `__pycache__`, and
+                // a link to sympy's `isympy` bytecode there would dangle in every environment.
+                if at.symlink_metadata().is_ok() || !target.exists() {
+                    continue;
                 }
                 fs::create_dir_all(at.parent().expect("under site-packages"))?;
-                platform::durable::symlink(&self.site.join(link), &at)?;
+                platform::durable::symlink(&target, &at)?;
                 record.push_str(&format!("{link},,\n"));
             }
             let info = dist.info.file_name().expect("a dist-info").to_string_lossy();

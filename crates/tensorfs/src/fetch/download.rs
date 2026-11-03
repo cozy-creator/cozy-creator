@@ -17,7 +17,9 @@
 //!   request moved bytes is asked again as at first. A cold R2 object stalls at a MiB boundary
 //!   for whoever asks first, again and again, while a fresh ranged ask is answered at once (pod
 //!   measurements, 2026-10-01); a patience that grew per drop let such a drip run unjudged for
-//!   minutes (tfs-138). A fetch whose every request is slow restarts none.
+//!   minutes (tfs-138). Such an object moves as fast asked again as left alone: its rate is its
+//!   own, and the rule neither gains nor costs it anything (tfs-141). A fetch whose every request
+//!   is slow restarts none.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
 //!   a fresh location, the same wrong bytes twice), on a dead peer, or when the origin has only
 //!   answered "not now" while nothing in the whole fetch landed, for [`ask`]'s stall rule; the
@@ -99,6 +101,11 @@ pub(crate) struct Task {
 }
 
 impl Task {
+    /// The most bytes any of its requests reached.
+    pub(crate) fn received(&self) -> u64 {
+        self.reached.load(Ordering::Acquire)
+    }
+
     fn enter(&self, phase: Phase) {
         self.phase.store(phase as u8, Ordering::Release);
         self.moved_ms.store(unix_ms(), Ordering::Release);
@@ -164,6 +171,10 @@ pub(crate) struct Waiter {
 }
 
 impl Waiter {
+    pub fn task(&self) -> Arc<Task> {
+        Arc::clone(&self.task)
+    }
+
     pub async fn wait(mut self) -> Result<Tier> {
         let answer = self.answer.wait_for(Option::is_some).await;
         match answer.as_deref() {

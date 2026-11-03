@@ -7,7 +7,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Clean, Event, Import, Imported, Open, Opened, Projects, Rename, Renamed, Runs, State, Transferred},
+    project::{Approve, Approved, Clean, Event, Import, Imported, Open, Opened, Projects, Rename, Renamed, Rendered, Runs, State, Transferred},
 };
 
 use crate::{
@@ -22,7 +22,7 @@ const EXAMPLES: &str = "Examples:
   cozy project new garden
   cd garden && cozy project import ./kyogre.png --character   prints the line to paste into project.yaml
   cozy project render all --on kiyui
-  cozy project render fight -n 3 --on kiyui    three takes of fight
+  cozy project render fight --new -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2
   cozy project rename theo mara                after renaming it in project.yaml
   cozy project push                            its files to your Tensorhub account
@@ -31,10 +31,18 @@ const EXAMPLES: &str = "Examples:
 project.yaml's comments and the README explain the rest.";
 
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy project render all --on kiyui         everything missing or out of date, then the edit
-  cozy project render all --on kiyui,jitae   spread over two machines
-  cozy project render fight -n 3 --on kiyui  three takes of fight
-  cozy project render fight --approve --on kiyui
+  cozy project render all --on kiyui               everything missing or out of date, then the edit
+  cozy project render all --on kiyui,jitae         spread over two machines
+  cozy project render fight --on kiyui             fight and what it reads, if missing or out of date
+  cozy project render fight --new --on kiyui       a new take of fight, whatever stands
+  cozy project render fight --new -n 3 --on kiyui  three new takes of fight
+  cozy project render fight --new --approve --on kiyui
+  cozy project render all --new --on kiyui         every node again
+  cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
+  cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
+  cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
+
+A node reads as what `approve` or --approve chose, else its newest. A file in its image: or video: pins it: nothing is made.
 
 Ctrl-C stops following, never the runs.";
 
@@ -111,26 +119,40 @@ struct ImportFile {
     prop: bool,
 }
 
-/// Make new takes and versions; `all` brings everything up to date.
+/// Bring nodes up to date: make only what is missing or out of date, text edits included.
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
 struct Render {
-    /// The nodes (`theo`, `dock.b`, `fight`, `fight.upscale`, …) to make new takes or versions of,
-    /// or `all`: everything missing or out of date, in order, each new one approved, then the edit.
+    /// The nodes (`theo`, `dock.b`, `fight`, `fight.upscale`, …) to bring up to date, with what they read,
+    /// or `all`: every node, in order, then the edit.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
     #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',', default_value = "local")]
     on: Vec<String>,
-    /// How many new takes or versions of each.
+    /// How many takes or versions of each node it renders. A current node stays as it is without --new.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
+    /// Render what is current too; an approved version stays chosen over what it makes.
+    #[arg(long)]
+    new: bool,
     /// Approve the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
     /// With `all`: no upscales; cut only the native preview (`preview.mp4`).
     #[arg(long)]
     preview: bool,
+    /// One shot: a new take keeping this take's start, not the one in use. Without --in, it goes on from this take's end.
+    #[arg(long, value_name = "N")]
+    take: Option<u32>,
+    /// One shot: a new take keeping that take up to about here, and rendering what follows with the shot's current text.
+    #[arg(long = "in", value_name = "SECONDS", allow_negative_numbers = true, value_parser = seconds)]
+    in_s: Option<f64>,
+}
+
+/// A time in seconds, any finite number: Calcifer says what it comes to.
+fn seconds(text: &str) -> Result<f64, String> {
+    text.parse().ok().filter(|at: &f64| at.is_finite()).ok_or_else(|| format!("{text} is not a time in seconds"))
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
@@ -195,10 +217,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                     1 => format!("1 {}", n.noun),
                     count => format!("{count} {}s", n.noun),
                 };
-                let approved = match (n.approved, n.assets.is_empty()) {
-                    (Some(number), _) => number.to_string(),
-                    (None, false) => "attached".into(),
-                    (None, true) => "-".into(),
+                let approved = match n.approved {
+                    _ if n.pinned => "pinned".into(),
+                    Some(number) => number.to_string(),
+                    None => "-".into(),
                 };
                 let made_by = n.made_by.clone().unwrap_or_else(|| "-".into());
                 let file = n.path.clone().unwrap_or_else(|| "-".into());
@@ -284,6 +306,8 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     let ask = Import { source, clean: args.character || args.prop, hub: ctx.hub().to_string() };
     let mut imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &ask, None).await?;
     imported.warnings.iter().for_each(|warning| output::warn(warning));
+    // `removed` from Calcifer is an earlier clean; one that lands here was made now.
+    let mut cleaned_now = false;
     if let Clean::Removing { run } = &imported.clean {
         let followed = watched(ctx, calcifer.run(run).await?).await?;
         imported.clean = match settled(&followed) {
@@ -295,7 +319,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
                         Event::Cleaned { sha256, error } if sha256 == imported.sha256 => {
                             match error {
                                 Some(error) => output::warn(&error),
-                                None => landed = Clean::Removed,
+                                None => (landed, cleaned_now) = (Clean::Removed, true),
                             }
                             break;
                         }
@@ -313,11 +337,13 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     }
     let said = match imported.clean {
         Clean::Untouched => "",
-        Clean::Removed => " (background removed)",
+        Clean::Removed if cleaned_now => " (background removed)",
+        Clean::Removed => " (background already removed)",
         Clean::Removing { .. } => " (its background is being removed)",
         Clean::Later => " (its background is removed when a machine first renders something that reads it)",
     };
-    anstream::println!("imported {}{said}", imported.prefix);
+    let verb = if imported.already { "already imported" } else { "imported" };
+    anstream::println!("{verb} {}{said}", imported.prefix);
     anstream::println!("{}", imported.line);
     Ok(ExitCode::SUCCESS)
 }
@@ -335,11 +361,16 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         hub: ctx.hub().to_string(),
         preview: args.preview,
         approve: args.approve,
+        new: args.new,
+        take: args.take,
+        in_s: args.in_s,
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
     let _: Opened = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     let status = format!("cozy project -p {} status", opened.path.display());
-    let mut failed = std::collections::HashSet::new();
+    let (mut failed, mut warned) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    // Each cut as last said: a render ends on what it holds, not on what it held as a take landed.
+    let mut cuts: Vec<(String, String)> = vec![];
     while let Some(event) = events.next().await {
         match event {
             Event::Started { run, .. } => {
@@ -349,29 +380,54 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                     return Ok(ExitCode::SUCCESS);
                 }
             }
-            Event::Landed { name, noun, number, path, .. } => {
+            Event::Landed { name, noun, number, path, execution_ms, .. } => {
                 let path = output::link(ctx, &opened.path.join(path));
-                output::say(ctx, &format!("{name}: {noun} {number} ({path})"));
+                let took = execution_ms.map(|ms| format!(" in {}", clock(ms))).unwrap_or_default();
+                output::say(ctx, &format!("{name}: {noun} {number}{took}  {path}"));
             }
             Event::Said { message } => output::say(ctx, &message),
-            Event::Warning { message } => output::warn(&message),
+            Event::Warning { message } => {
+                if warned.insert(message.clone()) {
+                    output::warn(&message);
+                }
+            }
             Event::Failed { error } => {
                 output::failure(ctx, &error.message, &error.next);
                 failed.insert(error.message);
             }
             Event::Moved { .. } | Event::Transferred { .. } | Event::Cleaned { .. } => {}
-            Event::Cut { cut, frames, fps, retimed, took_s } => {
-                let path = output::link(ctx, &opened.path.join(&cut));
-                output::say(ctx, &format!("cut {path}: {}{} in {took_s:.1} s", length(frames, fps), retimes(&retimed, fps)));
+            Event::Cut { cut, frames, fps, retimed, unchanged, .. } => {
+                let (path, seconds) = (output::link(ctx, &opened.path.join(&cut)), frames as f64 / fps);
+                let (name, left) = (cut.trim_end_matches(".mp4"), if unchanged { " (unchanged)" } else { "" });
+                let line = format!("{name}: {path}, {seconds:.1} s{}{left}", retimes(&retimed, fps));
+                cuts.retain(|(named, _)| *named != cut);
+                cuts.push((cut, line));
             }
-            Event::Ended { error: Some(error) } if !ctx.json && failed.contains(&error.message) => {
-                return Ok(ExitCode::from(error.exit_code() as u8));
+            Event::Ended { error, rendered } => {
+                cuts.iter().for_each(|(_, line)| output::say(ctx, line));
+                rendered.iter().for_each(|rendered| output::say(ctx, &finished(rendered)));
+                return match error {
+                    Some(error) if !ctx.json && failed.contains(&error.message) => Ok(ExitCode::from(error.exit_code() as u8)),
+                    Some(error) => Err(error),
+                    None => Ok(ExitCode::SUCCESS),
+                };
             }
-            Event::Ended { error: Some(error) } => return Err(error),
-            Event::Ended { error: None } => return Ok(ExitCode::SUCCESS),
         }
     }
     Err(Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go").next(status))
+}
+
+/// `3m52s`, or under a minute `38s`.
+fn clock(ms: u64) -> String {
+    output::span(((ms + 500) / 1000) as i64)
+}
+
+/// A render's last line: what it made and how long it took, with the generation time summed when renders ran at once.
+fn finished(rendered: &Rendered) -> String {
+    let count = |n: u32, noun: &str| (n > 0).then(|| format!("{n} {noun}{}", if n == 1 { "" } else { "s" }));
+    let made: Vec<String> = [count(rendered.takes, "take"), count(rendered.versions, "version")].into_iter().flatten().collect();
+    let generation = (rendered.execution_ms > rendered.elapsed_ms).then(|| format!(" ({} of generation)", clock(rendered.execution_ms)));
+    format!("rendered {} in {}{}", made.join(" and "), clock(rendered.elapsed_ms), generation.unwrap_or_default())
 }
 
 /// Under the table: what is missing, what is out of date and why, and where the cuts are.
@@ -379,6 +435,11 @@ fn summary(ctx: &Context, state: &State) {
     for node in state.nodes.iter().filter(|node| !node.prefixes.is_empty()) {
         let made: Vec<String> = node.prefixes.iter().map(|made| format!("{} {} {}", node.noun, made.number, made.prefix)).collect();
         output::say(ctx, &format!("{}: {}", node.name, made.join(", ")));
+        for made in &node.prefixes {
+            if let Some(kept) = made.kept {
+                output::say(ctx, &kept.said(&node.name, made.number));
+            }
+        }
     }
     if !state.missing.is_empty() {
         output::say(ctx, &format!("missing: {}", state.missing.join(", ")));
