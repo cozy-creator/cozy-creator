@@ -60,9 +60,15 @@ Root owns the exact execution cohort; development context is not the execution b
 `host_contract.py --helper <so> --mode markers|overflow` uses a real qualified
 TensorFS wheel payload, its actual observer registration, real marker calls and
 CPU ATen operations. It creates no CUDA allocation and synthesizes no allocator
-event. These checks cannot qualify GPU segment events or reproduce719. The controlled
-guard wheel's tested native getter supplies the actual cached-workspace flag; no
-second allocator or mangled ctypes symbol is loaded to query it.
+event. These checks cannot qualify GPU segment events or reproduce719. For the original9d
+reproduction, `allocation_trace_workspace_cache_enabled()` directly calls Torch's
+exported `at::cuda::isCUDABlasWorkspaceCachingEnabled()` in this same helper before
+CUDA initialization. It returns actual latched0/1, or-1 with explicit error/unavailable;
+it does not change the environment or install another allocator. No mangled ctypes
+symbol is used. `--mode workspace --initial-cache-state unset|0|1` runs a real host
+latching control in its own fresh process; only that control changes its environment
+after the first read. The execution wrapper records the actual state and refuses
+unexpected enabled mode without changing it. Prior b91/attempt002 proof remains separate.
 
 The first model diagnostic stays asynchronous. Additional stream checkpoints,
 launch-blocking or native completed-release hooks require a separate agreed control.

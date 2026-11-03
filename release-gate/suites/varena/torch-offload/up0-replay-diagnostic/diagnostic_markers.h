@@ -66,6 +66,9 @@ int allocation_trace_window(int enabled) XS138_TRACE_NOEXCEPT;
 void allocation_trace_stage(int stage) XS138_TRACE_NOEXCEPT;
 int allocation_trace_install(void) XS138_TRACE_NOEXCEPT;
 const char* allocation_trace_error(void) XS138_TRACE_NOEXCEPT;
+/* Actual first-call-latched Torch state:0/1, or-1 with explicit error on failure.
+ * Host-only; never initializes CUDA, installs an allocator, or changes environment. */
+int allocation_trace_workspace_cache_enabled(void) XS138_TRACE_NOEXCEPT;
 int allocation_trace_checkpoint(int marker, int device, uint64_t pool_a,
                                 uint64_t pool_b) XS138_TRACE_NOEXCEPT;
 /* Call only outside capture/replay/native exclusions. Serialization is here only. */

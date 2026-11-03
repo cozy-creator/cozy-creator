@@ -2,6 +2,7 @@
 #include "diagnostic_markers.h"
 #include <ATen/record_function.h>
 #include <ATen/core/Tensor.h>
+#include <ATen/cuda/CUDAContextLight.h>
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h>
 #include <atomic>
 #include <algorithm>
@@ -275,6 +276,16 @@ extern "C" int allocation_trace_install() noexcept {
 }
 extern "C" const char* allocation_trace_error() noexcept {
     return failure_ready.load(std::memory_order_acquire) ? failure.data() : "";
+}
+extern "C" int allocation_trace_workspace_cache_enabled() noexcept {
+    try {
+        return at::cuda::isCUDABlasWorkspaceCachingEnabled() ? 1 : 0;
+    } catch (const std::exception& error) {
+        record_failure(error.what());
+    } catch (...) {
+        record_failure("workspace-cache state query failed");
+    }
+    return -1;
 }
 extern "C" int allocation_trace_window(int enabled) noexcept {
     if (enabled != 0 && enabled != 1) { record_failure("invalid native trace window"); return -1; }
