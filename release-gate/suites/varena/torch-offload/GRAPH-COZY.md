@@ -19,6 +19,7 @@ CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 \
   python graph_bindings_cpu.py
 CUDA_VISIBLE_DEVICES='' python replay_scope_host.py
 CUDA_VISIBLE_DEVICES='' python graph_guard_retirement_cpu.py
+CUDA_VISIBLE_DEVICES='' python graph_configuration_cpu.py
 ```
 
 This runs actual tied/strided Torch and tiny Diffusers VAE computation through the
@@ -32,6 +33,11 @@ controls: an ended binding remains alive but releases its sanctioned strong refe
 no-user-escape storage expires, while a true detached alias is detected and strongly
 retained until its final owner drops. Active binding close refuses and read-only
 coverage stays intact. This is CPU/source evidence, not native capture/Plan cleanup.
+The configuration client executes real CPU Conv2d before/after stride, padding and
+dilation tuple changes, including a nested module. Output geometry changes while
+Parameters/buffers stay identical, and the actual configuration key must change.
+Restoring the tuple restores the key; unsupported tuples holding Tensor/mutable
+contents do not become cache owners. Stale CUDA replay refusal still needs GPU proof.
 
 The coordinator must bind the exact native SDK, Python files, helper/Runtime hashes,
 GPU UUID and ordinary-Cozy caller before running isolated GPU children. No script
@@ -55,6 +61,9 @@ and cleanup. Keep all stdout/stderr/artifacts on failure and do not lower assert
   independent old outputs, an escaped native alias on a graph Region, and stale-version
   selection refusal with earlier output/version preservation.
   It also observes restoration of a known enclosing offload Plan after segment replay.
+  Additional real Conv2d cases mutate stride/padding/dilation tuples after capture,
+  require GraphInvalidated before another actual replay hook, preserve an earlier
+  output, then restore the original tuple and replay the same definition successfully.
 - Tail: after actual launch, gate the real copy consumer; prove native trim selected
   a last-consumer fence and stayed blocked before opening the gate. No early reclaim.
 - Reset: reset the actual CUDA executable in its launch-end hook while work is gated;
