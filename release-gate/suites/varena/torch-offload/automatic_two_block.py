@@ -156,6 +156,7 @@ def run(args):
             assert all(
                 row["cold_observations"] == 1
                 and row["native_peak"] is not None
+                and row["capture_pool_bytes"] is not None
                 and row["captures"] == row["replays"] == 0
                 for row in cold["boundaries"].values()
             ), cold

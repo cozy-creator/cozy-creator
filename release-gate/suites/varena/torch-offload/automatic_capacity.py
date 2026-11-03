@@ -64,6 +64,8 @@ def run(args):
             row = next(iter(owner.graph_facts()["boundaries"].values()))
             assert row["cold_observations"] == 1 and row["native_peak"] > 0
             native_peak = row["native_peak"]
+            capture_pool_bytes = row["capture_pool_bytes"]
+            assert capture_pool_bytes >= native_peak
             del cold
             stream.synchronize()
             vt.trim(device)
@@ -80,6 +82,7 @@ def run(args):
                 assert refused["capacity_refusals"] == 1
                 assert refused["reason"] == "prebody_capacity_refused"
                 assert refused["native_peak"] == native_peak
+                assert refused["capture_pool_bytes"] == capture_pool_bytes
                 assert refused["captures"] == refused["replays"] == 0
                 assert refused["cache"]["has_definition"] is False
                 assert len(body_calls) == calls_before + 1  # No warm/capture body.
@@ -95,6 +98,7 @@ def run(args):
             assert len(body_calls) == before_capture + 2  # Warmup + definition.
             promoted_row = next(iter(owner.graph_facts()["boundaries"].values()))
             assert promoted_row["native_peak"] == native_peak
+            assert promoted_row["capture_pool_bytes"] == capture_pool_bytes
             assert promoted_row["captures"] == promoted_row["replays"] == 1
             torch.testing.assert_close(promoted.cpu(), expected, rtol=0, atol=0)
             repeated = model(value)
@@ -119,6 +123,7 @@ def run(args):
             "passed": True,
             "gpu_executed": True,
             "native_peak_unchanged": native_peak,
+            "capture_pool_bytes_unchanged": capture_pool_bytes,
             "native_limit_for_fixture": baseline["mapped_bytes"],
             "refused": refused,
             "promoted": promoted_row,

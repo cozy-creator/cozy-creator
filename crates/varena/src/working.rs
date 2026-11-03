@@ -2239,9 +2239,16 @@ pub fn phase_leave(
     });
     let published = reason.is_empty() && active.invalid.is_none();
     let capture_pool_bytes = if published {
-        active.packing.as_ref()
+        let measured = active.packing.as_ref()
             .map(|trace| trace.capacity(active.owned_peak, owner.page))
-            .transpose()?.unwrap_or(0)
+            .transpose();
+        match measured {
+            Ok(bytes) => bytes.unwrap_or(0),
+            Err(error) => {
+                split::phase_finished(&mut state, active.token, false, "capture_packing_invalid");
+                return Err(error);
+            }
+        }
     } else {
         0
     };

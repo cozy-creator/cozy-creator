@@ -17,9 +17,10 @@ the ordinary eager path. No warmup is authorized by a cold sample alone.
 2. An eligible cold call opens one native eager observation, executes its original
    body once, classifies its actual outputs, and waits the final4634 helper's OPEN
    `scope.checkpoint()` before closing the observation. Only a published native
-   `successful_peak_bytes` is retained; alias/type refusals keep original results.
+   `successful_peak_bytes` and separate `successful_capture_pool_bytes` are retained;
+   alias/type refusals keep original results.
 3. A later matching call opens an unpublishing preparation observation, creates a
-   private pool and passes that exact native peak unchanged to `prepare_pool`.
+   private pool and passes that exact native packing capacity unchanged to `prepare_pool`.
    The admitted SAME pool reaches the private GraphSegment constructor BEFORE its
    first authored warmup. Static inputs/weights, scoped Use readiness and actual
    capture remain the existing checked frontend path. No multiplier/estimated cap.
@@ -54,7 +55,8 @@ observation path catches the public `vt.PhaseOverlapError` alias directly. Older
 and reject before entry/body rather than using capability/empty-tuple fallback.
 Other native admission errors on the required SDK still propagate unchanged.
 
-`owner.graph_facts()` returns passive reasons/counters/native keys and peaks, not
+`owner.graph_facts()` returns passive reasons/counters/native keys, charged `native_peak`
+and separate trace-derived `capture_pool_bytes`, not
 graph/Plan/Region/tensor handles. Scope counts and Python facts are not GPU proof.
 
 ## Real two-block application

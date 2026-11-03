@@ -577,6 +577,7 @@ class _Selection:
     key: _InvocationKey | None = None
     native_key: str | None = None
     peak: int | None = None
+    capture_pool_bytes: int | None = None
     reason: str | None = None
     cold_decline: str | None = None
     cache: _GraphCacheEntry | None = None
@@ -732,7 +733,8 @@ class _AutomaticGraphs:
                 # False means absent; an active native key raises Busy instead.
                 vt.phase_forget(owner._owner.device.index, state.native_key)
         state.key, state.native_key = key, key.native_key(self._generation)
-        state.peak, state.reason, state.cold_decline = None, None, None
+        state.peak, state.capture_pool_bytes = None, None
+        state.reason, state.cold_decline = None, None
         return None
 
     def dispatch(self, module, original, args, kwargs, scope):
@@ -807,12 +809,17 @@ class _AutomaticGraphs:
                     if reason is not None:
                         state.reason = state.cold_decline = reason
                     elif row["published"]:
-                        peak = row["successful_capture_pool_bytes"]
-                        if type(peak) is not int or peak < 0:
+                        peak = row["successful_peak_bytes"]
+                        capture_pool_bytes = row["successful_capture_pool_bytes"]
+                        if any(
+                            type(value) is not int or value < 0
+                            for value in (peak, capture_pool_bytes)
+                        ):
                             raise adapter.OffloadError(
-                                "native automatic measurement returned no capture pool capacity"
+                                "native automatic measurement returned invalid peak or packing capacity"
                             )
-                        state.peak = peak  # Verbatim native capacity, no sizing policy.
+                        state.peak = peak
+                        state.capture_pool_bytes = capture_pool_bytes
                     else:
                         state.reason = "native_sample_unpublished"
                     return result  # Original cold result, exactly once.
@@ -835,7 +842,9 @@ class _AutomaticGraphs:
                                 preparation = execution["preparation"] = _Preparation()
                                 pool = tuple(torch.cuda.graph_pool_handle())
                                 if not preparation.prepare(
-                                    owner._owner.device.index, pool, state.peak
+                                    owner._owner.device.index,
+                                    pool,
+                                    state.capture_pool_bytes,
                                 ):
                                     state.capacity_refusals += 1
                                     eager_reason = "prebody_capacity_refused"
@@ -910,6 +919,7 @@ class _AutomaticGraphs:
                     "reason": state.reason,
                     "native_key": state.native_key,
                     "native_peak": state.peak,
+                    "capture_pool_bytes": state.capture_pool_bytes,
                     "eager_calls": state.eager_calls,
                     "cold_observations": state.cold_observations,
                     "captures": state.captures,
