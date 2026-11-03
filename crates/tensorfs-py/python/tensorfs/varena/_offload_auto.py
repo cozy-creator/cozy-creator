@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
@@ -36,6 +39,114 @@ _REVIEWED_MODULES = (
 )
 _REVIEWED_FORWARDS = {kind: kind.forward for kind in _REVIEWED_MODULES}
 _UNSUPPORTED_TREE = object()
+
+
+class _GraphCacheEntry:
+    """One native-pressure cache registration and one graph definition.
+
+    Automatic callers retain admission for their full selection/execution. Only
+    the native callback uses the graph's private lock-only retirement path.
+    """
+
+    def __init__(self, device):
+        from ._runtime import CacheOwner
+
+        self._pid = os.getpid()
+        self._lock = threading.RLock()
+        self._closing = False
+        self._failure = None
+        self.segment = None
+        self._callback = self._shrink  # Retain native weak callback's actual target.
+        self._native = CacheOwner(device, self._callback)
+        self._native.suspend()
+
+    def _check_process(self):
+        from ._offload import OffloadError
+
+        if self._pid != os.getpid():
+            raise OffloadError("automatic cache entries cannot be used after fork")
+
+    @contextmanager
+    def admission(self):
+        from ._offload import OffloadError
+
+        self._check_process()
+        with self._lock:
+            if self._closing:
+                raise OffloadError("automatic cache entry is closing")
+            self._native.check()
+            if self.segment is not None and self.segment._failure is not None:
+                raise OffloadError("cached graph execution ownership is unproven")
+            if self._failure is not None:
+                raise OffloadError(
+                    "automatic cache retirement failed"
+                ) from self._failure
+            yield self
+
+    def publish(self, segment):
+        from ._offload import OffloadError
+
+        with self.admission():
+            if self.segment is not None:
+                raise OffloadError(
+                    "retire the previous cache definition before publishing"
+                )
+            if segment._closed or segment._closing or segment._failure is not None:
+                raise OffloadError("cannot cache a closed or unproven graph")
+            self.segment = segment
+            self._native.touch()
+
+    def touch(self):
+        with self.admission():
+            if self.segment is not None:
+                self._native.touch()
+
+    def _shrink(self, _wanted):
+        # Native intent, never a byte credit or a Python victim/size policy.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._closing or self._failure is not None or self.segment is None:
+                return False
+            try:
+                if not self.segment._try_retire_cached():
+                    return False
+                self.segment = None
+                self._native.suspend()
+            except BaseException as error:
+                self._failure = error
+                raise
+            return True  # Native ready-only trim still owns physical release.
+        finally:
+            self._lock.release()
+
+    def facts(self):
+        self._check_process()
+        held = self._lock.acquire(blocking=False)
+        try:
+            return {
+                "has_definition": self.segment is not None,
+                "admission_busy": not held,
+                "closing": self._closing,
+                "failure": str(self._failure) if self._failure is not None else None,
+                "native": self._native.facts(),
+            }
+        finally:
+            if held:
+                self._lock.release()
+
+    def close(self):
+        """Controller calls outside offload/entry locks after stopping admission."""
+        self._check_process()
+        with self._lock:
+            self._closing = True
+        self._native.close()  # Drain without the locks a callback may need.
+        with self._lock:
+            segment = self.segment
+        if segment is not None:
+            segment.close()  # Public path takes the model lock in its normal order.
+        with self._lock:
+            self.segment = None
 
 
 @dataclass
