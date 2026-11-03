@@ -76,7 +76,9 @@ it is never caught after execution to silently retry/fallback.
 
 ## First-call measurement, then capture
 
-The separate eager component-stream helper is Agent2-owned; this lane does not
+The separate eager component-stream helper is now root-local
+`/root/p3_trim_qualification_nov3`-owned (superseding the inactive external Agent2
+assignment); this lane does not
 duplicate or edit its new file. Compose its eventual exact API outside automatic
 dispatch: component input/output scope -> measured eager/graph dispatcher on the
 actual selected stream -> one outer output handoff. Reuse that selected stream and
@@ -87,8 +89,11 @@ recording alone is not an ordering/completion witness. Never redirect an explici
 stream change back to an assumed owner stream. Capture bindings bypass eager helper
 joins/records; their frozen exports/stream ownership remain authoritative. VAE
 decode/encode entry coverage is separate from a root.forward-only wrapper. Exact
-minimal shared wiring will be composed by this lane after Agent2 provides its helper
-interface; no second stream helper or speculative per-op fence removal is introduced.
+minimal shared wiring will be composed by this lane after that local owner provides
+its helper interface; inactive Agent2 review is not a blocker. No second stream helper
+or speculative per-op fence removal is introduced. Adoption provenance must record
+the final composed owned wrapper and its actual original implementation, not infer
+approval from user-supplied __wrapped__ annotations.
 
 The state machine is cold -> measured -> prepared/cached; a changed key retires the old
 selection. No invocation executes eager as a retry after capture/replay has begun.
