@@ -18,6 +18,8 @@ DLPack repr(C) fields, capsule name and deleter must match the consumer. Checked
 
 Allocator callback ABI receives a valid writable Failure from the native shim. catch_unwind contains allocation/destructor panics; fork rejection precedes inherited state access. Bindings must remain static and layout-identical to the shim. Preserve sticky callback errors and process custody; do not move allocator policy into this bridge.
 
+The current-profile private table ABI2 adds borrowed physical-segment/block descriptors and a process-lifetime observer callback. Descriptor arrays and snapshot visitor context remain live only for the synchronous call. The shim contains C++ exceptions; Rust contains panics. Observer callbacks take no GIL and do not re-enter Varena. Initial inventory/subscription is atomic under registry/Working locks; failed map/free observation poisons the owner before any unmap, reuse or credit. The C++ observer retains scalar metadata, not tensor or Region owners. Torch's separate snapshot/trace-registration calls do not provide an atomic API handshake; see `working-observer.md`.
+
 ## `crates/tensorfs/examples/raw_source.rs`
 
 Three unsafe host-read calls have live mutable Vec destinations and owned checkpoint/source inputs. Overlap and cancellation cases must retain refusal bytes; fixture never claims GPU proof from the host path.

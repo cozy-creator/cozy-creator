@@ -1,10 +1,15 @@
 // Torch's pool filter and exception ABI stay here; allocation policy stays in Rust.
 #include <c10/core/Allocator.h>
 #include <c10/util/Exception.h>
+#include <c10/util/ApproximateClock.h>
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <cstdio>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -26,6 +31,22 @@ struct Failure {
     int32_t cuda;
     char message[512];
 };
+struct Segment {
+    int32_t device;
+    uint64_t address;
+    size_t bytes;
+    size_t size_class;
+    uint64_t pool_a;
+    uint64_t pool_b;
+};
+struct SnapshotBlock {
+    size_t bytes;
+    size_t requested;
+    int32_t allocated;
+    int32_t active;
+};
+using Observe = int32_t (*)(int32_t, const Segment*, size_t, Failure*);
+using Visit = int32_t (*)(void*, const Segment*, const SnapshotBlock*, size_t, Failure*);
 struct Bindings {
     uint32_t abi;
     uint32_t size;
@@ -36,6 +57,8 @@ struct Bindings {
     int32_t (*pool_begin)(int32_t, uint64_t, uint64_t, uint64_t, Failure*);
     int32_t (*pool_end)(int32_t, uint64_t, uint64_t, Failure*);
     int32_t (*pool_release)(int32_t, uint64_t, uint64_t, Failure*);
+    int32_t (*observe)(Observe, Failure*);
+    int32_t (*snapshot)(void*, Visit, Failure*);
 };
 Bindings core{};
 struct Route {
@@ -68,7 +91,7 @@ uint64_t stream_id(Stream stream) {
 
 extern "C" {
 VR_EXPORT int varena_torch_bind(const Bindings* bindings) noexcept {
-    if (!bindings || bindings->abi != 1 || bindings->size != sizeof(Bindings) || core.abi != 0) {
+    if (!bindings || bindings->abi != 2 || bindings->size != sizeof(Bindings) || core.abi != 0) {
         return -1;
     }
     core = *bindings;
@@ -193,3 +216,137 @@ VR_EXPORT void varena_torch_release_pool(int device, Pool pool) noexcept {
     core.pool_release(device, pool.first, pool.second, &error);
 }
 } // extern "C"
+
+namespace {
+namespace torch_allocator = torch::cuda::CUDAPluggableAllocator;
+namespace caching = c10::cuda::CUDACachingAllocator;
+
+template <class F>
+int32_t contain(Failure* failure, F&& operation) noexcept {
+    try {
+        operation();
+        return 1;
+    } catch (const std::exception& error) {
+        failure->kind = 3;
+        std::snprintf(failure->message, sizeof(failure->message), "%s", error.what());
+    } catch (...) {
+        failure->kind = 3;
+        std::snprintf(failure->message, sizeof(failure->message), "unknown Working observer exception");
+    }
+    return 0;
+}
+
+class VarenaAllocator final : public torch_allocator::CUDAPluggableAllocator {
+    std::mutex observer_mutex_;
+    std::map<std::pair<int32_t, uint64_t>, Segment> segments_;
+    std::vector<caching::AllocatorTraceTracker> trackers_;
+public:
+    VarenaAllocator() : CUDAPluggableAllocator(varena_torch_malloc, varena_torch_free) {
+        set_reset_fn(varena_torch_reset);
+        set_record_stream_fn(varena_torch_record_stream);
+        set_begin_allocate_to_pool(varena_torch_begin_pool);
+        set_end_allocate_to_pool_fn(varena_torch_end_pool);
+        set_release_pool(varena_torch_release_pool);
+    }
+
+    void observe(int32_t action, const Segment* segments, size_t count) {
+        // Native Working state is already held. No callback may acquire the GIL or
+        // re-enter Varena. NCCL's callback takes only hook/communicator locks and
+        // calls NCCL registration, never this allocator's allocation entrypoints.
+        std::lock_guard<std::mutex> lock(observer_mutex_);
+        if (action == 0) {
+            std::map<std::pair<int32_t, uint64_t>, Segment> initial;
+            for (size_t i = 0; i < count; ++i) {
+                const auto& segment = segments[i];
+                TORCH_CHECK(initial.emplace(std::make_pair(segment.device, segment.address), segment).second,
+                            "Varena duplicate initial Working segment");
+            }
+            TORCH_CHECK(segments_.empty() && trackers_.empty(), "Varena observer already initialized");
+            segments_.swap(initial);
+            return;
+        }
+        TORCH_CHECK(count == 1 && (action == 1 || action == 2), "invalid Varena Working observation");
+        const auto& segment = segments[0];
+        const auto key = std::make_pair(segment.device, segment.address);
+        if (action == 1) {
+            TORCH_CHECK(segments_.emplace(key, segment).second, "Varena duplicate Working map");
+        } else {
+            const auto found = segments_.find(key);
+            TORCH_CHECK(found != segments_.end() && found->second.bytes == segment.bytes &&
+                        found->second.pool_a == segment.pool_a && found->second.pool_b == segment.pool_b,
+                        "Varena Working retirement identity mismatch");
+        }
+        caching::TraceEntry event(action == 1 ? caching::TraceEntry::SEGMENT_ALLOC : caching::TraceEntry::SEGMENT_FREE,
+            static_cast<c10::DeviceIndex>(segment.device), segment.address, segment.bytes, nullptr,
+            {segment.pool_a, segment.pool_b}, c10::getApproximateTime());
+        for (const auto& tracker : trackers_) tracker(event);
+        // A throwing tracker leaves the range retained. Rust poisons its owner
+        // before returning; it must neither unmap nor reuse that physical backing.
+        if (action == 2) segments_.erase(key);
+    }
+
+    caching::SnapshotInfo snapshot(Pool pool, bool /*include_traces*/) override {
+        struct VisitContext { caching::SnapshotInfo snapshot; Pool pool; } context{{}, pool};
+        // Do not hold observer_mutex_ across native state traversal: mutations
+        // acquire those locks in the opposite direction before notifying us.
+        const auto visit = +[](void* raw, const Segment* segment, const SnapshotBlock* blocks,
+                               size_t count, Failure* failure) -> int32_t {
+            return contain(failure, [&] {
+                auto& context = *static_cast<VisitContext*>(raw);
+                const Pool identity{segment->pool_a, segment->pool_b};
+                if (context.pool != Pool{0, 0} && context.pool != identity) return;
+                caching::SegmentInfo value{};
+                value.device = static_cast<c10::DeviceIndex>(segment->device);
+                value.address = segment->address;
+                value.total_size = segment->bytes;
+                value.is_large = segment->size_class > (1 << 20);
+                value.owner_private_pool_id = identity;
+                for (size_t i = 0; i < count; ++i) {
+                    caching::BlockInfo block{};
+                    block.size = blocks[i].bytes;
+                    block.requested_size = blocks[i].requested;
+                    block.allocated = blocks[i].allocated != 0;
+                    block.active = blocks[i].active != 0;
+                    if (block.allocated) {
+                        value.allocated_size += block.size;
+                    }
+                    if (block.active) {
+                        value.active_size += block.size;
+                        value.requested_size += block.requested_size;
+                    }
+                    value.blocks.push_back(std::move(block));
+                }
+                context.snapshot.segments.push_back(std::move(value));
+            });
+        };
+        Failure failure{};
+        core.snapshot(&context, visit, &failure);
+        check(failure);
+        return std::move(context.snapshot);
+    }
+
+    void attachAllocatorTraceTracker(caching::AllocatorTraceTracker tracker) override {
+        std::lock_guard<std::mutex> lock(observer_mutex_);
+        trackers_.push_back(std::move(tracker));
+    }
+};
+
+// Process-lifetime ownership: native callbacks remain valid after Python drops
+// its installation handles and throughout Torch/global destructor ordering.
+auto& installed_allocator = *new std::shared_ptr<VarenaAllocator>();
+
+int32_t observe_working(int32_t action, const Segment* segments, size_t count, Failure* failure) noexcept {
+    return contain(failure, [&] { installed_allocator->observe(action, segments, count); });
+}
+} // namespace
+
+extern "C" VR_EXPORT int32_t varena_torch_install(Failure* failure) noexcept {
+    return contain(failure, [&] {
+        TORCH_CHECK(core.abi == 2 && !installed_allocator, "Varena allocator installation identity mismatch");
+        installed_allocator = std::make_shared<VarenaAllocator>();
+        Failure observed{};
+        core.observe(observe_working, &observed);
+        check(observed);
+        torch_allocator::changeCurrentAllocator(installed_allocator);
+    });
+}

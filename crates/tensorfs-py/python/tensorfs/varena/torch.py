@@ -31,7 +31,6 @@ PoolId: TypeAlias = tuple[int, int]
 _lock = threading.Lock()
 _owner = 0
 _library: ctypes.CDLL | None = None
-_allocator: Any = None
 _CAPTURE_CAPACITY_PREFIX = "[tensorfs.varena.capture_capacity.v1] "
 
 
@@ -86,7 +85,7 @@ def _activation_device(device: DeviceLike) -> int:
 
 def _bind_allocator() -> None:
     """Private Runtime CPU-only selection; device activation requires its explicit Start."""
-    global _owner, _library, _allocator
+    global _owner, _library
     import torch
 
     if _owner and _owner != os.getpid():
@@ -107,7 +106,7 @@ def _bind_allocator() -> None:
             actual = json.loads(metadata.read_text())
             runtime_torch = str(torch.__version__)
             expected = {
-                "abi": 1, "cuda": torch.version.cuda,
+                "abi": 2, "cuda": torch.version.cuda,
                 "cxx11_abi": int(torch._C._GLIBCXX_USE_CXX11_ABI),
                 "system": platform.system(), "machine": platform.machine(),
             }
@@ -122,23 +121,15 @@ def _bind_allocator() -> None:
             if native.varena_torch_bind(bindings) != 0:
                 raise RuntimeError("Varena Torch shim refused its native function table")
 
-            def address(name: str) -> int:
-                return cast(int, ctypes.cast(getattr(native, name), ctypes.c_void_p).value)
+            class Failure(ctypes.Structure):
+                _fields_ = [("kind", ctypes.c_int32), ("cuda", ctypes.c_int32), ("message", ctypes.c_char * 512)]
 
-            allocator = torch.cuda.memory.CUDAPluggableAllocator(
-                str(library), "varena_torch_malloc", "varena_torch_free"
-            )
-            hooks = allocator.allocator()
-            for setter, symbol in (
-                ("set_record_stream_fn", "varena_torch_record_stream"),
-                ("set_reset_fn", "varena_torch_reset"),
-                ("set_begin_allocate_to_pool", "varena_torch_begin_pool"),
-                ("set_end_allocate_to_pool_fn", "varena_torch_end_pool"),
-                ("set_release_pool", "varena_torch_release_pool"),
-            ):
-                getattr(hooks, setter)(address(symbol))
-            torch.cuda.memory.change_current_allocator(allocator)
-            _library, _allocator, _owner = native, allocator, os.getpid()
+            native.varena_torch_install.argtypes = [ctypes.POINTER(Failure)]
+            native.varena_torch_install.restype = ctypes.c_int32
+            failure = Failure()
+            if native.varena_torch_install(ctypes.byref(failure)) != 1 or failure.kind:
+                raise RuntimeError(bytes(failure.message).decode("utf-8", errors="replace"))
+            _library, _owner = native, os.getpid()
             _bind_stats(torch)
 
 
