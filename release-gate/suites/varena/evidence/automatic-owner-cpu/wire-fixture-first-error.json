@@ -1,0 +1,1 @@
+{"error": "fixture passed dict to native decode_command; actual API takes bytes", "product_changed": false}

@@ -1,0 +1,104 @@
+{
+  "baseline_head": "8e4f845e80c224c62657c1ceccba2a64421958e8",
+  "sdk": {
+    "preferred_native": "b40f91f736a8a713229465c631e3b475428c6fb5",
+    "features": [
+      "549f4915534c6f6d6840465b905d69038b07bbe7",
+      "12425d44ff3de33b791f79937a2645c827529b51"
+    ],
+    "approved_parent": "14e8f95dab4fff76f52b02616bdb453b62f94c8c",
+    "audited_master": "7626bc995a5d14bb81e7fd3712896c77b8f4ccdd",
+    "artifact_hashes": {
+      "core": "1d6b24dd4a32bd285daaa2f827f9dcd714ff96638080b78957d43c328ef854e0",
+      "extension": "cf0ec25f2c59c006a72f0e102632983ce9f4f4678a346b104d6ed5ba30ebff64"
+    },
+    "copy_source": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-graph-native-audited",
+    "owned_package": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-offload-graphs/.task/audited-source/crates/tensorfs-py/python/tensorfs",
+    "scope": "Read-only audited native/source copy plus feature-only Plan/graph Python overlay; no native/context snapshot imported into branch or cache writes."
+  },
+  "overlay_hashes": {
+    "_offload.py": "2597ec31cf680c57d070dbf017798f5249ed33121d09064269c1dfd0839925f7",
+    "_offload_graph.py": "1462072e298e8d2d7639dfc502ea4d0ad586a76634c2c132f5d846441e4ba452",
+    "torch.py": "7fbb79e817798a7aa2f932268bf68fcf6ba0f925a0a9a326b8c34617266e3566"
+  },
+  "results": [
+    {
+      "client": "graph_configuration_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "graph_guard_retirement_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "graph_bindings_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "shallow_copy_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "inference_alias_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "adapter_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "review_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "intent",
+      "exit_code": 0
+    },
+    {
+      "client": "plan_retirement_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "clip_inventory_cpu",
+      "exit_code": 0
+    },
+    {
+      "client": "replay_scope_host",
+      "exit_code": 0
+    }
+  ],
+  "command": "nice -n19 CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 HF_HUB_OFFLINE=1 PYTHONPATH=<owned audited SDK and exact current Python overlay> <torch-cpu>/bin/python <client>",
+  "scope": "Real CPU Conv2d configuration/output and other model/native-host controls. CUDA stale replay and native capture/Plan cleanup unrun; no claim about coordinator771/873 H100 qualification.",
+  "feature_commit": "f0989b046d29719e43ce8683e06437aacca8ab6f",
+  "prior_guard_plan_feature": "bd08f2eedc4a7d6be2a8ebf39851ae25b52afb15",
+  "prior_guard_plan_proof": "8e4f845e80c224c62657c1ceccba2a64421958e8",
+  "review": "outputs/xs138-graph-adapter-review-20261102/report.md",
+  "red": "Four actual CPU Conv2d controls change output shape with identical Parameters/buffers, but old configuration fingerprint stays unchanged.",
+  "green": "Stride/padding/dilation and nested Conv tuple changes alter actual fingerprint; exact reference output, restoration and no Tensor/mutable tuple ownership pass.",
+  "gpu": "UNRUN here. Prepared graph_frontend_gpu Conv cases require GraphInvalidated before extra replay hook, prior output preservation and original-tuple restoration/reuse. Existing capture_escape mode covers guard/Plan ownership; native failure paths remain GPU-unqualified.",
+  "checks": [
+    "Eleven actual CPU/native-host clients exit0",
+    "Ruff source/new CPU and changed GPU client pass",
+    "Ruff format check pass",
+    "Python syntax compile and git diff --check pass"
+  ],
+  "file_hashes": {
+    "config-final-adapter_cpu.json": "cb2f90517c2f194dd6bbd5d44de86ac354905f518150dc56980d4119ed00ef36",
+    "config-final-clip_inventory_cpu.json": "3e2e43c687c9361fc29e671e16cd6e0fb40a378d718c2adfaaa1731e005a5a33",
+    "config-final-graph_bindings_cpu.json": "71f8bcd3f48cc5ee8dd6b34b88c280f87062c9a661837ddbcf67f35d990cc335",
+    "config-final-graph_configuration_cpu.json": "8e43729c4c00737ae8a36b2011bd1100520581467ff5f7bfd3c954cd2e33f27e",
+    "config-final-graph_guard_retirement_cpu.json": "f4c704be216e6fdeec58b1970f5674bd98ae04e11495b238733fbc280f688e37",
+    "config-final-inference_alias_cpu.json": "fb477bfd15de98a1b7931675fafb8cf86fb229143d8479a61ad6544dd4297ab9",
+    "config-final-intent.json": "3b49985d18bc0e683394108439d5b145844d2e75258420720e45ec6cad24e470",
+    "config-final-manifest.json": "f6b8f24cfd438e778a79d543ed1ffe6bcbcf14d58f1fd0edbeff7da3876a3e79",
+    "config-final-plan_retirement_cpu.json": "8a3ced774bb15f4b54744baa959f40add2f6bed6a8fbc797e1a7a772a4b91fa7",
+    "config-final-replay_scope_host.json": "5ac8e7c15921ab1d4bcb95478fb57227170af22b3ab5a4a30abad192a90de182",
+    "config-final-review_cpu.json": "198446a96c7e74d7799c12ab73537cffd58538afc6eaf9e599e117da042f3d3c",
+    "config-final-review_cpu.stderr": "e4cdb89334365fb78812a7d22464009875821bb5b69ad6a5fe29412c19207457",
+    "config-final-shallow_copy_cpu.json": "e66654f9cf7552f93e69fb92fa2a1dfb7d40fe9eb252684bba7e87431e283447",
+    "config-final-shallow_copy_cpu.stderr": "b9a38355520c90aff3870de395708827377f5ba645fd50cc8789d5170d24dc84",
+    "graph-configuration-green.json": "8e43729c4c00737ae8a36b2011bd1100520581467ff5f7bfd3c954cd2e33f27e",
+    "graph-configuration-red.json": "d9968b7c41229e119b4e97df35d2ba8b415e68c832b34ea4f4be943ad7cef318",
+    "graph-configuration-red.stderr": "ae037a84823d5dbee3ad14e59268aa302c5ede9144809d61aa1e36cf6e144975"
+  }
+}

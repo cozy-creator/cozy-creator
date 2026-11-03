@@ -1,0 +1,22 @@
+[
+  {
+    "client": "graph_resources_cpu",
+    "args": [],
+    "exit_code": 0
+  },
+  {
+    "client": "automatic_two_block",
+    "args": [
+      "--device",
+      "cpu"
+    ],
+    "exit_code": 0
+  },
+  {
+    "client": "automatic_two_block",
+    "args": [
+      "--help"
+    ],
+    "exit_code": 0
+  }
+]

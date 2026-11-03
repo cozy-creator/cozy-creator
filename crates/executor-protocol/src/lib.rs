@@ -1,9 +1,9 @@
 //! TensorD ↔ executor seam: the commands TensorD sends a Runtime executor, the replies, progress
 //! and requests the executor sends back, and TensorD's answers. One definition for both sides.
 //!
-//! Each side may be another release than the other (the cozy binary and the tensorfs wheel ship
-//! separately), so every reader is tolerant: an unknown field is ignored, a missing one takes its
-//! default, and only a needed field (one without a default here) fails, by its name.
+//! This is the current typed command contract. Declared optional fields take their defaults;
+//! required fields fail by name and removed commands are refused. The worker and Runtime
+//! use the same per-rank native cooperation contract before CUDA initialization.
 //!
 //! The tensorfs wheel takes this crate, not `protocol`, whose machine client is reqwest and everything under it.
 #![forbid(unsafe_code)]
@@ -39,16 +39,13 @@ pub enum Command {
     /// `actor`'s newest run capability at `tensorfs.endpoint`, sent outside any exchange and
     /// answered by nothing: the executor's reads and uploads there present it from now on.
     Capability(Capability),
-    /// The GPU memory it may hold on one of its devices, sent outside any exchange (a running
-    /// call takes it at once) and answered by nothing; only to an executor whose hello says `room`.
-    Room(Room),
 }
 
 impl Command {
     /// Every `cmd` TensorD sends.
-    pub const NAMES: [&'static str; 14] = [
+    pub const NAMES: [&'static str; 13] = [
         "hello", "shutdown", "start", "load", "activate", "prepare_request", "invoke", "map", "unload",
-        "probe", "fork", "capability", "cancel", "room",
+        "probe", "fork", "capability", "cancel",
     ];
 
     /// One command from its wire bytes. An unknown member is ignored and a missing one takes its
@@ -73,7 +70,6 @@ impl Command {
             "probe" => Command::Probe(one(fields)?),
             "fork" => Command::Fork(one(fields)?),
             "capability" => Command::Capability(one(fields)?),
-            "room" => Command::Room(one(fields)?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -94,9 +90,18 @@ impl Command {
             Self::Probe(_) => "probe",
             Self::Fork(_) => "fork",
             Self::Capability(_) => "capability",
-            Self::Room(_) => "room",
         }
     }
+}
+
+/// Categorical native participant settings, never a byte allowance or allocation grant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
+pub struct Cooperation {
+    pub uuid: String,
+    pub directory: PathBuf,
+    pub shared: bool,
+    pub priority: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -132,6 +137,9 @@ pub struct Start {
     /// card of this many bytes, the executor's memory budget, to test constrained VRAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_limit: Option<u64>,
+    /// One owner intent per sealed GPU, in device order. Empty on an import-only parent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cooperation: Vec<Cooperation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -186,22 +194,6 @@ pub struct PrepareRequest {
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Cancel {
     pub request_id: String,
-}
-
-/// What the executor may hold of one of its GPUs (design/vram-yield.md): `target` bytes of what
-/// the driver charges it, which charged it `held` at the machine's reading; none: no limit. Lower
-/// than it holds, it gives at once (Torch's cache, then weight pages, never below what its call
-/// needs to go on); higher, its running call takes it at its next pass. Re-sent, the same limit.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Room {
-    /// The device's ordinal in the executor (its first GPU is 0).
-    #[serde(default)]
-    pub device: u32,
-    #[serde(default)]
-    pub target: Option<u64>,
-    #[serde(default)]
-    pub held: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -553,8 +545,8 @@ pub struct Hello {
     pub tensorfs_version: String,
     /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
     pub request_lookahead: bool,
-    /// It takes `room` outside any exchange, a running call included.
-    pub room: bool,
+    /// Supports the typed, capture-safe automatic native donor owner protocol.
+    pub cooperative_owner: bool,
     pub sealed: BTreeMap<String, String>,
 }
 
@@ -688,6 +680,8 @@ pub struct Frame {
     pub quiescent: bool,
     pub poisoned: String,
     pub reused: bool,
+    /// Start acknowledgement: the configured cooperative participant actually opened.
+    pub cooperation_active: bool,
     /// Map: this explicit program was prepared now. None is weight-only warming.
     pub prepared: Option<bool>,
     /// `start` of a group (degree > 1): the follower ranks' pids, rank 1 first.
@@ -1266,7 +1260,7 @@ mod python {
         )*};
     }
     methods!(
-        Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
+        Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, Cooperation, CallInterface, InputMetadata, InputFile,
         ByteGrant, CallProgress, Answer, PublishPart, SavedFile
     );
 
@@ -1339,8 +1333,7 @@ mod python {
         Unload => Command::Unload,
         Probe => Command::Probe,
         Fork => Command::Fork,
-        Capability => Command::Capability,
-        Room => Command::Room
+        Capability => Command::Capability
     );
 }
 

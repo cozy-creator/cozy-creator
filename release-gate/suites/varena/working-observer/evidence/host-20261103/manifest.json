@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "product_feature": "990ac0c3b1767669a22297759582997c6216f3e5",
+  "source_context": "290d73ceda7d6526bb630e96fba8be2f5d9b8390",
+  "rc_application": "f90b49f0d14628ecefda86e8e42eec4f4cbd49a7",
+  "workspace_signal_version": "0.16.11",
+  "proof_scope": "host build/install/snapshot only; RCf90 has same feature over its separate16.10 context; no GPU qualification",
+  "cuda_crt": "nvidia-cuda-crt==13.2.86",
+  "native_files": {
+    "_ext.abi3.so": "32fdf9dd4a6ac9e88e4464b79287f14108d84698cf0fc6f2a2740f18f022f884",
+    "_varena_torch.so": "6474d9780258a088418d721c977ee79f2c778a08679e6588ddcd238fdb4755b0",
+    ".native/libvarena.so": "c7d87908767944590d0538ef32ca6571979f47a76cca9a22475844e6db64d0da",
+    ".native/libstd-7e719de9c4abc98f.so": "a6542f0e553640385e5dbe14978e82547127e157a7d260d03d23189cf73c906c"
+  },
+  "source_files": {
+    "crates/varena/src/working.rs": "789840111fd7bfa66de57ced6966cf7b4cb20de59cfe611ab7d343283b91852d",
+    "crates/varena/src/working/observer.rs": "b288f82347827861b092b1c903f452a4811ea644027c5931b8b3f3d2715b0941",
+    "crates/tensorfs-py/src/varena/working.rs": "e255ce1231d12c8090cc256597d95e724f8603ec2dacd3e87ae9c1899d965193",
+    "crates/tensorfs-py/shim/varena_torch.cpp": "87675f2c41e5a07219a98572a996f51ed2712bf92f63a6f633bf4fa0a0d96f1a",
+    "crates/tensorfs-py/shim/build.py": "5bacb32f0a08e40b807d9cbd030073d7afc29cb5d0e05a689bb5716b541d3cbb",
+    "crates/tensorfs-py/python/tensorfs/varena/torch.py": "e7c9911862f00aab3c53dc658a420115b92226673b4cefbcc631e279dddb4db0"
+  },
+  "excludes_followup": "fafa897c8 gap metadata was added after this build and remains separately uncompiled/unrun"
+}

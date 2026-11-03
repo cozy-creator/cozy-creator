@@ -1,0 +1,25 @@
+{
+  "command": [
+    "cozy",
+    "run",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache/9b98c10b9/controller-sorata/project/native_owners",
+    "--on",
+    "sorata",
+    "--gpus=1",
+    "--input",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-cache/9b98c10b9/controller-sorata/input-template.json",
+    "--json",
+    "--out",
+    "/home/fidika/cozy_v2/outputs/varena-v2-p0-20261031/p3-lifecycle-sparse-leg16-plan/attempt-002/next-cells/native-owners-artifacts"
+  ],
+  "input_sha256": "46eec608724df6bd27c320d53a0929ca0bcac08c73f1697b2793f3d722f92937",
+  "input": {
+    "source_sha": "9b98c10b958cb705b257d87cee26cec9fa11bf11",
+    "helper_sha256": "d10ddaf1a1c2b7c898deeb2153d734bdc78548cf2a7b8ed7455e9c618b655518",
+    "native_extension_sha256": "070d70182056a6d202b28a92db49b078ec9f0239ee7337f829d894e7cafff5e6",
+    "gpu_uuid": "GPU-846689c6-daf3-15b1-580e-f2a78bdf6748"
+  },
+  "started_at": "2026-11-01T20:12:49.000159+00:00",
+  "returncode": 0,
+  "finished_at": "2026-11-01T20:12:58.405449+00:00"
+}

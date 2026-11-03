@@ -155,10 +155,8 @@ impl Service {
         std::thread::Builder::new()
             .name("machine-dispatch".into())
             .spawn(move || owner.dispatch_loop())?;
-        for (name, sweeps) in [("machine-pressure", false), ("machine-reclaim", true)] {
-            let weak = Arc::downgrade(&service);
-            std::thread::Builder::new().name(name.into()).spawn(move || Self::reclaim_loop(weak, sweeps))?;
-        }
+        let weak = Arc::downgrade(&service);
+        std::thread::Builder::new().name("machine-reclaim".into()).spawn(move || Self::reclaim_loop(weak))?;
         Ok(service)
     }
     /// The executor pool every run runs on, once configured.
@@ -334,21 +332,14 @@ impl Service {
             self.engine.wait_activity(epoch, None);
         }
     }
-    /// GPU demand every half second, or (`sweeps`) the disk's caches on their cadence: each on its
-    /// own thread, so a long sweep never delays a GPU's relief.
-    fn reclaim_loop(weak: std::sync::Weak<Self>, sweeps: bool) {
-        if sweeps {
-            platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
-        }
+    /// Sweep disk caches on their cadence. Native Varena owns GPU pressure service.
+    fn reclaim_loop(weak: std::sync::Weak<Self>) {
+        platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
         let mut swept: Option<std::time::Instant> = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
-                    if !sweeps {
-                        if let Some(pool) = service.gpu() { pool.relieve_pressure(&service.engine); }
-                        continue;
-                    }
                     // The first once its packages are configured, so the disk is measured early.
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {

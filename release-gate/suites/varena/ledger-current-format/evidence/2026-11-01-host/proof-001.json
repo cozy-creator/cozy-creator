@@ -1,0 +1,137 @@
+{
+  "gpu_execution": false,
+  "passed": true,
+  "cases": {
+    "live_current_reopen": {
+      "same_snapshot": true,
+      "inode": 2430070
+    },
+    "wrong_version": {
+      "before": {
+        "dev": 29,
+        "ino": 2430070,
+        "size": 32160,
+        "sha256": "2ae80c3d2a899d76cc7a95080a5820c31fea6c2cc6b4030c23f9baead9dccb1a"
+      },
+      "after": {
+        "dev": 29,
+        "ino": 2430070,
+        "size": 32160,
+        "sha256": "2ae80c3d2a899d76cc7a95080a5820c31fea6c2cc6b4030c23f9baead9dccb1a"
+      },
+      "refusals": [
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: device, boot, UID, namespace or layout identity\n"
+        },
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: device, boot, UID, namespace or layout identity\n"
+        }
+      ]
+    },
+    "wrong_length": {
+      "before": {
+        "dev": 29,
+        "ino": 2430070,
+        "size": 32152,
+        "sha256": "44513d9c86927634da09c9f94ae2cedf95a4a4c166f7361081c2862cee528e1a"
+      },
+      "after": {
+        "dev": 29,
+        "ino": 2430070,
+        "size": 32152,
+        "sha256": "44513d9c86927634da09c9f94ae2cedf95a4a4c166f7361081c2862cee528e1a"
+      },
+      "refusals": [
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: layout length\n"
+        },
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: layout length\n"
+        }
+      ]
+    },
+    "unpublished_initialization": {
+      "passed": true
+    },
+    "old_live": {
+      "before": {
+        "dev": 29,
+        "ino": 2430072,
+        "size": 27024,
+        "sha256": "5d54c90dfd75a3439ddb0a6f3b6fae5594d14e4bb32ec068a937820e9272020b"
+      },
+      "after": {
+        "dev": 29,
+        "ino": 2430072,
+        "size": 27024,
+        "sha256": "5d54c90dfd75a3439ddb0a6f3b6fae5594d14e4bb32ec068a937820e9272020b"
+      },
+      "refusals": [
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: layout length\n"
+        },
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: layout length\n"
+        }
+      ]
+    },
+    "old_empty": {
+      "before": {
+        "dev": 29,
+        "ino": 2430074,
+        "size": 27024,
+        "sha256": "ef39c3d895097c03b10099db19aaae0d9213d40e13b2a0c5d98845e947ffdb95"
+      },
+      "after": {
+        "dev": 29,
+        "ino": 2430074,
+        "size": 27024,
+        "sha256": "ef39c3d895097c03b10099db19aaae0d9213d40e13b2a0c5d98845e947ffdb95"
+      },
+      "refusals": [
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: layout length\n"
+        },
+        {
+          "status": 1,
+          "stdout": "",
+          "stderr": "incompatible ledger: layout length\n"
+        }
+      ]
+    },
+    "replaced_path": {
+      "before": {
+        "dev": 29,
+        "ino": 2430070,
+        "size": 32160,
+        "sha256": "49fd1ef7554e7cf383b5768cea2706a289177e7253e994c87ebb3405bb3bad09"
+      },
+      "after": {
+        "dev": 29,
+        "ino": 2430075,
+        "size": 32160,
+        "sha256": "49fd1ef7554e7cf383b5768cea2706a289177e7253e994c87ebb3405bb3bad09"
+      },
+      "wait": "fcntl_setlk",
+      "error": "ledger publication is busy\n"
+    }
+  },
+  "binaries": {
+    "/home/fidika/cozy_v2/outputs/xs138-ledger-current-format/target/debug/examples/ledger_peer": "48c0be4568b67139f38e6285cb77ae8f7396d069c409ddd6cedd7158f53e249b",
+    "/home/fidika/cozy_v2/outputs/xs138-p3-ledger-v3/cpu-build-004/v2/ledger-gate-v2": "8a3ed16ea48d9d26972b803ae32276140d86cd57fcdb2f74294c9fa2461f8f3b"
+  }
+}
