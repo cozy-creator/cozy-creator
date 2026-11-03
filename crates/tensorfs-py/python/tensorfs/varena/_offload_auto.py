@@ -670,6 +670,9 @@ class _AutomaticGraphs:
             # token/sample untouched. Never classify a body error or its text.
             yield None
             return
+        # Native1a exposes several unrelated failures as RuntimeError. They
+        # propagate from the constructor above BEFORE yield/body; no phase_stats
+        # or split_context query can safely relabel them as observation overlap.
         try:
             yield observation
         finally:

@@ -40,6 +40,68 @@ def pointers(gpu, regions, stream):
     return result
 
 
+def check_parent_observations(owner, model, value, expected, stream, counts, mode):
+    """Real optional negative/typed gates; no admission error is retried eager."""
+    receipts = []
+    for name, supplied, wanted in (
+        ("two-block-caller", value, expected),
+        (None, value[:1], expected[:1]),
+    ):
+        before = list(counts.values())
+        old_keys = [
+            row["native_key"] for row in owner.graph_facts()["boundaries"].values()
+        ]
+        parent = vt.phase_enter(stream.device, name, mode="eager")
+        error_type = None
+        try:
+            if mode == "typed":
+                result = model(supplied)
+                stream.synchronize()
+                torch.testing.assert_close(result.cpu(), wanted, rtol=2e-5, atol=2e-6)
+                assert list(counts.values()) == [number + 1 for number in before]
+                assert all(
+                    row["reason"] == "parent_observation_active"
+                    for row in owner.graph_facts()["boundaries"].values()
+                )
+            else:
+                try:
+                    model(supplied)
+                except RuntimeError as error:
+                    # Expected negative control only. No message classification
+                    # and NO second authored execution in this invocation.
+                    error_type = type(error).__name__
+                    assert list(counts.values()) == before
+                else:
+                    raise AssertionError(
+                        "untagged admission was not refused before body"
+                    )
+        finally:
+            row = vt.phase_leave(stream.device, parent, completed=False)
+        assert row["observation_id"] == parent and row["key"] == name
+        assert old_keys == [
+            row["native_key"] for row in owner.graph_facts()["boundaries"].values()
+        ]
+        if name is not None:
+            vt.phase_forget(stream.device, name)
+        after = list(counts.values())
+        resumed = model(value)  # New request, after caller closed its own token.
+        stream.synchronize()
+        torch.testing.assert_close(resumed.cpu(), expected, rtol=2e-5, atol=2e-6)
+        assert list(counts.values()) == after
+        receipts.append(
+            {
+                "parent_key": name,
+                "same_token_returned": True,
+                "body_calls_during_refusal": [
+                    right - left for left, right in zip(before, after)
+                ],
+                "propagated_error_type": error_type,
+                "cached_replay_resumed": True,
+            }
+        )
+    return receipts
+
+
 def run(args):
     device = torch.device(args.device)
     if device.type == "cuda" and device.index is None:
@@ -218,58 +280,17 @@ def run(args):
                 fifth.cpu(), changed_expected, rtol=2e-5, atol=2e-6
             )
             assert list(counts.values()) == [3, 5]
-            # A caller-owned observation retains its exact token and gets one
-            # eager body, never an overlapping child observation/replay.
-            parent = vt.phase_enter(device, "two-block-caller", mode="eager")
-            try:
-                with_parent = model(value)
-                stream.synchronize()
-            finally:
-                parent_row = vt.phase_leave(device, parent, completed=False)
-            assert (
-                parent_row["observation_id"] == parent
-                and parent_row["key"] == "two-block-caller"
-            )
-            assert list(counts.values()) == [4, 6]
-            torch.testing.assert_close(
-                with_parent.cpu(), changed_expected, rtol=2e-5, atol=2e-6
-            )
-            assert all(
-                row["reason"] == "parent_observation_active"
-                for row in owner.graph_facts()["boundaries"].values()
-            )
-            after_parent = model(value)
-            stream.synchronize()
-            assert list(counts.values()) == [4, 6]  # Cached selection resumes.
-            torch.testing.assert_close(
-                after_parent.cpu(), changed_expected, rtol=2e-5, atol=2e-6
-            )
-            assert vt.phase_forget(device, "two-block-caller")
-            old_keys = [
-                row["native_key"] for row in owner.graph_facts()["boundaries"].values()
-            ]
-            unkeyed = vt.phase_enter(device, mode="eager")
-            try:
-                changed_shape = model(value[:1])
-                stream.synchronize()
-            finally:
-                unkeyed_row = vt.phase_leave(device, unkeyed, completed=False)
-            assert (
-                unkeyed_row["observation_id"] == unkeyed and unkeyed_row["key"] is None
-            )
-            assert list(counts.values()) == [5, 7]
-            assert old_keys == [
-                row["native_key"] for row in owner.graph_facts()["boundaries"].values()
-            ]
-            torch.testing.assert_close(
-                changed_shape.cpu(), changed_expected[:1], rtol=2e-5, atol=2e-6
-            )
-            restored_shape = model(value)
-            stream.synchronize()
-            assert list(counts.values()) == [5, 7]
-            torch.testing.assert_close(
-                restored_shape.cpu(), changed_expected, rtol=2e-5, atol=2e-6
-            )
+            parent_receipts = []
+            if args.phase_control != "none":
+                parent_receipts = check_parent_observations(
+                    owner,
+                    model,
+                    value,
+                    changed_expected,
+                    stream,
+                    counts,
+                    args.phase_control,
+                )
             final = owner.graph_facts()
             assert [row["captures"] for row in final["boundaries"].values()] == [1, 2]
             assert not owner._intent_frames and not owner._intent_failed
@@ -292,10 +313,14 @@ def run(args):
             "pool_bytes_before_pressure": before_pressure["pools_bytes"],
             "pool_bytes_after_pressure": physical["pools_bytes"],
             "native_request": request_facts,
-            "typed_parent_observation_eager_choice": True,
+            "parent_observation_control": args.phase_control,
+            "parent_observation_receipts": parent_receipts,
+            "typed_parent_observation_eager_choice": args.phase_control == "typed",
+            "unknown_admission_refused_before_body": args.phase_control == "untyped",
             "matmul_precision": torch.get_float32_matmul_precision(),
             "rng_state_preserved": True,
-            "unkeyed_parent_preserves_old_key_across_shape_change": True,
+            "unkeyed_parent_preserves_old_key_across_shape_change": args.phase_control
+            != "none",
         }
     finally:
         sys.setprofile(previous)
@@ -305,6 +330,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--timeout-s", type=float, default=30)
+    parser.add_argument(
+        "--phase-control",
+        choices=("none", "untyped", "typed"),
+        default="none",
+        help="Optional parent observation gate; default normal flow needs no typed native seam",
+    )
     options = parser.parse_args()
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
