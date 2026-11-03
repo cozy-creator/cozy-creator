@@ -329,7 +329,7 @@ class _Epoch:
                     )
         if not definition.regions:
             return
-        self.used = definition.owner._owner.gpu.use(
+        self.used = definition.owner._owner.gpu.prepare_use(
             definition.regions, self.stream.cuda_stream
         )
         if capture:

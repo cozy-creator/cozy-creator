@@ -1,11 +1,10 @@
 # Required graph-capable offload: segmented adapter contract
 
-Status: native ownership contract agreed; adapter implementation and actual CPU binding
-checks are present. Scoped native readiness is an Agent 2 dependency, and a capture
-helper opt-out from context synchronization awaits shared-file agreement. No GPU
-execution, streamed residency or performance is qualified here. Product input is
-`0af634eff39c1a28ea587e1b69516f9dc326d142`, packing upstream
-`2c2d05c755195921f816719ab9e3aad39638d62d`, fixtures `3c678dfcd`.
+Status: the segmented adapter, automatic selection, scoped Source readiness and hard-cut
+stream-local capture helper are implemented. Current capture/replay epochs use the explicit
+native `Gpu.prepare_use` admission described below. That new admission path still requires
+matching build and GPU qualification; older execution receipts retain their exact cohorts.
+The dependency/adoption history below is not a current installation recipe or a performance claim.
 
 ## Frontend seam
 
@@ -81,7 +80,8 @@ this metadata key; arbitrary Python globals/configuration are not generally capt
 1. Freeze the segment's immutable versions and prepare its Region Plan outside capture.
    Establish exclusive adapter access; dtype conversion cannot mutate a live definition.
 2. Prepare/warm supported compute and working pool outside capture. Acquire a public Use
-   on the explicit capture stream and create all typed weight exports before capture.
+   with `Gpu.prepare_use(regions, stream)` on the explicit capture stream and create all
+   typed weight exports before capture.
    Native Source publication/orders precede reads on that actual stream.
 3. Enter existing `vt.graph(graph, pool, stream, reserve_bytes, footprint)`.
    A private capture-binding context unwraps managed weights only to those prebound
@@ -114,6 +114,16 @@ on refusal, and uses no global retirement drain/context synchronization. It does
 settle unrelated producers or promise capture admission. `export_use` calls
 `gpu.eager`, so it must never be invoked during capture.
 GraphFootprint accounts captured Working; it does not itself account weight residency.
+
+`Gpu.prepare_use` is an explicit pre-body admission operation, not an allocator callback
+wait or a capacity grant. Native code retains the requested Region/Plan identities, measures
+missing backing and actual headroom, and can service one finite cache-owner pass before one
+acquisition. Python supplies only Regions and the actual stream. The GIL and native mutexes
+are released while waiting; the current entry's owner claims remain held because callbacks
+take those locks nonblocking. Callback returns and unrelated global releases are not admission
+credit. Unknown ownership, changed generations, failed service or remaining capacity shortfall
+propagate before authored work; no body or acquisition loop is retried. Ordinary `Gpu.use`
+and malloc/free recovery retain their nonwaiting callback contract. See [PUBLIC-API.md](PUBLIC-API.md).
 
 The native wait retains an ABI retirement lease that excludes new capture/replay
 admission on this device for the duration of the call. The wait set is scoped; the
@@ -148,8 +158,8 @@ For each call, under the segment's submission lock:
 
 1. Select the supplied actual stream, order input producers, and serialize access to
    static graph input/output storage behind the previous replay/copy completion event.
-2. Activate the segment's exact native Region intent outside launch. Acquire Use for
-   deduplicated Regions and fresh ordinary checked exports (one valid uint8 span per
+2. Activate the segment's exact native Region intent outside launch. Call `Gpu.prepare_use` for
+   deduplicated Regions, then create fresh ordinary checked exports (one valid uint8 span per
    Region is enough). Existing TensorExport owns Pin/family/Weight and preserves exact
    final-fence quarantine. Bare Use close is not the checked replay safety contract.
    Call wait_ready after the transient typed exports exist for every acquired capture
@@ -183,15 +193,16 @@ The same cached definition can survive eviction/refill at the same VA between ca
 Only active replay Regions and legitimate aliases hold weight residency. Pools retain
 their own graph/live-output/in-flight references under the existing mechanisms.
 Closing disables new submissions and retires the definition/pool only under the
-existing in-flight/consumer ownership contract; exact abandonment semantics are a
-native confirmation item, not a Python finalizer assumption.
+existing in-flight/consumer ownership contract. Torch's retained holder owns the detached
+resource payload, not the Offload/controller/graph control cycle; abandonment qualification
+must name its actual cohort and checked completion, rather than assume a nonblocking finalizer.
 
 Old definitions retain old immutable dtype versions for already submitted work. Model
 version/layout/configuration or buffer-address rebinding invalidates new selections;
 prepare a new definition. Existing output copies and escaped old aliases stay valid.
-The initial explicit primitive does not reuse derived Versions across dtype roundtrips
-or automatically select/cache eligible model boundaries; those remain required model
-integration work. Close unused/invalidated definitions to release their Working caches.
+The explicit primitive does not reuse derived Versions across dtype roundtrips. Automatic
+selection and native-pressure cache retirement are implemented separately in
+[TORCH-AUTO-GRAPHS.md](TORCH-AUTO-GRAPHS.md). Close unused/invalidated definitions to release their Working caches.
 
 Private pools are currently required. Explicit shared pools refuse until ordered-group
 replay/output semantics are implemented. Each cached Working pool retains its normal
@@ -262,7 +273,8 @@ source. Its build, safety and host-client results are separate from canonical1eb
 results, and neither is GPU proof. The earlier #2486 implementation/client mapping
 186165d9f/1761c0612 and its receipts remain historical evidence for their named cohorts;
 do not adopt context4463a4fd9. No further native ownership class, StageSource or unchecked
-Tensor export is required. Frozen #2449 is preserved. Valid-Use GPU/graph proof is pending.
+Tensor export is required. Frozen #2449 is preserved. Those host receipts do not themselves
+qualify valid-Use GPU or graph execution on another source cohort.
 
 `vt.replay_scope(device)` is exactly the agreed thin wrapper: construct existing
 `_ext._VarenaAllocatorCapture(device, replay=True)`, yield, close in finally. It adds
