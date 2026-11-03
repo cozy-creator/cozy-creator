@@ -1858,8 +1858,15 @@ pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
         ));
     }
     let Some(owner) = existing(device)? else {
+        if crate::consumer_streams::tracked(device, stream)? {
+            return Err(Error::Invalid("tracked consumer retirement needs an initialized working device"));
+        }
         return Ok(());
     };
+    crate::consumer_streams::retire(device, stream, || retire_stream_inner(&owner, device, stream))
+}
+
+fn retire_stream_inner(owner: &Working, device: i32, stream: u64) -> Result<()> {
     let captures = crate::capture_counts()?;
     crate::ensure_not_capturing(&captures, device)?;
     let mut state = owner.lock()?;

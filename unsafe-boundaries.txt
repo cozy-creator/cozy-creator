@@ -73,6 +73,7 @@ crates/varena/src/abi/tensor_export.rs
 crates/varena/src/async_fill.rs
 crates/varena/src/cooperative/domain.rs
 crates/varena/src/cuda.rs
+crates/varena/src/consumer_streams.rs
 crates/varena/src/fork_guard.rs
 crates/varena/src/ledger/os.rs
 crates/varena/src/lib.rs

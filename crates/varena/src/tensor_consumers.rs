@@ -5,7 +5,7 @@
 //! index lets Torch's allocator hook record interior pointers without owning that
 //! storage, taking allocator locks, or calling into Python.
 
-use crate::{Error, Pin, Region, Result};
+use crate::{Error, Pin, Region, Result, StreamUses};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -21,7 +21,7 @@ struct Family {
     base: u64,
     end: u64,
     reserved_end: u64,
-    streams: Mutex<Vec<u64>>,
+    streams: StreamUses,
     active: AtomicBool,
     uncertain: AtomicBool,
 }
@@ -55,6 +55,18 @@ impl Consumers {
             ));
         }
         valid_stream(initial_stream)?;
+        let streams = StreamUses::new(pin.device());
+        streams.declare(initial_stream)?;
+        Self::from_streams(pin, streams)
+    }
+
+    /// Register one independently owned storage with a Use's shared declarations.
+    /// Each storage still has its own pointer-route lifetime and physical Pin.
+    pub fn from_streams(pin: &Pin, streams: StreamUses) -> Result<Self> {
+        crate::check_process()?;
+        if streams.device() != pin.device() || !streams.declared()? {
+            return Err(Error::Invalid("tensor export requires declared same-device consumers"));
+        }
         let family = Arc::new(Family {
             pid: std::process::id(),
             region: pin.region().id(),
@@ -67,7 +79,7 @@ impl Consumers {
                 .ptr()
                 .checked_add(pin.region().allocated_bytes() as u64)
                 .ok_or(Error::Invalid("tensor consumer reservation overflow"))?,
-            streams: Mutex::new(vec![initial_stream]),
+            streams,
             active: AtomicBool::new(true),
             uncertain: AtomicBool::new(false),
         });
@@ -123,13 +135,9 @@ impl Consumers {
         {
             return Err((pin, Error::Invalid("tensor consumer completion is unproven")));
         }
-        let streams = match self.0.streams.lock() {
-            Ok(streams) => streams.clone(),
-            Err(_) => return Err((pin, Error::Poisoned("tensor consumer streams".into()))),
-        };
-        // No pointer-index or family mutex crosses native event operations.
-        // SAFETY: the caller supplies the final-submission guarantee above.
-        unsafe { pin.try_into_fenced_region(&streams) }
+        // SAFETY: the caller closes final submission. Shared epoch gates serialize
+        // fence installation with checked retirement, including delayed storage GC.
+        unsafe { self.0.streams.release_pin(pin) }
     }
 }
 
@@ -197,20 +205,7 @@ impl Family {
         let result = (|| {
             crate::check_process()?;
             valid_stream(stream)?;
-            let mut streams = self
-                .streams
-                .lock()
-                .map_err(|_| Error::Poisoned("tensor consumer streams".into()))?;
-            // Release closes admission before taking this same mutex to snapshot
-            // stream tails. An admitted declaration is included in that snapshot;
-            // a lookup that only retained metadata cannot match reused storage.
-            if !self.active.load(Ordering::Acquire) {
-                return Ok(false);
-            }
-            if !streams.contains(&stream) {
-                streams.push(stream);
-            }
-            Ok(true)
+            self.streams.declare_if(stream, || self.active.load(Ordering::Acquire))
         })();
         if result.is_err() {
             self.uncertain.store(true, Ordering::Release);

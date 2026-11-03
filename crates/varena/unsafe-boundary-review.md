@@ -20,6 +20,12 @@ Allocator callback ABI receives a valid writable Failure from the native shim. c
 
 The current-profile private table ABI2 adds borrowed physical-segment/block descriptors and a process-lifetime observer callback. Descriptor arrays and snapshot visitor context remain live only for the synchronous call. The shim contains C++ exceptions; Rust contains panics. Observer callbacks take no GIL and do not re-enter Varena. Initial inventory/subscription is atomic under registry/Working locks; failed map/free observation poisons the owner before any unmap, reuse or credit. The C++ observer retains scalar metadata, not tensor or Region owners. Torch's separate snapshot/trace-registration calls do not provide an atomic API handshake; see `working-observer.md`.
 
+## `crates/varena/src/consumer_streams.rs`
+
+The existing Pin final-consumer boundary is shared through checked stream epochs. Epoch gates exclude retirement/destruction until live-stream fences are installed; completed epochs certify that the caller stopped submission/declaration and checked the stream before destruction. Only those completed witnesses authorize `into_completed_region`. Refusal returns the exact Pin. Stable gate ordering and weak registry cleanup prevent lock inversion and raw-handle reuse from resurrecting old declarations. No raw CUDA FFI is added; see `consumer-stream-retirement.md`.
+
+Private Use/DLPack storage now shares one actual Arc Pin owner, rather than independently releasing cloned Pins during capture. Native Fill completion can release its producer Pin only while the shared exported owner retains that exact Region. LoadSlot storage ownership remains independent of its work owner. Unknown capture or fence closure retains the Pin through existing native quarantine; no Pin-count heuristic proves graph custody.
+
 ## `crates/tensorfs/examples/raw_source.rs`
 
 Three unsafe host-read calls have live mutable Vec destinations and owned checkpoint/source inputs. Overlap and cancellation cases must retain refusal bytes; fixture never claims GPU proof from the host path.
