@@ -339,7 +339,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let path = format!("/v1/projects/{}/runs", opened.id);
     let _: Opened = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     let status = format!("cozy project -p {} status", opened.path.display());
-    let mut failed = std::collections::HashSet::new();
+    let (mut failed, mut warned) = (std::collections::HashSet::new(), std::collections::HashSet::new());
     while let Some(event) = events.next().await {
         match event {
             Event::Started { run, .. } => {
@@ -354,7 +354,11 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                 output::say(ctx, &format!("{name}: {noun} {number} ({path})"));
             }
             Event::Said { message } => output::say(ctx, &message),
-            Event::Warning { message } => output::warn(&message),
+            Event::Warning { message } => {
+                if warned.insert(message.clone()) {
+                    output::warn(&message);
+                }
+            }
             Event::Failed { error } => {
                 output::failure(ctx, &error.message, &error.next);
                 failed.insert(error.message);

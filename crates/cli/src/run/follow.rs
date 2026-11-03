@@ -452,6 +452,8 @@ struct View {
     status: Option<Status>,
     /// The output items already named.
     named: HashSet<String>,
+    /// The log's warnings already said: each once.
+    warned: HashSet<String>,
     /// The progress last shown, and when its step count last moved: a step running far past its
     /// stage's pace says so.
     last: Option<(Progress, Instant)>,
@@ -481,6 +483,7 @@ impl View {
             waiting: None,
             status: None,
             named: HashSet::new(),
+            warned: HashSet::new(),
             last: None,
             stalled: None,
         };
@@ -541,7 +544,9 @@ impl View {
             }
             // A stage the run entered shows in its progress line as it goes.
             Event::Log { level, text, .. } if !matches!(level.as_str(), "info" | "debug" | "stage") => {
-                self.line(&format!("  {level}: {text}"));
+                if self.warned.insert(text.clone()) {
+                    self.line(&format!("  {level}: {text}"));
+                }
             }
             // A call that failed is told by its run's reason, or by `cozy run show` when its run went on.
             Event::Call { call, .. } if call.reason.is_none() => {
