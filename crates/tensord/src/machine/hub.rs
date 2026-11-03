@@ -43,7 +43,7 @@ impl Hub {
         })
     }
 
-    /// When the Hub last answered this machine, whatever it said; 0: never in this process.
+    /// When the Hub itself last answered this machine, whatever it said; 0: never in this process.
     pub fn contact_ms(&self) -> i64 {
         self.contact_ms.load(Ordering::Acquire)
     }
@@ -61,12 +61,16 @@ impl Hub {
         }
     }
 
-    /// An answer, or a refusal the Hub made, is contact; only an unreachable Hub is not.
+    /// An answer, or a refusal the Hub made, is contact. An unreachable Hub is not, nor a proxy's
+    /// page in its place (`http_<status>`, no Hub envelope: `no available server` when it is down),
+    /// so a pod still ends itself through the outage that page stands for.
     fn heard<T>(&self, answer: Result<T, hub_client::Error>) -> Result<T, Refusal> {
-        if !matches!(
-            answer,
-            Err(hub_client::Error::Call(_) | hub_client::Error::Credential(_))
-        ) {
+        let contact = match &answer {
+            Ok(_) => true,
+            Err(hub_client::Error::Hub { code, .. }) => !code.starts_with("http_"),
+            Err(_) => false,
+        };
+        if contact {
             self.contact_ms
                 .store(super::lifecycle::now_ms(), Ordering::Release);
         }
