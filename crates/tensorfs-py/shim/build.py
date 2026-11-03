@@ -38,7 +38,7 @@ def main() -> None:
     try:
         subprocess.run([
             os.environ.get("CXX", "c++"), "-O2", "-std=c++20", "-shared", "-fPIC",
-            "-Wall", "-Wextra", "-Werror", f"-D_GLIBCXX_USE_CXX11_ABI={abi}",
+            "-Wall", "-Wextra", "-Werror", "-DNDEBUG", f"-D_GLIBCXX_USE_CXX11_ABI={abi}",
             "-isystem", str(root / "include"), "-isystem", str(cuda_include), "-isystem", str(cuda_crt_include),
             str(Path(__file__).with_name("varena_torch.cpp")),
             f"-L{root / 'lib'}", f"-L{root.parent / 'nvidia/cu13/lib'}",
