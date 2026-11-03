@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the optional P0 Torch shim ahead of wheel assembly, without CUDA initialization."""
+"""Build the Linux Torch allocator shim ahead of wheel assembly, without CUDA initialization."""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,7 @@ import subprocess
 
 import torch
 
-TORCH_ABI_COHORTS = ("2.14.0+cu130", "2.14.1+cu130")
+TORCH_ABI_COHORT = "2.15.0+cu132"
 
 
 def main() -> None:
@@ -19,10 +19,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path(__file__).parents[1] / "python/tensorfs")
     args = parser.parse_args()
     if platform.system() != "Linux":
-        raise SystemExit("the P0 Torch shim build currently qualifies Linux only")
+        raise SystemExit("the Torch shim build currently qualifies Linux only")
     build_torch = str(torch.__version__)
-    if build_torch not in TORCH_ABI_COHORTS or torch.version.cuda != "13.0":
-        raise SystemExit(f"the reviewed P0 shim ABI covers {TORCH_ABI_COHORTS} with CUDA 13.0; got {build_torch} / {torch.version.cuda}")
+    if build_torch != TORCH_ABI_COHORT or torch.version.cuda != "13.2":
+        raise SystemExit(f"the reviewed shim ABI requires {TORCH_ABI_COHORT} with CUDA 13.2; got {build_torch} / {torch.version.cuda}")
     root = Path(torch.__file__).resolve().parent
     args.out.mkdir(parents=True, exist_ok=True)
     output = args.out / "_varena_torch.so"
@@ -40,7 +40,7 @@ def main() -> None:
     finally:
         temporary.unlink(missing_ok=True)
     metadata = {
-        "abi": 1, "torch": build_torch, "supported_torch": list(TORCH_ABI_COHORTS),
+        "abi": 1, "torch": build_torch, "supported_torch": [TORCH_ABI_COHORT],
         "cuda": torch.version.cuda, "cxx11_abi": abi,
         "system": platform.system(), "machine": platform.machine(),
         "torch_git": torch.version.git_version,

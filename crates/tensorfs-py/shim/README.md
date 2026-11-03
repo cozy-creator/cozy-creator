@@ -35,20 +35,10 @@ working allocations, including graph pools, separately from weight-region statis
 snapshots/profilers, `MemPool`, CUDA IPC, cuDNN benchmark mode and Inductor graph trees are not supported
 by this adapter. Rebinding does not repair aliases imported before installation.
 
-## Reviewed Torch ABI cohorts
+## Reviewed Torch ABI profile
 
-One binary admits exactly `2.14.0+cu130` and `2.14.1+cu130`, CUDA 13.0, with matching C++ ABI and
-platform. Metadata keeps the actual build's Torch version/commit as well as this finite list;
-future patches require another review. A model keeps its locked Torch version.
+The Linux RC admits exactly `2.15.0+cu132`, CUDA 13.2, with the actual build's C++ ABI and platform. The installed SDK reports Torch commit `d0f2af8b66b20da4baa50644c0cd3f887a2eae2e`. Build metadata records that version/commit and the single supported profile; other builds require a new review.
 
-The installed builds report commits `08187d9e0fba026dc8217405802ab5381dc88d90` and
-`5c4886908584029761b579af026dcfb627c84070`. Their complete 11-header `Exception.h` dependency
-closure, allocator headers, `libc10.so`, `libc10_cuda.so`, and Python memory/graph adapters are
-byte-identical. All six c10 symbols referenced by the shim are present. The actual commits also
-have identical [allocator callback code](https://github.com/pytorch/pytorch/blob/08187d9e0fba026dc8217405802ab5381dc88d90/torch/csrc/cuda/CUDAPluggableAllocator.cpp)
-and capture/lifetime implementations. `libtorch_cuda.so` differs; this is not a numerical-parity
-claim between Torch versions.
+The shim uses the SDK's `c10::MempoolId_t` directly. The actual CUDA pluggable-allocator header supplies the reviewed allocation/free, record-stream, reset and pool callback signatures; `c10::Error`, `OutOfMemoryError` and `AcceleratorError` remain the direct exception API. No older-Torch fallback is selected.
 
-This establishes candidate ABI admission, not GPU qualification. At the 2026-10-31 compatibility
-change, existing GPU receipts covered 2.14.1; the actual 2.14.0 stress/model runs remained pending
-in tracker xs-138. Build and runtime hashes remain separate evidence.
+Header inspection, compile/link and host loading establish ABI-build evidence only. Actual CUDA allocator, capture/replay, lifetime and model execution remain separate integrated gates. Historical 2.14 qualification receipts remain preserved under their original source and artifact identities.

@@ -1,4 +1,5 @@
 // Torch's pool filter and exception ABI stay here; allocation policy stays in Rust.
+#include <c10/core/Allocator.h>
 #include <c10/util/Exception.h>
 #include <algorithm>
 #include <atomic>
@@ -16,7 +17,7 @@
 #endif
 
 using Stream = struct CUstream_st*;
-using Pool = std::pair<unsigned long long, unsigned long long>;
+using Pool = c10::MempoolId_t;
 using Filter = std::function<bool(Stream)>;
 
 namespace {
