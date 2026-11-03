@@ -68,52 +68,41 @@ shots:
   - name: awaken
     setup: coast.sea
     duration_s: 6
-    description: |
-      summary:
-      The target video shows <kyogre> bursting out of the stormy sea of <coast>.
-
-      detailed_description:
-      [Shot 1] A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
-
-      overall_soundscape:
-      Howling wind, crashing waves, and rolling thunder.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <kyogre> bursts out of the stormy sea of <coast>.
+    soundscape: Howling wind, crashing waves, and rolling thunder.
+    beats:
+      - at: 0
+        description: |
+          A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds and the crater city small on the far right. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins and the red lines along its sides starting to glow. The camera tilts up at slow speed to follow its head as heavy rain starts to fall.
 
   - name: erupt
     setup: coast.cliffs
     duration_s: 6
-    description: |
-      summary:
-      The target video shows <groudon> clawing its way out of the lava cliffs of <coast> and roaring.
-
-      detailed_description:
-      [Shot 1] A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
-
-      overall_soundscape:
-      Cracking rock, hissing lava, heavy footfalls, and a deep roar.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <groudon> claws its way out of the lava cliffs of <coast> and roars.
+    soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
+    beats:
+      - at: 0
+        description: |
+          A wide shot from the rocks looks up at the lava cliffs of <coast>, with a stream of lava crossing near the bottom of the frame and rain turning to steam above it. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It plants one foot, the ground jumps, and it rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   - name: clash
     setup: coast.wide
     duration_s: 38
-    description: |
-      summary:
-      The target video shows <kyogre> and <groudon> fighting on <coast> in one continuous shot, from a blast of water to a collision in the surf.
-
-      detailed_description:
-      [Shot 1] A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left, with storm clouds and heavy rain on the left and hard sunlight on the right. One continuous shot with no cuts. The camera moves slowly closer throughout. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
-      At 00:14.000, <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
-      At 00:28.000, <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
-
-      overall_soundscape:
-      Crashing surf, roaring fire, bursts of steam, and deep impacts.
-
-      non_diegetic_music:
-      N/A
+    summary: |
+      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts, with storm clouds and heavy rain on the left and hard sunlight on the right. The camera moves slowly closer throughout.
+    soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
+    beats:
+      - at: 0
+        description: |
+          A wide shot shows <kyogre> in the surf on the left, facing right, and <groudon> on the rocks on the right, facing left. <kyogre> surges forward, pushing a wave ahead of it, and fires a thick column of water across the frame. It bursts into a cloud of white steam against the stone plates of <groudon>, which slides back one step, its claws scraping sparks from the rock.
+      - at: 14
+        description: |
+          <groudon> leans out of the steam and breathes a wide torrent of orange fire across the surf, and the water boils under it. <kyogre> dives beneath the flames, and a long wake races toward the rocks.
+      - at: 28
+        description: |
+          <kyogre> erupts from the water at the shoreline, and the two crash together chest to chest in the breaking waves. A wall of water and steam explodes outward and rushes toward the camera, which shakes as spray hits the lens.
 "#
     .into()
 }
@@ -273,10 +262,15 @@ struct Shot {
     name: String,
     /// `Environment.Setup`.
     setup: Option<String>,
-    /// Its whole text, sent as its function's `prompt`: opaque here but for its `<mentions>`. A
-    /// person writes the function's own conventions in it, and cozy adds none.
+    /// The scene, the same in every segment: opaque here but for its `<mentions>`.
     #[serde(default, deserialize_with = "or_default")]
-    description: String,
+    summary: String,
+    /// Its moments, on its own timeline. A cut is a new shot.
+    #[serde(default)]
+    beats: Vec<Beat>,
+    /// Its sound bed (else the project's), and its music.
+    soundscape: Option<String>,
+    music: Option<String>,
     duration_s: f64,
     /// World states its frame at `at` seconds (default: its end) becomes the next revision of.
     #[serde(default)]
@@ -292,12 +286,42 @@ struct Shot {
 }
 
 #[derive(Clone, Deserialize)]
+struct Beat {
+    /// Seconds from the shot's start.
+    at: f64,
+    #[serde(default, deserialize_with = "or_default")]
+    description: String,
+}
+
+#[derive(Clone, Deserialize)]
 struct Write {
     state: String,
     at: Option<f64>,
 }
 
 impl Shot {
+    /// Everything it says, where its `<mentions>` are.
+    fn texts(&self) -> Vec<String> {
+        std::iter::once(self.summary.clone()).chain(self.beats.iter().map(|beat| beat.description.clone())).collect()
+    }
+
+    /// Its beats before `end`, in order.
+    fn beats_to(&self, end: f64) -> Vec<Beat> {
+        let mut beats: Vec<Beat> = self.beats.iter().filter(|beat| beat.at < end).cloned().collect();
+        beats.sort_by(|a, b| a.at.total_cmp(&b.at));
+        beats
+    }
+
+    /// Its text up to `end` as one text, for a function that takes no beats. A time is plain words here.
+    fn flat(&self, end: f64) -> String {
+        let told = self.beats_to(end).into_iter().map(|beat| match beat.at > 0.0 {
+            true => format!("At {:02}:{:06.3}, {}", (beat.at / 60.0) as u64, beat.at % 60.0, beat.description.trim()),
+            false => beat.description.trim().to_owned(),
+        });
+        let told: Vec<String> = told.collect();
+        [self.summary.trim().to_owned(), told.join("\n")].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n\n")
+    }
+
     /// The state each of its writes is of, and where, inside its length.
     fn written(&self) -> impl Iterator<Item = (&str, f64)> {
         (self.writes.iter()).map(|write| (write.state.as_str(), write.at.unwrap_or(self.duration_s).min(self.duration_s).max(0.0)))
@@ -535,7 +559,7 @@ impl Video {
         let value = protocol::yaml::to_json(&folder.text()?)
             .map_err(|why| {
                 invalid("project_yaml", format!("{}: {why}", folder::PROJECT))
-                    .remedy("text that starts with `[`, such as `[Shot 1]`, goes on the lines under `description: |`")
+                    .remedy("text that starts with `[` goes on the lines under `description: |`")
             })?;
         let mut ignored: Vec<String> = vec![];
         let mut note = |path: serde_ignored::Path<'_>| ignored.push(path.to_string().replace("?.", ""));
@@ -726,7 +750,7 @@ impl Video {
             items.push(Item::State(w));
         }
         for (k, shot) in project.shots.iter().enumerate() {
-            let texts = vec![shot.description.clone()];
+            let texts = shot.texts();
             let (mut needs, mut implied) = (vec![], vec![]);
             if let Some(setup) = &shot.setup {
                 if !nodes.iter().any(|n| n.kind == "setup" && name_key(&n.id) == name_key(setup)) {
@@ -800,8 +824,8 @@ impl Video {
             format!("{reader} mentions {read}, which is made from it: that mention stays plain text")
         }));
         for shot in &project.shots {
-            if shot.video.is_none() && shot.description.trim().is_empty() {
-                warnings.push(format!("{} has no description: its renderer is given no text", shot.name));
+            if shot.video.is_none() && shot.texts().iter().all(|text| text.trim().is_empty()) {
+                warnings.push(format!("{} has no summary and no beats: its renderer is given no text", shot.name));
             }
             let mut written = BTreeSet::new();
             for write in &shot.writes {
@@ -1091,7 +1115,7 @@ impl Video {
                 // upscaler gets the details of the original): its description, the descriptions of
                 // what it reads, and the style.
                 let shot = &self.project.shots[k];
-                let mut text = shot.description.trim().to_owned();
+                let mut text = shot.flat(shot.duration_s);
                 let read = self.graph.find(&shot.name).map(|s| &self.graph.upstream[s]).into_iter().flatten();
                 for edge in read {
                     let (name, description) = match (self.items[edge.node], &edge.state) {
@@ -1140,7 +1164,8 @@ impl Video {
     /// before, and it is said.
     fn ends(&self, k: usize, accepts: &Accepts, said: &mut Vec<String>) -> Vec<f64> {
         let shot = &self.project.shots[k];
-        let read = mentions(&shot.description);
+        let texts = shot.texts();
+        let read: Vec<&str> = texts.iter().flat_map(|text| mentions(text)).collect();
         let mut splits: Vec<(&str, f64)> = (shot.written())
             .filter(|&(state, at)| at > 0.0 && at < shot.duration_s && read.iter().any(|m| name_key(m) == name_key(state)))
             .collect();
@@ -1168,10 +1193,9 @@ impl Video {
     }
 
     /// Shot `k`'s call `call` as its function takes it (`accepts`), on the shot's one timeline:
-    /// - its whole text, each call: `description` as `prompt` (times before the call's start are its
-    ///   function's history, on the shot's one timeline, and those past its end a later call's: a call
-    ///   that ends before the shot gives the shot's length, `shot_duration_s`), the project's style,
-    ///   soundscape and aspect ratio;
+    /// - its `summary` and its `beats` up to the call's end, on the shot's one timeline (one flat `prompt`
+    ///   for a function that takes no beats), the project's style, its soundscape and music, and the
+    ///   aspect ratio;
     /// - `references`: each entity it reads (its description, a character's voice), its setup's
     ///   picture as its environment's, each world state as a loose environment picture with its
     ///   blocking (the version current at the call's start: the shot's own frame once it wrote it,
@@ -1274,30 +1298,36 @@ impl Video {
             add(reference.entry(), vec![(reference.file().0, read.path.clone(), read.digest.clone())], files);
         }
         let mut payload = Map::new();
-        let mut text = shot.description.clone();
+        let structured = takes("beats");
+        let mut text = if structured { shot.summary.trim().to_owned() } else { shot.flat(end) };
         let style = self.project.style.trim();
         match (takes("style"), style.is_empty()) {
             (true, false) => drop(payload.insert("style".into(), json!(style))),
             (false, false) => text = format!("{text}\n\nStyle: {style}."),
             _ => {}
         }
-        if !self.project.soundscape.trim().is_empty() {
-            match takes("soundscape") {
-                true => drop(payload.insert("soundscape".into(), json!(self.project.soundscape.trim()))),
-                false => said.push(format!("{}'s renderer takes no soundscape: it is left out", shot.name)),
+        let sound = shot.soundscape.as_deref().unwrap_or(&self.project.soundscape).trim();
+        for (field, value) in [("soundscape", sound), ("music", shot.music.as_deref().unwrap_or_default().trim())] {
+            match (takes(field), value.is_empty()) {
+                (true, false) => drop(payload.insert(field.into(), json!(value))),
+                (false, false) => said.push(format!("{}'s renderer takes no {field}: it is left out", shot.name)),
+                _ => {}
             }
         }
-        if takes("references") {
+        // With no references, a mention is the name itself.
+        let named = takes("references");
+        let plain = |text: &str| if named { text.to_owned() } else { text.replace(['<', '>'], "") };
+        if named {
             payload.insert("references".into(), Value::Array(references));
+        }
+        if structured {
+            let beats: Vec<Value> = shot.beats_to(end).iter().map(|beat| json!({"at": beat.at, "description": plain(beat.description.trim())})).collect();
+            payload.insert("summary".into(), json!(plain(&text)));
+            payload.insert("beats".into(), Value::Array(beats));
         } else {
-            // With no references, a mention is the name itself.
-            text = text.replace(['<', '>'], "");
+            payload.insert("prompt".into(), json!(plain(&text)));
         }
-        payload.insert("prompt".into(), json!(text));
         payload.insert("duration_s".into(), json!(end));
-        if takes("shot_duration_s") && !last {
-            payload.insert("shot_duration_s".into(), json!(shot.duration_s));
-        }
         if takes("aspect_ratio") {
             payload.insert("aspect_ratio".into(), json!(self.canvas.aspect));
         }
