@@ -172,7 +172,7 @@ class _GraphCacheEntry:
 class _Preparation:
     """One optional native pool admission, before any authored body/launch.
 
-    Admission target is an opaque native measured peak. Cancellation changes
+    Admission target is an opaque native packing requirement. Cancellation changes
     preparation ownership, never claims that backing bytes were physically freed.
     """
 
@@ -807,10 +807,10 @@ class _AutomaticGraphs:
                     if reason is not None:
                         state.reason = state.cold_decline = reason
                     elif row["published"]:
-                        peak = row["successful_peak_bytes"]
+                        peak = row["successful_capture_pool_bytes"]
                         if type(peak) is not int or peak < 0:
                             raise adapter.OffloadError(
-                                "native automatic measurement returned no successful peak"
+                                "native automatic measurement returned no capture pool capacity"
                             )
                         state.peak = peak  # Verbatim native capacity, no sizing policy.
                     else:
