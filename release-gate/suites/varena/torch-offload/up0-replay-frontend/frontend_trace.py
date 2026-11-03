@@ -65,6 +65,7 @@ class FrontendTrace(ReturnEvidence):
         self.stage = 0
         self.invocation = 0
         self.boundary = None
+        self.native_key = None
         self.device = -1
         self.window = False
         self.complete = False
@@ -106,7 +107,8 @@ class FrontendTrace(ReturnEvidence):
         if self.dispatch_frame is None:
             return None
         return {"boundary": self.boundary, "attempt": self.invocation,
-                "device": self.device, "stage": self.stage}
+                "device": self.device, "stage": self.stage,
+                "native_key": self.native_key}
 
     def set_stage(self, value):
         self.stage = value
@@ -176,6 +178,7 @@ class FrontendTrace(ReturnEvidence):
         ordinal = self.native.allocation_trace_marker(marker, invocation, *values)
         self.host_rows.append({"ordinal": int(ordinal), "marker": marker,
                                "boundary": boundary, "invocation": invocation,
+                               "native_key": self.native_key if boundary is not None else None,
                                "python_thread": threading.get_ident(),
                                "identity_unavailable_reason": reason})
         if not ordinal:
@@ -197,6 +200,7 @@ class FrontendTrace(ReturnEvidence):
                 return
             self.following = self.await_following
             self.boundary = name
+            self.native_key = state.native_key if type(state.native_key) is str else None
             self.dispatch_frame = id(frame)
             device = controller._owner_ref()._owner.device.index
             self.device = device if type(device) is int else -1
@@ -216,6 +220,9 @@ class FrontendTrace(ReturnEvidence):
             self.emit(170 if self.following else 100, values, reason)
         elif event == "return" and id(frame) == self.dispatch_frame:
             normal = frame.f_lasti in self.return_offsets[self.dispatch_code]
+            state = frame.f_locals.get("state")
+            key = getattr(state, "native_key", None)
+            self.native_key = key if type(key) is str else None
             values, reason = self.identity(frame)
             self.emit((171 if self.following else 101) + (not normal), values, reason)
             closing = self.following or not normal
@@ -313,7 +320,7 @@ class FrontendTrace(ReturnEvidence):
         }
         prefix.with_suffix(".host.json").write_text(json.dumps(facts) + "\n")
         try:
-            returns = self.read()
+            returns = self.read(self.native_key, self.device)
             prefix.with_suffix(".returns.json").write_text(json.dumps(returns) + "\n")
         except BaseException as error:
             self.fail("return_evidence_read:" + type(error).__name__)
