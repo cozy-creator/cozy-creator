@@ -15,6 +15,7 @@ mod split;
 mod cache;
 mod execution;
 mod observer;
+mod fit_diagnostic;
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use execution::Execution;
@@ -1105,40 +1106,15 @@ impl Working {
         // Only free ranges whose ordering permits this stream can be joined. Live blocks,
         // other-stream pending frees and segment boundaries always end a candidate run.
         let mut best: Option<(u64, usize, u64, bool)> = None;
-        let mut consider = |ptr, capacity, segment, complete| {
+        fit_diagnostic::runs(state, pool, stream, |ptr, capacity, segment, complete| {
             if capacity >= bytes && best.is_none_or(|(_, n, _, _)| capacity < n) {
                 best = Some((ptr, capacity, segment, complete));
             }
+        });
+        let Some((ptr, capacity, segment, complete)) = best else {
+            fit_diagnostic::emit(state, self.device, pool, bytes, requested, stream);
+            return None;
         };
-        for (base, segment) in &state.segments {
-            if segment.pool != Some(pool) {
-                continue;
-            }
-            let (mut start, mut length, mut complete) = (*base, 0usize, true);
-            for (ptr, block) in state.blocks.range(*base..*base + segment.bytes as u64) {
-                let ready = block.life == Life::Ready && block.reusable_on.is_none();
-                let ordered = block.reusable_on == Some(stream)
-                    && (matches!(block.life, Life::Ready | Life::Captured)
-                        || block.deferred_default());
-                if !ready && !ordered {
-                    consider(start, length, *base, complete);
-                    length = 0;
-                    continue;
-                }
-                if length != 0 && *ptr != start + length as u64 {
-                    consider(start, length, *base, complete);
-                    length = 0;
-                }
-                if length == 0 {
-                    start = *ptr;
-                    complete = true;
-                }
-                length += block.capacity;
-                complete &= ready;
-            }
-            consider(start, length, *base, complete);
-        }
-        let (ptr, capacity, segment, complete) = best?;
         let phase = state.phases.active.as_ref().map(|active| active.token);
         let end = ptr + capacity as u64;
         let parts: Vec<_> = state.blocks.range(ptr..end).map(|(p, _)| *p).collect();
