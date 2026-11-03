@@ -1,0 +1,71 @@
+{
+  "status": "prepared-unrun for model/GPU; actual original9d CPU host controls passed",
+  "host_result": {
+    "passed": true,
+    "markers": [
+      110,
+      111,
+      120,
+      122,
+      130,
+      131,
+      130,
+      132,
+      150,
+      151,
+      110,
+      111
+    ],
+    "normal_none_classified": true,
+    "real_python_error_classified": true,
+    "real_cpu_copy_error_classified": true,
+    "cpu_tensor_weakrefs_released": 4,
+    "stats_refusal_trace_survives": true,
+    "unprofiled_thread_proven": true,
+    "gap_native_markers_without_ATen": true,
+    "cuda_initialized": false,
+    "cuda_driver_loaded": false,
+    "workspace_cache_actual_native": 0,
+    "execution_base": "original9d-c059 SDK; Runtime wheel not needed by these CPU controls",
+    "model_dispatch_and_Rust_callbacks": "UNRUN; not emulated",
+    "scope": "host profile mechanism and exact helper only"
+  },
+  "host_receipt_directory": "/home/fidika/cozy_v2/outputs/xs138-27056-frontend-host-20261103/attempt-001",
+  "container_exit": {
+    "returncode": 0,
+    "elapsed_s": 6.927005734993145,
+    "container_absent": true,
+    "helper_sha256": "48b74e9080e171713126888a0fcd62e8815351e70c1ae4d8db7788f91a2a8955"
+  },
+  "source_checks": {
+    "status": "source checks only; GPU window execution unrun",
+    "sha256": {
+      "host_controls.py": "b3064739d4b317a4e18328ed5ace09bc8ac1ab918ed7f5984e542f6b0f173dfc",
+      "automatic_sdxl_gpu.py": "67c2507ff6625a76b17ccdcbf9862d343b89fdd26552d8e9990db8e8fc599e22",
+      "bind.py": "64a38420cacfb4bfaa86dc25d291a265ba2bbbec7628e1866791e003fc44f671",
+      "frontend_trace.py": "8ac843807d42f72f066464715ebba50a0beda930d4f33dfbebbcd05721c8c3c5"
+    },
+    "original_dispatch_and_graph_methods_unmodified": true,
+    "new_synchronization_graph_facts_cap_changes": false,
+    "actual9d_graph_copy_call_lines": [
+      862
+    ],
+    "actual9d_graph_clone_lambda_lines": [
+      867,
+      878
+    ],
+    "AST_parsed": [
+      "automatic_sdxl_gpu.py",
+      "bind.py",
+      "frontend_trace.py",
+      "host_controls.py"
+    ],
+    "product_diff_since_context": "",
+    "GLOSSARY_ADR_CodeGraph": "absent in owned relevant context",
+    "verified_head": "11bbeb12d6a9307ae5d9f0b0f45a7f84712afc39"
+  },
+  "helper_header_sha256": "2551e703227f6bda7f9ecc10231217bac552097712d2fee6840becf2a16940ad",
+  "original_client_sha256": "e7c4eed6fc34a427355cf6fd7b7735bea16f4470b06866bc51bbfa27eed1c652",
+  "return_evidence_sha256": "7653cb76fe29e96f7a6d8d6ef81bf4030aa57623136ef41ebaf007f816964cfb",
+  "no_product_or_native_build": true
+}

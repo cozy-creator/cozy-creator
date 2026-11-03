@@ -116,3 +116,8 @@ Source checks additionally verify the actual9d copy/clone call sites, no product
 diff, no replacement dispatch or graph methods, and no added sync/facts/cap calls.
 Actual invocation2/3 window traversal and Rust callback coverage require operator
 GPU evidence and remain unrun.
+
+Actual host controls passed on original wheel4e70c846 plus helper00348b74e90.
+See `validation.json` and the durable receipt directory it names. The helper
+header is2551e703; the older helper002/header4ecd pair is preserved historical
+evidence. The host container exited0 and is independently confirmed absent.
