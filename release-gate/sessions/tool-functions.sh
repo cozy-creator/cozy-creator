@@ -1,16 +1,16 @@
 # tool-functions (cl-774, "A tool is a function"): each tool from dropping it to accepting its output, on one rental driven from a
-# runner, the way the page does it: POST assets {tool, fields}, render, approve. A shape like `lab`'s, naming only a package, goes too.
-# Packages are local code from a packages_refs checkout named `pk`, since no release has these adapters yet; the session's cozy carries
-# its TensorD to the pod, and `runtime` the Runtime that reads `functions=`. A completed run is no pass: each output is measured, its
-# frames kept for a person to judge in $OUT/frames, and each call's input is checked against what crossed its mentions. One rental
-# (a 4090). params:
-#   runtime     the Runtime wheel with functions=, https://…#sha256=<hex> (default: the session's RUNTIME_WHEEL, from rc/<x>)
+# runner, the way the page does it: POST assets {tool, fields}, render, approve. What e2e's weightless `shaped.py` can't show goes here:
+# frames, a plate, a take, several pictures and a silent shot on the real models, and a file as the upgrade writes it, text asset and all.
+# Packages are local code from a packages_refs checkout named `pk`, since no release has these functions yet; the session's cozy carries
+# its TensorD to the pod, and `runtime` the Runtime with `Node`. A completed run is no pass: each output is measured, its frames kept for
+# a person to judge in $OUT/frames, and each call's input is checked against what crossed its mentions. One rental (a 4090). params:
+#   runtime     the Runtime wheel with Node, https://…#sha256=<hex> (default: the session's RUNTIME_WHEEL, from rc/<x>)
 #   traffic_gb  GB the provider bills (110)
 #   caption     also ask a local qwen3.5 for a description, 9 GB more ("true")
 . "$(dirname "$0")/lib.sh"
 URL=$(param runtime) PK=$PACKAGES/pk CAPTION=$(param caption true)
 for p in qwen-image-2 minimax-h3 birefnet seedvr2 qwen3.5; do [ -f "$PK/$p/pyproject.toml" ] || fail "no packages_refs checkout pk/$p"; done
-grep -q 'functions=\["upscale"\]' "$PK/minimax-h3/h3.py" || fail "pk is not rc/web-ui: minimax-h3 has no adapter per function"
+grep -q 'fill={"continue_from": "take"}' "$PK/minimax-h3/h3.py" || fail "pk is not rc/web-ui: minimax-h3's generate is no node"
 mkdir -p "$OUT/wheel" "$OUT/frames"
 if [ -n "$URL" ]; then
   [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex>"
@@ -19,7 +19,7 @@ if [ -n "$URL" ]; then
   [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
 else
   W=${RUNTIME_WHEEL:-}
-  [ -n "$W" ] || fail "no Runtime with functions=: name \`runtime\`, or dispatch from rc/<x>"
+  [ -n "$W" ] || fail "no Runtime with Node: name \`runtime\`, or dispatch from rc/<x>"
 fi
 command -v ffprobe > /dev/null || sudo apt-get install -y -qq ffmpeg > /dev/null 2>&1 || fail "no ffmpeg"
 [ -f "$REF/seed.jpg" ] || fail "no reference image"
@@ -66,20 +66,43 @@ J '(.target | test("/generate_turbo(@|$)")) and (.input.pictures[0].name == "art
 pic=$(file_of clean image); cp "$pic" "$OUT/frames/clean.${pic##*.}"; s=$(size "$pic"); say "clean: $s"
 [ "$s" = 1024x1024 ] || fail "1:1 at 1 MP made $s"
 
-say "birefnet/remove_background: no adapter, called with its file by its typed input"
+say "qwen-image-2/generate_turbo: two pictures, each read with its words"
+drop two "$PK/qwen-image-2/generate_turbo" '{"instructions": "<art> and <clean> side by side on one sheet.", "aspect_ratio": "16:9", "megapixels": 1}' image
+accept two
+J '.input.pictures | length == 2 and .[0].name == "art" and .[1].name == "clean" and (.[1].description | contains("PUBLIC-WORDS"))' <<< "$(call two)" || fail "two pictures' call: $(call two)"
+pic=$(file_of two image); cp "$pic" "$OUT/frames/two.${pic##*.}"; say "two: $(size "$pic")"
+
+say "birefnet/remove_background: called with its file by its typed input"
 drop cut "$PK/birefnet/remove_background" '{"image": "<art>"}' image
 accept cut
 J '(.target | test("/remove_background(@|$)")) and (.input.image | startswith("sha256:")) and (.input | keys == ["image"])' <<< "$(call cut)" || fail "birefnet's call: $(call cut)"
 pic=$(file_of cut image); cp "$pic" "$OUT/frames/cut.${pic##*.}"; say "cut: $(size "$pic")"
 
-say "minimax-h3/generate_turbo: a shot with beats, reading what was accepted"
-drop shot "$PK/minimax-h3/generate_turbo" '{"summary": "<clean> stands in a quiet studio.", "beats": [{"description": "<clean> turns slowly toward the camera while soft light moves across the wall.", "duration": 5}], "soundscape": "Soft room tone."}' video
+say "minimax-h3/generate: a shot with beats, reading what was accepted"
+drop shot "$PK/minimax-h3/generate" '{"summary": "<clean> stands in a quiet studio.", "beats": [{"description": "<clean> turns slowly toward the camera while soft light moves across the wall.", "duration": 5}], "soundscape": "Soft room tone."}' video
 accept shot
-J '(.target | test("/generate_turbo(@|$)")) and (.input | (has("turbo") | not) and .duration_s == 5 and (.references[0].name == "clean") and (.references[0].description | contains("PUBLIC-WORDS")) and (tostring | contains("OWN-QWEN-PROMPT") | not))' <<< "$(call shot)" || fail "h3's call: $(call shot)"
+J '(.target | test("/generate(@|$)")) and (.input | (has("turbo") | not) and (has("prompt") | not) and .beats[0].duration == 5 and .soundscape == "Soft room tone." and (.references[0].name == "clean") and (.references[0].description | contains("PUBLIC-WORDS")) and (tostring | contains("OWN-QWEN-PROMPT") | not))' <<< "$(call shot)" || fail "h3's call: $(call shot)"
 vid=$(file_of shot video); keep_frames shot "$vid"; s=$(size "$vid"); d=$(seconds "$vid"); say "shot: $s, $d s"
 [ "$s" = 1344x768 ] || fail "the shot is $s"
 awk -v d="$d" 'BEGIN{exit !(d > 4.5 && d < 6.5)}' || fail "a 5 s beat made $d s"
 ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$vid" | grep -q audio || fail "the shot has no sound"
+
+say "minimax-h3/generate: first and last frames, nothing said of its sound, so N/A; the text H3 reads is in its run's log"
+drop framed "$PK/minimax-h3/generate" '{"beats": [{"description": "The subject turns slowly toward the camera while soft light moves across the wall.", "duration": 5}], "first_frame": "<clean>", "last_frame": "<two>"}' video
+accept framed
+J '.input | (.first_frame | startswith("sha256:")) and (.last_frame | startswith("sha256:")) and (has("soundscape") | not) and (has("music") | not)' <<< "$(call framed)" || fail "framed's call: $(call framed)"
+cozy run show "$(cozy --json project -p "$P" show framed | jq -r '.versions[-1].runs[-1]')" --once > "$OUT/framed-log.txt" 2>&1 || fail "framed's log"
+grep -q 'h3 segment prompt' "$OUT/framed-log.txt" || fail "framed's log has no prompt"
+grep -q 'N/A' "$OUT/framed-log.txt" || fail "a silent shot's text doesn't say N/A: $(grep -m1 'h3 segment prompt' "$OUT/framed-log.txt" | cut -c1-600)"
+! grep -q 'reads as silence' "$OUT/framed-log.txt" || fail "a silent shot is warned of"
+vid=$(file_of framed video); keep_frames framed "$vid"; say "framed: $(size "$vid"), $(seconds "$vid") s"
+
+say "minimax-h3/generate: one beat, no summary, as written: MiniMax's own form reaches the model untouched"
+drop asis "$PK/minimax-h3/generate" '{"beats": [{"description": "[Shot 1] A paper boat drifts down a rain gutter.\nAt 00:03.000, it tips over a grate.", "duration": 6}]}' video
+accept asis
+cozy run show "$(cozy --json project -p "$P" show asis | jq -r '.versions[-1].runs[-1]')" --once > "$OUT/asis-log.txt" 2>&1 || fail "asis's log"
+grep -q 'A paper boat drifts' "$OUT/asis-log.txt" || fail "as written: $(grep -m1 'h3 segment prompt' "$OUT/asis-log.txt" | cut -c1-600)"
+vid=$(file_of asis video); keep_frames asis "$vid"; say "as written: $(size "$vid"), $(seconds "$vid") s"
 
 say "minimax-h3/upscale: its own tool, a video and a resolution"
 drop up "$PK/minimax-h3/upscale" '{"video": "<shot>", "resolution": "1080p"}' video
@@ -90,23 +113,24 @@ vid=$(file_of up video); keep_frames up "$vid"; s=$(size "$vid"); say "up: $s, $
 
 say "a beat past the package's limit is clamped and said, with the tool's own number"
 api --get --data-urlencode "project=$ID" "http://$ADDR/v1/tools" > "$OUT/tools.json"
-J --arg t "$PK/minimax-h3/generate_turbo" '.tools[] | select(.id == $t) | .controls[] | select(.field == "beats") | .max_duration == 15' "$OUT/tools.json" || fail "the beats control: $(jq -c --arg t "$PK/minimax-h3/generate_turbo" '.tools[] | select(.id == $t)' "$OUT/tools.json")"
+J --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t) | .controls[] | select(.field == "beats") | .type == "group" and .min_items == 1 and (.members[] | select(.field == "duration") | .max == 15)' "$OUT/tools.json" || fail "the beats control: $(jq -c --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t)' "$OUT/tools.json")"
+J --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t) | [.controls[] | select(.face) | .field] == ["summary", "beats", "soundscape", "music"]' "$OUT/tools.json" || fail "h3's face: $(jq -c --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t) | .controls | map(.field)' "$OUT/tools.json")"
 J --arg t "$PK/qwen-image-2/generate_turbo" '.tools[] | select(.id == $t) | .controls[] | select(.field == "megapixels") | .type == "range" and .min == 1 and .max == 4' "$OUT/tools.json" || fail "the megapixels control"
 
 say "a file like lab, as the upgrade writes it"
 cat >> "$P/project.yaml" <<YAML
   lab_sheet:
     tool: $PK/qwen-image-2/generate_turbo
-    instructions: A bronze clockwork automaton, waist up, from <art>, shown from the front on one sheet, with no text.
+    instructions: This is an RGBA image with transparency. A bronze clockwork automaton, waist up, from <art>, shown from the front on one sheet, with no text. The image has alpha channel and the background is transparent.
     aspect_ratio: "3:2"
     megapixels: 1
-    transparent: true
     asset_type: character
+  video_style:
+    text: High-quality Unreal Engine graphics, realistic and detailed.
   lab_shot:
     tool: $PK/minimax-h3/generate
-    style: High-quality Unreal Engine graphics, realistic and detailed
     aspect_ratio: "16:9"
-    summary: <lab_sheet> walks through a workshop at dusk.
+    summary: <video_style> <lab_sheet> walks through a workshop at dusk.
     soundscape: Quiet gears.
     beats:
       - duration: 5
@@ -114,7 +138,7 @@ cat >> "$P/project.yaml" <<YAML
 YAML
 step render-lab project -p "$P" render lab_shot --on "$NAME" || fail "lab's shape: $(tail -c 500 "$OUT/render-lab.txt")"
 J '(.target | test("/generate_turbo(@|$)")) and .input.aspect_ratio == "3:2" and .input.megapixels == 1' <<< "$(call lab_sheet)" || fail "the image's call: $(call lab_sheet)"
-J '(.target | test("/generate(@|$)")) and .input.duration_s == 5' <<< "$(call lab_shot)" || fail "the shot's call: $(call lab_shot)"
+J '(.target | test("/generate(@|$)")) and .input.beats[0].duration == 5 and (.input.summary | contains("High-quality Unreal"))' <<< "$(call lab_shot)" || fail "the shot's call: $(call lab_shot)"
 pic=$(file_of lab_sheet image); cp "$pic" "$OUT/frames/lab-sheet.${pic##*.}"
 vid=$(file_of lab_shot video); keep_frames lab "$vid"; say "lab shape: $(size "$pic"), $(size "$vid") $(seconds "$vid") s"
 
@@ -130,6 +154,20 @@ YAML
   [ "$before" = "$(sha256sum "$P/project.yaml")" ] || fail "caption wrote to the file"
   say "caption: $(jq -r .text "$OUT/caption.json" | cut -c1-300)"
 fi
+
+say "--take and --in: a longer shot, kept to a join and the rest made again"
+drop long "$PK/minimax-h3/generate" '{"summary": "<clean> stands in a quiet studio.", "beats": [{"description": "<clean> looks left.", "duration": 8}, {"description": "<clean> looks right.", "duration": 8}], "soundscape": "Soft room tone."}' video
+accept long
+step take-long project -p "$P" render long --take 1 --in 6 --on "$NAME" || fail "--in: $(tail -c 500 "$OUT/take-long.txt")"
+J '.input.continue_from | .at_s == 6 and (.video | startswith("sha256:")) and (.latents | startswith("sha256:"))' <<< "$(call long)" || fail "the kept call: $(call long)"
+vid=$(file_of long video); keep_frames take "$vid"; say "kept: $(size "$vid"), $(seconds "$vid") s"
+
+say "a plate, and a reference video and its sound"
+drop plated "$PK/minimax-h3/generate" '{"summary": "<clean> walks through <shot>.", "beats": [{"description": "<clean> walks on.", "duration": 5}], "plate": {"video": "<shot>"}}' video
+accept plated
+J '.input.plate.video | startswith("sha256:")' <<< "$(call plated)" || fail "the plate's call: $(call plated)"
+vid=$(file_of plated video); keep_frames plated "$vid"; say "plated: $(size "$vid"), $(seconds "$vid") s"
+
 cozy --json project -p "$P" status > "$OUT/status.json"
 cp "$P/project.yaml" "$P/project.lock" "$OUT/"
 say "PASS: each tool from drop to accept; judge $OUT/frames"

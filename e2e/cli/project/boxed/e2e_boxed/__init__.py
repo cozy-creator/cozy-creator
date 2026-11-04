@@ -5,7 +5,7 @@ import os
 from typing import Annotated
 
 import msgspec
-from cozy_runtime.author import App, ImageFile, ImageFrame, Outputs
+from cozy_runtime.author import App, ImageFile, ImageFrame, Node, Outputs
 
 app = App()
 SIDE = 16
@@ -24,31 +24,31 @@ def _picture(out: Outputs) -> Picture:
     return Picture(out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png"))
 
 
-@app.entrypoint(ui="ui/shade.js")
+@app.entrypoint(node=Node(ui="ui/shade.js"))
 def one_field(payload: Shaded, out: Outputs) -> Picture:
     """A still, its shade chosen on a row of swatches."""
     return _picture(out)
 
 
-@app.entrypoint(ui="ui/whole.js")
+@app.entrypoint(node=Node(ui="ui/whole.js"))
 def whole_face(payload: Shaded, out: Outputs) -> Picture:
     """A still whose whole box is its own."""
     return _picture(out)
 
 
-@app.entrypoint(ui="ui/throws.js")
+@app.entrypoint(node=Node(ui="ui/throws.js"))
 def throws(payload: Shaded, out: Outputs) -> Picture:
     """A still whose component throws as it draws."""
     return _picture(out)
 
 
-@app.entrypoint(ui="ui/later.js")
+@app.entrypoint(node=Node(ui="ui/later.js"))
 def later(payload: Shaded, out: Outputs) -> Picture:
     """A still whose component speaks an API from later."""
     return _picture(out)
 
 
-@app.entrypoint(ui="ui/gone.js")
+@app.entrypoint(node=Node(ui="ui/gone.js"))
 def gone(payload: Shaded, out: Outputs) -> Picture:
     """A still whose component isn't in its package."""
     return _picture(out)

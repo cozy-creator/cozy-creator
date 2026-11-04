@@ -3,7 +3,7 @@ import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Tool } from "../types"
 import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
-import { startingFields } from "./controls"
+import { startingFields, TEXT_TOOL } from "./controls"
 import { asName, stemName } from "./names"
 
 const GAP = 32
@@ -61,12 +61,13 @@ export class Placer {
   /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes. Local code goes by its function. */
   addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    const fields = startingFields(tool)
+    const text = tool === TEXT_TOOL
+    const fields = text ? { text: "" } : startingFields(tool)
     const key = `asset-${crypto.randomUUID()}`
-    const body = { tool: tool.id, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
+    const body = text ? { tool: "", name: "text", fields } : { tool: tool.id, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const row: Asset = { name: "", standing: "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: tool.id, versions: 0, status: "", fields, timeline }
-    const wanted = tool.local ? (tool.id.split("/").at(-1) ?? "").split("@")[0] : tool.label
+    const row: Asset = { name: "", standing: text ? "current" : "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: text ? undefined : tool.id, versions: 0, status: "", fields, timeline }
+    const wanted = text ? "text" : tool.local ? (tool.id.split("/").at(-1) ?? "").split("@")[0] : tool.label
     this.store.focusing = this.store.place(
       asName(wanted),
       { asset: row },

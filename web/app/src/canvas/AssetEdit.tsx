@@ -261,6 +261,26 @@ function ControlRow({ name, control, view, focus, named }: { name: string; contr
   }
 }
 
+/** A text asset: only its words, which whatever mentions it reads. It has nothing to render, no takes and nothing to approve. */
+export function TextAsset({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  return (
+    <div className="text-asset">
+      <MentionText
+        asset={name}
+        place="text"
+        value={said(store.valueOf(name, "text"))}
+        label="Text"
+        missing={view.asset?.missing ?? []}
+        focus={store.focusing === name}
+        onDraft={(words) => store.setDraft(name, "text", words)}
+        onSave={() => void store.save(name)}
+      />
+      {view.conflict && <Conflict name={name} />}
+    </div>
+  )
+}
+
 /** The file changed under what's typed. */
 export function Conflict({ name }: { name: string }) {
   const store = useCanvasStore()

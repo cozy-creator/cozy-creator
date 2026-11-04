@@ -6,6 +6,7 @@ import type { Tool, Tools } from "../types"
 import { Icon, type IconName } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useCanvasStore } from "./context"
+import { TEXT_TOOL } from "./controls"
 import { DRAGGED_TOOL } from "./drag"
 import { madeHere } from "./shown"
 import { ToolBrowse } from "./ToolBrowse"
@@ -108,7 +109,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
   }, [typed])
   const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, browsing ? "" : q, machine, project), enabled: !waiting })
   useEffect(() => {
-    if (data && !isPlaceholderData) store.addTools(data.tools)
+    store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools] : [TEXT_TOOL])
   }, [store, data, isPlaceholderData])
   if (shut) {
     return (
@@ -137,6 +138,11 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
       </button>
       {browsing && <ToolBrowse q={q} listed={tools} />}
       <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={browsing}>
+        {"text".includes(q.toLowerCase()) && (
+          <ul>
+            <ToolRow tool={TEXT_TOOL} place={place} yours={false} />
+          </ul>
+        )}
         {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
         {isPending && !error && (
           <ul aria-hidden="true">

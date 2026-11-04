@@ -3,7 +3,7 @@ import { useReactFlow, useStore } from "@xyflow/react"
 import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { AssetEdit, Conflict, InFrame, RenderButton } from "./AssetEdit"
+import { AssetEdit, Conflict, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
@@ -484,7 +484,9 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
         )}
         <span className={`dot ${dotOf(view)}`} />
       </div>
-      {asset?.timeline && editing ? (
+      {asset?.kind === "text" ? (
+        <TextAsset name={name} view={view} />
+      ) : asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={width}>
@@ -492,7 +494,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
           {active && asset && !view.placing && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {active && (
+      {active && asset?.kind !== "text" && (
         <div className="asset-more">
           {asset && !view.placing && <Takes view={view} name={name} width={width} />}
           {editing ? (

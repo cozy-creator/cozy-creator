@@ -1,14 +1,18 @@
 import type { Asset, Control, Tool } from "../types"
 import { type Row, rowsIn } from "./text"
 
-/** A row's members, from what rows hold: their words, then the number that adds up. */
+/** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
+export const TEXT_TOOL: Tool = { id: "text", package: "", function: "", release: "", label: "Text", kind: "text", controls: [] }
+
+/** A row's members, from what rows hold: what says the most, and each number, the first adding up and a new row as long as the first. What else a row holds stays, unseen. */
 function membersOf(rows: Row[]): Control[] {
   const held = new Map(rows.flatMap((row) => Object.entries(row)))
-  const words = [...held.keys()].filter((field) => typeof held.get(field) !== "number")
+  const said = (field: string) => Math.max(...rows.map((row) => String(row[field] ?? "").length))
+  const [words = "description"] = [...held.keys()].filter((field) => typeof held.get(field) === "string").sort((a, b) => said(b) - said(a))
   const numbers = [...held.keys()].filter((field) => typeof held.get(field) === "number")
   return [
-    ...words.map((field): Control => ({ field, type: "text", label: fieldWords(field) })),
-    ...numbers.map((field, at): Control => ({ field, type: "range", label: fieldWords(field), min: 0, max: Math.max(30, ...rows.map((row) => Number(row[field]) || 0)), step: 1, total: at === 0 })),
+    { field: words, type: "text", label: fieldWords(words) },
+    ...numbers.map((field, at): Control => ({ field, type: "range", label: fieldWords(field), min: 0, max: Math.max(30, ...rows.map((row) => Number(row[field]) || 0)), step: 1, total: at === 0, default: rows[0][field] })),
   ]
 }
 
@@ -24,7 +28,9 @@ function fromFields(fields: Record<string, unknown>): Control[] {
     return []
   })
   if (!held.some((control) => control.type === "text" || control.type === "group")) return [{ field: "instructions", type: "text", label: "Instructions" }, ...held]
-  return held
+  // What says the most comes first, whatever the alphabet makes of the fields.
+  const said = (control: Control) => (control.type === "text" ? String(fields[control.field]).length : 0)
+  return [...held].sort((a, b) => said(b) - said(a))
 }
 
 /** What a box asks for: its tool's controls, or what its fields hold. Nothing here knows any function. */

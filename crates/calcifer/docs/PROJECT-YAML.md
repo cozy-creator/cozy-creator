@@ -89,7 +89,7 @@ assets:
 | `voice` | `<name>`, another asset. Readers get its main file as `files.voice`. It isn't part of making this asset |
 | `models`, `lora` | Go on its function's first call |
 
-Every other key is an **input**: it passes through to the function and counts in the key. A function's adapter types them, and that type is its controls. An unknown key warns at render, and an unknown section warns at reading. A `kind` line warns and is ignored: what an asset is comes from its tool, its file or its version, and `GET /v1/projects/{id}` says it.
+Every other key is an **input**: it goes to the function and counts in the key. A function's types are its controls. An unknown key warns at render, and an unknown section warns at reading. A `kind` line warns and is ignored: what an asset is comes from its tool, its file or its version, and `GET /v1/projects/{id}` says it.
 
 **Text assets.** `text:` with no `tool` is an asset of words alone. `<name>` of one, in any input, is replaced by its words where it stands, before a package sees it, so a function has no `style` input and nothing is prepended: a style goes only where it's mentioned. Its text may mention others, and what it mentions is read by whatever mentions it. A cycle stays plain text, with a warning. Editing it puts what reaches it out of date, and what's approved stays approved. One deleted is no change to what was made with it. It can't go by a tag of a package the project uses.
 
@@ -103,19 +103,19 @@ Every other key is an **input**: it passes through to the function and counts in
 
 | Tool | Inputs |
 |---|---|
-| A shot, `minimax-h3/generate`, `generate_turbo` | `summary`, `beats` (each `description`, `duration`), `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `preset`, `resolution`; on `generate`, `turbo`, on unless it says `false`, and `steps`, only with it off |
+| A shot, `minimax-h3/generate` | `summary`, `beats` (each `description`, `duration`), `turbo`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `preset`, `resolution`; on `generate`, `turbo`, on unless it says `false`, and `steps`, only with it off |
 | An upscale, `minimax-h3/upscale` | `video`, `resolution` |
 | A picture, `qwen-image-2/generate_turbo`, `generate` | `instructions`, `aspect_ratio`, `megapixels`, `preset`; `steps` on `generate` |
 | An edit or a frame, `cozy/edit`, `cozy/frame` | See below |
 
-**A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence. A package chooses its own internals, such as how many context frames H3 keeps.
+**A shot with no `soundscape` or `music`** says `N/A` for each, which H3 reads as silence, with no warning: it's the default. Dialogue goes in a beat's text. **One beat and no `summary`** goes to the model as written, in MiniMax's own form if you like; its `duration` is then the whole video's. A package chooses its own internals, such as how many context frames H3 keeps.
 
 ## Mentions
 
 `<name>` in any input makes that asset an input.
 
 - **In a shot's `summary`:** reaches every segment. **In a beat:** only the segment holding it. H3 gets confused by extra references, so mention things only where they're needed.
-- **A package's own tags:** an adapter declares them, `@app.project_adapter("generate", reserved=["d", "scenetrans", "cutoff"])`, written out, as cozy reads it from the source. In the text of an asset that function makes, each stays text in any case, and reaches the adapter unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
+- **A package's own tags:** its function declares them, `node=Node(reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that function makes, each stays text in any case, and reaches it unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
 - **What can't be a name** is text, with no warning, as `<Picture 1>` and `</d>` are.
 - **A name that names nothing** fails that asset before anything runs, at no cost: `<Image-1> is no longer in the project`, with `did you mean <kyogre>?` when it's close. The failure stays until a version lands or its inputs change, what reads it waits, and everything else goes on. `status` says it ahead of a render. Until a function is read, at its first render, its assets' are held back, because they may be its tags. An approved asset runs nothing, so it doesn't fail unless you name it. An edit leaves out a clip it can't read.
 - **A cycle:** a mention that closes one stays plain text, with a warning, and both still render.
@@ -134,7 +134,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 
 **The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, and twelve for each text asset it takes in, so one gone hides no change in the others. Its inputs are as written, `<style>` and all. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
-**Not in the key:** its own `description`, `asset_type` and `voice`; package, adapter and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
+**Not in the key:** its own `description`, `asset_type` and `voice`; package and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
 **Seed:** Calcifer draws it when the function takes one, and records it.
 
@@ -214,24 +214,26 @@ cozy project approve clash_board 3
 cozy project render clash
 ```
 
-## Adapters
+## Functions
 
-**A function no adapter speaks for** is called directly with its inputs, each `<mention>` in a file input the file it names (`CALCIFER-API.md`). **An adapter** translates:
+An asset is a call of its function, the same one `cozy run` and an agent make. Its text goes to the function with its `<mentions>` in it, and everything else the function asks for is filled by its types:
+
+- **A file input** takes the file `<name>` names, and one no mention names takes the first read that has a file of its kind.
+- **A list of structs with a `name` member** (`references`, `pictures`) takes what the text mentions, member by member: `name`, `description`, `asset_type`, `made_by`; `alpha`, `width`, `height` as measured; a file by its role, `image`, `video`, `audio`, `voice`, or an output's name; and how to take it, `use_audio`, `follow`. A prompt never crosses a mention. An output past the main one reaches only the package that made it. With one file member, an entry per file, the rest `<name 2>`, `<name 3>`.
+- **A list of any other struct** is rows, as long as its type says at the least.
+- **A `Node` says the rest**, in the function's own package:
 
 ```python
-class TurboOperation(Operation, kw_only=True):
-    inputs: TurboInputs                          # its controls
-
-@app.project_adapter("generate_turbo", reserved=["d"])       # project-adapter-generate_turbo
-def adapt(op: TurboOperation) -> list[Invocation]: ...
+app.entrypoint(generate, node=Node(
+    label="MiniMax H3",                     # its name in the tool list
+    show=["soundscape", "music"],           # on its default face, beside its first text and what's required
+    hide=["steps", "upscale"],              # never drawn; a file or `cozy run` can still set them
+    fill={"continue_from": "take"},         # the take a new one keeps, or `<input>.<member>` of what that input mentions
+    reserved=["d", "scenetrans"],           # its model's own tags
+))
 ```
 
-For each asset that needs a run, Calcifer:
-1. Builds an `Operation`: `{version: 3, asset, kind, function, inputs, reads, keep}`.
-2. Stops there if the memo already has a result.
-3. Installs the package on the render machine and runs its adapter as a small CPU run. Adapters are pure, so they only take text, names and hashes.
-4. Runs the invocations it returns, in order, adding the seed, and on the first its `models` and `lora`. An empty list means no run: the asset's files are what it reads. In `input`, a string that is exactly `$0.video` means that field of invocation 0's result. A failed one stops the list and makes no version.
-5. Records all the resulting files as one new version, by output name, later over earlier.
+Hints on a field stay in `msgspec.Meta(extra={"min", "max", "options", "label", "placeholder", "total", "unit"})`. Past a bound is clamped and said. A required text left empty says the asset says nothing to make, and a required file that's missing says so, free, before anything is sent. A take made by another package is refused the same way. What's about the model is the function's, in its first lines: what it raises fails the run before any model loads, and its `warnings` reach the version.
 
 ## Edits and frames
 

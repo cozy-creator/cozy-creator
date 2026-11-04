@@ -571,6 +571,14 @@ code {
 .card.editing .words {
   display: none;
 }
+.text-asset {
+  padding: 8px;
+}
+
+.text-asset .mention-text {
+  min-height: 72px;
+}
+
 .in-frame {
   position: absolute;
   inset: 0;

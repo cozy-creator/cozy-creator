@@ -63,9 +63,8 @@ assets:
   hero_art:
     approved: hero.png
   hero_sheet:
-    tool: ./still.py/draw
-    instructions: From <hero_art>.
-    keep: true
+    tool: ./still.py/keep
+    image: <hero_art>
     description: "$CHAR"
     asset_type: character
   yard:
@@ -94,7 +93,7 @@ YAML
     expect project-split "$(jq -r 'if .run != null and .files.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
       "run $(jq -c .run <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v")"
     expect project-split-text "$(jq -r 'if ([.warnings[]?.message | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
-    # The gate's hero is a character whose sheet its package made, with a background: H3's adapter says it goes into the shot
+    # The gate's hero is a character whose sheet its package made, with a background: H3 says it goes into the shot
     # (se-104). A warning, no failed run. An imported picture is left alone, since it may be opaque on purpose.
     expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
   fi
@@ -198,7 +197,7 @@ YAML
     s=$(nice -n 19 ffmpeg -nostdin -v info -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$old" -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$f" -lavfi ssim -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)
     expect project-in-kept "$(awk -v s="${s:-0}" 'BEGIN { print s >= 0.95 ? "PASS" : "FAIL" }')" "SSIM of the kept part to take 1: ${s:-none}"
   fi
-  # H3's adapter refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
+  # H3 refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
   render project-in-end "$P" look --take 2; code=$?
   expect project-in-end "$([ "$code" != 0 ] && grep -q "already reaches the shot's end" project-in-end.log && echo PASS || echo FAIL)" "exit $code: $(tail -c 200 project-in-end.log)"
 fi
