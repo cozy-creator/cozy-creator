@@ -475,28 +475,38 @@ impl Built {
 
 /// One question to the environment's own Runtime (`cozy-runtime machine-describe`), which reads
 /// sources and installed metadata without importing them.
-fn ask_runtime(python: &Path, request: &Value) -> Result<Value, Failure> {
+fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>) -> Result<Value, Failure> {
     // -S keeps authored .pth startup code out; only the venv's own site-packages are added.
     const BOOTSTRAP: &str = "import pathlib,runpy,sys;\
         root=pathlib.Path(sys.executable).absolute().parent.parent;\
         sys.path[:0]=[str(p) for p in (*(root/'lib').glob('python*/site-packages'),root/'Lib'/'site-packages') if p.is_dir()];\
         sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
     let failed = |why: String| ("package_prepare_description_failed", why);
-    let output = Command::new(python)
-        .args(["-I", "-S", "-c", BOOTSTRAP])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .and_then(|mut child| {
-            child.stdin.take().expect("piped").write_all(request.to_string().as_bytes())?;
-            child.wait_with_output()
-        })
-        .map_err(io_failure)?;
-    let reply: Value = serde_json::from_slice(&output.stdout).map_err(|e| failed(format!("the description failed: {e}")))?;
+    let mut command = Command::new(python);
+    command.args(["-I", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    platform::process::own_group(&mut command);
+    let mut child = command.spawn().map_err(io_failure)?;
+    // Its own exit says why, should it stop before reading the request.
+    let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
+    let mut stdout = child.stdout.take().expect("piped");
+    // Supervised, as uv is: a cancel ends it, so a description that does not end holds no install.
+    let (ended, read) = std::thread::scope(|scope| {
+        let drained = scope.spawn(move || {
+            let mut kept = Vec::new();
+            let _ = stdout.read_to_end(&mut kept);
+            kept
+        });
+        let ended = crate::process::supervise(&mut child, stop, &|_| ());
+        (ended, drained.join().unwrap_or_default())
+    });
+    let status = match ended.map_err(io_failure)? {
+        Supervised::Exited(status) => status,
+        Supervised::Canceled => return Err(canceled()),
+    };
+    let reply: Value = serde_json::from_slice(&read).map_err(|e| failed(format!("the description failed: {e}")))?;
     match reply["kind"].as_str() {
         Some("describe_failed") => Err(failed(format!("{}: {}", reply["code"].as_str().unwrap_or_default(), reply["detail"].as_str().unwrap_or_default()))),
-        Some(_) if output.status.success() => Ok(reply),
+        Some(_) if status.success() => Ok(reply),
         _ => Err(failed("the description did not complete".into())),
     }
 }
@@ -511,9 +521,9 @@ pub(crate) struct Described {
 /// The environment's root digest and the other Apps it holds (`packages`: their distributions'
 /// packages), described inside it, with the root's code closures when `closures` asks. A failed
 /// description fails the install: an environment never publishes with silently missing callees.
-pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>, closures: bool)
+pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>, closures: bool, stop: Option<&crate::stop::Stop>)
     -> Result<Described, Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures}))?;
+    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures}), stop)?;
     let callees = serde_json::from_value(reply["callees"].clone())
         .map_err(|e| ("package_prepare_description_failed", format!("the environment's callees: {e}")))?;
     Ok(Described { source_digest: reply["source_digest"].as_str().unwrap_or_default().to_string(), callees, closures: closures_of(&reply) })
@@ -521,8 +531,8 @@ pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMa
 
 /// A live project's interface and code closures, read from its source directory by the
 /// environment's Runtime.
-pub(crate) fn describe_project(python: &Path, project: &Path) -> Result<(Value, BTreeMap<String, String>), Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}))?;
+pub(crate) fn describe_project(python: &Path, project: &Path, stop: Option<&crate::stop::Stop>) -> Result<(Value, BTreeMap<String, String>), Failure> {
+    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}), stop)?;
     let interface = Some(reply["interface"].clone()).filter(Value::is_object)
         .ok_or(("package_prepare_description_failed", "the project's description holds no interface".into()))?;
     Ok((interface, closures_of(&reply)))

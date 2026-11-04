@@ -404,6 +404,7 @@ impl Runs {
                     this.service.engine.end_preparation(&run, Outcome::Failed(failure)).map(drop)
                 }
             };
+            this.local.prepared(&run);
             if let Err(error) = ended {
                 tracing::warn!("run {run} preparation: {error}");
             }
@@ -1144,11 +1145,13 @@ impl Runs {
     /// stays until a later install finds it idle.
     fn supersede(&self, actor: &str, current: &Installation) -> Result<(), Refused> {
         let running = self.service.engine.with_journal(|j| j.running_generations())?;
+        let preparing = self.local.preparing();
         self.service.uninstall(actor, |prior| {
             prior.package == current.package
                 && prior.alias != current.alias
                 && prior.alias.starts_with("local-")
                 && !running.contains(&prior.generation)
+                && !preparing.contains(&prior.generation)
         })?;
         Ok(())
     }

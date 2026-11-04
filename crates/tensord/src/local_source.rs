@@ -12,7 +12,7 @@ use crate::{
 };
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -106,6 +106,9 @@ pub struct LocalSources {
     installing: Mutex<()>,
     /// The run whose install holds `installing`, and its package: what a second run waits for.
     holder: Mutex<Option<(String, String)>>,
+    /// The generation each run still preparing was handed: no other install of its package takes
+    /// it away before the run binds and the journal names it (cl-773).
+    preparing: Mutex<HashMap<String, String>>,
 }
 
 /// `name` as a path inside a tree: relative, with no step out of it.
@@ -212,6 +215,7 @@ impl LocalSources {
             publisher,
             installing: Mutex::new(()),
             holder: Mutex::new(None),
+            preparing: Mutex::default(),
         }
     }
 
@@ -399,8 +403,9 @@ impl LocalSources {
                 platform::durable::symlink(&environment, &dir.join("env")).map_err(|e| published::io_failure(e.into()))?;
                 let (env, distribution) = (dir.join("env"), published::distribution(&pyproject)?);
                 let python = platform::paths::venv_python(&env);
-                let (interface, closures) = environment::describe_project(&python, &project)?;
-                let callees = environment::describe_environment(&python, &distribution, &manifest.callees, false)?.callees;
+                let stop = job.stop.as_ref();
+                let (interface, closures) = environment::describe_project(&python, &project, stop)?;
+                let callees = environment::describe_environment(&python, &distribution, &manifest.callees, false, stop)?.callees;
                 let described = environment::Described { source_digest: manifest.source_digest(), callees, closures };
                 let record = built.record((&identity, &built_from), (&distribution, &manifest.release), &env, &interface,
                     &self.publisher.sdk.runtime_build, described)?;
@@ -423,6 +428,16 @@ impl LocalSources {
         })?;
         service.installed(&held);
         Ok(installed)
+    }
+
+    /// `run` ended its preparation: bound, the journal names its generation; else nothing does.
+    pub fn prepared(&self, run: &str) {
+        self.preparing.lock().unwrap().remove(run);
+    }
+
+    /// The generations of runs still preparing.
+    pub fn preparing(&self) -> HashSet<String> {
+        self.preparing.lock().unwrap().values().cloned().collect()
     }
 
     /// Keep remote source homes while a generation names their environment. Only completed,
@@ -500,6 +515,7 @@ impl LocalSources {
         let _held = Holder(&self.holder);
         if let Some(held) = service.engine.installation(actor, &alias)? {
             if service.catalog.resolve(&held.generation).is_ok() {
+                self.preparing.lock().unwrap().insert(run.to_string(), held.generation.clone());
                 return Ok(held);
             }
         }
@@ -521,7 +537,9 @@ impl LocalSources {
             }),
             ..Default::default()
         };
-        self.install_live(service, actor, alias, manifest, &object.sha256, &job)
+        let installed = self.install_live(service, actor, alias, manifest, &object.sha256, &job)?;
+        self.preparing.lock().unwrap().insert(run.to_string(), installed.generation.clone());
+        Ok(installed)
     }
 }
 
