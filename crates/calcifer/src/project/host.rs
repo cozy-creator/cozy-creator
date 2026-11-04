@@ -75,6 +75,17 @@ impl Package {
         }
     }
 
+    /// The function a job of `kind` will most likely call: the one named, else the first public one that makes it.
+    pub fn first_making(&self, kind: &str) -> Option<Renderer> {
+        if let Some(function) = &self.named {
+            return self.function(function).ok();
+        }
+        let interface = self.interface();
+        let makes = |name: &&str| !name.starts_with(ADAPTER) && interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let first = interface.public().into_iter().find(makes)?;
+        self.function(first).ok()
+    }
+
     /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
     pub fn named_kind(&self) -> Option<String> {
         let interface = self.interface();
@@ -262,6 +273,11 @@ impl Host {
         let found = Package { name: package, release: card.release.clone(), local: None, moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
+    }
+
+    /// Stops a run fetching ahead, however far it got. Nothing depends on it.
+    pub fn cancel_ahead(&self, run: &RunId) {
+        let _ = self.api.calcifer.cancel(run);
     }
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.

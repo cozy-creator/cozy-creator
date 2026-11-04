@@ -9,7 +9,7 @@ use std::{
 use protocol::{
     calcifer::{Event as RunEvent, Progress, Run, Status},
     ids::RunId,
-    project::{Board, Event, Job, JobState, Preview},
+    project::{Ahead, Board, Event, Job, JobState, Preview},
 };
 use tokio::sync::{broadcast, watch};
 
@@ -58,6 +58,8 @@ struct Held {
     warned: HashSet<(String, String)>,
     /// Each job as last told, by id.
     told: HashMap<String, Job>,
+    /// What machines are fetching ahead, and the run each is.
+    ahead: Vec<(RunId, Ahead)>,
 }
 
 /// A job with a run.
@@ -77,7 +79,9 @@ impl Jobs {
     }
 
     pub fn board(&self) -> Board {
-        self.board.borrow().clone()
+        let mut board = self.board.borrow().clone();
+        board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(_, row)| row.clone()).collect();
+        board
     }
 
     pub fn subscribe(&self) -> watch::Receiver<Board> {
@@ -217,9 +221,56 @@ impl Jobs {
         !self.held.lock().expect("jobs lock").warned.insert((asset.to_owned(), message.to_owned()))
     }
 
+    /// A machine began fetching ahead, as run `id`.
+    pub fn ahead(&self, id: RunId, function: String, machine: String, run: u64) {
+        let mut held = self.held.lock().expect("jobs lock");
+        let row = Ahead { function, machine, run, stage: Some("asked".into()), ..Ahead::default() };
+        crate::events::ahead_updated(&self.project, &row);
+        let _ = self.events.send(Event::Ahead { ahead: row.clone() });
+        held.ahead.push((id, row));
+        self.publish(&mut held);
+    }
+
+    /// What that did, if `id` is one; `Some` once it ended: why it stopped short, if it did.
+    fn ahead_ran(&self, held: &mut Held, id: &RunId, event: &RunEvent) -> bool {
+        let Some((_, row)) = held.ahead.iter_mut().find(|(run, _)| run == id) else { return false };
+        let was = row.clone();
+        match event {
+            RunEvent::Progress { progress } => {
+                row.stage = (!progress.stage.is_empty()).then(|| words(&progress.stage));
+                (row.done, row.total) = (progress.bytes_done, progress.bytes_total);
+            }
+            RunEvent::Completed { .. } => {
+                row.stage = None;
+                row.ready = true;
+                row.done = row.total;
+            }
+            RunEvent::Failed { run, .. } | RunEvent::Canceled { run, .. } => {
+                row.stage = None;
+                row.held_back = Some(run.reason.as_ref().map_or_else(|| "canceled".to_owned(), |reason| reason.message.clone()));
+            }
+            _ => {}
+        }
+        if *row != was {
+            let row = row.clone();
+            crate::events::ahead_updated(&self.project, &row);
+            let _ = self.events.send(Event::Ahead { ahead: row });
+        }
+        true
+    }
+
+    /// The runs fetching ahead that nothing it names waits for now.
+    pub fn ahead_going(&self) -> Vec<(String, String, RunId)> {
+        let held = self.held.lock().expect("jobs lock");
+        held.ahead.iter().filter(|(_, row)| row.stage.is_some()).map(|(id, row)| (row.function.clone(), row.machine.clone(), id.clone())).collect()
+    }
+
     /// What run `id` did, when it is one of this board's, under `dir`; `Some`: a warning it gave for the first time, and whose it is.
     pub fn ran(&self, id: &RunId, event: &RunEvent, dir: &Path) -> Option<(String, String)> {
         let mut held = self.held.lock().expect("jobs lock");
+        if self.ahead_ran(&mut held, id, event) {
+            return None;
+        }
         let live = held.live.iter_mut().find(|live| live.id == *id)?;
         match event {
             RunEvent::Created { run, .. }
@@ -286,7 +337,7 @@ impl Jobs {
             let _ = self.events.send(Event::Job { job: job.clone(), seq });
         }
         held.told = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
-        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs };
+        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(_, row)| row.clone()).collect() };
         // A client that keeps the board hears only when more than a job changed: its jobs it hears one by one.
         self.board.send_if_modified(|stands| {
             *stands = board;

@@ -23,7 +23,7 @@ Calcifer owns all of this. It knows no kinds and no packages by name. A package 
 | `files/` | Cozy only | Every file, by hash |
 | `project.canvas.yaml` | Cozy, for the page | Where each element sits: one line per card, sorted by name, so git merges it. Nothing reads it but the page, and nothing in it is an input |
 | `<edit_name>.mp4`, `.otio` | Cozy | Each cut |
-| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and any folder a run made |
+| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, any folder a run made, and while a render goes what its walk owes (`walk.json`, `asked/`) |
 
 ## The file
 
@@ -214,7 +214,7 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 
 A project has one walker, and each render adds to it: a second `render all` is a second pass of new versions, joining the first, and `--queue` adds without following. Without `--queue` a render follows until it ends, and its exit code says how it went; Ctrl-C only stops following, and the work stays queued. `status` shows what is running and what is queued, and queued work outlives a Calcifer restart until `cancel` drops it.
 
-- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `project.lock` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and an asset you delete from the file is still made by a render that had it.
+- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `.runs/` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and an asset you delete from the file is still made by a render that had it.
 - **A save that can't be read** refuses a new `render`, and does nothing else. `status` says what's wrong, and `cancel` works.
 - **`--on`:** each render's work goes where it said.
 - **`--missing`** doesn't make again what another render is making with the same inputs. A plain render makes its own version.

@@ -538,6 +538,9 @@ fn summary(ctx: &Context, state: &State) {
         let shown: Vec<&str> = queued.iter().map(|item| item.name.as_str()).collect();
         output::say(ctx, &format!("queued: {}", shown.join(", ")));
     }
+    for line in state.board.iter().flat_map(|board| &board.ahead).filter_map(render::ahead_line) {
+        output::say(ctx, &line);
+    }
     if !state.queue.is_empty() && !state.busy {
         output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");
     }

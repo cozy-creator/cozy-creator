@@ -4,7 +4,7 @@
 //! them. Its package's adapter for its kind turns it into calls, and they land as one version of the asset, in `files/` and
 //! project.lock (people write project.yaml; cozy writes one line of it at `approve`, `unpin`, `import` and `rename`). The reserved package `cozy` runs
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in
-//! project.lock, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
+//! `.runs/walk.json`, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod archive;
 mod assetfile;
 mod assets;
@@ -172,7 +172,7 @@ impl Projects {
         Ok(self.open.lock().expect("projects lock").get(id).cloned().expect("just opened"))
     }
 
-    /// The project in `dir` (canonical), opened once; its walk goes on when project.lock owes one.
+    /// The project in `dir` (canonical), opened once; its walk goes on when one is owed.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
         let folder = Folder::open(dir, api.machines.hubs.home())?;
         crate::events::project_opened(dir);
@@ -497,6 +497,8 @@ struct Walker {
     unread: Vec<(String, Error)>,
     /// The assets project.yaml names now, as of its stamp.
     names: Option<(String, HashSet<String>)>,
+    /// What machines were asked to fetch ahead: machine, function and its model choices.
+    asked_ahead: HashSet<(String, String, String)>,
 }
 
 /// One text a render was asked with, read once, and what stands by it: each asset worked out when asked of, and again once what it reads moved.
@@ -1630,6 +1632,12 @@ async fn cancel(
     }
     project.asked.notify_one();
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
+    // `all` stops what is fetched ahead too; the walker stops what fewer leave unneeded.
+    if all {
+        for (_, _, run) in project.jobs.ahead_going() {
+            let _ = api.calcifer.cancel(&run);
+        }
+    }
     Ok(Json(Cancelled { dropped, canceled }))
 }
 
@@ -2132,7 +2140,7 @@ enum Reach {
     Gone,
 }
 
-/// A project's one walker: what project.lock owes, each operation sent once what it reads has settled, each run followed until it lands.
+/// A project's one walker: gives each job of its graph its turn as what it needs ends, and follows each run until it lands.
 struct Walk {
     host: Host,
     project: Arc<Project>,
@@ -2162,6 +2170,16 @@ enum Done {
     Sent { id: usize, key: String, ask: Arc<Ask>, name: String, kind: String, inputs: Option<String>, result: Result<(), Error> },
     Made { id: usize, ask: String, name: String, kind: String, inputs: Option<String>, result: Result<(), Error> },
     Landed { job: String, landed: Followed },
+    Ahead,
+}
+
+/// What a queued job's machine can fetch before its turn: a function as its text names it, on one machine.
+struct Wanted {
+    machine: On,
+    hub: String,
+    with: String,
+    kind: String,
+    body: Map<String, Value>,
 }
 
 /// What a job's turn came to, done once the graph is let go.
@@ -2424,8 +2442,17 @@ impl Walk {
                     work.push(async move { Done::Landed { job, landed: self.follow(key).await } }.boxed());
                 }
             }
+            for wanted in self.wanted_ahead() {
+                work.push(async move {
+                    if let Err(error) = self.ask_ahead(wanted).await {
+                        warn!("fetching ahead in {}: {}", self.folder().dir.display(), error.message);
+                    }
+                    Done::Ahead
+                }.boxed());
+            }
             self.finish_asks().await?;
             self.sync();
+            self.ahead_unneeded();
             if work.is_empty() {
                 // What is going with nothing following it has ended.
                 {
@@ -2450,6 +2477,95 @@ impl Walk {
             }
             while let Some(Some(done)) = work.next().now_or_never() {
                 self.done(done, &mut followed, &mut first)?;
+            }
+        }
+    }
+
+    /// What jobs waiting for their turn will need that no machine was asked for. Only where the machine is known: with several it is chosen when a job goes.
+    fn wanted_ahead(&self) -> Vec<Wanted> {
+        let Ok(walk) = self.folder().walk_now() else { return vec![] };
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        let Walker { graph, readings, asked_ahead, .. } = &mut *walker;
+        let mut wanted = vec![];
+        for id in graph.open_jobs() {
+            let job = &graph.jobs[id];
+            if job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
+                continue;
+            }
+            let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
+            let Some(reading) = readings.get(&ask.digest) else { continue };
+            let [machine] = ask.target.on.as_slice() else { continue };
+            let asset = &reading.doc.assets[job.node];
+            let (with, kind) = (reading.doc.target(job.node), asset.kind.clone());
+            let chosen = serde_json::to_string(&(asset.body.get("models"), asset.body.get("lora"))).unwrap_or_default();
+            if asked_ahead.insert((machine.to_string(), with.clone(), chosen)) {
+                wanted.push(Wanted { machine: machine.clone(), hub: ask.target.hub.clone(), with, kind, body: asset.body.clone() });
+            }
+        }
+        wanted
+    }
+
+    /// Asks a machine for a function's code and weights, in the background: a warm run, which holds no GPU and starts no executor. The
+    /// function is what the text names, else the first of its package that makes this kind. Nothing here can fail a render.
+    async fn ask_ahead(&self, wanted: Wanted) -> Result<(), Error> {
+        let Wanted { machine, hub, with, kind, body } = wanted;
+        let on = [machine];
+        let package = self.host.package(&hub, &with, &self.folder().dir, &on).await?;
+        let Some(renderer) = package.first_making(&kind) else { return Ok(()) };
+        let placed = self.host.place(&on, &renderer);
+        let mut payload = Map::new();
+        for field in ["models", "lora"] {
+            if let Some(value) = body.get(field).filter(|value| !value.is_null()) {
+                payload.insert(field.into(), value.clone());
+            }
+        }
+        let called = renderer.target();
+        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
+        choices.take(&mut payload)?;
+        let models = choices::wire(&choices.into_choices())?;
+        let (source, inputs) = match &renderer.local {
+            None => {
+                if let On::Machine(name) = &placed {
+                    self.host.release_ready(name, &renderer.package, &renderer.release, &hub).await?;
+                }
+                (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![])
+            }
+            Some(path) => {
+                let prepared = self.host.ready(path, &placed, &hub).await?;
+                (v1::Source::Local(prepared.source), prepared.files)
+            }
+        };
+        let spec = v1::RunSpec { kind: v1::RunKind::Warm, source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
+        let target = format!("{}{called}", protocol::project::AHEAD);
+        let shown = package.name.clone() + "/" + &renderer.function;
+        let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None };
+        let key = format!("project-ahead-{}", new_key());
+        let run = self.send_run(&key, submit).await?;
+        self.project.jobs.ahead(run.id.clone(), shown, placed.to_string(), run.number);
+        Ok(())
+    }
+
+    /// What it fetches ahead for jobs that all ended: it needn't go on.
+    fn ahead_unneeded(&self) {
+        let needed: HashSet<(String, String)> = {
+            let walk = self.folder().walk_now().unwrap_or_default();
+            let walker = self.project.walker.lock().expect("walker lock");
+            let graph = &walker.graph;
+            (graph.open_jobs().into_iter().filter(|&id| graph.jobs[id].state == walker::State::Waiting))
+                .filter_map(|id| {
+                    let job = &graph.jobs[id];
+                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
+                    let doc = &walker.readings.get(&ask.digest)?.doc;
+                    Some(ask.target.on.iter().map(|on| (on.to_string(), format::plain_with(&doc.target(job.node), self.folder()))).collect::<Vec<_>>())
+                })
+                .flatten()
+                .collect()
+        };
+        for (function, machine, run) in self.project.jobs.ahead_going() {
+            let package = function.rsplit_once('/').map_or(function.as_str(), |(package, _)| package);
+            let wanted = needed.iter().any(|(on, with)| *on == machine && (with == &function || with == package || with.rsplit('/').next() == package.rsplit('/').next()));
+            if !wanted {
+                self.host.cancel_ahead(&run);
             }
         }
     }
@@ -2723,6 +2839,7 @@ impl Walk {
         };
         match done {
             Done::Measured => self.holding.store(false, Ordering::Relaxed),
+            Done::Ahead => {}
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
                     // No run came of it: it stands, it had no adapter, or it was canceled while being sent.

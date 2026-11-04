@@ -9,7 +9,7 @@ use std::{
 
 use protocol::{
     error::{Error, Kind},
-    project::{Board, Event, Job, JobState, Rendered},
+    project::{Ahead, Board, Event, Job, JobState, Rendered},
 };
 use ratatui::{
     Frame,
@@ -73,6 +73,13 @@ impl Rendering {
                     JobState::Waiting => 2,
                     _ => 0,
                 });
+                Fresh::Board
+            }
+            Event::Ahead { ahead } => {
+                match self.board.ahead.iter_mut().find(|held| held.run == ahead.run) {
+                    Some(held) => *held = ahead,
+                    None => self.board.ahead.push(ahead),
+                }
                 Fresh::Board
             }
             Event::Warning { message, name } => {
@@ -152,6 +159,19 @@ impl Rendering {
 }
 
 /// What an event newly is for a person to read.
+/// One line for what a machine is fetching ahead of its jobs; none once it is all there.
+pub(super) fn ahead_line(ahead: &Ahead) -> Option<String> {
+    let function = &ahead.function;
+    if let Some(why) = &ahead.held_back {
+        return Some(format!("{function}: not fetched ahead: {why}"));
+    }
+    let stage = ahead.stage.as_deref()?;
+    Some(match ahead.total {
+        0 => format!("{function} on {}, ahead of its turn: {stage}", ahead.machine),
+        total => format!("{function} on {}, ahead of its turn: {stage}: {} of {}", ahead.machine, output::bytes(ahead.done), output::bytes(total)),
+    })
+}
+
 enum Fresh {
     Nothing,
     Board,
@@ -394,6 +414,8 @@ fn finished(rendered: &Rendered) -> String {
 /// What has been said of each job, so each change is said once. A stage's steps are said at each tenth of the way.
 #[derive(Default)]
 struct Lines {
+    /// What it last said of each thing fetched ahead, by run.
+    ahead: HashMap<u64, String>,
     said: HashSet<(String, Option<u32>, String)>,
     tenths: HashMap<(String, Option<u32>), i64>,
     /// A failure said once, whose it was.
@@ -406,6 +428,15 @@ impl Lines {
     }
 
     fn board(&mut self, ctx: &Context, rendering: &Rendering) {
+        // What is fetched ahead, as it starts a stage or every quarter of the way.
+        for ahead in &rendering.board.ahead {
+            let Some(line) = ahead_line(ahead) else { continue };
+            let quarter = if ahead.total > 0 { ahead.done * 4 / ahead.total } else { 0 };
+            let at = format!("{:?} {quarter} {:?}", ahead.stage, ahead.held_back);
+            if self.ahead.insert(ahead.run, at.clone()).as_ref() != Some(&at) {
+                output::say(ctx, &line);
+            }
+        }
         for job in &rendering.board.jobs {
             let asset = &job.asset;
             let made = numbered(job);
@@ -640,7 +671,8 @@ impl View {
             })
             .collect();
         let said = rendering.said.last().filter(|said| said.name.is_none()).map(|said| said.message.clone());
-        let foot = warned.len() as u16 + u16::from(said.is_some()) + 1;
+        let ahead: Vec<String> = rendering.board.ahead.iter().filter_map(ahead_line).collect();
+        let foot = warned.len() as u16 + ahead.len() as u16 + u16::from(said.is_some()) + 1;
         let [top, body, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(foot)]).areas(frame.area());
 
         let silence = self.events.silence().map(|silence| format!(" · {silence}")).unwrap_or_default();
@@ -661,6 +693,7 @@ impl View {
 
         let dim = Style::new().add_modifier(Modifier::DIM);
         let mut lines: Vec<Line> = warned.into_iter().map(Line::from).collect();
+        lines.extend(ahead.into_iter().map(|line| Line::styled(line, dim)));
         lines.extend(said.map(|said| Line::styled(said, dim)));
         lines.push(Line::styled("↑/↓, Enter opens a run, q leaves it rendering", dim));
         frame.render_widget(Paragraph::new(lines), bottom);

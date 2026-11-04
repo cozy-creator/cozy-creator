@@ -816,13 +816,33 @@ impl Runs {
                 true => self.warm_models(actor, id, &spec, &*observe, stoppable)?,
                 false => vec![],
             };
+            // A function that loads no model itself runs on what it calls: the first of its package's
+            // internal functions stands for them. A wrong guess costs bytes, and its run fetches the rest.
+            let plan = match plan {
+                None if !install_only => match internal_models(&installation)?.first() {
+                    Some(callee) => {
+                        let own: Vec<_> = spec.models.iter().filter(|c| own_choice(c, callee)).cloned().collect();
+                        let report = observe.clone();
+                        self.resolve(actor, id, Some(installation.clone()), None, hub.clone(), &spec, callee, &own, None, &spec.lane,
+                            Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))), Some(&stoppable.stop))?.1
+                    }
+                    None => None,
+                },
+                plan => plan,
+            };
             // A function's warm run ends holding what its constructions read (`downloaded`), its
-            // on-demand models' too.
+            // on-demand models' too: only if that fits. It is a guess, so it never makes room.
             let mut moved = tensorfs::fetch::Landed::default();
             if let Some(plan) = &plan {
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
+                let selected = [plan.upfront(), plan.on_demand()].concat();
+                let absent = fetch.absent(&selected)?;
+                let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+                if absent > free {
+                    return Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free")));
+                }
                 let report = |done, total| observe("downloading its weights", done, total);
-                moved = fetch.download(&[plan.upfront(), plan.on_demand()].concat(), &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
+                moved = fetch.download(&selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
                     true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
                     false => {
                         let text = e.to_string();

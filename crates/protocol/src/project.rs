@@ -823,6 +823,36 @@ pub struct Board {
     pub shots: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
+    /// What machines are fetching ahead of what's queued, one per function.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<Ahead>,
+}
+
+/// How the target of a run fetching ahead starts.
+pub const AHEAD: &str = "ahead ";
+
+/// One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
+/// bytes, and its job's run fetches what it needs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ahead {
+    /// `org/package/function`.
+    pub function: String,
+    pub machine: String,
+    /// Its run, kept out of the list people read.
+    pub run: u64,
+    /// `installing it`, `downloading its weights`, …; none once it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub total: u64,
+    /// It's all there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ready: bool,
+    /// Why it stopped short: the disk has no room, or it was canceled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back: Option<String>,
 }
 
 /// How a job stands.
@@ -920,6 +950,10 @@ pub enum Event {
     Job {
         job: Job,
         seq: u64,
+    },
+    /// What a machine is fetching ahead, as it stands now, whole.
+    Ahead {
+        ahead: Ahead,
     },
     /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
     Started {

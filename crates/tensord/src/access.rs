@@ -417,6 +417,17 @@ impl Fetch {
         Ok(())
     }
 
+    /// The bytes of `selected` (header, components) not here.
+    pub fn absent(&self, selected: &[(String, Vec<String>)]) -> io::Result<u64> {
+        let mut absent = 0;
+        for (header, components) in selected {
+            let checkpoint = checkpoint(self.store(), header)?;
+            let objects = storage::chunks(&checkpoint, components);
+            absent += objects.iter().filter(|object| !self.store().holds(object)).map(|object| object.length).sum::<u64>();
+        }
+        Ok(absent)
+    }
+
     /// Every chunk of `selected` (header, components) here, reporting its bytes (a warm run
     /// of a function): those that came from the Hub and from the datacenter volume, and those held.
     pub fn download(&self, selected: &[(String, Vec<String>)], stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<tensorfs::fetch::Landed> {
