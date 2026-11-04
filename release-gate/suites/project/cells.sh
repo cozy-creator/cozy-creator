@@ -94,6 +94,7 @@ assets:
   edit:
     kind: video
     render: {with: cozy}
+    aspect_ratio: "16:9"
     resolution: 1080p
     pieces:
       - <mural_upscale>
