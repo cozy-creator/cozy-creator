@@ -204,9 +204,15 @@ def killed_during(delay: float = 0.0, **env: str):
     return cell
 
 
+def idle_bytes() -> str:
+    """What a donor holds idle: half the card, so the cell fits any card."""
+    total = subprocess.check_output(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits", "-i", "0"])
+    return str((int(total) // 2) << 20)
+
+
 def donor_answers(ctx: Context) -> None:
     """The control for kill_donor_trim: with no kill the asker gets its memory from the donor."""
-    idle = str(8192 << 20)
+    idle = idle_bytes()
     donor = ctx.child("donor", FAULT_IDLE=idle)
     if donor.step("ready", stall=120) is None:
         return
@@ -223,7 +229,7 @@ def donor_answers(ctx: Context) -> None:
 
 def kill_donor(ctx: Context) -> None:
     """Kill the donor while the asker's allocation has it unmapping, seen in the driver's used bytes."""
-    idle = str(8192 << 20)
+    idle = idle_bytes()
     donor = ctx.child("donor", FAULT_IDLE=idle)
     if donor.step("ready", stall=120) is None:
         return
