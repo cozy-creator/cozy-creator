@@ -40,6 +40,12 @@ against `gate-<SKU>-runtime-packages.json`). A suite is `suites/<name>/`: `cells
 way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py;
 `gate['runs']` holds each completed cell as `runs.py`'s summary of its record), and `skus` (`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.
 
+## Before renting
+
+`release-gate/interfaces.sh --runtime <wheel file|version> <packages checkout>` reads each package's interface back through the
+reader an executor starts on, as TensorD writes it: no GPU, no pod, seconds. Describing alone misses what only that reader
+refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything else.
+
 ## What a gate does
 
 1. Rents one fresh machine of the SKU.

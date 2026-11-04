@@ -19,9 +19,11 @@ use std::{
 use crate::process::Supervised;
 use crate::{origin::Machine, stop::Stop};
 
-/// The file in a selected pair naming its development Runtime build (`0.24.6+e9baf7a4`),
-/// which runs report: a named wheel file is not a published release.
-pub const RUNTIME_BUILD: &str = "runtime-build";
+/// The file in a selected pair naming its development Runtime build (`0.24.6+e9baf7a4`), which
+/// runs report: only a wheel a caller sent is one, and a package's bounds on the pair don't bind it.
+const RUNTIME_BUILD: &str = "development-runtime";
+/// That file as an older TensorD wrote it, for a numbered prerelease it fetched too.
+const OLDER_RUNTIME_BUILD: &str = "runtime-build";
 
 /// The service's exit status asking its parent to start the service again on the selected pair.
 pub const REPLACE_EXIT: i32 = 75;
@@ -1325,6 +1327,25 @@ fn verify_wheel(path: &Path, distribution: &str) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The development Runtime of the selected pair in `wheels`; empty for a release. An older TensorD
+/// (the one an update moving TensorD and the pair together runs on) also marked a GitHub prerelease
+/// it fetched, so its mark counts only while the file a caller sent is still in `staged`.
+pub fn development_runtime(wheels: &Path, staged: &Path) -> String {
+    if let Ok(build) = fs::read_to_string(wheels.join(RUNTIME_BUILD)) {
+        return build;
+    }
+    let Ok(build) = fs::read_to_string(wheels.join(OLDER_RUNTIME_BUILD)) else {
+        return String::new();
+    };
+    let sent = existing_wheel(wheels, "cozy_runtime").ok().zip(identified(wheels).ok())
+        .is_some_and(|(wheel, pair)| wheel.file_name().is_some_and(|file| staged.join(pair.runtime_sha256).join(file).is_file()));
+    if sent {
+        return build;
+    }
+    tracing::info!("Runtime {build} was fetched, not sent: an older TensorD's mark, and no development build");
+    String::new()
 }
 
 /// A development Runtime wheel's version and build: the source commit it embeds, else its
