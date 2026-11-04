@@ -94,6 +94,24 @@ pub(crate) fn request_boundary(device: i32, begin: bool) {
     }
 }
 
+fn nvml_device<'a>(nvml: &'a Nvml, b: &[u8; 16]) -> Option<nvml_wrapper::Device<'a>> {
+    let name = format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    nvml.device_by_uuid(format!("GPU-{name}")).or_else(|_| nvml.device_by_uuid(format!("MIG-{name}"))).ok()
+}
+
+/// What the driver keeps of this card: NVML counts it and CUDA's total leaves it out (378 MiB of a
+/// 12 GiB 3060). Zero when NVML can't say.
+pub(crate) fn driver_reservation(device: i32, cuda_total: usize) -> usize {
+    let measured = (|| {
+        let uuid = cuda::device_uuid(device).ok()?;
+        let nvml = Nvml::init().ok()?;
+        let total = nvml_device(&nvml, &uuid)?.memory_info().ok()?.total as usize;
+        total.checked_sub(cuda_total)
+    })();
+    measured.unwrap_or(0)
+}
+
 struct Native {
     device: i32,
     shared: bool,
@@ -148,10 +166,7 @@ impl Native {
 
     fn processes(&self) -> Option<BTreeMap<u32, u64>> {
         let nvml = self.nvml.as_ref()?;
-        let b = self.uuid;
-        let name = format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-        let device = nvml.device_by_uuid(format!("GPU-{name}")).or_else(|_| nvml.device_by_uuid(format!("MIG-{name}"))).ok()?;
+        let device = nvml_device(nvml, &self.uuid)?;
         let mut rows = BTreeMap::<u32, u64>::new();
         for process in device.running_compute_processes().ok()?.into_iter().chain(device.running_graphics_processes().ok()?) {
             let UsedGpuMemory::Used(bytes) = process.used_gpu_memory else { return None };

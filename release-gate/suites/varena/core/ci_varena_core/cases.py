@@ -36,7 +36,9 @@ def cap(managed, gpu=None):
     """A development cap leaving this much for our own bytes, the core's slack on top."""
     free, total = torch.cuda.mem_get_info(0)
     owned = vt.stats(0)["mapped_bytes"] + (gpu.stats()["resident_bytes"] if gpu else 0)
-    vt.set_limit(0, managed + max(total - free - owned, 0) + (128 << 20))
+    vt.set_limit(0, 1 << 50)  # Any cap makes the core read the driver's reservation.
+    reserved = vt.stats(0)["driver_reservation"]
+    vt.set_limit(0, managed + max(total - free - owned, 0) + (128 << 20) + reserved)
 
 
 def give_back():
@@ -146,7 +148,10 @@ def cap_counts_the_driver():
     """A development cap reads as a smaller card: the driver's own charge comes out of it."""
     free, total = torch.cuda.mem_get_info(0)
     used = total - free
-    vt.set_limit(0, used + 512 * MIB)
+    vt.set_limit(0, 1 << 50)
+    reserved = vt.stats(0)["driver_reservation"]
+    limit = reserved + used + 512 * MIB
+    vt.set_limit(0, limit)
     held = []
     try:
         while True:
@@ -154,7 +159,7 @@ def cap_counts_the_driver():
     except torch.OutOfMemoryError:
         pass
     free, total = torch.cuda.mem_get_info(0)
-    assert held and total - free <= used + 512 * MIB, (len(held), total - free, used)
+    assert reserved and held and reserved + total - free <= limit, (len(held), reserved, total - free, limit)
     count = len(held)
     del held
     settle()

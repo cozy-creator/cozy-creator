@@ -325,19 +325,21 @@ fn _varena_working_stats(
     py: Python<'_>,
     device: i32,
 ) -> PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    let (stats, weights_resident, weights_filled) = py
+    let (stats, weights_resident, weights_filled, driver_reservation) = py
         .detach(|| {
             check()?;
             Ok::<_, varena::Error>((
                 varena::working::stats(device)?,
                 varena::resident_bytes(device)?,
                 varena::filled_bytes(device)?,
+                varena::driver_reservation(device)?,
             ))
         })
         .map_err(|e| super::raise(py, e))?;
     Ok([
         ("weights_resident", weights_resident as u64),
         ("weights_filled", weights_filled),
+        ("driver_reservation", driver_reservation as u64),
         ("allocated_bytes", stats.allocated_bytes as u64),
         ("allocated_peak", stats.allocated_peak as u64),
         ("mapped_bytes", stats.mapped_bytes as u64),

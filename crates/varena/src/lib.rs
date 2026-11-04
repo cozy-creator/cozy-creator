@@ -380,6 +380,8 @@ pub struct Device {
     ceiling: AtomicUsize,
     /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
     total: AtomicUsize,
+    /// A real card of `ceiling`'s size would keep its driver's reservation out of it too.
+    reservation: OnceLock<usize>,
     /// That charge at the last sample: what the card uses beyond our own bytes.
     outside: AtomicUsize,
     pages: AtomicUsize,
@@ -412,6 +414,7 @@ impl Device {
             limit: AtomicUsize::new(usize::MAX),
             ceiling: AtomicUsize::new(usize::MAX),
             total: AtomicUsize::new(usize::MAX),
+            reservation: OnceLock::new(),
             outside: AtomicUsize::new(0),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
@@ -491,7 +494,10 @@ impl Device {
 
     /// The most our own bytes may reach right now.
     fn capacity(&self) -> usize {
-        let ceiling = self.ceiling.load(Ordering::Acquire).min(self.total.load(Ordering::Acquire));
+        let reserved = self.reservation.get().copied().unwrap_or(0);
+        let ceiling = self.ceiling.load(Ordering::Acquire);
+        let ceiling = if ceiling == usize::MAX { ceiling } else { ceiling.saturating_sub(reserved) };
+        let ceiling = ceiling.min(self.total.load(Ordering::Acquire));
         let cap = if ceiling == usize::MAX {
             usize::MAX
         } else {
@@ -514,6 +520,10 @@ impl Device {
     fn sample(&self) -> Result<()> {
         let (free, total) = self.driver().memory_info()?;
         self.total.store(total, Ordering::Release);
+        if self.ceiling.load(Ordering::Acquire) != usize::MAX {
+            #[cfg(target_os = "linux")]
+            self.reservation.get_or_init(|| cooperative::driver_reservation(self.ordinal, total));
+        }
         self.outside.store(total.saturating_sub(free).saturating_sub(self.owned()), Ordering::Release);
         Ok(())
     }
@@ -1521,6 +1531,11 @@ fn reclaim_room(device: i32, state: &Device) -> Result<ReclaimReport> {
     report.evicted_regions = reclaim::release(device, over, usize::MAX, reclaim::Wait::No,
         reclaim::Protect::default(), ReclaimReason::Room, &mut report.reclaimed_bytes)?;
     Ok(report)
+}
+
+/// What a development cap sets aside for the driver's own reservation; 0 until one is sampled.
+pub fn driver_reservation(device: i32) -> Result<usize> {
+    Ok(gpu(device)?.reservation.get().copied().unwrap_or(0))
 }
 
 /// Bytes every completed fill has written on this device: host-to-device traffic.
