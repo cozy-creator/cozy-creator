@@ -75,6 +75,47 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
     Ok(wheel)
 }
 
+/// The newest GitHub prerelease of `distribution` whose version `meets` admits and that holds a wheel
+/// for this machine, landed in `dir`: its version and path. None: no release meets it. Err: the
+/// releases couldn't be read, which says nothing of what is published.
+pub fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
+    #[derive(serde::Deserialize)]
+    struct Release { tag_name: String, #[serde(default)] draft: bool }
+    let http = reqwest::Client::builder().user_agent(concat!("cozy/", env!("CARGO_PKG_VERSION"))).build().map_err(io::Error::other)?;
+    let read = |url: String| {
+        let http = http.clone();
+        machine.block(stop, async move {
+            let answer = http.get(&url).send().await.map_err(weather)?;
+            let status = answer.status();
+            let text = answer.text().await.map_err(weather)?;
+            Ok::<_, Refusal>((status, text))
+        })
+    };
+    let (status, listed) = read(protocol::prerelease::releases(distribution)).map_err(io::Error::other)?;
+    if !status.is_success() {
+        return Err(io::Error::other(format!("GitHub answered HTTP {status}")));
+    }
+    let releases: Vec<Release> = serde_json::from_str(&listed).map_err(io::Error::other)?;
+    let mut versions: Vec<&str> = (releases.iter().filter(|release| !release.draft))
+        .filter_map(|release| protocol::prerelease::version_of(distribution, &release.tag_name))
+        .filter(|version| meets(version))
+        .collect();
+    let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
+    while let Some(version) = tensorfs::format::newest_by(versions.iter().copied(), |version| version) {
+        versions.retain(|other| *other != version);
+        let base = protocol::prerelease::base(distribution, version);
+        let (status, sums) = read(format!("{base}/SHA256SUMS")).map_err(io::Error::other)?;
+        if !status.is_success() {
+            continue;
+        }
+        if let Some((file, sha256)) = protocol::prerelease::wheel(&sums, distribution, version, &platform) {
+            let wheel = wheel_at(&format!("{base}/{file}"), sha256, file, dir, machine, stop)?;
+            return Ok(Some((version.to_owned(), wheel)));
+        }
+    }
+    Ok(None)
+}
+
 /// Wheel `file` at an https `url`, redirects followed: its bytes are held to `sha256`, so no host
 /// vouches for anything. Other bytes fail `wheel_digest_mismatch`.
 pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {

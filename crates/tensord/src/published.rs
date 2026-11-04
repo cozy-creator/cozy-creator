@@ -294,8 +294,6 @@ pub struct Publisher {
     building: Mutex<HashMap<String, String>>,
     /// This machine's PyTorch layer once read (`layer`).
     layer: Mutex<Option<Arc<layer::Layer>>>,
-    /// The machine's software updates: a package needing a newer Runtime gets one (`environment`).
-    updates: Option<Arc<crate::machine::update::Updates>>,
 }
 
 /// An identity's builder, forgotten however the build ends.
@@ -307,7 +305,7 @@ impl Drop for Building<'_> {
 }
 
 impl Publisher {
-    pub fn new(sdk: PackageSdk, machine: Arc<Machine>, updates: Option<Arc<crate::machine::update::Updates>>) -> Arc<Self> {
+    pub fn new(sdk: PackageSdk, machine: Arc<Machine>) -> Arc<Self> {
         Arc::new(Self {
             sdk,
             store: machine.store().clone(),
@@ -315,7 +313,6 @@ impl Publisher {
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
             layer: Mutex::default(),
-            updates,
         })
     }
 

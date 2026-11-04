@@ -955,6 +955,9 @@ pub struct Environment {
     pub release: String,
     #[serde(default)]
     pub hub: String,
+    /// The cozy-runtime installed in it: the machine's, or a newer one its package needs.
+    #[serde(default)]
+    pub runtime: String,
     /// What it holds now: `installed`, `downloaded`, `imported`, `host` or `gpu`.
     #[serde(default)]
     pub level: String,

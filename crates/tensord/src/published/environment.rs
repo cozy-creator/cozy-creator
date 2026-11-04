@@ -4,7 +4,8 @@
 //! (`layer`), then the environment's description by its own Runtime and its record; its bytecode
 //! compiles once it is installed. uv runs under one environment.
 use super::{canceled, io_failure, layer::Layer, Failure, Job, Locked, Publisher, SDK};
-use crate::{catalog::normalized, machine::update, process::Supervised};
+use crate::{catalog::normalized, machine::{pypi, update}, process::Supervised};
+use pep440_rs::{Version, VersionSpecifiers};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -12,6 +13,7 @@ use std::{
     io::{self, Read, Write},
     path::Path,
     process::{Command, Stdio},
+    str::FromStr,
 };
 
 /// What one environment is built from.
@@ -40,7 +42,8 @@ pub(crate) struct Project<'a> {
 /// What its record says of the Runtime pair it holds.
 #[derive(serde::Deserialize, serde::Serialize)]
 pub(crate) struct Built {
-    /// `machine`: this machine's pair; `locked`: the package's own.
+    /// `machine`: this machine's pair; `own`: newer ones its floor needs, in this environment alone;
+    /// `locked`: the package's own, on a machine with no pair.
     pub sdk: String,
     /// What the run is told of the pair (uv's findings, a development Runtime): empty for nothing.
     pub fallback: String,
@@ -48,8 +51,39 @@ pub(crate) struct Built {
 
 /// The pair's step: refused for a floor the pair misses, with what it misses.
 enum Pair {
-    Floor(String),
+    Floor(Vec<String>),
     Failed(Failure),
+}
+
+/// A requirement on a member of the pair (`cozy-runtime[media]>=0.39.0`).
+struct Floor {
+    name: String,
+    extras: String,
+    bounds: String,
+    specifiers: VersionSpecifiers,
+}
+
+impl Floor {
+    fn parse(requirement: &str) -> Option<Self> {
+        let requirement: String = requirement.split(';').next()?.chars().filter(|c| !" ()".contains(*c)).collect();
+        let end = requirement.find(|c: char| "<>=!~".contains(c))?;
+        let (named, bounds) = requirement.split_at(end);
+        let (name, extras) = named.split_once('[').map_or((named, ""), |(name, extras)| (name, extras.trim_end_matches(']')));
+        let specifiers = VersionSpecifiers::from_str(bounds).ok()?;
+        Some(Self { name: normalized(name), extras: extras.to_string(), bounds: bounds.to_string(), specifiers })
+    }
+
+    fn meets(&self, version: &str) -> bool {
+        Version::from_str(version).is_ok_and(|version| self.specifiers.contains(&version))
+    }
+
+    /// `name[extras]==version`, as uv installs it.
+    fn pinned(&self, version: &str) -> String {
+        match self.extras.is_empty() {
+            true => format!("{}=={version}", self.name),
+            false => format!("{}[{}]=={version}", self.name, self.extras),
+        }
+    }
 }
 
 impl Publisher {
@@ -142,7 +176,17 @@ impl Publisher {
                 // not install here (no macOS TensorFS wheel).
                 let offered = [args.clone(), self.sdk.requirements.iter().map(String::as_str).collect()].concat();
                 if !(own_sdk && self.uv(&offered, &[], job).is_ok()) {
-                    self.uv(&args, &[], job)?;
+                    if let Err(failure) = self.uv(&args, &[], job) {
+                        // A floor only a GitHub prerelease meets: uv's index can't resolve the project.
+                        let declared = declared_pair(project.dir);
+                        if failure.0 == super::CANCELED || declared.is_empty() {
+                            return Err(failure);
+                        }
+                        self.published_pair(env, &declared, &BTreeMap::new(), project.label, job)?;
+                        let wheels = env.join(PAIR_WHEELS);
+                        let links = wheels.to_string_lossy();
+                        self.uv(&[args.clone(), vec!["--find-links", &links]].concat(), &[], job)?;
+                    }
                 }
             }
         }
@@ -170,6 +214,7 @@ impl Publisher {
             self.uv(&args, &[], job)?;
         }
         let mut fallback = String::new();
+        let mut sdk = if own_sdk { "machine" } else { "locked" };
         if own_sdk {
             next();
             // The pair the package itself selects: its lock's, else what its resolution installed.
@@ -181,10 +226,11 @@ impl Publisher {
                 Ok(warning) => warning,
                 Err(Pair::Failed(failure)) => return Err(failure),
                 Err(Pair::Floor(floors)) => {
-                    let _ = fs::remove_dir_all(env);
-                    return Err(self.meet_floor(project.label, &floors, &wanted, job));
+                    sdk = "own";
+                    self.own_pair(env, &py, &floors, &wanted, project.label, job)?
                 }
             };
+            let _ = fs::remove_dir_all(env.join(PAIR_WHEELS));
             if !fallback.is_empty() {
                 tracing::warn!("package {}: {fallback}", project.label);
                 job.stage(format!("warning: {fallback}"));
@@ -200,14 +246,14 @@ impl Publisher {
                 return Err((TORCH_MISSED, missed.join(", ")));
             }
         }
-        Ok(Built { sdk: if own_sdk { "machine" } else { "locked" }.into(), fallback })
+        Ok(Built { sdk: sdk.into(), fallback })
     }
 
     /// This machine's own Runtime and TensorFS over the environment. Every other installed version
     /// stays exact: they constrain the install, and a pin the pair's own requirements reject keeps
     /// its version while the pair goes in without its dependencies. A floor the package puts on the
-    /// pair that it misses (Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is `Floor`,
-    /// never a run on a Runtime too old for it. What else uv's check finds that the pair adds (a
+    /// pair that it misses (Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is `Floor`
+    /// (`own_pair`), never a run on a Runtime too old for it. What else uv's check finds that the pair adds (a
     /// ceiling a newer pair passes: version skew is allowed) is the run's warning.
     fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<String, Pair> {
         let failed = Pair::Failed;
@@ -243,9 +289,9 @@ impl Publisher {
         }
         let added: Vec<String> = self.check(py, job).map_err(failed)?.difference(&before).cloned().collect();
         // A development Runtime is its owner's choice: the package runs on it, warned below.
-        let floors: Vec<&str> = added.iter().filter_map(|line| floor(line)).collect();
+        let floors: Vec<String> = added.iter().filter_map(|line| floor(line)).map(String::from).collect();
         if !floors.is_empty() && self.sdk.runtime_build.is_empty() {
-            return Err(Pair::Floor(floors.join(" and ")));
+            return Err(Pair::Floor(floors));
         }
         if !added.is_empty() {
             warnings.push(format!("uv pip check: {}", added.join("; ")));
@@ -257,54 +303,89 @@ impl Publisher {
         Ok(warnings.join("; "))
     }
 
-    /// A package needing a newer Runtime than this machine's: the machine updates its pair to the
-    /// package's own versions (never older than it runs), and the run prepares again on it after
-    /// the restart the update ends with. The refusal when it cannot; a cancel ends the wait.
-    fn meet_floor(&self, label: &str, floors: &str, wanted: &BTreeMap<String, String>, job: &Job) -> Failure {
-        let refuse = |why: String| ("runtime_floor_unmet", format!("{label} needs {floors}, and {why}"));
-        let Some(updates) = &self.updates else {
-            return refuse("this machine does not update itself".into());
+    /// A package needing a newer Runtime than this machine's: this environment alone takes it, and
+    /// the machine, its pair and its other environments stay as they are. The version its lock names
+    /// when that meets the floor, else the newest that does. Refused when none is published.
+    fn own_pair(&self, env: &Path, py: &str, floors: &[String], wanted: &BTreeMap<String, String>, label: &str, job: &Job) -> Result<String, Failure> {
+        let chosen = self.published_pair(env, floors, wanted, label, job)?;
+        let wheels = env.join(PAIR_WHEELS);
+        job.stage(format!("{label} needs {}: its environment takes {}", floors.join(" and "), chosen.join(" and ")));
+        let (constraints, excludes) = (env.join("cozy-constraints.txt"), env.join("cozy-excludes.txt"));
+        let (links, machine) = (wheels.to_string_lossy(), self.sdk.find_links.as_ref().map(|p| p.to_string_lossy().to_string()));
+        let install = |how: &[&str]| {
+            let mut args = vec!["pip", "install", "--python", py, "--excludes", excludes.to_str().unwrap_or_default(), "--find-links", &links];
+            args.extend(how);
+            if let Some(machine) = &machine {
+                args.extend(["--find-links", machine]);
+            }
+            args.extend(chosen.iter().map(String::as_str));
+            self.uv(&args, &[], job)
         };
-        let running = updates.software();
-        let newer = |name: &str, running: &str| {
-            wanted.get(name).filter(|version| older(running, version)).map(|version| update::Choice { version: version.clone(), ..Default::default() })
-        };
-        let (runtime, tensorfs) = (newer("cozy-runtime", &running.runtime), newer("tensorfs", &running.tensorfs));
-        if runtime.is_none() && tensorfs.is_none() {
-            return refuse(format!("it names no Runtime newer than this machine's {}", running.runtime));
+        let before = self.check(py, job)?;
+        let mut warnings = vec![];
+        if let Err((code, detail)) = install(&["--constraints", constraints.to_str().unwrap_or_default()]) {
+            if code == super::CANCELED {
+                return Err((code, detail));
+            }
+            install(&["--no-deps"])?;
+            warnings.push(format!("{} want versions the package's own do not hold, which it keeps ({})", chosen.join(" and "), crate::triage::ends(&detail, 1000)));
         }
-        let to = |choice: &Option<update::Choice>, running: &str| choice.as_ref().map_or(running.to_string(), |c| c.version.clone());
-        let (to_runtime, to_tensorfs) = (to(&runtime, &running.runtime), to(&tensorfs, &running.tensorfs));
-        let operation = format!("floor-{to_runtime}-{to_tensorfs}").replace('+', ".");
-        let request = update::Request {
-            operation: operation.clone(),
-            pin: None,
-            runtime,
-            tensorfs,
-            cozy: None,
-            gpu_memory_limit: None,
-            binary: None,
-            toolchain: false,
-        };
+        let found = self.check(py, job)?;
+        let missed: Vec<&str> = found.iter().filter_map(|line| floor(line)).collect();
+        if !missed.is_empty() {
+            return Err(("runtime_floor_unmet", format!("{label} needs {}, and {} doesn't meet it", missed.join(" and "), chosen.join(" and "))));
+        }
+        let added: Vec<&String> = found.difference(&before).collect();
+        if !added.is_empty() {
+            warnings.push(format!("uv pip check: {}", added.iter().map(|line| line.as_str()).collect::<Vec<_>>().join("; ")));
+        }
+        Ok(warnings.join("; "))
+    }
+
+    /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
+    /// the pair beyond what `env` holds: `locked`'s when it meets the floor, else uv's index, else a
+    /// GitHub prerelease, landed in `env`'s `PAIR_WHEELS` for uv to find. Each as uv installs it.
+    fn published_pair(&self, env: &Path, floors: &[String], locked: &BTreeMap<String, String>, label: &str, job: &Job) -> Result<Vec<String>, Failure> {
         let stop = job.stop.clone().unwrap_or_default();
-        let pause = || {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            stop.is_cancelled()
-        };
-        // Behind an update in progress it is queued, and starts when that one ends.
-        if let Err((_, why)) = updates.request(request, true, |code| std::process::exit(code)) {
-            return refuse(format!("this machine's update to Runtime {to_runtime} was refused: {why}"));
-        }
-        tracing::info!("package {label} needs {floors}: updating to Runtime {to_runtime}, TensorFS {to_tensorfs}");
-        job.waiting(Some(format!("waiting for this machine's update to Runtime {to_runtime} ({label} needs {floors})")));
-        loop {
-            if let Some(status) = updates.update(&operation).filter(|status| status.terminal()) {
-                return refuse(format!("this machine's update to Runtime {to_runtime} ended {}: {}", status.state, status.error));
+        let wheels = env.join(PAIR_WHEELS);
+        fs::create_dir_all(&wheels).map_err(io_failure)?;
+        let held = installed(env);
+        let mut asked: Vec<String> = floors.to_vec();
+        let mut chosen: BTreeMap<String, String> = BTreeMap::new();
+        while let Some(requirement) = asked.pop() {
+            let invalid = || ("runtime_floor_unmet", format!("{label} needs {requirement}, which this machine can't read"));
+            let floor = Floor::parse(&requirement).ok_or_else(invalid)?;
+            if chosen.contains_key(&floor.name) {
+                continue;
             }
-            if pause() {
-                return canceled();
-            }
+            let pin = locked.get(&floor.name).filter(|version| floor.meets(version));
+            let bounds = pin.map_or_else(|| floor.bounds.clone(), |version| format!("=={version}"));
+            let input = format!("{}{bounds}\n", floor.name);
+            let resolved = update::compile_sdk(&self.sdk.uv, &self.sdk.python, &input, &stop, false).map_err(io_failure)?;
+            let prefix = format!("{}==", floor.name);
+            let on_index = resolved.ok().and_then(|plan| plan.lines().find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned)));
+            let version = match on_index {
+                Some(version) => version,
+                None => {
+                    let meets = |version: &str| match pin {
+                        Some(pin) => version == pin,
+                        None => floor.meets(version),
+                    };
+                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, &stop).map_err(|why| {
+                        ("runtime_floor_unread", format!("{label} needs {requirement}: uv's index doesn't have it, and its GitHub prereleases can't be read now ({why})"))
+                    })?;
+                    let (version, wheel) = found.ok_or_else(|| {
+                        ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't published: neither uv's index nor a GitHub prerelease has a version that meets it"))
+                    })?;
+                    asked.extend(wheel_requires(&wheel).map_err(io_failure)?.into_iter().filter(|required| {
+                        Floor::parse(required).is_some_and(|needed| !held.get(&needed.name).is_some_and(|version| needed.meets(version)))
+                    }));
+                    version
+                }
+            };
+            chosen.insert(floor.name.clone(), floor.pinned(&version));
         }
+        Ok(chosen.into_values().collect())
     }
 
     /// `uv pip check`'s findings in an environment, one line each (`The package …`).
@@ -534,6 +615,34 @@ fn floor(line: &str) -> Option<&str> {
     let name = normalized(requirement[..end].split('[').next()?);
     let below = |clause: &str| [">=", "~=", "==", ">"].iter().find_map(|op| clause.trim().strip_prefix(op)).is_some_and(|v| older(installed, v.trim()));
     (SDK.contains(&name.as_str()) && requirement[end..].split(';').next()?.split(',').any(below)).then_some(requirement)
+}
+
+/// Where an environment's own pair's wheels wait for uv, while it is built.
+const PAIR_WHEELS: &str = "cozy-pair";
+
+/// What the wheel requires of the Runtime pair, outside any extra.
+fn wheel_requires(wheel: &Path) -> io::Result<Vec<String>> {
+    let mut archive = zip::ZipArchive::new(File::open(wheel)?).map_err(io::Error::other)?;
+    // `<distribution>-<version>-…whl` holds `<distribution>-<version>.dist-info/METADATA`.
+    let file = wheel.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    let mut named = file.split('-');
+    let name = format!("{}-{}.dist-info/METADATA", named.next().unwrap_or_default(), named.next().unwrap_or_default());
+    let mut text = String::new();
+    archive.by_name(&name).map_err(io::Error::other)?.read_to_string(&mut text)?;
+    Ok(text.lines().filter_map(|line| line.strip_prefix("Requires-Dist:").map(str::trim))
+        .filter(|required| !required.contains("extra =="))
+        .filter(|required| SDK.contains(&normalized(required.split(|c: char| " ;<>=!~[(".contains(c)).next().unwrap_or_default()).as_str()))
+        .map(String::from).collect())
+}
+
+/// What an unlocked project's pyproject.toml requires of the Runtime pair.
+fn declared_pair(dir: &Path) -> Vec<String> {
+    let read = fs::read_to_string(dir.join("pyproject.toml")).ok().and_then(|text| toml::from_str::<toml::Value>(&text).ok());
+    let dependencies = read.as_ref().and_then(|document| document.get("project")?.get("dependencies")?.as_array().cloned()).unwrap_or_default();
+    dependencies.iter().filter_map(toml::Value::as_str)
+        .filter(|required| SDK.contains(&normalized(required.split(|c: char| " ;<>=!~[(".contains(c)).next().unwrap_or_default()).as_str()))
+        .filter(|required| Floor::parse(required).is_some())
+        .map(String::from).collect()
 }
 
 /// A build the layer cannot serve: the requirements it misses (`Publisher::build`).

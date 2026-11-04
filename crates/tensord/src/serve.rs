@@ -408,7 +408,7 @@ fn start_api(
     let store = store.clone();
     let mut backend = NativeBackend::new(service.clone(), identity.authority.clone(), store.clone());
     backend.logs = logs;
-    let publisher = crate::published::Publisher::new(sdk, machine.clone(), identity.updates.clone());
+    let publisher = crate::published::Publisher::new(sdk, machine.clone());
     service.configure_publisher(publisher.clone());
     backend.publisher = Some(publisher.clone());
     let objects = Arc::new(crate::objects::Objects::new(&root.join("writes"), service.engine.clone(), store.clone())?);

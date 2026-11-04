@@ -148,7 +148,7 @@ fn source(ctx: &Context, hub: &str) -> String {
     }
 }
 
-pub(crate) const HEADERS: [&str; 5] = ["MACHINE", "PACKAGE", "RELEASE", "LEVEL", "SOURCE"];
+pub(crate) const HEADERS: [&str; 6] = ["MACHINE", "PACKAGE", "RELEASE", "RUNTIME", "LEVEL", "SOURCE"];
 
 /// Each package `machines` hold.
 pub(crate) fn rows<'a>(ctx: &Context, machines: impl IntoIterator<Item = &'a Machine>) -> Vec<Held<'a>> {
@@ -159,6 +159,7 @@ pub(crate) fn rows<'a>(ctx: &Context, machines: impl IntoIterator<Item = &'a Mac
                 machine: &machine.name,
                 package: &env.package,
                 release: &env.release,
+                runtime: &env.runtime,
                 level: &env.level,
                 hub: &env.hub,
                 source: source(ctx, &env.hub),
@@ -174,6 +175,8 @@ pub(crate) struct Held<'a> {
     machine: &'a str,
     package: &'a str,
     release: &'a str,
+    /// The cozy-runtime in its environment.
+    runtime: &'a str,
     level: &'a str,
     hub: &'a str,
     /// `local`, `hub`, or another Hub's URL.
@@ -189,6 +192,7 @@ impl Held<'_> {
             machine.into(),
             package.into(),
             release.into(),
+            self.runtime.into(),
             self.level.into(),
             self.source.clone(),
         ]

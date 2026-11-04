@@ -1683,6 +1683,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                 package: env.package.clone(),
                 release: env.release.clone(),
                 hub: hubs.named(&env.hub),
+                runtime: env.runtime.clone(),
                 level: env.level.clone(),
                 warning: env.warning.clone(),
             })
