@@ -1,8 +1,9 @@
 # e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy web
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
-# call with no holder or session. Then the page as a person uses it: Place (web/place.js), and one stream across tabs and a
-# `kill -9` of Calcifer (web/reconnect.js).
+# call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
+# `kill -9` of Calcifer (web/reconnect.js), and the Runs and Machines drawers with a real run from the CLI where this computer runs
+# models (web/drawers.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -50,6 +51,8 @@ step "web-reconnect: one stream across tabs, and kill -9 of Calcifer with no rel
 local restart=''
 [ -n "${WEB_ALONE:-}" ] || restart=$(web_restart "$lock")
 web_proof reconnect "$chrome" "$pw" "$restart"
+step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
+web_proof drawers "$chrome" "$pw" ''
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept.
@@ -66,12 +69,12 @@ web_link() {
   [ -n "$link" ] || { check "web-serves: cozy web --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
 }
 
-# web_proof <place|reconnect> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
+# web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
 # name, which it forgets, folder and all, whatever happened.
 web_proof() {
   local name=$1 chrome=$2 pw=$3 restart=$4 json=$OUT/web-$1.json link code=0 id folder lock addr token
   web_link || return
-  RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+  ALONE=${WEB_ALONE:-} RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$name.err" || code=$?
   [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
   lock=$HOME/.cozy/calcifer/calcifer.lock.holder

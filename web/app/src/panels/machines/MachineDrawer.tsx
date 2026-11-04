@@ -86,6 +86,7 @@ function Update({ machine }: { machine: Machine }) {
           </button>
         </div>
       </form>
+      {machine.kind === "local" && tensord.trim() && <p className="muted">Calcifer itself moves to that cozy at the next `cozy` command in a terminal.</p>}
       {said && <p className="muted">{said}</p>}
       <Failure error={ask.error} lead="Couldn't update it" />
     </details>
