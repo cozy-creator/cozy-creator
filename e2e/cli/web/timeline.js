@@ -80,7 +80,7 @@ function plate(path, color, seconds, hz) {
   const stillPath = join(dir, 'title.png');
   ffmpeg('-f', 'lavfi', '-i', "color=c=0x00ff00:size=400x400,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,200),0,255)'", '-frames:v', '1', stillPath);
   const stage = await page.locator('.stage').boundingBox();
-  await drop(page, [red, blue, { name: 'title.png', type: 'image/png', bytes: readFileSync(stillPath) }], stage.x + 300, stage.y + 60);
+  await drop(page, [red, blue, { name: 'title.png', type: 'image/png', bytes: readFileSync(stillPath) }], stage.x + 508, stage.y + 104);
   await until('the three landed', async () => (await read()).assets.filter((asset) => asset.sha256).length, (n) => n === 3);
   await page.waitForSelector('.react-flow__node .nm:text-is("title")');
 
@@ -88,7 +88,7 @@ function plate(path, color, seconds, hz) {
   const tools = (await call('GET', '/v1/tools')).body.tools;
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.label === 'Edit' && tool.kind === 'video' && tool.controls[0]?.type === 'timeline', tool);
-  await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1000, y: 100 } });
+  await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1208, y: 144 } });
   const card = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   await card('Edit').waitFor();
   check('its_name', Boolean(await edit()), (await read()).assets.map((asset) => asset.name));
@@ -270,7 +270,7 @@ function plate(path, color, seconds, hz) {
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
   await card('Edit').locator('.head').hover();
-  await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.stage'), { targetPosition: { x: 300, y: 700 } });
+  await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.stage'), { targetPosition: { x: 508, y: 744 } });
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
