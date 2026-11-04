@@ -3,7 +3,6 @@
 // `project.changed` of an import the CLI makes. Prints what it saw as JSON, and web.sh judges it.
 //   node serves.js <link> <project id> <project folder> <file to import>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $COZY: the CLI. Every browser step is bounded.
-// Nothing here uses waitForFunction: it evals in the page, which the page's CSP refuses and this cell would report.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const [link, id, folder, file] = process.argv.slice(2);
