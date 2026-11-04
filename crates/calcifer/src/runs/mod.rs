@@ -141,7 +141,10 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
         return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
     }
     match prepare(api, key, &ask).await? {
-        Prepared::Install(run) => Ok(Submitted { run, replay: false, notes: vec![], preparing: true }),
+        Prepared::Install(run) => {
+            let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
+            Ok(Submitted { run, replay: false, notes, preparing: true })
+        }
         Prepared::Run { submit, notes } => {
             let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
             Ok(Submitted { notes, ..submitted })
@@ -178,6 +181,11 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
                 package,
+    if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
+        && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
+    {
+        return Ok(Prepared::Install(going));
+    }
                 interface: &card.interface,
                 release: Some(&card.release),
                 source: spec::Source::Release(Some(&card.release)),

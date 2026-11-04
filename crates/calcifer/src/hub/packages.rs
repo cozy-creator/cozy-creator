@@ -235,23 +235,28 @@ impl Ask for PackageInstall {
                 let _ = hub_client::cards::card(|| Ok(reader), &root, &hub, &package, &release).await;
             }
         });
-        let submit = SubmitRun {
-            agreed: self.agreed,
-            on: self.on,
-            hub: hub.to_string(),
-            kind: RunKind::Warm,
-            target: format!("{package}@{chosen}"),
-            spec: v1::RunSpec {
-                kind: v1::RunKind::Warm,
-                source: Some(Source::Release(v1::Release { package: package.clone(), release: chosen })),
-                ..Default::default()
-            },
-            inputs: vec![],
-            held: vec![],
-            out: None,
-            warnings: vec![],
-        };
+        let submit = release_install(hub.as_str(), self.on, &package, &chosen, self.agreed);
         Ok(Prepared { submit, after: Some(After::Retire { package }) })
+    }
+}
+
+/// The run that installs `release` of `package` on a machine: a warm one naming no function.
+pub(crate) fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<protocol::calcifer::Agreed>) -> SubmitRun {
+    SubmitRun {
+        agreed,
+        on,
+        hub: hub.to_owned(),
+        kind: RunKind::Warm,
+        target: format!("{package}@{release}"),
+        spec: v1::RunSpec {
+            kind: v1::RunKind::Warm,
+            source: Some(Source::Release(v1::Release { package: package.to_owned(), release: release.to_owned() })),
+            ..Default::default()
+        },
+        inputs: vec![],
+        held: vec![],
+        out: None,
+        warnings: vec![],
     }
 }
 

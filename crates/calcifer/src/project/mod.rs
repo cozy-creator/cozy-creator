@@ -1876,7 +1876,12 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            None => {
+                if let On::Machine(machine) = &placed {
+                    self.host.release_ready(machine, &renderer.package, &renderer.release, &hub).await.map_err(named)?;
+                }
+                v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() })
+            }
             Some(path) => {
                 let prepared = self.host.ready(path, &placed, &hub).await.map_err(named)?;
                 staged.extend(prepared.files);

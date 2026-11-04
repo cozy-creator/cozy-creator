@@ -4,7 +4,8 @@
 //! computer, a dev build staged with the run. With none named, each moves to its Hub's target. On
 //! `local`, a `cozy` that `cozy update` installed and `local` does not run yet goes with it. The
 //! run holds new runs behind it and waits for those in flight; it succeeds only when the machine
-//! then runs what it asked for (`verified`).
+//! then runs what it asked for (`verified`). A machine too old for what is asked of it is brought up
+//! here too (`brought_up`), never while it has work: an update waits for measured idleness on the machine.
 use std::{path::Path, sync::Arc};
 
 use axum::{
@@ -14,7 +15,7 @@ use axum::{
     http::StatusCode,
 };
 use protocol::{
-    calcifer::{self as wire, Component, Machine, MachineKind, MachineStatus, MachineUpdate, On, StagedInput, SubmitRun, Updating},
+    calcifer::{self as wire, Component, Machine, MachineKind, MachineStatus, MachineUpdate, On, Reason, Run, StagedInput, Status, SubmitRun, Updating, Warning},
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
@@ -28,7 +29,78 @@ use crate::{
     store::RunRow,
 };
 
+/// What a machine refuses for being older than this Calcifer, which a newer TensorD doesn't: before 0.18.5, a package's floor on
+/// the Runtime, since then met in that package's own environment.
+const OLDER_REFUSALS: [&str; 1] = ["runtime_floor_unmet"];
+
+/// The warning on the update run that brings a machine up, which is also said to whoever waits on it.
+pub(crate) const BRINGING_UP: &str = "machine_brought_up";
+
+/// How far bringing a machine up has got.
+pub(crate) enum BroughtUp {
+    Going(Box<Run>),
+    Done,
+}
+
+/// The command that moves `name` to this cozy.
+fn bring_up_command(name: &str) -> String {
+    format!("cozy machine update {name} --tensord {}", env!("CARGO_PKG_VERSION"))
+}
+
 impl Machines {
+    /// What a run failing with `reason` on machine `name` comes to, when that is its being older than this Calcifer: its update to
+    /// this cozy, going or done, the same one for everything that asks, said in one line. None: it isn't that, and the failure stands.
+    /// A machine this computer's user doesn't own, a dev build, or one with work here isn't updated unasked: the refusal is the command.
+    pub(crate) async fn brought_up(self: &Arc<Self>, name: &str, reason: &Reason) -> Result<Option<BroughtUp>, Error> {
+        if !OLDER_REFUSALS.contains(&reason.code.as_str()) {
+            return Ok(None);
+        }
+        let m = self.show(name).await?;
+        let Some(status) = m.status.as_ref() else { return Ok(None) };
+        let own = env!("CARGO_PKG_VERSION");
+        if !newer(own, &status.version) {
+            return Ok(None);
+        }
+        let by_hand = |why: String| {
+            Error::new(Kind::Conflict, "machine_too_old", format!("{}; {name} runs cozy {}, and {why}", reason.message, status.version))
+                .cause(reason.code.clone())
+                .next(bring_up_command(name))
+        };
+        let key = format!("bring-up-{}-{own}", m.rental_id.as_deref().unwrap_or(name));
+        let fresh = self.store().keyed(&key).map_err(internal)?.is_none();
+        if fresh {
+            if m.kind == MachineKind::Added {
+                return Err(by_hand("it is its owner's to update".into()));
+            }
+            if status.dev {
+                return Err(by_hand("it runs a dev build, which nothing replaces unasked".into()));
+            }
+            let load = self.store().machine_load().map_err(internal)?;
+            if load.get(name).is_some_and(|(running, queued)| running + queued > 0) {
+                return Err(by_hand("it has work going, which an update would hold new runs behind".into()));
+            }
+        }
+        let ask = MachineUpdate { tensord: Some(Component::Version(own.into())), ..Default::default() };
+        let (updating, _) = self.update(&key, name, ask).await.map_err(|e| by_hand(format!("updating it was refused: {}", e.message)))?;
+        let Some(mut run) = updating.run else { return Ok(Some(BroughtUp::Done)) };
+        if fresh {
+            let warning = Warning {
+                code: BRINGING_UP.into(),
+                message: format!("{name} runs cozy {}, too old for this ({}): updating it to {own}, then going on", status.version, reason.message),
+            };
+            self.calcifer.warn(&run.id, &warning).map_err(|e| Refusal::from(e).0)?;
+            run.warnings.push(warning);
+        }
+        match run.status {
+            Status::Completed => Ok(Some(BroughtUp::Done)),
+            Status::Failed | Status::Canceled => {
+                let why = run.reason.as_ref().map_or_else(|| "its update did not finish".to_owned(), |reason| reason.message.clone());
+                Err(by_hand(format!("updating it failed: {why}")))
+            }
+            _ => Ok(Some(BroughtUp::Going(Box::new(run)))),
+        }
+    }
+
     /// Starts the update `ask` of the machine `text` names under `key`: the same key again answers
     /// the run it made.
     pub async fn update(self: &Arc<Self>, key: &str, text: &str, ask: MachineUpdate) -> Result<(Updating, bool), Error> {
@@ -188,6 +260,13 @@ impl Machines {
     /// restarting again (for an update queued behind this one) is judged by what this update's
     /// outcome says it left; a dev build's flag is its status's alone.
     pub(crate) async fn verified(self: &Arc<Self>, row: &RunRow, mut outcome: v1::Outcome) -> v1::Outcome {
+        // A refusal for its age says what ends it, wherever the run was headed.
+        if let (Some(name), Some(reason)) = (row.machine.as_deref(), outcome.reason.as_mut().filter(|reason| OLDER_REFUSALS.contains(&reason.code.as_str())))
+            && let Ok(m) = self.show(name).await
+            && let Some(status) = m.status.as_ref().filter(|status| newer(env!("CARGO_PKG_VERSION"), &status.version))
+        {
+            reason.message += &format!("; {name} runs cozy {}: `{}` brings it up", status.version, bring_up_command(name));
+        }
         let Some(name) = row.machine.as_deref().filter(|_| row.kind == wire::Kind::Update && outcome.status == "succeeded") else {
             return outcome;
         };
@@ -220,6 +299,22 @@ impl Machines {
         });
         outcome
     }
+}
+
+/// A release's first run on a machine older than this Calcifer, which may refuse what a newer one wouldn't: the install goes first, as
+/// local code's does, so a refusal stops short of the run and the machine can be brought up. The run or update going, if any.
+pub(crate) async fn release_first(api: &Arc<crate::api::Api>, key: &str, name: &str, hub: &str, package: &str, release: &str) -> Result<Option<Run>, Error> {
+    let Ok(m) = api.machines.show(name).await else { return Ok(None) };
+    let Some(status) = m.status.as_ref().filter(|status| newer(env!("CARGO_PKG_VERSION"), &status.version)) else { return Ok(None) };
+    if status.environments.iter().any(|env| env.package == package && env.release == release) {
+        return Ok(None);
+    }
+    let submit = || crate::hub::release_install(hub, On::Machine(name.to_owned()), package, release, None);
+    Ok(match crate::local_code::install_through(api, &format!("{key}/install"), submit).await? {
+        crate::local_code::Install::Going(run) => Some(run),
+        // The run says for itself why it can't go.
+        crate::local_code::Install::Ended(_) => None,
+    })
 }
 
 /// `POST /v1/machines/{name}/update`: 202 with the update run, 200 when the key had made it or the
@@ -287,7 +382,8 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
             Kind::NotFound,
             "release_not_found",
             format!("{project} {version} is neither on PyPI nor a GitHub prerelease ({base}/SHA256SUMS: HTTP {})", sums.status()),
-        ));
+        )
+        .remedy("with no version named, `cozy machine update <machine>` moves it to its Hub's target"));
     }
     let sums = sums.text().await.map_err(failed)?;
     let (file, sha256) = protocol::prerelease::wheel(&sums, distribution, version, platform).ok_or_else(|| {

@@ -189,7 +189,7 @@ impl Machines {
             false => Ok(frame.workload_key),
             true => Err(Denied::Refused(Reason {
                 code: "machine_takes_no_capability".into(),
-                message: format!("{machine} runs a TensorD that takes no run capability (cl-675): update it with cozy machine update"),
+                message: format!("{machine} runs a TensorD that takes no run capability: cozy machine update {machine} --tensord {}", env!("CARGO_PKG_VERSION")),
                 ..Default::default()
             })),
         }
