@@ -309,6 +309,17 @@ impl Engine {
     /// The machine's warning for a run (its precision, its SDK), on its root run's log as its
     /// package's lines are: a call's leads with its function, since only the root's log
     /// reaches its follower and `run show`.
+    /// `id`'s success is held for no later call, nor is that of any memoized run that called it:
+    /// whether that is news for `id`.
+    pub(crate) fn unmemoize(&self, id: &str, why: &str) -> io::Result<bool> {
+        let mut journal = self.journal.lock().unwrap();
+        let (first, mut parent) = journal.unmemoize(id, why)?;
+        while !parent.is_empty() {
+            parent = journal.unmemoize(&parent, why)?.1;
+        }
+        Ok(first)
+    }
+
     pub fn append_warning(&self, id: &str, text: &str) -> io::Result<u64> {
         let record = self.get(id)?;
         match record.invocation.root.as_str() {

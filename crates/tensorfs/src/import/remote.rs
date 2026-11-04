@@ -481,7 +481,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                         if lfs.oid.bytes().all(|b| b == b'*') {
                             return refuse(
                                 Code::CREDENTIAL_REQUIRED,
-                                format!("{}: gated; supply a Hugging Face token", row.path),
+                                format!("{}: gated: accept its terms on Hugging Face, and supply a token (HF_TOKEN, or `huggingface_token` in cozy's config, on the computer that sent it)", row.path),
                             );
                         }
                     }

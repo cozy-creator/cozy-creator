@@ -124,7 +124,7 @@ pub struct Request {
 impl Request {
     /// The run's Hub, for `what`: refused when the run carries no Hub access.
     fn hub(&self, what: &str) -> Result<&hub::Source, Failure> {
-        let absent = || ("hub_access_absent", format!("{what} needs the run's Hub access, and this run carries none"));
+        let absent = || ("hub_access_absent", format!("{what} needs the run's Hub access, and this run carries none: `cozy login <email>` on the computer that sent it, then run it again"));
         self.source.as_ref().ok_or_else(absent)
     }
 
@@ -433,7 +433,11 @@ impl Publisher {
             }),
             ..Default::default()
         };
-        patiently(&job, || self.work(service, actor, request, &job))
+        // A disk that can't hold it says what fills it and what would.
+        patiently(&job, || self.work(service, actor, request, &job)).map_err(|(code, why)| match code {
+            "machine_disk_full" if !why.contains("--disk-gb") => (code, format!("{why}{}", crate::reclaim::advice(self.store.root(), 0))),
+            _ => (code, why),
+        })
     }
 
     /// A slot's model made from its provider source (TensorFS `source_model`), kept as the
@@ -477,7 +481,7 @@ impl Publisher {
     /// A slot's model this machine's store holds, by its header or its tree.
     fn held_grant(&self, installation: &Installation, path: &str, reference: &domain::Ref) -> Result<ModelGrant, Failure> {
         let named = format!("sha256:{}", sha256::hex(&reference.digest));
-        let absent = |_| ("checkpoint_absent", format!("{path} names checkpoint {named}, which this machine does not hold"));
+        let absent = |_| ("checkpoint_absent", format!("{path} names checkpoint {named}, which this machine does not hold: run what made it on this machine, or name a model of the Hub's"));
         let checkpoint = storage::checkpoint(&self.store, &named).map_err(absent)?;
         Ok(ModelGrant {
             package: installation.package.clone(),
@@ -1495,6 +1499,8 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
         tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", refusal.to_string()),
         // The run's capability was refused (expired); without one a private object is absent.
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
+        // A provider's own answer to a token it wants, or one it refused.
+        tensorfs::err::Code::PERMISSION_DENIED => (code, format!("{refusal}: a gated or private source reads with your token there, HF_TOKEN or CIVITAI_TOKEN (or `huggingface_token`, `civitai_token` in cozy's config) on the computer that sent it")),
         _ if tensorfs::Failure::from(refusal.clone()).kind == tensorfs::Kind::Network => (UNREACHABLE, refusal.to_string()),
         _ => (code, refusal.to_string()),
     }
@@ -1529,8 +1535,9 @@ fn opens_views(service: &Service, installation: &Installation, choice: &domain::
         return Ok(());
     }
     let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
+    // The environment is built for the machine's pair: the machine moves, and the run asks again.
     Err(("model_adapter_refused", format!(
-        "LoRAs need Runtime {} and TensorFS {} or newer, and {} runs on {}: update this machine (`cozy machine update`)",
+        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} runs on {3}: `cozy machine update <machine>` moves it to the current release; then run it again",
         VIEWS[0].2, VIEWS[1].2, installation.package, runs.join(" / "))))
 }
 
@@ -1569,7 +1576,7 @@ fn apply_adapters(
             let tree = (!adapter.manifest.is_empty())
                 .then(|| ObjectRef { sha256: adapter.manifest.trim_start_matches("sha256:").into(), length: 0 });
             let source = source.ok_or_else(|| ("hub_access_absent",
-                format!("an adapter of {} names a Hub model, and this run carries no Hub access", grant.slot)))?;
+                format!("an adapter of {} names a Hub model, and this run carries no Hub access: `cozy login <email>` on the computer that sent it, then run it again", grant.slot)))?;
             let named = resolve(source, Named {
                 repository: adapter.model.clone(),
                 release: adapter.release.clone(),
@@ -1689,7 +1696,7 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
     let (org, name) = package.split_once('/').unwrap_or_default();
     let read = format!("the install plan of {package}@{release} at {}", catalog.origin());
     let plan = catalog.install_plan(org, name, release, None).map_err(|e| absent(e, "release_absent", &read, || {
-        format!("{package} has no release {release} at {}", catalog.origin())
+        format!("{package} has no release {release} at {}: `cozy package info {package}` lists its releases", catalog.origin())
     }))?;
     if plan.release != release {
         return Err(("catalog_read_failed", format!("{package}@{release} named another release")));
@@ -1733,11 +1740,11 @@ fn newest_release(catalog: &Catalog, org: &str, name: &str) -> Result<String, Fa
     let card = catalog
         .package(org, name)
         .map_err(|e| absent(e, "package_absent", &format!("the releases of {org}/{name} at {}", catalog.origin()),
-            || format!("{org}/{name} is not published at {}", catalog.origin())))?;
+            || format!("{org}/{name} is not published at {}, or is private: `cozy package ls {name}` lists what you can see", catalog.origin())))?;
     let open = card.releases.iter().filter(|row| row.yanked != Some(true) && row.yanked_at.as_deref().is_none_or(str::is_empty));
     tensorfs::format::newest_by(open, |row| row.release.as_str())
         .map(|row| row.release.clone())
-        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked")))
+        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked: `cozy package info {org}/{name}` lists them")))
 }
 
 /// A wheel the run's Hub hosts, downloaded by its digest (`fetch_hub`) and installed from disk.
@@ -1772,7 +1779,10 @@ impl HubFile {
 /// fails on its measured stillness, `ledger`'s stop ends it, and what landed stays for the
 /// next ask. Answers the blob's path.
 pub(crate) fn io_failure(error: io::Error) -> Failure {
-    ("release_root_preparation_failed", error.to_string())
+    match error.kind() {
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ("machine_disk_full", error.to_string()),
+        _ => ("release_root_preparation_failed", error.to_string()),
+    }
 }
 
 /// A slot's declared default as a choice (its `default`: `[org/]model@release`, or a local
@@ -1807,7 +1817,8 @@ fn local_aliases(installation: &Installation, request: &Request) -> io::Result<b
 
 /// A slot with neither a choice nor a declared default.
 pub(crate) fn choice_absent(path: &str, package: &str) -> Failure {
-    ("model_choice_absent", format!("the run names no model for {path}, and {package} declares no default for it"))
+    let parameter = path.rsplit('.').next().unwrap_or(path);
+    ("model_choice_absent", format!("the run names no model for {path}, and {package} declares no default for it: add `model.{parameter}=<org/model>` to `cozy run`"))
 }
 
 fn model_slots(interface: &Value, entrypoint: &str) -> Option<Vec<Value>> {

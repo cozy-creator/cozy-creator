@@ -1144,6 +1144,20 @@ impl Journal {
         })
     }
 
+    /// A memoizable run that called something a replay of it would skip: its success is not held.
+    /// Answers whether it was going to be, and its parent, which is in the same case.
+    pub(crate) fn unmemoize(&mut self, id: &str, why: &str) -> io::Result<(bool, String)> {
+        let mut held = false;
+        let record = self.update(id, |record| {
+            held = !record.memo.computation.is_empty();
+            if held {
+                record.memo = CallMemo { unmemoized: why.into(), ..Default::default() };
+            }
+            Ok(held)
+        })?;
+        Ok((held, record.invocation.parent))
+    }
+
     /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares
     /// again (`interrupted`). One sent with tokens kept none, since they stay off its disk: nothing
     /// of it ran, so it is forgotten, and its controller, which holds them, finds it gone
@@ -1529,7 +1543,7 @@ impl Journal {
         if record.state == State::Unknown {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "execution state was written by a newer machine",
+                "execution state was written by a newer machine: `cozy machine update <machine>` reads it",
             ));
         }
         let was_terminal = record.state.terminal();

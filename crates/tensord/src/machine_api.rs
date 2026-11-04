@@ -992,7 +992,7 @@ fn digest_bytes(value: &str) -> Result<Vec<u8>, Error> {
 /// A callable's declaration.
 fn entrypoint<'a>(interface: &'a Value, name: &str) -> Result<&'a Value, Error> {
     protocol::interface::entrypoint(interface, name)
-        .ok_or_else(|| Error::validation("invalid_request", "entrypoint is not declared by this held package"))
+        .ok_or_else(|| Error::validation("invalid_request", "entrypoint is not declared by this held package: `cozy run <package>` lists its functions"))
 }
 fn problem(error: io::Error) -> Error {
     match error.kind() {
