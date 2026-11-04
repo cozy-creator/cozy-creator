@@ -36,6 +36,12 @@ cuda.cuMemsetD8Async.argtypes = [ctypes.c_uint64, ctypes.c_ubyte, ctypes.c_size_
 cuda.cuMemcpyDtoH_v2.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_size_t]
 
 
+def raw(tensor: torch.Tensor) -> bytes:
+    """Its bytes: bfloat16 widens exactly, and numpy has no bfloat16."""
+    host = tensor.cpu()
+    return (host.to(torch.float32) if host.dtype == torch.bfloat16 else host).numpy().tobytes()
+
+
 def say(step: str, **facts: object) -> None:
     RESULT["steps"].append({"step": step, **facts})
     print(json.dumps({"step": step, **facts}), flush=True)
@@ -50,7 +56,7 @@ class Block(torch.nn.Module):
     """A Conv2d, GroupNorm, LayerNorm, attention, Linear and an explicit cuBLAS matmul, with the
     cross-attention shape (154, 2048) x (2048, 1280) that writes its cuBLAS workspace."""
 
-    def __init__(self, channels: int = 320, dim: int = 640, heads: int = 10, rng: bool = False) -> None:
+    def __init__(self, channels: int = 320, dim: int = 640, heads: int = 10, rng: str = "") -> None:
         super().__init__()
         self.dim, self.heads, self.rng = dim, heads, rng
         self.group = torch.nn.GroupNorm(32, channels)
@@ -67,6 +73,8 @@ class Block(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, _, h, w = x.shape
+        if self.rng == "first":  # before anything is freed in the pool
+            x = x + 0.01 * torch.randn_like(x)
         y = self.into(self.conv(F.silu(self.group(x)))).flatten(2).transpose(1, 2)
         z = self.norm(y)
         split = lambda t: t.reshape(b, h * w, self.heads, self.dim // self.heads).transpose(1, 2)
@@ -75,12 +83,12 @@ class Block(torch.nn.Module):
         y = y + self.words(self.text(self.context)).mean(1, keepdim=True)
         y = y + self.down(F.gelu(self.up(self.norm(y))))
         y = torch.matmul(y, self.weight)
-        if self.rng:
+        if self.rng == "late":
             y = y + 0.01 * torch.randn_like(y)
         return x + self.back(y.transpose(1, 2).reshape(b, self.dim, h, w))
 
 
-def model(depth: int = ARGS.depth, rng: bool = False, seed: int = 138) -> torch.nn.Module:
+def model(depth: int = ARGS.depth, rng: str = "", seed: int = 138) -> torch.nn.Module:
     torch.manual_seed(seed)
     net = torch.nn.Sequential(*[Block(rng=rng) for _ in range(depth)]).to(device, DTYPE).eval()
     context = torch.randn(2, 77, 2048, dtype=torch.float32).to(device, DTYPE)
@@ -145,7 +153,7 @@ class Captured:
             torch.cuda.manual_seed(seed)
         replay(self.graph, self.stream)
         self.stream.synchronize()
-        return self.output.cpu().numpy().tobytes()
+        return raw(self.output)
 
 
 def squeeze(leave: int = 64 << 20) -> torch.Tensor:
@@ -258,9 +266,18 @@ def arm_two_pools(stream) -> None:
     del hold
 
 
+def arm_rng_late(stream) -> None:
+    """The first RNG tensor in a capture, after its stream has freed temporaries in the pool."""
+    try:
+        item = Captured(model(rng="late"), stream)
+        say("captured", pool_bytes=item.bytes, **live_blocks(item.pool))
+    except torch.OutOfMemoryError as error:
+        say("capture_refused", type=type(error).__name__, message=str(error)[:200], reserved=256 << 20)
+
+
 def arm_rng(stream) -> None:
     """RNG seed and offset tensors land in the pool by the capture thread's route. Torch refills them each replay."""
-    item = Captured(model(rng=True), stream)
+    item = Captured(model(rng="first"), stream)
     live = live_blocks(item.pool)
     eight = [r for r in live["live_requested"] if r <= 16]
     first, second = item.run(sample(0), seed=5), item.run(sample(0), seed=6)
@@ -313,12 +330,13 @@ class Domain:
             self.control.wait_event(self.join)
         self.current.wait_stream(self.control)
         self.current.wait_stream(self.library)
-        return RuntimeGraph(graph, statics[0], outputs[0], self, pool)
+        return RuntimeGraph(graph, statics[0], outputs[0], self, pool, net)
 
 
 class RuntimeGraph:
-    def __init__(self, graph, static, output, domain, pool) -> None:
+    def __init__(self, graph, static, output, domain, pool, net) -> None:
         self.graph, self.static, self.output, self.domain, self.pool = graph, static, output, domain, pool
+        self.net = net  # its weights are in the graph
 
     def run(self, value: torch.Tensor | None) -> bytes:
         stream = self.domain.current
@@ -330,7 +348,7 @@ class RuntimeGraph:
             out.copy_(self.output)
             vt.record_pool_stream(self.pool, stream)
             stream.synchronize()
-            return out.cpu().numpy().tobytes()
+            return raw(out)
 
 
 def arm_runtime(stream) -> None:
@@ -405,7 +423,7 @@ def arm_aux_write(stream) -> None:
     def run() -> bytes:
         replay(graph, stream)
         stream.synchronize()
-        return output.cpu().numpy().tobytes()
+        return raw(output)
     control = run()
     size = sum(s for _, s in ranges)
     assert vt._unmap_pool(pool, DEVICE) == size
@@ -422,7 +440,7 @@ def arm_alias(stream) -> None:
     alias = item.output.detach()
     assert vt._unmap_pool(item.pool, DEVICE) == item.bytes
     try:
-        got = alias.cpu().numpy().tobytes()
+        got = raw(alias)
         say("alias_read_unmapped", outcome="returned", bytes=len(got))
     except BaseException as error:  # noqa: BLE001 - this is the measurement
         say("alias_read_unmapped", outcome="error", code=getattr(error, "error_code", None), message=str(error)[:300])
@@ -450,13 +468,13 @@ def arm_lazy_workspace(stream) -> None:
     in_it = [b["requested_size"] for s in torch.cuda.memory_snapshot(mempool_id=pool) for b in s["blocks"] if b["requested_size"] == want]
     replay(graph, stream)
     stream.synchronize()
-    control = output.cpu().numpy().tobytes()
+    control = raw(output)
     say("captured", workspace_in_pool=bool(in_it), pool_bytes=sum(s for _, s in ranges))
     assert vt._unmap_pool(pool, DEVICE) > 0
     try:
         eager = net(static)
         stream.synchronize()
-        say("eager_cublas_while_unmapped", outcome="pass", identical=eager.cpu().numpy().tobytes() == control)
+        say("eager_cublas_while_unmapped", outcome="pass", identical=raw(eager) == control)
     except BaseException as error:  # noqa: BLE001 - this is the measurement
         say("eager_cublas_while_unmapped", outcome="error", code=getattr(error, "error_code", None), message=str(error)[:300])
         finish(3)
@@ -545,6 +563,9 @@ def arm_timing(stream) -> None:
         net = model(depth=depth)
         trials = []
         for trial in range(4):
+            warm = time.perf_counter()
+            net(sample(trial))
+            stream.synchronize()
             began = time.perf_counter()
             item = Captured(net, stream, reserve=1 << 30)
             captured = time.perf_counter()
@@ -556,7 +577,8 @@ def arm_timing(stream) -> None:
                 start = time.perf_counter()
                 vt.prepare_pool(item.pool, 0, DEVICE)
                 remaps.append((time.perf_counter() - start) * 1e3)
-            trials.append({"capture_ms": round((captured - began) * 1e3, 2), "first_replay_ms": round((replayed - captured) * 1e3, 2),
+            trials.append({"eager_ms": round((began - warm) * 1e3, 2), "capture_ms": round((captured - began) * 1e3, 2),
+                           "first_replay_ms": round((replayed - captured) * 1e3, 2),
                            "remap_ms": rounded(remaps), "pool_bytes": item.bytes})
             del item.output, item.input
             item.graph.reset()
