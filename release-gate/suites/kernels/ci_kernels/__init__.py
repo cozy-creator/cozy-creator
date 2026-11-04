@@ -168,7 +168,11 @@ def declared(row: arch.Row, sm: int) -> dict:
         for s in sets.values()
         if f"triton:{s.name}" in names
     }
-    return {"names": sorted(dict.fromkeys(names)), "entries": entries, "row": row.name, "sm": sm}
+    # A process holds one build of a module, and a `-full` build serves the kernels of the narrower one:
+    # those first, or a kernel the narrower build opened refuses them (`attention_kernel_needs_executor`).
+    full = {f"attention:{c.name}" for c in on_row if c.artifact.endswith("-full")}
+    ordered = sorted(dict.fromkeys(names), key=lambda name: (name not in full, name))
+    return {"names": ordered, "entries": entries, "row": row.name, "sm": sm}
 
 
 def _launcher_order() -> list[str]:
