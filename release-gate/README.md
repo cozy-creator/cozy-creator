@@ -132,6 +132,7 @@ Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a firs
 `door` (cl-749, cl-774 Part D) proves a rental's own Calcifer and the door to it, its hostile-pod red arms first at no cost on the
 runner with a second user as an added machine; `part` is `idle`, which ends with a page held open while the pod releases itself,
 or `release`, End through the door.
+`tool-functions` (cl-774) takes `qwen-image-2/generate_turbo`, `birefnet/remove_background`, `minimax-h3/generate_turbo` and `minimax-h3/upscale` from dropping the tool to accepting its output on one 4090, a shape like `lab`'s beside them, and a Caption, from a `packages_refs` checkout `pk`, keeping frames to judge.
 `multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
