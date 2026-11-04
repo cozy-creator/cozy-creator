@@ -276,10 +276,6 @@ sends it back. A code is answered once.
   `Idempotency-Key`.
 - `DELETE /v1/models/{org}/{name}`, `…/releases/{version}`, `…/commits/{commit}` (`?hub=`):
   `ModelDeleted`.
-- `POST /v1/models/{org}/{name}/commits` `{hub, from, lane, mirror, trigger, strength}`:
-  `RecordedCommit`. Commit `from` (`org/name@sha256:…`) of another model, recorded as one of this
-  model when the caller may read its whole closure: nothing is uploaded. Its lane is checked before
-  the mirror is recorded.
 
 **Asks that become runs.** Each is a POST with an `Idempotency-Key`, `202` with the run
 (`calcifer::Submitted`), followed on `GET /v1/runs/{id}/events` like any run. Each has a quote route
@@ -293,7 +289,10 @@ once the machine completes the run happens before the run settles and is in its 
   the source and uploads it as a private commit of `destination` in `lane`; `ModelUploading`, the run
   and the mirror recorded before it (`mirror`). `source` is a provider source, a Hub model, a
   `local/` alias, an absolute path to a file or a CozyTensors folder, or `run:N[#output]`, which runs
-  on the machine that holds the output. Its trigger and strength (the flags, else the source's own)
+  on the machine that holds the output. A commit, `org/name@sha256:…`, on no `base` is at the Hub
+  already: it's recorded as a commit of `destination` when the caller may read its whole closure,
+  checked against `lane` before the mirror is recorded. That answers `200` with `recorded`
+  (`RecordedCommit`) and no run, and its quote answers `null`, since nothing rents. Its trigger and strength (the flags, else the source's own)
   are set at the Hub once it completes (`result.after.display`).
 - `POST /v1/model-quantizations` `ModelQuantize` (quote: `/v1/model-quantization-quotes`, published
   packages only): Calcifer picks the commit (a release's original weights, else the commit named),
@@ -436,7 +435,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
 | `cozy model delete` | `DELETE /v1/models/{org}/{name}[/releases/{v}\|/commits/{c}]` |
 | `cozy model download` | `POST /v1/model-downloads` (`/v1/model-download-quotes` first for `new`); `GET /v1/runs/{id}/events` |
-| `cozy model upload` | `POST /v1/model-uploads` (`/v1/model-upload-quotes` first for `new`); `GET /v1/runs/{id}/events`. A Hub commit: `POST /v1/models/{org}/{name}/commits` |
+| `cozy model upload` | `POST /v1/model-uploads` (`/v1/model-upload-quotes` first for `new`); `GET /v1/runs/{id}/events` unless it answers `recorded` |
 | `cozy model quantize` | `POST /v1/model-quantizations` (`/v1/model-quantization-quotes` first for `new`), again while `preparing`; `GET /v1/runs/{id}/events` |
 | `cozy package ls [query]` | `GET /v1/packages` |
 | `cozy package ls --on` | `GET /v1/machines`, `GET /v1/machines/{name}?fresh=true` |

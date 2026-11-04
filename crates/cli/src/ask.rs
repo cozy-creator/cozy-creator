@@ -8,8 +8,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{Context, run::mint_key};
 
-/// `ask` at `route`; when it rents (`on` is `new`), quoted at `quotes` and agreed to first, the
-/// agreed price set by `agreed`.
+/// `ask` at `route`; when it rents (`on` is `new`, and `quotes` says it does), quoted at `quotes` and agreed to
+/// first, the agreed price set by `agreed`.
 pub(crate) async fn start<A: Serialize, T: DeserializeOwned>(
     ctx: &Context,
     route: &str,
@@ -20,11 +20,13 @@ pub(crate) async fn start<A: Serialize, T: DeserializeOwned>(
 ) -> Result<T, Error> {
     let calcifer = ctx.calcifer().await?;
     if matches!(on, On::New(_)) {
-        let quoted: RunQuote = calcifer.post(quotes, ask, None).await?;
-        if !crate::machine::agree(ctx, &quoted)? {
-            return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
+        let quoted: Option<RunQuote> = calcifer.post(quotes, ask, None).await?;
+        if let Some(quoted) = quoted {
+            if !crate::machine::agree(ctx, &quoted)? {
+                return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
+            }
+            agreed(ask, quoted.quote.agreed());
         }
-        agreed(ask, quoted.quote.agreed());
     }
     calcifer.post(route, ask, Some(&mint_key())).await
 }

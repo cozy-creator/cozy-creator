@@ -451,8 +451,8 @@ pub struct ModelUpload {
     pub hub: Option<String>,
     /// A provider source, `local/<alias>`, a Hub model, an absolute path to a `.safetensors` file
     /// or a CozyTensors folder, or `run:N[#output]`: a run's weights output, uploaded from the
-    /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded
-    /// (`POST /v1/models/{org}/{name}/commits`).
+    /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and nothing
+    /// runs.
     pub source: String,
     /// `org/name`.
     pub destination: String,
@@ -478,35 +478,18 @@ pub struct ModelUpload {
     pub agreed: Option<crate::calcifer::Agreed>,
 }
 
-/// `POST /v1/models/{org}/{name}/commits`: commit `from` of another model, recorded as a commit of
-/// this one when the caller may read its whole closure. Nothing is uploaded.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ModelCommitAsk {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub: Option<String>,
-    /// `org/name@sha256:<commit>`.
-    pub from: String,
-    /// The lane `from` is in.
-    pub lane: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mirror: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub strength: Option<f64>,
-}
-
+/// A Hub commit recorded as a commit of another model when the caller may read its whole closure: nothing uploaded.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecordedCommit {
     pub commit: String,
     pub from: String,
     pub lane: String,
     pub model: String,
-    /// What a mirror recorded first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mirrored: Option<Mirrored>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<Displayed>,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 /// A destination recorded as a mirror of its author's model, before anything uploads.
@@ -523,14 +506,17 @@ pub struct Mirrored {
     pub added_handle: Option<String>,
 }
 
-/// `POST /v1/model-uploads` answered: the run, as `calcifer::Submitted` says it, and the mirror
-/// recorded before it.
+/// `POST /v1/model-uploads` answered: the run, as `calcifer::Submitted` says it, or for a Hub commit what was
+/// recorded, with no run; and the mirror recorded before either.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelUploading {
-    pub run: crate::calcifer::Run,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::calcifer::Run>,
     pub replay: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mirrored: Option<Mirrored>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded: Option<RecordedCommit>,
 }
 
 /// `POST /v1/package-installs` (an `Idempotency-Key`): a warm run that installs a package's

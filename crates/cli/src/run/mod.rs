@@ -104,9 +104,14 @@ pub struct Placement {
 impl Placement {
     /// Where the run goes; `local` refused where this OS runs no models itself.
     pub fn on(&self) -> Result<On, Error> {
-        let on = self.on.clone().unwrap_or_else(|| "local".to_owned());
-        protocol::calcifer::local_usable(&on)?;
-        Ok(On::from(on))
+        let on = self.named();
+        protocol::calcifer::local_usable(&on.to_string())?;
+        Ok(on)
+    }
+
+    /// Where it would go, for Calcifer to judge.
+    pub fn named(&self) -> On {
+        On::from(self.on.clone().unwrap_or_else(|| "local".to_owned()))
     }
 }
 

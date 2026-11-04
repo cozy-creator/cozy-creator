@@ -7,14 +7,12 @@ use std::process::ExitCode;
 
 use protocol::calcifer::{Run, Status};
 use protocol::error::Error;
-use protocol::hub::{Displayed, Mirrored, ModelCommitAsk, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
+use protocol::hub::{Displayed, Mirrored, ModelDownload, ModelUpload, ModelUploading, RecordedCommit};
 use serde::Serialize;
 
-use protocol::model_ref::{ModelRef, Repo};
 use super::{Download, Upload};
 use crate::Context;
 use crate::ask::{absolute, start};
-use crate::calcifer_client::path;
 use crate::output::{self, Record, Table};
 
 /// What the machine made (TensorD's `result.models[0]`), after `follow`'s record; `--json`
@@ -73,18 +71,12 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 }
 
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
-    let destination = Repo::hub(&args.destination)?;
-    // A Hub commit is already at the Hub: the destination records it there, and nothing moves (on
-    // a base it is composed instead).
-    if let (Ok(ModelRef::Commit { .. }), None) = (ModelRef::parse(&args.source), &args.base) {
-        return recorded(ctx, args, &destination).await;
-    }
-    let on = args.placement.on()?;
+    let on = args.placement.named();
     let from_run = args.source.starts_with("run:");
     let mut ask = ModelUpload {
         hub: Some(ctx.hub().to_string()),
         source: absolute(&args.source)?,
-        destination: destination.to_string(),
+        destination: args.destination,
         lane: args.lane,
         source_format: args.format,
         mirror: args.mirror,
@@ -100,7 +92,12 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
     if let Some(mirrored) = &uploading.mirrored {
         mirror(ctx, mirrored);
     }
-    let run = crate::run::follow(ctx, uploading.run).await?;
+    if let Some(made) = &uploading.recorded {
+        recorded(ctx, made);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let run = uploading.run.ok_or_else(|| Error::internal("model_upload_answer", "Calcifer answered an upload with neither a run nor a commit"))?;
+    let run = crate::run::follow(ctx, run).await?;
     if !from_run {
         made(ctx, &run);
     }
@@ -133,33 +130,18 @@ fn display(ctx: &Context, shown: &Displayed) {
     output::say(ctx, &format!("{}: {}", shown.model, said.join(", ")));
 }
 
-/// A Hub commit recorded as a commit of `to`: the Hub records it when this account may read its
-/// whole closure, so no machine pulls it and no byte uploads.
-async fn recorded(ctx: &Context, args: Upload, to: &Repo) -> Result<ExitCode, Error> {
-    let ask = ModelCommitAsk {
-        hub: Some(ctx.hub().to_string()),
-        from: args.source,
-        lane: args.lane,
-        mirror: args.mirror,
-        trigger: args.trigger,
-        strength: args.strength,
-    };
-    let at = path(&["v1", "models", &to.org, &to.name, "commits"]);
-    let made: RecordedCommit = ctx.calcifer().await?.post(&at, &ask, None).await?;
-    if let Some(mirrored) = &made.mirrored {
-        mirror(ctx, mirrored);
-    }
+/// A Hub commit recorded as a commit of another model: no machine pulled it and no byte uploaded.
+fn recorded(ctx: &Context, made: &RecordedCommit) {
     if ctx.json {
-        output::json(&made);
-        return Ok(ExitCode::SUCCESS);
+        output::json(made);
+        return;
     }
-    Record::new().field("commit", format!("{to}@{}", made.commit)).field("lane", &made.lane)
+    Record::new().field("commit", format!("{}@{}", made.model, made.commit)).field("lane", &made.lane)
         .field("from", &made.from).note("recorded at the Hub: nothing uploaded").print(ctx);
-    output::next(ctx, &[&format!("cozy model publish {to} <version> {}", made.commit)]);
+    output::nexts(ctx, &made.next);
     if let Some(shown) = &made.display {
         display(ctx, shown);
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 /// The destination as a mirror of its author's model, recorded before anything uploaded.
