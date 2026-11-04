@@ -44,12 +44,12 @@ drop() {
 accept() {
   step "render-$1" project -p "$P" render "$1" --new --on "$NAME" || fail "$1: $(tail -c 500 "$OUT/render-$1.txt")"
   local n
-  n=$(jq -r --arg a "$(tr '_-' '  ' <<< "$1")" '.assets[$a].versions[-1].number' "$P/project.lock")
+  n=$(cozy --json project -p "$P" show "$1" | jq -r '.versions[-1].number')
   step "approve-$1" project -p "$P" approve "$1" "$n" || fail "approve $1: $(tail -c 300 "$OUT/approve-$1.txt")"
   J --arg n "$1" '.assets[] | select(.name == $n) | .pinned' <<< "$(cozy --json project -p "$P" status)" || fail "$1 isn't accepted"
 }
-call() { cozy --json run show "$(jq -r --arg a "$(tr '_-' '  ' <<< "$1")" '.assets[$a].versions[-1].run' "$P/project.lock")" --once | jq -c .request; }
-file_of() { jq -r --arg a "$(tr '_-' '  ' <<< "$1")" --arg f "$2" '. as $l | $P + "/" + $l.files[$l.assets[$a].versions[-1].files[$f]].path' --arg P "$P" "$P/project.lock"; }
+call() { cozy --json run show "$(cozy --json project -p "$P" show "$1" | jq -r '.versions[-1].runs[-1]')" --once | jq -c .request; }
+file_of() { cozy --json project -p "$P" show "$1" | jq -r --arg f "$2" --arg P "$P" '$P + "/" + .versions[-1].files[$f].path'; }
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$1"; }
 seconds() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
 keep_frames() { ffmpeg -v error -y -i "$2" -vf "select='eq(n,0)+eq(n,60)+eq(n,120)'" -vsync 0 "$OUT/frames/$1-%d.png"; }

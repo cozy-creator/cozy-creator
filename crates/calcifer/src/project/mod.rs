@@ -359,7 +359,12 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
 /// than it was, or a file comes to or goes from `files/`, as a pull's do with no write to either. Read from their stats alone, so a look at it
 /// costs nothing: every write replaces the file, so its inode tells two writes in one clock tick apart.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    format!("{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
+    // A person may write over a film at the root, and status says what it holds.
+    let films: String = (std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "mp4"))
+        .map(|entry| stamp(&entry.path()))
+        .collect();
+    format!("{films}.{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.
@@ -1137,7 +1142,9 @@ async fn rename(
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
         return Err(refuse(Kind::NotFound, "asset_unknown", said));
     };
-    let old = lock.asset(&asked.from).filter(|held| !held.versions.is_empty());
+    let mut back = lock.clone();
+    back.untombstone(&asked.from);
+    let old = back.asset(&asked.from).filter(|held| !held.versions.is_empty());
     let stands = !free && doc.find(&asked.from).is_some();
     if old.is_none() && stands {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
@@ -1169,6 +1176,7 @@ async fn rename(
 
 /// project.lock with asset `from` called `to`: its row, and what is pending or owed of it.
 fn renamed(lock: &mut Lock, from: &str, to: &str) {
+    lock.untombstone(from);
     let key = name_key(from);
     if let Some(mut held) = lock.assets.remove(&key) {
         held.name = to.to_owned();
@@ -1345,6 +1353,7 @@ async fn runs(
     let before = queue(&project.folder, &lock);
     let ask = Ask { id: new_key(), text, digest, target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
     (project.folder.update_lock(|lock| {
+        lock.tombstone(|key| doc.find(key).is_some());
         if !joined || added > 0 {
             lock.walk.asks.push(ask.clone());
         }

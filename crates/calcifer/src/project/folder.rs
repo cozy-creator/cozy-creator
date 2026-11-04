@@ -22,6 +22,8 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tensorfs::err::{Code, Refusal};
 
+use tracing::warn;
+
 use super::graph::name_key;
 
 pub const PROJECT: &str = "project.yaml";
@@ -34,6 +36,11 @@ pub const FILES: &str = "files";
 pub const RUNS: &str = ".runs";
 /// A cache of what is measured of each file, which a read of the file can always make again.
 pub(super) const MEASURED: &str = ".measured.json";
+/// Where a project.lock that can't be read goes.
+const BROKEN: &str = "project.lock.broken";
+const UNREADABLE: &str = "lock_unreadable";
+/// What marks a row whose name the file has lost: no name can hold it.
+const TOMBSTONE: char = '#';
 /// The lock's format.
 pub(super) const FORMAT: u32 = 3;
 
@@ -345,7 +352,7 @@ impl Asset {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lock {
     pub format: u32,
     /// Every file, by sha256.
@@ -537,7 +544,37 @@ impl Lock {
         if let Some(files) = value["files"].as_object_mut() {
             files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
         }
-        serde_json::to_string_pretty(&value).expect("a lock serializes") + "\n"
+        protocol::yaml::from_json(&value)
+    }
+
+    /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
+    /// name starts with no versions. It stays an orphan until `reclaim`, and `cozy project rename` still finds it.
+    pub fn tombstone(&mut self, named: impl Fn(&str) -> bool) {
+        let going: BTreeSet<String> = (self.pending.values().map(|pending| name_key(&pending.asset)))
+            .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
+            .collect();
+        let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
+        for key in lost {
+            let Some(mut held) = self.assets.remove(&key) else { continue };
+            if held.name.is_empty() {
+                held.name.clone_from(&key);
+            }
+            let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
+            self.assets.insert(free, held);
+        }
+    }
+
+    /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that.
+    pub fn untombstone(&mut self, name: &str) {
+        let key = name_key(name);
+        if self.assets.contains_key(&key) {
+            return;
+        }
+        let prefix = format!("{key}{TOMBSTONE}");
+        let latest = self.assets.keys().filter(|at| at.starts_with(&prefix)).max_by_key(|at| at[prefix.len()..].parse::<u32>().unwrap_or(0)).cloned();
+        if let Some(held) = latest.and_then(|at| self.assets.remove(&at)) {
+            self.assets.insert(key, held);
+        }
     }
 
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
@@ -557,12 +594,17 @@ pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
+    /// project.lock as last read, and how what it was read from stood then, so it is read again only when that changes.
+    held: Mutex<Option<(Stamp, Lock)>>,
 }
+
+/// How each of project.lock, the measurements and `files/` stood.
+type Stamp = [String; 3];
 
 impl Folder {
     /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_owned(), tools: PathBuf::new() }
+        Self { dir: dir.to_owned(), tools: PathBuf::new(), held: Mutex::default() }
     }
 
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
@@ -575,7 +617,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools(), held: Mutex::default() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -588,10 +630,39 @@ impl Folder {
 
     /// The history: this and `update_lock` are the one way to it, whatever holds it.
     pub fn lock(&self) -> Result<Lock, Error> {
+        let stamp = self.stamp();
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, lock)) = held.as_ref().filter(|(at, _)| *at == stamp) {
+            return Ok(lock.clone());
+        }
         let path = self.dir.join(LOCK);
-        let mut lock = if path.exists() { parse_lock(&read(&path)?)? } else { Lock::default() };
+        let mut lock = match path.exists() {
+            true => match parse_lock(&read(&path)?) {
+                Err(error) if error.code == UNREADABLE => self.set_aside(&error)?,
+                parsed => parsed?,
+            },
+            false => Lock::default(),
+        };
         self.fill(&mut lock);
+        *held = Some((stamp, lock.clone()));
         Ok(lock)
+    }
+
+    fn stamp(&self) -> Stamp {
+        [LOCK, MEASURED, FILES].map(|name| super::stamp(&self.dir.join(name)))
+    }
+
+    /// A project.lock that can't be read is kept, never written over: moved aside, and said by `Doc::read` for as long as it's there.
+    fn set_aside(&self, why: &Error) -> Result<Lock, Error> {
+        let aside = (1..).map(|n| self.dir.join(if n == 1 { BROKEN.to_owned() } else { format!("{BROKEN}-{n}") })).find(|path| !path.exists()).expect("a free name");
+        std::fs::rename(self.dir.join(LOCK), &aside).map_err(|e| io_at(&aside, e))?;
+        warn!("{}: {}: moved to {}", self.dir.display(), why.message, aside.display());
+        Ok(Lock::default())
+    }
+
+    /// What says project.lock was set aside, if one was: its versions aren't read.
+    pub fn lock_set_aside(&self) -> bool {
+        self.dir.join(BROKEN).exists()
     }
 
     /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
@@ -609,8 +680,9 @@ impl Folder {
         }
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let hex = name.split('.').next().unwrap_or_default();
-            if hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            let (hex, rest) = name.split_once('.').unwrap_or((&name, ""));
+            // What is named more than its hash and its type is no file of the project's.
+            if hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && !rest.contains('.') {
                 let file = lock.files.entry(format!("sha256:{hex}")).or_default();
                 file.path = format!("{FILES}/{name}");
                 file.sha256 = format!("sha256:{hex}");
@@ -627,15 +699,21 @@ impl Folder {
 
     /// Applies `change` to project.lock as it is now.
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
-        self.rewrite(&self.dir.join(LOCK), |text| {
-            let mut lock: Lock = match text {
-                "" => Lock::default(),
-                text => parse_lock(text)?,
-            };
-            self.fill(&mut lock);
+        let wrote = std::cell::RefCell::new(None);
+        // What this wrote it needn't read back.
+        let held = || {
+            if let Some(mut lock) = wrote.take() {
+                self.fill(&mut lock);
+                *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.stamp(), lock));
+            }
+        };
+        self.rewrite_then(&self.dir.join(LOCK), |_| {
+            let mut lock = self.lock()?;
             change(&mut lock);
-            Ok(lock.written())
-        })
+            let text = lock.written();
+            *wrote.borrow_mut() = Some(lock);
+            Ok(text)
+        }, held)
     }
 
     /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
@@ -935,12 +1013,13 @@ impl Folder {
 
 /// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
 fn parse_lock(text: &str) -> Result<Lock, Error> {
-    let lock: Result<Lock, _> = serde_json::from_str(text);
-    match lock {
-        Ok(lock) if lock.format == FORMAT => Ok(lock),
-        Ok(lock) => Err(old_lock(&lock.format.to_string())),
-        Err(e) if e.to_string().contains("missing field `format`") => Err(old_lock("1")),
-        Err(e) => Err(Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {e}"))),
+    let unreadable = |why: String| Error::new(Kind::Validation, UNREADABLE, format!("{LOCK}: {why}"));
+    let value = protocol::yaml::to_json(text).map_err(unreadable)?;
+    match value["format"].as_u64() {
+        Some(format) if format == u64::from(FORMAT) => serde_json::from_value(value).map_err(|e| unreadable(e.to_string())),
+        Some(format) => Err(old_lock(&format.to_string())),
+        None if value.is_object() => Err(old_lock("1")),
+        None => Err(unreadable("it is no mapping".to_owned())),
     }
 }
 
@@ -1017,6 +1096,11 @@ impl Folder {
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+        self.rewrite_then(path, change, || {})
+    }
+
+    /// `rewrite`, and `wrote` once it has replaced the file, before any other write can.
+    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
         let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             let before = match path.exists() {
@@ -1033,6 +1117,7 @@ impl Folder {
             };
             if now == before {
                 durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
+                wrote();
                 crate::events::project_changed(&self.dir);
                 return Ok(());
             }

@@ -278,6 +278,9 @@ impl Doc {
             return Err(invalid("project_format", said).next("cozy project upgrade"));
         }
         let mut warnings = vec![];
+        if folder.lock_set_aside() {
+            warnings.push(Warning::of_file(format!("{0} could not be read and is kept as {0}.broken: its versions, seeds and takes aren't read here, so only what is approved stands. Fix it and put it back, or delete it", folder::LOCK)));
+        }
         if version.is_none() {
             warnings.push(Warning::of_file(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT)));
         }

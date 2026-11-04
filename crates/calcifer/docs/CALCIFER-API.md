@@ -388,7 +388,7 @@ Python and cozy-runtime its project locks; nothing runs to describe it.
 ### Projects
 A project is a folder holding `project.yaml` (what a person or the page says, which Calcifer edits line by line, keeping the rest as it stands; `PROJECT-YAML.md` is the format), `project.lock`
 (Calcifer's), `files/`, and its edits at the root (`<name>.mp4` and `<name>.otio`). Its id is fixed by its folder. Every file the project
-uses is a real file in `files/<sha256>.<ext>`, flat. The lock's `files` table has a row only for what a file can't say, where it stays and its
+uses is a real file in `files/<sha256>.<ext>`, flat. project.lock is YAML. Its `files` table has a row only for what a file can't say, where it stays and its
 parts, and what's measured of a file is kept in `.measured.json`, which can be lost. The lock names nothing of this computer, so it travels with project.yaml. A yaml or lock of format 2 is refused
 and left as it is, `next` naming `cozy project upgrade`.
 

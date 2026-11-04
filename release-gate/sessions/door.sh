@@ -256,12 +256,11 @@ door_archive() {
   pod "printf '%s' iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg== | base64 -d > $P/pixel.png"
   answers "import a picture through the door" 200 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-$RANDOM" -d "{\"source\":\"$P/pixel.png\"}" "$D/v1/projects/$id/imports"
   pod "python3 - <<'PY'
-import json
 path = '$a/project.lock'
-lock = json.load(open(path))
-digest = 'sha256:' + 'ab' * 32
-lock['files'][digest] = {'machine': 'another-pod', 'length': 7}
-json.dump(lock, open(path, 'w'))
+text = open(path).read()
+row = '  \"sha256:' + 'ab' * 32 + '\":\n    length: 7\n    machine: another-pod\n'
+text = text.replace('files: {}\n', 'files:\n' + row) if 'files: {}\n' in text else text.replace('files:\n', 'files:\n' + row, 1)
+open(path, 'w').write(text)
 PY" || check "a file another machine keeps, in the lock"
   rm -rf "$OUT/archive"; mkdir -p "$OUT/archive"
   api -D "$OUT/archive.hdr" -o "$OUT/archive.tar" "$D/v1/projects/$id/archive" || check "GET archive"

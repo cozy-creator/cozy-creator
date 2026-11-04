@@ -18,7 +18,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | Path | Written by | Holds |
 |---|---|---|
 | `project.yaml` | The page and the CLI, line by line; or a hand or an LLM | What should exist |
-| `project.lock` | Cozy only | Each asset's versions, and a row for a file only when its file can't say it: where it stays, its parts |
+| `project.lock` | Cozy only | YAML: each asset's versions, and a row for a file only when its file can't say it: where it stays, its parts. Replaced whole, and read again only when it changed. One that can't be read is kept as `project.lock.broken` and said, never written over: what's approved stands |
 | `project.canvas.yaml` | Cozy, for the page | Where each box sits. Nothing else reads it, and nothing in it is an input |
 | `files/` | Cozy only | Every file, by hash |
 | `<edit_name>.mp4`, `.otio` | Cozy | Each edit |
@@ -188,7 +188,7 @@ An asset has one main file; any other files are what the same run left, such as 
 
 ## Orphans
 
-An asset no longer named in the file keeps its versions and files until `reclaim`. Deleting one from the page takes its versions with it, and Undo puts them back; what it made stands, and its files wait, unnamed, for `reclaim`.
+An asset no longer named in the file keeps its versions and files until `reclaim`. Once a render has seen it gone, its name is free: a later asset of that name starts with no versions, and `cozy project rename` still finds the old ones. Deleting one from the page takes its versions with it, and Undo puts them back; what it made stands, and its files wait, unnamed, for `reclaim`.
 
 ## Storyboards
 

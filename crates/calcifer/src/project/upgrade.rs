@@ -500,8 +500,8 @@ fn inline(value: &Value) -> String {
 
 /// The old lock's rows as versions now are: what they keep, and an Edit's clips each with the file it cut.
 fn shrunk(lock: &mut Value) {
-    for asset in lock["assets"].as_object_mut().into_iter().flat_map(|assets| assets.values_mut()) {
-        for version in asset["versions"].as_array_mut().into_iter().flatten() {
+    for asset in lock.get_mut("assets").and_then(Value::as_object_mut).into_iter().flat_map(|assets| assets.values_mut()) {
+        for version in asset.get_mut("versions").and_then(Value::as_array_mut).into_iter().flatten() {
             let cut: HashMap<String, Value> = version["reads"].as_array().into_iter().flatten().filter_map(|read| {
                 let files = read["files"].as_object()?;
                 let main = ["video", "image", "audio"].iter().find_map(|role| files.get(*role)).or_else(|| files.values().next())?;

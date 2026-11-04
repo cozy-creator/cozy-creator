@@ -91,3 +91,68 @@ fn keys_of(document: &Yaml<'_>, path: &[&str]) -> Vec<String> {
         _ => vec![],
     }
 }
+
+/// `value` as YAML a diff can follow: each key on its own line, in the order it holds them, a string plain where that reads back as that
+/// string and otherwise quoted as JSON, which is YAML.
+pub fn from_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_node(value, 0, &mut out);
+    out
+}
+
+fn write_node(value: &Value, indent: usize, out: &mut String) {
+    let pad = " ".repeat(indent);
+    match value {
+        Value::Object(fields) if !fields.is_empty() => {
+            for (key, item) in fields {
+                out.push_str(&pad);
+                out.push_str(&write_text(key));
+                out.push(':');
+                match item {
+                    Value::Object(inner) if !inner.is_empty() => {
+                        out.push('\n');
+                        write_node(item, indent + 2, out);
+                    }
+                    Value::Array(inner) if !inner.is_empty() => {
+                        out.push('\n');
+                        write_node(item, indent + 2, out);
+                    }
+                    _ => {
+                        out.push(' ');
+                        write_node(item, 0, out);
+                    }
+                }
+            }
+        }
+        Value::Array(items) if !items.is_empty() => {
+            for item in items {
+                let mut inner = String::new();
+                write_node(item, indent + 2, &mut inner);
+                out.push_str(&pad);
+                out.push_str("- ");
+                out.push_str(inner.trim_start_matches(' '));
+            }
+        }
+        scalar => {
+            out.push_str(&pad);
+            match scalar {
+                Value::String(text) => out.push_str(&write_text(text)),
+                Value::Object(_) => out.push_str("{}"),
+                Value::Array(_) => out.push_str("[]"),
+                other => out.push_str(&other.to_string()),
+            }
+            out.push('\n');
+        }
+    }
+}
+
+/// `text` plain when nothing could read it as anything else: a hash, a name, a path. Anything starting with a digit may be a number.
+fn write_text(text: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_/.:+@=-".contains(c);
+    let starts = text.chars().next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '/');
+    let word = matches!(text.to_ascii_lowercase().as_str(), "null" | "true" | "false");
+    match starts && text.chars().all(safe) && !text.ends_with(':') && !word {
+        true => text.to_owned(),
+        false => Value::from(text).to_string(),
+    }
+}
