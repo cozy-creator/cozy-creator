@@ -312,6 +312,15 @@ fn asset_of(name: &str, body: &Map<String, Value>, defaults: &Map<String, Value>
         // Named alone, a package could take these words for what to draw.
         inputs.insert("instructions".to_owned(), json!(description));
     }
+    // A picture with no background is asked for in its words, Qwen's, as its adapter put them.
+    let qwen = with.split('@').next().unwrap_or(&with).trim_end_matches('/').rsplit(['/', '\\']).take(2).any(|part| part == "qwen-image-2");
+    let clear = inputs.get("transparent").or_else(|| section.filter(|_| own_with.is_none())?.get("transparent")).and_then(Value::as_bool);
+    if qwen && clear.is_some() {
+        inputs.remove("transparent");
+        if let (Some(true), Some(said)) = (clear, inputs.get("instructions").and_then(Value::as_str).map(|said| said.trim().to_owned())) {
+            inputs.insert("instructions".to_owned(), json!(format!("This is an RGBA image with transparency. {said}\n\nThe image has alpha channel and the background is transparent.")));
+        }
+    }
     if !description.is_empty() {
         let said = versions.and_then(|versions| versions.last()?["invocations"][0]["input"]["prompt"].as_str());
         if !inputs.values().any(|value| value == description.as_str()) && said.is_some_and(|prompt| prompt.contains(description.trim())) {
@@ -620,6 +629,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         let mut section = section.as_object().cloned().unwrap_or_default();
         section.remove("with");
         section.remove("turbo");
+        section.remove("transparent");
         if !section.is_empty() {
             defaults.insert(kind.clone(), Value::Object(section));
         }

@@ -304,6 +304,8 @@ assets:
     render: A wall.
   poster:
     render: After an edit, with <table.1> and <coast.1>.
+  clear:
+    render: {with: /nowhere/qwen-image-2, prompt: A cat., transparent: true}
   shot:
     kind: video
     render: {with: cozy}
@@ -335,6 +337,7 @@ for name in art hero hero.old wall table.1; do
   J --arg n "$name" '.assets[] | select(.name == $n) | .standing == "current"' "$OUT/upgraded-status.json" || check "upgrade: $name went out of date: $(jq -c --arg n "$name" '.assets[] | select(.name == $n)' "$OUT/upgraded-status.json")"
 done
 J '.assets[] | select(.name == "wall") | .approved == 1' "$OUT/upgraded-status.json" || check "upgrade: wall holds no version: $(row "$U" wall .)"
+J '.assets[] | select(.name == "clear") | .fields.instructions == "This is an RGBA image with transparency. A cat.\n\nThe image has alpha channel and the background is transparent." and (.fields | has("transparent") | not)' "$OUT/upgraded-status.json" || check "upgrade: Qwen's transparent: $(row "$U" clear .fields)"
 J '.assets[] | select(.name == "hero") | .fields.asset_type == "character" and .fields.description == "A brave hero." and .fields.instructions == "From <art>." and .fields.style == "Plain."' "$OUT/upgraded-status.json" || check "upgrade: hero: $(row "$U" hero .fields)"
 J '.assets[] | select(.name == "hero.old") | .fields.description == "The hero of old." and .fields.instructions == "From <hero>." and .fields.asset_type == "character"' "$OUT/upgraded-status.json" || check "upgrade: hero.old: $(row "$U" hero.old .fields)"
 J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versions == 1' "$OUT/upgraded-status.json" || check "upgrade: what was out of date: $(row "$U" poster .)"
