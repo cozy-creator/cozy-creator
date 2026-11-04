@@ -17,6 +17,8 @@
 #   download-cut/-resume  new random weights ($TFS_RESUME_MB MiB), uploaded private from this computer's machine, cancelled
 #                    part-way on $M, then downloaded again: only the rest comes, from the Hub. No datacenter volume
 #                    holds them (TensorFS writes back public objects only), so a cache never serves the resume (cl-686)
+#   kill-cut/-resume the same with TensorD killed in place of the cancel, as a crash ends it: a rental only (over SSH),
+#                    and its stable parent starts it again. What landed is still there, unfinished chunks too
 #   upload           new random weights (a CozyTensors folder) to a throwaway <account>/ci-tfs-<R>
 #   upload-again     the same folder to a second tag: no chunk is sent again (dedup)
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
@@ -40,19 +42,36 @@ tfs_step() {
   printf '%s\t%s\t%s\n' "$name" "$(cat "$T/$name.number")" "$(( $(date +%s%3N) - t0 ))" >> "$T/steps.tsv"
   log "tensorfs $name: run $(cat "$T/$name.number") $(run_get "$T" "$name" .status)"
 }
-# tfs_cut <name> <stage> <fraction> <cozy args...>: the command, cancelled once its <stage> progress passes the
-# fraction; the bytes it had moved by then go in <name>.cut.
+# tfs_cancel <run>: the run cancelled. tfs_kill <run>: TensorD on $M killed under it, by the pid it reports; the follower
+# is told by the machine going away.
+tfs_cancel() { "$CLI" run cancel "$1" -y >/dev/null 2>&1; }
+tfs_kill() {
+  local pid
+  pid=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.tensord_pid // empty')
+  [ -n "$pid" ] && "$CLI" machine ssh "$M" -- kill -9 "$pid"
+}
+# tfs_cut <name> <stage> <fraction> <cancel|kill> <cozy args...>: the command, cut so once its <stage> progress passes
+# the fraction; the bytes it had moved by then go in <name>.cut.
 tfs_cut() {
-  local name=$1 stage=$2 frac=$3 n moved=; shift 3
+  local name=$1 stage=$2 frac=$3 how=$4 n moved=; shift 4
   n=$(run_submit "$T" "$name" "$@")
   while [ -n "$n" ] && kill -0 "$(cat "$T/$name.pid")" 2>/dev/null; do
     moved=$(python3 -I "$HERE/suites/tensorfs/check.py" --past "$T/$name.ndjson" "$stage" "$frac")
-    if [ -n "$moved" ]; then "$CLI" run cancel "$n" -y >/dev/null 2>&1; echo "$moved" > "$T/$name.cut"; break; fi
+    if [ -n "$moved" ]; then "tfs_$how" "$n"; echo "$moved" > "$T/$name.cut"; break; fi
     sleep 0.5
   done
   run_wait "$T" "$name"
   printf '%s\t%s\t\n' "$name" "${n:-none}" >> "$T/steps.tsv"
-  log "tensorfs $name: run ${n:-none} cancelled at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
+  log "tensorfs $name: run ${n:-none}: $how at $(cat "$T/$name.cut" 2>/dev/null || echo '?') bytes"
+}
+# tfs_fixture <step> <dest>: new random weights uploaded private from this computer's machine; their commit in TFS_COMMIT.
+tfs_fixture() {
+  TFS_COMMIT=
+  [ -n "$WHO" ] && tfs_random "$T/resume.safetensors" "$TFS_RESUME_MB" || return 1
+  TFS_DESTS+=("$2")
+  tfs_step "$1" model upload "$T/resume.safetensors" "$2" --lane f16 --source-format as-is --on local -y
+  TFS_COMMIT=$(run_get "$T" "$1" "[.result.models[]?.published | select(.destination == \"$2\") | .commit][0]")
+  rm -f "$T/resume.safetensors"
 }
 # tfs_random <file> <MiB>: new random F16 weights as one .safetensors file.
 tfs_random() {
@@ -136,18 +155,25 @@ done
 if tfs_case download; then
   tfs_step download-cold model download "$TFS_MODEL" --on "$M" -y
   tfs_step download-again model download "$TFS_MODEL" --on "$M" -y
-  d=$WHO/ci-tfs-resume-$R c=
-  if [ -n "$WHO" ] && tfs_random "$T/resume.safetensors" "$TFS_RESUME_MB"; then
-    TFS_DESTS+=("$d")
-    tfs_step download-fixture model upload "$T/resume.safetensors" "$d" --lane f16 --source-format as-is --on local -y
-    c=$(run_get "$T" download-fixture "[.result.models[]?.published | select(.destination == \"$d\") | .commit][0]")
-  fi
-  rm -f "$T/resume.safetensors"
-  if [ -n "$c" ]; then
-    tfs_cut download-cut download 0.3 model download "$d@$c" --on "$M" -y
-    tfs_step download-resume model download "$d@$c" --on "$M" -y
+  d=$WHO/ci-tfs-resume-$R
+  tfs_fixture download-fixture "$d"
+  if [ -n "${TFS_COMMIT:-}" ]; then
+    tfs_cut download-cut download 0.3 cancel model download "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_step download-resume model download "$d@$TFS_COMMIT" --on "$M" -y
   else
     expect tensorfs-download-resume FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" download-fixture .reason.message)"
+  fi
+  tfs_cleanup
+fi
+# A rental's only: `--on` a machine that is someone's own never has its service killed.
+if [ -z "$ON" ] && tfs_case kill; then
+  d=$WHO/ci-tfs-kill-$R
+  tfs_fixture kill-fixture "$d"
+  if [ -n "${TFS_COMMIT:-}" ]; then
+    tfs_cut kill-cut download 0.3 kill model download "$d@$TFS_COMMIT" --on "$M" -y
+    tfs_step kill-resume model download "$d@$TFS_COMMIT" --on "$M" -y
+  else
+    expect tensorfs-kill-resume FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" kill-fixture .reason.message)"
   fi
   tfs_cleanup
 fi
@@ -164,7 +190,7 @@ elif [ -n "$WHO" ] && tfs_weights "$T/up-a" "$TFS_UPLOAD_MB" && tfs_weights "$T/
   d=$WHO/ci-tfs-$R; TFS_DESTS+=("$d")
   tfs_step upload model upload "$T/up-a" "$d" --lane bf16 --on "$M" -y
   tfs_step upload-again model upload "$T/up-a" "$d" --lane bf16-b --on "$M" -y
-  tfs_cut upload-cut "uploading to" 0.3 model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
+  tfs_cut upload-cut "uploading to" 0.3 cancel model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
   tfs_step upload-resume model upload "$T/up-c" "$d" --lane bf16-c --on "$M" -y
   tfs_cleanup
 else

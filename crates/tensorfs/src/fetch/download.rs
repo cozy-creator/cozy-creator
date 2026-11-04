@@ -617,15 +617,15 @@ impl<'s> Sink<'s> {
         Ok(())
     }
 
-    /// The whole range at byte `at`, whose arrival has counted already, joins the bytes in order.
-    async fn take(&mut self, at: u64) -> Result<()> {
+    /// The whole range at the byte reached, whose arrival has counted already, joins the bytes in order.
+    async fn take(&mut self) -> Result<()> {
         self.flush(None).await?;
         let Some(mut admission) = self.admission.take() else {
             return refuse(Code::IO_FAILED, "the admission is gone");
         };
         let _writing = self.shared.writes.acquire().await;
         let taken = tokio::task::spawn_blocking(move || {
-            let taken = admission.take(at);
+            let taken = admission.take();
             (admission, taken)
         })
         .await;
@@ -1246,7 +1246,7 @@ impl Shared {
                 next = end;
             }
             while whole.remove(&sink.reached) {
-                if let Err(refusal) = sink.take(sink.reached).await {
+                if let Err(refusal) = sink.take().await {
                     return refusal.into();
                 }
             }

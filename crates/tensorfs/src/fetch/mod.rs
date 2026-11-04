@@ -103,9 +103,9 @@ pub trait Admission: Send {
     fn range(&mut self, _at: u64) -> Result<Option<(File, u64)>> {
         Ok(None)
     }
-    /// The range at byte `at`, which is finished and reaches back to the bytes in order, joins
-    /// them. The bytes in order now.
-    fn take(&mut self, _at: u64) -> Result<u64> {
+    /// The finished range starting at the first byte it lacks joins the bytes in order. The bytes
+    /// in order now: the same when there is no such range.
+    fn take(&mut self) -> Result<u64> {
         refuse(Code::IO_FAILED, "this store keeps no ranges")
     }
     /// Ends it, nothing kept.

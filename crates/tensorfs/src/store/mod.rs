@@ -671,10 +671,13 @@ impl Admission {
         if self.length > expect.length {
             return Err(invalid(&self.temp, "longer than its object"));
         }
-        while self.take_at(self.length)? {}
-        for (path, _) in self.ranges()? {
-            let length = fs::metadata(&path).map_err(fail("stat", &path))?.len();
-            self.ahead += length;
+        while self.take_next()? {}
+        for (path, at) in self.ranges()? {
+            if at < self.length {
+                let _ = fs::remove_file(path);
+                continue;
+            }
+            self.ahead += fs::metadata(&path).map_err(fail("stat", &path))?.len();
             self.ranged = true;
         }
         Ok(())
@@ -692,19 +695,14 @@ impl Admission {
         Ok(())
     }
 
-    /// The range at byte `at` goes in order behind the bytes held, past any it overlaps. False when
-    /// there is none, or it is ahead of them.
-    fn take_at(&mut self, at: u64) -> Result<bool> {
-        if at > self.length {
-            return Ok(false);
-        }
-        let path = self.range_path(at);
+    /// The range that starts at the first byte it lacks joins the bytes in order. False: none does.
+    fn take_next(&mut self) -> Result<bool> {
+        let path = self.range_path(self.length);
         let mut range = match File::open(&path) {
             Ok(range) => range,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(fail("open", &path)(error)),
         };
-        range.seek(SeekFrom::Start(self.length - at)).map_err(fail("seek", &path))?;
         let mut buffer = vec![0; 1 << 20];
         loop {
             let n = match range.read(&mut buffer) {
@@ -906,8 +904,8 @@ impl fetch::Admission for Admission {
         Ok(Some((file, held)))
     }
 
-    fn take(&mut self, at: u64) -> crate::err::Result<u64> {
-        self.take_at(at).map_err(Error::refusal)?;
+    fn take(&mut self) -> crate::err::Result<u64> {
+        self.take_next().map_err(Error::refusal)?;
         Ok(self.length)
     }
 
