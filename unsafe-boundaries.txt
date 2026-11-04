@@ -44,7 +44,7 @@ crates/tensorfs/src/io/decode.rs
 crates/tensorfs/src/io/device.rs
 crates/tensorfs/src/io/device/owned.rs
 crates/tensorfs/src/io/host.rs
-crates/tensorfs/src/io/metrics.rs
+crates/tensorfs/src/io/metrics/gpu.rs
 crates/tensorfs/src/io/mod.rs
 crates/tensorfs/src/io/pins.rs
 crates/tensorfs/src/io/plan.rs

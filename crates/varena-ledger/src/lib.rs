@@ -347,14 +347,16 @@ impl Table {
             if page.released.load(Acquire) != before { return Recovery::Retry; }
             let now = Instant::now();
             if let Some(limit) = supervisor {
-                if page.rows[row.0].short.load(Acquire) == REFUSED || now >= limit || !self.held_elsewhere(0) {
+                // Another thread of this process finishing its own recovery clears the row's word.
+                let short = &page.rows[row.0].short;
+                let _ = short.compare_exchange(0, before + 1, AcqRel, Acquire);
+                if short.load(Acquire) == REFUSED || now >= limit || !self.held_elsewhere(0) {
                     return Recovery::Final;
                 }
             } else {
-                let others = || page.rows.iter().enumerate()
-                    .filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0);
-                let answered = others().all(|(_, words)| words.answered.load(Acquire) >= generation);
-                if answered && now < deadline && others().any(|(_, words)| words.idle.load(Acquire) != 0) {
+                let live = || page.rows.iter().enumerate().filter(|(_, words)| words.pid.load(Acquire) != 0);
+                let answered = live().all(|(_, words)| words.answered.load(Acquire) >= generation);
+                if answered && now < deadline && live().any(|(index, words)| index != row.0 && words.idle.load(Acquire) != 0) {
                     // A peer still reports idle memory, maybe finishing a stream: ask again.
                     wait(&page.answers, seen, TICK);
                     generation = self.ask(row, bytes);

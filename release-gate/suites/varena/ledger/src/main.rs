@@ -29,6 +29,8 @@ impl Donor for Pretend {
 
 /// Child: hold `gib` GiB as a donor. `age` orders it: lower trims first.
 fn donor(uuid: [u8; 16], gib: u64, trim_ms: u64, age_ms: u64) {
+    // SAFETY: a plain prctl: a failed cell leaves no donor behind.
+    unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
     let table = Table::open(&uuid).expect("open");
     let row = table.claim().expect("row");
     table.request_begin(row);
@@ -53,12 +55,19 @@ fn spawn(uuid: [u8; 16], gib: u64, trim_ms: u64, age_ms: u64) -> Child {
     child
 }
 
-fn fresh(tag: u8) -> ([u8; 16], Table, Row) {
+/// A table with this process as an asker: a row, and its donor thread holding nothing.
+fn fresh(tag: u8) -> ([u8; 16], &'static Table, Row) {
     let mut uuid = [tag; 16];
     uuid[..4].copy_from_slice(&std::process::id().to_le_bytes());
-    let table = Table::open(&uuid).unwrap();
-    let row = table.claim().unwrap();
+    let (table, row) = claimed(&uuid);
     (uuid, table, row)
+}
+
+fn claimed(uuid: &[u8; 16]) -> (&'static Table, Row) {
+    let table: &'static Table = Box::leak(Box::new(Table::open(uuid).unwrap()));
+    let row = table.claim().unwrap();
+    std::thread::spawn(move || table.serve(row, &mut Pretend { held: 0, trim_ms: 0 }));
+    (table, row)
 }
 
 fn signal(child: &Child, signal: i32) {
@@ -85,19 +94,23 @@ fn main() {
     // The oldest idle donor gives; a wake is far under the 500 ms old cadence.
     let (uuid, table, row) = fresh(1);
     let (mut old, mut young) = (spawn(uuid, 8, 0, 0), spawn(uuid, 8, 0, 20));
-    let (result, took) = recover(&table, row, 2 * GIB, patience);
+    let (result, took) = recover(table, row, 2 * GIB, patience);
     println!("ask: {result:?} in {took:?}, idle left {} GiB", table.idle() / GIB);
     assert_eq!(result, Recovery::Retry);
     assert!(took < Duration::from_millis(100), "{took:?}");
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(table.idle(), 14 * GIB, "only the oldest trims");
 
-    // Nothing idle anywhere: every peer answers, and the answer is final at once.
-    let (result, _) = recover(&table, row, 32 * GIB, patience);
-    assert_eq!(result, Recovery::Retry);
-    std::thread::sleep(Duration::from_millis(50));
-    let (result, took) = recover(&table, row, 2 * GIB, patience);
-    println!("empty: {result:?} in {took:?}");
+    // Every release ends a wait: asking again takes the rest. With nothing idle anywhere every
+    // peer answers, and the answer is final at once.
+    let mut asks = 0;
+    let (result, took) = loop {
+        let (result, took) = recover(table, row, 32 * GIB, patience);
+        asks += 1;
+        if result == Recovery::Final { break (result, took); }
+    };
+    println!("empty after {asks} asks: {result:?} in {took:?}");
+    assert_eq!(table.idle(), 0);
     assert_eq!(result, Recovery::Final);
     assert!(took < Duration::from_millis(500), "{took:?}");
     let _ = (old.kill(), young.kill(), old.wait(), young.wait());
@@ -105,12 +118,9 @@ fn main() {
     // A donor killed mid-trim wakes the asker, and the other donor carries on.
     let (uuid, table, row) = fresh(2);
     let (mut dying, mut other) = (spawn(uuid, 8, 10_000, 0), spawn(uuid, 8, 0, 20));
-    let waiter = std::thread::spawn({
-        let table = Table::open(&uuid).unwrap();
-        move || {
-            let row = table.claim().unwrap();
-            recover(&table, row, 16 * GIB, Duration::from_secs(30))
-        }
+    let waiter = std::thread::spawn(move || {
+        let (table, row) = claimed(&uuid);
+        recover(table, row, 16 * GIB, Duration::from_secs(30))
     });
     std::thread::sleep(Duration::from_millis(200));
     let killed = Instant::now();
@@ -121,10 +131,10 @@ fn main() {
     assert_eq!(result, Recovery::Retry);
     assert!(killed.elapsed() < Duration::from_millis(500), "{:?}", killed.elapsed());
     // The dead row's bytes are settling: retries, not out of memory, and the other is still there.
-    let (result, _) = recover(&table, row, GIB, patience);
+    let (result, _) = recover(table, row, GIB, patience);
     assert_eq!(result, Recovery::Retry);
     table.reap();
-    assert_eq!(table.pids().len(), 3, "asker, its helper's row and the living donor");
+    assert_eq!(table.pids().len(), 3, "this process's two rows and the living donor");
     let _ = (other.kill(), other.wait());
 
     // A stopped donor first in line does not block the one behind it.
@@ -132,12 +142,12 @@ fn main() {
     let (mut stopped, mut behind) = (spawn(uuid, 8, 0, 0), spawn(uuid, 8, 0, 20));
     signal(&stopped, libc::SIGSTOP);
     std::thread::sleep(Duration::from_millis(50));
-    let (result, took) = recover(&table, row, 12 * GIB, patience);
+    let (result, took) = recover(table, row, 12 * GIB, patience);
     println!("stopped: {result:?} in {took:?}");
     assert_eq!(result, Recovery::Retry, "the donor behind takes the rest of the want");
     assert!(took < patience);
     // Now only the stopped one has anything: the deadline bounds it, never a hang.
-    let (result, took) = recover(&table, row, GIB, patience);
+    let (result, took) = recover(table, row, GIB, patience);
     println!("stopped alone: {result:?} in {took:?}");
     assert_eq!(result, Recovery::Final);
     assert!(took >= patience && took < patience * 2, "{took:?}");
@@ -166,24 +176,18 @@ fn main() {
     // TensorD's turn: an asker peers could not help waits for an exit, or for a no.
     let (uuid, table, row) = fresh(5);
     let supervisor = Table::open(&uuid).unwrap();
-    let waiting = std::thread::spawn({
-        let table = Table::open(&uuid).unwrap();
-        let mut turns = 0;
-        move || {
-            let row = table.claim().unwrap();
-            let first = recover(&table, row, GIB, Duration::from_secs(2)).0;
-            std::thread::sleep(Duration::from_secs(6)); // past the death's settling
-            let second = recover(&table, row, GIB, Duration::from_secs(2)).0;
-            turns += 1;
-            (first, second, turns)
-        }
+    let waiting = std::thread::spawn(move || {
+        let (table, row) = claimed(&uuid);
+        let first = recover(table, row, GIB, Duration::from_secs(2)).0;
+        std::thread::sleep(Duration::from_secs(6)); // past the death's settling
+        (first, recover(table, row, GIB, Duration::from_secs(2)).0)
     });
     let ended = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     std::thread::spawn({
         let ended = ended.clone();
         move || supervisor.supervise(|| Some(ended.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0))
     });
-    let (first, second, _) = waiting.join().unwrap();
+    let (first, second) = waiting.join().unwrap();
     println!("supervised: {first:?} then {second:?}, asked {}", ended.load(std::sync::atomic::Ordering::SeqCst));
     assert_eq!((first, second), (Recovery::Retry, Recovery::Final));
     assert_eq!(ended.load(std::sync::atomic::Ordering::SeqCst), 2);
