@@ -197,7 +197,8 @@ cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err"
 
 update() { step update; update_to_newest; }
 # Every log cozy wrote (Calcifer, TensorD, executors), before removal erases ~/.cozy: what a failed step left behind.
-logs() { step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true; }
+# As files, which e2e/publish can scrub.
+logs() { step logs; mkdir -p "$OUT/cozy-logs"; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | (cd "$OUT/cozy-logs" && tar -xf -)) || true; }
 remove() { logs; step "remove cozy"; remove_cozy; }
 
 # Local code of one name at two paths, each saying which it is, run in turn: each runs its own, not the first's install (cl-733: a
