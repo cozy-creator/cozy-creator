@@ -1210,6 +1210,7 @@ code=0; render "$T" reader || code=$?
 [ "$(made "$T" no)" = null ] || [ "$(made "$T" no)" = 0 ] || check "failures: a refusal made a version"
 says failures "reader cannot render: no failed in this render"
 stops
+failed_once
 absent_piece
 rename_waits
 [ -d "${PACKAGES:-}/minimax-h3" ] || return 0
@@ -1336,6 +1337,43 @@ says stops "rendered 0 of 8; "
 says stops "cozy project render all --missing --on local"
 failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq '.runs | length')
 [ "$failed" -lt 8 ] || check "stops: $failed of 8 runs ran: $(tail -c 400 "$OUT/render.txt")"
+}
+
+# A shot that fails on a new project, read by another: the walk doesn't send it again, one row says so, and what reads it says why. A
+# render the person asks again is a new attempt.
+failed_once() {
+step "a project: a failed take isn't sent again by the walk; asked again, it is"
+local T=$OUT/failed-once look code=0 tried
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 2
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+look=$(prefix "$T" "$T/look.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  look:
+    video: $look
+  broken:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look>.
+    crash: the card ran out of memory
+  reader:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look> after <broken>.
+YAML
+tried() { cozy --json run ls -p "$T" --limit 0 --state failed | jq '[.runs[] | select(.target | endswith("/crash"))] | length'; }
+render "$T" all || code=$?
+[ "$code" != 0 ] || check "failed once: render exited 0: $(tail -c 400 "$OUT/render.txt")"
+[ "$(tried)" = 1 ] || check "failed once: the walk sent it $(tried) times: $(tail -c 600 "$OUT/render.txt")"
+J '[.board.jobs[] | select(.asset == "broken")] | length == 1 and .[0].state == "failed" and .[0].number == 1' <<< "$(status "$T")" || check "failed once: its rows: $(status "$T" | jq -c '.board.jobs | map({asset, state, number})')"
+J '[.board.jobs[] | select(.asset == "reader")] | length == 1 and .[0].state == "failed"' <<< "$(status "$T")" || check "failed once: what reads it: $(status "$T" | jq -c '.board.jobs | map({asset, state})')"
+says "failed once" "reader cannot render: broken failed in this render"
+says "failed once" "rendered 0 of 2; 2 failed"
+! grep -q 'no take yet' "$OUT/render.txt" || check "failed once: it went on to send it: $(tail -c 400 "$OUT/render.txt")"
+code=0; render "$T" broken || code=$?
+{ [ "$code" != 0 ] && [ "$(tried)" = 2 ]; } || check "failed once: asked again, exit $code, $(tried) runs"
+J '[.board.jobs[] | select(.asset == "broken")] | length == 1 and .[0].number == 2' <<< "$(status "$T")" || check "failed once: asked again, its rows: $(status "$T" | jq -c '.board.jobs | map({asset, state, number})')"
 }
 
 # A piece gone from this computer, and at no machine or Hub: the cut fails with the command to run, and the film stays what it was.

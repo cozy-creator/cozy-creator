@@ -1989,9 +1989,10 @@ impl Walk {
         let key = next.take.as_ref().map_or_else(new_key, |take| take.key.clone());
         let settle = |lock: &mut Lock| {
             let Some(mine) = lock.walk.asks.iter_mut().find(|mine| mine.id == ask.id) else { return };
-            match &next.take {
-                None => drop(mine.sent.insert(name_key(&name))),
-                Some(_) => mine.takes.retain(|take| take.key != key),
+            // Tried once either way: a take that fails isn't owed again for what reads it. Only a new render asks again.
+            mine.sent.insert(name_key(&name));
+            if next.take.is_some() {
+                mine.takes.retain(|take| take.key != key);
             }
         };
         let (mut target, approve, new) = match &next.take {
