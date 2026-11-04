@@ -1056,7 +1056,7 @@ impl Calcifer {
                     return Err(e.into());
                 }
                 // A run its machine calls over with no outcome sent is no stream held open to start another: it can't read that outcome.
-                None if matches!(state_now.as_str(), "succeeded" | "failed" | "canceled") => {
+                None if matches!(state_now.as_str(), "succeeded" | "completed" | "failed" | "canceled") => {
                     self.record_batch(id, &mut batch)?;
                     return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
                 }
