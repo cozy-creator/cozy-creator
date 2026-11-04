@@ -444,7 +444,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
             platform::durable::replace(&project, format::starter().as_bytes(), 0o644).map_err(|e| io(path, std::io::Error::other(e)))?;
-            let dir = std::fs::canonicalize(path).map_err(|e| io(path, e))?;
+            let dir = platform::durable::canonical(path).map_err(|e| io(path, std::io::Error::other(e)))?;
             crate::events::project_changed(&dir);
             dir
         }
@@ -483,7 +483,7 @@ fn named_project(api: &Api, name: &str) -> Result<PathBuf, Error> {
             Ok(()) => {
                 let project = dir.join(folder::PROJECT);
                 platform::durable::replace(&project, format::blank().as_bytes(), 0o644).map_err(|e| io(std::io::Error::other(e)))?;
-                let dir = std::fs::canonicalize(&dir).map_err(io)?;
+                let dir = platform::durable::canonical(&dir).map_err(|e| io(std::io::Error::other(e)))?;
                 crate::events::project_changed(&dir);
                 return Ok(dir);
             }
@@ -502,7 +502,7 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
             .remedy("run it inside a project's folder, or name one with -p <path>")
             .next("cozy project new <path>")
     };
-    let start = std::fs::canonicalize(path).map_err(|_| not_found())?;
+    let start = platform::durable::canonical(path).map_err(|_| not_found())?;
     (start.ancestors()).find(|dir| dir.join(folder::PROJECT).is_file()).map(FsPath::to_owned).ok_or_else(not_found)
 }
 
