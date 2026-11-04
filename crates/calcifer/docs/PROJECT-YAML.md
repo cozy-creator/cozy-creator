@@ -105,7 +105,7 @@ Every other field, such as `summary`, `beats`, `description`, `instructions`, `c
 
 `defaults.all` is only for what every kind shares, such as `style`.
 
-**`options`** holds a model's own settings, such as turbo, context frames or a default sound prompt, and isn't part of this standard: it's an unstructured map, any field to any value, on `defaults.<kind>` and on an asset, the asset's values over the defaults' key by key. It goes only to the adapter, as `op.options`, which turns it into that package's calls; another model has other fields. Cozy adds nothing from it to a call. It counts in the memo, and an asset naming its own `with:` takes none from defaults.
+**`options`** holds a model's own settings, such as turbo or a default sound prompt, and isn't part of this standard: it's an unstructured map, any field to any value, on `defaults.<kind>` and on an asset, the asset's values over the defaults' key by key. It goes only to the adapter, as `op.options`, which turns it into that package's calls; another model has other fields. Cozy adds nothing from it to a call. It counts in the memo, and an asset naming its own `with:` takes none from defaults.
 
 `defaults` holds settings, not what's in the picture or sound, beyond the project-wide `style`. `soundscape` and `music` go on each shot.
 
