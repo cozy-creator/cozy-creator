@@ -1,6 +1,6 @@
 import type { Edge, Node, ReactFlowInstance } from "@xyflow/react"
 import type { Client } from "../api/client"
-import type { Entity, Imported, ProjectNode, ProjectState, Row, Run, Standing } from "../types"
+import type { Entity, Imported, Asset, ProjectState, Row, Run, Standing } from "../types"
 import { say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { type Box, type EdgeKind, type EdgeSpec, edgesOf, homesFor, warningsOf } from "./graph"
@@ -31,7 +31,7 @@ export interface Placing {
 /** Everything a card shows that isn't a position. Culling unmounts cards, so a card holds none of it. */
 export interface ElementView {
   name: string
-  asset?: ProjectNode
+  asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */
   linked?: Standing | "failed"
@@ -248,7 +248,7 @@ export class CanvasStore {
     const state = this.state!
     const rows = this.rows!
     const entities = state.entities ?? []
-    const present = new Set([...state.nodes, ...entities].map((element) => element.name))
+    const present = new Set([...state.assets, ...entities].map((element) => element.name))
     for (const [from, to] of this.renames) if (present.has(to)) this.renames.delete(from)
     const becoming = new Set(this.renames.values())
     const fresh: Element[] = []
@@ -259,7 +259,7 @@ export class CanvasStore {
       const now = warnings.get(name)
       return (view.warnings ?? []).join("\n") === (now ?? []).join("\n") ? {} : { warnings: now }
     }
-    for (const asset of state.nodes) {
+    for (const asset of state.assets) {
       for (const number of asset.making ?? []) {
         this.owners.set(number, asset.name)
         this.askRun(number)
@@ -284,7 +284,7 @@ export class CanvasStore {
         fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), warnings: warnings.get(asset.name) })
       }
     }
-    const standing = new Map(state.nodes.map((asset) => [asset.name, asset.failure ? ("failed" as const) : asset.standing]))
+    const standing = new Map(state.assets.map((asset) => [asset.name, asset.failure ? ("failed" as const) : asset.standing]))
     for (const entity of entities) {
       const linked = worst(linksOf(entity).map((name) => standing.get(name)))
       const view = this.views.get(entity.name)
@@ -328,7 +328,7 @@ export class CanvasStore {
     }
     const rows = this.rows!
     const state = this.state!
-    const named = new Set([...state.nodes, ...(state.entities ?? [])].map((element) => element.name))
+    const named = new Set([...state.assets, ...(state.entities ?? [])].map((element) => element.name))
     const wanted = elements.filter(({ name }) => !this.views.has(name) && named.has(name))
     const found = wanted.filter(({ name }) => cards[name])
     for (const { name } of found) rows.set(name, cards[name])
@@ -580,7 +580,7 @@ export class CanvasStore {
   holdsFile(sha256: string): boolean {
     for (const view of this.views.values()) if (view.landed?.sha256 === sha256) return true
     return Boolean(
-      this.state?.nodes.some((asset) => asset.sha256 === sha256 || Object.values(asset.files ?? {}).some((file) => file.sha256 === sha256)),
+      this.state?.assets.some((asset) => asset.sha256 === sha256 || Object.values(asset.files ?? {}).some((file) => file.sha256 === sha256)),
     )
   }
 

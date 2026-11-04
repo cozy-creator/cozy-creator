@@ -122,12 +122,12 @@ pub struct Known {
     pub busy: bool,
 }
 
-/// `GET /v1/projects/{id}`: its nodes in order, and what reading the project said.
+/// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
     pub path: PathBuf,
-    pub nodes: Vec<Node>,
+    pub assets: Vec<Asset>,
     /// Identity and links, no work: they make nothing and hold no version.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<Entity>,
@@ -384,7 +384,7 @@ pub enum Standing {
 
 /// An asset: a stable name holding a set of files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Node {
+pub struct Asset {
     pub name: String,
     #[serde(default)]
     pub standing: Standing,
@@ -452,7 +452,7 @@ pub struct Node {
     /// The shot whose beat writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub written_by: Option<String>,
-    /// Its inputs, flat, each by a control's `field`: what `PATCH /v1/projects/{id}/nodes/{name}` sets, as it applies now.
+    /// Its inputs, flat, each by a control's `field`: what `PATCH /v1/projects/{id}/assets/{name}` sets, as it applies now.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub fields: Map<String, Value>,
     /// Names what a write of its fields read: `If-Match` on `PATCH`. An edit of another node doesn't move it. None for what has no lines of its own.
@@ -470,16 +470,16 @@ pub struct Node {
     pub missing: Vec<String>,
 }
 
-/// `GET /v1/projects/{id}/nodes/{name}`: a node and each of its versions, 1 first.
+/// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NodeVersions {
-    pub node: Node,
+pub struct AssetVersions {
+    pub asset: Asset,
     pub versions: Vec<Version>,
 }
 
-/// `POST /v1/projects/{id}/nodes`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
+/// `POST /v1/projects/{id}/assets`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NewNode {
+pub struct NewAsset {
     /// A tool's `id`, from `GET /v1/tools`.
     pub tool: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -491,17 +491,17 @@ pub struct NewNode {
     pub fields: Map<String, Value>,
 }
 
-/// What a write of a node answers: its name, and what `If-Match` names from here on.
+/// What a write of an asset answers: its name, and what `If-Match` names from here on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NodeMade {
+pub struct AssetMade {
     pub name: String,
     pub etag: String,
 }
 
-/// `PATCH /v1/projects/{id}/nodes/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
+/// `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
 /// `tool` changes what makes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NodePatch {
+pub struct AssetPatch {
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub fields: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -510,7 +510,7 @@ pub struct NodePatch {
 
 /// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NodePatched {
+pub struct AssetPatched {
     pub name: String,
     pub etag: String,
     pub was: String,
@@ -518,9 +518,9 @@ pub struct NodePatched {
     pub warnings: Vec<String>,
 }
 
-/// What `DELETE /v1/projects/{id}/nodes/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
+/// What `DELETE /v1/projects/{id}/assets/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NodeDeleted {
+pub struct AssetDeleted {
     pub name: String,
     /// Opaque to a client.
     pub text: String,
@@ -528,9 +528,9 @@ pub struct NodeDeleted {
     pub at: Option<Card>,
 }
 
-/// `PUT /v1/projects/{id}/nodes/{name}`: a deleted node back.
+/// `PUT /v1/projects/{id}/assets/{name}`: a deleted asset back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NodeBack {
+pub struct AssetBack {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Card>,

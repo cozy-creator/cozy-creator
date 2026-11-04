@@ -46,7 +46,7 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
 
 /** The words a card shows when it has nothing else to show. */
 export function lineOf(text?: Record<string, unknown>): string | null {
-  return string(text?.prompt) ?? string(text?.summary) ?? string(text?.description) ?? beatsOf(text)[0]?.description ?? null
+  return string(text?.instructions) ?? string(text?.summary) ?? string(text?.description) ?? beatsOf(text)[0]?.description ?? null
 }
 
 /** The text at a place an asset's `reads` names: `summary`, `beats.0.description`. */

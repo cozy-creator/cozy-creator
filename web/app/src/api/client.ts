@@ -21,9 +21,9 @@ import type {
   ModelReleased,
   ModelSearch,
   ModelUploading,
-  NodeDeleted,
-  NodeMade,
-  NodePatched,
+  AssetDeleted,
+  AssetMade,
+  AssetPatched,
   Opened,
   OrgClaim,
   PackageDetail,
@@ -273,24 +273,24 @@ export class Client {
   }
 
   /** A tool dropped on the canvas. */
-  newNode(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown> }): Promise<NodeMade> {
-    return this.write("POST", `${project(id)}/nodes`, body, key)
+  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown> }): Promise<AssetMade> {
+    return this.write("POST", `${project(id)}/assets`, body, key)
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */
-  patchNode(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string): Promise<NodePatched> {
+  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string): Promise<AssetPatched> {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (read) headers["If-Match"] = read
-    return this.json(`${project(id)}/nodes/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) })
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) })
   }
 
-  deleteNode(id: string, name: string): Promise<NodeDeleted> {
-    return this.write("DELETE", `${project(id)}/nodes/${encodeURIComponent(name)}`, {})
+  deleteAsset(id: string, name: string): Promise<AssetDeleted> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {})
   }
 
   /** What deleting it answered, back under its name. */
-  putNodeBack(id: string, name: string, text: string, at?: Row): Promise<NodeMade> {
-    return this.write("PUT", `${project(id)}/nodes/${encodeURIComponent(name)}`, { text, at })
+  putAssetBack(id: string, name: string, text: string, at?: Row): Promise<AssetMade> {
+    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at })
   }
 
   /** What can be dropped on a canvas: what `on` has installed, then the Hub's. */

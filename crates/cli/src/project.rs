@@ -312,7 +312,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 rows.fold(table, |table, entity| table.row([entity.name.clone(), entity.kind.clone(), linked(entity)])).print();
             }
             let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "PINNED", "MADE BY", "STATUS", "FILE"]);
-            let rows = state.nodes.iter().map(|a| {
+            let rows = state.assets.iter().map(|a| {
                 let made = match a.versions {
                     1 => format!("1 {}", a.noun),
                     count => format!("{count} {}s", a.noun),
@@ -566,7 +566,7 @@ fn summary(ctx: &Context, state: &State) {
     if !state.queue.is_empty() && !state.busy {
         output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");
     }
-    for asset in state.nodes.iter().filter(|asset| !asset.prefixes.is_empty()) {
+    for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
         let from = |made: &protocol::project::VersionPrefix| match made.from.as_slice() {
             [] => String::new(),
             pieces => format!(" (from {})", pieces.join(", ")),
@@ -579,7 +579,7 @@ fn summary(ctx: &Context, state: &State) {
             }
         }
     }
-    for asset in &state.nodes {
+    for asset in &state.assets {
         if let Some(failure) = &asset.failure {
             output::failure_of(ctx, failure);
         }

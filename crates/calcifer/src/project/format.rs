@@ -699,11 +699,11 @@ impl Doc {
         self.warnings.push(Warning::of(name, message));
     }
 
-    /// Asset `i`'s inputs as a node has them, flat: what it passes to its function, whichever part of the file says it, defaults too, and a beat's `writes`.
+    /// Asset `i`'s inputs, flat: what it passes to its function, whichever part of the file says it, defaults too, and a beat's `writes`.
     pub fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];
         let passes = |(field, value): &(&String, &Value)| !RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty());
-        let mut flat: Map<String, Value> = asset.body.iter().filter(passes).map(|(field, value)| (said_as(field).to_owned(), value.clone())).collect();
+        let mut flat: Map<String, Value> = asset.body.iter().filter(passes).map(|(field, value)| (field.clone(), value.clone())).collect();
         flat.extend(asset.body.get("options").and_then(Value::as_object).into_iter().flatten().map(|(field, value)| (field.clone(), value.clone())));
         // A pin over an input keeps it, and it is what the box shows.
         flat.extend(PINS.iter().filter_map(|field| Some(((*field).to_owned(), asset.fields.get(*field)?.clone()))));
@@ -726,7 +726,7 @@ impl Doc {
         }
         let mut said = vec![];
         for (field, value) in &asset.fields {
-            said_in(value, said_as(field).to_owned(), &mut said);
+            said_in(value, field.clone(), &mut said);
         }
         let read = |&j: &usize| {
             let key = name_key(&self.assets[j].name);
@@ -1113,13 +1113,6 @@ pub fn plain_with(with: &str) -> String {
 
 /// What passes to the adapter. A beat's `writes` doesn't: a write goes by `Operation.writes`, or is a free frame outside the key.
 /// A field as a person who writes `render: text` knows it.
-fn said_as(field: &str) -> &str {
-    match field {
-        "instructions" => "prompt",
-        field => field,
-    }
-}
-
 /// Each mention under `value`, with where: `summary`, `beats.0.description`, `pieces.1`.
 fn said_in(value: &Value, place: String, found: &mut Vec<(String, String)>) {
     match value {
