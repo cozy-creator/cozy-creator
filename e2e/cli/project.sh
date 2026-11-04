@@ -95,6 +95,7 @@ entities
 orphans
 joining
 walking
+walk_restarted
 queueing
 every_render
 keeps
@@ -1153,6 +1154,38 @@ api -X PUT -d "$(jq -c '{text, at}' <<< "$back")" "http://$ADDR/v1/projects/$id/
 [ ! -e "$W/.runs/walk.json" ] || check "walking: .runs/walk.json outlived the render"
 [ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
 grep -q "\"type\":\"job.updated\".*\"project\":\"$id\"\|\"project\":\"$id\".*\"type\":\"job.updated\"" "$stream" || check "walking: /v1/events told no job.updated: $(head -c 300 "$stream")"
+}
+
+walk_restarted() {
+step "a project: Calcifer killed mid-walk, and the walk goes on with no run sent twice"
+local R=$OUT/walk-restarted lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid run
+mkdir -p "$R"
+cat > "$R/project.yaml" <<YAML
+version: 3
+assets:
+  first:
+    tool: $here/project/shots.py/shoot
+    seconds: 12
+  second:
+    tool: $here/project/shots.py/shoot
+    seconds: 3
+  reader:
+    tool: $here/project/draw.py/draw
+    instructions: From <first> and <second>.
+YAML
+cozy project -p "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
+for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(cozy --json run show "$run" | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
+pid=$(jq -r .pid "$lock")
+kill -9 "$pid"; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+cozy project ls > /dev/null || check "restarted: cozy doesn't answer after Calcifer was killed"
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+[ "$(jq -r .pid "$lock")" != "$pid" ] || check "restarted: Calcifer is still pid $pid"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5; done
+{ [ "$(made "$R" first)" = 1 ] && [ "$(made "$R" second)" = 1 ] && [ "$(made "$R" reader)" = 1 ]; } || check "restarted: made $(jq -c '.assets | map_values(.versions | length)' "$R/project.lock")"
+local sent; sent=$(cozy --json run ls --limit 0 | jq -c '[.runs[] | select(.project == "walk-restarted" and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
+[ ! -e "$R/.runs/walk.json" ] || check "restarted: .runs/walk.json outlived the render"
 }
 
 queueing() {
