@@ -60,6 +60,8 @@ pub struct Api {
     /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
     pub(crate) works: crate::hub::Works,
     pub(crate) sessions: crate::sessions::Sessions,
+    /// The components packages ship, as read for the page.
+    pub(crate) tool_uis: crate::tool_ui::Held,
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
@@ -81,6 +83,7 @@ impl Api {
             releases: Default::default(),
             codes: Default::default(),
             works: Default::default(),
+            tool_uis: Default::default(),
             bearer: Sha256::digest(token).into(),
             stopping: RwLock::new(false),
             stop: watch::channel(false).0,
@@ -160,6 +163,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/run-quotes", post(crate::runs::quote))
         .route("/v1/targets", get(crate::runs::describe))
         .route("/v1/tools", get(crate::toolbox::list))
+        .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route(
             "/v1/files/{name}",
             axum::routing::put(crate::runs::files::put)
@@ -173,6 +177,7 @@ pub fn router(api: Arc<Api>) -> Router {
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .route("/v1/session", post(crate::sessions::start))
+        .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)

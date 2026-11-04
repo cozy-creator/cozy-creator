@@ -52,6 +52,13 @@ pub struct Tool {
     pub ui: Option<String>,
 }
 
+/// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolUi {
+    /// Its entry module on this computer's Calcifer, named by its hash.
+    pub module: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlType {

@@ -95,10 +95,14 @@ async fn held(api: &Arc<Api>, hub: &str, on: &On) -> Vec<Tool> {
     read_all(api, hub, installed_releases(api, hub, on).await).await
 }
 
+/// A Hub's one spelling.
+pub(crate) fn canonical(hub: &str) -> String {
+    Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from)
+}
+
 /// What `on` has installed from `hub`: each package and its newest release there.
 async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
     let Some((_, environments)) = api.machines.holds(on).await else { return vec![] };
-    let canonical = |hub: &str| Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from);
     let here = canonical(hub);
     let mut packages: Vec<&str> = (environments.iter()).filter(|env| !env.release.is_empty() && canonical(&env.hub) == here).map(|env| env.package.as_str()).collect();
     packages.sort_unstable();

@@ -31,6 +31,7 @@ pub mod runs;
 pub mod serve;
 mod sessions;
 pub mod store;
+mod tool_ui;
 mod toolbox;
 mod update;
 

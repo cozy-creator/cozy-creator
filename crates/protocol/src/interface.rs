@@ -281,6 +281,9 @@ pub struct AssetsKind {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Invocable {
+    /// The module that declares it, dotted, from its package's root.
+    #[serde(default, deserialize_with = "or_default")]
+    pub module: String,
     /// `request/<field>` → the author's default, for people.
     #[serde(default, deserialize_with = "or_default")]
     pub defaults: BTreeMap<String, Value>,

@@ -3,7 +3,7 @@
 //! origin, where script is code execution as you, and a pod's provider has root and any package on
 //! it can answer for it. So nothing of this computer's goes out with a request, and only what can't
 //! run or stick comes back with an answer: a named few headers, always sandboxed, and only JSON, an
-//! event stream or media shown in place.
+//! event stream or media shown in place. Anything else comes back as octets, to save.
 use std::{io, sync::Arc};
 
 use axum::{
@@ -102,14 +102,15 @@ fn returned(answer: &HeaderMap) -> HeaderMap {
     for (name, value) in answer.iter().filter(|(name, _)| name.as_str().starts_with("cozy-")) {
         headers.append(name.clone(), value.clone());
     }
-    let kind = media_type(answer);
+    // `script-src 'self'` passes this origin, so a type that can run as a module (a package's component) never comes back from a pod.
+    let kind = media_type(answer).filter(|kind| in_place(kind));
     if answer.contains_key(header::CONTENT_TYPE) {
         let spelled = kind.as_deref().unwrap_or("application/octet-stream");
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(spelled).expect("checked to be tokens"));
     }
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    if !kind.as_deref().is_some_and(in_place) {
+    if kind.is_none() {
         headers.insert(header::CONTENT_DISPOSITION, HeaderValue::from_static("attachment"));
     }
     headers
