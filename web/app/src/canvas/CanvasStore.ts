@@ -91,7 +91,7 @@ export interface Keep {
 export const CARD_WIDTH = 240
 
 type Flow = ReactFlowInstance<ElementNode, Edge>
-const UNDO_MS = 60_000
+const UNDO_MS = 5 * 60_000
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
 
@@ -139,6 +139,8 @@ export class CanvasStore {
   readonly dropTargets = new Map<Element, DropTarget>()
   /** Each open text's way to take a name at its caret, by `<node>:<place>`. */
   private carets = new Map<string, (name: string) => void>()
+  /** The box last typed in stays open until a click elsewhere, so what's dragged next can land where its caret was. */
+  readonly editing = signal<string | null>(null)
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** The name a just-dropped tool will have: its text takes the keys. */

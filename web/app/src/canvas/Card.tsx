@@ -1,6 +1,6 @@
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow, useStore } from "@xyflow/react"
-import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useRef, useState } from "react"
+import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useRef, useState, useSyncExternalStore } from "react"
 import { useSignal } from "../ui/signal"
 import { AssetEdit } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
@@ -371,6 +371,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   const far = useStore((state) => state.transform[2] < 0.2)
   const [hover, setHover] = useState(false)
   const [focused, setFocused] = useState(false)
+  const typedIn = useSyncExternalStore(store.editing.subscribe, () => store.editing.get() === name)
   const open = useCallback(() => store.openName(name), [store, name])
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
@@ -385,7 +386,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   const face = faceOf(view)
   const canFlip = makes(view)
   // At rest a box is its picture or its text and a name. All else comes when it's asked for, and isn't there until then, so 300 boxes cost little.
-  const active = !far && (hover || selected || focused || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name)
+  const active = !far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name)
   const editing = face === "edit" && active
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")

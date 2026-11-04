@@ -54,7 +54,8 @@ function ProjectSync({ id }: { id: string }) {
     if (state) store.applyState(state)
     // A tool an asset names that the list didn't hold, asked for by its name, once.
     for (const tool of new Set(state?.assets.flatMap((asset) => asset.tool ?? []))) {
-      if (tool === "cozy" || asked.current.has(tool) || store.tools.get().has(tool)) continue
+      // Local code, by its path, is no one's to search for.
+      if (tool === "cozy" || /^[./~\\]|^\w:[\\/]/.test(tool) || asked.current.has(tool) || store.tools.get().has(tool)) continue
       asked.current.add(tool)
       client.tools(tool.split("/").slice(0, -1).join(" "), null).then(({ tools }) => store.addTools(tools), () => {})
     }
@@ -270,6 +271,7 @@ function Canvas({
       const command = event.metaKey || event.ctrlKey
       if (event.key === "Escape") {
         store.menu.set(null)
+        store.editing.set(null)
         for (const node of flow.getNodes()) {
           const placing = store.get(node.data.name)?.placing
           if (node.selected && placing && placing.stage !== "adding") store.cancel(store.resolveName(node.data.name))
@@ -361,6 +363,7 @@ function Canvas({
           attributionPosition="bottom-left"
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
+          onPaneClick={() => store.editing.set(null)}
           onNodeContextMenu={(event, node) => {
             if (node.type !== "element") return
             event.preventDefault()
