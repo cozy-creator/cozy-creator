@@ -1002,6 +1002,13 @@ impl Arena {
     /// Start a phase: earlier ready cache becomes standby, still reclaimable under pressure.
     /// This changes metadata only, never physical/VA ownership. A saturated clock falls back
     /// to the global streaming bound because later touches cannot establish a new phase.
+    /// The current phase ends here: what was used before it is no longer in its loop.
+    pub(crate) fn phase_boundary(&self) -> Result<()> {
+        let mut state = self.lock()?;
+        state.phase_boundary = (state.clock != u64::MAX).then_some(state.clock);
+        Ok(())
+    }
+
     pub fn reset_preferences(&self) -> Result<()> {
         let captures = capture_counts()?;
         ensure_recovery_allowed(&captures, self.device)?;
@@ -1924,6 +1931,11 @@ impl Region {
     fn pin_locked(self: &Arc<Self>, state: &mut State) -> Result<Pin> {
         state.clock = state.clock.saturating_add(1);
         let entry = state.entries.get_mut(&self.id).expect("live region");
+        // A region back again with no phase declared is a loop, begun at its last use: from
+        // there on eviction goes most recent first, keeping what the loop reaches next.
+        if state.phase_boundary.is_none() && entry.last_use != 0 {
+            state.phase_boundary = Some(entry.last_use - 1);
+        }
         entry
             .uses
             .pins

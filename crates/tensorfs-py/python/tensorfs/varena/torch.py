@@ -202,15 +202,15 @@ def split_context(device: int) -> dict[str, Any]:
     return _ext._varena_split_context(device)
 
 
-def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, preferred: str, stream: int) -> dict[str, Any]:
+def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequence[int]]], *, stream: int) -> dict[str, Any]:
     """Choose an opaque legal variant from a complete copied allocation menu before execution."""
     _installed()
-    return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], preferred=preferred, stream=stream)
+    return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], stream=stream)
 
 
 def commit_execution(
     device: DeviceLike, configuration: str, site: str,
-    choices: Sequence[tuple[str, Sequence[int]]], *, preferred: str, stream: int,
+    choices: Sequence[tuple[str, Sequence[int]]], *, stream: int,
 ) -> Any:
     """Copy one current closed producer declaration and fix its native choice before entry.
 
@@ -222,7 +222,7 @@ def commit_execution(
     _installed()
     return _ext._VarenaExecution(
         _device(device), configuration, site, [(name, list(sizes)) for name, sizes in choices],
-        preferred=preferred, stream=stream,
+        stream=stream,
     )
 
 

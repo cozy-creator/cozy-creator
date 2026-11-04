@@ -18,7 +18,6 @@ fn selected(device: i32, page: usize, key: &str, stream: u64) -> Result<working:
         device,
         key,
         vec![("one".into(), vec![page])],
-        "one",
         stream,
     )?)
 }

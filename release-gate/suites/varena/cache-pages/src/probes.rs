@@ -499,9 +499,8 @@ fn choice_with_plan(
                 ("whole".into(), vec![4 * page]),
                 ("half".into(), vec![2 * page]),
             ],
-            "whole",
             cuda.stream(),
-        )
+    )
     };
     let live = select()?;
     require(

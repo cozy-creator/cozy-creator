@@ -212,7 +212,6 @@ fn observers_inner(
         device,
         "retiring-b-live-a",
         vec![("one".into(), vec![page])],
-        "one",
         active.ptr as u64,
     )?;
     require(

@@ -501,19 +501,18 @@ fn _varena_split_context<'py>(py: Python<'py>, device: i32) -> PyResult<Bound<'p
 }
 
 #[pyfunction]
-#[pyo3(signature = (device, key, choices, *, preferred, stream))]
+#[pyo3(signature = (device, key, choices, *, stream))]
 fn _varena_split_select<'py>(
     py: Python<'py>,
     device: i32,
     key: &str,
     choices: Vec<(String, Vec<usize>)>,
-    preferred: &str,
     stream: u64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let selected = py
         .detach(|| {
             check()?;
-            varena::working::split_select(device, key, choices, preferred, stream)
+            varena::working::split_select(device, key, choices, stream)
         })
         .map_err(|error| split_error(py, error))?;
     selection(py, &selected)
@@ -621,15 +620,15 @@ struct PyExecution {
 #[pymethods]
 impl PyExecution {
     #[new]
-    #[pyo3(signature = (device, configuration, site, choices, *, preferred, stream))]
+    #[pyo3(signature = (device, configuration, site, choices, *, stream))]
     fn new(
         py: Python<'_>, device: i32, configuration: &str, site: &str,
-        choices: Vec<(String, Vec<usize>)>, preferred: &str, stream: u64,
+        choices: Vec<(String, Vec<usize>)>, stream: u64,
     ) -> PyResult<Self> {
         let execution = py.detach(|| {
             check()?;
             varena::working::Execution::commit(
-                device, configuration, site, choices, preferred, stream,
+                device, configuration, site, choices, stream,
             )
         }).map_err(|error| split_error(py, error))?;
         Ok(Self { execution: super::Deferred::new(execution) })

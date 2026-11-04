@@ -19,7 +19,6 @@ struct Sample {
 }
 struct Site {
     choices: Vec<Choice>,
-    preferred: String,
     samples: BTreeMap<String, Sample>,
 }
 struct Active {
@@ -56,9 +55,9 @@ pub(super) fn matches_active(state: &State, key: &str, choice: &str, phase: u64)
 }
 
 pub(super) fn validate_committed(
-    owner: &Working, key: &str, choices: Vec<(String, Vec<usize>)>, preferred: &str,
+    owner: &Working, key: &str, choices: Vec<(String, Vec<usize>)>,
 ) -> Result<()> {
-    register(owner, key, choices, preferred)
+    register(owner, key, choices)
 }
 
 fn committed_operation(
@@ -195,9 +194,8 @@ fn register(
     owner: &Working,
     key: &str,
     declarations: Vec<(String, Vec<usize>)>,
-    preferred: &str,
 ) -> Result<()> {
-    if key.is_empty() || declarations.is_empty() || preferred.is_empty() {
+    if key.is_empty() || declarations.is_empty() {
         return Err(Error::Invalid(
             "split needs a nonempty configuration and legal menu",
         ));
@@ -220,15 +218,12 @@ fn register(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    if !ids.contains(preferred) {
-        return Err(Error::Invalid("preferred split is not declared"));
-    }
     let mut state = owner.lock()?;
     if state.splits.active.is_some() {
         return Err(Error::Invalid("native split sites cannot nest"));
     }
     if let Some(site) = state.splits.sites.get(key) {
-        if site.choices != choices || site.preferred != preferred {
+        if site.choices != choices {
             return Err(Error::Invalid(
                 "split configuration changed its copied legal menu",
             ));
@@ -238,7 +233,6 @@ fn register(
             key.to_owned(),
             Site {
                 choices,
-                preferred: preferred.to_owned(),
                 samples: BTreeMap::new(),
             },
         );
@@ -259,6 +253,7 @@ struct Fit {
     reclaimable_cache: usize,
     now: usize,
     after_idle: usize,
+    capacity: usize,
     generation: u64,
     phase: Option<crate::plan::Snapshot>,
     after_outside: usize,
@@ -271,6 +266,9 @@ impl Fit {
     fn preserves_phase(&self) -> bool {
         self.phase_available
             .is_some_and(|available| self.missing <= available)
+    }
+    fn usable(&self) -> bool {
+        self.fits() || self.preserves_phase()
     }
 }
 
@@ -295,6 +293,7 @@ fn fits(
     key: &str,
     stream: u64,
     free: usize,
+    total: usize,
     generation: u64,
     phase: Option<&crate::plan::Snapshot>,
 ) -> Result<Vec<Fit>> {
@@ -306,13 +305,28 @@ fn fits(
         .sites
         .get(key)
         .ok_or(Error::Invalid("unknown split configuration"))?;
+    let capacity = total
+        .min(owner.room.limit.load(Ordering::Acquire))
+        .min(owner.room.ceiling.load(Ordering::Acquire));
+    // A level not yet run is scaled as its measured siblings came out. Otherwise a declaration's
+    // excess keeps a coarser level from ever being tried, and a finer measured one sticks.
+    let mut scale: Option<(usize, usize)> = None;
+    for choice in &site.choices {
+        if let Some(sample) = site.samples.get(&choice.id).filter(|sample| sample.known) {
+            let measured = backing(owner, &sample.classes)?;
+            if scale.is_none_or(|(m, d)| measured as u128 * d as u128 > m as u128 * choice.backing as u128) {
+                scale = Some((measured, choice.backing.max(1)));
+            }
+        }
+    }
+    let scaled = |bytes: usize| scale.map_or(bytes, |(m, d)| (bytes as u128 * m as u128 / d as u128) as usize);
     site.choices
         .iter()
         .map(|choice| {
             let sample = site.samples.get(&choice.id).filter(|sample| sample.known);
             let classes = sample.map_or(&choice.classes, |sample| &sample.classes);
             let full = if sample.is_none() {
-                choice.backing
+                scaled(choice.backing)
             } else {
                 backing(owner, classes)?
             };
@@ -349,6 +363,7 @@ fn fits(
                 }
             }
             let missing = backing(owner, &missing)?;
+            let missing = if sample.is_none() { scaled(missing) } else { missing };
             let preserved_bytes = preserve.iter().map(|base| state.segments[base].bytes).sum();
             let reclaimable: usize = state
                 .segments
@@ -389,6 +404,7 @@ fn fits(
                 reclaimable_cache,
                 now: headroom(owner, free, 0),
                 after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
+                capacity,
                 generation,
                 phase: phase.cloned(),
                 after_outside,
@@ -407,30 +423,25 @@ fn snapshot(device: i32, owner: &Working, key: &str, stream: u64) -> Result<Vec<
     let phase = crate::plan::snapshot(&lease)?;
     let state = owner.lock()?;
     let _context = owner.driver.enter()?;
-    let (free, _) = owner.driver.memory_info()?;
-    fits(owner, &state, key, stream, free, generation, phase.as_ref())
+    let (free, total) = owner.driver.memory_info()?;
+    fits(owner, &state, key, stream, free, total, generation, phase.as_ref())
 }
 
-fn decision(
-    plans: &[Fit],
-    stream: u64,
-    preferred: Option<&str>,
-    working: usize,
-    weights: usize,
-) -> Option<SplitSelection> {
-    let eligible: Vec<_> = plans
-        .iter()
-        .filter(|plan| plan.fits() || plan.preserves_phase())
-        .collect();
-    // Menu order is largest to smallest. Phase residency wins before a streaming
-    // preference; when no choice can preserve it, the existing actual-capacity
-    // selection remains. No efficient chunk is invented by this memory layer.
-    let selected = eligible
-        .iter()
-        .find(|plan| plan.preserves_phase())
-        .copied()
-        .or_else(|| preferred.and_then(|id| eligible.iter().find(|plan| plan.id == id).copied()))
-        .or_else(|| eligible.first().copied())?;
+/// The level this operation should run at, whatever is free right now: the largest under what
+/// the card leaves beside the phase's weights, or a fifth of it on a card that streams them
+/// anyway. Weights make room for it. Following free memory instead runs at the finest level
+/// whenever weights fill the card, and makes millions of allocations.
+fn target(plans: &[Fit]) -> usize {
+    let first = plans.first().expect("copied menu");
+    let weights = first.phase.as_ref().map_or(0, |phase| phase.bytes);
+    let cap = first.capacity.saturating_sub(weights).max(first.capacity / 5);
+    plans.iter().position(|plan| plan.full <= cap).unwrap_or(plans.len() - 1)
+}
+
+/// The target or, only if it cannot be had, the largest usable level finer than it.
+fn decision(plans: &[Fit], stream: u64, working: usize, weights: usize) -> Option<SplitSelection> {
+    let eligible: Vec<_> = plans[target(plans)..].iter().filter(|plan| plan.usable()).collect();
+    let selected = eligible.first().copied()?;
     Some(SplitSelection {
         stream,
         choice_id: selected.id.clone(),
@@ -472,8 +483,8 @@ fn trim_for(device: i32, owner: &Working, key: &str, choice: &str, stream: u64) 
     let _context = owner.driver.enter()?;
     let result = (|| {
         owner.poll(&mut state)?;
-        let (free, _) = owner.driver.memory_info()?;
-        let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
+        let (free, total) = owner.driver.memory_info()?;
+        let plans = fits(owner, &state, key, stream, free, total, generation, phase.as_ref())?;
         let plan = plans
             .iter()
             .find(|plan| plan.id == choice)
@@ -501,10 +512,9 @@ pub fn split_select(
     device: i32,
     key: &str,
     choices: Vec<(String, Vec<usize>)>,
-    preferred: &str,
     stream: u64,
 ) -> Result<SplitSelection> {
-    let result = split_select_inner(device, key, choices, preferred, stream);
+    let result = split_select_inner(device, key, choices, stream);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "split_select_error");
     }
@@ -515,7 +525,6 @@ fn split_select_inner(
     device: i32,
     key: &str,
     choices: Vec<(String, Vec<usize>)>,
-    preferred: &str,
     stream: u64,
 ) -> Result<SplitSelection> {
     valid_stream(stream)?;
@@ -524,26 +533,22 @@ fn split_select_inner(
     if owner.lock()?.phases.active.as_ref().is_some_and(|phase| phase.committed_site.is_some()) {
         return Err(Error::Invalid("a committed execution cannot select another choice"));
     }
-    register(&owner, key, choices, preferred)?;
+    register(&owner, key, choices)?;
+    // Make room for the target first: working pages, then weights.
     let plans = snapshot(device, &owner, key, stream)?;
-    if let Some(choice) = decision(&plans, stream, None, 0, 0) {
-        return Ok(choice);
+    let at = target(&plans);
+    if plans[at].usable() {
+        return decision(&plans, stream, 0, 0).ok_or_else(|| exhausted(&plans));
     }
-    let working = trim_for(device, &owner, key, preferred, stream)?;
+    let working = trim_for(device, &owner, key, &plans[at].id, stream)?;
     let plans = snapshot(device, &owner, key, stream)?;
-    if let Some(choice) = decision(&plans, stream, None, working, 0) {
-        return Ok(choice);
+    let at = target(&plans);
+    if plans[at].usable() {
+        return decision(&plans, stream, working, 0).ok_or_else(|| exhausted(&plans));
     }
-    let preferred_plan = plans
-        .iter()
-        .find(|plan| plan.id == preferred)
-        .expect("copied preferred");
-    let needed = preferred_plan
-        .missing
-        .saturating_sub(preferred_plan.after_idle);
-    let weights = crate::reclaim(device, needed)?.reclaimed_bytes;
+    let weights = crate::reclaim(device, plans[at].missing.saturating_sub(plans[at].after_idle))?.reclaimed_bytes;
     let plans = snapshot(device, &owner, key, stream)?;
-    decision(&plans, stream, Some(preferred), working, weights).ok_or_else(|| exhausted(&plans))
+    decision(&plans, stream, working, weights).ok_or_else(|| exhausted(&plans))
 }
 
 /// Re-evaluate the exact agreed geometry and stream immediately before opening the leaf.
@@ -641,13 +646,14 @@ fn split_begin_inner(
     committed_operation(&state, key, choice_id, completion_owner)?;
     selected_generation(plan_generation, generation)?;
     let _context = owner.driver.enter()?;
-    let (free, _) = owner.driver.memory_info()?;
+    let (free, total) = owner.driver.memory_info()?;
     let plans = fits(
         &owner,
         &state,
         key,
         stream,
         free,
+        total,
         generation,
         phase.as_ref(),
     )?;
