@@ -23,8 +23,6 @@ def main() -> None:
            "make_room", "capture", "replay")
     assert not any(hasattr(varena, name) for name in old)
     assert not hasattr(_runtime, "Cache"), "a second Python Cache API survived"
-    assert hasattr(_ext, "_VarenaArenaRetirement")
-    assert hasattr(_ext._VarenaArena, "close")
     for method, arguments in (
         (varena.Gpu.use, (None, [])),
         (varena.Gpu.alloc, (None, 1)),

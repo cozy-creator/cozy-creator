@@ -82,7 +82,7 @@ fn native_error(failure: Failure) -> Error {
 
 /// Same-cohort read-only event observations, including during a blocked reclaim.
 /// These are the existing Driver atomics, not completion or released-byte proof.
-/// Do not acquire capture exclusion or Arena state: a waiter can hold both.
+/// Do not acquire capture exclusion or the device table: a waiter can hold both.
 #[doc(hidden)]
 pub fn gpu_event_counts(id: u64) -> crate::Result<(u64, u64, u64)> {
     process().map_err(native_error)?;

@@ -107,7 +107,7 @@ impl CallbackScope {
     }
 
     /// Logical owner retirement with actual per-owner locks/pins, allowing other graph
-    /// sequences to replay. The worker retains observed Arena leases separately; physical
+    /// sequences to replay. The worker retains its observed leases separately; physical
     /// unmapping remains in the ready-only pass after this scope and defers during replay.
     pub fn producing(&self) -> Result<CallbackGuard> {
         if !self.current()? {

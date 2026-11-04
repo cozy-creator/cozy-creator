@@ -689,7 +689,7 @@ impl Payload {
         drop(self.guard.take());
         drop(_context);
         drop(self.region.take());
-        drop(region); // must precede retirement exclusion's release, even for the last Arena
+        drop(region); // must precede retirement exclusion's release, even for the last Region
         drop(_retirement);
         // There are no GPU owners left to quarantine if metadata was poisoned. Preserve
         // that poison for observers, but never send this empty payload through failure cleanup.
