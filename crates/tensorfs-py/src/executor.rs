@@ -5,7 +5,7 @@
 use executor_protocol::{
     TensorFSOptions,
     Activate, Adapter, Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, Capability, CheckpointItem,
-    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Cooperation, Fork,
+    ChildCall, ChildCancel, ChildEvents, ChildForget, ChildPoll, Command, Construction, Fork,
     GpuRelease, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelLoad, ModelPrefetch,
     PreparedUse, PrepareRequest, Probe, Publish, PublishPart, SavedFile, Start, StageMemoLookup, StageMemoStore, Unload, View,
 };
@@ -63,7 +63,6 @@ pub fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<HelloCommand>()?;
     m.add_class::<ShutdownCommand>()?;
     m.add_class::<Start>()?;
-    m.add_class::<Cooperation>()?;
     m.add_class::<Load>()?;
     m.add_class::<Activate>()?;
     m.add_class::<PrepareRequest>()?;

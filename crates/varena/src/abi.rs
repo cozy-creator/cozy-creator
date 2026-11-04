@@ -108,40 +108,14 @@ pub extern "C" fn vr_v1_error_requested_bytes() -> u64 {
     LAST.with(|v| v.borrow().1)
 }
 
-struct ServiceLease {
-    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    owner: crate::cooperative::Owner,
-}
+struct ServiceLease;
 impl ServiceLease {
     fn open(device: i32) -> Result<Self> {
-        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        {
-            let owner = crate::cooperative::Owner::get_or_open_default(device)
-                .map_err(Self::error)?;
-            owner.retain_working_lifetime().map_err(Self::error)?;
-            Ok(Self { owner })
-        }
-        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
-        {
-            let _ = device;
-            Err(Failure(UNSUPPORTED, "public GPU cooperation requires Linux with 64-bit atomics".into(), 0))
-        }
-    }
-    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    fn error(error: crate::cooperative::Error) -> Failure {
-        match error {
-            crate::cooperative::Error::Native(error) => error.into(),
-            crate::cooperative::Error::Ledger(error @ (crate::ledger::Error::Busy
-                | crate::ledger::Error::Stale | crate::ledger::Error::StaleSample)) =>
-                Failure(BUSY, error.to_string(), 0),
-            crate::cooperative::Error::Ledger(error) => Failure(UNSUPPORTED, error.to_string(), 0),
-        }
+        crate::activate(device, true)?;
+        Ok(Self)
     }
     fn try_close(&self) -> Result<bool> {
-        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        { self.owner.try_close().map_err(Self::error) }
-        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
-        { Ok(true) }
+        Ok(true)
     }
 }
 

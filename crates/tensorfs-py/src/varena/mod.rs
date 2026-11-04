@@ -4,8 +4,6 @@ mod tensor_export;
 mod census;
 mod cache;
 mod cache_owner;
-#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-mod cooperative;
 mod plan;
 #[cfg(feature = "store")]
 mod continuation;
@@ -907,8 +905,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     working::install(module)?;
     tensor_export::install(module)?;
     census::install(module)?;
-    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    cooperative::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;

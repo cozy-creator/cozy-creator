@@ -1,5 +1,5 @@
 //! Nonwaiting requests to explicit cache owners. Allocators see host control only;
-//! callback/data ownership stays on a separate worker, never the cooperation thread.
+//! callback/data ownership stays on a separate worker, never the donor thread.
 use crate::{Error, GlobalCaptureGuard, Result};
 use platform_signal::{Signal, wait_any};
 use std::cell::Cell;
@@ -31,8 +31,6 @@ pub(crate) fn in_callback(owner: &CacheOwner) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Cause {
     Allocation,
-    Cooperative,
-    Foreign,
     /// Explicit pre-body Use preparation only; allocator callers never wait on this pass.
     Admission,
 }
@@ -40,8 +38,7 @@ pub enum Cause {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestKey {
     pub cause: Cause,
-    /// Process-unique intent identity from next_generation(), not a reusable ledger round.
-    /// The cooperation adapter retains the association with its exact ledger round itself.
+    /// Process-unique intent identity from next_generation().
     pub generation: u64,
 }
 
@@ -237,7 +234,6 @@ struct State {
     next_owner: u64,
     owners: BTreeMap<u64, Arc<OwnerMeta>>,
     jobs: BTreeMap<RequestKey, Arc<Job>>,
-    last: BTreeMap<Cause, Arc<Job>>,
     worker: Option<ThreadId>,
 }
 struct Control {
@@ -318,7 +314,6 @@ impl CacheOwner {
                         next_owner: 0,
                         owners: BTreeMap::new(),
                         jobs: BTreeMap::new(),
-                        last: BTreeMap::new(),
                         worker: None,
                     }),
                     changed: Condvar::new(),
@@ -677,29 +672,11 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
     if control.requestable.load(Ordering::Acquire) == 0 {
         return Ok(None);
     }
-    if !state.jobs.contains_key(&key)
-        && state
-            .last
-            .get(&key.cause)
-            .is_some_and(|job| job.key.generation > key.generation)
-    {
-        return Err(Error::Invalid("cache request identity is obsolete"));
-    }
-    let job = if let Some(job) = state
-        .jobs
-        .get(&key)
-        .or_else(|| state.last.get(&key.cause).filter(|job| job.key == key))
-    {
+    let job = if let Some(job) = state.jobs.get(&key) {
         let job = Arc::clone(job);
         let mut held = job.lock()?;
-        if held.facts.finished || held.cancelled {
-            if bytes > held.wanted {
-                return Err(Error::Invalid("ended cache request cannot grow"));
-            }
-        } else {
-            held.wanted = held.wanted.max(bytes);
-            if key.cause == Cause::Allocation { held.waiting_service = false; }
-        }
+        held.wanted = held.wanted.max(bytes);
+        if key.cause == Cause::Allocation { held.waiting_service = false; }
         drop(held);
         job
     } else {
@@ -853,17 +830,11 @@ fn worker_tick(
         };
         if let Some(wanted) = collect {
             match crate::reclaim_completed(control.device, wanted, arenas) {
-                Ok(released) => {
+                Ok(_) => {
                     let mut held = job.lock()?;
                     held.collect_pending = false;
                     job.wake();
                     drop(held);
-                    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-                    if released != 0 {
-                        crate::cooperative::wake_cache_actions(control.device)?;
-                    }
-                    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
-                    let _ = released;
                 }
                 // Physical collection can be blocked by an unrelated graph replay.
                 // The owner still has its own exclusion/claims: a Python logical
@@ -892,15 +863,7 @@ fn worker_tick(
             if held.facts.finished {
                 job.wake();
                 drop(held);
-                let mut state = control.lock()?;
-                state.jobs.remove(&job.key);
-                if state
-                    .last
-                    .get(&job.key.cause)
-                    .is_none_or(|previous| previous.key.generation < job.key.generation)
-                {
-                    state.last.insert(job.key.cause, Arc::clone(&job));
-                }
+                control.lock()?.jobs.remove(&job.key);
                 continue;
             }
             if held.waiting_service {
@@ -1003,8 +966,6 @@ fn worker_tick(
         drop(owner);
         job.wake();
         control.changed.notify_all();
-        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        crate::cooperative::wake_cache_actions(control.device)?;
     }
     // Explicit last-owner retirement is separate from no-wait collection. There are no
     // callbacks left to serve. Preserve leases on capture/replay refusal; release them

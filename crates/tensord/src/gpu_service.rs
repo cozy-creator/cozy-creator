@@ -8,7 +8,7 @@ use platform::process::{Birth, Exact};
 use crate::{
     catalog::HeldGeneration,
     device_executor::{
-        self, channel_lost, Activate, Answer, Binding, Cancellation, Command, Construction, Cooperation,
+        self, channel_lost, Activate, Answer, Binding, Cancellation, Command, Construction,
         DeviceExecutor, ExecutorConfig, Forked, Frame, Invoke, Load, Map, ModelLoad,
         InputFile, InputMetadata, PrepareRequest, Request, Services, Start,
     },
@@ -506,7 +506,6 @@ struct Session {
     /// Its Start ran: its devices, group and package are up.
     started: bool,
     /// Immutable categorical device mode, negotiated before this executor opens CUDA.
-    cooperation: Vec<Cooperation>,
     /// Each construction it loaded, and where TensorD last had its models brought (Runtime places
     /// them): `host` once loaded, `gpu` after a call or a `gpu` warming.
     loaded: BTreeMap<String, Level>,
@@ -894,6 +893,21 @@ struct Device {
     entry: String,
     /// Its observed figures; None where the inventory does not name this GPU.
     memory: Option<Arc<memory::Gpu>>,
+    /// What its executors hold and ask for. They and it meet here without any wire.
+    #[cfg(target_os = "linux")]
+    ledger: Option<Arc<varena_ledger::Table>>,
+}
+
+impl Device {
+    /// What its executors hold and could give back.
+    #[cfg(target_os = "linux")]
+    fn idle_bytes(&self) -> u64 {
+        self.ledger.as_ref().map_or(0, |table| table.idle())
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn idle_bytes(&self) -> u64 {
+        0
+    }
 }
 
 pub(crate) struct Permit {
@@ -953,6 +967,12 @@ impl Pool {
         let devices: Vec<Device> = envelope.iter().map(|entry| Device {
             entry: entry.clone(),
             memory: memory::Gpu::create(entry, &config.inventory, config.gpu_memory_limit, &peaks, &notes).map(Arc::new),
+            #[cfg(target_os = "linux")]
+            ledger: memory::row(entry, &config.inventory)
+                .and_then(|row| varena_ledger::parse_uuid(&row.device_uuid))
+                .and_then(|uuid| varena_ledger::Table::open(&uuid)
+                    .map_err(|error| tracing::warn!("GPU {entry} has no ledger: {error}")).ok())
+                .map(Arc::new),
         }).collect();
         let gpus = devices.iter().filter_map(|d| d.memory.clone()).collect();
         let running = memory::Running::default();
@@ -975,6 +995,15 @@ impl Pool {
                     .map_err(|error| tracing::warn!("memory: no memory observation events: {error}"))
                     .ok(),
             };
+            #[cfg(target_os = "linux")]
+            for (index, table) in devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
+                let pool = pool.clone();
+                let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
+                    .spawn(move || table.supervise(|| pool.upgrade().map(|pool| pool.end_idle_on(index))));
+                if let Err(error) = watching {
+                    tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
+                }
+            }
             let exits = Exits::watch(pool.clone())
                 .map_err(|error| tracing::warn!("executor exits are not watched: {error}"))
                 .ok();
@@ -1075,45 +1104,17 @@ impl Pool {
         })
     }
 
-    /// A cold Cooperative executor is about to Start on a lane the caller already holds.
-    /// Retire idle non-warm GPU processes there: native page donation cannot release their
-    /// CUDA contexts. This is a lifecycle choice, independent of byte samples or fit estimates.
-    /// Running sessions are outside `sessions`; import-only parents are in `zygotes`.
-    fn retire_idle_for_start(&self, lane: &std::ops::Range<usize>, construction: &str, starting: &Birth) -> io::Result<()> {
-        loop {
-            let victim = {
-                // Membership and idle custody are checked atomically at removal. A warm-set
-                // update after this point sees an already retiring executor, not a warm owner
-                // that was selected from a stale membership snapshot.
-                let members = self.members.lock().unwrap();
-                let warm: std::collections::BTreeSet<&str> = members.values().flatten()
-                    .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.as_str())).collect();
-                let mut sessions = self.sessions.lock().unwrap();
-                let key = sessions.iter()
-                    .filter(|(_, session)| session.degree != 0
-                        && session.start >= lane.start && session.lane().end <= lane.end
-                        && !session.loaded.keys().any(|key| warm.contains(key.as_str())))
-                    .min_by_key(|(_, session)| session.used)
-                    .map(|(key, _)| key.clone());
-                key.and_then(|key| sessions.remove(&key))
-            };
-            let Some(session) = victim else { return Ok(()); };
-            let births = executor_births(&session.executor.birth, &session.followers);
-            let (plan, start) = (session.env.clone(), session.start);
-            let ended = session.executor.terminate();
-            self.retire_returned(&plan, start, &births);
-            let exited = births.iter().try_fold(true, |all, birth| birth.ended().map(|gone| all && gone));
-            let proven = exited.as_ref().is_ok_and(|all| *all);
-            self.notes.note(serde_json::json!({"event":"cooperative_idle_exit", "plan":plan,
-                "for":construction, "starting":starting, "gpus":lane.clone().collect::<Vec<_>>(),
-                "retired":births, "exited":proven,
-                "terminate_error":ended.as_ref().err().map(ToString::to_string),
-                "observation_error":exited.as_ref().err().map(ToString::to_string)}));
-            ended?;
-            if !exited? {
-                return Err(io::Error::other("cold GPU Start refused: an idle executor's exact exit is unproven"));
-            }
-        }
+    /// An asker on GPU `index` stays short after every peer trimmed. Only an exit returns a CUDA
+    /// context: end the least recently used idle executor there, warm sets last. Whether one ended.
+    #[cfg(target_os = "linux")]
+    fn end_idle_on(&self, index: usize) -> bool {
+        let warm: std::collections::BTreeSet<String> = self.members.lock().unwrap().values().flatten()
+            .filter_map(|member| member.plan.as_ref().map(|plan| plan.construction.clone())).collect();
+        let key = self.sessions.lock().unwrap().iter()
+            .filter(|(_, session)| session.degree != 0 && session.lane().contains(&index))
+            .min_by_key(|(_, session)| (session.loaded.keys().any(|key| warm.contains(key)), session.used))
+            .map(|(key, _)| key.clone());
+        key.is_some_and(|key| self.end_session(&key))
     }
     /// Current minimum driver free bytes, used only for exit diagnostics.
     fn free(&self, lane: &std::ops::Range<usize>) -> Option<u64> {
@@ -1187,12 +1188,12 @@ impl Pool {
     pub fn problems(&self) -> Vec<String> {
         self.config.problems.clone()
     }
-    /// The first `degree` GPUs' current capability and observed free bytes. Native
-    /// Varena owns allocation/reclaim decisions; no inferred idle-weight credit is added.
+    /// The first `degree` GPUs' current capability and free bytes, counting what idle peers hold:
+    /// they give it back when asked, so it is room a new model can plan on.
     pub fn hardware(&self, degree: u32) -> tensorfs::fetch::Hardware {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
-        let free_vram = devices.iter().filter_map(|d| d.memory.as_ref()?.free()).min();
+        let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
         tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
@@ -1370,8 +1371,7 @@ impl Pool {
         while self.end_idle_deviceless(&which) {}
     }
     /// One pass over `actor`'s warm set: each member is brought as far toward its level as
-    /// free room and the room of idle tenants outside every warm set allow. It never takes
-    /// from another member or a running call, and keeps the reason when it stops short.
+    /// it can. It keeps the reason when it stops short.
     pub fn keep(self: &Arc<Self>, engine: &Arc<Engine>, actor: &str) {
         self.keep_with(engine, actor, None);
     }
@@ -2848,7 +2848,7 @@ impl Pool {
                     import_only: true,
                     memo: executor.memo_settings(),
                     gpu_memory_limit: None,
-                    cooperation: vec![],
+                    shared: false,
                 }),
                 &mut device_executor::Baseline,
             )?;
@@ -3143,22 +3143,6 @@ impl Pool {
                 "spawn",
             ),
         };
-        // Hello is CPU-only. Require the current native owner before CUDA Start;
-        // allocation and reclaim decisions belong to Varena on every GPU rank.
-        let cooperation = if plan.degree == 0 { vec![] } else {
-            if !cfg!(all(target_os = "linux", target_has_atomic = "64"))
-                || !executor.hello.cooperative_owner
-            {
-                return Err(io::Error::new(io::ErrorKind::Unsupported,
-                    "CUDA executors require Linux with 64-bit atomics and native per-rank cooperation"));
-            }
-            let lane = start..start + plan.degree as usize;
-            let settings = self.cooperation_settings(lane.clone())?;
-            self.notes.note(serde_json::json!({"event":"gpu_memory_policy", "pid":executor.birth.pid,
-                "gpus":lane.clone().collect::<Vec<_>>(), "mode":"Cooperative"}));
-            self.retire_idle_for_start(&lane, &plan.construction, &executor.birth)?;
-            settings
-        };
         let launch = Launch {
             mode,
             ms: launched.elapsed().as_secs_f64() * 1e3,
@@ -3170,8 +3154,7 @@ impl Pool {
         executor.keep_memo(self.memo.clone());
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
-            let gpus = self.lane(start, plan.degree)?.iter().filter_map(|device| Some(device.memory.as_ref()?.uuid.clone())).collect();
-            let tenant = Tenant { plan: plan.executor.clone(), start, exact, gpus };
+            let tenant = Tenant { plan: plan.executor.clone(), start, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 birth: executor.birth.clone(), env: plan.executor.clone(), constructions: Default::default(), start,
@@ -3198,7 +3181,6 @@ impl Pool {
             degree: plan.degree,
             followers: vec![],
             started: false,
-            cooperation,
             loaded: BTreeMap::new(),
             active: String::new(),
             executor,
@@ -3207,33 +3189,6 @@ impl Pool {
             invoked: Default::default(),
             serving: id,
         })
-    }
-
-    fn cooperation_settings(&self, lane: std::ops::Range<usize>) -> io::Result<Vec<Cooperation>> {
-        #[cfg(unix)]
-        let directory = {
-            let directory = PathBuf::from(format!("/dev/shm/cozy-varena-{}", rustix::process::geteuid().as_raw()));
-            std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&directory)
-                .or_else(|error| if error.kind() == io::ErrorKind::AlreadyExists { Ok(()) } else { Err(error) })?;
-            directory
-        };
-        #[cfg(not(unix))]
-        let directory: PathBuf = return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "native cooperation requires Linux with 64-bit atomics"));
-        let mut settings = Vec::with_capacity(lane.len());
-        for index in lane {
-            let gpu = self.devices.get(index).and_then(|d| self.inventory(&d.entry))
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "cooperative GPU identity is unavailable"))?;
-            if !gpu.device_uuid.starts_with("GPU-") && !gpu.device_uuid.starts_with("MIG-") {
-                return Err(io::Error::new(io::ErrorKind::Unsupported, "cooperation requires the actual GPU/MIG UUID"));
-            }
-            if settings.iter().any(|setting: &Cooperation| setting.uuid.eq_ignore_ascii_case(&gpu.device_uuid)) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "cooperation requires distinct GPU/MIG identities"));
-            }
-            settings.push(Cooperation { uuid: gpu.device_uuid.clone(), directory: directory.clone(),
-                shared: self.config.host.mode == HostMode::Shared, priority: 0 });
-        }
-        Ok(settings)
     }
 
     /// Start the process once, load the plan's construction into it once and invoke it, active
@@ -3284,9 +3239,6 @@ impl Pool {
                 leader: session.executor.birth.clone(),
                 plan: session.env.clone(),
                 start,
-                gpus: gpus.iter().filter_map(|device| device.memory.clone()).collect(),
-                opening: None,
-                notes: self.notes.clone(),
             }),
             host: self.host.as_deref(),
         };
@@ -3309,14 +3261,10 @@ impl Pool {
                     constructions: constructions(&plan),
                     memo: session.executor.memo_settings(),
                     gpu_memory_limit: self.config.gpu_memory_limit,
-                    cooperation: session.cooperation.clone(),
+                    shared: self.config.host.mode == HostMode::Shared,
                 }),
                 &mut callbacks,
             )?)?;
-            if started.cooperation_active == session.cooperation.is_empty() {
-                return Err(io::Error::new(io::ErrorKind::Unsupported,
-                    "executor Start did not acknowledge its negotiated GPU memory policy"));
-            }
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
@@ -4262,10 +4210,6 @@ struct Formation {
     leader: Birth,
     plan: String,
     start: usize,
-    /// Its lane's GPUs, and the leader's CUDA context opening on the first (`Frame.cuda`).
-    gpus: Vec<Arc<memory::Gpu>>,
-    opening: Option<memory::Opening>,
-    notes: MemoryLog,
 }
 
 impl Formation {
@@ -4278,32 +4222,11 @@ impl Formation {
             .filter_map(|birth| Exact::open(birth).ok().flatten())
             .collect();
         let tenant = |follower: &Exact| -> io::Result<(u32, Tenant)> {
-            let tenant = Tenant { plan: self.plan.clone(), start: self.start, exact: follower.try_clone()?,
-                gpus: self.gpus.iter().map(|gpu| gpu.uuid.clone()).collect() };
+            let tenant = Tenant { plan: self.plan.clone(), start: self.start, exact: follower.try_clone()? };
             Ok((follower.birth().pid, tenant))
         };
         self.tenants.register(followers.iter().map(tenant).collect::<io::Result<Vec<_>>>()?);
         Ok(followers)
-    }
-
-    /// A single-GPU leader's CUDA context `opening`, then `open`: the window its driver pid is
-    /// learned in (`memory::Registry::opened`).
-    fn cuda(&mut self, phase: &str) {
-        let [gpu] = self.gpus.as_slice() else { return };
-        match phase {
-            "opening" => {
-                let pids = gpu.processes().map(|processes| processes.into_keys().collect());
-                self.opening = Some(self.tenants.opening(&gpu.uuid, pids, vec![self.leader.pid], &self.plan));
-            }
-            "open" => {
-                let Some(opening) = self.opening.take() else { return };
-                if let Some(learned) = self.tenants.opened(opening, gpu.processes()) {
-                    self.notes.note(serde_json::json!({"event": "driver_pids", "gpu": learned.gpu,
-                        "executors": [self.leader.pid], "ours": learned.ours, "unattributed": learned.unattributed}));
-                }
-            }
-            _ => {}
-        }
     }
 }
 
@@ -4327,9 +4250,6 @@ struct Callbacks<'a> {
 }
 impl Services for Callbacks<'_> {
     fn progress(&mut self, frame: &Frame) {
-        if let (Some(formation), false) = (&mut self.formation, frame.cuda.is_empty()) {
-            formation.cuda(&frame.cuda);
-        }
         if let (Some(formation), false) = (&self.formation, frame.follower_pids.is_empty()) {
             if let Err(error) = formation.register(&frame.follower_pids) {
                 tracing::warn!("run {}: followers {:?} unregistered: {error}", self.id, frame.follower_pids);

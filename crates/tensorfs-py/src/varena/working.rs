@@ -291,22 +291,26 @@ fn _varena_working_bindings() -> PyResult<usize> {
 
 #[pyfunction]
 fn _varena_working_initialize(py: Python<'_>, device: i32) -> PyResult<()> {
-    let bound = py.detach(|| {
+    py.detach(|| {
         check()?;
-        varena::working::cooperation_bound(device)
+        varena::activate(device, true)
     })
-    .map_err(|e| super::raise(py, e))?;
-    if bound { return Ok(()); }
-    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    {
-        py.detach(|| {
-            let owner = varena::cooperative::Owner::get_or_open_default(device)?;
-            owner.retain_working_lifetime()
-        }).map_err(|e| super::cooperative::raise(py, e))
-    }
-    #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
-    Err(pyo3::exceptions::PyRuntimeError::new_err(
-        "native CUDA service activation requires Linux with 64-bit atomics"))
+    .map_err(|e| super::raise(py, e))
+}
+
+/// Runtime's Start: this GPU's context and this process's row, in the machine's mode.
+#[pyfunction]
+fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
+    py.detach(|| {
+        check()?;
+        varena::activate(device, shared)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
+fn _varena_request_boundary(py: Python<'_>, device: i32, begin: bool) {
+    py.detach(|| varena::request_boundary(device, begin));
 }
 
 #[pyfunction]
@@ -892,6 +896,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_pool_release, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_bindings, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_activate, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;

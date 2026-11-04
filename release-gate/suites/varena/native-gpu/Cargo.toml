@@ -11,14 +11,6 @@ name = "varena-async-fill"
 path = "../../../../crates/varena/examples/async_fill.rs"
 
 [[bin]]
-name = "varena-cache-pages"
-path = "../cache-pages/src/main.rs"
-
-[[bin]]
-name = "varena-ledger-peer"
-path = "../../../../crates/varena/examples/ledger_peer.rs"
-
-[[bin]]
 name = "varena-raw-source"
 path = "../../../../crates/tensorfs/examples/raw_source.rs"
 

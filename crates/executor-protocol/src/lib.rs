@@ -2,8 +2,7 @@
 //! and requests the executor sends back, and TensorD's answers. One definition for both sides.
 //!
 //! This is the current typed command contract. Declared optional fields take their defaults;
-//! required fields fail by name and removed commands are refused. The worker and Runtime
-//! use the same per-rank native cooperation contract before CUDA initialization.
+//! required fields fail by name and removed commands are refused.
 //!
 //! The tensorfs wheel takes this crate, not `protocol`, whose machine client is reqwest and everything under it.
 #![forbid(unsafe_code)]
@@ -94,16 +93,6 @@ impl Command {
     }
 }
 
-/// Categorical native participant settings, never a byte allowance or allocation grant.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
-pub struct Cooperation {
-    pub uuid: String,
-    pub directory: PathBuf,
-    pub shared: bool,
-    pub priority: i32,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "python", pyo3::pyclass(module = "tensorfs.executor", frozen, eq, get_all, skip_from_py_object))]
 pub struct Start {
@@ -137,9 +126,9 @@ pub struct Start {
     /// card of this many bytes, the executor's memory budget, to test constrained VRAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_memory_limit: Option<u64>,
-    /// One owner intent per sealed GPU, in device order. Empty on an import-only parent.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cooperation: Vec<Cooperation>,
+    /// The machine's mode: idle memory yields to foreign programs too. Peers donate either way.
+    #[serde(default)]
+    pub shared: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -545,8 +534,6 @@ pub struct Hello {
     pub tensorfs_version: String,
     /// Correlated PrepareRequest replies and cancellation-safe prepared-record publication.
     pub request_lookahead: bool,
-    /// Supports the typed, capture-safe automatic native donor owner protocol.
-    pub cooperative_owner: bool,
     pub sealed: BTreeMap<String, String>,
 }
 
@@ -663,9 +650,6 @@ pub struct Frame {
     #[serde(skip)]
     pub request: Option<Request>,
     pub reply: String,
-    /// A single-GPU executor's CUDA context `opening`, then `open`: the window the machine learns
-    /// its driver pid in (where the driver names other pids, a container).
-    pub cuda: String,
     pub ok: bool,
     pub code: String,
     pub detail: String,
@@ -680,8 +664,6 @@ pub struct Frame {
     pub quiescent: bool,
     pub poisoned: String,
     pub reused: bool,
-    /// Start acknowledgement: the configured cooperative participant actually opened.
-    pub cooperation_active: bool,
     /// Map: this explicit program was prepared now. None is weight-only warming.
     pub prepared: Option<bool>,
     /// `start` of a group (degree > 1): the follower ranks' pids, rank 1 first.
@@ -1260,7 +1242,7 @@ mod python {
         )*};
     }
     methods!(
-        Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, Cooperation, CallInterface, InputMetadata, InputFile,
+        Adapter, PreparedUse, Binding, ModelLoad, MemoSettings, Construction, CallInterface, InputMetadata, InputFile,
         ByteGrant, CallProgress, Answer, PublishPart, SavedFile
     );
 

@@ -38,12 +38,6 @@ class Construction(_Wire):
     manifest: str
     components: list[str]
 
-class Cooperation(_Wire):
-    uuid: str
-    directory: Path
-    shared: bool
-    priority: int
-
 class Start(_Wire):
     devices: str
     application: str
@@ -53,7 +47,7 @@ class Start(_Wire):
     call_interfaces: list[CallInterface]
     constructions: list[Construction]
     memo: MemoSettings | None
-    cooperation: list[Cooperation]
+    shared: bool
 
 class Adapter(_Wire):
     model_id: str

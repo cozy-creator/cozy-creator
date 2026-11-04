@@ -57,11 +57,9 @@ nonblocking streams and prove their own completion with events.
 
 ## Ownership, streams and errors
 
-Ordinary open inherits a ready service's verified cooperation domain and configuration.
-If none exists, native code discovers the authoritative CUDA/NVML identity and creates
-the one private default domain with Shared mode and priority0. Creation defaults never
-reconfigure a surviving service. Generic clients remain Unknown until actual lifecycle
-reporting exists; opening a Gpu does not fabricate idle state or an H measurement.
+Opening a device takes this process's row in that GPU's ledger (`crates/varena-ledger`), once, in
+Shared mode unless the Runtime's Start said otherwise. Rows are advisory: an ask only triggers a
+driver retry, and a table that cannot open costs donations, never an allocation.
 
 
 Closing a GPU releases its handle; children retain device ownership. A Region pointer
@@ -85,13 +83,9 @@ abandoned live Cache bytes. These job counts are not physical-reclamation credit
 An abandoned Rust Pass whose abort is refused transfers its entire Plan for retirement.
 Use an explicit complete/abort retry if the caller needs to retain that Plan.
 
-Final Arena teardown uses the native per-device retirement queue. Persistent Peer
-and callback-worker observer roots detach there; genuine Region/Pin/Fill/Plan owners
-survive. The API worker observes only a host ticket and keeps its service client lease
-until actual Arena completion or quarantine. Closing that lease uses nonwaiting native
-polling. The process allocator holds separate passive service custody, so closing public
-Gpu clients does not remove accounting for global Working/Torch storage. Passive
-custody is not an execution client; a process with no reporters stays Unknown.
+Final Arena teardown uses the native per-device retirement queue. Donor-thread and
+callback-worker observer roots detach there; genuine Region/Pin/Fill/Plan owners
+survive. A process's ledger row and donor thread live until it exits.
 
 Use success orders only its supplied consumer stream behind source production; it does
 not assert host-visible GPU completion. Other readers need their own Use on that stream,

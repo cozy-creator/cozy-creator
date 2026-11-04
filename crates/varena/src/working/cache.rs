@@ -533,14 +533,3 @@ pub(super) fn ready_bytes(state: &State, page: usize) -> usize {
         .sum()
 }
 
-#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-pub(super) fn accounting(state: &State, page: usize, reading: &mut crate::cooperative::Accounting) {
-    for held in state.caches.values() {
-        let cache = held.stats(page);
-        reading.physical.caches.live += cache.live_bytes as u64;
-        reading.physical.caches.pending += cache.pending_bytes as u64;
-        reading.physical.caches.idle += cache.ready_bytes as u64;
-        reading.pending_release += cache.pending_bytes as u64;
-        reading.reclaimable += cache.ready_bytes as u64;
-    }
-}

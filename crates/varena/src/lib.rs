@@ -42,10 +42,8 @@ pub fn retain_unproven_pin(pin: Pin, failure: Error) {
 pub mod cache_owner;
 pub use cache_owner::CacheOwner;
 pub use working::{Cache, CacheStats};
-#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-pub mod ledger;
-#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-pub mod cooperative;
+#[cfg(target_os = "linux")]
+mod cooperative;
 #[cfg(all(target_os = "linux", feature = "kernel-fork-guard", not(feature = "strict-pid-guard")))]
 pub mod fork_guard;
 
@@ -115,22 +113,47 @@ impl From<AllocationFailure> for Error {
     }
 }
 
-enum PeerProgress {
-    Unavailable,
-    Retry,
-    FinalRetry,
+/// No progress for this long ends a recovery; any progress starts it again.
+const RECOVERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether memory came back: Some(false) means retry once and report out of memory. None when
+/// nobody can be asked: a local cap is this process's own limit, and only Linux has a ledger.
+fn ask_peers(device: i32, bytes: usize, physical: bool, deadline: std::time::Instant) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    if physical {
+        return Some(cooperative::recover(device, bytes, deadline) == varena_ledger::Recovery::Retry);
+    }
+    let _ = (device, bytes, physical, deadline);
+    None
 }
 
-const RECOVERY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+/// Make this GPU usable by this process: its context, and its row in the GPU's ledger.
+/// Idempotent; the first caller's `shared` holds (true: yield idle memory to foreign programs).
+pub fn activate(device: i32, shared: bool) -> Result<()> {
+    check_process()?;
+    if device < 0 {
+        return Err(Error::Invalid("device must be nonnegative"));
+    }
+    #[cfg(target_os = "linux")]
+    cooperative::join(device, shared)?;
+    #[cfg(not(target_os = "linux"))]
+    { let _ = shared; working::initialize(device)?; }
+    working::mark_cooperation_bound(device)
+}
+
+/// A request started or ended on `device`: an atomic store, which orders who donates first.
+pub fn request_boundary(device: i32, begin: bool) {
+    #[cfg(target_os = "linux")]
+    cooperative::request_boundary(device, begin);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (device, begin);
+}
 
 #[derive(Default)]
 struct Recovery {
     deadline: Option<std::time::Instant>,
-    observed: Option<(u64, u64)>,
     terminal: bool,
     cache_request: Option<cache_owner::ShrinkRequest>,
-    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    participation: Option<cooperative::Participation>,
 }
 
 impl Recovery {
@@ -162,23 +185,19 @@ impl Recovery {
             (Some(cold), Some(_)) => cold.join()?,
             _ => false,
         };
-        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        let progress = if physical {
-            cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed,
-                &mut self.participation, self.cache_request.as_ref().map(|_| release_before))?
-        } else { PeerProgress::Unavailable };
-        #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
-        let progress = { let _ = (device, bytes, physical, &mut self.deadline, &mut self.observed); PeerProgress::Unavailable };
+        let peers = ask_peers(device, bytes, physical, limit);
+        let peer_progress = peers == Some(true);
         let mut cache_progress = self.cache_request.is_some() && released_bytes(device)? > release_before;
-        if wait_for_cache && !cache_progress && matches!(progress, PeerProgress::Unavailable) {
+        if wait_for_cache && !cache_progress && !peer_progress {
             cache_progress = self.cache_request.as_ref().expect("joined cache request")
                 .wait_allocation_release(release_before, limit)?;
         }
-        self.terminal = std::time::Instant::now() >= limit
-            || (!cache_progress && !matches!(progress, PeerProgress::Retry));
-        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        if self.terminal { drop(self.participation.take()); }
-        Ok(cache_progress || !matches!(progress, PeerProgress::Unavailable))
+        if peer_progress || cache_progress {
+            self.deadline = None;
+        } else {
+            self.terminal = true;
+        }
+        Ok(peer_progress || cache_progress || peers.is_some())
     }
 
 }
@@ -801,7 +820,7 @@ impl Arena {
         let mut captures = capture_counts()?;
         ensure_recovery_allowed(&captures, device)?;
         let driver = Arc::new(cuda::Driver::open(device)?);
-        let metadata = arena_retirement::Metadata::new(id,device,driver.counters());
+        let metadata = arena_retirement::Metadata::new(id,device);
         let activity = captures.entry(device).or_default();
         let (capturing, room) = (Arc::clone(&activity.captures), Arc::clone(&activity.room));
         drop(captures);

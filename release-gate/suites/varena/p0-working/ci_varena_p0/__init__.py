@@ -90,16 +90,6 @@ def split_policy(payload: Probe, tel: Telemetry) -> Report:
     return _cuda_child(payload, tel, "split_policy.py", "varena-p2-split-policy")
 
 
-class CooperativeProbe(Probe):
-    gpu_uuid: str = ""
-
-
-@app.entrypoint(accelerator=True)
-def cooperative(payload: CooperativeProbe, tel: Telemetry) -> Report:
-    """Two fresh CUDA processes exercise the explicit same-domain native ledger."""
-    return _cuda_child(payload, tel, "cooperative.py", "varena-p3-cooperative", report_failure=True)
-
-
 @app.entrypoint(accelerator=True)
 def retention_policy(payload: Probe, tel: Telemetry) -> Report:
     """Real cache-window clearing, roomy retention and unchanged managed/Room capacity."""

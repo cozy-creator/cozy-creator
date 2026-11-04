@@ -18,6 +18,8 @@ members = [
     "crates/tensorfs-py",
     "crates/varena",
     "crates/varena-client",
+    "crates/varena-ledger",
+    "release-gate/suites/varena/ledger",
     "release-gate/suites/varena/public-api",
     "release-gate/suites/varena/native-gpu",
 ]
@@ -42,6 +44,7 @@ protocol = { path = "crates/protocol" }
 tensord = { path = "crates/tensord" }
 tensorfs = { path = "crates/tensorfs", default-features = false }
 varena = { path = "crates/varena" }
+varena-ledger = { path = "crates/varena-ledger" }
 
 anstream = "1.0.0"
 anstyle = "1.0.14"

@@ -3967,6 +3967,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "varena-ledger",
  "webpki-roots",
  "zip",
 ]
@@ -4454,6 +4455,7 @@ dependencies = [
  "platform-signal",
  "serde_json",
  "thiserror 2.0.21",
+ "varena-ledger",
 ]
 
 [[package]]
@@ -4461,6 +4463,21 @@ name = "varena-client"
 version = "0.1.0"
 dependencies = [
  "libloading 0.9.0",
+]
+
+[[package]]
+name = "varena-ledger"
+version = "0.18.5"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "varena-ledger-cells"
+version = "0.18.5"
+dependencies = [
+ "libc",
+ "varena-ledger",
 ]
 
 [[package]]

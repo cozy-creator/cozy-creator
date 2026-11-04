@@ -3,7 +3,7 @@
 //! A graph owner must call `pool_capture_complete` after CUDA capture actually ends and
 //! `pool_record_stream` after every replay/consumer submission before dropping its reference.
 
-#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
+#[cfg(target_os = "linux")]
 pub(crate) mod peer;
 
 use crate::{Error, GlobalCaptureGuard, Result, cuda};
@@ -687,8 +687,6 @@ struct Working {
     external_callbacks: Arc<std::sync::atomic::AtomicUsize>,
     state: Mutex<State>,
     cooperation_bound: AtomicBool,
-    #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-    cooperation: Mutex<Option<crate::cooperative::ProcessKeepalive>>,
 }
 
 static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
@@ -740,36 +738,9 @@ pub fn require_cooperation(device: i32) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-pub(crate) fn retain_cooperation(
-    device: i32,
-    keepalive: crate::cooperative::ProcessKeepalive,
-) -> Result<()> {
-    let owner = owner(device)?; // Existing initialized Working only; no GPU creation here.
-    let mut candidate = Some(keepalive);
-    let result = {
-        let mut held = owner
-            .cooperation
-            .lock()
-            .map_err(|_| Error::Poisoned("working service custody".into()))?;
-        match held.as_ref() {
-            Some(existing)
-                if !existing.same_service(candidate.as_ref().expect("owned candidate")) =>
-            {
-                Err(Error::Invalid(
-                    "working storage already belongs to another service",
-                ))
-            }
-            Some(_) => Ok(()),
-            None => {
-                *held = candidate.take();
-                owner.cooperation_bound.store(true, Ordering::Release);
-                Ok(())
-            }
-        }
-    };
-    drop(candidate); // No Working/capture/allocator/ledger guard owns a final host release.
-    result
+pub(crate) fn mark_cooperation_bound(device: i32) -> Result<()> {
+    owner(device)?.cooperation_bound.store(true, Ordering::Release);
+    Ok(())
 }
 
 fn rounded(bytes: usize, align: usize) -> Result<usize> {
@@ -1486,8 +1457,6 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
         external_callbacks,
         state: Mutex::new(state),
         cooperation_bound: AtomicBool::new(false),
-        #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
-        cooperation: Mutex::new(None),
     });
     devices.insert(device, Arc::clone(&owner));
     Ok(owner)

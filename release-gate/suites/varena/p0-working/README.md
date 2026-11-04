@@ -273,31 +273,6 @@ interleave was missed rather than treating elapsed time as proof. All existing m
 minimum-refusal and ownership cells now pass the actual stream explicitly.
 
 
-## P3 explicit native GPU cooperation (run 24919 passed)
-
-`/cooperative` takes the usual exact Probe artifact fields plus `gpu_uuid`, the actual typed
-GPU/MIG UUID on the owned machine. Use ordinary `cozy run` with `--gpus=1` and the default Cozy
-home, as for the other entries. This entry starts two fresh child processes; no post-CUDA fork,
-new daemon, model download or rental action occurs inside it. It opens one task-owned tmpfs
-ledger and real TensorFS source files, never rewrites a shared default source/cache.
-
-The fixture checks actual idle working/weight exchange, live/pinned/pending/Unjoined protection,
-real driver observations and allocation, stale-sample refusal, duplicate service, capture/replay
-zero-driver service, external-owner retirement, GC during capture, explicit close and donor death.
-A cleanup sentinel proves the existing native queue advanced while capture was still active;
-it does not assume that sleeping or GC alone drained native destruction. The optional observable
-concurrent-retirement refusal is recorded as unexercised when the existing mutex serializes the
-attempt until retirement finishes. It is not manufactured as a timing pass.
-
-Normal fixture cleanup may synchronize; measured peer service may not. Keep all run
-receipts and distinguish this mechanism check from real model/foreign-pressure qualification.
-
-Run **24919** passed all nine explicit mechanism groups on one RTX 4090, using native TensorFS
-`1c6b1c15b` and fixture `e25a46b75`; the native wheel was unchanged after the initial fixture
-failure 24917.
-This proves same-UID/user/PID/mount-namespace explicit service, not automatic policy or TensorD
-migration. Always check `Report.passed` and nested `child_exit_code`, not run completion alone.
-
 ## P2 clearing the legacy cache window (source-only until run)
 
 `/retention_policy` uses the actual native allocator and two fixed-address 4 MiB

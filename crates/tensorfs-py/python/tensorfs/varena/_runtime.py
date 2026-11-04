@@ -12,20 +12,23 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from .. import _ext
-from ._cooperative import (
-    Cooperation,
-    CooperationDeferredError,
-    CooperationOwner,
-    CooperationStaleSampleError,
-)
-
-__all__ = ["Cooperation", "CooperationDeferredError", "CooperationOwner", "CooperationStaleSampleError"]
-
 if TYPE_CHECKING:
     from torch import Tensor
     from typing_extensions import Buffer
 
 PoisonedError = _ext.VarenaPoisonedError
+
+
+def activate(device: int, *, shared: bool) -> None:
+    """This GPU's context and this process's row in its ledger. `shared` is the machine's mode: it
+    yields idle memory to foreign programs; every participant donates to every other either way.
+    """
+    _ext._varena_activate(device, shared)
+
+
+def request_boundary(device: int, *, begin: bool) -> None:
+    """A request started or ended here: orders who donates first. An atomic store, never fails."""
+    _ext._varena_request_boundary(device, begin)
 
 
 def bind_torch_allocator() -> None:

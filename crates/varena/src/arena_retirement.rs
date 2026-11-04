@@ -94,18 +94,16 @@ pub(crate) struct Metadata {
     pub(crate) device: i32,
     pub(crate) physical: Arc<AtomicUsize>,
     pub(crate) finalizing: AtomicBool,
-    counters: Arc<cuda::Counters>,
     observers: Mutex<Observers>,
 }
 
 impl Metadata {
-    pub(crate) fn new(id: u64, device: i32, counters: Arc<cuda::Counters>) -> Arc<Self> {
+    pub(crate) fn new(id: u64, device: i32) -> Arc<Self> {
         Arc::new(Self {
             id,
             device,
             physical: Arc::new(AtomicUsize::new(0)),
             finalizing: AtomicBool::new(false),
-            counters,
             observers: Mutex::new(Observers::default()),
         })
     }
@@ -136,7 +134,6 @@ impl Metadata {
         let owner = if held.closing { None } else { arena.cloned() };
         let observation = Arc::new(Observation {
             id: self.id,
-            counters: self.counters.clone(),
             owner: Mutex::new(owner),
         });
         held.leases.retain(|lease| lease.strong_count() != 0);
@@ -145,21 +142,10 @@ impl Metadata {
     }
 }
 
-/// Persistent GPU custody is explicit and detachable. Historical counter metadata
-/// remains host-only after detach, so a native-call epoch cannot decrease or alias.
+/// Persistent GPU custody is explicit and detachable.
 pub(crate) struct Observation {
     pub(crate) id: u64,
-    counters: Arc<cuda::Counters>,
     owner: Mutex<Option<Arc<Arena>>>,
-}
-
-impl Observation {
-    pub(crate) fn activity_calls(&self) -> u64 {
-        self.counters.activity_calls.load(Ordering::Relaxed)
-    }
-    pub(crate) fn memory_calls(&self) -> u64 {
-        self.counters.memory_calls.load(Ordering::Relaxed)
-    }
 }
 
 pub(crate) fn request(

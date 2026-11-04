@@ -1,573 +1,214 @@
-//! Native GPU cooperation. Peer is the explicit publication/service mechanism; Owner runs
-//! that mechanism and sampled pressure on the library-owned thread. No daemon or hook.
-use crate::{Completion, Contents, ReclaimReason, ledger, working};
-use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, atomic::Ordering};
+//! This process's part in sharing a GPU: a row in its ledger, one donor thread, and the sample of
+//! foreign pressure. All of it is advisory: a table that cannot open or a peer that dies costs
+//! donations, never an allocation.
+use crate::{Error, Result, arena_retirement::Observation, cache_owner, capture_counts, cuda, working};
+use nvml_wrapper::{Nvml, enums::device::UsedGpuMemory};
+use std::collections::BTreeMap;
+use std::os::unix::fs::MetadataExt;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use varena_ledger::{Donor, Recovery, Row, Table};
 
-mod owner;
-mod pressure;
-mod domain;
-pub use domain::{default_directory, device_descriptor};
-pub use owner::{Facts, Owner, RecoveryOutcome, RecoveryReport};
-pub use pressure::{Boundary, Facts as PressureFacts, initial_pid_namespace};
-pub(crate) use owner::{Participation, ProcessKeepalive, recover};
-pub(crate) use owner::wake_cache_actions;
+/// What to ask for when a CUDA context itself is refused (xs-112: 2 to 3 GB).
+const CONTEXT_BYTES: usize = 3 << 30;
+/// How long an ask waits on peers that have stopped answering.
+const PEER_WAIT: Duration = Duration::from_secs(2);
+/// How long a donor waits on its own cache owners, which may need a GIL someone holds.
+const OWNER_WAIT: Duration = Duration::from_secs(1);
+/// A foreign process crossing this is a program starting: all idle memory goes back to it.
+const NEW_PROCESS: u64 = 256 << 20;
+/// Linux UAPI nsfs.h: only in the initial PID namespace are NVML's pids ours.
+const PID_NS_INIT_INO: u64 = 0xefff_fffc;
 
-fn deferred(error: &Error) -> bool {
-    matches!(error,
-        Error::Native(crate::Error::CaptureActive | crate::Error::Busy)
-        | Error::Ledger(ledger::Error::Busy | ledger::Error::Stale | ledger::Error::StaleSample))
+struct Service {
+    table: Table,
+    row: Row,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Native(#[from] crate::Error),
-    #[error(transparent)]
-    Ledger(#[from] ledger::Error),
-}
-pub type Result<T> = std::result::Result<T, Error>;
+static SERVICES: Mutex<BTreeMap<i32, Arc<Service>>> = Mutex::new(BTreeMap::new());
+static JOINING: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Accounting {
-    pub physical: ledger::Physical,
-    pub reclaimable: u64,
-    /// Whole mappings whose only remaining obstacle is known submitted consumer work.
-    /// Unknown consumers and live graph owners are excluded.
-    pub pending_release: u64,
-    /// False means metadata only: capture/replay excluded every CUDA call.
-    pub refreshed: bool,
+fn service(device: i32) -> Option<Arc<Service>> {
+    SERVICES.lock().unwrap_or_else(|error| error.into_inner()).get(&device).cloned()
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Service {
-    pub round: Option<u64>,
-    pub released: u64,
-    pub completed: u64,
-    pub pending: u64,
-    pub deferred: bool,
-    pub accounting: Option<Accounting>,
-    pub owner_action: bool,
-    pub owner_pending: bool,
-    pub owner_returned: u64,
-    pub owner_declined: u64,
-    pub owner_failed: u64,
-}
-
-struct Shrink {
-    round: u64,
-    key: crate::cache_owner::RequestKey,
-    request: Option<crate::cache_owner::ShrinkRequest>,
-    queueing: bool,
-    start_completed: u64,
-    target: usize,
-}
-impl Drop for Shrink {
-    fn drop(&mut self) {
-        if let Some(request) = &self.request { let _ = request.cancel(); }
+/// Take this process's row on `device`, open its context and start its donor. Idempotent: the
+/// first caller's `shared` holds. Dedicated (`shared` false) only means not yielding to foreign
+/// programs: every participant donates to every other in both modes.
+pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
+    let _joining = JOINING.lock().unwrap_or_else(|error| error.into_inner());
+    if working::cooperation_bound(device)? {
+        return Ok(());
     }
-}
-
-#[derive(Default)]
-struct State {
-    // Host-only handles cancel before the retained GPU leases are dropped.
-    shrink: Option<Shrink>,
-    // Explicit persistent observer roots can detach without ending this participant.
-    // Host driver-counter history survives detach; actual snapshot owners stay transient.
-    arenas: Vec<Arc<crate::arena_retirement::Observation>>,
-    last_use: u64,
-    progress: Option<(u64, u64)>,
-    activity: ledger::Activity,
-}
-
-impl State {
-    fn cancel_shrink(&mut self) -> Result<()> {
-        if let Some(shrink) = &self.shrink {
-            if shrink.queueing { return Err(crate::Error::Busy.into()); }
-            if let Some(request) = &shrink.request {
-                request.cancel()?;
-                if request.facts()?.running { return Err(crate::Error::Busy.into()); }
+    // The row comes first: a context can itself be refused for memory, and then we ask.
+    let uuid = cuda::device_uuid(device)?;
+    let service = match Table::open(&uuid).map(|table| table.claim().map(|row| Service { table, row })) {
+        Ok(Some(service)) => Some(Arc::new(service)),
+        Ok(None) => { eprintln!("varena: GPU {device}'s ledger is full; this process shares no memory"); None }
+        Err(error) => { eprintln!("varena: GPU {device} has no ledger: {error}"); None }
+    };
+    if let Some(service) = &service {
+        SERVICES.lock().unwrap_or_else(|error| error.into_inner()).insert(device, Arc::clone(service));
+    }
+    let mut last = false;
+    loop {
+        match working::initialize(device) {
+            Err(Error::Cuda { code: 2, .. }) if !last => {
+                last = recover(device, CONTEXT_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
             }
+            result => break result,
         }
-        self.shrink = None;
-        Ok(())
+    }?;
+    if let Some(service) = service {
+        let mut donor = Native::new(device, shared, uuid)?;
+        std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
+            let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.table.serve(service.row, &mut donor)));
+            // Only reached on a panic. The row goes, so nobody waits on this process.
+            eprintln!("varena: GPU {device}'s donor ended: {served:?}");
+            service.table.leave(service.row);
+        }).map_err(|error| Error::Unsupported(format!("donor thread: {error}")))?;
+    }
+    Ok(())
+}
+
+/// The allocating thread, after local reclaim failed and with no lock held.
+pub(crate) fn recover(device: i32, bytes: usize, deadline: Instant) -> Recovery {
+    match service(device) {
+        Some(service) => service.table.recover(service.row, bytes as u64, deadline),
+        None => Recovery::Final,
     }
 }
 
-struct QueueAdmission<'a> {
-    peer: &'a Peer,
-    key: crate::cache_owner::RequestKey,
-    armed: bool,
-}
-impl Drop for QueueAdmission<'_> {
-    fn drop(&mut self) {
-        if self.armed && self.peer.pid == std::process::id() {
-            let mut state = self.peer.state.lock().unwrap_or_else(|error| error.into_inner());
-            if let Some(shrink) = state.shrink.as_mut().filter(|shrink| shrink.key == self.key) {
-                shrink.queueing = false;
-            }
-        }
+pub(crate) fn request_boundary(device: i32, begin: bool) {
+    if let Some(service) = service(device) {
+        if begin { service.table.request_begin(service.row) } else { service.table.request_end(service.row) }
     }
 }
 
-/// One explicit participant for a process/device. The typed descriptor is verified against
-/// cuDeviceGetUuid_v2; directory/UID/namespaces must satisfy ledger-foundation.md.
-/// Dropping this owner may run ordinary final arena teardown: do it outside application,
-/// capture and allocator locks. Service itself never drops its retained arena owners.
-/// Use retire/try_close for capture-aware retirement; raw Rust Drop inside capture is not
-/// qualified. The Python adapter retains and retries a refused owner on its existing queue.
-pub struct Peer {
+struct Native {
     device: i32,
-    pid: u32,
-    participant: ledger::Participant,
-    ledger: ledger::Ledger,
-    state: Mutex<State>,
+    shared: bool,
+    room: Arc<crate::Room>,
+    retained: Vec<Arc<Observation>>,
+    idle: u64,
+    asked: bool,
+    nvml: Option<Nvml>,
+    uuid: [u8; 16],
+    previous: Option<BTreeMap<u32, u64>>,
 }
 
-/// Drop outside application locks. Field order keeps capture/replay excluded until every
-/// retained Arena has been dropped, without holding the capture mutex across Arena::drop.
-pub struct Retirement {
-    _owner: Peer,
-    _guard: crate::GlobalCaptureGuard,
-}
-
-impl Peer {
-    /// Acquire retirement exclusion without destroying anything. On refusal the complete
-    /// owner is returned unchanged. This lets an adapter unlock before actual final drops.
-    pub fn retire(self) -> std::result::Result<Retirement, (Self, Error)> {
-        let ready = self.lock().and_then(|mut state| state.cancel_shrink());
-        if let Err(error) = ready { return Err((self, error)); }
-        match crate::enter_retirement(self.device) {
-            Ok(guard) => Ok(Retirement {
-                _owner: self,
-                _guard: guard,
-            }),
-            Err(error) => Err((self, error.into())),
-        }
-    }
-
-    pub fn try_close(self) -> std::result::Result<(), (Self, Error)> {
-        self.retire().map(drop)
-    }
-
-    pub fn open(
-        device: i32,
-        descriptor: ledger::Device,
-        directory: &Path,
-        sharing: ledger::Sharing,
-        priority: i32,
-    ) -> Result<Self> {
-        crate::check_process()?;
-        // initialize() opens no CUDA and must have run before concurrent fork producers.
-        ledger::initialize()?;
-        working::initialize(device)?;
-        {
-            let captures = crate::capture_counts()?;
-            crate::ensure_recovery_allowed(&captures, device)?;
-            if captures
-                .get(&device)
-                .is_some_and(|activity| activity.retirements.load(Ordering::Acquire) != 0)
-            {
-                return Err(crate::Error::Busy.into());
-            }
-            if working::peer::uuid(device)? != descriptor.uuid {
-                return Err(
-                    crate::Error::Invalid("ledger UUID does not match the CUDA device").into(),
-                );
-            }
-        }
-        // Native capture/context guards are gone before opening any shared lock.
-        let ledger = ledger::Ledger::open_nonblocking(directory, descriptor)?;
-        ledger.reap_dead()?;
-        let participant = ledger.register(sharing, priority)?;
-        let peer = Self {
+impl Native {
+    fn new(device: i32, shared: bool, uuid: [u8; 16]) -> Result<Self> {
+        let host_pids = shared && std::fs::metadata("/proc/self/ns/pid").is_ok_and(|ns| ns.ino() == PID_NS_INIT_INO);
+        Ok(Self {
             device,
-            pid: std::process::id(),
-            participant,
-            ledger,
-            state: Mutex::new(State::default()),
-        };
-        peer.publish(0)?;
-        Ok(peer)
+            shared,
+            room: crate::room(device)?,
+            retained: Vec::new(),
+            idle: 0,
+            asked: false,
+            nvml: if host_pids { Nvml::init().ok() } else { None },
+            uuid,
+            previous: None,
+        })
     }
 
-    fn check(&self) -> Result<()> {
-        if self.pid != std::process::id() {
-            return Err(ledger::Error::Inherited.into());
+    fn count_idle(&mut self) -> Result<u64> {
+        let mut idle = working::peer::idle_bytes(self.device)?;
+        for arena in crate::retain_arenas(self.device, &mut self.retained)?.arenas {
+            for entry in arena.lock()?.entries.values() {
+                let in_use = entry.uses.pins() != 0 || entry.uses.state() == crate::Contents::Loading
+                    || entry.uses.unjoined.load(Ordering::Acquire);
+                if entry.handle.is_some() && !in_use {
+                    idle += entry.bytes as u64;
+                }
+            }
         }
-        crate::check_process()?;
-        Ok(())
+        Ok(idle)
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, State>> {
-        self.check()?;
-        self.state
-            .lock()
-            .map_err(|_| crate::Error::Poisoned("GPU participant mutex".into()).into())
+    /// Whether a foreign process just crossed `NEW_PROCESS`. Unknown in a PID namespace.
+    fn new_foreign_process(&mut self, table: &Table) -> bool {
+        let Some(rows) = self.processes() else {
+            self.previous = None;
+            return false;
+        };
+        let peers = table.pids();
+        let foreign: BTreeMap<u32, u64> = rows.into_iter().filter(|(pid, _)| !peers.contains(pid)).collect();
+        let crossed = self.previous.as_ref().is_some_and(|previous| foreign.iter().any(|(pid, bytes)|
+            *bytes >= NEW_PROCESS && previous.get(pid).copied().unwrap_or(0) < NEW_PROCESS));
+        self.previous = Some(foreign);
+        crossed
     }
 
-    pub fn id(&self) -> ledger::RowId {
-        self.participant.id()
+    fn processes(&self) -> Option<BTreeMap<u32, u64>> {
+        let nvml = self.nvml.as_ref()?;
+        let b = self.uuid;
+        let name = format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+        let device = nvml.device_by_uuid(format!("GPU-{name}")).or_else(|_| nvml.device_by_uuid(format!("MIG-{name}"))).ok()?;
+        let mut rows = BTreeMap::<u32, u64>::new();
+        for process in device.running_compute_processes().ok()?.into_iter().chain(device.running_graphics_processes().ok()?) {
+            let UsedGpuMemory::Used(bytes) = process.used_gpu_memory else { return None };
+            let value = rows.entry(process.pid).or_default();
+            *value = (*value).max(bytes); // Compute and graphics can report the same process.
+        }
+        Some(rows)
+    }
+}
+
+impl Donor for Native {
+    fn holdings(&mut self) -> (u64, u64) {
+        let held = self.room.pages.load(Ordering::Acquire) + self.room.working.load(Ordering::Acquire);
+        // A momentary refusal keeps the last count: zero would read as nothing left to ask for.
+        self.idle = self.count_idle().unwrap_or(self.idle);
+        (held as u64, self.idle)
     }
 
-    pub fn snapshot(&self) -> Result<ledger::Snapshot> {
-        self.check()?;
-        Ok(self.ledger.snapshot()?)
+    fn trim(&mut self, bytes: u64) -> u64 {
+        let wanted = bytes as usize;
+        let released = || self.room.released.load(Ordering::Acquire);
+        let since = released();
+        // A capture or a replay refuses this: the asker comes back while idle memory remains.
+        let _ = crate::reclaim_completed(self.device, wanted, &mut self.retained);
+        if released() - since < bytes && cache_owner::requestable(self.device).is_ok_and(|owners| owners != 0) {
+            // Only its owners can shrink a cache. Their worker runs them, so a GIL never blocks this thread.
+            let key = cache_owner::next_generation().map(|generation| cache_owner::RequestKey { cause: cache_owner::Cause::Allocation, generation });
+            if let Ok(Ok(Some(request))) = key.map(|key| cache_owner::request_shrink(self.device, key, wanted)) {
+                let _ = request.wait_allocation_release(since, Instant::now() + OWNER_WAIT);
+            }
+        }
+        released() - since
     }
 
-    pub fn configure(&self, sharing: ledger::Sharing, priority: i32) -> Result<()> {
-        // Serialize with the complete donor pass, including its captured assignment,
-        // physical effects and acknowledgement. Once Dedicated returns, an earlier
-        // Shared snapshot cannot start another release on this Peer.
-        let mut state = self.lock()?;
-        if sharing == ledger::Sharing::Dedicated { state.cancel_shrink()?; }
-        Ok(self.participant.configure(sharing, priority)?)
-    }
-
-    /// Host lifecycle only. Publication carries the latest category; this never queries
-    /// CUDA or waits for shared metadata on the caller's boundary.
-    pub fn set_activity(&self, activity: ledger::Activity) -> Result<()> {
-        self.lock()?.activity = activity;
-        Ok(())
-    }
-
-    /// Actual host-monotonic last-use time supplied by the owner. Do not advance it merely
-    /// because a periodic publication runs. No shared IPC is added to alloc/free.
-    pub fn publish(&self, last_use: u64) -> Result<Accounting> {
-        let inventory=self.inventory()?;
-        let mut state = self.lock()?;
-        state.last_use = state.last_use.max(last_use);
-        let reading = self.native_tick(&mut state, &inventory, 0, 0, &mut 0)?;
-        self.participant.publish_policy(reading.physical, reading.reclaimable, state.last_use,
-            Some((state.activity, crate::cache_owner::requestable(self.device)? != 0)))?;
-        Ok(reading)
-    }
-
-    /// Read actual CUDA free/total outside shared locks, then optimistically commit against
-    /// the generation read before that observation. H/attribution remain unknown here.
-    pub fn sample(&self, observed_at: u64) -> Result<ledger::Sample> {
-        self.sample_reserve(observed_at, None)
-    }
-
-    fn sample_reserve(&self, observed_at: u64, reserve: Option<u64>) -> Result<ledger::Sample> {
-        self.check()?;
-        // Commit exact departures first, separately from optimistic sample validation.
-        self.ledger.reap_dead()?;
-        let expected = self.ledger.snapshot()?.generation;
-        let (free, total) = {
-            let captures = crate::capture_counts()?;
+    /// Design §4.6: `free < H` gives back up to `2H - free`, wherever a foreign program or this
+    /// card's own fill put it, and speculation regrows at a pass boundary only once `2H` is free.
+    fn tick(&mut self, table: &Table, row: Row, idle: u64) {
+        if std::mem::take(&mut self.asked) {
+            table.stop_asking(row);
+        }
+        if !self.shared || idle == 0 {
+            return;
+        }
+        let sample = capture_counts().and_then(|captures| {
             crate::ensure_recovery_allowed(&captures, self.device)?;
-            working::peer::memory_info(self.device)?
-        };
-        let used = total.checked_sub(free).ok_or(crate::Error::Invalid(
-            "inconsistent CUDA capacity observation",
-        ))?;
-        Ok(self.participant.sample(
-            expected,
-            total as u64,
-            used as u64,
-            observed_at,
-            reserve,
-            reserve.is_some(),
-        )?)
-    }
-
-    pub fn ask(&self, sample_generation: u64, wanted: u64) -> Result<ledger::Round> {
-        self.check()?;
-        Ok(self.participant.ask(sample_generation, wanted)?)
-    }
-
-    /// Coordinated device pressure, including this Shared owner's completed idle backing.
-    pub fn ask_device(&self, sample_generation: u64, wanted: u64) -> Result<ledger::Round> {
-        self.check()?;
-        Ok(self.participant.ask_device(sample_generation, wanted)?)
-    }
-
-    pub fn ask_idle(&self, sample_generation: u64) -> Result<ledger::Round> {
-        self.check()?;
-        Ok(self.participant.ask_idle(sample_generation)?)
-    }
-
-    pub fn withdraw(&self, round: u64) -> Result<bool> {
-        self.check()?;
-        Ok(self.participant.withdraw(round)?)
-    }
-
-    pub fn clear_want(&self) -> Result<()> {
-        self.check()?;
-        Ok(self.participant.clear_want()?)
-    }
-
-    /// One finite no-wait donor pass. Copies the assignment before CUDA; publishes and acks
-    /// only after native context/capture/allocator guards are gone. An ack is never a grant.
-    pub fn service(&self) -> Result<Service> {
-        self.check()?;
-        if crate::cache_owner::is_dispatcher_thread(self.device)? {
-            return Err(crate::Error::Busy.into());
-        }
-        let inventory=self.inventory()?;
-        let mut state = self.lock()?;
-        if let Some(shrink) = state.shrink.as_ref().filter(|shrink| shrink.queueing) {
-            return Ok(Service { round: Some(shrink.round), deferred: true, ..Service::default() });
-        }
-        self.ledger.reap_dead()?;
-        let table = self.ledger.snapshot()?;
-        let Some(round) = table.round.filter(|round| !round.aborted) else {
-            state.cancel_shrink()?;
-            return Ok(Service::default());
-        };
-        if state.shrink.as_ref().is_some_and(|shrink| shrink.round != round.generation) {
-            state.cancel_shrink()?;
-        }
-        let Some(donor) = round
-            .donations
-            .iter()
-            .find(|donor| donor.owner == self.id())
-        else {
-            state.cancel_shrink()?;
-            return Ok(Service::default());
-        };
-        let mut result = Service {
-            round: Some(round.generation),
-            completed: donor.completed,
-            pending: donor.pending,
-            owner_action: donor.action,
-            ..Service::default()
-        };
-        if matches!(
-            donor.answer,
-            ledger::Answer::Unasked | ledger::Answer::Complete | ledger::Answer::Refused | ledger::Answer::OwnerGone
-        ) {
-            state.cancel_shrink()?;
-            return Ok(result);
-        }
-        let completed = state
-            .progress
-            .filter(|(id, _)| *id == round.generation)
-            .map_or(donor.completed, |(_, done)| done.max(donor.completed));
-        if table.rows.iter().find(|row| row.id == self.id())
-            .is_some_and(|row| row.sharing == ledger::Sharing::Dedicated) {
-            state.cancel_shrink()?;
-            // Lifecycle configuration applies before any further native release. Preserve
-            // prior actual progress, but an old assignment is not ongoing Shared consent.
-            self.participant.acknowledge_stage(round.generation, donor.action, completed, 0, ledger::Answer::Refused)?;
-            result.completed = completed;
-            result.pending = 0;
-            return Ok(result);
-        }
-        let maximum = donor.held_at_ask.saturating_sub(completed);
-        let wanted = donor.requested.saturating_sub(completed);
-        let observed_action = state.shrink.as_ref().and_then(|shrink| shrink.request.as_ref())
-            .map(|request| request.facts().map(|facts| facts.action_epoch)).transpose()?.unwrap_or(0);
-        let mut released = 0;
-        let outcome =
-            self.native_tick(&mut state, &inventory, wanted as usize, maximum as usize, &mut released);
-        // Preserve each successful physical effect even if the subsequent snapshot or
-        // publication fails; a retry must not spend this donor snapshot a second time.
-        result.released = released as u64;
-        result.completed = completed + result.released;
-        state.progress = Some((round.generation, result.completed));
-        let reading = outcome?;
-        result.deferred = !reading.refreshed;
-        result.accounting = Some(reading);
-        self.participant.publish_policy(reading.physical, reading.reclaimable, state.last_use,
-            Some((state.activity, crate::cache_owner::requestable(self.device)? != 0)))?;
-        if result.deferred {
-            return Ok(result);
-        }
-        result.pending = if result.completed >= donor.requested {
+            working::peer::memory_info(self.device)
+        });
+        let Ok((free, total)) = sample else { return };
+        let (free, total) = (free as u64, total as u64);
+        let reserve = (total / 16).max(512 << 20);
+        let want = if self.new_foreign_process(table) {
+            total
+        } else if free < reserve {
+            2 * reserve - free
+        } else {
             0
-        } else {
-            reading
-                .pending_release
-                .min(donor.held_at_ask.saturating_sub(result.completed))
         };
-        if donor.action && result.completed < donor.requested {
-            let key = match &state.shrink {
-                Some(shrink) => shrink.key,
-                None => {
-                    let key = crate::cache_owner::RequestKey {
-                        cause: match round.kind {
-                            ledger::AskKind::Allocation => crate::cache_owner::Cause::Cooperative,
-                            ledger::AskKind::DevicePressure | ledger::AskKind::AllIdle => crate::cache_owner::Cause::Foreign,
-                        },
-                        generation: crate::cache_owner::next_generation()?,
-                    };
-                    state.shrink = Some(Shrink { round: round.generation, key, request: None, queueing: false,
-                        start_completed: result.completed, target: donor.requested.saturating_sub(result.completed) as usize });
-                    key
-                }
-            };
-            state.shrink.as_mut().expect("associated round").queueing = true;
-            let shrink = state.shrink.as_ref().expect("associated round");
-            let existing = shrink.request.clone();
-            let target = shrink.target;
-            let serviced = result.completed.saturating_sub(shrink.start_completed).min(target as u64) as usize;
-            drop(state);
-            // Queue only after the capped native pass and outside Peer, capture, allocator
-            // and ledger guards. The distinct cache dispatcher owns callback/GIL execution.
-            let mut admission = QueueAdmission { peer: self, key, armed: true };
-            let queued = match existing {
-                Some(request) => request.service_progress(serviced, observed_action).map(|()| Some(request)),
-                None => crate::cache_owner::request_shrink(self.device, key, target),
-            };
-            state = self.lock()?;
-            admission.armed = false;
-            let shrink = state.shrink.as_mut().filter(|shrink| shrink.key == key)
-                .ok_or(crate::Error::Busy)?;
-            shrink.queueing = false;
-            // A closing owner can make requestable zero while its admitted callback is
-            // still running. Retain the old handle so Dedicated/retirement can see it.
-            if let Some(request) = queued? { shrink.request = Some(request); }
-            if let Some(request) = &shrink.request {
-                let facts = request.facts()?;
-                result.owner_pending = facts.running || (!facts.cancelled && !facts.finished);
-                result.owner_returned = facts.returned;
-                result.owner_declined = facts.declined;
-                result.owner_failed = facts.failed;
-                // observed_release_bytes is global process progress, never donor credit.
-            }
+        let _ = working::peer::pressure(self.device, want != 0, want == 0 && free >= 2 * reserve);
+        if want != 0 {
+            table.ask(row, want);
+            self.asked = true;
         }
-        let answer = if result.completed >= donor.requested {
-            ledger::Answer::Complete
-        } else if result.pending != 0 || result.owner_pending {
-            ledger::Answer::Pending
-        } else {
-            ledger::Answer::Refused
-        };
-        if answer != ledger::Answer::Pending {
-            if let Some(request) = state.shrink.as_ref().and_then(|shrink| shrink.request.as_ref()) {
-                request.cancel()?;
-            }
-        }
-        self.participant
-            .acknowledge_stage(round.generation, donor.action, result.completed, result.pending, answer)?;
-        Ok(result)
-    }
-
-    /// Metadata-only instrumentation, including initialized driver wrapper context/sampling
-    /// calls. Used to prove a service tick inside capture/replay performs no CUDA operation.
-    pub fn cuda_calls(&self) -> Result<u64> {
-        let state = self.lock()?;
-        Ok(working::peer::cuda_calls(self.device)?
-            + state
-                .arenas
-                .iter()
-                .map(|arena| arena.activity_calls())
-                .sum::<u64>())
-    }
-
-    fn memory_calls(&self) -> Result<u64> {
-        let state = self.lock()?;
-        Ok(working::peer::memory_calls(self.device)? + state.arenas.iter()
-            .map(|arena| arena.memory_calls()).sum::<u64>())
-    }
-
-    fn observation<T>(&self, operation: impl FnOnce() -> T) -> Result<T> {
-        self.check()?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device)?;
-        if captures.get(&self.device).is_some_and(|entry| entry.retirements.load(Ordering::Acquire)!=0) {
-            return Err(crate::Error::Busy.into());
-        }
-        Ok(operation())
-    }
-
-    fn inventory(&self) -> Result<crate::ArenaInventory> {
-        let inventory=crate::arena_inventory(self.device)?;
-        {
-            let mut state=self.lock()?;
-            crate::observe_inventory(&inventory,&mut state.arenas)?;
-        }
-        Ok(inventory)
-    }
-
-    fn native_tick(
-        &self,
-        _state: &mut State,
-        inventory: &crate::ArenaInventory,
-        wanted: usize,
-        maximum: usize,
-        released: &mut usize,
-    ) -> crate::Result<Accounting> {
-        let captures = crate::capture_counts()?;
-        let refresh = crate::ensure_recovery_allowed(&captures, self.device).is_ok();
-        if refresh && wanted != 0 {
-            working::peer::release(self.device, wanted, maximum, released)?;
-            for arena in &inventory.arenas {
-                if *released >= wanted {
-                    break;
-                }
-                arena.reclaim_ready_counted(&captures, wanted - *released, maximum - *released,
-                    ReclaimReason::Room, released)?;
-            }
-        }
-        let reading = working::peer::with_snapshot(self.device, refresh, |mut reading| {
-            // Lock order: capture registry → working state → arena states in registration order.
-            let mut states = inventory
-                .arenas
-                .iter()
-                .map(|arena| arena.lock())
-                .collect::<crate::Result<Vec<_>>>()?;
-            for (arena, held) in inventory.arenas.iter().zip(&mut states) {
-                let _context = refresh
-                    .then(|| arena.driver.enter())
-                    .transpose()
-                    .map_err(|error| crate::poison(held, error))?;
-                let ids: Vec<_> = held.entries.keys().copied().collect();
-                for id in ids {
-                    let entry = &held.entries[&id];
-                    if entry.handle.is_none() {
-                        continue;
-                    }
-                    let bytes = entry.bytes as u64;
-                    if entry.uses.pins() != 0 || entry.uses.state() == Contents::Loading {
-                        reading.physical.weights.live += bytes;
-                        continue;
-                    }
-                    let completion = if refresh {
-                        arena.completion(held, id)?
-                    } else if entry.uses.unjoined.load(Ordering::Acquire) {
-                        Completion::Unjoined
-                    } else if entry.uses.fences().is_empty() {
-                        Completion::Done
-                    } else {
-                        Completion::Pending
-                    };
-                    match completion {
-                        Completion::Done => {
-                            reading.physical.weights.idle += bytes;
-                            reading.reclaimable += bytes;
-                        }
-                        Completion::Pending => {
-                            reading.physical.weights.pending += bytes;
-                            reading.pending_release += bytes;
-                        }
-                        Completion::Unjoined => reading.physical.weights.pending += bytes,
-                    }
-                }
-            }
-            // Accepted final resources stay physically accounted but provide neither
-            // reclaimable nor pending-release credit to this donor's capped service.
-            for metadata in &inventory.finalizing {
-                reading.physical.weights.pending += metadata.physical.load(Ordering::Acquire) as u64;
-            }
-            let physical = reading
-                .physical
-                .total()
-                .map_err(|_| crate::Error::Invalid("physical snapshot overflow"))?;
-            let room = &captures.get(&self.device).expect("initialized device").room;
-            if physical
-                != (room.pages.load(Ordering::Acquire) + room.working.load(Ordering::Acquire))
-                    as u64
-            {
-                // Finalizing jobs update exact host counters only after real release.
-                // A partial counter observation is not a coherent capacity publication;
-                // retry a fresh snapshot rather than crediting any missing bytes.
-                return Err(crate::Error::Busy);
-            }
-            Ok(reading)
-        })?;
-        Ok(reading)
     }
 }
