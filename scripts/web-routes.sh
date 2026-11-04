@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Every route web/app calls is one Calcifer serves, by method and path, parameter names aside. Calcifer's: every
 # `.route("<path>", <methods>)` under crates/calcifer/src (api.rs, project/mod.rs, hub/mod.rs), on one line or many; axum's
-# `get` serves HEAD too. web/app's: every string in web/app/src starting `/v1/`, api/client.ts's above all, query dropped. Its
-# method is a `method: "X"` or "X" among the call's arguments, else the call's name (`get`, `postJson`, `api.del`), else GET,
-# as fetch and <img> ask. Fails on anything it can't read, so nothing goes unchecked: a route's path or methods not written
-# out, a path built from a variable, no client.
+# `get` serves HEAD too. The page's: every string in web/app/src/api/client.ts starting `/v1/`, query dropped, and a helper
+# answering a route's start (`const project = (id) => `/v1/projects/${id}``) read where it's used. Its method is a `method: "X"`
+# or "X" among the call's arguments, else the call's name (`get`, `postJson`, `api.del`), else GET, as fetch and <img> ask. A
+# hole holding `.join(` is a path of any length, other holes one segment. Fails on anything it can't read, so nothing goes
+# unchecked: a route's path or methods not written out, a path started by a variable, no client.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export LC_ALL=C
@@ -27,13 +28,22 @@ served=$(find crates/calcifer/src -name '*.rs' -print0 | sort -z | xargs -0 perl
   /\.nest\(/ and die "web-routes: $ARGV: a .nest( hides its routes from this check\n";
 ') || exit 1
 
-called=$(find web/app/src \( -name '*.ts' -o -name '*.tsx' \) -print0 | sort -z | xargs -0 perl -0777 -ne '
+called=$(perl -0777 -ne '
   # Comments, strings and templates, each whole, so one is never read inside another.
   my $str = qr/\x27(?:[^\x27\\\n]|\\.)*\x27|"(?:[^"\\\n]|\\.)*"/;
   my $tpl; $tpl = qr/`(?:[^`\\\$]|\\.|\$(?!\{)|\$\{(?:[^{}`\x27"]++|$str|(??{$tpl})|\{(?:[^{}`\x27"]++|$str|(??{$tpl}))*\})*\})*`/;
   my $args = qr/(?<rest>(?:[^()`\x27"]++|$str|$tpl|\((?&rest)\))*)/;
   my $verb = qr/GET|HEAD|POST|PUT|PATCH|DELETE/;
   my $src = $_;
+  # Helpers, read where they are used. One-line, so line numbers hold.
+  my $define = qr/\bconst\s+(\w+)\s*=\s*\([^()]*\)\s*(?::\s*\w+\s*)?=>\s*`(\/v1\/(?:[^`\\]|\\.)*)`/;
+  my %helper; $helper{$1} = $2 while $src =~ /$define/g;
+  $src =~ s/$define//g;
+  for my $name (keys %helper) {
+    my $use = qr/(?<![.\w])$name\((?:[^()]++|\([^()]*\))*\)(?!\s*[:{])/;
+    $src =~ s/\$\{$use\}/$helper{$name}/g;
+    $src =~ s/$use/`$helper{$name}`/g;
+  }
   while ($src =~ /\/\/[^\n]*|\/\*.*?\*\/|($str|$tpl)/gs) {
     next unless defined $1;
     my ($lit, $at, $after) = ($1, $-[1], $+[1]);
@@ -44,7 +54,7 @@ called=$(find web/app/src \( -name '*.ts' -o -name '*.tsx' \) -print0 | sort -z 
     $text =~ /^\$\{[^}]*\}\/[a-z]/ and die "web-routes: $where: spell the route out whole, not $lit\n";
     $text =~ m{^/v1/?$} and die "web-routes: $where: spell the route out whole, not $lit\n";
     next unless $text =~ m{^/v1/};
-    (my $path = $text) =~ s/\$\{(?:[^{}]++|\{[^{}]*\})*\}/\x01/g;
+    (my $path = $text) =~ s/(\$\{(?:[^{}]++|\{[^{}]*\})*\})/index($1, ".join(") >= 0 ? "\x02" : "\x01"/ge;
     $path =~ s/[?#].*//s;
     # The call this string is an argument of, if any: its name, what comes before, and the rest of its arguments.
     my $before = substr($src, 0, $at);
@@ -60,9 +70,10 @@ called=$(find web/app/src \( -name '*.ts' -o -name '*.tsx' \) -print0 | sort -z 
     if (!$method && $name =~ /(?:^|\.)(get|head|post|put|patch|del|delete)(?:[A-Z]\w*)?$/) { $method = uc($1) eq "DEL" ? "DELETE" : uc($1) }
     $method ||= "GET";
     $path =~ s/\x01/{}/g;
+    $path =~ s/\x02/{*}/g;
     print "$method $path $where\n";
   }
-') || exit 1
+' web/app/src/api/client.ts) || exit 1
 [ -n "$served" ] && [ -n "$called" ] || fail "no routes read"
 
 missing=$(perl -e '
@@ -72,22 +83,25 @@ missing=$(perl -e '
     my ($verb, $path) = split / /;
     (my $re = quotemeta $path) =~ s/\\\{\\\*\w+\\\}/.+/g;
     $re =~ s/\\\{\w+\\\}/[^\/]+/g;
-    push @routes, [$verb, qr/^$re$/];
+    push @routes, [$verb, qr/^$re$/, $path];
   }
   sub serves {
     my ($method, $shape) = @_;
+    my $start;
+    if ($shape =~ m{^(.*)/\{\*\}$}) { ($start = quotemeta $1) =~ s/\\\{\\\}/\\{\\w+\\}/g; }
     for (@routes) {
-      my ($verb, $re) = @$_;
-      next unless $shape =~ $re;
+      my ($verb, $re, $path) = @$_;
+      next unless defined $start ? $path =~ m{^$start/} : $shape =~ $re;
       return 1 if $method eq "?" || $verb eq "ANY" || $verb eq $method || ($method eq "HEAD" && $verb eq "GET");
     }
     0;
   }
   for (split /\n/, $called) {
     my ($method, $path, $where) = split / /;
-    # A segment holding a hole is a parameter. The last one may end in the query instead: `/v1/runs${query}`.
+    # A segment holding a hole is a parameter. The last one may end in the query instead: `/v1/runs${query}`. A `{*}` is any
+    # route that goes on from there.
     my @segments = split m{/}, $path, -1;
-    my @shape = map { /\{\}/ ? "{}" : $_ } @segments;
+    my @shape = map { /\{\*\}/ ? "{*}" : /\{\}/ ? "{}" : $_ } @segments;
     my @plain = @shape;
     $plain[-1] = $1 if $segments[-1] =~ /^([^{}]+)\{\}$/;
     my ($whole, $short) = (join("/", @shape), join("/", @plain));
