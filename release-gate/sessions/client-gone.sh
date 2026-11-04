@@ -17,13 +17,14 @@
 #   before      a cozy to run `before_parts` (default "b c m s") on first, without judging them, for what they did before a fix
 #   parts       which of a, g, b, c, v, m, s, l run (default all but s)
 #   rent_lock   a file to hold while ordering, where several sessions rent from one computer
+#   runtime     a Runtime for the pod with `cozy`: a wheel or a version (default: the pod's)
 #   traffic_gb  GB the provider bills (default 12)
 #   seconds     the least time the cap must buy (default 2400)
 . "$(dirname "$0")/lib.sh"
 FIX=$(cd "$(dirname "$0")/fixtures/client-gone" && pwd)
 [ -f "$FIX/art.py" ] && [ -f "$FIX/link.py" ] && [ -f "$FIX/hole.py" ] || fail "no fixture checkout"
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
-UNDER=$(param cozy "$(command -v cozy)") BEFORE=$(param before) LOCK=$(param rent_lock) LINK=7777
+UNDER=$(param cozy "$(command -v cozy)") BEFORE=$(param before) LOCK=$(param rent_lock) RUNTIME=$(param runtime) LINK=7777
 PARTS=,$(param parts a,g,b,c,v,m,l), BEFORE_PARTS=$(param before_parts "b c m s")
 has() { [[ $PARTS == *",$1,"* ]]; }
 RENT_ARGS=--ssh
@@ -62,7 +63,7 @@ sh 'cp /etc/resolv.conf /root/resolv.conf.gone; cp /etc/hosts /root/hosts.gone'
 # Puts the cozy under test on the pod and on the computer that asks, whose machine `box` is the pod over the line.
 put() {
   local tag=$1 version key
-  step "update-$tag" machine update "$NAME" --tensord "$2" -y || fail "update to $2"
+  step "update-$tag" machine update "$NAME" --tensord "$2" ${RUNTIME:+--runtime "$RUNTIME"} -y || fail "update to $2"
   version=$(sh 'cozy --version'); say "$tag: the pod runs $version"
   sh 'cozy machine show local --json' > "$OUT/local-$tag.json" || fail "cozy machine show local"
   ADDRESS=$(jq -r .address "$OUT/local-$tag.json") FINGERPRINT=$(jq -r .fingerprint "$OUT/local-$tag.json")
