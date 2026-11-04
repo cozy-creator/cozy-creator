@@ -151,7 +151,10 @@ async fn submit_ask(api: &Arc<Api>, key: &str, ask: RunRequest, keep: bool) -> R
         return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
     }
     match prepare(api, key, &ask).await? {
-        Prepared::Install(run) => Ok(Submitted { run, replay: false, notes: vec![], preparing: true }),
+        Prepared::Install(run) => {
+            let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
+            Ok(Submitted { run, replay: false, notes, preparing: true })
+        }
         Prepared::Run { submit, mut notes } => {
             let given = given(&submit);
             let project = submit.out.as_deref().and_then(crate::project::of_landing).filter(|_| keep).map(Path::to_owned);
@@ -225,11 +228,18 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     // function lists its functions on an OS that runs no models here.
     if local(api, ask).is_some() {
         protocol::calcifer::local_usable(&on.to_string())?;
+        // Refused before that install, not after it.
+        project_of(api, ask)?;
     }
     let hub = hub(api, &ask.hub);
     let cwd = ask.cwd.as_deref();
     let agreed = ask.agreed.clone();
     let resolved = target::resolve(api, &hub, &ask.target, cwd, &on, ask.warm.is_some(), key, agreed).await?;
+    if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
+        && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
+    {
+        return Ok(Prepared::Install(going));
+    }
     let (package, function, code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -321,6 +331,18 @@ struct Code<'a> {
     on: On,
 }
 
+/// The project `ask` belongs to. A person's run has one, as a commit has a repository; keeping a function warm and `cozy model quantize` are no one's run.
+fn project_of(api: &Api, ask: &RunRequest) -> Result<Option<PathBuf>, Error> {
+    let project = match ask.project.as_deref() {
+        Some(named) => crate::project::named(api, named)?,
+        None => None,
+    };
+    if project.is_none() && ask.warm.is_none() && !ask.recipes {
+        return Err(crate::project::not_in_one());
+    }
+    Ok(project)
+}
+
 /// Binds the ask's terms to `callable` of `code` (a warm run, its model choices only) into the
 /// submission, and what binding said.
 async fn call(
@@ -339,14 +361,7 @@ async fn call(
     }
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
-    // A person's run belongs to a project, as a commit to a repository. Keeping a function warm and `cozy model quantize` are no one's run.
-    let project = match ask.project.as_deref() {
-        Some(named) => crate::project::named(api, named)?,
-        None => None,
-    };
-    if project.is_none() && ask.warm.is_none() && !ask.recipes {
-        return Err(crate::project::not_in_one());
-    }
+    let project = project_of(api, ask)?;
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
@@ -443,7 +458,8 @@ pub(crate) fn callable<'a>(package: &str, interface: &'a Interface, asked: &str)
                     "callable_unreadable",
                     format!("{package}/{name} is not readable by this cozy: {why}"),
                 )
-                .remedy("update cozy, or call another function of the package"));
+                .remedy("update cozy, or call another function of the package")
+                .next("cozy update"));
             }
             let public = interface.public();
             let mut error =

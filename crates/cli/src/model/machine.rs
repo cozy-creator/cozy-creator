@@ -131,6 +131,7 @@ fn display(ctx: &Context, shown: &Displayed) {
 
 /// A Hub commit recorded as a commit of another model: no machine pulled it and no byte uploaded.
 fn recorded(ctx: &Context, made: &RecordedCommit) {
+    made.warnings.iter().for_each(|warning| output::warn(warning));
     if ctx.json {
         output::json(made);
         return;

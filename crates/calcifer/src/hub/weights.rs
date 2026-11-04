@@ -256,14 +256,29 @@ impl Ask for ModelDownload {
     }
 }
 
+/// A strength past the -10 to 10 a model takes, held to the nearest, and the warning that says so. Only what is no number is refused.
+fn strength_within(strength: Option<f64>) -> Result<(Option<f64>, Option<String>), Refusal> {
+    match strength {
+        Some(given) if !given.is_finite() => Err(usage("model_strength_invalid", "--strength is a number between -10 and 10")),
+        Some(given) if given.abs() > 10.0 => {
+            let held = given.clamp(-10.0, 10.0);
+            Ok((Some(held), Some(format!("--strength {given} is past what a model takes: it is {held}"))))
+        }
+        kept => Ok((kept, None)),
+    }
+}
+
 impl Ask for ModelUpload {
-    async fn prepare(self, api: &Arc<Api>) -> Result<Prepared, Refusal> {
+    async fn prepare(mut self, api: &Arc<Api>) -> Result<Prepared, Refusal> {
+        let (strength, said) = strength_within(self.strength)?;
+        self.strength = strength;
+        let warned = |mut prepared: Prepared| {
+            prepared.submit.warnings.extend(said.clone().map(|message| Warning { code: "input_limit".into(), message }));
+            prepared
+        };
         let hub = origin(api, self.hub.as_deref())?;
         let destination = Repo::hub(&self.destination).map_err(Refusal)?.to_string();
         let lane = refs::label("--lane", &self.lane).map_err(Refusal)?;
-        if self.strength.is_some_and(|s| !s.is_finite() || s.abs() > 10.0) {
-            return Err(usage("model_strength_invalid", "--strength is a number between -10 and 10"));
-        }
         let commit = matches!(ModelRef::parse(&self.source), Ok(ModelRef::Commit { .. }));
         let converted = !self.source.starts_with("run:") && !commit;
         if self.trained_on.is_some() && !converted {
@@ -276,7 +291,7 @@ impl Ask for ModelUpload {
             }
             // It runs where the weights are, whatever `on` names.
             let submit = from_run(api, reference, &destination, &lane)?;
-            return Ok(Prepared { submit, after: Some(display(false)) });
+            return Ok(warned(Prepared { submit, after: Some(display(false)) }));
         }
         protocol::calcifer::local_usable(&self.on.to_string()).map_err(Refusal)?;
         // The machine publishes under this computer's sign-in; refuse before anything is made.
@@ -313,7 +328,7 @@ impl Ask for ModelUpload {
         }
         let after = display(true);
         let submit = warm(&hub, self.on, self.agreed, target, made, destination, lane);
-        Ok(Prepared { submit, after: Some(after) })
+        Ok(warned(Prepared { submit, after: Some(after) }))
     }
 }
 
@@ -448,9 +463,7 @@ async fn mirror(api: &Api, hub: &Origin, source: &str, page: &str, repo: &Repo) 
 /// nothing. With the mirror recorded before it.
 async fn record(api: &Api, hub: &Origin, ask: ModelUpload, from: Repo, commit: String) -> Result<(RecordedCommit, Option<Mirrored>), Refusal> {
     let to = Repo::hub(&ask.destination).map_err(Refusal)?;
-    if ask.strength.is_some_and(|s| !s.is_finite() || s.abs() > 10.0) {
-        return Err(usage("model_strength_invalid", "--strength is a number between -10 and 10"));
-    }
+    let (strength, said) = strength_within(ask.strength)?;
     let client = signed_in(api, hub)?;
     let card = (client.get_model(&from.org, &from.name).await).map_err(|e| refusal(hub, e))?;
     let lanes = card.releases.iter().flat_map(|r| r.lanes.iter().map(|(lane, l)| (lane.as_str(), l.commit.as_str(), l.length)));
@@ -470,7 +483,7 @@ async fn record(api: &Api, hub: &Origin, ask: ModelUpload, from: Repo, commit: S
         None => None,
     };
     let made = (client.create_model_commit(&to.org, &to.name, &commit, length).await).map_err(|e| refusal(hub, e))?;
-    let display = match (ask.trigger, ask.strength) {
+    let display = match (ask.trigger, strength) {
         (None, None) => None,
         (trigger, strength) => Some(display(&api.machines, hub, to.to_string(), trigger, strength).await),
     };
@@ -481,6 +494,7 @@ async fn record(api: &Api, hub: &Origin, ask: ModelUpload, from: Repo, commit: S
         lane: made.lane,
         model: to.to_string(),
         display,
+        warnings: said.into_iter().collect(),
     };
     Ok((recorded, mirrored))
 }

@@ -86,10 +86,14 @@ impl Error {
                 Refusal { retry_after_s, ..Refusal::new(Kind::of_http(status), code.clone(), message).cause(code) },
                 remedy,
             ),
-            Self::Call(message) => (
-                Refusal::unavailable("hub_unreachable", message),
-                "check this computer's internet connection, then try again".into(),
-            ),
+            Self::Call(message) => {
+                // A timeout is the Hub keeping quiet; only what never connected says anything of this computer.
+                let remedy = match message.contains("timed out") || message.contains("no answer in") {
+                    true => "the Hub took too long to answer: it is busy or down, and asking again is safe",
+                    false => "this computer couldn't reach the Hub: its connection, or the Hub being down. Asking again is safe",
+                };
+                (Refusal::unavailable("hub_unreachable", message), remedy.into())
+            }
             Self::Credential(message) => (
                 Refusal::credential("hub_credential", message).next(login()),
                 String::new(),

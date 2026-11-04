@@ -982,6 +982,23 @@ impl Store {
         })
     }
 
+    /// Settles a run its machine keeps answering an internal failure about: canceled when that was asked, else failed, saying where
+    /// to look, as it may have gone on there. It is never sent again.
+    pub fn gave_up(&self, id: &str, machine: &str, code: &str, message: &str) -> Result<Vec<Event>> {
+        self.write(|tx| match run_in(tx, id)? {
+            Some(row) if row.state == State::Settled => Ok(vec![]),
+            Some(row) if row.cancel_requested => {
+                let message = format!("canceled, though {machine} wouldn't answer: {code}: {message}");
+                end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
+            }
+            Some(_) => {
+                let message = format!("{machine} keeps failing when asked about this run, and it was not retried: {message}: cozy machine logs {machine}");
+                end(tx, id, Status::Failed, Some(Reason { code: code.into(), message, origin: "machine".into(), ..Default::default() }))
+            }
+            None => Ok(vec![]),
+        })
+    }
+
     /// Ends a run its machine never accepted, with `reason`.
     pub fn fail(&self, id: &str, reason: Reason) -> Result<Vec<Event>> {
         self.write(|tx| match run_in(tx, id)? {

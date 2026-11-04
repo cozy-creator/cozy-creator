@@ -121,7 +121,8 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
                 Kind::Validation,
                 format!("{name}_digest_mismatch"),
                 format!("{} is sha256:{got}, not the pinned sha256:{}", archive.url, archive.sha256),
-            ));
+            )
+        .next("cozy doctor"));
         }
         tools::extract(archive, &mut download, staging.path()).map_err(|e| failed(e.to_string()))?;
         let _ = std::fs::remove_file(&part);

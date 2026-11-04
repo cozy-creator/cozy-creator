@@ -316,6 +316,7 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; pull again") });
     }
     std::fs::rename(&part, &at).map_err(named)?;
+    folder::sealed(&at);
     tally.moved.fetch_add(1, Ordering::Relaxed);
     let _ = project.events.send(Event::Moved { file: Some(path), bytes: tally.bytes.load(Ordering::Relaxed) });
     Ok(())
@@ -335,6 +336,21 @@ async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Err
     ticking(project, || tally.bytes.load(Ordering::Relaxed), fetching).await.map_err(failed)?;
     let (moved, bytes) = (tally.moved.load(Ordering::Relaxed), tally.bytes.load(Ordering::Relaxed));
     Ok(Transferred { files, moved, bytes, skipped: tally.skipped(), kept_in: None, commit: None })
+}
+
+/// One file of `project` fetched from `hub`, when it holds it: what a cut needs of a piece. Err: why not.
+pub(super) async fn pull_one(api: &Api, project: &Project, hub: &str, file: folder::File) -> Result<(), String> {
+    let hub = match hub {
+        "" => api.machines.hubs.hub.clone(),
+        hub => Origin::parse(hub).map_err(|e| e.message)?,
+    };
+    let (_, endpoint) = signed(api, &hub).map_err(|e| e.message)?;
+    let _held = project.moving.lock().await;
+    let store = project.folder.dir.join(folder::FILES);
+    std::fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
+    let tally = Tally::default();
+    fetch(project, &endpoint, &tally, file).await.map_err(|e| failed(e).message)?;
+    tally.skipped().pop().map_or(Ok(()), |skipped| Err(skipped.why))
 }
 
 /// What a transfer asks for, refused now when this computer is not signed in.

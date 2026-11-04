@@ -79,31 +79,25 @@ pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
     said
 }
 
-/// Takes from `pieces` what isn't on this computer, and says each: the rest still make the cut.
-pub fn absent(pieces: &mut Vec<Piece>) -> Vec<String> {
-    let mut said = vec![];
-    pieces.retain(|piece| {
-        let here = piece.path.is_file();
-        if !here {
-            said.push(format!("{}: {} is not on this computer: cozy project pull: that cut is left out", piece.asset, piece.path.display()));
-        }
-        here
-    });
-    said
-}
-
 /// Why the film `files` holds isn't what a cut of these fields makes: its frames, measured, against what its pieces add up to, one a
 /// piece being rounding. A film short of a piece isn't that cut's state, whatever made it. None until each is measured.
-pub fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, files: &folder::Files) -> Option<String> {
-    let film = lock.files.get(files.get("video")?)?;
+pub fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, version: &folder::Version) -> Option<String> {
+    let film = lock.files.get(version.files.get("video")?)?;
     if film.frames == 0 {
         return None;
     }
     let fps = Canvas::of(fields, &mut vec![]).fps;
     let (mut pieces, _) = pieces(fields, reads, &Folder::at(Path::new("")), lock);
+    // What it says it went without isn't why it's short.
+    pieces.retain(|piece| !version.without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
     past_end(&mut pieces, fps);
     let made = measure(&pieces, fps)?.frames;
     (film.frames.abs_diff(made) > pieces.len() as u64).then(|| format!("its film holds {} frames, and its pieces add up to {made}", film.frames))
+}
+
+/// ffprobe's answer when the file at `path` isn't a video it reads.
+pub fn unread(ffprobe: &Path, path: &Path) -> Option<String> {
+    probe(ffprobe, path, false).err().map(|error| error.message)
 }
 
 /// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
@@ -560,6 +554,11 @@ pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Opti
     })
 }
 
+/// How many frames the video at `path` holds, when ffprobe reads it.
+pub fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
+    probe(ffprobe, path, false).ok().map(|probe| probe.frames)
+}
+
 /// How long the video or sound at `path` lasts, as its container says.
 pub fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
     let args = ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration", "-of", "csv=p=0"];
@@ -725,10 +724,36 @@ pub fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result
 
 /// `from`, a file of the project's, as `to` at its root: a hard link, else a copy; a reader never meets half a file.
 pub fn publish(from: &Path, to: &Path) -> std::io::Result<()> {
-    let part = to.with_file_name(format!(".{}.link", to.file_name().expect("a name").to_string_lossy()));
+    let part = to.with_file_name(format!(".{}.part", to.file_name().expect("a name").to_string_lossy()));
     let _ = std::fs::remove_file(&part);
-    if std::fs::hard_link(from, &part).is_err() {
-        std::fs::copy(from, &part)?;
-    }
+    // A real file of its own, whatever a person does to it; `copy` clones where the filesystem can.
+    std::fs::copy(from, &part)?;
+    writable(&part)?;
     std::fs::rename(&part, to)
+}
+
+#[cfg(unix)]
+fn writable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn writable(path: &Path) -> std::io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions)
+}
+
+/// Whether the film at `path` still shares its bytes with `files/`, as one a cozy before this published does: writing to it would write there.
+#[cfg(unix)]
+pub fn shares_bytes(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
+}
+
+#[cfg(not(unix))]
+pub fn shares_bytes(_: &Path) -> bool {
+    false
 }

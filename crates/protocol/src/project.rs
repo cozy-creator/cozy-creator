@@ -296,6 +296,12 @@ pub struct VersionPrefix {
     /// Its main file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main: Option<MainFile>,
+    /// A cut's: what it was cut from, `<asset> <version>` each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<String>,
+    /// A cut's: what it was cut without, `<piece>: <why>` each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<String>,
 }
 
 /// The file people mean by a version, and what is measured of it so far.
@@ -355,6 +361,9 @@ pub struct Cut {
     pub retimed: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skips: Vec<String>,
+    /// The film that stands was cut without these: `<piece>: <why>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<String>,
 }
 
 /// How an asset stands, for a client that shows it rather than says it (`status` says it).
@@ -593,6 +602,9 @@ pub struct Renamed {
     pub from: String,
     pub to: String,
     pub versions: u32,
+    /// A render is going: it happens as that ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
 }
 
 /// `POST /v1/projects/{id}/reclaim`: lists what it would delete: orphans' versions, and any file nothing else names. With
@@ -712,9 +724,13 @@ pub enum Event {
         took_s: f64,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unchanged: bool,
+        /// What this film was cut without: `<piece>: <why>`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        without: Vec<String>,
     },
-    /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
-    /// that failed (`Failed` said it already, unless the walk itself stopped).
+    /// The walk is over: nothing it was asked is left to send or follow. `error` is the first thing that
+    /// failed (`Failed` said it already, unless the walk itself stopped), or when more than that was
+    /// asked, `render_incomplete`: how far it got, that failure, and the command for the rest.
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,

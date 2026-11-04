@@ -490,6 +490,8 @@ pub struct RecordedCommit {
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A destination recorded as a mirror of its author's model, before anything uploads.

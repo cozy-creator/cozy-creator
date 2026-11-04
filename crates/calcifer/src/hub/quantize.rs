@@ -77,7 +77,8 @@ pub(super) async fn quote(
             Kind::Usage,
             "quote_local",
             "local code runs where it was made ready; a `new` machine takes a published release",
-        )));
+        )
+        .next("cozy machine rent")));
     }
     let Planned::Run(request) = plan(&api, "quote", ask).await? else {
         unreachable!("a published package installs nothing first");

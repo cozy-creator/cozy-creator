@@ -113,6 +113,11 @@ impl Error {
         self
     }
 
+    /// Whether asking the Hub again may be answered: it gave no answer, a slow one, or failed on its side. A refusal is final.
+    pub fn hub_transient(&self) -> bool {
+        matches!(self.code.as_str(), "hub_unreachable" | "hub_slow") || (self.kind == Kind::Unavailable && self.cause.as_ref() == Some(&self.code))
+    }
+
     /// The process exit code: 2 for usage, 1 for everything else.
     pub fn exit_code(&self) -> i32 {
         if self.kind == Kind::Usage { 2 } else { 1 }

@@ -235,12 +235,11 @@ async fn add(
 async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, Error> {
     let m = machine(ctx, name).await?;
     let Some(login) = &m.ssh else {
-        let why = match m.rental {
-            Some(_) => format!("{} was rented without an SSH key", m.name),
-            None => format!("{} is not a rental: SSH there as its owner does", m.name),
-        };
-        return Err(Error::new(Kind::Usage, "machine_ssh_none", why)
-            .remedy("rent with `--ssh` to log in: cozy machine rent <sku> --ssh"));
+        return Err(match &m.rental {
+            Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{} was rented without an SSH key, and a rental can't take one later", m.name))
+                .next(format!("cozy machine rent {} --ssh", rental.sku)),
+            None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental: SSH there as its owner does", m.name)),
+        });
     };
     let mut ssh = std::process::Command::new(&login.args[0]);
     ssh.args(&login.args[1..]);

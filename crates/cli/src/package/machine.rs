@@ -109,7 +109,7 @@ async fn held(ctx: &Context, on: Option<&On>) -> Result<Vec<HeldPackage>, Error>
             Followed::Ready(machine) => machine,
             Followed::Unfollowed => {
                 let message = format!("{name} has not started; nothing was sent to it");
-                return Err(Error::new(Kind::Unavailable, "machine_booting", message));
+                return Err(Error::new(Kind::Unavailable, "machine_booting", message).next(format!("cozy machine show {name}")));
             }
         };
     }
@@ -126,7 +126,8 @@ pub(crate) fn named(on: &On) -> Result<&str, Error> {
             Kind::Usage,
             "machine_name_required",
             format!("--on {on} names no machine whose packages can be read"),
-        )),
+        )
+        .next("cozy machine ls")),
     }
 }
 

@@ -19,7 +19,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::Infallible,
     path::{Path as FsPath, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -34,7 +37,7 @@ use axum::{
     },
     routing::{get, post},
 };
-use futures_util::{Stream, StreamExt as _, stream::FuturesUnordered};
+use futures_util::{FutureExt as _, Stream, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use protocol::{
     calcifer::{FileTerm, Kind as RunKind, On, Run, RunRequest, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
@@ -200,7 +203,9 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// The words a run hears outside a project, as `git` says it of a repository.
 pub(crate) fn not_in_one() -> Error {
-    Error::new(Kind::Usage, "not_in_a_project", "not in a project: cd into one, or cozy project new <name>")
+    Error::new(Kind::Usage, "not_in_a_project", "not in a project: cd into one, or make one")
+        .next("cozy project ls")
+        .next("cozy project new my-project && cd my-project")
 }
 
 /// Where a run of the project in `dir` lands its outputs.
@@ -382,7 +387,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
     tokio::spawn(async move {
         remember(&api);
         let error = match walk.go().await {
-            Ok(first) => first,
+            Ok(first) => first.map(|first| walk.last_word(first)),
             Err(error) => {
                 *walk.project.walking.lock().expect("walking lock") = false;
                 Some(error)
@@ -440,7 +445,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
             let project = path.join(folder::PROJECT);
             if project.exists() {
                 let said = format!("{} is a project already", path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said)));
+                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", path.display()))));
             }
             std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
             platform::durable::replace(&project, format::starter().as_bytes(), 0o644).map_err(|e| io(path, std::io::Error::other(e)))?;
@@ -547,7 +552,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<StatusCode, Refusal> {
     let mut open = api.projects.open.lock().expect("projects lock");
     if open.get(&id).is_some_and(|project| *project.walking.lock().expect("walking lock")) {
-        let said = format!("{id} is rendering: it is forgotten once its runs land");
+        let said = format!("{id} is rendering: forget it once its runs land");
         return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
     }
     open.remove(&id);
@@ -724,8 +729,24 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
     let (mut pieces, skips) = tools::pieces(&asset.fields, &stand[i].reads, folder, lock);
     tools::past_end(&mut pieces, canvas.fps);
     let made = tools::measure(&pieces, canvas.fps);
-    let (frames, retimed) = (made.as_ref().map(|made| made.frames), made.map(|made| made.retimed).unwrap_or_default());
-    Cut { cut: name, path, fps: canvas.fps, cut_at_ms, frames, retimed, skips }
+    // The film's own length once one stands, whatever its pieces now add up to.
+    let frames = folder.film_frames(&path).or(made.as_ref().map(|made| made.frames));
+    let retimed = made.map(|made| made.retimed).unwrap_or_default();
+    let standing = stand[i].version().and_then(|number| lock.asset(&asset.name)?.version(number));
+    let without = standing.map(|version| version.without.iter().map(folder::Without::said).collect()).unwrap_or_default();
+    Cut { cut: name, path, fps: canvas.fps, cut_at_ms, frames, retimed, skips, without }
+}
+
+/// What a cut's version was cut from: each piece's asset, and its version when it was one.
+fn cut_from(lock: &Lock, version: &Version) -> Vec<String> {
+    if version.made_by.as_ref().is_none_or(|by| by.with != "cozy/cut") {
+        return vec![];
+    }
+    let took = |read: &ReadFrom| {
+        let number = lock.asset(&read.name)?.versions.iter().find(|held| held.main() == folder::main_of(&read.files))?.number;
+        Some(format!("{} {number}", read.name))
+    };
+    version.reads.iter().map(|read| took(read).unwrap_or_else(|| read.name.clone())).collect()
 }
 
 /// What its versions are called.
@@ -844,6 +865,8 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.runs.last().copied(),
                     main: main_file(folder, lock, &version.files),
+                    from: cut_from(lock, version),
+                    without: version.without.iter().map(folder::Without::said).collect(),
                 })
             })
             .collect(),
@@ -984,7 +1007,8 @@ async fn reclaim(
 
 /// Renames asset `from` to `to`: in project.yaml its key and every `<from>`, unless the file has moved to `to` already, then what
 /// project.lock keeps of it, its pin and what is pending or owed of it, and its row on the canvas. Its readers' text changed, so they
-/// go out of date unless pinned. Refused while the project renders. Nothing on disk moves.
+/// go out of date unless pinned. While the project renders, what it renders still says `from`, so project.lock's part happens as that
+/// walk ends. Nothing on disk moves.
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -995,9 +1019,6 @@ async fn rename(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
-    if *project.walking.lock().expect("walking lock") {
-        return Err(refuse(Kind::Conflict, "project_busy", "the project is rendering: rename once its runs land".into()));
-    }
     let mut doc = Doc::load(folder).map_err(Refusal)?;
     let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
     if let Some(i) = doc.holds(&asked.from).filter(|_| free) {
@@ -1019,18 +1040,28 @@ async fn rename(
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
     }
     if old.is_none() && !free && canvas::row(folder, &asked.from).map_err(Refusal)?.is_none() {
-        return Err(refuse(Kind::NotFound, "asset_unknown", format!("project.lock keeps no version of {}", asked.from)));
+        let said = format!("project.lock keeps no version of {}", asked.from);
+        return Err(Refusal(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status")));
     }
     let to = doc.assets[i].name.clone();
     if old.is_some() && lock.asset(&to).is_some_and(|held| !held.versions.is_empty()) {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
     }
     let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
-    if old.is_some() {
-        folder.update_lock(|lock| renamed(lock, &from, &to)).map_err(Refusal)?;
+    // Under `walking`, as a walk's end is, so that it is done now or that walk does it.
+    let walking = project.walking.lock().expect("walking lock");
+    let queued = *walking;
+    if queued || old.is_some() {
+        folder
+            .update_lock(|lock| match queued {
+                true => lock.walk.renames.push((from.clone(), to.clone())),
+                false => renamed(lock, &from, &to),
+            })
+            .map_err(Refusal)?;
     }
+    drop(walking);
     canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
-    Ok(Json(Renamed { from, to, versions }))
+    Ok(Json(Renamed { from, to, versions, queued }))
 }
 
 /// project.lock with asset `from` called `to`: its row, and what is pending or owed of it.
@@ -1064,8 +1095,8 @@ async fn runs(
     let body = body?;
     let asked: Runs = parse(&body)?;
     if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
-        let said = "a project's runs go to machines: rent one first (`cozy machine rent`)";
-        return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said)));
+        let said = "a project's runs go to machines: rent one first, then name it with --on";
+        return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
     }
     if asked.approve && asked.n > 1 {
         let said = format!("--approve approves the one new version; -n {} makes {}", asked.n, asked.n);
@@ -1167,10 +1198,10 @@ async fn runs(
             continue;
         }
         if doc.tool(i).is_some() {
-            match missing {
-                true => said(format!("{name} is made here, free, when what it reads settles")),
-                // Named, it is made again, as anything named is.
-                false => takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, keeps: None }),
+            said(format!("{name} is made here, free, when what it reads settles"));
+            // Named, it is made again, as anything named is.
+            if !missing {
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, keeps: None });
             }
             if approve {
                 say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));
@@ -1217,7 +1248,7 @@ async fn runs(
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
     let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
     let before = queue(&project.folder, &lock);
-    let ask = Ask { id: new_key(), text, digest, target: target.clone(), all: all && missing, outdated, sent: BTreeSet::new(), takes };
+    let ask = Ask { id: new_key(), text, digest, target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
     (project.folder.update_lock(|lock| {
         if !joined || added > 0 {
             lock.walk.asks.push(ask.clone());
@@ -1650,6 +1681,9 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
         };
         let tools: Vec<usize> = tools.into_iter().filter(|&i| tried.insert(doc.assets[i].name.clone())).collect();
         if tools.is_empty() {
+            for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
+                walker.film_follows(&doc, &stand, &lock, i).await;
+            }
             return vec![];
         }
         for i in tools {
@@ -1820,11 +1854,146 @@ struct Walk {
     tally: Mutex<Rendered>,
     /// The cuts it made, which it has said.
     cut: Mutex<BTreeSet<String>>,
+    /// What it did not make, for its last word.
+    missed: Mutex<Missed>,
+    /// How many runs failed each way on each machine: (machine, code, message).
+    faults: Mutex<HashMap<(String, String, String), u32>>,
+    /// The machines it stopped sending to (`fault`), with the renders that stops: one asked later tries again.
+    stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    /// That this computer's first need of ffprobe was met: it measures what adapters read.
+    measuring: AtomicBool,
 }
+
+/// What a walk did not make, and how to ask for it again.
+#[derive(Default)]
+struct Missed {
+    failed: u32,
+    unsent: u32,
+    names: BTreeSet<String>,
+    /// A render of `all` was among them.
+    whole: bool,
+    /// A render that takes out-of-date pins too was among them.
+    outdated: bool,
+    on: Vec<On>,
+}
+
+/// A run being followed to its end: its key, and what landing it came to.
+type Following<'a> = BoxFuture<'a, (String, Result<Result<(), Stopped>, Error>)>;
 
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
-        Self { host: Host::new(api), project: project.clone(), began: Instant::now(), tally: Mutex::default(), cut: Mutex::default() }
+        Self {
+            host: Host::telling(api, project.events.clone()),
+            project: project.clone(),
+            began: Instant::now(),
+            tally: Mutex::default(),
+            cut: Mutex::default(),
+            missed: Mutex::default(),
+            faults: Mutex::default(),
+            stopped: Mutex::default(),
+            measuring: AtomicBool::new(false),
+        }
+    }
+
+    /// The walk's first failure as its last word when it made or missed more than that one: how far it got, and the command for the rest.
+    fn last_word(&self, first: Error) -> Error {
+        let tally = self.tally.lock().expect("tally lock");
+        let missed = self.missed.lock().expect("missed lock");
+        let made = tally.takes + tally.versions;
+        let total = made + missed.failed + missed.unsent;
+        if total <= 1 {
+            return first;
+        }
+        let unsent = match missed.unsent {
+            0 => String::new(),
+            n => format!(", {n} not sent"),
+        };
+        let said = format!("rendered {made} of {total}; {} failed{unsent}: {}", missed.failed, first.message);
+        let what = match missed.whole || missed.names.is_empty() {
+            true if missed.outdated => "all --missing --outdated".to_owned(),
+            true => "all --missing".to_owned(),
+            false => missed.names.iter().cloned().collect::<Vec<_>>().join(" "),
+        };
+        let on = missed.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+        let mut error = Error::new(first.kind, "render_incomplete", said).cause(first.code).next(format!("cozy project render {what} --on {on}"));
+        error.next.extend(first.next.into_iter().take(1));
+        error
+    }
+
+    /// Records what `ask` is, for the last word.
+    fn asked_of(&self, ask: &Ask) {
+        let mut missed = self.missed.lock().expect("missed lock");
+        missed.whole |= ask.all || ask.whole;
+        missed.outdated |= ask.outdated;
+        for on in &ask.target.on {
+            if !missed.on.contains(on) {
+                missed.on.push(on.clone());
+            }
+        }
+    }
+
+    /// One thing it did not send, because every machine it could go to stopped.
+    fn not_sent(&self, name: &str) {
+        let mut missed = self.missed.lock().expect("missed lock");
+        missed.unsent += 1;
+        missed.names.insert(name.to_owned());
+    }
+
+    /// A run failed `code`, saying `why`, on `machine`. The second alike stops what this walk's renders send there and cancels
+    /// what they sent that has not begun: whatever is wrong there, the next run would pay to find it again.
+    fn fault(&self, machine: &str, code: &str, why: &str) -> Result<(), Error> {
+        let seen = {
+            let mut faults = self.faults.lock().expect("faults lock");
+            let seen = faults.entry((machine.to_owned(), code.to_owned(), why.to_owned())).or_default();
+            *seen += 1;
+            *seen
+        };
+        if seen < 2 {
+            return Ok(());
+        }
+        let lock = self.folder().lock()?;
+        let asks: BTreeSet<String> = lock.walk.asks.iter().map(|ask| ask.id.clone()).collect();
+        let fresh = {
+            let mut stopped = self.stopped.lock().expect("stopped lock");
+            let fresh = !stopped.contains_key(machine);
+            stopped.entry(machine.to_owned()).or_default().extend(asks.iter().cloned());
+            fresh
+        };
+        if fresh {
+            self.say(Event::Warning { message: format!("{machine}: {seen} runs failed the same way, so this render sends it nothing more: {why}") });
+        }
+        for pending in lock.pending.values().filter(|pending| pending.run > 0 && asks.contains(&pending.ask)) {
+            self.host.cancel_unstarted(pending.run, machine);
+        }
+        Ok(())
+    }
+
+    /// Which of `on` render `ask` may still send to.
+    fn sending(&self, ask: &str, on: &[On]) -> Vec<On> {
+        let stopped = self.stopped.lock().expect("stopped lock");
+        if stopped.is_empty() {
+            return on.to_vec();
+        }
+        let stops = |machine: &str| stopped.get(machine).is_some_and(|asks| asks.contains(ask));
+        (on.iter())
+            .filter(|on| match on {
+                On::Machine(machine) => !stops(machine),
+                // Whichever machine it would be may be the one.
+                _ => !stopped.keys().any(|machine| stops(machine)),
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Sizes an adapter reads are ffprobe's: with files to measure and none here, this computer's first need fetches it, or says what goes without.
+    async fn measuring(&self, lock: &Lock) {
+        if !self.folder().wants_ffprobe(lock) || self.measuring.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        self.say(Event::Said { message: "fetching ffmpeg and ffprobe, which measure this project's files".into() });
+        if let Err(error) = self.host.ffmpeg().await {
+            self.say(Event::Warning { message: format!("adapters see no sizes for this project's files: {}: cozy doctor", error.message) });
+        }
     }
 
     /// What it landed and how long it took, if it landed anything.
@@ -1860,8 +2029,12 @@ impl Walk {
             && let Ok(doc) = Doc::read(self.folder(), &ask.text)
         {
             let stand = doc.stand(&lock);
+            let stopped = self.sending(id, &ask.target.on).is_empty();
             for (i, message) in stuck(&doc, &stand, &lock, ask) {
-                self.failed_asset(&doc, &stand, i, Error::new(Kind::NotFound, "file_missing", message), first);
+                match stopped {
+                    true => self.not_sent(&doc.assets[i].name),
+                    false => self.failed_asset(&doc, &stand, i, Error::new(Kind::NotFound, "file_missing", message), first),
+                }
             }
             self.say_cuts(&doc, &stand).await?;
         }
@@ -1874,20 +2047,31 @@ impl Walk {
     }
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
-    /// again under that key, each attempt said; one its Hub says stopped or ended is refused at once.
+    /// again under that key; one its Hub says stopped or ended is refused at once.
     async fn send_run(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+        self.again(|| self.host.submit(key, run.clone())).await
+    }
+
+    /// `ask`, and again while its machine answers no connect or the Hub doesn't answer, each attempt said. Everything asked this way
+    /// is a read, or goes under a key.
+    async fn again<T, F: Future<Output = Result<T, Error>>>(&self, ask: impl Fn() -> F) -> Result<T, Error> {
         const WAITS: [u64; 4] = [3, 6, 12, 24];
+        let again = |e: &Error| e.code == "machine_unreachable" || e.hub_transient();
         for (attempt, wait) in WAITS.iter().enumerate() {
-            match self.host.submit(key, run.clone()).await {
-                Err(e) if e.code == "machine_unreachable" => {
-                    let message = format!("{}; attempt {}/{} in {wait} s", e.message, attempt + 2, WAITS.len() + 1);
+            match ask().await {
+                Err(e) if again(&e) => {
+                    let wait = e.wait_or(std::time::Duration::from_secs(*wait));
+                    let message = format!("{}; attempt {}/{} in {} s", e.message, attempt + 2, WAITS.len() + 1, wait.as_secs());
                     self.say(Event::Warning { message });
-                    tokio::time::sleep(std::time::Duration::from_secs(*wait)).await;
+                    tokio::time::sleep(wait).await;
                 }
                 answer => return answer,
             }
         }
-        self.host.submit(key, run).await
+        ask().await.map_err(|e| match again(&e) {
+            true => Error { message: format!("{}, after {} attempts", e.message, WAITS.len() + 1), ..e },
+            false => e,
+        })
     }
 
     fn say(&self, event: Event) {
@@ -1897,10 +2081,11 @@ impl Walk {
     /// Sends whatever is ready, makes each tool whose reads have settled, follows every pending run (what it sent, what an earlier
     /// walker sent), and plans again as each lands or something is asked, until nothing is owed: then the first thing that failed, if one did.
     async fn go(&self) -> Result<Option<Error>, Error> {
-        let (mut first, mut following, mut followed) = (None, FuturesUnordered::new(), HashSet::new());
+        let (mut first, mut following, mut followed): (_, FuturesUnordered<Following<'_>>, _) = (None, FuturesUnordered::new(), HashSet::new());
         let mut greeted = HashSet::new();
         loop {
             let mut moved = false;
+            self.measuring(&self.folder().lock()?).await;
             self.measure()?;
             // Each render on its own text, all going at once: what is independent goes together.
             let asks: Vec<String> = self.folder().lock()?.walk.asks.into_iter().map(|ask| ask.id).collect();
@@ -1916,6 +2101,7 @@ impl Walk {
                 };
                 let lock = self.folder().lock()?;
                 let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id) else { continue };
+                self.asked_of(ask);
                 if greeted.insert(id.clone()) {
                     doc.warnings.iter().for_each(|warning| self.say(Event::Warning { message: warning.message.clone() }));
                 }
@@ -1935,8 +2121,11 @@ impl Walk {
                 for next in planned.send {
                     let i = next.i;
                     if let Err(error) = self.send(ask, &doc, &stand, &lock, next).await {
+                        self.send_failed(ask, &doc.assets[i].name, &error)?;
                         self.failed_asset(&doc, &stand, i, error, &mut first);
                     }
+                    // What has landed since: a machine failing every run stops the rest of this list.
+                    self.landed_now(&mut following, &mut followed, &mut first)?;
                 }
                 for i in planned.tools {
                     let made = self.tool(ask, &doc, &stand, &lock, i).await;
@@ -1954,11 +2143,7 @@ impl Walk {
                     self.finish(&id, &mut first).await?;
                 }
             }
-            for key in self.folder().lock()?.pending.into_keys() {
-                if followed.insert(key.clone()) {
-                    following.push(self.follow(key));
-                }
-            }
+            self.landed_now(&mut following, &mut followed, &mut first)?;
             if moved {
                 continue;
             }
@@ -1975,11 +2160,8 @@ impl Walk {
             tokio::select! {
                 Some((key, landed)) = following.next() => {
                     followed.remove(&key);
-                    if let Err((error, tried)) = landed? {
-                        match tried {
-                            Some((name, inputs)) => self.failed_of(&name, "", inputs, error, &mut first),
-                            None => self.failed(error, &mut first),
-                        }
+                    if let Err(stopped) = landed? {
+                        self.not_landed(stopped, &mut first);
                     }
                 }
                 () = self.project.asked.notified() => {}
@@ -1987,16 +2169,69 @@ impl Walk {
         }
     }
 
+    /// Follows what is newly pending, and lands what has ended by now, waiting for nothing.
+    fn landed_now<'a>(&'a self, following: &mut FuturesUnordered<Following<'a>>, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<(), Error> {
+        for key in self.folder().lock()?.pending.into_keys() {
+            if followed.insert(key.clone()) {
+                following.push(self.follow(key).boxed());
+            }
+        }
+        while let Some(Some((key, landed))) = following.next().now_or_never() {
+            followed.remove(&key);
+            if let Err(stopped) = landed? {
+                self.not_landed(stopped, first);
+            }
+        }
+        Ok(())
+    }
+
+    /// A followed run that didn't land: a failure of the asset it was a try at, when it was one.
+    fn not_landed(&self, (error, tried): Stopped, first: &mut Option<Error>) {
+        match tried {
+            Some((name, inputs)) => self.failed_of(&name, "", inputs, error, first),
+            None => self.failed(error, first),
+        }
+    }
+
+    /// `name` could not be sent: when that is its machines' doing, not its own, it counts as what they failed.
+    fn send_failed(&self, ask: &Ask, name: &str, error: &Error) -> Result<(), Error> {
+        self.missed.lock().expect("missed lock").names.insert(name.to_owned());
+        if error.kind != Kind::Unavailable {
+            return Ok(());
+        }
+        let code = error.cause.as_deref().unwrap_or(&error.code);
+        let why = error.message.strip_prefix(name).unwrap_or(&error.message);
+        for on in &ask.target.on {
+            if let On::Machine(machine) = on {
+                self.fault(machine, code, why)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the walk is over, nothing owed or followed. Decided under `walking`, so an ask finds
     /// this walker going or starts the next.
     fn over(&self) -> Result<bool, Error> {
         let mut walking = self.project.walking.lock().expect("walking lock");
-        *walking = self.folder().lock()?.owes();
+        let lock = self.folder().lock()?;
+        *walking = !lock.walk.asks.is_empty() || !lock.pending.is_empty();
+        if !*walking && !lock.walk.renames.is_empty() {
+            self.folder().update_lock(|lock| {
+                for (from, to) in std::mem::take(&mut lock.walk.renames) {
+                    // A render of it since made versions of its own: nothing overwrites those.
+                    match lock.asset(&to).is_some_and(|held| !held.versions.is_empty()) {
+                        true => self.say(Event::Warning { message: format!("{from} stays {from}: {to} has versions of its own now") }),
+                        false => renamed(lock, &from, &to),
+                    }
+                }
+            })?;
+        }
         Ok(!*walking)
     }
 
     /// What failed, of no one asset: said now; what does not read it goes on.
     fn failed(&self, error: Error, first: &mut Option<Error>) {
+        self.missed.lock().expect("missed lock").failed += 1;
         self.say(Event::Failed { name: None, error: error.clone() });
         first.get_or_insert(error);
     }
@@ -2008,6 +2243,11 @@ impl Walk {
     /// What failed of `name`: said now, kept for whoever reads it later, never sent again this walk; what does not read it goes on. Canceling
     /// is said, and isn't a failure of the asset.
     fn failed_of(&self, name: &str, kind: &str, inputs: Option<String>, error: Error, first: &mut Option<Error>) {
+        {
+            let mut missed = self.missed.lock().expect("missed lock");
+            missed.failed += 1;
+            missed.names.insert(name.to_owned());
+        }
         if error.code != CANCELED {
             let failed = Failed { inputs, error: error.clone() };
             if let Err(error) = self.folder().update_lock(|lock| lock.asset_mut(name, kind).failed = Some(failed.clone())) {
@@ -2024,18 +2264,12 @@ impl Walk {
         for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
             let name = cut_name(&doc.assets[i].name);
             let Some(file) = stand[i].files.as_ref().and_then(|files| files.get("video")).and_then(|sha256| lock.files.get(sha256)) else { continue };
-            let at = self.folder().dir.join(&name);
-            if !at.is_file() {
-                let _ = tools::publish(&self.folder().path(&file.path), &at);
-            }
-            if !at.with_extension("otio").is_file() {
-                self.timeline_again(&doc.assets[i], &stand[i], &lock, &name).await;
-            }
+            self.film_follows(doc, stand, &lock, i).await;
             if self.cut.lock().expect("cut lock").contains(&name) {
                 continue;
             }
             let row = cut_row(doc, self.folder(), &lock, stand, i);
-            self.say(Event::Cut { cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true });
+            self.say(Event::Cut { cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true, without: row.without });
         }
         Ok(())
     }
@@ -2074,10 +2308,15 @@ impl Walk {
                 Some(_) => mine.takes.retain(|take| take.key != key),
             }
         };
-        let (target, approve, new) = match &next.take {
+        let (mut target, approve, new) = match &next.take {
             None => (ask.target.clone(), false, next.unpin),
             Some(take) => (take.target.clone(), take.approve, take.new),
         };
+        target.on = self.sending(&ask.id, &target.on);
+        if target.on.is_empty() {
+            self.not_sent(&name);
+            return self.folder().update_lock(settle);
+        }
         let standing = &stand[i];
         let noun = noun(doc, lock, i);
         if !new && standing.files.is_some() {
@@ -2100,7 +2339,8 @@ impl Walk {
                     return Err(cannot(&name, format!("{} of {} is not on this computer: cozy project pull", gone.join(", "), read.name)));
                 }
             }
-            let package = self.host.package(&target.hub, &doc.target(i), &self.folder().dir, &target.on).await?;
+            let with = doc.target(i);
+            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on)).await?;
             if let Some(moved) = &package.moved {
                 self.say(Event::Warning { message: moved.clone() });
             }
@@ -2125,8 +2365,9 @@ impl Walk {
                 && let Some(file) = keep["latents"]["sha256"].as_str().and_then(|sha256| lock.files.get(sha256))
                 && matches!(self.reach(file, &target.on).await, Reach::Gone)
             {
-                let said = format!("{name}: take {}'s latents went with its machine: `cozy project render {name}` renders the whole shot", keep["take"]);
-                return Err(Error::new(Kind::NotFound, "take_latents_gone", said));
+                let said = format!("{name}: take {}'s latents went with its machine: rendering again renders the whole shot", keep["take"]);
+                let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                return Err(Error::new(Kind::NotFound, "take_latents_gone", said).next(format!("cozy project render {name} --on {on}")));
             }
             // What stays on a machine that's gone isn't read: an adapter does without it.
             let mut reads = standing.reads.clone();
@@ -2263,7 +2504,7 @@ impl Walk {
         let (source, inputs) = match &adapter.local {
             None => (v1::Source::Release(v1::Release { package: adapter.package.clone(), release: adapter.release.clone() }), vec![]),
             Some(path) => {
-                let prepared = self.host.ready(path, &placed, hub).await?;
+                let prepared = self.again(|| self.host.ready(path, &placed, hub)).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };
@@ -2279,7 +2520,8 @@ impl Walk {
         let run = self.send_run(&new_key(), submit).await?;
         let run = self.host.wait(&run.id).await?;
         if run.status != RunStatus::Completed {
-            return Err(failed(run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone())));
+            let why = run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
+            return Err(failed(why).next(format!("cozy run show {}", run.number)));
         }
         Ok(answered(run.result.as_ref()))
     }
@@ -2363,9 +2605,14 @@ impl Walk {
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
-            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            None => {
+                if let On::Machine(machine) = &placed {
+                    self.again(|| self.host.release_ready(machine, &renderer.package, &renderer.release, &hub)).await.map_err(named)?;
+                }
+                v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() })
+            }
             Some(path) => {
-                let prepared = self.host.ready(path, &placed, &hub).await.map_err(named)?;
+                let prepared = self.again(|| self.host.ready(path, &placed, &hub)).await.map_err(named)?;
                 staged.extend(prepared.files);
                 v1::Source::Local(prepared.source)
             }
@@ -2438,6 +2685,15 @@ impl Walk {
         // What this run landed is its version's, not a loose file of the project's.
         folder.update_lock(|lock| lock.runs.retain(|row| row.run != run.number))?;
         if run.status != RunStatus::Completed {
+            // Canceled because its machine stopped: not sent, as far as anyone paid for it.
+            if run.status == RunStatus::Canceled && run.started_at_ms.is_none() && run.machine.as_deref().is_some_and(|machine| self.stopped.lock().expect("stopped lock").contains_key(machine)) {
+                self.not_sent(&name);
+                return Ok(());
+            }
+            self.missed.lock().expect("missed lock").names.insert(name.clone());
+            if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
+                self.fault(machine, &reason.code, &reason.message)?;
+            }
             let status = format!("{:?}", run.status).to_lowercase();
             let said = match &run.reason {
                 Some(reason) => format!("{name}: {status}: {}", reason.message),
@@ -2502,7 +2758,8 @@ impl Walk {
             let mut done = pending.done.clone();
             done.push(saved);
             next.input = earlier(next.input, &done).map_err(|why| cannot(&name, why))?;
-            let package = self.host.package(&pending.target.hub, &doc.target(i), &folder.dir, &pending.target.on).await?;
+            let with = doc.target(i);
+            let package = self.again(|| self.host.package(&pending.target.hub, &with, &folder.dir, &pending.target.on)).await?;
             let carried = Pending { version, rest, done, run: 0, ..pending.clone() };
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
             return self.submit(&new_key(), next, &package, &doc.assets[i], carried, &settle).await;
@@ -2567,7 +2824,8 @@ impl Walk {
         self.folder().keep(frame.path())
     }
 
-    /// Makes tool `i` here, from what it reads now, and lists what it made. A tool keeps one version, free to make again, and its pinned one.
+    /// Makes tool `i` here, from what it reads now, and lists what it made. A frame keeps one version, free to make again, and its pinned one. A cut keeps
+    /// every one with new bytes, as anything else does: the same pieces coming out the same make none.
     async fn tool(&self, ask: &Ask, doc: &Doc, stand: &[Standing], lock: &Lock, i: usize) -> Result<(), Error> {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -2588,7 +2846,13 @@ impl Walk {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
-                let Some(files) = self.cut_tool(asset, standing, &mut version).await? else { return Ok(()) };
+                let Some((files, without)) = self.cut_tool(asset, standing, &ask.target).await? else { return Ok(()) };
+                version.without = without;
+                let now = self.folder().lock()?;
+                let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
+                if again {
+                    return Ok(());
+                }
                 version.files = files;
             }
             Tool::Frame => {
@@ -2603,10 +2867,6 @@ impl Walk {
         let number = std::cell::Cell::new(0);
         self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
         version.number = number.get();
-        // One cut missing a file here matches no key, so the next walk makes it again; this one doesn't.
-        if version.inputs.is_empty() {
-            self.tried(&ask.id, &name)?;
-        }
         self.record_free(doc, &name, &asset.kind, version, noun(doc, lock, i))
     }
 
@@ -2620,27 +2880,32 @@ impl Walk {
         })
     }
 
-    /// Cuts `asset`'s pieces, its film and timeline at the root. None: nothing to cut. The film stays at the root however its
-    /// version goes; a cut missing a file here is recorded under no key, so it is made again. A piece here that it can't read
-    /// fails it: nothing is cut, and no film stands short of a piece.
-    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, version: &mut Version) -> Result<Option<Files>, Error> {
+    /// Cuts `asset`'s pieces, its film and timeline at the root, and what it went without. None: nothing to cut. A piece not here is
+    /// fetched from the machine that keeps it, or the Hub. One that can't be had, or has no version yet, is left out, warned of and said
+    /// with the film: Paul, "it'd generate the edit without them", and the film before it stays a version. One here that ffprobe can't
+    /// read fails it: nothing is cut, and the film that stands stays.
+    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
         let folder = self.folder();
         let mut said = vec![];
         let canvas = Canvas::of(&asset.fields, &mut said);
         // ffprobe first, as this may be its first need here, then every file measured.
         let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
+        let lock = folder.lock()?;
+        let (pieces, _) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
+        let name = cut_name(&asset.name);
+        let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+        let mut without = self.bring_pieces(asset, &pieces, &lock, target, &ffprobe, &on).await?;
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
         let (mut pieces, skips) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
-        let name = cut_name(&asset.name);
-        if !skips.is_empty() {
-            self.say(Event::Said { message: format!("{name} skips {}: no version yet", skips.join(", ")) });
+        pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
+        for piece in skips {
+            self.say(Event::Warning { message: format!("{name} is cut without {piece}, which has no version yet: cozy project render {piece} --on {on}") });
+            without.push(folder::Without { piece, why: "no version yet".into(), absent: false });
         }
-        let absent = pieces.iter().any(|piece| !piece.path.is_file());
-        said.extend(tools::absent(&mut pieces));
         let unreadable = tools::unreadable(&ffprobe, &pieces);
         if !unreadable.is_empty() {
-            return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}", asset.name, unreadable.join("; "))));
+            return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: the film that stands stays", asset.name, unreadable.join("; "))).next("cozy project status"));
         }
         said.extend(tools::past_end(&mut pieces, canvas.fps));
         said.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
@@ -2657,22 +2922,102 @@ impl Walk {
         })
         .await
         .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
-        let before = folder.lock()?.asset(&asset.name).and_then(|held| held.versions.last()?.files.get("video").cloned());
+        let now = folder.lock()?;
+        let held = now.asset(&asset.name);
+        let before = held.and_then(|held| held.versions.last()?.files.get("video").cloned());
         let sha256 = folder.take(&part)?;
         let path = folder.lock()?.files.get(&sha256).map(|file| folder.path(&file.path));
         if let Some(path) = path {
+            self.keep_aside(&asset.name, &folder.dir.join(&name), &now);
             tools::publish(&path, &folder.dir.join(&name)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{name}: {e}")))?;
         }
-        if absent {
-            version.inputs.clear();
+        // The timeline it's the film of, kept with it: a version chosen later brings its own.
+        let timeline = folder.keep(&folder.dir.join(&name).with_extension("otio"))?;
+        // What the film is, not what its pieces add up to.
+        let frames = folder.film_frames(&folder.dir.join(&name)).unwrap_or(made.frames);
+        if frames.abs_diff(made.frames) > 1 + standing.reads.len() as u64 {
+            self.say(Event::Warning { message: format!("{name} holds {frames} frames, and its pieces add up to {}", made.frames) });
         }
-        let (frames, retimed, took_s) = (made.frames, made.retimed, began.elapsed().as_secs_f64());
+        let (retimed, took_s) = (made.retimed, began.elapsed().as_secs_f64());
         self.cut.lock().expect("cut lock").insert(name.clone());
-        self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256) });
-        Ok(Some(Files::from([("video".to_owned(), sha256)])))
+        let said = without.iter().map(folder::Without::said).collect();
+        self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256), without: said });
+        Ok(Some((Files::from([("video".to_owned(), sha256), ("timeline".to_owned(), timeline)]), without)))
     }
 
-    /// Lists a tool's version, its older ones gone unless pinned, and whatever files only they named.
+    /// A file at `at`, where a film goes, that is no version of `asset`: someone made it there. It is kept beside it, and said.
+    fn keep_aside(&self, asset: &str, at: &FsPath, lock: &Lock) {
+        let Ok(got) = tokio::task::block_in_place(|| folder::hash(at)) else { return };
+        if lock.asset(asset).is_some_and(|held| held.versions.iter().any(|version| version.main() == Some(&got))) {
+            return;
+        }
+        let stem = at.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        let aside = at.with_file_name(format!("{stem}.edited-{}.mp4", folder::prefix_of(&got)));
+        if std::fs::rename(at, &aside).is_ok() {
+            self.say(Event::Warning { message: format!("{} isn't a version of {asset}: it is kept as {}", at.display(), aside.display()) });
+        }
+    }
+
+    /// The film and timeline at the root as asset `i`'s state has them: a version chosen, a memo gone back to, one deleted, or one
+    /// still linked into `files/` by a cozy before this.
+    async fn film_follows(&self, doc: &Doc, stand: &[Standing], lock: &Lock, i: usize) {
+        let Some(files) = stand[i].files.as_ref() else { return };
+        let Some(file) = files.get("video").and_then(|sha256| lock.files.get(sha256)) else { return };
+        let (at, from) = (self.folder().dir.join(cut_name(&doc.assets[i].name)), self.folder().path(&file.path));
+        if !from.is_file() {
+            return;
+        }
+        let same = !tools::shares_bytes(&at) && tokio::task::block_in_place(|| folder::hash(&at)).is_ok_and(|got| got == file.sha256);
+        if !same {
+            self.keep_aside(&doc.assets[i].name, &at, lock);
+            if let Err(e) = tools::publish(&from, &at) {
+                self.say(Event::Warning { message: format!("{}: {e}", at.display()) });
+            }
+        }
+        let timeline = at.with_extension("otio");
+        match files.get("timeline").and_then(|sha256| lock.files.get(sha256)) {
+            Some(kept) if !same || !timeline.is_file() => {
+                if let Err(e) = tools::publish(&self.folder().path(&kept.path), &timeline) {
+                    self.say(Event::Warning { message: format!("{}: {e}", timeline.display()) });
+                }
+            }
+            None if !timeline.is_file() => self.timeline_again(&doc.assets[i], &stand[i], lock, &cut_name(&doc.assets[i].name)).await,
+            _ => {}
+        }
+    }
+
+    /// Each of `pieces` not on this computer, or whose bytes aren't its hash, fetched: from the machine that keeps it while that lives, else
+    /// the Hub. What can't be had, warned of with what to run, is what the cut goes without. One whose bytes changed that ffprobe can't read
+    /// fails it, with ffprobe's answer.
+    async fn bring_pieces(&self, asset: &format::Asset, pieces: &[tools::Piece], lock: &Lock, target: &Target, ffprobe: &FsPath, on: &str) -> Result<Vec<folder::Without>, Error> {
+        let (mut without, mut seen) = (vec![], BTreeSet::new());
+        for piece in pieces.iter().filter(|piece| seen.insert(name_key(&piece.asset))) {
+            let Some(file) = lock.files.get(&piece.digest) else { continue };
+            // A file is named for its bytes, and a cut reads them all anyway.
+            let here = piece.path.is_file();
+            let (path, digest) = (piece.path.clone(), piece.digest.clone());
+            let changed = here && tokio::task::spawn_blocking(move || folder::hash(&path).is_ok_and(|got| got != digest)).await.unwrap_or(false);
+            if here && !changed {
+                continue;
+            }
+            let why = if changed { "its bytes changed" } else { "not on this computer" };
+            self.say(Event::Said { message: format!("{}: {} is {why}: fetching it", asset.name, piece.asset) });
+            let brought = match file.stays() && self.host.fetchable(&file.sha256, &file.machine) {
+                true => self.host.fetch(&file.sha256, &file.machine).await,
+                false => self.host.pull_one(&self.project, &target.hub, file.clone()).await,
+            };
+            let Err(reason) = brought else { continue };
+            if let Some(answer) = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten() {
+                return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: {answer}: the film that stands stays", asset.name, piece.asset)).next("cozy project status"));
+            }
+            let piece = piece.asset.clone();
+            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)) });
+            without.push(folder::Without { piece, why: why.into(), absent: !here });
+        }
+        Ok(without)
+    }
+
+    /// Lists a tool's version: a cut's join its others, and a frame's older ones go unless pinned, with whatever files only they named.
     fn record_free(&self, doc: &Doc, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
         let number = version.number;
         let old = std::cell::RefCell::new(vec![]);
@@ -2680,9 +3025,10 @@ impl Walk {
         let now = Doc::load(self.folder());
         let doc = now.as_ref().unwrap_or(doc);
         let pin = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.1.clone()));
+        let cut = doc.find(name).is_some_and(|i| doc.tool(i) == Some(Tool::Cut));
         self.folder().update_lock(|lock| {
             let held = lock.asset_mut(name, kind);
-            let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| version.main() == pin.as_ref());
+            let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| cut || version.main() == pin.as_ref());
             held.versions = keep;
             held.versions.push(version.clone());
             held.versions.sort_by_key(|version| version.number);
@@ -2807,7 +3153,8 @@ fn covered(doc: &Doc, stand: &[Standing], ask: &Ask) -> Vec<bool> {
     let taken = |i: usize| ask.takes.iter().any(|take| name_key(&take.asset) == key(i));
     let mut covered = vec![ask.all; doc.assets.len()];
     for &i in doc.order.iter().rev() {
-        covered[i] |= taken(i);
+        // Naming a cut cuts what stands, free: it pays for nothing it reads.
+        covered[i] |= taken(i) && doc.tool(i).is_none();
         let tool = doc.tool(i).is_some() && doc.assets[i].pin.is_none();
         if covered[i] && (stand[i].files.is_none() || taken(i) || tool) {
             for &read in &doc.upstream[i] {

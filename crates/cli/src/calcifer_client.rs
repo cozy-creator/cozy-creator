@@ -143,7 +143,7 @@ impl Client {
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        self.exchange(|c, base| c.get(format!("{base}{path}"))).await
+        self.asked_again(Error::hub_transient, || self.exchange(|c, base| c.get(format!("{base}{path}")))).await
     }
 
     pub async fn get_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
@@ -151,28 +151,38 @@ impl Client {
         Q: Serialize + ?Sized,
         T: DeserializeOwned,
     {
-        self.exchange(|c, base| c.get(format!("{base}{path}")).query(query)).await
+        self.asked_again(Error::hub_transient, || self.exchange(|c, base| c.get(format!("{base}{path}")).query(query))).await
     }
 
-    /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask. A machine that answers
-    /// no connect records nothing and is asked again under that key, each attempt said (Paul,
-    /// 11-03); one its Hub says stopped or ended is refused otherwise, and at once.
+    /// A POST; `key` is its `Idempotency-Key`, so a retry is the same ask, as a quote is one that buys
+    /// nothing. A machine that answers no connect, or a Hub that doesn't answer, records nothing and is
+    /// asked again under that key, each attempt said (Paul, 11-03); one its Hub says stopped or ended
+    /// is refused otherwise, and at once.
     pub async fn post<B, T>(&self, path: &str, body: &B, key: Option<&str>) -> Result<T, Error>
     where
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
+        match key.is_some() || path.ends_with("-quotes") {
+            true => self.asked_again(|e| e.code == UNREACHABLE || e.hub_transient(), || self.posted(path, body, key)).await,
+            false => self.posted(path, body, key).await,
+        }
+    }
+
+    /// `ask`, and again while its refusal is `again`, each attempt said, at the wait the answer stated if it did.
+    async fn asked_again<T, F: Future<Output = Result<T, Error>>>(&self, again: impl Fn(&Error) -> bool, ask: impl Fn() -> F) -> Result<T, Error> {
         let attempts = UNREACHABLE_WAITS.len() + 1;
         for (attempt, wait) in UNREACHABLE_WAITS.iter().enumerate() {
-            match self.posted(path, body, key).await {
-                Err(e) if key.is_some() && e.code == UNREACHABLE => {
-                    output::warn(&format!("{}; attempt {}/{attempts} in {wait} s", e.message, attempt + 2));
-                    tokio::time::sleep(Duration::from_secs(*wait)).await;
+            match ask().await {
+                Err(e) if again(&e) => {
+                    let wait = e.wait_or(Duration::from_secs(*wait));
+                    output::warn(&format!("{}; attempt {}/{attempts} in {} s", e.message, attempt + 2, wait.as_secs()));
+                    tokio::time::sleep(wait).await;
                 }
                 answer => return answer,
             }
         }
-        self.posted(path, body, key).await.map_err(|e| match e.code == UNREACHABLE {
+        ask().await.map_err(|e| match again(&e) {
             true => Error { message: format!("{}, after {attempts} attempts", e.message), ..e },
             false => e,
         })
@@ -519,7 +529,7 @@ impl Client {
         let installed = installed(home)?;
         let spec = self.spec(installed.clone());
         let failed = |e: platform::Error| {
-            Error::new(Kind::Unavailable, "calcifer_start_failed", e.to_string())
+            Error::new(Kind::Unavailable, "calcifer_start_failed", e.to_string()).next("cozy doctor")
         };
         home.open().map_err(failed)?;
         platform::durable::private_dir(&home.calcifer()).map_err(failed)?;
