@@ -1,0 +1,567 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.4 var(--sans);
+}
+button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+code {
+  font: 12px var(--mono);
+}
+.sp {
+  flex: 1;
+}
+.muted {
+  color: var(--mute);
+}
+
+/* Before there's a page */
+.gate {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--mute);
+}
+.gate h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.gate p {
+  margin: 0;
+}
+.copyable {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  border: 1px solid var(--line2);
+  border-radius: 5px;
+  background: #101114;
+  color: var(--ink);
+}
+.copyable button {
+  color: var(--mute);
+  font-size: 11px;
+}
+.copyable button:hover {
+  color: var(--ink);
+}
+
+/* Top bar */
+.top {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: var(--top);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 40;
+}
+.proj {
+  font: 600 13px var(--mono);
+  white-space: nowrap;
+}
+.proj:hover {
+  color: var(--ember2);
+}
+.path {
+  color: var(--faint);
+  font: 12px var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.sum {
+  color: var(--mute);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.sum.mak {
+  color: var(--mak);
+}
+.sum.ood {
+  color: var(--ood);
+}
+.gap {
+  flex: 1;
+}
+.canvas-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tb {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tb:hover {
+  border-color: var(--line2);
+}
+.tb.primary {
+  background: var(--ember);
+  border-color: var(--ember);
+  color: #1b1006;
+  font-weight: 600;
+}
+.pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.pill.warn {
+  color: var(--ood);
+  border: 1px solid #e6c14b55;
+}
+
+/* The canvas */
+.stage {
+  position: fixed;
+  inset: var(--top) 0 0 0;
+  background: var(--bg);
+}
+.picker {
+  display: none;
+}
+.react-flow {
+  --xy-background-color: var(--bg);
+  --xy-selection-background-color: #ff8a3d14;
+  --xy-selection-border: 1px solid var(--ember);
+  --xy-attribution-background-color: transparent;
+}
+.react-flow__attribution {
+  color: var(--faint);
+}
+.react-flow__attribution a {
+  color: var(--faint);
+}
+.react-flow__nodesselection-rect {
+  background: none;
+  border: 1px dashed #ff8a3d66;
+}
+.dropveil {
+  position: absolute;
+  inset: 0;
+  border: 2px dashed var(--ember);
+  background: #ff8a3d0d;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ember2);
+  font-size: 15px;
+  pointer-events: none;
+}
+.empty-canvas {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--mute);
+  pointer-events: none;
+  z-index: 4;
+}
+.empty-canvas p {
+  margin: 0;
+}
+.empty-canvas button {
+  pointer-events: auto;
+}
+
+/* Elements */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  user-select: none;
+  box-shadow:
+    0 1px 0 #0006,
+    0 8px 24px #0005;
+  overflow: hidden;
+}
+.card:hover {
+  border-color: var(--line2);
+}
+.react-flow__node.selected .card {
+  border-color: var(--ember);
+  box-shadow:
+    0 0 0 1px var(--ember),
+    0 10px 30px #0008;
+}
+.react-flow__node:focus,
+.react-flow__node:focus-visible {
+  outline: none;
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  min-height: 30px;
+}
+.nm {
+  font: 12px var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  cursor: text;
+}
+.nm-field {
+  font: 12px var(--mono);
+  flex: 1;
+  min-width: 0;
+  background: #0f1012;
+  border: 1px solid var(--ember);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: 0;
+}
+.tag {
+  font-size: 10px;
+  color: var(--mute);
+  border: 1px solid var(--line2);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.s-current {
+  background: var(--cur);
+}
+.s-ood {
+  background: var(--ood);
+}
+.s-making {
+  background: var(--mak);
+  animation: pulse 1.2s infinite;
+}
+.s-missing {
+  background: none;
+  border: 1.5px solid var(--faint);
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.iconb {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex: none;
+}
+.iconb:hover {
+  background: #ffffff14;
+  color: var(--ink);
+}
+.media {
+  position: relative;
+  overflow: hidden;
+  background: #0a0a0b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.media.alpha {
+  background-color: #2a2c30;
+  background-image: conic-gradient(#33353a 25%, transparent 25% 50%, #33353a 50% 75%, transparent 75%);
+  background-size: 14px 14px;
+}
+.media img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.media .live {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.media .live.audio {
+  top: auto;
+  height: 36px;
+  background: none;
+}
+.media-note {
+  color: var(--faint);
+  font-size: 12px;
+  z-index: 1;
+}
+.play,
+.stop {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #000a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  z-index: 2;
+}
+.play {
+  left: 6px;
+  bottom: 6px;
+}
+.stop {
+  right: 6px;
+  top: 6px;
+}
+.play:hover,
+.stop:hover {
+  background: var(--ember);
+  color: #1b1006;
+}
+.prog {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: #ffffff12;
+  z-index: 2;
+}
+.prog i {
+  display: block;
+  height: 100%;
+  background: var(--mak);
+}
+.status {
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--mute);
+  border-top: 1px solid #ffffff08;
+}
+.status.ood {
+  color: var(--ood);
+}
+.status.mak {
+  color: #9ccbff;
+}
+
+/* Far out */
+.stage[data-lod="1"] .status,
+.stage[data-lod="2"] .status,
+.stage[data-lod="2"] .tag,
+.stage[data-lod="2"] .play {
+  display: none;
+}
+.stage[data-lod="2"] .nm {
+  font-size: 22px;
+}
+.stage[data-lod="2"] .dot {
+  width: 18px;
+  height: 18px;
+}
+
+/* The dock */
+.dock {
+  position: fixed;
+  bottom: 14px;
+  left: calc((100vw - var(--drawer)) / 2);
+  transform: translateX(-50%);
+  width: 680px;
+  max-width: calc(100vw - var(--drawer) - 24px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #1b1c20f7;
+  border: 1px solid var(--line2);
+  border-radius: 11px;
+  box-shadow: 0 18px 60px #000c;
+  z-index: 30;
+}
+.dock-hint {
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Drawers */
+.shell {
+  --drawer: 0px;
+  height: 100%;
+}
+.shell[data-drawer="normal"] {
+  --drawer: 470px;
+}
+.shell[data-drawer="wide"] {
+  --drawer: 760px;
+}
+.drawer {
+  position: fixed;
+  top: var(--top);
+  bottom: 0;
+  right: 0;
+  width: var(--drawer);
+  max-width: 100vw;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.drawer-head b {
+  font-weight: 500;
+}
+.drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 10px;
+}
+.yaml {
+  margin: 0;
+  font: 11.5px/1.5 var(--mono);
+  color: #b6b8bf;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.row {
+  display: flex;
+  gap: 8px;
+}
+.field {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background: #0f1012;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+}
+.field:focus {
+  border-color: var(--line2);
+}
+.list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.list a {
+  display: block;
+  padding: 7px 8px;
+  border-radius: 5px;
+}
+.list a:hover {
+  background: #ffffff0a;
+}
+.list b {
+  display: block;
+  font: 500 12px var(--mono);
+}
+.list small {
+  color: var(--faint);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* Lines the page says */
+.notes {
+  position: fixed;
+  left: 12px;
+  bottom: 34px;
+  width: min(420px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 45;
+}
+.note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #22242a;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  font-size: 12px;
+}
+.note .line {
+  flex: 1;
+  min-width: 0;
+}
+.note .remedy {
+  flex-basis: 100%;
+  color: var(--mute);
+  order: 2;
+}
+.note .copyable {
+  order: 3;
+}

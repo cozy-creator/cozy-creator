@@ -1,0 +1,22 @@
+:root {
+  --bg: #0d0e10;
+  --dot: #1f2125;
+  --card: #17181b;
+  --card2: #1e2024;
+  --panel: #121316;
+  --line: #2b2d32;
+  --line2: #3a3d44;
+  --ink: #e8e6e1;
+  --mute: #8f9198;
+  --faint: #62646b;
+  --ember: #ff8a3d;
+  --ember2: #ffb37d;
+  --cur: #5fbf7a;
+  --ood: #e6c14b;
+  --mak: #5aa9ff;
+  --bad: #f0625d;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --top: 44px;
+  color-scheme: dark;
+}
