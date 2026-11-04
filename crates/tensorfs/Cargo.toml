@@ -10,10 +10,6 @@ name = "tfs"
 path = "src/bin/tfs/main.rs"
 required-features = ["store"]
 
-[[example]]
-name = "raw_source"
-required-features = ["store", "cuda"]
-
 [features]
 # The store, fetch, convert and everything that opens one. Without it: the format and the
 # read engine only.

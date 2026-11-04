@@ -21,7 +21,6 @@ members = [
     "crates/varena-ledger",
     "release-gate/suites/varena/ledger",
     "release-gate/suites/varena/public-api",
-    "release-gate/suites/varena/native-gpu",
 ]
 
 [workspace.package]

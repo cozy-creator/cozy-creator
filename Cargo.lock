@@ -4490,18 +4490,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "varena-native-gpu-proof"
-version = "0.0.0"
-dependencies = [
- "libc",
- "libloading 0.9.0",
- "serde_json",
- "tensorfs",
- "tokio",
- "varena",
-]
-
-[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
