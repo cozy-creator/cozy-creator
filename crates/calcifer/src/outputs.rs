@@ -505,7 +505,7 @@ impl Calcifer {
             let store_began = Instant::now();
             let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
                 Some(project) => {
-                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest, done: item.done };
+                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest };
                     // The file stands where it landed if its project can't take it.
                     crate::project::landed(project, &made, dest).unwrap_or_else(|why| {
                         warn!(run = %run.id, output = %name, "not kept in its project: {why}");

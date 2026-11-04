@@ -215,7 +215,6 @@ pub(crate) struct Landed<'a> {
     pub output: &'a str,
     pub index: u32,
     pub digest: &'a str,
-    pub done: bool,
 }
 
 /// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
@@ -227,9 +226,8 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<P
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
     let kept = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
-    if made.done {
-        let _ = std::fs::remove_file(dest);
-    }
+    // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
+    let _ = std::fs::remove_file(dest);
     Ok(kept)
 }
 

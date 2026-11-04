@@ -407,7 +407,8 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         anstream::println!("{}", imported.line);
         return Ok(ExitCode::SUCCESS);
     };
-    let run = crate::run::follow(ctx, *run).await?;
+    // The live view alone, where a run's progress goes: its record would be more lines on stdout.
+    let run = watched(ctx, *run).await?;
     if run.status == protocol::calcifer::Status::Completed {
         crate::run::paste(ctx, &run);
         return Ok(ExitCode::SUCCESS);

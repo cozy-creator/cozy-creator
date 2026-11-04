@@ -53,7 +53,7 @@ local P=$OUT/garden code ID
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null)" = project.yaml ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.yaml"
 cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
-for name in kyogre groudon coast "coast wide" awaken erupt clash edit; do grep -q "$name" "$OUT/project-new-status.txt" || check "a new project's status names no $name"; done
+for name in kyogre kyogre_sheet groudon coast coast_plate awaken erupt clash edit; do grep -q "$name" "$OUT/project-new-status.txt" || check "a new project's status names no $name"; done
 mkdir -p "$P/sub"
 (cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> /dev/null || check "status from a subfolder failed"
 (cd / && cozy --json project -p "$P" status) > /dev/null 2>&1 || check "status by -p from / failed"
@@ -124,7 +124,7 @@ assets:
     kind: image
     description: <card> as a poster.
   copied:
-    render: {with: $here/project/copy.py}
+    render: {with: $here/project/copied.py}
     kind: image
     image: <card>
 YAML
@@ -227,7 +227,7 @@ J --arg h "$hash" '.runs | length == 1 and (.[0] | (.sha256 | ltrimstr("sha256:"
 J '.run_files == 1' <<< "$(status "$R")" || check "runs: status does not count it: $(status "$R" | jq -c .run_files)"
 cozy run -p "$R" "$here/project/draw.py" prompt=second > "$OUT/run-second.txt" 2>&1 || check "runs: -p: $(tail -c 300 "$OUT/run-second.txt")"
 other=$(sed -n 's/^image: \([0-9a-f]\{12\}\)$/\1/p' "$OUT/run-second.txt"); [ -n "$other" ] && [ "$other" != "$hash" ] || check "runs: -p made no new file: $(tail -c 300 "$OUT/run-second.txt")"
-(cd "$R" && cozy run "$here/project/copy.py" --file "image=$hash") > "$OUT/run-copy.txt" 2>&1 || check "runs: --file by hash: $(tail -c 300 "$OUT/run-copy.txt")"
+(cd "$R" && cozy run "$here/project/copied.py" --file "image=$hash") > "$OUT/run-copy.txt" 2>&1 || check "runs: --file by hash: $(tail -c 300 "$OUT/run-copy.txt")"
 J '.runs | length == 3' "$R/project.lock" || check "runs: three runs, and the lock lists $(jq -c '.runs | length' "$R/project.lock")"
 
 step "a project: run ls in it lists its runs, and --all every one"
@@ -270,7 +270,7 @@ assets:
 
   flat: {kind: image, description: A flat one., render: {with: $here/project/draw.py}}
   copied:
-    render: {with: $here/project/copy.py}
+    render: {with: $here/project/copied.py}
     kind: image
     image: <card>
   poster:
