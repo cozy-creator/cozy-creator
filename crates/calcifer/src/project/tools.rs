@@ -368,12 +368,23 @@ pub fn cut(
     mux.extend(["-map", "0:v", "-c", "copy", "-movflags", "+faststart", "-f", "mp4"].map(Into::into));
     mux.push(part.clone().into_os_string());
     run(ffmpeg, &mux.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
-    let timeline = otio(name, pieces, &probes, &ranges, fps);
-    let otio_path = folder.dir.join(Path::new(name).with_extension("otio"));
-    let text = serde_json::to_string_pretty(&timeline).expect("a timeline serializes") + "\n";
-    platform::durable::replace(&otio_path, text.as_bytes(), 0o644).map_err(|e| failed(format!("{}: {e}", otio_path.display())))?;
+    write_otio(folder, name, pieces, &probes, &ranges, fps)?;
     prune(cache);
     Ok((made, part))
+}
+
+fn write_otio(folder: &Folder, name: &str, pieces: &[Piece], probes: &[Probe], ranges: &[(u64, u64)], fps: f64) -> Result<(), Error> {
+    let timeline = otio(name, pieces, probes, ranges, fps);
+    let otio_path = folder.dir.join(Path::new(name).with_extension("otio"));
+    let text = serde_json::to_string_pretty(&timeline).expect("a timeline serializes") + "\n";
+    platform::durable::replace(&otio_path, text.as_bytes(), 0o644).map_err(|e| failed(format!("{}: {e}", otio_path.display())))
+}
+
+/// The timeline of a cut that stands, when its `.otio` is gone: the same pieces, so nothing is cut.
+pub fn timeline(ffprobe: &Path, folder: &Folder, pieces: &[Piece], fps: f64, name: &str) -> Result<(), Error> {
+    let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, false)).collect::<Result<Vec<_>, _>>()?;
+    let ranges: Vec<(u64, u64)> = pieces.iter().filter_map(|piece| piece.frames(fps)).collect();
+    write_otio(folder, name, pieces, &probes, &ranges, fps)
 }
 
 /// The edit as OpenTimelineIO's own JSON (`Timeline.1`, as OpenTimelineIO 0.18 writes it), written

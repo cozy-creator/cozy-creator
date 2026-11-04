@@ -1113,7 +1113,7 @@ impl Walk {
                         lock.walk = Default::default();
                     }
                 })?;
-                self.say_cuts(&doc, &stand)?;
+                self.say_cuts(&doc, &stand).await?;
                 if self.over()? {
                     return Ok(first);
                 }
@@ -1146,7 +1146,7 @@ impl Walk {
     }
 
     /// Each current cut at the walk's end, what a render ends on, its film back at the root if someone moved it.
-    fn say_cuts(&self, doc: &Doc, stand: &[Standing]) -> Result<(), Error> {
+    async fn say_cuts(&self, doc: &Doc, stand: &[Standing]) -> Result<(), Error> {
         let lock = self.folder().lock()?;
         for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
             let name = cut_name(&doc.assets[i].name);
@@ -1155,6 +1155,9 @@ impl Walk {
             if !at.is_file() {
                 let _ = tools::publish(&self.folder().path(&file.path), &at);
             }
+            if !at.with_extension("otio").is_file() {
+                self.timeline_again(&doc.assets[i], &stand[i], &lock, &name).await;
+            }
             if self.cut.lock().expect("cut lock").contains(&name) {
                 continue;
             }
@@ -1162,6 +1165,25 @@ impl Walk {
             self.say(Event::Cut { cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true });
         }
         Ok(())
+    }
+
+    /// A standing cut's `.otio`, written again from its pieces; one that can't be says so and the walk goes on.
+    async fn timeline_again(&self, asset: &format::Asset, standing: &Standing, lock: &Lock, name: &str) {
+        let canvas = Canvas::of(&asset.fields, &mut vec![]);
+        let (mut pieces, _) = tools::pieces(&asset.fields, &standing.reads, self.folder(), lock);
+        tools::past_end(&mut pieces, canvas.fps);
+        let project = self.project.clone();
+        let (cut, fps) = (name.to_owned(), canvas.fps);
+        let written = match self.host.ffmpeg().await {
+            Ok((_, ffprobe)) => tokio::task::spawn_blocking(move || tools::timeline(&ffprobe, &project.folder, &pieces, fps, &cut))
+                .await
+                .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))
+                .and_then(|written| written),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = written {
+            self.say(Event::Warning { message: format!("{name}'s timeline is gone and isn't written again: {}", error.message) });
+        }
     }
 
     /// Sends `next` under its key: a new version of its asset on its target's machines, recorded as pending together with what

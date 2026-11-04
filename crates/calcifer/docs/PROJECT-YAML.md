@@ -282,7 +282,7 @@ There are no loops, so at hundreds of assets a tool or an LLM writes the file.
 
 ## Cuts and frames
 
-`with: cozy` is reserved: Calcifer runs it itself, free, with no machine, once what it reads settles and on `approve`. A cut reads each asset's state, else its newest version, and says so. Same takes, same key, not cut again. It keeps one version, and its pinned one, being free to make again.
+`with: cozy` is reserved: Calcifer runs it itself, free, with no machine, once what it reads settles and on `approve`. A cut reads each asset's state, else its newest version, and says so. Same takes, same key, not cut again; a deleted `.mp4` or `.otio` comes back at the next render. It keeps one version, and its pinned one, being free to make again.
 
 - **`kind: edit`:** `pieces` holds `<name>`, the whole take, or `{video: <name>, start: 12, end: 132}`, frames at its `fps` (24 by default), every in and out point exact. It writes `<name>.mp4` and `<name>.otio` at the root, the same edit as an OpenTimelineIO timeline.
 - **The canvas:** `aspect_ratio` and `resolution: 1440p` on it. Every piece fills it, center-cropped, never letterboxed or stretched. A take at another rate is retimed, and `status` names it. With no `resolution`, it's the first take's own size when that is the aspect but for a model's rounding, so such takes join with no encode.

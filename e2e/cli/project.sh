@@ -797,6 +797,10 @@ render "$T" all || check "cuts: render all again: $(tail -c 300 "$OUT/render.txt
 says cuts "(unchanged)"
 [ "$(stat -c %Y%N "$T/edit.mp4" 2>/dev/null || stat -c %Y "$T/edit.mp4")" = "$made_at" ] || check "cuts: same takes, cut again"
 J '.assets.edit.versions | length == 1' "$T/project.lock" || check "cuts: a cut kept its old version"
+cp "$T/edit.otio" "$OUT/edit.otio.was"; rm -f "$T/edit.otio"
+render "$T" all || check "cuts: with its .otio deleted: $(tail -c 300 "$OUT/render.txt")"
+cmp -s "$T/edit.otio" "$OUT/edit.otio.was" || check "cuts: a deleted .otio did not come back the same"
+[ "$(stat -c %Y%N "$T/edit.mp4" 2>/dev/null || stat -c %Y "$T/edit.mp4")" = "$made_at" ] || check "cuts: a deleted .otio cut again"
 
 step "a project: a take at 25 fps, retimed; a take that isn't a piece any more"
 sed -i "s/^    video: $B\$/    video: $R/" "$T/project.yaml"
