@@ -78,4 +78,4 @@ crates/varena/src/tensor_consumers.rs
 crates/varena/src/working.rs
 release-gate/suites/varena/public-api/src/lib.rs
 crates/varena-ledger/src/lib.rs
-release-gate/suites/varena/ledger/src/main.rs
+release-gate/suites/varena/ledger/src/cells.rs
