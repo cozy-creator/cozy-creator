@@ -2569,8 +2569,17 @@ impl Pool {
                     {
                         let name = holder.and_then(|record| record.submission.map(|s| s.request_id))
                             .filter(|id| !id.is_empty()).unwrap_or_else(|| format!("request {seq}"));
-                        return Err(Some(format!("its GPU lane is held by {name}, which has ended, and nothing \
-                            will release it; this call fails instead of waiting")));
+                        // Nothing else will release its lane, and no command restarts a rented TensorD.
+                        if let Some(lane) = self.allocations.release(seq) {
+                            tracing::warn!(root, holder = seq, "the GPU lane {lane:?} of {name}, which has ended, was never released: released now");
+                            self.note_gpus(engine, seq, "release", lane, Some(root));
+                        }
+                        // A call slot is a thread's, which may still be on the card: that one isn't ours to take.
+                        if self.allocations.holds(seq) {
+                            return Err(Some(format!("its GPU is held by a call of {name}, which has ended, and nothing \
+                                will release it; this call fails instead of waiting")));
+                        }
+                        return self.root_lane(engine, root, claims);
                     }
                 }
                 // A root not started yet just stays queued.
