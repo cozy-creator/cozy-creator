@@ -582,8 +582,23 @@ pub(super) async fn follow<B: MachineBackend>(
     let snapshot = v1::RunEvent { sequence: 0, at_ms: 0, event: v1::Event::State(state(&id, &current)) };
     let _ = sender.try_send(Ok(snapshot));
     tokio::spawn(async move {
-        if let Err(error) = log(backend, actor, id, cursor, limit, &sender).await {
-            let _ = sender.send(Err(error)).await;
+        if let Err(error) = log(backend, actor, id.clone(), cursor, limit, &sender).await {
+            tracing::warn!("run {id}: its log can't be read: {error}");
+            // An error ends the stream with no word of why, and a controller attaches again. An
+            // outcome that can't be made never can be: said as its outcome, the run ends (cl-773).
+            let lasting = matches!(error.code.as_str(), "custody_corrupt" | "result_unreadable");
+            let _ = sender.send(match lasting {
+                true => Ok(v1::RunEvent {
+                    sequence: cursor + 1,
+                    at_ms: 0,
+                    event: v1::Event::Outcome(v1::Outcome {
+                        status: "failed".into(),
+                        reason: Some(v1::Reason { code: error.code, message: error.message, origin: "machine".into(), ..Default::default() }),
+                        ..Default::default()
+                    }),
+                }),
+                false => Err(error),
+            }).await;
         }
     });
     Ok(receiver)
