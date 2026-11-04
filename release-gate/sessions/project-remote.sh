@@ -153,7 +153,7 @@ rm -f "$OUT/edges-second.mp4"
 second --json project -p "$C" push > "$OUT/push-second.json" 2> "$OUT/push-second.err" || fail "push from the second computer: $(tail -3 "$OUT/push-second.err")"
 # Its own cut's bytes are all that is new, and its timeline's if that came out different.
 SIZE=$(sudo stat -c %s "$C/edit.mp4") OTIO=$(sudo stat -c %s "$C/edit.otio")
-J --argjson n "$SIZE" --argjson o "$OTIO" --argjson f "$FILES" '.files == $f and ((.moved == 1 and .bytes == $n) or (.moved == 2 and .bytes == $n + $o))' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
+J --argjson n "$SIZE" --argjson o "$OTIO" --argjson f "$(sudo cat "$C/project.lock" | jq '.files | length')" '.files == $f and ((.moved == 1 and .bytes == $n) or (.moved == 2 and .bytes == $n + $o))' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
 cozy --json project -p "$P" push > "$OUT/push-edges.json" 2> "$OUT/push-edges.err" || fail "push the first computer's cut: $(tail -3 "$OUT/push-edges.err")"
 
 say "a file over the Hub's limit goes as parts, a new file beside it, and its push killed mid-way"
@@ -170,7 +170,7 @@ J --arg s "sha256:$HUGE_SHA" '(.files[$s].parts | length == 6) and ([.files[$s].
 code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
 say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"
 [ "$code" = 0 ] || fail "a push of a file over the limit exited $code: $(tail -3 "$OUT/push-huge.err")"
-J --argjson f "$FILES" '.files == $f + 2 and (.skipped // [] | length == 0) and .commit != null' "$OUT/push-huge.json" || fail "the push did not send everything"
+J --argjson f "$(jq '.files | length' "$P/project.lock")" '.files == $f and (.skipped // [] | length == 0) and .commit != null' "$OUT/push-huge.json" || fail "the push did not send everything"
 cozy --json project -p "$P" push > "$OUT/push-huge-2.json" 2> "$OUT/push-huge-2.err"; code=$?
 { [ "$code" = 0 ] && J '.moved == 0 and .bytes == 0' "$OUT/push-huge-2.json"; } || fail "pushed again, exit $code: $(jq -c . "$OUT/push-huge-2.json")"
 
@@ -188,7 +188,7 @@ LANDED=$(sudo find "$C2/files" -name '.*.part' -size +1100M -printf '%s\n' | hea
 code=0; second --json project -p "$C2" pull > "$OUT/pull-huge.json" 2> "$OUT/pull-huge.err" || code=$?
 say "pull: exit $code, $(jq -c . "$OUT/pull-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/pull-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a pull that skipped a file exited $code, not 3"
-J --argjson f "$FILES" '.files == $f + 3 and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+J --argjson f "$(sudo cat "$C2/project.lock" | jq '.files | length')" '.files == $f and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
 J --argjson l "$LANDED" '.bytes <= (5368709121 - $l + 1000000000)' "$OUT/pull-huge.json" || fail "the pull began the big file again"
 GOT=$(sudo sh -c "sha256sum '$C2/files/$HUGE_SHA'.*" | cut -c1-64); [ "$GOT" = "$HUGE_SHA" ] || fail "the parted file came out $GOT, not $HUGE_SHA"
 second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-huge.err" || fail "status: $(tail -3 "$OUT/status-huge.err")"
