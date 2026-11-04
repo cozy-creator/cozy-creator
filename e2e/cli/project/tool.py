@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
 # ///
 """The tool cell's package: weightless functions as a canvas drops them. `still` has no adapter, so it's called directly. `told` has an
 adapter told its name, whose answer says what it saw of what it reads. `need` wants a file it may not get, `clip` makes a video, `words`
