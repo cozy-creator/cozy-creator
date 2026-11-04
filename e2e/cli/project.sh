@@ -2366,6 +2366,60 @@ J '[.assets[] | select(.name == "reader")][0].inputs != null' "$OUT/numbers-stat
 cozy project -p "$V" approve zero "$over" > "$OUT/numbers-approve.txt" 2>&1 || check "numbers: approving over one: $(cat "$OUT/numbers-approve.txt")"
 grep -Eq "^  zero: \{image: \"$over\"\}$" "$V/project.yaml" || check "numbers: approve wrote: $(grep -n 'zero:' "$V/project.yaml")"
 
+step "a project: a hash that reads as a number is that hash, whatever a person's file writes"
+local V=$OUT/numbers over fits digits zero; mkdir -p "$V"; still "$V/base.png" teal; printf 'version: 2\nassets: {}\n' > "$V/project.yaml"
+# The same picture, with bytes after its end until its hash starts as each shape does. One prefix in about 150 has one of them.
+python3 - "$V" > "$OUT/numbers.txt" <<'PY' || check "numbers: the fixtures: $(cat "$OUT/numbers.txt")"
+import hashlib, pathlib, re, sys
+v = pathlib.Path(sys.argv[1])
+base = (v / "base.png").read_bytes()
+shapes = {"over": r"[1-9][0-9]{0,6}e[0-9]{4,10}", "fits": r"[1-9][0-9]{8,9}e[0-9]{1,2}", "digits": r"[1-9][0-9]{11}", "zero": r"0[0-9]{11}"}
+found, n = {}, 0
+while len(found) < len(shapes):
+    n += 1
+    data = base + n.to_bytes(8, "big")
+    prefix = hashlib.sha256(data).hexdigest()[:12]
+    for name, shape in shapes.items():
+        if name not in found and re.fullmatch(shape, prefix):
+            found[name] = prefix
+            (v / f"{name}.png").write_bytes(data)
+for name, prefix in found.items():
+    print(name, prefix)
+PY
+over=$(awk '$1 == "over" { print $2 }' "$OUT/numbers.txt") fits=$(awk '$1 == "fits" { print $2 }' "$OUT/numbers.txt")
+digits=$(awk '$1 == "digits" { print $2 }' "$OUT/numbers.txt") zero=$(awk '$1 == "zero" { print $2 }' "$OUT/numbers.txt")
+for name in over fits digits zero; do
+  cozy project -p "$V" import "$V/$name.png" > "$OUT/numbers-$name.txt" 2>&1 || check "numbers: importing $name: $(tail -c 300 "$OUT/numbers-$name.txt")"
+  grep -Eq '^image: "[0-9a-fe]{12}"$' "$OUT/numbers-$name.txt" || check "numbers: cozy did not quote $name: $(cat "$OUT/numbers-$name.txt")"
+done
+cat > "$V/project.yaml" <<YAML
+version: 2
+entities:
+  hero:
+    kind: character
+    image: $fits
+    young:
+      image: $zero
+assets:
+  over: {image: $over}
+  fits:
+    image: $fits
+  digits:
+    image: $digits
+  zero: {image: $zero}
+  reader:
+    render: {with: $here/project/draw.py, prompt: "from <over>, <fits>, <digits>, <zero> and <hero>"}
+YAML
+status "$V" > "$OUT/numbers-status.json" || check "numbers: a person's file was refused: $(cozy project -p "$V" status 2>&1 | tail -c 300)"
+for name in over fits digits zero; do
+  J --arg n "$name" --arg p "sha256:$(eval echo "\$$name")" '[.assets[] | select(.name == $n)][0] | .pinned and (.sha256 | startswith($p))' "$OUT/numbers-status.json" || check "numbers: $name is not its file: $(jq -c --arg n "$name" '.assets[] | select(.name == $n) | {sha256, status}' "$OUT/numbers-status.json")"
+done
+J --arg p "sha256:$fits" --arg z "sha256:$zero" '([.assets[] | select(.name == "hero.image")][0].sha256 | startswith($p)) and ([.assets[] | select(.name == "hero.young.image")][0].sha256 | startswith($z))' "$OUT/numbers-status.json" || check "numbers: an entity's links: $(jq -c '[.assets[] | {name, sha256}]' "$OUT/numbers-status.json")"
+J '[.assets[] | select(.name == "reader")][0].inputs != null' "$OUT/numbers-status.json" || check "numbers: what mentions them has no inputs: $(jq -c '.assets[] | select(.name == "reader")' "$OUT/numbers-status.json")"
+! jq -c .warnings "$OUT/numbers-status.json" | grep -Eq "is not a hash|no file's hash" || check "numbers: warned: $(jq -c .warnings "$OUT/numbers-status.json")"
+cozy project -p "$V" approve zero "$over" > "$OUT/numbers-approve.txt" 2>&1 || check "numbers: approving over one: $(cat "$OUT/numbers-approve.txt")"
+grep -Eq "^  zero: \{image: \"$over\"\}$" "$V/project.yaml" || check "numbers: approve wrote: $(grep -n 'zero:' "$V/project.yaml")"
+
 step "a project: import --remove-background"
 local runs_before cleaned original
 ffmpeg -v error -y -f lavfi -i "color=c=black@0.0:size=64x64,format=rgba" -frames:v 1 "$U/clear.png"
