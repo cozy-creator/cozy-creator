@@ -887,10 +887,10 @@ async fn runs(
             continue;
         }
         if doc.tool(i).is_some() {
-            match missing {
-                true => said(format!("{name} is made here, free, when what it reads settles")),
-                // Named, it is made again, as anything named is.
-                false => takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, keeps: None }),
+            said(format!("{name} is made here, free, when what it reads settles"));
+            // Named, it is made again, as anything named is.
+            if !missing {
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, keeps: None });
             }
             if approve {
                 say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));

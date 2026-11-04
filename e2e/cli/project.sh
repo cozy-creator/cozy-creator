@@ -1219,7 +1219,7 @@ render "$T" all || code=$?
 says stops "runs failed the same way, so this render sends it nothing more"
 says stops "rendered 0 of 8; "
 says stops "cozy project render all --missing --on local"
-failed=$(cozy --json run -p "$T" ls --limit 0 --state failed | jq '.runs | length')
+failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq '.runs | length')
 [ "$failed" -lt 8 ] || check "stops: $failed of 8 runs ran: $(tail -c 400 "$OUT/render.txt")"
 }
 
@@ -1278,7 +1278,7 @@ render "$T" film || check "truth: cut: $(tail -c 400 "$OUT/render.txt")"
 says truth "warning"
 says truth "skips later"
 J '.cuts[0].frames == 144' <<< "$(status "$T")" || check "truth: status of the film: $(status "$T" | jq -c .cuts)"
-cp "$T/short.mp4" "$T/film.mp4"
+rm "$T/film.mp4"; cp "$T/short.mp4" "$T/film.mp4"
 J '.cuts[0].frames == 24' <<< "$(status "$T")" || check "truth: status doesn't read the file: $(status "$T" | jq -c .cuts)"
 }
 
@@ -1307,7 +1307,7 @@ render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 short=$(jq -r --arg p "$short" '.files | keys[] | select(contains($p))' "$T/project.lock")
 jq --arg s "$short" '.assets.edit.versions[-1].files.video = $s' "$T/project.lock" > "$T/lock.tmp" && mv "$T/lock.tmp" "$T/project.lock"
-cp "$T/short.mp4" "$T/edit.mp4"
+rm "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: not whole after a render: $(status "$T" | jq -c .cuts)"
