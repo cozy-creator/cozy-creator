@@ -1,6 +1,6 @@
 //! project.yaml, format 2 (design/project-graph.md): assets, the operation that makes each (a package, by `with`, and a `kind`,
 //! which its adapter turns into calls), the memo key, and what each asset's state is. The platform reads `kind`, `render` (`with`, `prompt`,
-//! `models`, `lora`), a hash in `image`, `video` or `audio`, an entity's links, a beat's `writes` and `duration`, and `<name>` in any text. It knows
+//! `models`, `lora`), a hash in `image`, `video` or `audio`, an entity's links, and `<name>` in any text. It knows
 //! no kind's meaning and no field's shape, but for the reserved package `cozy`, which it runs itself. Every other field passes through to the adapter and counts in the
 //! key. Nothing refuses a project but a file of no format: what one line gets wrong is said, and that line does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -27,7 +27,7 @@ const RENDERED: [&str; 5] = ["with", "instructions", "options", "models", "lora"
 const PINS: [&str; 3] = ["image", "video", "audio"];
 /// The links of an entity that a read of it gets as files. Its other links go by name, `<kyogre.primordial>`.
 const ROLES: [&str; 4] = ["image", "video", "audio", "voice"];
-const RESERVED: [&str; 10] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio", "writes"];
+const RESERVED: [&str; 9] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio"];
 const SECTIONS: [&str; 4] = ["version", "defaults", "entities", "assets"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
@@ -36,8 +36,6 @@ const COZY: &str = "cozy";
 const FOR_READERS: [&str; 3] = ["description", "use_audio", "follow"];
 /// What `cozy` reads of a cut or a frame.
 const TOOL_FIELDS: [&str; 6] = ["pieces", "fps", "aspect_ratio", "resolution", "video", "at"];
-/// How long a beat with no `duration` lasts, where its writes are concerned; an adapter says the same.
-const BEAT_S: f64 = 5.0;
 
 /// A new project's project.yaml: a short film that renders as it stands. Cozy never writes it again.
 pub fn starter() -> String {
@@ -144,14 +142,8 @@ pub struct Asset {
     pub pin: Option<(&'static str, String)>,
     /// It has no operation: no `with`, of its own or from defaults, or no `kind` for its package's adapter.
     pub hollow: bool,
-    /// A free frame a beat names: `cozy` makes it, and it stays the world state it is to what reads it.
-    pub frame: bool,
     /// What it reads, in the order its text mentions them.
     pub reads: Vec<usize>,
-    /// The revisions it sends to its function.
-    pub writes: Vec<Write>,
-    /// The asset whose function sends this revision: its state comes with that one's take.
-    pub writer: Option<usize>,
     /// A hash written in an entity's link: the entity or sub-entity, and the field, whose line holds it.
     pub line: Option<(String, String)>,
     /// It is no asset but an entity, a sub-entity or a link of one: no work and no versions, its files what its links hold now.
@@ -171,22 +163,6 @@ pub struct Links {
     pub parent: Option<String>,
 }
 
-/// A revision of a series an operation's text names.
-#[derive(Clone)]
-pub struct Write {
-    pub key: String,
-    pub name: String,
-    /// Where on its shot's timeline: its beat's start, and `at` into it.
-    pub at_s: f64,
-    pub fields: Map<String, Value>,
-}
-
-impl Write {
-    fn record(&self) -> Value {
-        json!({"name": self.name, "at_s": self.at_s, "fields": self.fields})
-    }
-}
-
 /// A function Calcifer runs itself, free, with no machine.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tool {
@@ -197,7 +173,7 @@ pub enum Tool {
 /// project.yaml as Calcifer reads it.
 pub struct Doc {
     pub assets: Vec<Asset>,
-    /// What each reads, a revision its writer too.
+    /// What each reads.
     pub upstream: Vec<Vec<usize>>,
     /// Each asset after what it reads.
     pub order: Vec<usize>,
@@ -208,7 +184,7 @@ pub struct Doc {
     /// Mentions naming nothing and no tag its package is known to have. Until a package is read its tags may be among them, so
     /// nothing is made of these before then.
     unread: Vec<(usize, String)>,
-    /// How many the file declares, in order, and those after them are images only a beat names.
+    /// How many the file declares, in order, and those after them are what its entities make: an entity, and a link or a hash in one.
     declared: usize,
     /// The project's folder, which says what is on this computer.
     dir: PathBuf,
@@ -221,11 +197,8 @@ pub enum State {
     Pinned { version: Option<u32>, changed: Vec<String> },
     /// This version has these inputs.
     Current(u32),
-    /// This take of its writer wrote it.
-    Written { by: String, version: u32 },
     /// An entity, whose links all stand.
     Linked,
-    Unwritten { by: String },
     /// Something it reads has no state.
     Waits,
     /// It has versions, none with these inputs, and why.
@@ -251,7 +224,7 @@ impl Standing {
     pub fn version(&self) -> Option<u32> {
         match self.state {
             State::Pinned { version, .. } => version,
-            State::Current(version) | State::Written { version, .. } => Some(version),
+            State::Current(version) => Some(version),
             _ => None,
         }
     }
@@ -334,24 +307,6 @@ impl Doc {
             doc.declare(text, &name, written, &defaults, folder, &lock);
         }
         doc.declared = doc.assets.len();
-        for i in 0..doc.declared {
-            if doc.assets[i].body.contains_key("writes") {
-                let name = doc.assets[i].name.clone();
-                doc.warn(&name, format!("{name}'s writes: go on the beat that writes them, each `image` with an `at` into that beat: these are ignored"));
-            }
-            let mut said = vec![];
-            let mut writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
-            doc.warnings.append(&mut said);
-            if !writes.is_empty() && doc.assets[i].kind != "video" {
-                let name = doc.assets[i].name.clone();
-                doc.warn(&name, format!("{name}'s writes: only a video writes images: these are ignored"));
-                writes.clear();
-            }
-            for (beat, image, at) in writes {
-                named(&image)?;
-                doc.write(i, beat, &image, at);
-            }
-        }
         for name in protocol::yaml::keys(text, &["entities"]) {
             let Some(written) = entities.get(&name) else { continue };
             doc.entity(text, &name, written, &defaults, folder, &lock);
@@ -384,7 +339,10 @@ impl Doc {
                 Map::new()
             }
         };
-        let body = unfolded(name, body, &mut self.warnings);
+        let mut body = unfolded(name, body, &mut self.warnings);
+        if without_writes(&mut body) {
+            self.warn(name, format!("{name}'s writes: a shot no longer makes pictures, so these are ignored: one frame of a video is its own asset, `{{video: <{name}>, at: 3, render: {{with: cozy}}}}`"));
+        }
         let own: BTreeSet<String> = body.keys().cloned().collect();
         // An asset's kind is its file's type: what it writes, else the field holding its hash, else `image`.
         let hash = |field: &&str| body.get(*field).and_then(Value::as_str).is_some_and(|text| mentions(text).is_empty());
@@ -449,7 +407,7 @@ impl Doc {
         let with = merged.get("with").and_then(Value::as_str).map(|with| plain_with(with, folder));
         let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, tool: with, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, line: None, links: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, tool: with, body: merged, fields, own, pin, hollow, reads: vec![], line: None, links: None });
         Some(self.assets.len() - 1)
     }
 
@@ -548,71 +506,11 @@ impl Doc {
             own: BTreeSet::new(),
             pin: None,
             hollow: true,
-            frame: false,
             reads: vec![],
-            writes: vec![],
-            writer: None,
             line: None,
             links: Some(links),
         });
         true
-    }
-
-    /// `image`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
-    /// after that beat, in a later beat or in text every segment holds, its function takes it, in its one take; otherwise it is a
-    /// free frame, outside its key. A pinned image is read, never written. Two assets writing one name: the first stands.
-    fn write(&mut self, i: usize, beat: usize, image: &str, at: f64) {
-        let key = name_key(image);
-        let writer_name = self.assets[i].name.clone();
-        let revision = match self.index.get(&key).copied() {
-            Some(revision) => revision,
-            None => {
-                self.index.insert(key.clone(), self.assets.len());
-                self.assets.push(Asset {
-                    name: image.to_owned(),
-                    kind: "image".into(),
-                    tool: None,
-                    body: Map::new(),
-                    fields: Map::new(),
-                    own: BTreeSet::new(),
-                    pin: None,
-                    hollow: false,
-                    frame: false,
-                    reads: vec![],
-                    writes: vec![],
-                    writer: None,
-                    line: None,
-                    links: None,
-                });
-                self.assets.len() - 1
-            }
-        };
-        let own = &mut self.assets[revision];
-        if own.writer.is_some() || own.frame {
-            self.warn(&writer_name, format!("{writer_name} writes {image}, which is written above: the first stands"));
-            return;
-        }
-        own.hollow = false;
-        if own.pin.is_some() {
-            return;
-        }
-        let mut read_after = self.assets[i].fields.clone();
-        if let Some(Value::Array(beats)) = read_after.get_mut("beats") {
-            beats.drain(..(beat + 1).min(beats.len()));
-        }
-        let read = mentions_in(&Value::Object(read_after)).iter().any(|mention| name_key(mention) == key);
-        if read {
-            let (fields, name) = (self.assets[revision].fields.clone(), self.assets[revision].name.clone());
-            self.assets[revision].writer = Some(i);
-            self.assets[i].writes.push(Write { key, name, at_s: at, fields });
-        } else {
-            let own = &mut self.assets[revision];
-            own.frame = true;
-            own.body.insert("with".into(), json!("cozy"));
-            own.body.insert("video".into(), json!(format!("<{writer_name}>")));
-            own.body.insert("at".into(), json!(at));
-            own.fields = fields_of(&own.body);
-        }
     }
 
     /// Each asset's reads, and the order. A mention of nothing stays text; one that closes a cycle too.
@@ -630,11 +528,6 @@ impl Doc {
         }
         for i in 0..n {
             let asset = &self.assets[i];
-            if let Some(writer) = asset.writer {
-                upstream[i].push(writer);
-                fixed[i].push(writer);
-                continue;
-            }
             if let Some(links) = &asset.links {
                 for (field, target) in &links.own {
                     match self.find(target) {
@@ -658,7 +551,6 @@ impl Doc {
                     said.push(line);
                 }
             }
-            let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
                 // A tag of its package, in any case, stays text as written, whatever the project names.
                 if tags.is_some_and(|tags| is_tag(tags, &mention)) {
@@ -668,7 +560,6 @@ impl Doc {
                     unread.push((i, mention));
                     continue;
                 };
-                let key = name_key(&self.assets[j].name);
                 // An entity's links are edges too, through its sub-entities as well, so what it links to can't read it.
                 if self.links_to(j, i) {
                     let line = Warning::of(&asset.name, format!("{} mentions {}, which is made from it: that mention stays plain text", asset.name, self.assets[j].name));
@@ -677,7 +568,7 @@ impl Doc {
                     }
                     continue;
                 }
-                if j != i && !own.contains(key.as_str()) && !upstream[i].contains(&j) {
+                if j != i && !upstream[i].contains(&j) {
                     upstream[i].push(j);
                     reads[i].push(j);
                 }
@@ -706,7 +597,7 @@ impl Doc {
         self.warnings.push(Warning::of(name, message));
     }
 
-    /// Asset `i`'s inputs, flat: what it passes to its function, whichever part of the file says it, defaults too, and a beat's `writes`.
+    /// Asset `i`'s inputs, flat: what it passes to its function, whichever part of the file says it, defaults too.
     pub fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];
         let passes = |(field, value): &(&String, &Value)| !RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty());
@@ -718,19 +609,9 @@ impl Doc {
         flat
     }
 
-    /// The shot whose beat writes asset `i`: its take's frame, or a free frame cut from its video.
-    pub fn written_by(&self, i: usize) -> Option<&str> {
-        let asset = &self.assets[i];
-        let writer = asset.writer.or_else(|| asset.frame.then(|| asset.reads.first().copied()).flatten())?;
-        Some(&self.assets[writer].name)
-    }
-
-    /// What asset `i` reads by a mention, each with the places its text says so. A frame's only read is the shot that writes it.
+    /// What asset `i` reads by a mention, each with the places its text says so.
     pub fn reads_of(&self, i: usize) -> Vec<Read> {
         let asset = &self.assets[i];
-        if asset.frame {
-            return vec![];
-        }
         let mut said = vec![];
         for (field, value) in &asset.fields {
             said_in(value, field.clone(), &mut said);
@@ -847,9 +728,6 @@ impl Doc {
     /// Asset `i`'s operation when Calcifer runs it itself: the reserved package `cozy`.
     pub fn tool(&self, i: usize) -> Option<Tool> {
         let asset = &self.assets[i];
-        if asset.frame {
-            return Some(Tool::Frame);
-        }
         (asset.tool.as_deref()? == COZY).then_some(())?;
         match asset.kind.as_str() {
             "video" => Some(Tool::Cut),
@@ -869,11 +747,10 @@ impl Doc {
 
     /// Whether asset `i` has an operation that can make it.
     pub fn makes(&self, i: usize) -> bool {
-        let asset = &self.assets[i];
-        asset.writer.is_none() && !asset.hollow
+        !self.assets[i].hollow
     }
 
-    /// Whether the file itself declares asset `i`, as a revision only a beat names is not.
+    /// Whether the file itself declares asset `i`, as what an entity makes is not.
     pub fn declared(&self, i: usize) -> bool {
         i < self.declared
     }
@@ -929,15 +806,6 @@ impl Doc {
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
                 }
                 None => stand(State::Pinned { version: None, changed: vec![] }, Some(Files::from([((*field).to_owned(), sha256.clone())]))),
-            };
-        }
-        if let Some(writer) = asset.writer {
-            let by = self.assets[writer].name.clone();
-            let take = done[writer].version().and_then(|number| lock.asset(&by)?.version(number));
-            let wrote = take.and_then(|take| Some((take.number, take.writes.get(&name_key(&asset.name))?)));
-            return match wrote {
-                Some((version, files)) => stand(State::Written { by, version }, Some(files.clone())),
-                None => stand(State::Unwritten { by }, None),
             };
         }
         let Some(now) = &inputs else { return stand(State::Waits, None) };
@@ -1028,11 +896,8 @@ impl Doc {
             })
             .collect();
         top.insert("reads".into(), json!(reads));
-        let writes: Vec<Value> = asset.writes.iter().map(Write::record).collect();
-        if !writes.is_empty() {
-            digests.insert("writes".into(), digest(&json!(writes)));
-        }
-        top.insert("writes".into(), json!(writes));
+        // Every key made so far holds this: without it, every version of every project would go out of date.
+        top.insert("writes".into(), json!([]));
         (digest(&Value::Object(top)), digests)
     }
 
@@ -1063,9 +928,8 @@ impl Doc {
                 json!({"name": read.name, "kind": of.kind, "fields": for_readers(&of.fields), "files": files, "made_by": made_by})
             })
             .collect();
-        let writes: Vec<Value> = asset.writes.iter().map(|write| json!({"name": write.name, "at_s": write.at_s, "fields": for_readers(&write.fields)})).collect();
         let options = asset.body.get("options").cloned().unwrap_or_else(|| json!({}));
-        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "function": function.unwrap_or_default(), "fields": self.node_fields(i), "options": options, "reads": reads, "writes": writes, "keep": keep})
+        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "function": function.unwrap_or_default(), "fields": self.node_fields(i), "options": options, "reads": reads, "keep": keep})
     }
 
     /// `--take`, `--in`: what its adapter is told of the take a new one keeps, its files as records; None if it holds no video.
@@ -1077,41 +941,6 @@ impl Doc {
         let made_by = held.made_by.as_ref().map_or("", |by| by.with.as_str());
         Some(json!({"take": keeps.take, "video": video.record(), "latents": latents.map(folder::File::record), "at_s": keeps.in_s, "ends_s": ends_s, "made_by": made_by}))
     }
-}
-
-/// What each beat writes, soonest first: the beat, the image, and when on the shot's timeline. A write is `{image, at}`: `at` is
-/// seconds into its beat, else its end; past the beat it clamps, which is said, as is any other field.
-fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<Warning>) -> Vec<(usize, String, f64)> {
-    let (mut start, mut found) = (0.0, vec![]);
-    for (n, beat) in body.get("beats").and_then(Value::as_array).into_iter().flatten().enumerate() {
-        let length = beat["duration"].as_f64().filter(|duration| *duration > 0.0).unwrap_or(BEAT_S);
-        let listed = match &beat["writes"] {
-            Value::Array(items) => items.clone(),
-            Value::Null => vec![],
-            one => vec![one.clone()],
-        };
-        for item in listed {
-            let (image, at) = match &item {
-                Value::String(image) => (image.clone(), None),
-                item => (text_of(item.get("image")), item["at"].as_f64()),
-            };
-            if image.is_empty() {
-                said.push(Warning::of(name, format!("{name}'s beat {} writes nothing: each write names an `image`", n + 1)));
-                continue;
-            }
-            for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["image", "at"].contains(&field.as_str())) {
-                said.push(Warning::of(name, format!("{name}'s write of {image}: cozy reads no field {field}; it is ignored")));
-            }
-            let within = at.unwrap_or(length).clamp(0.0, length);
-            if let Some(at) = at.filter(|at| *at != within) {
-                said.push(Warning::of(name, format!("{name} writes {image} at {at} s into a beat {length} s long: it is taken at {within} s")));
-            }
-            found.push((n, image, start + within));
-        }
-        start += length;
-    }
-    found.sort_by(|a, b| a.2.total_cmp(&b.2));
-    found
 }
 
 /// What of a read crosses its mention.
@@ -1138,8 +967,6 @@ pub fn plain_with(with: &str, folder: &Folder) -> String {
     path.strip_prefix("_/").unwrap_or(path).to_owned()
 }
 
-/// What passes to the adapter. A beat's `writes` doesn't: a write goes by `Operation.writes`, or is a free frame outside the key.
-/// A field as a person who writes `render: text` knows it.
 /// Each mention under `value`, with where: `summary`, `beats.0.description`, `pieces.1`.
 fn said_in(value: &Value, place: String, found: &mut Vec<(String, String)>) {
     match value {
@@ -1150,17 +977,19 @@ fn said_in(value: &Value, place: String, found: &mut Vec<(String, String)>) {
     }
 }
 
+/// What passes to the adapter.
 fn fields_of(body: &Map<String, Value>) -> Map<String, Value> {
-    let mut fields: Map<String, Value> = (body.iter())
+    (body.iter())
         .filter(|(field, value)| !RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty()))
         .map(|(field, value)| (field.clone(), value.clone()))
-        .collect();
-    for beat in fields.get_mut("beats").and_then(Value::as_array_mut).into_iter().flatten() {
-        if let Some(beat) = beat.as_object_mut() {
-            beat.remove("writes");
-        }
-    }
-    fields
+        .collect()
+}
+
+/// `body` with no `writes`, its own or a beat's, so a file written when a shot made pictures keeps its key. Whether it had any.
+fn without_writes(body: &mut Map<String, Value>) -> bool {
+    let own = body.remove("writes").is_some();
+    let beats = body.get_mut("beats").and_then(Value::as_array_mut).into_iter().flatten();
+    beats.filter_map(Value::as_object_mut).fold(own, |had, beat| beat.remove("writes").is_some() || had)
 }
 
 fn text_of(value: Option<&Value>) -> String {

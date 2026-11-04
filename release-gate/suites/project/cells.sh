@@ -1,9 +1,8 @@
 # Suite `project` (xs-151, cl-758): `cozy project render` on fixture projects, format 2, the walk in this computer's Calcifer (the
 # candidate cozy), the runs on $M. Each cell is a project folder under $OUT, judged from its project.lock and files:
-# - project-split: a 10 s shot whose later beat reads a world state an earlier beat writes: one run, one take, the written frame
-#   kept, no seam of ours; project-upscale: its upscale from those latents, at 1080p and the shot's aspect, and edit.mp4 at the
+# - project-split: a 10 s shot of two beats: one run, one take, its latents kept, no seam of ours; project-upscale: its upscale from those latents, at 1080p and the shot's aspect, and edit.mp4 at the
 #   1920x1080 canvas.
-# - project-segments: a shot two segments make, a write at their join, carrying 22 and 56 frames: both segments ran, no cut at the join.
+# - project-segments: a shot two segments make, carrying 22 and 56 frames: both segments ran, no cut at the join.
 # - project-in: a new take that keeps take 1 up to `--in` and renders the rest from edited text: one run, the kept frames as
 #   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
@@ -67,12 +66,9 @@ assets:
       - duration: 6
         description: |
           <hero> rolls bright orange paint across the wall in big letters that read OPEN.
-        writes:
-          - image: wall.1
-            at: 5
       - duration: 4
         description: |
-          <hero> steps back from <wall.1>, where the orange letters read OPEN, and says "Done."
+          <hero> steps back from the wall of <yard>, where the orange letters read OPEN, and says "Done."
   hero_art:
     kind: image
     image: hero.png
@@ -84,9 +80,6 @@ assets:
     kind: image
     image: place.png
     description: "$SCENE"
-  wall.1:
-    kind: image
-    description: a stepladder against the wall, and fresh paint
   mural_upscale:
     kind: video
     video: <mural>
@@ -107,8 +100,8 @@ YAML
   f=$(made "$P" mural)
   if [ -z "$f" ]; then expect project-split FAIL "no version of mural: $(tail -c 300 project-split.log)"
   else
-    expect project-split "$(jq -r 'if (.runs | length) == 1 and .files.latents != null and .writes["wall.1"].image != null then "PASS" else "FAIL" end' <<< "$v")" \
-      "runs $(jq -c .runs <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v"), wall.1 $(jq -r '.writes["wall.1"].image // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
+    expect project-split "$(jq -r 'if (.runs | length) == 1 and .files.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
+      "runs $(jq -c .runs <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
     expect project-split-text "$(jq -r 'if ([.warnings[]?.message | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
     # The gate's hero is a character whose sheet its package made, with a background: H3's adapter says it goes into the shot
     # (se-104). A warning, no failed run. An imported picture is left alone, since it may be opaque on purpose.
@@ -165,12 +158,9 @@ assets:
       - duration: 10
         description: |
           <hero> sets off across <yard>, the camera following alongside.
-        writes:
-          - image: yard.1
-            at: 10
       - duration: 10
         description: |
-          <hero> keeps walking across <yard.1> and stops at the far side.
+          <hero> keeps walking across <yard> and stops at the far side.
 YAML
 )
     imported "$P" hero.png place.png
@@ -182,7 +172,6 @@ YAML
     expect project-segments-$cf "$(jq -r 'if ([.[] | select(.status == "succeeded")] | length) == 2 and (.[1].label == "Segment 2 of 2") then "PASS" else "FAIL" end' <<< "$labels" 2>/dev/null || echo FAIL)" "calls $labels, context_frames $given, want $cf"
     r=$("${FR[@]}" seams "$P/$f" --at "$(awk 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), 10 + i / 8 }')" 2>&1 | tail -1)
     expect project-segments-$cf-seam "$(jq -r 'if ([.boundaries[].ratio] | max) < 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "no cut within half a second of the join at 10 s: $r"
-    expect project-segments-$cf-write "$(jq -r 'if .writes["yard.1"].image != null then "PASS" else "FAIL" end' <<< "$v" 2>/dev/null || echo FAIL)" "yard.1: $(jq -r '.writes["yard.1"].image // "none"' <<< "$v")"
   done
 fi
 

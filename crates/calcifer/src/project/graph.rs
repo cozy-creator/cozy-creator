@@ -81,7 +81,7 @@ pub struct Graph {
 
 impl Graph {
     /// Each asset's reads ordered; a mention that closes a cycle is left out, the text staying as written (`closing`), and
-    /// `fixed` (a revision's edge to its writer) goes last.
+    /// `fixed` (an entity's edge to what it links) goes last.
     pub fn new(mut upstream: Vec<Vec<usize>>, fixed: &[Vec<usize>]) -> Self {
         let mut closing = vec![];
         let order = loop {

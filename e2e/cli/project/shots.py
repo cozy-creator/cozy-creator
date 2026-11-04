@@ -3,8 +3,7 @@
 # dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
 # ///
 """The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
-video is its plate, `given` the request it got, and `written` a picture per write; the field `bare` calls a function that takes no
-writes, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
+video is its plate and `given` the request it got; the field `bare` calls a function of just its video, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
 going, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read, and `crash` a run that fails saying it. An `image`
 types its operation's fields. An `audio` says its `options`."""
 
@@ -15,7 +14,7 @@ import struct
 import time
 
 import msgspec
-from cozy_runtime.author import App, File, ImageFrame, Invocation, Operation, Outputs, Refuse
+from cozy_runtime.author import App, File, Invocation, Operation, Outputs, Refuse
 
 app = App()
 
@@ -30,16 +29,10 @@ class Keeping(msgspec.Struct, kw_only=True):
     at_s: float | None = None
 
 
-class Ask(msgspec.Struct, kw_only=True):
-    name: str
-    at_s: float | None = None
-
-
 class Request(msgspec.Struct, kw_only=True):
     prompt: str
     plate: Plate
     seed: int | None = None
-    writes: list[Ask] = []
     continue_from: Keeping | None = None
 
 
@@ -47,7 +40,6 @@ class Take(msgspec.Struct):
     video: File
     latents: File
     given: File
-    written: list[File]
     kept_s: float | None
     warnings: list[str]
 
@@ -55,11 +47,9 @@ class Take(msgspec.Struct):
 @app.entrypoint()
 def shoot(payload: Request, out: Outputs) -> Take:
     keeps = payload.continue_from
-    given = {"prompt": payload.prompt, "seed": payload.seed, "writes": [ask.name for ask in payload.writes],
-             "at": [ask.at_s for ask in payload.writes], "keep": keeps.at_s if keeps else None}
-    frames = [out.save_image(ImageFrame(16, 16, os.urandom(3) * 256), format="png") for _ in payload.writes]
+    given = {"prompt": payload.prompt, "seed": payload.seed, "keep": keeps.at_s if keeps else None}
     return Take(out.save_bytes(payload.plate.video.read_bytes(), media_type="video/mp4"), out.save_bytes(os.urandom(32), media_type="application/octet-stream"),
-                out.save_bytes(json.dumps(given).encode(), media_type="application/json"), frames,
+                out.save_bytes(json.dumps(given).encode(), media_type="application/json"),
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
@@ -85,7 +75,7 @@ def adapt(op: Operation) -> list[Invocation]:
         return [Invocation(function="noise", input={"prompt": op.asset})]
     said = [f"{read.name}={read.kind}{'+latents' if 'latents' in read.files else ''}" for read in op.reads]
     told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
-    request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}, "writes": [{"name": write.name, "at_s": write.at_s} for write in op.writes]}
+    request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}}
     if op.keep:
         request["continue_from"] = {"video": op.keep.video.sha256, "at_s": op.keep.at_s} | ({"latents": op.keep.latents.sha256} if op.keep.latents else {})
     return [Invocation(function="shoot", input=request)]

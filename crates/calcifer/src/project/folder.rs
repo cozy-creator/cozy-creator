@@ -192,9 +192,6 @@ pub struct Version {
     pub kept: Option<protocol::project::Kept>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: Files,
-    /// The frames it wrote, by the name key of the image each is.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub writes: BTreeMap<String, Files>,
     /// A digest per field of its record, to say which changed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub digests: BTreeMap<String, String>,
@@ -287,9 +284,6 @@ pub struct Pending {
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpin: Option<String>,
-    /// The images it was asked to write, in order, each with where: its result's `written` in that order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub writes: Vec<Written>,
     /// Where it goes, and each call after this one of the operation's list.
     pub target: Target,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -305,13 +299,6 @@ pub struct Invocation {
     pub function: String,
     #[serde(default)]
     pub input: Map<String, Value>,
-}
-
-/// An image a run writes: its name, and where in the video if the function doesn't.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Written {
-    pub name: String,
-    pub at_s: f64,
 }
 
 /// An asset's versions by number, the last number given (numbers are never given again), and the seed of a run that failed,
@@ -537,11 +524,7 @@ impl Lock {
     pub fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
         let versions = (self.assets.iter().filter(|(key, _)| keep(key))).flat_map(|(_, asset)| &asset.versions);
         let pending = self.pending.values().map(|pending| &pending.version);
-        versions
-            .chain(pending)
-            .flat_map(|version| version.files.values().chain(version.writes.values().flat_map(BTreeMap::values)))
-            .map(String::as_str)
-            .collect()
+        versions.chain(pending).flat_map(|version| version.files.values()).map(String::as_str).collect()
     }
 }
 

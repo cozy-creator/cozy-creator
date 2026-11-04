@@ -446,12 +446,9 @@ pub struct Asset {
     pub made_by: Option<String>,
     /// For people, in its own noun: current, no take yet, out of date and why, making (run N), …
     pub status: String,
-    /// What it reads by a mention, in the order its text says them. A shot's own write isn't among them.
+    /// What it reads by a mention, in the order its text says them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<Read>,
-    /// The shot whose beat writes it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub written_by: Option<String>,
     /// Its inputs, flat, each by a control's `field`: what `PATCH /v1/projects/{id}/assets/{name}` sets, as it applies now.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub fields: Map<String, Value>,

@@ -22,7 +22,7 @@ pub fn files_of<'a>(files: &'a Files, kind: &str) -> Vec<&'a str> {
     files.get(kind).map(String::as_str).into_iter().chain(listed.into_iter().map(|(_, sha256)| sha256)).collect()
 }
 
-/// A mention's name as a model reads it: `<coast.2>` is `<coast 2>`.
+/// A mention's name as a model reads it: `<kyogre.pose>` is `<kyogre pose>`.
 fn spoken(name: &str) -> String {
     name.replace('.', " ")
 }

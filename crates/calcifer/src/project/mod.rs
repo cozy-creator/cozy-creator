@@ -62,7 +62,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
-use folder::{Ask, Failed, Files, Folder, Invocation, Keeps, Lock, MadeBy, Pending, ReadFrom, Take, Target, Tried, Version, Written};
+use folder::{Ask, Failed, Files, Folder, Invocation, Keeps, Lock, MadeBy, Pending, ReadFrom, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Maker, Package, Renderer};
@@ -853,8 +853,6 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         ([], Stand::Pinned { version: Some(version), changed }) => format!("pinned: {noun} {version}; its inputs changed: {}", changed.join(", ")),
         ([], Stand::Current(_)) => "current".into(),
         ([], Stand::Linked) => "linked".into(),
-        ([], Stand::Written { by, version }) => format!("written by {by} {version}"),
-        ([], Stand::Unwritten { by }) => format!("{by} has not written it"),
         ([], Stand::Waits) => "waits for what it reads".into(),
         ([], Stand::Stale(why)) => format!("out of date: {why}"),
         ([], Stand::Missing) if asset.hollow => "it has nothing to make".into(),
@@ -873,7 +871,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         (false, _) => RowStanding::Making,
         (true, Stand::Stale(_)) => RowStanding::OutOfDate,
         (true, Stand::Pinned { .. }) if !changed.is_empty() => RowStanding::OutOfDate,
-        (true, Stand::Missing | Stand::Waits | Stand::Unwritten { .. }) => RowStanding::Missing,
+        (true, Stand::Missing | Stand::Waits) => RowStanding::Missing,
         (true, _) => RowStanding::Current,
     };
     Row {
@@ -915,7 +913,6 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         made_by: made.and_then(|made| made.made_by.as_ref()).map(|by| by.with.clone()),
         status,
         reads: doc.reads_of(i),
-        written_by: doc.written_by(i).map(str::to_owned),
         fields: doc.flat_fields(i),
         etag: None,
         failure,
@@ -938,7 +935,7 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
     (lock.assets.iter())
         .filter(|(key, held)| doc.holds(key).is_none() && !held.versions.is_empty())
         .map(|(key, held)| {
-            let files = held.versions.iter().flat_map(|version| version.files.values().chain(version.writes.values().flat_map(BTreeMap::values)));
+            let files = held.versions.iter().flat_map(|version| version.files.values());
             let freed: Vec<&String> = files.filter(|sha256| !kept.contains(*sha256) && counted.insert((*sha256).clone())).collect();
             Orphan {
                 name: if held.name.is_empty() { key.clone() } else { held.name.clone() },
@@ -1192,10 +1189,6 @@ async fn runs(
         let name = asset.name.clone();
         if asset.pin.is_some() && asset.hollow {
             said(format!("{name} is a constant, one file: nothing is made of it"));
-            continue;
-        }
-        if let Some(writer) = asset.writer {
-            said(format!("{name} comes with {}'s take", doc.assets[writer].name));
             continue;
         }
         if doc.tool(i).is_some() {
@@ -1565,10 +1558,6 @@ async fn approve(
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &asked.name).map_err(Refusal)?;
     let asset = &doc.assets[i];
-    if let Some(writer) = asset.writer {
-        let said = format!("{} comes with {}'s take: approve that take", asset.name, doc.assets[writer].name);
-        return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said)));
-    }
     let noun = noun(&doc, &lock, i);
     let versions: Vec<&Version> = lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions).collect();
     // A short run of digits is a version. Anything else is a file of the project's, by hash: any picture can be what this asset is.
@@ -1603,10 +1592,6 @@ async fn approve(
         return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).remedy(format!("if it should be {is}, write `kind: {is}` on it"))));
     }
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
-    if !doc.declared(i) && asset.line.is_none() {
-        let said = format!("{} is a frame its writer's beat names, with no lines of its own in {}", asset.name, folder::PROJECT);
-        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).remedy(format!("add it under assets: with `{field}: {}`", format::yaml_scalar(folder::prefix_of(&chosen))))));
-    }
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
     // A hash written in an entity's link is rewritten there.
@@ -2439,9 +2424,6 @@ impl Walk {
                 self.say(Event::Said { message: format!("{name}: {} {why}, so it has one result per inputs: {stands}", package.name) });
                 return self.folder().update_lock(settle);
             }
-            if !asset.writes.is_empty() && !renderers.iter().any(|renderer| renderer.accepts.contains("writes")) {
-                warnings.push(format!("{} takes no writes: {name}'s frames are cut from its take, and it reads what it started with", package.name));
-            }
             warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
             let mut version = self.version(doc, standing, i, warnings, inputs.clone());
             if seeded {
@@ -2454,11 +2436,10 @@ impl Walk {
             let number = std::cell::Cell::new(0);
             self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
             version.number = number.get();
-            let writes = asset.writes.iter().map(|write| Written { name: write.name.clone(), at_s: write.at_s }).collect();
             let mut calls = calls.into_iter();
             let first = calls.next().expect("at least one");
             let seed = version.seed;
-            let pending = Pending { ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), writes, target: target.clone(), rest: calls.collect(), done: vec![] };
+            let pending = Pending { ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
             let settling = |lock: &mut Lock| {
                 settle(lock);
                 if let Some(seed) = seed {
@@ -2741,7 +2722,7 @@ impl Walk {
                 version.warnings.push(message);
             }
         }
-        // Every file the run saved, by its output's name (a list's items as `<name>-<n>`). `written` is the frames it was asked for, in order.
+        // Every file the run saved, by its output's name (a list's items as `<name>-<n>`).
         let (mut saved, mut stayed) = (Files::new(), Files::new());
         for output in &run.output {
             // The first of a list goes by its name, so a reader that takes one takes it.
@@ -2758,12 +2739,6 @@ impl Walk {
                 continue;
             }
             let Some(path) = output.path.as_ref().filter(|path| path.is_file()) else { continue };
-            if output.name == "written" {
-                if let Some(write) = pending.writes.get(output.index as usize) {
-                    version.writes.insert(name_key(&write.name), Files::from([("image".to_owned(), folder.keep(path)?)]));
-                }
-                continue;
-            }
             saved.insert(file, folder.keep(path)?);
         }
         if saved.is_empty() && pending.rest.is_empty() && version.files.is_empty() {
@@ -2788,12 +2763,6 @@ impl Walk {
             let carried = Pending { version, rest, done, run: 0, ..pending.clone() };
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
             return self.submit(&new_key(), next, &package, &doc.assets[i], carried, &settle).await;
-        }
-        for write in &pending.writes {
-            if !version.writes.contains_key(&name_key(&write.name)) {
-                let frame = self.cut_write(&name, &version, write).await?;
-                version.writes.insert(name_key(&write.name), Files::from([("image".to_owned(), frame)]));
-            }
         }
         let kind = folder.lock()?.asset(&name).map(|held| held.kind.clone()).unwrap_or_default();
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
@@ -2823,17 +2792,7 @@ impl Walk {
         }
     }
 
-    /// An image its function didn't write, cut from its landed video.
-    async fn cut_write(&self, name: &str, version: &Version, write: &Written) -> Result<String, Error> {
-        let lock = self.folder().lock()?;
-        let video = version.files.get("video").and_then(|sha256| lock.files.get(sha256)).map(|file| self.folder().path(&file.path));
-        let Some(video) = video else {
-            return Err(cannot(name, format!("it saved no video to take {} from", write.name)));
-        };
-        self.frame(name, &video, Some(write.at_s)).await
-    }
-
-    /// The frame of `video` at `at` seconds, half a frame early so a write at its end is its last frame, kept as a file of the
+    /// The frame of `video` at `at` seconds, half a frame early so one at its end is its last frame, kept as a file of the
     /// project. One past its end is its last, which is said.
     async fn frame(&self, name: &str, video: &FsPath, at: Option<f64>) -> Result<String, Error> {
         let (ffmpeg, _) = self.host.ffmpeg().await?;
@@ -3266,7 +3225,6 @@ fn unread(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask, i: usize) -> St
     }
     match &stand[j].state {
         _ if ask.sent.contains(&name_key(name)) => format!("{name} failed in this render"),
-        Stand::Unwritten { by } => format!("{name} comes with {by}'s take, and there is none"),
         Stand::Stale(why) => format!("{name} is out of date: {why}"),
         _ if doc.assets[j].hollow => format!("{name} has nothing to make"),
         _ if lock.asset(name).is_some_and(|held| !held.versions.is_empty()) => format!("{name} has no version with these inputs"),

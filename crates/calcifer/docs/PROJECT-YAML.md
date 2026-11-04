@@ -99,17 +99,14 @@ assets:
       - duration: 14
         description: |
           Following <clash_board>, a wide shot of <coast> shows <kyogre> and <groudon>.
-        writes:                # screenshots saved as image assets
-          - image: coast.1
-            at: 14
       - duration: 14
         description: |
-          The fight continues on <coast.1>.
+          The fight continues on <coast>.
 ```
 
 ## What the platform reads
 
-Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in the field of an asset's type, an entity's links, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities` and `assets`, one namespace.
+Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in the field of an asset's type, an entity's links, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities` and `assets`, one namespace.
 
 Every other field at an asset's root, such as `summary`, `beats`, `description`, `camera` or `fps`, passes through to the adapter untouched and counts as an input.
 
@@ -137,7 +134,7 @@ A package chooses its own internals, such as how many context frames H3 keeps. T
 
 | First-party | Fields, beyond what the platform reads |
 |---|---|
-| A shot, `minimax-h3` | `summary`, `beats` (each `description`, `duration`, `writes`), `soundscape`, `music`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`) |
+| A shot, `minimax-h3` | `summary`, `beats` (each `description`, `duration`), `soundscape`, `music`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`) |
 | An upscale, a `video` asset of `minimax-h3` | `video`, `resolution` |
 | An `image`, `qwen-image-2` | `description`, `render.prompt` |
 | A cut or frame, `cozy` | See below |
@@ -148,11 +145,11 @@ At render, a typed adapter warns of an unknown field an asset writes itself. **A
 
 `<name>` in any text makes that asset an input.
 
-**Names** of assets, entities and sub-entities hold only letters, digits, `_`, `-` and `.`, such as `kyogre_sheet` or `coast.1`. Anything else is refused when the file is read, in one line with the fix, and nothing renders: `` `kyogre sheet`: names can't hold spaces or commas; use `kyogre_sheet` ``. `rename` takes the same rule. Names match in any case, with `_` and `-` alike.
+**Names** of assets, entities and sub-entities hold only letters, digits, `_`, `-` and `.`, such as `kyogre_sheet`. Anything else is refused when the file is read, in one line with the fix, and nothing renders: `` `kyogre sheet`: names can't hold spaces or commas; use `kyogre_sheet` ``. `rename` takes the same rule. Names match in any case, with `_` and `-` alike.
 
 - **In a shot's `summary`:** reaches every segment.
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
-- **Explicit:** `<coast>` always means what is named `coast`, and `<coast.2>` always means `coast.2`. Nothing resolves to "the newest".
+- **Explicit:** `<coast>` always means what is named `coast`. Nothing resolves to "the newest".
 - **Of an entity:** see below.
 - **A package's own tags:** an adapter can declare them, `@app.project_adapter("video", reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that package makes, each stays text in any case (`<d>`, `<D>`), exactly as written, with no warning, and reaches the adapter unchanged. A project naming something the same, in any case, is warned at the name, and `<d>` is the tag; a tag is never a `did you mean`.
 - **What can't be a name** is text, with no warning, as `<Picture 1>` and `</d>` are.
@@ -230,10 +227,9 @@ An asset has one main file, from its one `render` or its one pin; any other file
 
 - **A hash is its text.** One that looks like a number, `12345678e012` or `012345678901`, is that hash, quoted or not, in an asset's `image`, `video` or `audio` and anywhere in an entity. Cozy quotes the ones it writes, so other YAML readers see them the same way. Anywhere else a number is a number, and one too big to be one, `1e999`, is its text.
 - **The line:** `approve` writes the field of its type, `video: <hash>` for a take and `image:` for a picture, as that one line, keeping comments, order and formatting, and a save made just before it stands. A line holding an input keeps it, `video: <hash>  # was <clash>`, and `unpin` puts it back.
-- **A shot's pin:** `video: <hash>` brings that take's whole set: latents and any world states it wrote. A hash that matches no version is just that file.
+- **A shot's pin:** `video: <hash>` brings that take's whole set, its latents too. A hash that matches no version is just that file.
 - **Other fields while pinned:** `render` and the text stay in the file and are ignored for that asset. Delete the line and they apply again.
 - **A pin freezes files, not text:** editing an approved character's `description` doesn't re-render it, but shots that read it go out of date, because H3 receives those words.
-- **Pinning a written world state:** it's read and no longer written, which can put the shot that wrote it out of date.
 
 ## Import and the background
 
@@ -248,16 +244,6 @@ An asset has one main file, from its one `render` or its one pin; any other file
 ## Orphans
 
 An asset no longer named in the YAML keeps its versions and files. Editing the graph loses nothing as long as names stay the same. Removing or renaming a name in the file orphans its files, and only `reclaim` deletes them.
-
-## Writes
-
-A write is a screenshot taken at `at` seconds into that beat, the beat's end if left out, saved as an image asset: a continuity still, how things stand at a moment, so the next shot matches. A beat may hold several. It only matters across segments and shots: within a segment the model remembers.
-
-- **Reading one:** a later segment or another shot gets the picture as a loose guide; assets read it too. That wording lives in the adapter, not the YAML.
-- **Numbers:** you write them, `coast.1`, `coast.2`, so inserting one never moves another's versions or pins.
-- **A write is `{image, at}`, and has no description.** A picture is the state. To add words, declare it as its own asset with a `description`, and the write fills in its picture. Any other field warns.
-- **On a `video` asset's beats only.** Past its beat, `at` clamps with a warning. Two assets writing one name: the first stands, with a warning.
-- **A write the shot doesn't read after its beat** is a free frame, cut from the take here, outside the shot's memo: moving it re-renders nothing. One the shot reads, in a later beat or its `summary`, goes to the function, in its one take. A package that takes no `writes` gets its frames cut from the take, with a warning.
 
 ## Storyboards
 
@@ -284,7 +270,7 @@ def adapt_video(op: VideoOperation) -> list[Invocation]: ...
 ```
 
 For each asset that needs a run, Calcifer:
-1. Finds the package and function and builds an `Operation`: `{version, asset, kind, function, fields, options, reads, writes, keep}`.
+1. Finds the package and function and builds an `Operation`: `{version, asset, kind, function, fields, options, reads, keep}`.
 2. Stops there if the memo already has a result.
 3. Installs the package on the render machine and runs its adapter as a small CPU run, or goes straight to the function if none speaks for it. Adapters are pure, so they only take text, names and hashes.
 4. Runs the invocations it returns, in order, adding the seed, and on the first its `models` and `lora`. An empty list means no run: the asset's files are what it reads. In `input`, a string that is exactly `$0.video` means that field of invocation 0's result. A failed one stops the list and makes no version, and the next render tries again with the same seed.
@@ -319,7 +305,7 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 - **A cut, `kind: video`:** `pieces` holds `<name>`, the whole take, or `{video: <name>, start: 12, end: 132}`, frames at its `fps` (24 by default), every in and out point exact. It writes `<name>.mp4` and `<name>.otio` at the root, the same edit as an OpenTimelineIO timeline. A piece not on this computer is fetched, from the machine that keeps it or the Hub. One that can't be had, that has no version yet, or that names nothing, is left out with a warning naming it: the rest is cut, as a new version, and the closing line and `status` say `(without <piece>: <why>)`. The next render cuts it whole once that piece is there. A piece here that ffprobe can't read fails the cut, with ffprobe's answer, and the film that stands stays. Naming a cut cuts it again, `(unchanged)` when the bytes come out the same. A film whose frames don't match what its pieces add up to isn't its state, and cuts again at the next render.
 - **The canvas:** `aspect_ratio` and `resolution: 1440p` on it. Every piece fills it, center-cropped, never letterboxed or stretched. A take at another rate is retimed, and `status` names it. With no `resolution`, it's the first take's own size when that is the aspect but for a model's rounding, so such takes join with no encode.
-- **A frame, `kind: image`:** `{video: <clash>, at: 3, render: {with: cozy}}` is one frame of a video.
+- **A frame, `kind: image`:** `{video: <clash>, at: 3, render: {with: cozy}}` is one frame of a video. A shot makes no pictures: `writes:`, on a beat or an asset, warns and is ignored, and a mention of what it named names nothing.
 
 ## Runs
 

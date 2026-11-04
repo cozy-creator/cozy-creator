@@ -89,7 +89,7 @@ joining
 queueing
 every_render
 keeps
-written
+frames
 adapters
 tool_functions
 cuts "$P" "$ID"
@@ -865,7 +865,7 @@ cat >> "$T/project.yaml" <<YAML
 YAML
 render "$T" all --missing || check "orphans: render all with doomed"
 gone_file=$(jq -r '.assets.doomed.versions[0].files.image' "$T/project.lock")
-jq --arg s "$gone_file" '.assets.kept.versions[0].writes = {"a frame": {"image": $s}}' "$T/project.lock" > "$T/l" && mv "$T/l" "$T/project.lock"
+jq --arg s "$gone_file" '.assets.kept.versions[0].files.frame = $s' "$T/project.lock" > "$T/l" && mv "$T/l" "$T/project.lock"
 sed -i '/^  doomed:$/,/^    description: Going\.$/d' "$T/project.yaml"
 cat >> "$T/project.yaml" <<YAML
   second:
@@ -1161,121 +1161,70 @@ tail -1 "$OUT/alone.ndjson" | J '.run.output[0] | (.stays | not) and .path != nu
 cozy project -p "$T" reclaim > "$OUT/reclaim-stays.txt" 2>&1 || check "stays: reclaim: $(tail -c 300 "$OUT/reclaim-stays.txt")"
 }
 
-# An image a beat writes: a screenshot at `at` into the beat. What the shot reads after that beat goes to its function, in its key; what
-# it doesn't is a free frame, outside its key. A mention names exactly the asset it names.
-written() {
-step "a project: written written by beats"
-local T=$OUT/series look take frames
+# One frame of a video is an asset of its own, made here, free: moved, only it is made again. A shot makes no pictures: `writes:`, on a
+# beat or an asset, is said and ignored and stays out of its key, and a mention of what it named names nothing, which fails only that asset.
+frames() {
+step "a project: a frame of a shot, moved, re-renders nothing"
+local T=$OUT/frames look made was before
 mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 8
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
 version: 2
 assets:
-  first:
-    kind: video
-    render: {with: $here/project/shots.py}
-    summary: Dusk on <look> and <coast>.
   long_take:
     kind: video
     render: {with: $here/project/shots.py}
     summary: Walking on <look>.
     beats:
       - duration: 4
-        description: She runs on <coast>.
-        writes:
-          - image: coast.1
-            at: 1
-          - image: coast.2
-            at: 3
+        description: She runs.
       - duration: 4
-        description: She stands on <coast.1>, then <coast.2>.
-        writes:
-          - image: harbor.1
-            at: 1
+        description: She stands.
+  harbor:
+    kind: image
+    video: <long_take>
+    at: 1
+    render: {with: cozy}
+  look:
+    video: $look
+YAML
+render "$T" all || check "frames: render all: $(tail -c 400 "$OUT/render.txt")"
+J '.assets.harbor.versions[-1] | .made_by.with == "cozy/frame" and (.files.image != null)' "$T/project.lock" || check "frames: harbor is not a frame: $(jq -c '.assets.harbor.versions[-1].made_by' "$T/project.lock")"
+made=$(runs "$T"); was=$(row "$T" long_take .inputs)
+sed -i 's/^    at: 1$/    at: 2/' "$T/project.yaml"
+[ "$(row "$T" long_take .inputs)" = "$was" ] || check "frames: moving a frame moved its shot's key"
+render "$T" harbor || check "frames: render it: $(tail -c 300 "$OUT/render.txt")"
+says frames "harbor: version"
+J '.assets.harbor.versions | length == 1' "$T/project.lock" || check "frames: a tool kept its old version: $(jq -c '.assets.harbor.versions | length' "$T/project.lock")"
+J '.assets.harbor.versions[-1].digests.at != null' "$T/project.lock" || check "frames: a frame's key does not hold its time"
+[ "$(runs "$T")" = "$made" ] || check "frames: moving a frame ran something"
+
+step "a project: writes: is said and ignored, and a mention of what it named fails only what says it"
+sed -i 's/^        description: She runs\.$/&\n        writes:\n          - image: coast.1\n            at: 1/' "$T/project.yaml"
+sed -i 's/^    summary: Walking on <look>\.$/    writes: {coast.9: 1}\n&/' "$T/project.yaml"
+cat >> "$T/project.yaml" <<YAML
   next:
     kind: video
     render: {with: $here/project/shots.py}
-    summary: Dawn on <look> and <coast.2>, by <harbor.1>.
-  look:
-    video: $look
-  coast:
-    render: {with: $here/project/draw.py}
-    kind: image
-    description: A coast.
-  poster:
-    render: {with: $here/project/draw.py}
-    kind: image
-    description: <coast.1> as a poster.
-YAML
-J '[.assets[] | select(.name == "coast.1" or .name == "coast.2") | .kind] == ["image", "image"]' <<< "$(status "$T")" || check "series: revisions are not assets: $(status "$T" | jq -c '[.assets[].name]')"
-render "$T" all || check "series: render all: $(tail -c 400 "$OUT/render.txt")"
-given() { cat "$T/$(jq -r --arg s "$1" '.files[.assets[$s].versions[-1].files.given].path' "$T/project.lock")"; }
-J '.writes == ["coast.1", "coast.2"] and .at == [1, 3]' <<< "$(given 'long take')" || check "series: long take's writes are not its beats', on the shot's clock: $(given 'long take')"
-J '.prompt | contains("coast.2=") and contains("look=")' <<< "$(given next)" || check "series: next does not read <coast.2>: $(given next)"
-take=$(jq -c '.assets["long take"].versions[-1].writes | keys' "$T/project.lock")
-[ "$take" = '["coast.1","coast.2"]' ] || check "series: long take's take holds $take"
-[ "$(made "$T" coast.1)" = null ] || [ "$(made "$T" coast.1)" = 0 ] || check "series: a sent revision has versions of its own"
-[ "$(row "$T" coast.1 .status)" = '"written by long_take 1"' ] || check "series: coast.1 is $(row "$T" coast.1 .status)"
-J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.2"].image' "$T/project.lock")" '.assets["next"].versions[-1].reads[] | select(.name == "coast.2") | .files.image == $want' "$T/project.lock" \
-  || check "series: next's <coast.2> is not what long take wrote: $(jq -c '.assets["next"].versions[-1].reads' "$T/project.lock")"
-J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.1"].image' "$T/project.lock")" '.assets.poster.versions[-1].reads[] | select(.name == "coast.1") | .files.image == $want' "$T/project.lock" \
-  || check "series: poster's <coast.1> is not that revision"
-J '.assets["first"].versions[-1].reads | map(.name) | index("coast")' "$T/project.lock" || check "series: first does not read coast"
-[ "$(jq -r '.assets["first"].versions[-1].reads[] | select(.name == "coast") | .files.image' "$T/project.lock")" = "$(jq -r '.assets.coast.versions[-1].files.image' "$T/project.lock")" ] || check "series: first's <coast> is not coast itself"
-
-step "a project: a free frame, moved, re-renders nothing"
-J '.assets["harbor.1"].versions[-1] | .made_by.with == "cozy/frame" and (.files.image != null)' "$T/project.lock" || check "series: harbor.1 is not a free frame: $(jq -c '.assets["harbor.1"].versions[-1].made_by' "$T/project.lock")"
-frames=$(runs "$T")
-local was=$(row "$T" 'long_take' .inputs)
-sed -i '/image: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
-[ "$(row "$T" 'long_take' .inputs)" = "$was" ] || check "series: moving a free write moved its shot's key"
-render "$T" 'harbor.1' || check "series: render a free frame: $(tail -c 300 "$OUT/render.txt")"
-says series "harbor.1: version"
-J '.assets["harbor.1"].versions | length == 1' "$T/project.lock" || check "series: a tool kept its old version: $(jq -c '.assets["harbor.1"].versions | length' "$T/project.lock")"
-J '.assets["harbor.1"].versions[-1].digests.at != null' "$T/project.lock" || check "series: a frame's key does not hold its time"
-[ "$(runs "$T")" = "$frames" ] || check "series: moving a free frame ran something"
-
-step "a project: pinning a sent write puts its shot out of date; a write past its beat warns"
-local pic; still "$T/pic.png" navy; pic=$(prefix "$T" "$T/pic.png")
-sed -i "/^  poster:\$/i\\  coast.2:\\n    image: $pic" "$T/project.yaml"
-case "$(row "$T" 'long_take' .status)" in *'out of date'*) ;; *) check "series: a pinned sent write did not put its shot out of date: $(row "$T" 'long_take' .status)" ;; esac
-J '.assets[] | select(.name == "coast.2") | .pinned' <<< "$(status "$T")" || check "series: coast.2 is not pinned"
-sed -i '/^  coast.2:$/,+1d' "$T/project.yaml"
-sed -i '0,/at: 1$/s//at: 40/' "$T/project.yaml"
-J '[.warnings[].message] | any(contains("at 40 s into a beat 4 s long"))' <<< "$(status "$T")" || check "series: a write past its beat did not warn: $(status "$T" | jq -c .warnings)"
-sed -i '0,/image: harbor.1/s//&\n            description: Not a field of a write./' "$T/project.yaml"
-J '[.warnings[].message] | any(contains("write of harbor.1: cozy reads no field description"))' <<< "$(status "$T")" || check "series: another field on a write did not warn: $(status "$T" | jq -c .warnings)"
-sed -i 's/^    summary: Walking on <look>\.$/    writes: {coast.9: 1}\n&/' "$T/project.yaml"
-J '[.warnings[].message] | any(contains("go on the beat"))' <<< "$(status "$T")" || check "series: writes on an asset did not warn: $(status "$T" | jq -c .warnings)"
-
-step "a project: a package that takes no writes: frames from the landed video"
-local B=$OUT/bare; mkdir -p "$B"; plate "$B/look.mp4" testsrc2 440 800
-printf 'version: 2\nassets: {}\n' > "$B/project.yaml"
-look=$(prefix "$B" "$B/look.mp4")
-cat > "$B/project.yaml" <<YAML
-version: 2
-assets:
-  moves:
+    summary: Dawn on <look>, by <coast.1>.
+  other:
     kind: video
     render: {with: $here/project/shots.py}
-    bare: true
-    plate: <look>
-    summary: It walks.
-    beats:
-      - duration: 4
-        description: The wall turns.
-        writes:
-          - image: wall.1
-            at: 3
-      - duration: 2
-        description: It stands by <wall.1>.
-  look:
-    video: $look
+    summary: Noon on <look>.
 YAML
-render "$B" moves || check "bare: render: $(tail -c 400 "$OUT/render.txt")"
-says bare "takes no writes"
-J '.assets.moves.versions[-1].writes["wall.1"].image != null' "$B/project.lock" || check "bare: no frame was cut for wall.1: $(jq -c '.assets.moves.versions[-1].writes' "$B/project.lock")"
+J '[.warnings[] | select(.name == "long_take") | .message | select(contains("writes: a shot no longer makes pictures"))] | length == 1' <<< "$(status "$T")" || check "frames: writes: did not warn once: $(status "$T" | jq -c .warnings)"
+[ "$(row "$T" long_take .inputs)" = "$was" ] || check "frames: writes: moved its shot's key"
+[ "$(row "$T" long_take .status)" = '"current"' ] || check "frames: writes: put its shot out of date: $(row "$T" long_take .status)"
+J '.fields.beats[0].writes == null and .fields.writes == null' <<< "$(row "$T" long_take .)" || check "frames: writes: is among its fields: $(row "$T" long_take .fields)"
+J '[.assets[].name] | (index("coast.1") or index("coast.9")) | not' <<< "$(status "$T")" || check "frames: writes: named an asset: $(status "$T" | jq -c '[.assets[].name]')"
+before=$(runs "$T")
+render "$T" all --missing && check "frames: render all exited 0 with a mention of nothing"
+says frames "next: <coast.1> is no longer in the project"
+J '.assets[] | select(.name == "next") | .failure.code == "input_missing" and .missing == ["coast.1"]' <<< "$(status "$T")" || check "frames: next: $(row "$T" next .)"
+[ "$(made "$T" next)" = 0 ] || [ "$(made "$T" next)" = null ] || check "frames: next has a version"
+[ "$(made "$T" other)" = 1 ] || check "frames: other did not land: $(tail -c 300 "$OUT/render.txt")"
+[ "$(runs "$T")" = "$((before + 1))" ] || check "frames: a mention of nothing ran something: $(runs "$T") runs, was $before"
 }
 
 # An adapter's no run, its warnings, a typed `fields`, and a list of calls as one version.
