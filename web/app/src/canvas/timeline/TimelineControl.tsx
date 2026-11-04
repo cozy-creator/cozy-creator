@@ -26,6 +26,8 @@ function follow(event: ReactPointerEvent, moving: (event: PointerEvent) => void,
   event.preventDefault()
   event.stopPropagation()
   const pointer = event.pointerId
+  // Off the box the pointer is still this gesture's, and the box stays open under it.
+  event.currentTarget.closest(".tl")?.setPointerCapture(pointer)
   const move = (next: PointerEvent) => {
     if (next.pointerId === pointer) moving(next)
   }

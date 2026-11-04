@@ -102,10 +102,10 @@ function plate(path, color, seconds, hz) {
   await away();
   await until('an Edit at rest', () => card('Edit').locator('.tl').count(), (n) => n === 0);
   check('at_rest_says_what_it_is_for', (await card('Edit').locator('.media-note').textContent()) === 'Drag videos and stills here');
-  const atRest = await card('Edit').locator('.card').boundingBox();
+  const atRest = await card('Edit').locator('.media').boundingBox();
   await openEdit();
   const onHover = await card('Edit').locator('.tl').boundingBox();
-  check('a_hover_moves_nothing', Math.abs(onHover.height - (atRest.height - (onHover.y - atRest.y))) < 2, { atRest, onHover });
+  check('a_hover_moves_nothing', Math.abs(onHover.y - atRest.y) < 2 && Math.abs(onHover.height - atRest.height) < 2 && Math.abs(onHover.width - atRest.width) < 3, { atRest, onHover });
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
   const clips = () => page.$$eval('.tl-clip', (els) => els.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames), missing: el.dataset.missing })));
   const order = async () => (await clips()).map((clip) => clip.name).join(' ');
@@ -147,14 +147,14 @@ function plate(path, color, seconds, hz) {
   await openEdit();
 
   // Pull an end: the bubble says the timecode, the clips stay snapped.
-  const pull = async (name, side, by) => {
+  const pull = async (name, side, by, off = 0) => {
     await settled();
     const handle = await page.locator(`.tl-clip[data-name="${name}"] .tl-handle.${side}`).boundingBox();
     await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
     const under = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.className, { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 });
     if (!`${under}`.includes('tl-handle')) throw new Error(`${name}'s ${side} handle is under ${under}`);
     await page.mouse.down();
-    await page.mouse.move(handle.x + handle.width / 2 + by, handle.y + handle.height / 2, { steps: 5 });
+    await page.mouse.move(handle.x + handle.width / 2 + by, handle.y + handle.height / 2 + off, { steps: 5 });
     const bubble = await page.locator('.tl-bubble').textContent();
     await page.mouse.up();
     return bubble;
@@ -167,7 +167,8 @@ function plate(path, color, seconds, hz) {
   await page.keyboard.press('ArrowLeft');
   await until('a frame off the out point', async () => (await clips()).find((clip) => clip.name === 'red').out, (out) => out === pulled - 1);
   await pull('blue', 'in', 40);
-  await pull('title', 'out', -60);
+  // A press holds it open wherever the pointer goes: this one lets go well off the box.
+  check('a_press_holds_it_open', /^\d\d:\d\d:\d\d:\d\d, \d+ f$/.test(await pull('title', 'out', -60, 300)));
   await until('three trims saved', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => (text.match(/frames:|start:|end:/g) ?? []).length >= 3);
   // Reorder: blue goes first.
   const first = await strip();
