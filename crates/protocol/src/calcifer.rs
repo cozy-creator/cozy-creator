@@ -1284,20 +1284,12 @@ pub struct Quote {
     pub expected_hours: f64,
     pub expected_download_gb: u32,
     pub expected_total_usd_micros: i64,
+    /// The order's terms the Hub holds it to, which a renter sends back as it came. A user is shown
+    /// only the GPU's price (`gpu_usd_micros_per_hour`): that is what we charge.
+    pub agreed: Agreed,
     /// What the Hub changed of the ask to quote it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-}
-
-impl Quote {
-    /// The order's terms the Hub holds it to: the machine and its disk an hour, and traffic. A
-    /// user is shown only the GPU's price (`gpu_usd_micros_per_hour`): that is what we charge.
-    pub fn agreed(&self) -> Agreed {
-        Agreed {
-            usd_micros_per_hour: self.gpu_usd_micros_per_hour + self.storage_usd_micros_per_hour,
-            usd_micros_per_gb: self.bandwidth_usd_micros_per_gb.unwrap_or_default(),
-        }
-    }
 }
 
 /// The most a renter agreed to pay: the machine and its disk an hour, and traffic a GB.
@@ -1351,6 +1343,8 @@ pub struct Keepalive {
 pub enum NewMachine {
     Rent {
         sku: String,
+        /// Empty: Calcifer's configured Hub.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         hub: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gpus: Option<u32>,

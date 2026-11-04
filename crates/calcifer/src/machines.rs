@@ -1287,6 +1287,7 @@ pub(crate) async fn quote(
             "only a rent has a price",
         )));
     };
+    let hub = crate::hub::origin(&api, Some(&hub))?.to_string();
     // The product asked for is honoured or refused, never widened to another.
     let sku = api.machines.spelled_sku(&hub, &sku).await;
     api.machines.admit_sku(&hub, &sku, gpus.unwrap_or(1)).await.map_err(Refusal)?;
@@ -1367,6 +1368,7 @@ pub(crate) async fn create(
                         .remedy("one key names one rental forever; retrying under it is safe"),
                     )
                 })?;
+            let hub = crate::hub::origin(&api, Some(&hub))?.to_string();
             let shape = Shape {
                 gpus,
                 disk_gb,

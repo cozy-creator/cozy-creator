@@ -202,9 +202,9 @@ A machine is this computer's (`local`, started when used), a rental, or another 
 - `GET /v1/machines/{name}[?fresh=true]`: `Machine`. A rental rented with an SSH key has `ssh {args, line}`: the command that logs in, with a known-hosts file of its own, as an argument list and as a line to paste. `fresh` reads its Status now, or refuses
   `machine_unavailable`.
 - `POST /v1/machines` (`NewMachine`):
-  - `{"kind": "rent", sku, hub, gpus?, disk_gb?, ssh_key?, agreed}`, with an `Idempotency-Key`. It answers
+  - `{"kind": "rent", sku, hub?, gpus?, disk_gb?, ssh_key?, agreed}`, with an `Idempotency-Key`. It answers
     `202 Rented {machine, quote, replay}`, or `200` on a replay. Follow the boot on the events until the
-    machine is `ready`, or `ended` without one. `agreed` is the quote's `agreed()`: a dearer order rents
+    machine is `ready`, or `ended` without one. `agreed` is the quote's `agreed`, sent back as it came: a dearer order rents
     nothing (`rental_price_rose`).
     - A Hub that does not answer is asked again under the same key, across restarts, so one order buys one
       pod at most. Until it answers, the order is a `booting` machine in the list, under the name it was asked
@@ -268,7 +268,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - A removed key's next call is refused.
 - `GET /v1/rental-skus[?hub=]`: `RentalSkus {rental_skus}`. These are the Hub's products for rent now,
   cheapest first by their fewest GPUs. A product the Hub cannot sell now, for any reason, is not listed.
-- `POST /v1/rental-quotes` (`NewMachine` rent): `Quote`, the Hub's price for exactly that order. Nothing is
+- `POST /v1/rental-quotes` (`NewMachine` rent): `Quote`, the Hub's price for exactly that order: `gpu_usd_micros_per_hour`, what a
+  person is shown, and `agreed {usd_micros_per_hour, usd_micros_per_gb}`, the terms an order sends back. So does `RunQuote.quote`. Nothing is
   rented.
   - First it admits the product at that GPU count, never widening it to another: `400 sku_unknown`, or
     `507 sku_out_of_stock`, `sku_cooldown` or `sku_retry_in_progress`.

@@ -25,7 +25,7 @@ pub(crate) async fn start<A: Serialize, T: DeserializeOwned>(
             if !crate::machine::agree(ctx, &quoted)? {
                 return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
             }
-            agreed(ask, quoted.quote.agreed());
+            agreed(ask, quoted.quote.agreed);
         }
     }
     calcifer.post(route, ask, Some(&mint_key())).await

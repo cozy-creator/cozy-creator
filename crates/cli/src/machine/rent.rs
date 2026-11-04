@@ -98,7 +98,7 @@ pub async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         output::say(ctx, "nothing was rented");
         return Ok(ExitCode::SUCCESS);
     }
-    let agreed = Some(quoted.quote.agreed());
+    let agreed = Some(quoted.quote.agreed);
     let rented: Rented = match calcifer.post("/v1/machines", &ask(agreed), Some(&key)).await {
         // An answer lost on the way back may still have placed the order, which Calcifer keeps.
         Err(e) if matches!(e.kind, Kind::Unavailable | Kind::Internal) => {

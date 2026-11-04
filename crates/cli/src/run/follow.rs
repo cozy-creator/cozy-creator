@@ -38,7 +38,7 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
         if !crate::machine::agree(ctx, &quoted)? {
             return Err(Error::new(Kind::Usage, "quote_declined", "nothing was rented and the run was not sent"));
         }
-        ask.agreed = Some(quoted.quote.agreed());
+        ask.agreed = Some(quoted.quote.agreed);
     }
     let submitted: Submitted = calcifer.post("/v1/runs", &ask, Some(key)).await?;
     for note in &submitted.notes {
