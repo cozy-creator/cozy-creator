@@ -332,6 +332,9 @@ pub struct Run {
     /// The project folder its outputs land in; none for what is no person's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<PathBuf>,
+    /// That project's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub status: Status,
     #[serde(default)]
     pub cancel_requested: bool,
@@ -389,6 +392,20 @@ pub struct Run {
     /// A project adapter's run: `cozy project`'s own, which a list people read leaves out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub adapter: bool,
+    /// With `?detail=full`: what was asked of it, to show and to ask again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<RunAsked>,
+}
+
+/// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunAsked {
+    pub target: String,
+    /// Its payload, each file by its `sha256:`, and `models` for the models and LoRAs it chose: what `input` takes.
+    pub input: serde_json::Map<String, serde_json::Value>,
+    /// Its integer seed, given or derived from its key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
 }
 
 /// One request field a run's executor served other than as sent (`Outcome.adjustments`).
@@ -461,6 +478,17 @@ pub struct OutputItem {
     /// The file on this computer that holds this revision's bytes, once they landed there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// Where Calcifer serves those bytes: an API path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// A picture's or video's size, measured as this revision landed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// A video's or sound's length: measured as this revision landed, else its machine's word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     /// Why this revision's bytes will not land (its machine ended, or holds them no more).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_error: Option<String>,

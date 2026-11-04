@@ -523,6 +523,8 @@ async fn show(
     let mut run = api.calcifer.store().detail(&row)?;
     let record = api.calcifer.record(&row)?;
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
+    (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
+    run.request = crate::runs::asked(&row);
     run.report = crate::runs::report::of(&run);
     Ok(Json(run))
 }

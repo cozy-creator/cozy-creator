@@ -376,6 +376,7 @@ impl Calcifer {
     pub fn record(&self, row: &RunRow) -> Result<Run, Error> {
         let mut run = self.store.record(row)?;
         run.project = project::of_landing(&row.out_dir).map(Path::to_path_buf);
+        run.project_id = run.project.as_deref().map(project::project_id);
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);

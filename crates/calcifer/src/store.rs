@@ -14,7 +14,7 @@ use protocol::{
     },
     config::Origin,
     ids::{Digest, RunId},
-    machine as v1,
+    machine as v1, tree,
 };
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
@@ -82,6 +82,9 @@ const SCHEMA: &str = "
         media_type TEXT NOT NULL,
         label TEXT NOT NULL DEFAULT '',
         duration_us INTEGER NOT NULL DEFAULT 0,
+        width INTEGER NOT NULL DEFAULT 0,
+        height INTEGER NOT NULL DEFAULT 0,
+        measured_ms INTEGER NOT NULL DEFAULT 0,
         done INTEGER NOT NULL DEFAULT 0,
         path TEXT,
         exported_rev INTEGER,
@@ -113,6 +116,29 @@ const SCHEMA: &str = "
         kind TEXT NOT NULL DEFAULT 'rent' CHECK (kind IN ('rent', 'end')),
         run TEXT REFERENCES runs (id)
     ) STRICT;";
+
+/// A store made before outputs were measured gains their columns. Its version stands: every statement names its columns, so a
+/// Calcifer that predates them goes on reading it.
+fn measured_columns(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('outputs') WHERE name = 'measured_ms')", [], |r| r.get(0))?;
+    if has {
+        return Ok(());
+    }
+    let tx = writer.transaction()?;
+    for column in ["width", "height", "measured_ms"] {
+        tx.execute_batch(&format!("ALTER TABLE outputs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"))?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// What is measured of an output: 0 for what doesn't apply or couldn't be read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Measured {
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u64,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -320,7 +346,7 @@ impl Store {
                 tx.pragma_update(None, "user_version", VERSION)?;
                 tx.commit()?;
             }
-            VERSION => {}
+            VERSION => measured_columns(&mut writer)?,
             other => return Err(StoreError::Version(other)),
         }
         let reader = Connection::open(path)?;
@@ -1201,7 +1227,7 @@ impl Store {
         })
     }
 
-    /// Records the output's file at `path` as holding revision `rev`; while that is its current
+    /// Records the output's file at `path` as holding revision `rev`, and what was measured of it; while that is its current
     /// revision, the run's next event says it landed.
     pub fn exported(
         &self,
@@ -1210,11 +1236,12 @@ impl Store {
         index: u32,
         rev: u64,
         path: &Path,
+        measured: Measured,
     ) -> Result<Vec<Event>> {
         self.write(|tx| {
             tx.execute(
-                "UPDATE outputs SET exported_rev = ?4, path = ?5 WHERE run = ?1 AND name = ?2 AND idx = ?3",
-                params![run, name, index, rev as i64, path.to_string_lossy()],
+                "UPDATE outputs SET exported_rev = ?4, path = ?5, width = ?6, height = ?7, measured_ms = ?8 WHERE run = ?1 AND name = ?2 AND idx = ?3",
+                params![run, name, index, rev as i64, path.to_string_lossy(), measured.width, measured.height, measured.duration_ms as i64],
             )?;
             export_settled(tx, run, name, index, rev, true)
         })
@@ -1811,12 +1838,22 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
     }])
 }
 
+/// The API path that serves an output.
+fn output_url(number: u64, name: &str, index: u32) -> String {
+    let mut url = url::Url::parse("http://calcifer/").expect("a base URL");
+    url.path_segments_mut().expect("a base URL").extend(["v1", "runs", &number.to_string(), "outputs", name]);
+    match index {
+        0 => url.path().to_owned(),
+        index => format!("{}?index={index}", url.path()),
+    }
+}
+
 /// A run row as the API answers it, with its output items in the order they first appeared.
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
     let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
              CASE WHEN exported_rev = rev THEN path END, CASE WHEN failed_rev = rev THEN export_error END,
-             checkpoint, {STAYS}
+             checkpoint, {STAYS}, width, height, measured_ms, duration_us
          FROM outputs WHERE run = ?1 ORDER BY created_seq"
     ))?;
     let settled_ok = row.status == Some(Status::Completed);
@@ -1827,6 +1864,10 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         let done: bool = r.get(7)?;
         let path: Option<String> = r.get(8)?;
         let checkpoint = checkpoint_ref(r, 10)?;
+        let media_type: String = r.get(5)?;
+        let url = (path.is_some() && checkpoint.is_none() && media_type != tree::MEDIA).then(|| output_url(row.number, &name, index));
+        let measured = |column| -> rusqlite::Result<Option<u32>> { Ok(Some(r.get::<_, i64>(column)? as u32).filter(|n| *n > 0)) };
+        let (measured_ms, grown_us) = (r.get::<_, i64>(14)? as u64, r.get::<_, i64>(15)? as u64);
         let id = match index {
             0 => format!("{}/{name}", row.number),
             i => format!("{}/{name}/{i}", row.number),
@@ -1840,9 +1881,13 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             id,
             name,
             index,
+            url,
+            width: measured(12)?,
+            height: measured(13)?,
+            duration_ms: Some(if measured_ms > 0 { measured_ms } else { grown_us / 1000 }).filter(|ms| *ms > 0),
             rev: r.get::<_, i64>(2)? as u64,
             length: r.get::<_, i64>(3)? as u64,
-            media_type: r.get(5)?,
+            media_type,
             label: r.get(6)?,
             sha256: (status == ItemStatus::Completed && checkpoint.is_none())
                 .then(|| digest.parse().ok())
@@ -1863,6 +1908,8 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         target: row.target.clone(),
         hub: row.hub.clone().map(String::from).unwrap_or_default(),
         project: None,
+        project_id: None,
+        request: None,
         machine: row.machine.clone(),
         status: match (row.state, row.status) {
             (State::Settled, Some(status)) => status,

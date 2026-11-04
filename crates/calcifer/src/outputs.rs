@@ -48,7 +48,7 @@ use crate::{
     lanes::{self, Ranged},
     link::LANES,
     lock,
-    store::{OutputRow, RunRow, State as RunState, StoreError},
+    store::{Measured, OutputRow, RunRow, State as RunState, StoreError},
 };
 
 /// Bytes are read in ranges of `clamp(length / (RANGES_PER_LANE * LANES), 1 MiB, RANGE)`, at
@@ -403,7 +403,8 @@ impl Calcifer {
                 let appended = lock(&self.exports.appended).get(&appended).copied();
                 fetch_file(link, &target, item, &dest, appended, &moved).await?
             };
-            self.land(run, item, &staged, &dest)
+            let measured = self.measured(item, &staged).await;
+            self.land(run, item, &staged, &dest, measured)
         };
         tokio::pin!(work);
         let done = loop {
@@ -467,6 +468,17 @@ impl Calcifer {
         Ok(owed.collect())
     }
 
+    /// What ffprobe says of a revision about to land, a picture, video or sound; nothing with no ffprobe here, or of what it doesn't read.
+    async fn measured(&self, item: &OutputRow, staged: &Path) -> Measured {
+        let media = ["image/", "video/", "audio/"].iter().any(|kind| item.media_type.starts_with(kind));
+        let Some(machines) = self.machines().filter(|_| media) else { return Measured::default() };
+        let Some((_, ffprobe)) = platform::tools::ffmpeg(&machines.hubs.home().tools(), &crate::tools::path()) else {
+            return Measured::default();
+        };
+        let staged = staged.to_owned();
+        tokio::task::spawn_blocking(move || probe(&ffprobe, &staged)).await.unwrap_or_default()
+    }
+
     /// Puts the staged bytes in the item's place and records them, one step as `serve` sees it.
     fn land(
         &self,
@@ -474,6 +486,7 @@ impl Calcifer {
         item: &OutputRow,
         staged: &Path,
         dest: &Path,
+        measured: Measured,
     ) -> Result<(), Failure> {
         let began = Instant::now();
         let old = suffixed(dest, ".old");
@@ -514,7 +527,7 @@ impl Calcifer {
                 }
                 None => dest.to_owned(),
             };
-            let events = self.store.exported(id, name, index, rev, &kept)?;
+            let events = self.store.exported(id, name, index, rev, &kept, measured)?;
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
             self.publish(&run.id, events);
@@ -532,6 +545,40 @@ impl Calcifer {
             elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
         remove(&old);
         Ok(())
+    }
+}
+
+/// A file's first video stream's size and its length, as ffprobe reads them.
+fn probe(ffprobe: &Path, path: &Path) -> Measured {
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    struct Stream {
+        width: u32,
+        height: u32,
+    }
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    struct Format {
+        duration: String,
+    }
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    struct Probed {
+        streams: Vec<Stream>,
+        format: Format,
+    }
+    let asked = std::process::Command::new(ffprobe)
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json"])
+        .arg(path)
+        .output();
+    let Ok(probed) = asked.map_err(drop).and_then(|done| serde_json::from_slice::<Probed>(&done.stdout).map_err(drop)) else {
+        return Measured::default();
+    };
+    let stream = probed.streams.first();
+    Measured {
+        width: stream.map_or(0, |s| s.width),
+        height: stream.map_or(0, |s| s.height),
+        duration_ms: probed.format.duration.parse::<f64>().map_or(0, |seconds| (seconds * 1000.0).round() as u64),
     }
 }
 

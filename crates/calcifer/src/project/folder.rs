@@ -579,6 +579,23 @@ impl Folder {
         Ok(sha256)
     }
 
+    /// A file a run is given, of `sha256`, kept in `files/` unless it's here, and in the lock's table, under what its bytes say it is
+    /// else its own extension: a hard link with `link`, else a copy.
+    pub fn keep_given(&self, source: &Path, sha256: &str, link: bool) -> Result<(), Error> {
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        if self.lock()?.files.get(sha256).is_some_and(|file| self.path(&file.path).is_file()) {
+            return Ok(());
+        }
+        let mut head = Vec::new();
+        std::fs::File::open(source).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| io_at(source, e))?;
+        let path = infer::get(&head).map_or_else(|| file_of(sha256, source), |kind| file_named(sha256, kind.extension()));
+        self.store(&path, |part| match link && std::fs::hard_link(source, part).is_ok() {
+            true => Ok(()),
+            false => std::fs::copy(source, part).map(drop),
+        })?;
+        self.tabled(path, sha256)
+    }
+
     /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
     pub fn take(&self, source: &Path) -> Result<String, Error> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());

@@ -224,6 +224,17 @@ pub(crate) fn named(api: &Api, named: &FsPath) -> Result<Option<PathBuf>, Error>
     }
 }
 
+/// The files a run is `given`, each `(path, sha256)`, kept in its project unless they're there. What Calcifer holds in `uploads` is
+/// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
+pub(crate) fn keep_given(project: &FsPath, given: &[(PathBuf, String)], uploads: &FsPath) -> Vec<String> {
+    let folder = Folder::at(project);
+    let unkept = given.iter().filter_map(|(path, sha256)| {
+        let why = folder.keep_given(path, sha256, path.starts_with(uploads)).err()?;
+        Some(format!("{} isn't kept in its project, so asking this run again needs it given again: {}", path.display(), why.message))
+    });
+    unkept.collect()
+}
+
 /// The folder a project's runs land in, as a run's record has it.
 pub(crate) fn landed_in(dir: &FsPath) -> String {
     landing(dir).to_string_lossy().into_owned()
@@ -1285,7 +1296,7 @@ async fn removing_background(api: &Arc<Api>, folder: &Folder, at: &FsPath, field
     }
     let image = FileTerm { name: Some("image".into()), file: at.to_string_lossy().into_owned() };
     let ask = RunRequest { target: "birefnet/remove_background".into(), on, files: vec![image], project: Some(folder.dir.clone()), ..Default::default() };
-    match crate::runs::request(api, key, ask).await {
+    match crate::runs::request_keeping_outputs(api, key, ask).await {
         Ok(submitted) => Ok(submitted.run),
         Err(error) if error.code == "local_unavailable" => Err(format!("{}: rent one with `cozy machine rent`, or add `--on <machine>`; a plain copy is kept", error.message)),
         Err(error) => Err(format!("{}; a plain copy is kept", error.message)),

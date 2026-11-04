@@ -132,7 +132,7 @@ A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds i
 interface, cuts and stages its files and builds the machine's spec (`crates/calcifer/src/runs`). No client builds
 a spec.
 
-- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or a folder in or holding one: without it `400 not_in_a_project`, an unknown id `404 project_unknown`, and its outputs land in that project's `files/` and `project.lock`'s `runs`. Answers `202` (`200` when the key had made it) with
+- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or a folder in or holding one: without it `400 not_in_a_project`, an unknown id `404 project_unknown`, and its outputs land in that project's `files/` and `project.lock`'s `runs`; a file it's given joins `files/` at submit, so it can be asked again once what held it is gone. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing}`:
   - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
@@ -171,11 +171,11 @@ a spec.
   its `Content-Length` (`400 file_length_required`); `400 file_digest_mismatch` drops the bytes; `409 file_length_conflict` when it is
   being written at another length. `HEAD`: `200` held whole, else `404`, with `Cozy-Held` either way. A held file or part unused for a day is dropped.
 - `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is an id (`404 project_unknown`), or a folder:
-  the runs of the project holding it; in none, all of them. Each run names its `project`.
+  the runs of the project holding it; in none, all of them. Each run names its `project` and `project_id`.
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
-  `done_fraction`, `bytes_per_s` and `eta_s`. `?detail=full` adds `measurements`, `calls` and `report` (each
+  `done_fraction`, `bytes_per_s` and `eta_s`. Each output, once it landed, has `url`, the API path that serves it, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
   executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
-  ceiling).
+  ceiling) and `request {target, input, seed?}`: what it was asked, read-only, each file by its `sha256:` and the models and LoRAs it chose as `models`. To ask it again, send `target` and `input` with a new key.
   A run settled over 30 days ago has dropped `measurements` and each call's, so its `report` is gone. Nothing else
   of a run is ever dropped: its row, `result`, reason, outputs, logs and `calls` stay for good.
 - `GET /v1/runs/{id}/events` (`Last-Event-ID` or `?starting_after=`): `run.*`, `output_item.*`, `run.log`,

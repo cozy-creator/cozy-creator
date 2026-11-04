@@ -130,7 +130,17 @@ fn local(api: &Api, ask: &RunRequest) -> Option<Result<(PathBuf, Option<String>)
 /// Records `ask` under `key` and starts it; the same key again answers the recorded run without
 /// binding anything again, and another ask under it is a conflict. Local code not yet made ready
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
+/// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
+    submit_ask(api, key, ask, true).await
+}
+
+/// As `request`, keeping nothing it's given: only what it makes is the project's.
+pub(crate) async fn request_keeping_outputs(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
+    submit_ask(api, key, ask, false).await
+}
+
+async fn submit_ask(api: &Arc<Api>, key: &str, ask: RunRequest, keep: bool) -> Result<Submitted, Error> {
     let digest = digest(&ask);
     let calcifer = &api.calcifer;
     if let Some((row, recorded)) = calcifer.store().recorded(key).map_err(store)? {
@@ -142,11 +152,54 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
     }
     match prepare(api, key, &ask).await? {
         Prepared::Install(run) => Ok(Submitted { run, replay: false, notes: vec![], preparing: true }),
-        Prepared::Run { submit, notes } => {
+        Prepared::Run { submit, mut notes } => {
+            let given = given(&submit);
+            let project = submit.out.as_deref().and_then(crate::project::of_landing).filter(|_| keep).map(Path::to_owned);
             let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
+            if let Some(project) = project.filter(|_| !submitted.replay) {
+                let uploads = files::dir(calcifer);
+                let kept = tokio::task::spawn_blocking(move || crate::project::keep_given(&project, &given, &uploads)).await;
+                let said = kept.map_err(|e| Error::internal("keep_given", e.to_string()))?;
+                notes.extend(said.into_iter().map(|message| Note { level: NoteLevel::Warning, message }));
+            }
             Ok(Submitted { notes, ..submitted })
         }
     }
+}
+
+/// The files a submission's call is given, with their hashes: not a folder's manifest or its members, nor local code's own.
+fn given(submit: &SubmitRun) -> Vec<(PathBuf, String)> {
+    let staged = |digest: &str| submit.inputs.iter().find(|input| input.digest.to_string() == digest).map(|input| input.path.clone());
+    let files = submit.spec.inputs.iter().filter(|input| input.media_type != protocol::tree::MEDIA);
+    files.filter_map(|input| Some((staged(&input.digest)?, input.digest.clone()))).collect()
+}
+
+/// What a run was asked, from the spec it was sent: its payload, the models and LoRAs it chose as `input`'s `models` takes them,
+/// and its seed. None for what no one asked with a payload.
+pub(crate) fn asked(row: &crate::store::RunRow) -> Option<protocol::calcifer::RunAsked> {
+    let mut input: serde_json::Map<String, serde_json::Value> = serde_json::from_str(row.spec.payload.as_ref()?.get()).ok()?;
+    let seed = input.get("seed").and_then(serde_json::Value::as_i64);
+    let reference = |source: &str, repository: &str, manifest: &str, release: &str| match (source, manifest, release) {
+        (source, ..) if !source.is_empty() => source.to_owned(),
+        (_, manifest, _) if !manifest.is_empty() => format!("{repository}@{manifest}"),
+        (_, _, release) if !release.is_empty() => format!("{repository}@{release}"),
+        _ => repository.to_owned(),
+    };
+    let models = row.spec.models.iter().map(|choice| {
+        let lora: Vec<_> = (choice.adapters.iter())
+            .map(|a| serde_json::json!({"ref": reference(&a.source, &a.model, &a.manifest, &a.release), "strength": a.scale.parse::<f64>().unwrap_or(1.0)}))
+            .collect();
+        let mut chosen = serde_json::json!({"lora": lora});
+        if !choice.repository.is_empty() || !choice.source.is_empty() {
+            chosen["ref"] = reference(&choice.source, &choice.repository, &choice.manifest, &choice.release).into();
+        }
+        (choice.parameter.clone(), chosen)
+    });
+    let models: serde_json::Map<_, _> = models.collect();
+    if !models.is_empty() {
+        input.insert("models".into(), models.into());
+    }
+    Some(protocol::calcifer::RunAsked { target: row.target.clone(), input, seed })
 }
 
 /// The ask's identity: what it asks, whatever price it was quoted since.
