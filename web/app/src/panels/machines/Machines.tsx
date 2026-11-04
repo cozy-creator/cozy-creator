@@ -103,7 +103,13 @@ const lookAt = (machine: string | null) => {
  */
 function Switcher() {
   const { here, remote, client } = useConnection()
-  const { data } = useQuery({ queryKey: ["here", "machines"], queryFn: () => here.machines(), enabled: !client.transport.channel })
+  // Here, the list the stream keeps live. Through a door the stream is the pod's and nothing feeds this computer's list, so each opening reads it.
+  const { data } = useQuery({
+    queryKey: remote ? ["here", "machines"] : ["machines"],
+    queryFn: () => here.machines(),
+    refetchOnMount: remote ? "always" : true,
+    enabled: !client.transport.channel,
+  })
   const doors = data?.machines.filter((machine) => machine.kind === "rental" && machine.state === "ready" && machine.recorded !== false && !machine.offline) ?? []
   const looked = remote ? data?.machines.find((machine) => named(machine, remote)) : undefined
   if (!remote && !doors.length) return null

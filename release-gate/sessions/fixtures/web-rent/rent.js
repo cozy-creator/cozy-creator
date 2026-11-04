@@ -217,8 +217,9 @@ async function use(name, work) {
       await until('it can be looked at', () => page.locator('.switcher option').allTextContents(), (names) => names.includes(name));
       await Promise.all([page.waitForEvent('load'), page.selectOption('.switcher select', name)]);
       await page.waitForSelector('.top');
-      await until('its world', () => page.textContent('.drawer'), (text) => text.includes('local') && !text.includes(`${name} `), 120_000);
-      check('its_world_has_the_pod_as_local', (await page.locator('.runrow b').allTextContents()).join() === 'local', await page.locator('.runrow b').allTextContents());
+      // Its rows, not the drawer's words: the switcher itself says `local` before anything has come through the door.
+      const rows = await until('its world', () => page.locator('.runrow b').allTextContents(), (names) => names.length > 0, 120_000);
+      check('its_world_has_the_pod_as_local', rows.join() === 'local', rows);
       check('which_calcifer_shows', (await page.textContent('.top')).includes(`On ${name}`));
       check('no_rent_on_a_pod', (await page.locator('.sku').count()) === 0);
       await shot('switched');
