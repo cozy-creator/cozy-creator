@@ -66,6 +66,13 @@ async function until(what, read, wanted, ms = STEP_MS) {
   throw new Error(`${what}: still ${JSON.stringify(last)} after ${ms} ms`);
 }
 
+// The pointer on it, as a person's. A locator's hover that retries scrolls the canvas to centre what it's after, and React Flow scrolls back within
+// milliseconds, which leaves the pointer over another box: that box opens, and this one closes (macOS, 41927957996: `web-nodes-died.json`).
+async function pointAt(page, locator) {
+  const { x, y, width, height } = await locator.boundingBox();
+  await page.mouse.move(x + width / 2, y + height / 2);
+}
+
 async function drop(page, files, x, y) {
   const transfer = await page.evaluateHandle((list) => {
     const data = new DataTransfer();
@@ -128,4 +135,4 @@ async function lastLook() {
   await boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
 }
 
-module.exports = { MP4, STEP_MS, boxLog, drop, lastLook, lookAt, png, until, watchBoxes, wav };
+module.exports = { MP4, STEP_MS, boxLog, drop, lastLook, lookAt, png, pointAt, until, watchBoxes, wav };

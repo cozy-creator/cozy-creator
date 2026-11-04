@@ -12,7 +12,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, png, until } = require('./page');
+const { STEP_MS, lastLook, lookAt, png, until, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -228,7 +228,7 @@ function linesOf(text, name) {
   const away = () => page.mouse.move(2, 500);
   const open = async (name) => {
     await away();
-    await box(name).locator('.nm').hover();
+    await pointAt(page, box(name).locator('.nm'));
     await box(name).locator('.head [aria-label=Delete]').waitFor();
   };
   /** A place on screen, right of where the page puts what has none. */

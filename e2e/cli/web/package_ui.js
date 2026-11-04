@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, until } = require('./page');
+const { STEP_MS, until, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -143,7 +143,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const away = () => page.mouse.move(2, 500);
   const open = async (name) => {
     await away();
-    await box(name).locator('.nm').hover();
+    await pointAt(page, box(name).locator('.nm'));
     await box(name).locator('button[aria-label=Render]').waitFor();
   };
   // Behind its More, opened if it isn't.

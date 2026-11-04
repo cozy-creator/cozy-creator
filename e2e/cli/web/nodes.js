@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes } = require('./page');
+const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -95,7 +95,7 @@ function linesOf(text, name) {
   const away = () => page.mouse.move(2, 500);
   const open = async (name) => {
     await away();
-    await box(name).locator('.nm').hover();
+    await pointAt(page, box(name).locator('.nm'));
     await box(name).locator('.head [aria-label=Delete]').waitFor();
   };
   // Behind its More, opened if it isn't.

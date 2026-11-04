@@ -13,7 +13,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav } = require('./page');
+const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -33,7 +33,7 @@ const element = (page, name) => page.locator('.react-flow__node').filter({ has: 
 const away = (page) => page.mouse.move(2, 500);
 async function open(page, name) {
   await away(page);
-  await element(page, name).locator('.nm').hover();
+  await pointAt(page, element(page, name).locator('.nm'));
 }
 async function tag(page, name) {
   await open(page, name);
@@ -323,6 +323,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // A failure is named and stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
   await open(page, 'needs');
+  // Its controls open under it, and it sits low: the canvas goes up as far as they need, as a person would take it.
+  const under = await needs.locator('.take.add').boundingBox();
+  await page.mouse.wheel(0, Math.max(0, under.y + under.height + 40 - page.viewportSize().height));
+  await page.waitForTimeout(200);
+  await open(page, 'needs');
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
@@ -350,11 +355,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
   await until('and from the card', () => needs.locator('.status.bad').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
 
   // A file that leaves is on another computer, and when it comes back it shows, with no reload: a pull writes neither file.
   const older = await asset('older_art');
   const olderAt = join(folder, older.path);
-  renameSync(olderAt, `${olderAt}.away`);
+  // Out of files/, where any name starting with its hash is it.
+  const olderAway = join(folder, 'older_art.away');
+  renameSync(olderAt, olderAway);
   const absent = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
   await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
@@ -362,7 +371,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('pull_offered', (await element(page, 'older_art').locator('.status .act').textContent()) === 'Pull');
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
   await shot('absent');
-  renameSync(`${olderAt}.away`, olderAt);
+  renameSync(olderAway, olderAt);
   await until('back', () => element(page, 'older_art').locator('.media-note').count(), (n) => n === 0);
   check('file_back_with_no_reload', await notReloaded());
 
