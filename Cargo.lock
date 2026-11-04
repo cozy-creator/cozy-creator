@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "platform-signal"
-version = "0.16.13"
+version = "0.16.14"
 dependencies = [
  "rustix",
  "windows-sys 0.61.2",
