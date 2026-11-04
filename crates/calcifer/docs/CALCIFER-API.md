@@ -181,7 +181,8 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - A rental is `ending` until its Hub affirms the pod gone, then `ended`. An added machine is removed.
   - An ending machine takes no new runs (`409 machine_ending`), and `local` is refused.
   - An order its Hub has not answered stops at once (`ending`, no `rental_id`): it buys nothing more, and leaves
-    the list once its Hub answers and anything it placed is ending. So does one whose run ended.
+    the list once its Hub answers and anything it placed is ending. So does one whose run ended, or that its Hub
+    has not answered for an hour.
 - `POST /v1/machines/{name}/keepalive`: `Keepalive`. It restarts a rental's 15-minute idle clock once the
   machine acknowledges.
 - `POST /v1/machines/{name}/update` (`MachineUpdate`), with an `Idempotency-Key`: the machine's Runtime,

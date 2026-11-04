@@ -513,6 +513,11 @@ impl Store {
         self.read(|conn| ask_in(conn, key))
     }
 
+    /// When the ask under `key` was first made.
+    pub fn ask_made_at(&self, key: &str) -> Result<Option<i64>> {
+        self.read(|conn| Ok(conn.query_row("SELECT created_at FROM asks WHERE key = ?1", [key], |r| r.get(0)).optional()?))
+    }
+
     /// Replaces a pending ask's body: what it is to do, changed by its asker while it waits.
     pub fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
         self.write(|tx| {
