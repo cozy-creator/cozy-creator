@@ -2109,13 +2109,15 @@ impl Walk {
                 let stand = doc.stand(&lock);
                 let planned = plan(&doc, &stand, &lock, ask);
                 for &i in &planned.kept {
+                    let name = &doc.assets[i].name;
                     let why = doc.tags(i).and_then(|tags| doc.missing_inputs(i, tags)).unwrap_or_default();
+                    let why = why.strip_prefix(&format!("{name}: ")).unwrap_or(&why);
                     let changed = match &stand[i].state {
                         Stand::Pinned { changed, .. } => changed.join(", "),
                         _ => String::new(),
                     };
-                    self.say(Event::Said { message: format!("{why}: it stays pinned, though {changed} changed") });
-                    self.tried(&id, &doc.assets[i].name)?;
+                    self.say(Event::Said { message: format!("{name} stays pinned, though {changed} changed: {why}") });
+                    self.tried(&id, name)?;
                 }
                 let idle = planned.send.is_empty() && planned.tools.is_empty();
                 moved |= !idle;
