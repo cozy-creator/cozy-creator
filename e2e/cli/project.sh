@@ -223,6 +223,7 @@ for type in run.completed output_item.landed run.log; do
 done
 
 step "a project: --plain on a terminal is one line per event"
+printf 'project\x1frender\x1f--plain\x1f\x1e' >> "$OUT/argv.log"  # script runs the binary itself
 script -qfec "stty rows 24 cols 120; '$COZY' project -p '$T' render sophia --plain --on local" "$OUT/by-asset-plain.txt" > /dev/null 2>&1 || check "by asset: --plain: $(tail -c 400 "$OUT/by-asset-plain.txt")"
 { grep -aqE '^sophia: version [0-9]+' "$OUT/by-asset-plain.txt" && ! grep -aq $'\x1b\\[?1049h' "$OUT/by-asset-plain.txt"; } || check "by asset: --plain drew a view: $(cat -v "$OUT/by-asset-plain.txt" | tail -c 400)"
 

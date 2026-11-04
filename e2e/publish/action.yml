@@ -19,7 +19,7 @@ runs:
     - shell: bash
       env:
         OUTPUT: ${{ inputs.path }}
-      run: node "$GITHUB_ACTION_PATH/../scrub.js" "$OUTPUT"
+      run: node "$GITHUB_ACTION_PATH/scrub.js" "$OUTPUT"
     - uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.name }}
