@@ -137,6 +137,11 @@ impl Recovery {
     /// Called after finite local retries fail. Owner requests are always asynchronous;
     /// only physical refusals can enter peer recovery. Local caps never ask other PIDs.
     fn next(&mut self, device: i32, bytes: usize, physical: bool) -> Result<bool> {
+        self.next_with_cold(device, bytes, physical, None)
+    }
+
+    fn next_with_cold(&mut self, device: i32, bytes: usize, physical: bool,
+                      cold: Option<working::ColdRecovery>) -> Result<bool> {
         if self.terminal { return Ok(false); }
         {
             let captures = capture_counts()?;
@@ -150,6 +155,13 @@ impl Recovery {
                 cause: cache_owner::Cause::Allocation, generation: cache_owner::next_generation()?,
             }, bytes)?;
         }
+        // A cold observation explicitly opts in before its body. Invalidate the
+        // exact sample as soon as it joins asynchronous recovery, even when the
+        // allocation succeeds before every accepted callback has returned.
+        let wait_for_cache = match (cold, self.cache_request.as_ref()) {
+            (Some(cold), Some(_)) => cold.join()?,
+            _ => false,
+        };
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
         let progress = if physical {
             cooperative::recover(device, bytes, &mut self.deadline, &mut self.observed,
@@ -157,7 +169,11 @@ impl Recovery {
         } else { PeerProgress::Unavailable };
         #[cfg(not(all(target_os = "linux", target_has_atomic = "64")))]
         let progress = { let _ = (device, bytes, physical, &mut self.deadline, &mut self.observed); PeerProgress::Unavailable };
-        let cache_progress = self.cache_request.is_some() && released_bytes(device)? > release_before;
+        let mut cache_progress = self.cache_request.is_some() && released_bytes(device)? > release_before;
+        if wait_for_cache && !cache_progress && matches!(progress, PeerProgress::Unavailable) {
+            cache_progress = self.cache_request.as_ref().expect("joined cache request")
+                .wait_allocation_release(release_before, limit)?;
+        }
         self.terminal = std::time::Instant::now() >= limit
             || (!cache_progress && !matches!(progress, PeerProgress::Retry));
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]

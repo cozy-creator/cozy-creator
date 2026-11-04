@@ -377,6 +377,45 @@ struct ActivePhase {
     invalid: Option<String>,
     replay: Option<ReplayTrace>,
     committed_site: Option<(String, String)>,
+    cold_recovery_thread: Option<std::thread::ThreadId>,
+}
+
+/// Host identity only; no allocator guard or GPU owner crosses a recovery wait.
+pub(crate) struct ColdRecovery {
+    device: i32,
+    token: u64,
+    thread: std::thread::ThreadId,
+}
+impl ColdRecovery {
+    pub(crate) fn join(self) -> Result<bool> {
+        let owner = owner(self.device)?;
+        let mut state = owner.lock()?;
+        if self.thread != std::thread::current().id()
+            || state.phases.active.as_ref().is_none_or(|phase| {
+                phase.token != self.token || phase.cold_recovery_thread != Some(self.thread)
+            })
+        {
+            return Ok(false);
+        }
+        state.phases.invalidate("cache_recovery");
+        split::invalidate(&mut state, "cache_recovery");
+        Ok(true)
+    }
+}
+
+fn cold_recovery(device: i32) -> Result<Option<ColdRecovery>> {
+    let owner = owner(device)?;
+    // Includes explicit same-thread external-callback scopes, not just the
+    // separate cache worker. The allocating stack cannot leave its outer scope
+    // before recovery returns. Do not recheck after queueing our own callback.
+    if owner.external_callbacks.load(Ordering::Acquire) != 0 {
+        return Ok(None);
+    }
+    let state = owner.lock()?;
+    let thread = std::thread::current().id();
+    Ok(state.phases.active.as_ref()
+        .filter(|phase| phase.mode == PhaseMode::Eager && phase.cold_recovery_thread == Some(thread))
+        .map(|phase| ColdRecovery { device, token: phase.token, thread }))
 }
 
 #[derive(Default)]
@@ -1487,7 +1526,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         let mut physical = None;
         let result = alloc_local(device, bytes, stream, pool, &mut physical, bound);
         if pool.is_none() && let Err(Error::OutOfMemory { requested_bytes }) = &result
-            && recovery.next(device, physical.unwrap_or(*requested_bytes), physical.is_some())?
+            && recovery.next_with_cold(device, physical.unwrap_or(*requested_bytes), physical.is_some(),
+                cold_recovery(device)?)?
         {
             continue; // All native guards are gone; retry the real allocator, never a grant.
         }
@@ -2006,7 +2046,18 @@ pub(crate) fn reclaim_for_weights(device: i32, bytes: usize) -> Result<usize> {
 /// Begin one device-wide execution observation. None means the final configuration is not
 /// known yet: observe demand, but do not admit speculation from an earlier guessed key.
 pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<u64> {
-    phase_enter_inner(device, key, mode, None, None)
+    phase_enter_inner(device, key, mode, None, None, false)
+}
+
+/// Private automatic first-observation entry. Only this token's calling thread
+/// may await cache progress after an actual non-pool Working refusal. Entry itself
+/// requests no reclamation. Any joined recovery keeps this sample unpublished.
+#[doc(hidden)]
+pub fn phase_enter_cold(device: i32, key: String) -> Result<u64> {
+    if crate::cache_owner::is_dispatcher_thread(device)? {
+        return Err(Error::Invalid("cache callbacks cannot enter cold recovery"));
+    }
+    phase_enter_inner(device, Some(key), PhaseMode::Eager, None, None, true)
 }
 
 fn phase_enter_inner(
@@ -2015,6 +2066,7 @@ fn phase_enter_inner(
     mode: PhaseMode,
     committed_site: Option<(String, String)>,
     expected_plan_generation: Option<u64>,
+    cold_recovery: bool,
 ) -> Result<u64> {
     if key.as_ref().is_some_and(String::is_empty) {
         return Err(Error::Invalid("phase execution key must not be empty"));
@@ -2029,6 +2081,14 @@ fn phase_enter_inner(
     let mut state = owner.lock()?;
     if state.phases.active.is_some() {
         return Err(Error::PhaseOverlap);
+    }
+    if cold_recovery {
+        crate::ensure_recovery_allowed(&captures, device)?;
+        if key.as_ref().and_then(|key| state.phases.samples.get(key))
+            .is_some_and(|sample| sample.known)
+        {
+            return Err(Error::Invalid("cold recovery requires an unknown execution sample"));
+        }
     }
     if committed_site.is_some() && state.splits.active_is_present() {
         return Err(Error::Invalid("committed execution cannot overlap an active split"));
@@ -2064,6 +2124,7 @@ fn phase_enter_inner(
         invalid,
         replay: None,
         committed_site,
+        cold_recovery_thread: cold_recovery.then(|| std::thread::current().id()),
     });
     state.refresh_phase();
     Ok(token)

@@ -256,6 +256,12 @@ def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["ea
     return _ext._varena_phase_enter(_device(device), key, mode=mode)
 
 
+def _phase_enter_cold(device: DeviceLike, key: str) -> int:
+    """Opt this unknown observation into bounded native allocation recovery."""
+    _installed()
+    return _ext._varena_phase_enter_cold(_device(device), key)
+
+
 def phase_leave(device: DeviceLike, token: int, *, completed: bool, key: str | None = None) -> dict[str, Any]:
     """End after checked execution completion, supplying an actually observed key if needed.
 

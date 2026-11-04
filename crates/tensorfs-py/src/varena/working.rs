@@ -740,6 +740,15 @@ impl Drop for PyGraphFootprint {
 }
 
 #[pyfunction]
+fn _varena_phase_enter_cold(py: Python<'_>, device: i32, key: String) -> PyResult<u64> {
+    py.detach(|| {
+        check()?;
+        varena::working::phase_enter_cold(device, key)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 #[pyo3(signature = (device, key = None, *, mode = "eager"))]
 fn _varena_phase_enter(
     py: Python<'_>,
@@ -865,6 +874,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<CallbackScope>()?;
     module.add_class::<PyExecution>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_phase_enter_cold, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;

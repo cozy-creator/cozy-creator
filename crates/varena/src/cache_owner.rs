@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread::ThreadId;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 thread_local! {
     // Only the native dispatcher establishes this identity. An already-running
@@ -218,11 +218,13 @@ struct Job {
     key: RequestKey,
     start_release: u64,
     state: Mutex<JobState>,
+    changed: Condvar,
     admission_wake: Option<Signal>,
 }
 impl Job {
-    fn wake_admission(&self) {
+    fn wake(&self) {
         if let Some(signal) = &self.admission_wake { signal.set(); }
+        self.changed.notify_all();
     }
     fn lock(&self) -> Result<MutexGuard<'_, JobState>> {
         self.state
@@ -525,12 +527,35 @@ impl ShrinkRequest {
             .unwrap_or(0);
         Ok(job.facts.clone())
     }
+
+    /// Observe an Allocation job within its caller's existing deadline. The worker
+    /// retains the job and callback custody when this observer returns or times out.
+    /// In particular, never drain/cancel a coalesced request while its caller may
+    /// hold the GIL. Release progress permits a real allocation retry, not success.
+    pub(crate) fn wait_allocation_release(&self, since: u64, deadline: Instant) -> Result<bool> {
+        self.check()?;
+        if self.job.key.cause != Cause::Allocation {
+            return Err(Error::Invalid("only allocation requests expose recovery progress"));
+        }
+        let mut job = self.job.lock()?;
+        loop {
+            if self.control.room.released.load(Ordering::Acquire) > since {
+                return Ok(true);
+            }
+            let now = Instant::now();
+            if job.facts.finished || job.cancelled || now >= deadline {
+                return Ok(false);
+            }
+            (job, _) = self.job.changed.wait_timeout(job, deadline - now)
+                .map_err(|_| Error::Poisoned("cache recovery wait mutex".into()))?;
+        }
+    }
     pub fn cancel(&self) -> Result<()> {
         self.check()?;
         let mut job = self.job.lock()?;
         job.cancelled = true;
         job.facts.cancelled = true;
-        self.job.wake_admission();
+        self.job.wake();
         self.control.changed.notify_all();
         Ok(())
     }
@@ -552,7 +577,7 @@ impl ShrinkRequest {
         if !job.facts.running && !job.waiting_service && job.owners.is_empty() {
             job.facts.finished = true;
         }
-        self.job.wake_admission();
+        self.job.wake();
         self.control.changed.notify_all();
         Ok(())
     }
@@ -690,6 +715,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
         let job = Arc::new(Job {
             key,
             start_release,
+            changed: Condvar::new(),
             admission_wake: if key.cause == Cause::Admission {
                 Some(Signal::new().map_err(|error| Error::Unsupported(format!("Use admission wake: {error}")))?)
             } else { None },
@@ -753,7 +779,7 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
                     if let Ok(mut held) = job.lock() {
                         held.admission_failure.get_or_insert_with(|| error.clone());
                     }
-                    job.wake_admission();
+                    job.wake();
                 }
             }
             control.changed.notify_all();
@@ -828,7 +854,10 @@ fn worker_tick(
         if let Some(wanted) = collect {
             match crate::reclaim_completed(control.device, wanted, arenas) {
                 Ok(released) => {
-                    job.lock()?.collect_pending = false;
+                    let mut held = job.lock()?;
+                    held.collect_pending = false;
+                    job.wake();
+                    drop(held);
                     #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
                     if released != 0 {
                         crate::cooperative::wake_cache_actions(control.device)?;
@@ -861,7 +890,7 @@ fn worker_tick(
                 held.facts.finished = true;
             }
             if held.facts.finished {
-                job.wake_admission();
+                job.wake();
                 drop(held);
                 let mut state = control.lock()?;
                 state.jobs.remove(&job.key);
@@ -896,14 +925,14 @@ fn worker_tick(
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
             }
-            job.wake_admission();
+            job.wake();
             continue;
         };
         {
             let mut owner = registration.owner.lock()?;
             if owner.closing || !owner.facts.requestable || owner.facts.failed.is_some() {
                 job.lock()?.facts.running = false;
-                job.wake_admission();
+                job.wake();
                 continue;
             }
             owner.facts.running = true;
@@ -972,7 +1001,7 @@ fn worker_tick(
         }
         drop(held);
         drop(owner);
-        job.wake_admission();
+        job.wake();
         control.changed.notify_all();
         #[cfg(all(target_os = "linux", target_has_atomic = "64"))]
         crate::cooperative::wake_cache_actions(control.device)?;
