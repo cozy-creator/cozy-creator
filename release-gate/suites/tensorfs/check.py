@@ -200,8 +200,9 @@ def check(gate):
 
     if done('download-cut', cancelled=True) and done('download-resume'):
         resumed('download-cut', 'download-resume')
-    if done('kill-cut', cancelled=True) and done('kill-resume'):
-        resumed('kill-cut', 'kill-resume')
+    # The same run goes on once TensorD is back: its own record is the resume.
+    if done('kill-cut'):
+        resumed('kill-cut', 'kill-cut')
     up = None
     if done('upload'):
         evs = rows['upload']['evs']

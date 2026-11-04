@@ -17,8 +17,9 @@
 #   download-cut/-resume  new random weights ($TFS_RESUME_MB MiB), uploaded private from this computer's machine, cancelled
 #                    part-way on $M, then downloaded again: only the rest comes, from the Hub. No datacenter volume
 #                    holds them (TensorFS writes back public objects only), so a cache never serves the resume (cl-686)
-#   kill-cut/-resume the same with TensorD killed in place of the cancel, as a crash ends it: a rental only (over SSH),
-#                    and its stable parent starts it again. What landed is still there, unfinished chunks too
+#   kill-cut         the same with TensorD killed in place of the cancel, as a crash ends it: a rental only (over SSH).
+#                    Its stable parent starts it again and the same run goes on, so that run's record is the resume:
+#                    what landed is still there, unfinished chunks too
 #   upload           new random weights (a CozyTensors folder) to a throwaway <account>/ci-tfs-<R>
 #   upload-again     the same folder to a second tag: no chunk is sent again (dedup)
 #   upload-cut/-resume    new weights cancelled part-way, then uploaded again: only the rest is sent
@@ -42,13 +43,11 @@ tfs_step() {
   printf '%s\t%s\t%s\n' "$name" "$(cat "$T/$name.number")" "$(( $(date +%s%3N) - t0 ))" >> "$T/steps.tsv"
   log "tensorfs $name: run $(cat "$T/$name.number") $(run_get "$T" "$name" .status)"
 }
-# tfs_cancel <run>: the run cancelled. tfs_kill <run>: TensorD on $M killed under it, by the pid it reports; the follower
-# is told by the machine going away.
+# tfs_cancel <run>: the run cancelled. tfs_kill: TensorD on $M killed under it: the service, the child of the pod's PID 1,
+# which starts it again; the follower is told by the machine going away.
 tfs_cancel() { "$CLI" run cancel "$1" -y >/dev/null 2>&1; }
 tfs_kill() {
-  local pid
-  pid=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.tensord_pid // empty')
-  [ -n "$pid" ] && "$CLI" machine ssh "$M" -- kill -9 "$pid"
+  "$CLI" machine ssh "$M" -- 'kill -9 $(ps -eo pid=,ppid=,args= | awk "\$2 == 1 && /machine serve/ {print \$1}")' </dev/null
 }
 # tfs_cut <name> <stage> <fraction> <cancel|kill> <cozy args...>: the command, cut so once its <stage> progress passes
 # the fraction; the bytes it had moved by then go in <name>.cut.
@@ -171,9 +170,8 @@ if [ -z "$ON" ] && tfs_case kill; then
   tfs_fixture kill-fixture "$d"
   if [ -n "${TFS_COMMIT:-}" ]; then
     tfs_cut kill-cut download 0.3 kill model download "$d@$TFS_COMMIT" --on "$M" -y
-    tfs_step kill-resume model download "$d@$TFS_COMMIT" --on "$M" -y
   else
-    expect tensorfs-kill-resume FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" kill-fixture .reason.message)"
+    expect tensorfs-kill-cut FAIL "no private model to resume (${WHO:-not signed in}): $(run_get "$T" kill-fixture .reason.message)"
   fi
   tfs_cleanup
 fi
