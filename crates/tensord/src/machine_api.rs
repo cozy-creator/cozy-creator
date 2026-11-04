@@ -199,10 +199,17 @@ impl NativeBackend {
                 .service
                 .engine
                 .installation_for_generation(&context.actor, &record.invocation.generation)
-                .map_err(problem)?
-                .ok_or_else(|| Error::internal("custody_corrupt", "held installation interface absent"))?;
-            let interface: Value = serde_json::from_slice(&held.interface)
-                .map_err(|_| Error::internal("custody_corrupt", "held installation interface corrupt"))?;
+                .map_err(problem)?;
+            // Its installation removed since (`cozy package remove`): the environment's own record.
+            // Without either this is a refusal, never a 500 its controller asks about forever.
+            let interface: Value = match held {
+                Some(held) => serde_json::from_slice(&held.interface)
+                    .map_err(|_| Error::internal("custody_corrupt", "held installation interface corrupt"))?,
+                None => self.service.catalog.resolve(&record.invocation.generation)
+                    .map(|generation| generation.record.interface.clone())
+                    .map_err(|_| Error::conflict("result_unreadable",
+                        format!("{} was removed from this machine before this run's result was read: run it again", record.invocation.package)))?,
+            };
             let declaration =
                 entrypoint(&interface, &record.invocation.entrypoint)?;
             schema_digest =
@@ -992,7 +999,7 @@ fn digest_bytes(value: &str) -> Result<Vec<u8>, Error> {
 /// A callable's declaration.
 fn entrypoint<'a>(interface: &'a Value, name: &str) -> Result<&'a Value, Error> {
     protocol::interface::entrypoint(interface, name)
-        .ok_or_else(|| Error::validation("invalid_request", "entrypoint is not declared by this held package"))
+        .ok_or_else(|| Error::validation("invalid_request", "entrypoint is not declared by this held package: `cozy run <package>` lists its functions"))
 }
 fn problem(error: io::Error) -> Error {
     match error.kind() {

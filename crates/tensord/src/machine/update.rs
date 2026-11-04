@@ -169,6 +169,9 @@ pub struct Request {
     /// Install the build toolchain (`super::toolchain`) instead of a software pair.
     #[serde(default)]
     pub toolchain: bool,
+    /// What its caller noted of the ask, for its outcome (`Status::notes`).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// An update waiting for the one in progress, with its status.
@@ -510,6 +513,7 @@ impl Updates {
                 gpu_memory_limit: None,
                 binary: None,
                 toolchain: true,
+                notes: vec![],
             };
             // One already answered (installed, failed or queued) asks nothing.
             let _ = self.request(fetch, true, |code| std::process::exit(code));
@@ -782,6 +786,7 @@ impl Updates {
             from: this_binary(identified(&self.paths.sdk()).map_err(server)?),
             pinned: request.pin.unwrap_or(false),
             history,
+            notes: request.notes.clone(),
             ..Status::default()
         };
         status.enter("waiting");
@@ -964,7 +969,7 @@ impl Updates {
             return match &request.cozy {
                 Some(named) if named != VERSION => Err(coded(
                     "binary_mismatch",
-                    format!("this machine runs cozy {VERSION} from its launch path, not {named}"),
+                    format!("this machine runs cozy {VERSION} from its launch path, not {named}: `cozy machine update <machine> --tensord {named}` fetches it"),
                 )),
                 _ => Ok(None),
             };
@@ -1112,7 +1117,9 @@ impl Updates {
             (None, Err(error), None) => return Err(error),
         };
         let runtime = stage(candidate, &runtime, "cozy_runtime")?;
-        if let Some(file) = request.runtime.as_ref().filter(|c| !c.file.is_empty()) {
+        // A file the caller sent is a development build; a numbered prerelease it named (`url`) is a
+        // release like any other, and a package's floor on it is met as ever.
+        if let Some(file) = request.runtime.as_ref().filter(|c| !c.file.is_empty() && c.url.is_empty()) {
             fs::write(candidate.join(RUNTIME_BUILD), build(&runtime, &file.sha256)?)?;
         }
         match tensorfs {
@@ -1125,7 +1132,7 @@ impl Updates {
                 let tensorfs = stage(candidate, &tensorfs, "tensorfs")?;
                 if let Err(reason) = self.compile(&[runtime, tensorfs])? {
                     let names: Vec<String> = wheels(candidate).into_iter().map(|(d, v, _)| format!("{d} {v}")).collect();
-                    return Err(invalid(&format!("{} do not install together: {reason}", names.join(" and "))));
+                    return Err(invalid(&format!("{} do not install together: {reason}; name ones that do with --runtime <version> and --tensorfs <version>", names.join(" and "))));
                 }
             }
         }

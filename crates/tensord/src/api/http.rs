@@ -139,7 +139,7 @@ impl<B: MachineBackend> Machine<B> {
             .keys
             .check(|keys| capability::verify(token, &authority.worker_id, keys, unix_now(), ""))
             .map_err(|refusal| match refusal {
-                capability::Refusal::Clock => Error::credential("machine_clock", format!("{refusal} (this machine reads {} Unix seconds)", unix_now())),
+                capability::Refusal::Clock => Error::credential("machine_clock", format!("{refusal} (this machine reads {} Unix seconds): set right whichever is wrong", unix_now())),
                 refusal => Error::credential("capability_invalid", refusal.to_string()),
             })?;
         Ok(Caller { actor: VerifiedActor { public_key: signer.to_bytes() }, grant })

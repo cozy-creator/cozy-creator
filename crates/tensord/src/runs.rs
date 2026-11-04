@@ -174,7 +174,7 @@ fn public_root(entry: &Value) -> Result<(), Refused> {
     if protocol::interface::internal(entry) {
         return Err(refused(
             "callable_internal",
-            format!("{} is an internal package function", protocol::interface::name(entry).unwrap_or_default()),
+            format!("{} is an internal package function, which only its package's own code calls: `cozy run <package>` lists the ones you can", protocol::interface::name(entry).unwrap_or_default()),
         ));
     }
     Ok(())
@@ -256,7 +256,7 @@ pub(crate) fn upload(
     let named = crate::precision::bits(lane);
     if named > 0 && held.bits > 0 && named != held.bits {
         return Err(refused("commit_lane_mismatch", format!(
-            "lane {lane} is {named}-bit, and these weights are {} ({}-bit): name the lane they hold", held.family, held.bits)));
+            "lane {lane} is {named}-bit, and these weights are {} ({}-bit): name the lane they hold (`--lane {}`)", held.family, held.bits, held.family)));
     }
     let commit = tensorfs::format::Tree::of(lane, header.clone(), files).map_err(|e| refused("invalid_request", e.to_string()))?;
     let tree = store.put_tree(&commit).map_err(|e| failed(e.to_string()))?;
@@ -404,6 +404,7 @@ impl Runs {
                     this.service.engine.end_preparation(&run, Outcome::Failed(failure)).map(drop)
                 }
             };
+            this.local.prepared(&run);
             if let Err(error) = ended {
                 tracing::warn!("run {run} preparation: {error}");
             }
@@ -558,7 +559,7 @@ impl Runs {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         let hub_access = || {
             hub.as_ref().ok_or_else(|| {
-                refused("hub_access_absent", "this needs the run's Hub access, and it carries none")
+                refused("hub_access_absent", "this needs the run's Hub access, and it carries none: `cozy login <email>` on the computer that sent it, then run it again")
             })
         };
         let folder = model_folder::prepare(self, actor, spec, choice, stoppable)?;
@@ -579,7 +580,7 @@ impl Runs {
             let local = crate::storage::local(publisher.store(), &choice.repository)
                 .map_err(|e| refused("checkpoint_absent", e.to_string()))?
                 .filter(|local| publisher.store().holds(&local.header))
-                .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}")))?;
+                .ok_or_else(|| refused("checkpoint_absent", format!("this machine holds no local/{name}: `cozy model download <source> local/{name} --on <machine>` puts it there")))?;
             let row = json!({"parameter": choice.parameter,
                 "repository": choice.repository, "checkpoint": local.header.id()});
             (local.header, Some(local.tree), row)
@@ -590,7 +591,7 @@ impl Runs {
             })?;
             let sha256 = tensorfs::sha256::hex(&header.digest);
             let held = crate::storage::held(publisher.store(), &sha256)
-                .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}")))?;
+                .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}: run what made it on this machine, or name a model of the Hub's")))?;
             publisher.held_for(&self.service, hub_access().ok(), &held).map_err(|(code, message)| refused(code, message))?;
             let row = json!({"parameter": choice.parameter, "checkpoint": format!("sha256:{sha256}")});
             (held, None, row)
@@ -771,7 +772,7 @@ impl Runs {
         if declared.is_none() && !install_only {
             return Err(refused(
                 "invalid_entrypoint",
-                format!("{} declares no entrypoint {:?}", installation.package, spec.entrypoint),
+                format!("{0} declares no entrypoint {1:?}: `cozy run {0}` lists its functions", installation.package, spec.entrypoint),
             ));
         }
         if spec.parent.is_empty() {
@@ -797,6 +798,20 @@ impl Runs {
             }
         }
         if spec.warm {
+            // A package that does not import says so now, not at its first call. When its environment
+            // already knows why (a floor its development Runtime missed), nothing else can come of it.
+            if install_only && self.service.gpu().is_some() {
+                observe("importing it", 0, 0);
+            }
+            if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
+                if !generation.record.floors_missed.is_empty() {
+                    return Err(refused(code, said));
+                }
+                let warning = format!("{code}: {said}. Its calls will fail the same way");
+                if let Err(error) = self.service.engine.append_warning(id, &warning) {
+                    tracing::warn!("run {id}: {warning} ({error})");
+                }
+            }
             let models = match install_only {
                 true => self.warm_models(actor, id, &spec, &*observe, stoppable)?,
                 false => vec![],
@@ -811,7 +826,10 @@ impl Runs {
                     true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
                     false => {
                         let text = e.to_string();
-                        refused(if text.starts_with("machine_disk_full") { "machine_disk_full" } else { "model_fetch_failed" }, text)
+                        match text.starts_with("machine_disk_full") {
+                            true => refused("machine_disk_full", text + &crate::reclaim::advice(self.publisher.store().root(), 0)),
+                            false => refused("model_fetch_failed", text),
+                        }
                     }
                 })?;
             }
@@ -1001,11 +1019,16 @@ impl Runs {
             if item.level > Level::Installed && !declares(&installation, &item.entrypoint)? {
                 return Err(refused(
                     "invalid_entrypoint",
-                    format!("{} declares no entrypoint {:?}", installation.package, item.entrypoint),
+                    format!("{0} declares no entrypoint {1:?}: `cozy run {0}` lists its functions", installation.package, item.entrypoint),
                 ));
             }
-            if item.payload.is_some() && plan.is_none() {
-                return Err(refused("prepare_unbound", "program warming requires this entrypoint's GPU model"));
+            // A request prepares a function's own GPU model; one with none warms what it calls, as ever.
+            let unbound = item.payload.is_some() && plan.is_none();
+            if unbound {
+                let warning = format!("{} binds no GPU model of its own: its inputs are not warmed, only the models it calls", item.entrypoint);
+                if let Err(error) = self.service.engine.append_warning(id, &warning) {
+                    tracing::warn!("run {id}: {warning} ({error})");
+                }
             }
             // A function that loads no model itself (an orchestrator) runs on the ones it calls.
             // The interface names no call graph, and internal functions exist only to be called:
@@ -1043,7 +1066,7 @@ impl Runs {
                 })
                 .map_err(io::Error::other)?);
                 let held = self.service.catalog.resolve(&installation.generation)?;
-                members.push(self.member(held, &installation, plan, item.level, hub.clone(), item.payload.clone()));
+                members.push(self.member(held, &installation, plan, item.level, hub.clone(), item.payload.clone().filter(|_| !unbound)));
             }
         }
         self.service
@@ -1121,12 +1144,14 @@ impl Runs {
     /// ones, whose executors end and environments' records leave. One an unfinished run names
     /// stays until a later install finds it idle.
     fn supersede(&self, actor: &str, current: &Installation) -> Result<(), Refused> {
-        let running = self.service.engine.with_journal(|j| j.running_generations())?;
+        let unsettled = self.service.engine.with_journal(|j| j.unsettled_generations())?;
+        let preparing = self.local.preparing();
         self.service.uninstall(actor, |prior| {
             prior.package == current.package
                 && prior.alias != current.alias
                 && prior.alias.starts_with("local-")
-                && !running.contains(&prior.generation)
+                && !unsettled.contains(&prior.generation)
+                && !preparing.contains(&prior.generation)
         })?;
         Ok(())
     }

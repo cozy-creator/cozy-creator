@@ -46,13 +46,13 @@ pub enum Error {
     #[error("invalid document: {0}")]
     Invalid(String),
     /// The `format` tag names another document kind or major version.
-    #[error("format {found:?} is not {expected} (any minor)")]
+    #[error("format {found:?} is not {expected} (any minor): another kind of document, or a newer TensorFS wrote it (on a cozy machine, `cozy machine update <machine>`)")]
     Format {
         found: String,
         expected: &'static str,
     },
     /// The tensor reads, but this reader has no decoder for its scheme.
-    #[error("unknown scheme {0:?}: its parts read raw, decode is refused")]
+    #[error("unknown scheme {0:?}: its parts read raw, decode is refused: a newer TensorFS may decode it (on a cozy machine, `cozy machine update <machine>`)")]
     UnknownScheme(String),
     /// A known scheme whose params, parts or logical dtype break its definition.
     #[error("cannot decode: {0}")]

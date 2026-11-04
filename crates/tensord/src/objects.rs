@@ -387,7 +387,7 @@ impl Objects {
         let missing = length - held.iter().map(|(s, e)| e - s).sum::<u64>();
         let disk = Disk::measure(&self.engine.root)?;
         if missing > if reserve { disk.available } else { disk.free() } {
-            return Err(refused("machine_disk_full", format!("no room for the object: {missing} bytes do not fit, {} are free", disk.available)));
+            return Err(refused("machine_disk_full", format!("no room for the object: {missing} bytes do not fit, {} are free{}", disk.available, crate::reclaim::advice(&self.engine.root, missing))));
         }
         if missing > disk.free() {
             tracing::warn!("an upload of {missing} bytes takes this machine's disk into its reserve: {} are free", disk.available);

@@ -609,6 +609,17 @@ impl Journal {
              WHERE state NOT IN ('completed','failed','canceled')",
         )
     }
+    /// Every generation a run still needs its installation for: an unfinished run's, and a finished
+    /// one's whose outcome has not been read, since it is made at its first read from that
+    /// installation's interface. Taken away first, the read fails for good (cl-773).
+    pub fn unsettled_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+        self.generations(
+            "SELECT json_extract(invocation,'$.generation') FROM executions
+             WHERE state NOT IN ('completed','failed','canceled')
+                OR (COALESCE(json_extract(invocation,'$.parent'),'')=''
+                    AND id NOT IN (SELECT execution FROM public_terminals))",
+        )
+    }
     fn generations(&self, query: &str) -> io::Result<std::collections::HashSet<String>> {
         let mut statement = self.connection.prepare(query).map_err(db_error)?;
         let rows = statement
@@ -1144,6 +1155,20 @@ impl Journal {
         })
     }
 
+    /// A memoizable run that called something a replay of it would skip: its success is not held.
+    /// Answers whether it was going to be, and its parent, which is in the same case.
+    pub(crate) fn unmemoize(&mut self, id: &str, why: &str) -> io::Result<(bool, String)> {
+        let mut held = false;
+        let record = self.update(id, |record| {
+            held = !record.memo.computation.is_empty();
+            if held {
+                record.memo = CallMemo { unmemoized: why.into(), ..Default::default() };
+            }
+            Ok(held)
+        })?;
+        Ok((held, record.invocation.parent))
+    }
+
     /// A restarted machine holds no preparation. A preparing run it kept the spec of prepares
     /// again (`interrupted`). One sent with tokens kept none, since they stay off its disk: nothing
     /// of it ran, so it is forgotten, and its controller, which holds them, finds it gone
@@ -1529,7 +1554,7 @@ impl Journal {
         if record.state == State::Unknown {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "execution state was written by a newer machine",
+                "execution state was written by a newer machine: `cozy machine update <machine>` reads it",
             ));
         }
         let was_terminal = record.state.terminal();
