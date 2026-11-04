@@ -319,7 +319,8 @@ entities:
   await page.waitForTimeout(300);
   check('two_videos_at_most', (await page.locator('video').count()) === 2, await page.locator('video').count());
   await until('none playing', async () => {
-    if (await page.locator('.stop').count()) await page.locator('.stop').first().click();
+    // One that ends takes its Stop away as this reaches for it.
+    if (await page.locator('.stop').count()) await page.locator('.stop').first().click({ timeout: 2000 }).catch(() => {});
     return page.locator('video').count();
   }, (n) => n === 0);
 
@@ -329,7 +330,11 @@ entities:
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  await until('its reason shows', () => needs.locator('.status.bad').count(), (n) => n === 1);
+  // Under the pointer: a box says why when it's looked at, and this one sits low enough for the click to have moved things.
+  await until('its reason shows', async () => {
+    await open(page, 'needs');
+    return needs.locator('.status.bad').count();
+  }, (n) => n === 1);
   check('failed_dot', (await needs.locator('.dot.s-failed').count()) === 1);
   check('try_again_offered', (await needs.locator('.status.bad .act').textContent()) === 'Try again');
   const told = spawnSync(COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });

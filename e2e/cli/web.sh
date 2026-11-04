@@ -56,7 +56,7 @@ step "web-drawers: a real run live to its end and a cancel, one log stream acros
 web_proof drawers "$chrome" "$pw" ''
 step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"
 local no_hub=''
-[ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" 'COZY_HUB_URL=http://127.0.0.1:9 ')
+[ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
 step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
@@ -67,16 +67,18 @@ local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null |
 PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
 step "web-package-ui: a package's component drawn, its field saved and read back; what can't draw falls back; a release held to its hash"
 local on_hub=''
-[ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" 'COZY_HUB_URL=@HUB@ ')
+[ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
-# reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. $2 goes before that verb.
+# reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. It comes back on the Hub $2, else on this
+# suite's: config.toml's, since a service hears nothing of a caller's environment, and it starts before that verb asks.
 web_restart() {
-  local kill="kill -9 \$(jq -r .pid < '$1')"
+  local kill="kill -9 \$(jq -r .pid < '$1')" config=$HOME/.cozy/config.toml hub=${2:-${COZY_HUB_URL:-}} point=''
   [ "${RUNNER_OS:-}" != Windows ] || kill="taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"
-  echo "$kill; sleep 1; ${2:-}'$COZY' machine ls > /dev/null 2>&1"
+  [ -z "$hub" ] || point="{ grep -v '^hub_url' '$config'; echo 'hub_url = \"$hub\"'; } > '$config.next'; mv '$config.next' '$config'; "
+  echo "$point$kill; sleep 1; ${hub:+COZY_HUB_URL=$hub }'$COZY' machine ls > /dev/null 2>&1"
 }
 
 # A fresh sign-in link in $link, or a failed check.
@@ -94,6 +96,8 @@ web_proof() {
   ALONE=${WEB_ALONE:-} RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$name.err" || code=$?
   [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
+  # What died on another Hub doesn't leave the next proof on it.
+  [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   lock=$HOME/.cozy/calcifer/calcifer.lock.holder
   addr=$(jq -r .address "$lock" 2> /dev/null) token=$(jq -r .token "$lock" 2> /dev/null)
   id=$(jq -r '.seen.project.id // empty' "$json" 2> /dev/null) folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)

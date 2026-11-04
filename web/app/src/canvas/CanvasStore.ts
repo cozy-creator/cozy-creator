@@ -439,6 +439,8 @@ export class CanvasStore {
     if (!items.length) return
     const nodes = items.map(({ element, row }) => {
       const making = element.asset?.making ?? []
+      // A name a box had before it was renamed, now another's.
+      this.aliases.delete(element.name)
       // Its card may be placed after what its run said came back.
       this.views.set(element.name, { ...viewOf(element), landing: this.landings.delete(element.name) || undefined, run: making.length ? this.runs.get(Math.min(...making)) : undefined })
       for (const number of making) this.owners.set(number, element.name)
