@@ -88,7 +88,13 @@ says() { grep -qF -- "$2" "$OUT/render.txt" || check "$1: render does not say '$
 
 projects() {
 step "a project: new, walk-up, -p"
-local P=$OUT/garden code ID
+local P=$OUT/garden code ID calcifer
+# Calcifer takes no arguments: any says what it is, and starts no daemon.
+calcifer=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
+[ "$(cozy calcifer --help | grep -c 'takes no arguments')" = 1 ] || check "cozy calcifer --help doesn't say what it is"
+code=0; cozy calcifer no-such-word > /dev/null 2>&1 || code=$?
+[ "$code" = 1 ] || check "cozy calcifer no-such-word exited $code, not 1"
+[ "$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$calcifer" ] || check "cozy calcifer --help moved Calcifer from $calcifer to $(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")"
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null)" = project.yaml ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.yaml"
 grep -q 'cozy project render all' "$OUT/project-new.txt" || check "project new does not say what's next: $(tail -c 300 "$OUT/project-new.txt")"
