@@ -61,6 +61,7 @@ parse() {
   # By hand (--installed), a --tensord file is the CLI as it is: nothing is installed over this computer's cozy.
   [ -z "$INSTALLED" ] || [ ! -f "$CAND_COZY" ] || { COZY=$CAND_COZY; CAND_COZY=''; }
   mkdir -p "$OUT"
+  OUT=$(cd "$OUT" && pwd)
 }
 
 step() { echo "::endgroup::"; echo "::group::$*"; }
@@ -424,7 +425,7 @@ machine_ready() {
 
 # cell <name> <target> [inputs...]: one `cozy run` on local (e2e/run.sh's run_cell), followed to its end. Its
 # events go to $OUT/<name>.ndjson, its record (`cozy run show`) to $OUT/<name>.json, its number to
-# $OUT/<name>.number, its outputs under $OUT/out/<name>/. A run that does not complete is a recorded failure
+# $OUT/<name>.number, its outputs in the script's project. A run that does not complete is a recorded failure
 # (`check`), unless ALLOW names a code its refusal carries: then $OUT/<name>.refused holds that code. Returns 1
 # when the run neither completed nor was refused as allowed.
 RUN_CLI=cozy; . "$E2E/run.sh"

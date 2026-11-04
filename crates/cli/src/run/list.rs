@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::{follow, live};
 use crate::{Context, output, tui};
 
-pub(crate) const HEADERS: [&str; 6] = ["#", "TARGET", "MACHINE", "STATUS", "PROGRESS", "TIME"];
+pub(crate) const HEADERS: [&str; 7] = ["#", "TARGET", "PROJECT", "MACHINE", "STATUS", "PROGRESS", "TIME"];
 /// The newest runs a list shows unless `--limit` says otherwise.
 const SHOWN: u64 = 50;
 /// A target or progress is one table cell; `cozy run show` has it whole.
@@ -26,6 +26,9 @@ pub struct Query {
     pub package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine: Option<String>,
+    /// A project's folder: only its runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<std::path::PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub before: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,7 +114,8 @@ pub(crate) fn matches(query: &Query, run: &Run) -> bool {
         .machine
         .as_ref()
         .is_none_or(|m| run.machine.as_ref() == Some(m));
-    state && package && machine
+    let project = query.project.as_ref().is_none_or(|p| run.project.as_ref() == Some(p));
+    state && package && machine && project
 }
 
 /// `text` cut to one cell's width.
@@ -132,7 +136,7 @@ fn clip_target(target: String) -> String {
     format!("{}…{version}", target[..at].chars().take(keep).collect::<String>())
 }
 
-/// The runs as rows of the table and the live view: # · TARGET · MACHINE · STATUS · PROGRESS ·
+/// The runs as rows of the table and the live view: # · TARGET · PROJECT · MACHINE · STATUS · PROGRESS ·
 /// TIME. A queued run's STATUS is its place in its machine's line (`queue: 1` is next: only the
 /// running work is ahead of it). PROGRESS is the stage while it runs, and a failed or canceled
 /// run's reason in one line; `cozy run show` has it whole. TIME is its own, never its queue's.
@@ -193,6 +197,7 @@ fn row(run: &Run) -> Vec<String> {
     vec![
         run.number.to_string(),
         clip_target(target),
+        run.project.as_ref().and_then(|at| at.file_name()).map_or_else(|| "—".into(), |name| name.to_string_lossy().into_owned()),
         run.machine.clone().unwrap_or_else(|| "—".into()),
         status,
         clip(progress),

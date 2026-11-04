@@ -187,6 +187,8 @@ pub struct RunFilter {
     /// A prefix of the run's target (`org/pkg`).
     pub target: Option<String>,
     pub machine: Option<String>,
+    /// Only the runs landing here: a project's.
+    pub out_dir: Option<String>,
     /// Only runs numbered below this.
     pub before: Option<u64>,
     pub limit: u64,
@@ -511,6 +513,11 @@ impl Store {
         self.read(|conn| ask_in(conn, key))
     }
 
+    /// When the ask under `key` was first made.
+    pub fn ask_made_at(&self, key: &str) -> Result<Option<i64>> {
+        self.read(|conn| Ok(conn.query_row("SELECT created_at FROM asks WHERE key = ?1", [key], |r| r.get(0)).optional()?))
+    }
+
     /// Replaces a pending ask's body: what it is to do, changed by its asker while it waits.
     pub fn rewrite_ask(&self, key: &str, body: &[u8]) -> Result<()> {
         self.write(|tx| {
@@ -675,7 +682,8 @@ impl Store {
             AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status
                 ELSE 'queued' END = ?2)
             AND (?3 IS NULL OR substr(target, 1, length(?3)) = ?3)
-            AND (?4 IS NULL OR machine = ?4)";
+            AND (?4 IS NULL OR machine = ?4)
+            AND (?5 IS NULL OR out_dir = ?5)";
         self.read(|conn| {
             let status = filter.status.map(|status| match status {
                 Status::Queued => "queued",
@@ -685,16 +693,16 @@ impl Store {
                 Status::Canceled => "canceled",
             });
             let before = filter.before.map_or(i64::MAX, |n| n as i64);
-            let matching = params![before, status, filter.target, filter.machine];
+            let matching = params![before, status, filter.target, filter.machine, filter.out_dir];
             let total: i64 =
                 conn.query_row(&format!("SELECT COUNT(*) {MATCHING}"), matching, |r| {
                     r.get(0)
                 })?;
             let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?5"
+                "SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?6"
             ))?;
             let read = statement.query_map(
-                params![before, status, filter.target, filter.machine, filter.limit as i64],
+                params![before, status, filter.target, filter.machine, filter.out_dir, filter.limit as i64],
                 |r| Ok((r.get::<_, i64>(1)?, run_row(r))),
             )?;
             let (mut rows, mut unreadable) = (vec![], vec![]);
@@ -1104,12 +1112,10 @@ impl Store {
     /// Calcifer has not given up.
     pub fn exports_owed(&self) -> Result<Vec<(RunId, u64)>> {
         self.read(|conn| {
-            let mut statement = conn.prepare(
+            let mut statement = conn.prepare(&format!(
                 "SELECT DISTINCT runs.id, runs.number FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev
-                   AND outputs.checkpoint IS NULL
-                 ORDER BY runs.number",
-            )?;
+                 WHERE {OWED} ORDER BY runs.number"
+            ))?;
             let rows = statement
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1123,13 +1129,12 @@ impl Store {
     /// not given up, by run and appearance.
     pub fn exports_owed_on(&self, machine: &str) -> Result<Vec<OwedExport>> {
         self.read(|conn| {
-            let mut statement = conn.prepare(
+            let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
                  FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE runs.machine = ?1 AND outputs.exported_rev IS NOT outputs.rev
-                   AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
-                 ORDER BY runs.number, outputs.created_seq",
-            )?;
+                 WHERE runs.machine = ?1 AND {OWED}
+                 ORDER BY runs.number, outputs.created_seq"
+            ))?;
             let rows = statement
                 .query_map([machine], |r| {
                     Ok((
@@ -1156,18 +1161,32 @@ impl Store {
         })
     }
 
-    /// The run's outputs to export, in the order they first appeared. A checkpoint is never
-    /// exported (`OutputItem::is_checkpoint`), so it is owed nowhere.
+    /// The run's outputs to export, in the order they first appeared.
     pub fn outputs_to_export(&self, run: &str) -> Result<Vec<OutputRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {OUTPUT_COLUMNS} FROM outputs WHERE run = ?1 AND exported_rev IS NOT rev
-                 AND failed_rev IS NOT rev AND checkpoint IS NULL ORDER BY created_seq"
+                "SELECT {OUTPUT_COLUMNS} FROM outputs WHERE run = ?1 AND {OWED} ORDER BY created_seq"
             ))?;
             Ok(statement
                 .query_map([run], output_row)?
                 .collect::<rusqlite::Result<_>>()?)
         })
+    }
+
+    /// The newest run on `machine` that made these bytes, with its output: what can read them from there.
+    pub fn making(&self, digest: &str, machine: &str) -> Result<Option<(RunRow, OutputRow)>> {
+        let found: Option<(String, String, i64)> = self.read(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT outputs.run, outputs.name, outputs.idx FROM outputs JOIN runs ON runs.id = outputs.run
+                     WHERE outputs.digest = ?1 AND outputs.done AND runs.machine = ?2 ORDER BY runs.number DESC LIMIT 1",
+                    params![digest, machine],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?)
+        })?;
+        let Some((run, name, index)) = found else { return Ok(None) };
+        Ok(self.run(&run)?.zip(self.output(&run, &name, index as u32)?))
     }
 
     pub fn output(&self, run: &str, name: &str, index: u32) -> Result<Option<OutputRow>> {
@@ -1267,6 +1286,18 @@ fn export_settled(
         },
     }])
 }
+
+/// Whether an output stays on its machine (`OutputItem::stays`): untyped bytes, such as a model's latents, of a run that made
+/// something else. A run whose only output is untyped brings that here.
+const STAYS: &str = "(outputs.media_type LIKE 'application/octet-stream%'
+    AND EXISTS (SELECT 1 FROM outputs made WHERE made.run = outputs.run AND made.media_type NOT LIKE 'application/octet-stream%'))";
+
+/// An output owed to this computer: its newest revision neither landed nor given up, and no checkpoint. Untyped bytes wait for
+/// their run's end, when `STAYS` is known, and are owed then only if they don't stay.
+const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
+    AND (outputs.media_type NOT LIKE 'application/octet-stream%'
+        OR ((SELECT state FROM runs WHERE runs.id = outputs.run) = 'settled'
+            AND NOT EXISTS (SELECT 1 FROM outputs made WHERE made.run = outputs.run AND made.media_type NOT LIKE 'application/octet-stream%')))";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
     CASE WHEN failed_rev = rev THEN export_error END, checkpoint";
@@ -1781,12 +1812,12 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
 
 /// A run row as the API answers it, with its output items in the order they first appeared.
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
              CASE WHEN exported_rev = rev THEN path END, CASE WHEN failed_rev = rev THEN export_error END,
-             checkpoint
-         FROM outputs WHERE run = ?1 ORDER BY created_seq",
-    )?;
+             checkpoint, {STAYS}
+         FROM outputs WHERE run = ?1 ORDER BY created_seq"
+    ))?;
     let settled_ok = row.status == Some(Status::Completed);
     let items = statement.query_map([row.id.as_str()], |r| {
         let name: String = r.get(0)?;
@@ -1821,6 +1852,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
                 .get::<_, Option<String>>(9)?
                 .filter(|_| checkpoint.is_none()),
             checkpoint,
+            stays: r.get(11)?,
         })
     })?;
     Ok(Run {
@@ -1829,6 +1861,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         kind: row.kind,
         target: row.target.clone(),
         hub: row.hub.clone().map(String::from).unwrap_or_default(),
+        project: None,
         machine: row.machine.clone(),
         status: match (row.state, row.status) {
             (State::Settled, Some(status)) => status,

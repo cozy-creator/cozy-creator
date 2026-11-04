@@ -32,13 +32,17 @@ def main():
     package = Path(__file__).resolve().parent
     args.out.mkdir(parents=True, exist_ok=True)
 
+    # A run belongs to a project.
+    if not (args.out / "project" / "project.yaml").is_file():
+        subprocess.run(["cozy", "project", "new", str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
+
     def call(name, argv):
         with (
             (args.out / f"{name}.json").open("w") as stdout,
             (args.out / f"{name}.err").open("w") as stderr,
         ):
             result = subprocess.run(
-                ["cozy", *map(str, argv), "--json"],
+                ["cozy", *map(str, argv), *(["-p", str(args.out / "project")] if argv[0] == "run" else []), "--json"],
                 stdout=stdout,
                 stderr=stderr,
                 check=False,

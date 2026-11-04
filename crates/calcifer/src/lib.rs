@@ -337,14 +337,14 @@ impl Calcifer {
             wants,
             agreed: submit.agreed,
         };
-        let (me, key, given, digest) = (self.clone(), key.to_owned(), submit.inputs, digest.to_owned());
+        let (me, key, given, held, digest) = (self.clone(), key.to_owned(), submit.inputs, submit.held, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {
             let _input_owners = input_owners;
             // Copied first; then, against a settled run's deletion of the same objects, checked
             // again and recorded under one guard.
-            stage(&me.inputs, &new.spec, &given)?;
+            stage(&me.inputs, &new.spec, &given, &held)?;
             let _staging = lock(&me.staging);
-            let inputs = stage(&me.inputs, &new.spec, &given)?;
+            let inputs = stage(&me.inputs, &new.spec, &given, &held)?;
             Ok::<_, Error>(me.store.submit(&key, &digest, NewRun { inputs, ..new })?)
         })
         .await
@@ -384,6 +384,7 @@ impl Calcifer {
     /// The run as the API answers it, with what it is doing now.
     pub fn record(&self, row: &RunRow) -> Result<Run, Error> {
         let mut run = self.store.record(row)?;
+        run.project = project::of_landing(&row.out_dir).map(Path::to_path_buf);
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
@@ -1387,11 +1388,12 @@ fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64,
 /// given path resolves to, which reads nothing (the machine verifies the bytes it is sent), else
 /// a copy checked against its digest and length. Only a regular file is staged; any other name
 /// there is replaced. Answers the objects the run's machine is written: every given file and
-/// every object `spec.inputs` names, each of which must be staged.
+/// every object `spec.inputs` names, each of which must be staged but for what its machine holds (`held`).
 fn stage(
     inputs: &Path,
     spec: &v1::RunSpec,
     given: &[StagedInput],
+    held: &[Digest],
 ) -> Result<Vec<(Digest, u64)>, Error> {
     let mut objects = vec![];
     for source in given {
@@ -1415,6 +1417,9 @@ fn stage(
     for input in &spec.inputs {
         let invalid = |message: String| Error::Invalid(format!("input {}: {message}", input.field));
         let digest: Digest = input.digest.parse().map_err(|e: &str| invalid(e.into()))?;
+        if held.contains(&digest) {
+            continue;
+        }
         if !inputs.join(hex::encode(digest.bytes())).exists() {
             return Err(invalid(format!("no file was given for {digest}")));
         }

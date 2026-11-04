@@ -1236,7 +1236,7 @@ impl Updates {
 }
 
 /// Resolves SDK requirements for the executors' `python` over uv's configured index.
-pub(super) fn compile_sdk(uv: &super::uv::Uv, python: &str, input: &str, stop: &Stop, wheel_plan: bool) -> io::Result<Result<String, String>> {
+pub(crate) fn compile_sdk(uv: &super::uv::Uv, python: &str, input: &str, stop: &Stop, wheel_plan: bool) -> io::Result<Result<String, String>> {
     let mut command = uv.command()?;
     command.args(["pip", "compile"]);
     if wheel_plan { command.args(["--format", "pylock.toml", "--only-binary", ":all:"]); }

@@ -10,7 +10,7 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `hubcheck/`: every suite's cozy reaches tensorhub.com through it, and it holds each request and response to the API
   document the Hub serves (GET /openapi.yaml; tensorhub's server is the truth, the document follows it). A mismatch
   fails the suite: a request is the client's drift, a response the document's.
-- `run.sh`: how every suite (and the release gate) runs `cozy run`: `--out`, the record's `output[].path`, and a run
+- `run.sh`: how every suite (and the release gate) runs `cozy run`: in its project, the record's `output[].path`, and a run
   followed by the CLI's own events to its end or a typed error; nothing is cut for time.
 - `cli/run.sh`: install, up, the local machine, the candidates, a weightless request through them, BiRefNet resolved,
   downloaded and warmed (its forward pass on the CPU only when ci/affected selects `model`: the Runtime, TensorD,

@@ -1,10 +1,8 @@
-//! A project folder (Paul, 11-01): `project.yaml` (people's; cozy writes it only at `cozy project
-//! new`), `project.lock` (cozy's: each node's versions, what made each, which is approved, the files
-//! imported, the runs still making one, and what its walk still owes), `assets/`, and the cut
-//! (`edit.mp4`). Every file the project uses is a real file in `assets/<sha256>.<ext>`, flat: each take
-//! and version, clean and latents cozy makes, and each file `cozy project import` brought in
-//! (`Folder::import`). project.yaml names one only by a hex prefix of its hash (`Lock::matching`), so
-//! the lock names nothing of this computer and travels with project.yaml.
+//! A project folder: `project.yaml` (people's; cozy writes it at `cozy project new`, and one line of it at `approve` and `unpin`),
+//! `project.lock` (cozy's: each file, each asset's versions, what made each, the runs still making one, and what
+//! its walk still owes), `files/`, and the cuts at its root. Every file the project uses is a real file in
+//! `files/<sha256>.<ext>`, flat. project.yaml names one only by a hex prefix of its hash (`Lock::matching`),
+//! so the lock names nothing of this computer and travels with project.yaml.
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
@@ -28,104 +26,150 @@ use super::graph::name_key;
 
 pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
-/// Where every file the project uses is kept, by content: `assets/<sha256>.<ext>`.
-pub const ASSETS: &str = "assets";
-/// A version's primary asset, the one its node reads as: its video, else its clean (a cleaned
-/// picture's), else its image.
-const PRIMARY: [&str; 3] = ["video", "clean", "image"];
+/// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
+pub const FILES: &str = "files";
+/// Where a run's outputs land before they are kept in `files/`.
+pub const RUNS: &str = ".runs";
+/// The lock's format.
+const FORMAT: u32 = 2;
 
 /// The most a URL may give: far past any picture, and a shared project can't fill a disk with it.
 const URL_MOST: usize = 64 << 20;
 /// How long a URL may take. Measured progress can't judge this one: a stranger's server can drip a
 /// byte at a time for ever, so this is the last resort, and it leaves room for `URL_MOST` over a slow line.
 const URL_LONGEST: Duration = Duration::from_secs(300);
-/// What an import kept: its asset, and the field that names one of its type (`image`, `video`, `audio`).
+/// What an import kept: its file, and the field that names one of its type (`image`, `video`, `audio`).
 pub struct Kept {
-    pub asset: Asset,
+    pub file: File,
     pub field: &'static str,
-    /// Its bytes were in `assets/` already, so nothing was copied.
+    /// Its bytes were in `files/` already, so nothing was copied.
     pub already: bool,
-    /// It was marked for a clean before, and this import did not mark it.
-    pub unmarked: bool,
 }
 
-/// How many hex characters of its hash cozy prints for an asset, for project.yaml.
+/// How many hex characters of its hash cozy prints for a file, for project.yaml.
 const PREFIX: usize = 12;
 
-/// A file the project uses: its path in the project (`assets/<sha256>.<ext>`), its sha256, and for a
-/// video its shape, probed once (`Folder::shape_videos`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Asset {
+/// A file the project uses: its path in the project (`files/<sha256>.<ext>`), its sha256, and what is
+/// measured of it once: a picture's or video's size, a video's rate and frames, a picture's alpha (the
+/// share of it fully transparent).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct File {
     pub path: String,
     pub sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub video: Option<Shape>,
-}
-
-/// A video's width and height (which decide whether its shot is upscaled), frame rate (a take at
-/// another rate than the project's is retimed when cut) and frame count.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Shape {
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub width: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub height: u64,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
     pub fps: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub frames: u64,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub alpha: f64,
+    /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<tensorfs::format::ObjectRef>,
+    /// The machine that keeps it, an output not brought here (`OutputItem::stays`): nothing is in `files/` until something needs it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
+    /// Its bytes, when it isn't here to measure.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub length: u64,
 }
 
-/// The extensions of the files whose shape is probed.
-const VIDEOS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
+impl File {
+    /// What an operation is given of it: no path, since nothing of this computer goes.
+    pub fn record(&self) -> Value {
+        serde_json::json!({"sha256": self.sha256, "width": self.width, "height": self.height, "fps": self.fps, "frames": self.frames, "alpha": self.alpha})
+    }
 
-/// One version of a node (a take, for a shot or its upscale): its number, its assets, what made it
-/// and what it was made from.
+    fn extension(&self) -> String {
+        Path::new(&self.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+    }
+
+    pub fn is_video(&self) -> bool {
+        VIDEOS.contains(&self.extension().as_str())
+    }
+
+    /// The role that pins it, by what it is.
+    pub fn field(&self) -> &'static str {
+        match self.extension().as_str() {
+            _ if self.is_video() => "video",
+            "wav" | "mp3" | "flac" | "ogg" | "m4a" | "aac" => "audio",
+            _ => "image",
+        }
+    }
+
+    /// Whether a machine was left keeping it.
+    pub fn stays(&self) -> bool {
+        !self.machine.is_empty()
+    }
+
+    /// Not measured yet, and one that can be.
+    fn unmeasured(&self) -> bool {
+        self.width == 0 && (self.is_video() || PICTURES.contains(&self.extension().as_str()))
+    }
+}
+
+/// The extensions of the files that are measured.
+const VIDEOS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
+const PICTURES: [&str; 5] = ["png", "jpg", "jpeg", "webp", "avif"];
+
+/// A version's files: by output name, each one's sha256.
+pub type Files = BTreeMap<String, String>;
+
+/// One result of an operation: its number, its files, the key it was made under, and what made it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Made {
-    pub node: String,
-    /// 1 first, never reused; 0 while nothing of it has landed.
+pub struct Version {
+    /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
-    /// By the run output's name (`video`, `image`, `latents`; a cleaned picture's `clean`). Empty
-    /// while its run is pending.
+    /// The memo key's inputs. Empty for one whose inputs can't be known: it never reads as current.
+    #[serde(default)]
+    pub inputs: String,
+    /// The key's sample: the seed Calcifer drew. None: its function takes no seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// And the start of another take that it keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<protocol::project::Kept>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assets: BTreeMap<String, Asset>,
-    /// The function, models, LoRAs and options that made it.
+    pub files: Files,
+    /// The frames it wrote, by the name key of the image each is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub writes: BTreeMap<String, Files>,
+    /// A digest per field of its record, to say which changed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub digests: BTreeMap<String, String>,
+    /// What it read: for people, never for a decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<ReadFrom>,
+    /// The function, models, LoRAs and options that made it. Outside the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<MadeBy>,
-    /// What it was made from, or what it read when it was approved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream: Option<Vec<Upstream>>,
-    /// What the author had written of it when it was made or approved: by field, each a digest of the words as written. None
-    /// for a version made before cozy recorded this. A cozy update must never put anything out of date, so a field's meaning
-    /// never changes (new text is a new field), and only fields both sides have are compared.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<BTreeMap<String, String>>,
-    /// The frames it wrote for world states, by state.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub writes: BTreeMap<String, Asset>,
-    /// The runs that made it, in order: one per call of a shot made in consecutive calls.
+    /// The runs that made it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<u64>,
-    /// Those runs' execution time, and its clean's.
-    #[serde(default, skip_serializing_if = "is_zero_ms")]
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub execution_ms: u64,
-    /// What each of those runs was asked: a function and its exact input. Never read to say what is out of date.
+    /// What each of those runs was asked: a function and its exact input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invocations: Vec<Value>,
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-    /// The start of another take that it keeps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept: Option<protocol::project::Kept>,
-    /// A picture's clean, which is never cleaned again.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub cleaned: bool,
-    /// The hash of the imported picture this run cleans.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub clean_of: Option<String>,
+}
+
+/// An asset a version read, and the files that were.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReadFrom {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: Files,
 }
 
 /// What made a version: `with` as `org/package/function@release`, and its run's model choices and
-/// options as its render block gave them.
+/// options as the file gave them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MadeBy {
     pub with: String,
@@ -137,211 +181,196 @@ pub struct MadeBy {
     pub options: Map<String, Value>,
 }
 
-impl Made {
-    /// The asset its node reads as (`PRIMARY`).
-    pub fn primary(&self) -> Option<&Asset> {
-        PRIMARY.iter().find_map(|name| self.assets.get(*name))
-    }
-
-    /// Whether `now` says something else than it recorded, in a field both have.
-    pub fn text_changed(&self, now: &BTreeMap<String, String>) -> bool {
-        self.text.iter().flatten().any(|(field, digest)| now.get(field).is_some_and(|now| now != digest))
-    }
-
-    /// Its assets and writes.
-    fn files(&self) -> impl Iterator<Item = &Asset> {
-        self.assets.values().chain(self.writes.values())
+impl Version {
+    /// The file people mean by it: its video, else its picture, else its sound, else its first.
+    pub fn main(&self) -> Option<&String> {
+        main_of(&self.files)
     }
 }
 
-/// What a version read: a node's asset (a state's revision, with `state`), or a file of the
-/// project's that is no node's (`<node>.<field>`), by its sha256.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Upstream {
-    pub node: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-    pub asset: String,
+/// The file people mean by a set of files.
+pub fn main_of(files: &Files) -> Option<&String> {
+    ["video", "image", "audio"].iter().find_map(|name| files.get(*name)).or_else(|| files.values().next())
 }
 
 /// A run making a version, recorded before it is sent (under its idempotency key) and followed
 /// until it lands: whatever stops the walk, the next one follows it and never sends it again.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
+    /// The render it is of, whose text it lands and goes on with.
+    #[serde(default)]
+    pub ask: String,
+    /// The asset it makes, as the file names it.
+    pub asset: String,
     /// What it makes.
-    pub made: Made,
+    pub version: Version,
     /// Its run's number, once sent.
     #[serde(default)]
     pub run: u64,
-    /// The Hub it was sent for, which a picture's clean goes to too.
-    #[serde(default)]
-    pub hub: String,
-    /// The result field holding the version (`image`, `video`).
-    pub field: String,
-    /// The machines it may go to, which a shot's next call goes to too.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub on: Vec<On>,
-    /// For a shot: which of its consecutive calls this is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call: Option<Call>,
-    pub then: Then,
-}
-
-/// One of a shot's consecutive calls (one when it reads nothing it wrote itself): which, where each
-/// ends on the shot's timeline, the states whose frames this one's video gives (at seconds into the
-/// shot), and the video and latents of the call before it, which this one continues.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Call {
-    pub index: usize,
-    pub ends: Vec<f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub writes: Vec<(String, f64)>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<(Asset, Option<Asset>)>,
-    /// The first call of a take keeping another's start: where on the shot it starts (0 otherwise), and whether that cuts
-    /// `from` there. Otherwise it goes on from `from`'s end.
-    #[serde(default, skip_serializing_if = "is_zero_s")]
-    pub start_s: f64,
+    /// Pinned in project.yaml when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub cut: bool,
+    pub approve: bool,
+    /// The images it was asked to write, in order, each with where: its result's `written` in that order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<Written>,
+    /// Where it goes, and each call after this one of the operation's list.
+    pub target: Target,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rest: Vec<Invocation>,
+    /// What each call before this one saved, for a later one that reads it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub done: Vec<Files>,
 }
 
-fn is_zero_s(s: &f64) -> bool {
-    *s == 0.0
+/// One call an adapter answered: a function of its package, and its exact input.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Invocation {
+    pub function: String,
+    #[serde(default)]
+    pub input: Map<String, Value>,
 }
 
-/// What becomes of a run's file once it lands.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Then {
-    /// Listed as a version: approved when `approve` (`--approve`), and with `clears`, which brings an out-of-date node up to
-    /// date, the approval it had goes, so it reads as the newest.
-    List {
-        approve: bool,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        clears: bool,
-    },
-    /// Cleaned first, and its clean listed.
-    Clean {
-        approve: bool,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        clears: bool,
-    },
-    /// The clean of an imported picture: from then on what its hash resolves to.
-    Imported,
+/// An image a run writes: its name, and where in the video if the function doesn't.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Written {
+    pub name: String,
+    pub at_s: f64,
 }
 
-/// A node's kind, its versions by number, the primary asset's path of the one chosen by `approve` or `--approve`, and the last
-/// number given (numbers are never given again).
+/// An asset's versions by number, the last number given (numbers are never given again), and the seed of a run that failed,
+/// kept for the next try on those inputs.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Node {
+pub struct Asset {
+    /// Its name as the file wrote it when it was made.
+    #[serde(default)]
+    pub name: String,
     #[serde(default)]
     pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved: Option<String>,
     #[serde(default)]
-    pub versions: Vec<Made>,
+    pub versions: Vec<Version>,
     #[serde(default)]
     pub numbered: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tried: Option<Tried>,
 }
 
-impl Node {
-    /// Where the version it reads as is with no file pinned in project.yaml: the approved one, else the newest.
-    pub fn current_at(&self) -> Option<usize> {
-        let approved = self.approved.as_ref();
-        let chosen = approved.and_then(|path| self.versions.iter().position(|made| made.primary().is_some_and(|asset| asset.path == *path)));
-        chosen.or_else(|| self.versions.iter().rposition(|made| made.primary().is_some()))
+/// The seed last sent for `inputs`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tried {
+    pub inputs: String,
+    pub seed: u64,
+}
+
+impl Asset {
+    pub fn version(&self, number: u32) -> Option<&Version> {
+        self.versions.iter().find(|version| version.number == number)
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Lock {
-    /// By name key. A node project.yaml no longer names is kept, its versions with it, until it is
-    /// renamed (`cozy project rename`).
+    pub format: u32,
+    /// Every file, by sha256.
     #[serde(default)]
-    pub nodes: BTreeMap<String, Node>,
-    /// The files `cozy project import` brought in, by sha256.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub imports: BTreeMap<String, Import>,
+    pub files: BTreeMap<String, File>,
+    /// By name key. An asset project.yaml no longer names is kept, its versions with it, until it is
+    /// renamed or reclaimed.
+    #[serde(default)]
+    pub assets: BTreeMap<String, Asset>,
     /// By idempotency key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
-    /// What each cut holds as last made (`video::holds`).
+    /// What `cozy run`s left here: they belong to no asset, and no memo holds them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<RunFile>,
+    /// Each package's own tags, by the name its memo knows it by, as last read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub cuts: BTreeMap<String, String>,
+    pub reserved: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
 }
 
-/// An imported file: its asset, and for one `--character` or `--prop` marked (`mark`), the clean that its
-/// hash resolves to for what reads it once made.
+/// One file a `cozy run` left in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Import {
-    #[serde(flatten)]
-    pub asset: Asset,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub mark: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub clean: Option<Asset>,
+pub struct RunFile {
+    pub run: u64,
+    pub function: String,
+    pub output: String,
+    pub sha256: String,
+}
+
+impl Default for Lock {
+    fn default() -> Self {
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default() }
+    }
 }
 
 /// What a render asked that the project's walk has not sent yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Owed {
-    /// A render bringing nodes up to date: every node, then the edit, or only `only`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub all: Option<Target>,
-    /// The nodes it covers, by name key, with what they read; empty for every node.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub only: BTreeSet<String>,
-    /// `render all --new`: what is current too, but for a file attached by hand.
+    /// Each render not done, in the order asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<Ask>,
+    /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asked: BTreeMap<String, String>,
+}
+
+/// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
+/// of it, and a restart resumes it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ask {
+    pub id: String,
+    pub text: String,
+    /// `text`'s sha256: asks of the same text make the same inputs.
+    pub digest: String,
+    /// Where what it brings up goes.
+    pub target: Target,
+    /// `render all --missing`: every asset with no state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub new: bool,
-    /// How many versions of each it makes; 0 is 1.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub n: u32,
-    /// `render all --preview`: no upscales, and only the native cut.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub preview: bool,
-    /// What `all` sent this walk, made or failed, by name key: each is sent once.
+    pub all: bool,
+    /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
-    /// New versions of named nodes, one each.
+    /// New versions of named assets, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<Take>,
 }
 
-fn is_zero(n: &u32) -> bool {
-    *n == 0
+fn is_zero<T: Default + PartialEq>(n: &T) -> bool {
+    *n == T::default()
 }
 
-fn is_zero_ms(ms: &u64) -> bool {
-    *ms == 0
+fn is_zero_f(n: &f64) -> bool {
+    *n == 0.0
 }
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        self.all.is_none() && self.sent.is_empty() && self.takes.is_empty()
+        self.asks.is_empty() && self.asked.is_empty()
     }
 }
 
-/// The machines a version may be made on, and the Hub its renderer is read from.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// The machines a version may be made on, and the Hub its function is read from.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     pub on: Vec<On>,
     pub hub: String,
 }
 
-/// One new version of `node`, sent under `key`.
+/// One new version of `asset`, sent under `key`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Take {
     pub key: String,
-    pub node: String,
+    pub asset: String,
     #[serde(flatten)]
     pub target: Target,
-    /// Approved when it lands (`--approve`).
+    /// Pinned when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
+    /// A new seed even with a state, as every render but `--missing` asks: no such take is a run a state already answers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
     /// It keeps the start of an earlier take (`--take`, `--in`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keeps: Option<Keeps>,
@@ -356,108 +385,66 @@ pub struct Keeps {
 }
 
 impl Lock {
-    /// Every file it names: each import and its clean, each version's assets and writes, what each
-    /// pending run makes and continues.
-    fn files(&self) -> impl Iterator<Item = &Asset> {
-        let imports = self.imports.values().flat_map(|import| std::iter::once(&import.asset).chain(&import.clean));
-        let pending = self.pending.values().map(|pending| &pending.made);
-        let versions = self.nodes.values().flat_map(|node| &node.versions).chain(pending).flat_map(Made::files);
-        let from = self.pending.values().filter_map(|pending| pending.call.as_ref()?.from.as_ref());
-        let continued = from.flat_map(|(video, latents)| std::iter::once(video).chain(latents));
-        imports.chain(versions).chain(continued)
-    }
-
-    /// Every file it names, by path, with its sha256.
-    pub fn assets(&self) -> BTreeMap<&str, &str> {
-        self.files().map(|asset| (asset.path.as_str(), asset.sha256.as_str())).collect()
-    }
-
-    /// The assets whose hash starts with `prefix`, imported or made, one per hash.
-    pub fn matching(&self, prefix: &str) -> Vec<&Asset> {
-        let mut found: BTreeMap<&str, &Asset> = BTreeMap::new();
-        for asset in self.files().filter(|asset| hex_of(&asset.sha256).starts_with(prefix)) {
-            let seen = found.entry(&asset.sha256).or_insert(asset);
-            if seen.video.is_none() {
-                *seen = asset;
-            }
-        }
-        found.into_values().collect()
-    }
-
-    /// Whether a run cleaning the imported `sha256` is on its way.
-    pub fn cleaning(&self, sha256: &str) -> Option<u64> {
-        self.pending.values().find(|pending| pending.made.clean_of.as_deref() == Some(sha256)).map(|pending| pending.run)
+    /// The files whose hash starts with `prefix`.
+    pub fn matching(&self, prefix: &str) -> Vec<&File> {
+        self.files.values().filter(|file| hex_of(&file.sha256).starts_with(prefix)).collect()
     }
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
     pub fn owes(&self) -> bool {
-        self.walk.all.is_some() || !self.walk.takes.is_empty() || !self.pending.is_empty()
+        !self.walk.asks.is_empty() || !self.pending.is_empty()
     }
 
-    pub fn node(&self, node: &str) -> Option<&Node> {
-        self.nodes.get(&name_key(node))
+    pub fn asset(&self, name: &str) -> Option<&Asset> {
+        self.assets.get(&name_key(name))
     }
 
-    /// `node`'s version whose primary asset is at `path`.
-    pub fn made(&self, node: &str, path: &str) -> Option<&Made> {
-        self.node(node)?.versions.iter().find(|made| made.primary().is_some_and(|asset| asset.path == path))
-    }
-
-    /// `node`'s next number, given now: one past every number it gave.
-    pub fn number(&mut self, node: &str) -> u32 {
-        let node = self.nodes.entry(name_key(node)).or_default();
-        node.numbered = node.numbered.max(node.versions.iter().map(|made| made.number).max().unwrap_or(0)) + 1;
-        node.numbered
-    }
-
-    /// Lists `made` (its assets kept, its number given) as its node's (of `kind`) newest version,
-    /// approved when `approve`.
-    /// A version whose primary asset one already has (a render that came back the same, such as a fixed
-    /// seed's) is that version: its number is the one given back, and no second version is listed.
-    pub fn record(&mut self, made: Made, kind: &str, approve: bool, clears: bool) -> u32 {
-        let node = self.nodes.entry(name_key(&made.node)).or_default();
-        node.kind = kind.into();
-        if approve {
-            node.approved = made.primary().map(|asset| asset.path.clone());
-        } else if clears {
-            node.approved = None;
+    pub fn asset_mut(&mut self, name: &str, kind: &str) -> &mut Asset {
+        let asset = self.assets.entry(name_key(name)).or_default();
+        asset.name = name.to_owned();
+        if !kind.is_empty() {
+            asset.kind = kind.to_owned();
         }
-        // The same content (its path is its sha256), whatever has been probed of it yet.
-        let path = |made: &Made| made.primary().map(|asset| asset.path.clone());
-        let same = node.versions.iter().position(|version| version.number != made.number && path(version) == path(&made));
-        if let Some(same) = same {
-            // What it stands on now, and the newest, or it would stay out of date and be made again.
-            let number = node.versions[same].number;
-            let newest = node.versions.iter().all(|version| version.number <= number);
-            let version = &mut node.versions[same];
-            (version.text, version.upstream) = (made.text, made.upstream);
-            if !newest && made.number > 0 {
-                version.number = made.number;
-                node.versions.sort_by_key(|made| made.number);
-                return made.number;
-            }
-            return number;
-        }
-        let number = made.number;
-        node.versions.retain(|version| version.number != number);
-        node.versions.push(made);
-        node.versions.sort_by_key(|made| made.number);
-        number
+        asset
+    }
+
+    /// `name`'s next number, given now: one past every number it gave.
+    pub fn number(&mut self, name: &str, kind: &str) -> u32 {
+        let asset = self.asset_mut(name, kind);
+        asset.numbered = asset.numbered.max(asset.versions.iter().map(|version| version.number).max().unwrap_or(0)) + 1;
+        asset.numbered
+    }
+
+    /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
+    pub fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
+        let versions = (self.assets.iter().filter(|(key, _)| keep(key))).flat_map(|(_, asset)| &asset.versions);
+        let pending = self.pending.values().map(|pending| &pending.version);
+        versions
+            .chain(pending)
+            .flat_map(|version| version.files.values().chain(version.writes.values().flat_map(BTreeMap::values)))
+            .map(String::as_str)
+            .collect()
     }
 }
+
+/// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
+static WRITING: Mutex<()> = Mutex::new(());
+/// Held while a file is kept and while files are deleted, so one isn't deleted between.
+static COLLECTING: Mutex<()> = Mutex::new(());
 
 pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
-    /// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
-    writing: Mutex<()>,
-    /// Held while an import is named in the lock and while garbage is collected, so it is not collected between.
-    collecting: Mutex<()>,
 }
 
 impl Folder {
-    /// The project in `dir`, its videos probed with the ffprobe in `home`'s tools (else PATH's).
+    /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
+    pub fn at(dir: &Path) -> Self {
+        Self { dir: dir.to_owned(), tools: PathBuf::new() }
+    }
+
+    /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
     pub fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
         if !dir.join(PROJECT).is_file() {
             return Err(Error::new(
@@ -467,7 +454,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools(), writing: Mutex::default(), collecting: Mutex::default() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -483,8 +470,7 @@ impl Folder {
         if !path.exists() {
             return Ok(Lock::default());
         }
-        serde_json::from_str(&read(&path)?)
-            .map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{}: {e}", path.display())))
+        parse_lock(&read(&path)?)
     }
 
     /// Applies `change` to project.lock as it is now.
@@ -492,33 +478,96 @@ impl Folder {
         self.rewrite(&self.dir.join(LOCK), |text| {
             let mut lock: Lock = match text {
                 "" => Lock::default(),
-                text => serde_json::from_str(text)
-                    .map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {e}")))?,
+                text => parse_lock(text)?,
             };
             change(&mut lock);
             Ok(serde_json::to_string_pretty(&lock).expect("a lock serializes") + "\n")
         })
     }
 
-    /// `source`, a file a run saved, kept as an asset: copied whole before it is named, once per
-    /// content.
-    pub fn keep(&self, source: &Path) -> Result<Asset, Error> {
+    /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
+    /// so that edit stands. The only write of it but `cozy project new`.
+    pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+        self.rewrite(&self.project(), change)
+    }
+
+    /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
+    pub fn keep(&self, source: &Path) -> Result<String, Error> {
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
-        let path = asset_of(&sha256, source);
+        let path = file_of(&sha256, source);
         self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
-        Ok(Asset { path, sha256, video: None })
+        self.tabled(path, &sha256)?;
+        Ok(sha256)
+    }
+
+    /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
+    pub fn take(&self, source: &Path) -> Result<String, Error> {
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let sha256 = hash(source)?;
+        let path = file_of(&sha256, source);
+        if !self.store(&path, |part| std::fs::rename(source, part))? {
+            let _ = std::fs::remove_file(source);
+        }
+        self.tabled(path, &sha256)?;
+        Ok(sha256)
+    }
+
+    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
+    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<PathBuf, Error> {
+        let (path, old) = {
+            let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+            let path = file_of(digest, dest);
+            let at = self.dir.join(&path);
+            if !at.is_file() {
+                let dir = self.dir.join(FILES);
+                std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
+                if std::fs::hard_link(dest, &at).is_err() {
+                    self.store(&path, |part| std::fs::copy(dest, part).map(drop))?;
+                }
+            }
+            self.tabled(path.clone(), digest)?;
+            let old = std::cell::RefCell::new(vec![]);
+            self.update_lock(|lock| {
+                let earlier = lock.runs.iter().position(|row| row.run == made.run && row.output == made.output);
+                match earlier {
+                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut lock.runs[at], made.clone()).sha256],
+                    None => lock.runs.push(made.clone()),
+                }
+            })?;
+            (self.path(&path), old.into_inner())
+        };
+        self.drop_unused(&old)?;
+        Ok(path)
+    }
+
+    /// An output its machine keeps, in the lock's table: its hash, which machine, and no file.
+    pub fn stays(&self, sha256: &str, machine: &str, length: u64) -> Result<(), Error> {
+        let file = File { path: format!("{FILES}/{}", hex_of(sha256)), sha256: sha256.to_owned(), ..Default::default() };
+        self.update_lock(|lock| {
+            let held = lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
+            (held.machine, held.length) = (machine.to_owned(), length);
+        })
+    }
+
+    /// The file at `path` in the lock's table, unless it is there.
+    fn tabled(&self, path: String, sha256: &str) -> Result<(), Error> {
+        let file = File { path, sha256: sha256.to_owned(), ..Default::default() };
+        self.update_lock(|lock| {
+            lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
+        })
     }
 
     /// The file at `source` (an absolute path, or an `http(s)` URL) kept as a real file
-    /// `assets/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock with `mark` (none
-    /// for what is no picture; a later import's word stands). Err: why not.
-    pub async fn import(&self, source: &str, mark: bool) -> Result<Kept, String> {
+    /// `files/<sha256>.<ext>`, its type read from its bytes, and recorded in project.lock. Err: why not.
+    pub async fn import(&self, source: &str) -> Result<Kept, String> {
         if is_url(source) {
             let bytes = fetch_url(source).await?;
             let (kind, field) = media(infer::get(&bytes))?;
             let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
-            let path = asset_named(&sha256, kind.extension());
-            return self.recorded(path, sha256, field, mark, |part| std::fs::write(part, &bytes));
+            let path = file_named(&sha256, kind.extension());
+            return self.recorded(path, sha256, field, |part| std::fs::write(part, &bytes));
         }
         let path = Path::new(source);
         if !path.is_absolute() {
@@ -530,9 +579,36 @@ impl Folder {
             std::fs::File::open(path).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
             let (kind, field) = media(infer::get(&head))?;
             let sha256 = hash(path).map_err(|e| e.message)?;
-            let at = asset_named(&sha256, kind.extension());
-            self.recorded(at, sha256, field, mark, |part| std::fs::copy(path, part).map(drop))
+            let at = file_named(&sha256, kind.extension());
+            self.recorded(at, sha256, field, |part| std::fs::copy(path, part).map(drop))
         })
+    }
+
+    /// A source for a run to read, kept nowhere: a file where it is, or a URL's bytes where runs land. With the field that names it.
+    pub async fn source(&self, source: &str) -> Result<(PathBuf, &'static str), String> {
+        if is_url(source) {
+            let bytes = fetch_url(source).await?;
+            let (kind, field) = media(infer::get(&bytes))?;
+            let dir = self.dir.join(RUNS);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let at = dir.join(format!("{}.{}", hex::encode(Sha256::digest(&bytes)), kind.extension()));
+            std::fs::write(&at, &bytes).map_err(|e| e.to_string())?;
+            return Ok((at, field));
+        }
+        let path = Path::new(source);
+        if !path.is_absolute() {
+            return Err("it is neither an absolute path nor an http(s) URL".into());
+        }
+        let mut head = Vec::new();
+        std::fs::File::open(path).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
+        let (_, field) = media(infer::get(&head))?;
+        Ok((path.to_owned(), field))
+    }
+
+    /// The share of the picture at `path` that is fully transparent; 0 with no ffmpeg to say.
+    pub fn transparent(&self, path: &Path) -> f64 {
+        let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return 0.0 };
+        super::tools::measured(&found.path, &ffprobe, path, false).map_or(0.0, |file| file.alpha)
     }
 
     /// An import's bytes at `path`, written by `write` unless they are there, named in project.lock.
@@ -541,30 +617,21 @@ impl Folder {
         path: String,
         sha256: String,
         field: &'static str,
-        mark: bool,
         write: impl Fn(&Path) -> std::io::Result<()>,
     ) -> Result<Kept, String> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let already = !self.store(&path, write).map_err(|e| e.message)?;
-        let asset = Asset { path, sha256, video: None };
-        let mark = mark && field == "image";
-        let unmarked = !mark && self.lock().map_err(|e| e.message)?.imports.get(&asset.sha256).is_some_and(|import| import.mark);
-        let new = || Import { asset: asset.clone(), mark, clean: None };
-        let record = |lock: &mut Lock| {
-            lock.imports.entry(asset.sha256.clone()).and_modify(|import| import.mark = mark).or_insert_with(new);
-        };
-        self.update_lock(record).map_err(|e| e.message)?;
-        Ok(Kept { asset, field, already, unmarked })
+        self.tabled(path.clone(), &sha256).map_err(|e| e.message)?;
+        Ok(Kept { file: File { path, sha256, ..Default::default() }, field, already })
     }
 
-    /// `path` (an asset's) made by `write` at a part beside it and then named, unless it is there, as a real file: a link an
-    /// older cozy left is replaced. Whether it wrote it.
+    /// `path` (a file's) made by `write` at a part beside it and then named, unless it is there. Whether it wrote it.
     fn store(&self, path: &str, write: impl Fn(&Path) -> std::io::Result<()>) -> Result<bool, Error> {
         let at = self.dir.join(path);
-        if at.symlink_metadata().is_ok_and(|meta| meta.is_file()) {
+        if at.is_file() {
             return Ok(false);
         }
-        let dir = self.dir.join(ASSETS);
+        let dir = self.dir.join(FILES);
         std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
         let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
         let _ = std::fs::remove_file(&part);
@@ -572,79 +639,110 @@ impl Folder {
         Ok(true)
     }
 
-    /// Each asset project.lock names that an older cozy left as a link, made a real file, so what it links to can go. With its
-    /// target gone it stays, and what reads it says so; a target that is another file now isn't that asset, so the link goes.
-    pub fn real_files(&self) -> Result<(), Error> {
-        let entries = std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten();
-        let links: Vec<_> = entries.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_symlink())).collect();
-        if links.is_empty() {
-            return Ok(());
-        }
-        let lock = self.lock()?;
-        let named = lock.assets();
-        for link in links {
-            let (from, path) = (link.path(), format!("{ASSETS}/{}", link.file_name().to_string_lossy()));
-            let Some(sha256) = named.get(path.as_str()) else { continue };
-            match hash(&from) {
-                Ok(now) if now == *sha256 => drop(self.store(&path, |part| std::fs::copy(&from, part).map(drop))?),
-                Ok(_) => std::fs::remove_file(&from).map_err(|e| io_at(&from, e))?,
-                Err(_) => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// An asset's path, as the lock writes it, on this computer.
+    /// A file's path, as the lock writes it, on this computer.
     pub fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
     }
 
-    /// Every video `lock` records (a version's asset, an imported file) with no shape yet,
-    /// probed once and recorded, in `lock` and in project.lock. With no ffprobe here yet (the walk
-    /// fetches one before it cuts), they wait for the next read.
-    pub fn shape_videos(&self, lock: &mut Lock) -> Result<(), Error> {
-        let unshaped = |asset: &Asset| {
-            let ext = Path::new(&asset.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
-            asset.video.is_none() && ext.is_some_and(|ext| VIDEOS.contains(&ext.as_str()))
-        };
-        let versions = lock.nodes.values().flat_map(|node| &node.versions).flat_map(|made| made.assets.values());
-        let imports = lock.imports.values().map(|import| &import.asset);
-        let wanted: BTreeSet<&String> = imports.chain(versions).filter(|a| unshaped(a)).map(|a| &a.path).collect();
-        if wanted.is_empty() {
+    /// Whether a file the lock names should be here and isn't, so a pull is what it needs: what stays on a machine isn't.
+    pub fn missing(&self, file: &File) -> bool {
+        !file.stays() && !self.path(&file.path).is_file()
+    }
+
+    /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in
+    /// project.lock. With no ffprobe here yet (the walk fetches one first), they wait for the next read.
+    pub fn measure(&self, lock: &mut Lock) -> Result<(), Error> {
+        if !lock.files.values().any(File::unmeasured) {
             return Ok(());
         }
-        let Some((_, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return Ok(()) };
-        let shapes: BTreeMap<String, Shape> = (wanted.into_iter())
-            .filter_map(|path| Some((path.clone(), super::video::shape(&ffprobe, &self.dir.join(path))?)))
+        let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return Ok(()) };
+        let measured: BTreeMap<String, File> = (lock.files.values().filter(|file| file.unmeasured()))
+            .filter(|file| self.dir.join(&file.path).is_file())
+            .filter_map(|file| {
+                let at = self.dir.join(&file.path);
+                let probed = super::tools::measured(&found.path, &ffprobe, &at, file.is_video())?;
+                Some((file.sha256.clone(), File { path: file.path.clone(), sha256: file.sha256.clone(), parts: file.parts.clone(), ..probed }))
+            })
             .collect();
+        if measured.is_empty() {
+            return Ok(());
+        }
         let fill = |lock: &mut Lock| {
-            let versions = lock.nodes.values_mut().flat_map(|node| &mut node.versions).flat_map(|made| made.assets.values_mut());
-            for asset in lock.imports.values_mut().map(|import| &mut import.asset).chain(versions) {
-                asset.video = asset.video.or_else(|| shapes.get(&asset.path).copied());
+            for (sha256, file) in &measured {
+                lock.files.insert(sha256.clone(), file.clone());
             }
         };
-        if shapes.is_empty() {
-            return Ok(());
-        }
         fill(lock);
         self.update_lock(fill)
     }
 
-    /// Deletes each asset nothing in project.lock names: no version (of a node project.yaml names or
-    /// not), no pending run or call, no import.
-    pub fn collect_garbage(&self) -> Result<(), Error> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+    /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, and
+    /// their bytes. With `delete` they go, from disk and from the table: what `reclaim --yes` frees.
+    pub fn sweep(&self, named: &BTreeSet<String>, delete: bool) -> Result<(u64, u64), Error> {
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
-        let named = lock.assets();
-        for entry in std::fs::read_dir(self.dir.join(ASSETS)).into_iter().flatten().flatten() {
-            let path = format!("{ASSETS}/{}", entry.file_name().to_string_lossy());
-            let ours = entry.file_type().is_ok_and(|kind| kind.is_file() || kind.is_symlink());
-            if ours && !path.contains("/.") && !named.contains_key(path.as_str()) {
+        let (mut files, mut bytes) = (0, 0);
+        for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
+            let path = format!("{FILES}/{}", entry.file_name().to_string_lossy());
+            let used = lock.files.values().any(|file| file.path == path && named.contains(&file.sha256));
+            if path.contains("/.") || used || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            bytes += entry.metadata().map_or(0, |meta| meta.len());
+            files += 1;
+            if delete {
                 std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
             }
         }
-        Ok(())
+        // What runs left where they land: a folder they made, or a file still there.
+        let left = walked(&self.dir.join(RUNS));
+        files += left.0;
+        bytes += left.1;
+        if delete {
+            self.update_lock(|lock| {
+                lock.files.retain(|sha256, _| named.contains(sha256));
+                lock.runs.retain(|row| named.contains(&row.sha256));
+            })?;
+            let _ = std::fs::remove_dir_all(self.dir.join(RUNS));
+        }
+        Ok((files, bytes))
     }
+
+    /// Bytes on disk of `sha256`, if here.
+    pub fn size(&self, lock: &Lock, sha256: &str) -> u64 {
+        lock.files.get(sha256).and_then(|file| std::fs::metadata(self.path(&file.path)).ok()).map_or(0, |meta| meta.len())
+    }
+
+    /// Deletes those of `sha256s` nothing in the lock names any more: a tool's old version, free to make again.
+    pub fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = self.lock()?;
+        let mut named = lock.named(|_| true);
+        named.extend(lock.runs.iter().map(|row| row.sha256.as_str()));
+        for sha256 in sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())) {
+            let Some(file) = lock.files.get(sha256) else { continue };
+            let at = self.path(&file.path);
+            let _ = std::fs::remove_file(&at);
+        }
+        let unused: Vec<&String> = sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())).collect();
+        self.update_lock(|lock| lock.files.retain(|sha256, _| !unused.contains(&sha256)))
+    }
+}
+
+/// `text` as a lock of this format. A lock of another isn't read, so nothing writes over it.
+fn parse_lock(text: &str) -> Result<Lock, Error> {
+    let lock: Result<Lock, _> = serde_json::from_str(text);
+    match lock {
+        Ok(lock) if lock.format == FORMAT => Ok(lock),
+        Ok(lock) => Err(old_lock(&lock.format.to_string())),
+        Err(e) if e.to_string().contains("missing field `format`") => Err(old_lock("1")),
+        Err(e) => Err(Error::new(Kind::Validation, "lock_unreadable", format!("{LOCK}: {e}"))),
+    }
+}
+
+fn old_lock(format: &str) -> Error {
+    let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is");
+    Error::new(Kind::Validation, "lock_format", said).remedy("migrate the project once with a cozy that reads it (design/project-graph)")
 }
 
 /// The file at `url`, public addresses only at every hop, up to `URL_MOST`. Err: why not.
@@ -699,15 +797,15 @@ fn media(kind: Option<infer::Type>) -> Result<(infer::Type, &'static str), Strin
     Ok((kind, field))
 }
 
-/// An asset's path, given its extension.
-fn asset_named(sha256: &str, ext: &str) -> String {
-    format!("{ASSETS}/{}.{ext}", hex_of(sha256))
+/// A file's path, given its extension.
+fn file_named(sha256: &str, ext: &str) -> String {
+    format!("{FILES}/{}.{ext}", hex_of(sha256))
 }
 
-/// An asset's path: `assets/<hex of sha256>.<the source's extension>`.
-fn asset_of(sha256: &str, source: &Path) -> String {
+/// A file's path: `files/<hex of sha256>.<the source's extension>`.
+fn file_of(sha256: &str, source: &Path) -> String {
     let ext = source.extension().map(|e| format!(".{}", e.to_string_lossy().to_ascii_lowercase())).unwrap_or_default();
-    format!("{ASSETS}/{}{ext}", sha256.trim_start_matches("sha256:"))
+    format!("{FILES}/{}{ext}", hex_of(sha256))
 }
 
 impl Folder {
@@ -715,7 +813,7 @@ impl Folder {
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-        let _held = self.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             let before = match path.exists() {
                 true => read(path)?,
@@ -734,6 +832,26 @@ impl Folder {
             }
         }
     }
+}
+
+/// How many files are under `dir`, and their bytes.
+fn walked(dir: &Path) -> (u64, u64) {
+    let (mut files, mut bytes) = (0, 0);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => {
+                let below = walked(&entry.path());
+                files += below.0;
+                bytes += below.1;
+            }
+            Ok(meta) => {
+                files += 1;
+                bytes += meta.len();
+            }
+            Err(_) => {}
+        }
+    }
+    (files, bytes)
 }
 
 fn read(path: &Path) -> Result<String, Error> {

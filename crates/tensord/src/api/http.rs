@@ -138,7 +138,10 @@ impl<B: MachineBackend> Machine<B> {
         let (grant, signer) = authority
             .keys
             .check(|keys| capability::verify(token, &authority.worker_id, keys, unix_now(), ""))
-            .map_err(|refusal| Error::credential("capability_invalid", refusal.to_string()))?;
+            .map_err(|refusal| match refusal {
+                capability::Refusal::Clock => Error::credential("machine_clock", format!("{refusal} (this machine reads {} Unix seconds)", unix_now())),
+                refusal => Error::credential("capability_invalid", refusal.to_string()),
+            })?;
         Ok(Caller { actor: VerifiedActor { public_key: signer.to_bytes() }, grant })
     }
 

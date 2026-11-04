@@ -1,17 +1,17 @@
-//! What a project's walk asks of the Calcifer it runs in, and nothing else: the Hub's renderers,
+//! What a project's walk asks of the Calcifer it runs in, and nothing else: the Hub's packages,
 //! sending and following runs, the machines' load, and ffmpeg. A walk hosted elsewhere (the Hub)
 //! answers these same calls.
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use protocol::{
-    calcifer::{On, Run, Status as RunStatus, SubmitRun},
+    calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
-    ids::RunId,
+    ids::{Digest, RunId},
     interface::{self, Slot},
     model_ref::ModelRef,
 };
@@ -25,9 +25,51 @@ use crate::{
     runs::target::{self, Resolved},
 };
 
-/// A renderer as the Hub has it (its package's newest release, or the one `@release` names), or
-/// local code on this computer (`with: ./dir/function`, from the project's folder); and the
-/// longest piece it makes when it renders shots.
+/// A package as the Hub has it (the release its machine holds, else its newest, or the one `@release` names), or local code on this computer (`with: ./dir`,
+/// from the project's folder).
+#[derive(Clone)]
+pub struct Package {
+    pub name: String,
+    /// For local code, its source's digest.
+    pub release: String,
+    /// Local code: its package directory or script, made ready on the machine each call goes to.
+    pub local: Option<PathBuf>,
+    /// A yanked release this walk moved off, said once.
+    pub moved: Option<String>,
+    document: Value,
+}
+
+/// A project adapter's function is named this and the kind it adapts (`App.project_adapter`).
+pub const ADAPTER: &str = "project-adapter-";
+/// The project format its record is.
+const FORMAT: u64 = 2;
+
+impl Package {
+    /// The function of its package that turns an operation of `kind` into calls, if it reads this format. With none, this package can't make that kind.
+    pub fn adapter(&self, kind: &str) -> Option<Renderer> {
+        let name = format!("{ADAPTER}{kind}");
+        let entry = interface::entrypoints(&self.document).find(|entry| interface::name(entry) == Some(name.as_str()))?;
+        let version = entry["request"]["fields"].as_array()?.iter().find(|field| field["name"] == "version")?;
+        let reads = version["type"]["literal"].as_array()?.iter().any(|value| value.as_u64() == Some(FORMAT));
+        reads.then(|| self.function(&name)).and_then(Result::ok)
+    }
+
+    /// The tags its adapters declare as their own (`App.project_adapter(reserved=)`): in a text they are text.
+    pub fn reserved(&self) -> Vec<String> {
+        let adapters = interface::entrypoints(&self.document).filter(|entry| interface::name(entry).is_some_and(|name| name.starts_with(ADAPTER)));
+        let mut tags: Vec<String> = adapters.flat_map(|entry| entry["reserved"].as_array().into_iter().flatten()).filter_map(|tag| Some(tag.as_str()?.to_owned())).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        tags
+    }
+
+    /// `function` of it.
+    pub fn function(&self, function: &str) -> Result<Renderer, Error> {
+        Renderer::read(&self.name, function, self.release.clone(), &self.document, self.local.clone())
+    }
+}
+
+/// One function of a package, as a run of it is sent.
 #[derive(Clone)]
 pub struct Renderer {
     pub package: String,
@@ -37,67 +79,15 @@ pub struct Renderer {
     /// Local code: its package directory or script, made ready on the machine each call goes to.
     pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
-    pub accepts: Accepts,
-    /// Its package's project adapters: by node kind, the format versions each reads.
-    pub adapters: BTreeMap<String, Vec<u64>>,
-    /// And by node kind, the fields each one's record has.
-    pub adapter_fields: BTreeMap<String, BTreeSet<String>>,
+    pub accepts: BTreeSet<String>,
+    /// An adapter's typed `fields`, if it types them: a field the asset wrote that isn't one is warned of.
+    pub signature: Option<BTreeSet<String>>,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
     pub calls: Vec<Slot>,
 }
 
-/// A project adapter's function is named this and its node kind (`App.project_adapter`).
-pub const ADAPTER: &str = "project-adapter-";
-
-/// What a function's request takes, as its schema says: a project sends only these fields, and a
-/// shot's references only of these kinds, with these fields each.
-#[derive(Clone, Debug, Default)]
-pub struct Accepts {
-    pub fields: BTreeSet<String>,
-    /// `references`' kinds (its union's tags), each with its fields.
-    pub kinds: BTreeMap<String, BTreeSet<String>>,
-    /// A shot renderer's shortest piece (its `duration_s` schema extra).
-    pub min_piece_s: Option<f64>,
-    /// `continue_from`'s fields.
-    pub continues: BTreeSet<String>,
-}
-
-impl Accepts {
-    pub fn read(request: &Value) -> Self {
-        let fields = |doc: &Value| -> Vec<Value> { doc["fields"].as_array().cloned().unwrap_or_default() };
-        let named = |doc: &Value| fields(doc).iter().filter_map(|f| f["name"].as_str().map(str::to_owned)).collect();
-        let field = |name: &str| fields(request).into_iter().find(|f| f["name"] == name);
-        let extra = |key: &str| field("duration_s").and_then(|f| f["extra"][key].as_f64());
-        let union = field("references").map(|f| f["type"]["list"]["union"].clone()).unwrap_or_default();
-        let kinds = (union.as_array().into_iter().flatten())
-            .filter_map(|member| Some((member["tag"].as_str()?.to_owned(), named(member))))
-            .collect();
-        let continues = field("continue_from").map(|f| f["type"].clone()).unwrap_or_default();
-        let continues = continues["union"].as_array().cloned().unwrap_or_else(|| vec![continues]).iter().flat_map(named).collect();
-        // A list with no room for anything is not taken.
-        let taken = fields(request).iter().filter(|f| f["constraints"]["max_length"].as_u64() != Some(0)).filter_map(|f| f["name"].as_str().map(str::to_owned)).collect();
-        Self {
-            fields: taken,
-            kinds,
-            min_piece_s: extra("min_piece_s"),
-            continues,
-        }
-    }
-}
-
 impl Renderer {
-    /// The function of its package that turns a project node of `kind` into a call, if it reads this format's `version`.
-    pub fn adapter(&self, kind: &str, version: u64) -> Option<String> {
-        let reads = self.adapters.get(kind)?.contains(&version);
-        reads.then(|| format!("{ADAPTER}{kind}"))
-    }
-
-    /// Whether its adapter for `kind` reads `field` of the record.
-    pub fn adapter_reads(&self, kind: &str, field: &str) -> bool {
-        self.adapter_fields.get(kind).is_some_and(|fields| fields.contains(field))
-    }
-
     /// `function` of the package interface `document`.
     fn read(
         package: &str,
@@ -110,28 +100,21 @@ impl Renderer {
         let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
             .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()))?;
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
+        let fields = entry["request"]["fields"].as_array();
+        // A list with no room for anything is not taken.
+        let accepts = (fields.into_iter().flatten())
+            .filter(|field| field["constraints"]["max_length"].as_u64() != Some(0))
+            .filter_map(|field| field["name"].as_str().map(str::to_owned))
+            .collect();
+        let typed = fields.and_then(|fields| fields.iter().find(|field| field["name"] == "fields"));
+        let signature = typed.and_then(|field| Some(field["type"]["fields"].as_array()?.iter().filter_map(|field| field["name"].as_str().map(str::to_owned)).collect()));
         Ok(Self {
             package: package.into(),
             function: function.into(),
             release,
             local,
-            accepts: Accepts::read(&entry["request"]),
-            adapters: interface::entrypoints(document)
-                .filter_map(|entry| {
-                    let kind = interface::name(entry)?.strip_prefix(ADAPTER)?;
-                    let fields = entry["request"]["fields"].as_array()?;
-                    let version = fields.iter().find(|field| field["name"] == "version")?;
-                    let reads = version["type"]["literal"].as_array()?.iter().filter_map(Value::as_u64).collect();
-                    Some((kind.to_owned(), reads))
-                })
-                .collect(),
-            adapter_fields: interface::entrypoints(document)
-                .filter_map(|entry| {
-                    let kind = interface::name(entry)?.strip_prefix(ADAPTER)?;
-                    let fields = entry["request"]["fields"].as_array()?;
-                    Some((kind.to_owned(), fields.iter().filter_map(|field| field["name"].as_str().map(str::to_owned)).collect()))
-                })
-                .collect(),
+            accepts,
+            signature,
             slots: read(interface::models(entry).iter().collect()),
             calls: read(interface::call_slots(document, entry)),
         })
@@ -148,8 +131,8 @@ impl Renderer {
 
 pub struct Host {
     api: Arc<Api>,
-    /// Read once a walk, by Hub and target.
-    renderers: Mutex<HashMap<(String, String), Renderer>>,
+    /// Read once a walk, by Hub, `with` and machine.
+    packages: Mutex<HashMap<(String, String, String), Package>>,
     /// This walk's: the installs its local code asks for are keyed under it, so a failed one is
     /// asked again by the next walk, never replayed.
     walk: String,
@@ -159,7 +142,7 @@ impl Host {
     pub fn new(api: &Arc<Api>) -> Self {
         let mut walk = [0u8; 8];
         getrandom::fill(&mut walk).expect("the OS has randomness");
-        Self { api: api.clone(), renderers: Mutex::default(), walk: hex::encode(walk) }
+        Self { api: api.clone(), packages: Mutex::default(), walk: hex::encode(walk) }
     }
 
     /// What local code at `path` going `on` a machine is keyed under (`local_code::prepare`).
@@ -173,50 +156,41 @@ impl Host {
         local_code::ready(&self.api, path, on, hub, &self.key(path, on)).await
     }
 
-    /// `target` as `cozy run` takes it: local code (`./dir/function` from the project's `folder`,
-    /// `~/…`, an absolute path), described on the first of `on`'s machines; else
-    /// `[org/]package/function[@release]` as `hub` (empty: the default one) has it.
-    pub async fn renderer(
-        &self,
-        hub: &str,
-        target: &str,
-        folder: &Path,
-        on: &[On],
-    ) -> Result<Renderer, Error> {
+    /// The package `with` names: local code (`./dir` from the project's `folder`, `~/…`, an absolute path), described on the first of
+    /// `on`'s machines; else `[org/]package[@release]` as `hub` (empty: the default one) has it.
+    pub async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
-        if let Some(found) = local_code::target(target, folder, &home) {
-            let (path, function) = found?;
-            let function = function.ok_or_else(|| {
-                Error::new(Kind::Validation, "with_unnamed", format!("with: {target} names no function"))
-                    .remedy(format!("{target}/<function>"))
-            })?;
+        if let Some(found) = local_code::target(with, folder, &home) {
+            let (path, _) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let prepared = local_code::ready(&self.api, &path, &on, hub, &self.key(&path, &on)).await?;
-            let Some(interface) = prepared.interface else {
-                let said = format!("{target} is not described on {on:?} yet: its first render installs it");
+            let Some(document) = prepared.interface else {
+                let said = format!("{with} is not described on {on:?} yet: its first render installs it");
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Renderer::read(&prepared.package, &function, release, &interface, Some(path));
+            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, document });
         }
-        let at = (hub.to_owned(), target.to_owned());
-        if let Some(found) = self.renderers.lock().expect("renderers lock").get(&at) {
+        let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
+        self.published(hub, with, Some(&first)).await
+    }
+
+    /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
+    /// walk's first; another installs the release); none: as this computer knows it, for a read
+    /// that runs nothing.
+    pub async fn published(&self, hub: &str, with: &str, on: Option<&On>) -> Result<Package, Error> {
+        let at = (hub.to_owned(), with.to_owned(), on.map(On::to_string).unwrap_or_default());
+        if let Some(found) = self.packages.lock().expect("packages lock").get(&at) {
             return Ok(found.clone());
         }
-        // As `cozy run` resolves it: the release named, else the newest this computer keeps.
+        // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, .. } = target::published(&self.api, &hub, target).await? else {
+        let Resolved::Release { package, card, moved, .. } = target::published(&self.api, &hub, with, on).await? else {
             unreachable!("a published target resolves to a release");
         };
-        // A package of one function needs no more naming, here as in `cozy run`.
-        let function = function.or_else(|| target::only_function(&card.interface).map(str::to_owned)).ok_or_else(|| {
-            let said = format!("{target} is not [org/]package/function[@release]");
-            Error::new(Kind::Validation, "renderer_malformed", said)
-        })?;
-        let function = crate::runs::callable(&package, &card.interface, &function)?.name.clone();
-        let found = Renderer::read(&package, &function, card.release.clone(), card.interface_document(), None)?;
-        self.renderers.lock().expect("renderers lock").insert(at, found.clone());
-        Ok(found)
+        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, document: card.interface_document().clone() };
+        self.packages.lock().expect("packages lock").insert(at, found.clone());
+        Ok(Package { moved, ..found })
     }
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.
@@ -240,7 +214,7 @@ impl Host {
             let row =
                 row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
             let run = calcifer.record(&row).map_err(refused)?;
-            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && !owed(&run) {
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && !run.output.iter().any(OutputItem::owed) {
                 return Ok(run);
             }
             tokio::select! {
@@ -248,6 +222,37 @@ impl Host {
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             }
         }
+    }
+
+    /// The machine among `on` that already holds these bytes for this computer.
+    pub async fn holding(&self, sha256: &str, length: u64, on: &[On]) -> Option<On> {
+        let digest: Digest = sha256.parse().ok()?;
+        for machine in on {
+            let On::Machine(text) = machine else { continue };
+            let machines = &self.api.machines;
+            if text == "local" && machines.local_up().await.is_err() {
+                continue;
+            }
+            let Ok((_, link)) = machines.linked(text) else { continue };
+            if length > 0 && link.held(&digest, length).await.is_ok_and(|held| held >= length) {
+                return Some(machine.clone());
+            }
+        }
+        None
+    }
+
+    /// Whether `machine` is there to fetch `sha256` from: Calcifer knows the run on it that made these bytes, it hasn't ended, and its
+    /// Hub doesn't call it offline.
+    pub fn fetchable(&self, sha256: &str, machine: &str) -> bool {
+        let (machines, store) = (&self.api.machines, self.api.calcifer.store());
+        store.making(sha256, machine).is_ok_and(|made| made.is_some())
+            && machines.here(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
+            && machines.offline(machine).is_none()
+    }
+
+    /// `sha256`, which `machine` keeps, brought here now as an export brings an output: into its project's `files/`. Err: why not.
+    pub async fn fetch(&self, sha256: &str, machine: &str) -> Result<(), String> {
+        self.api.calcifer.bring(sha256, machine).await
     }
 
     /// Where a run of `renderer` goes among `on`: one is where it goes; of several, the machine
@@ -289,11 +294,6 @@ impl Host {
         let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
         Ok((found.ffmpeg, found.ffprobe))
     }
-}
-
-/// An output still owed to this computer: its last revision neither landed nor failed.
-fn owed(run: &Run) -> bool {
-    run.output.iter().any(|item| !item.is_checkpoint() && item.path.is_none() && item.export_error.is_none())
 }
 
 fn refused(error: crate::Error) -> Error {

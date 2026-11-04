@@ -37,6 +37,7 @@ http-body-util.workspace = true
 bytes.workspace = true
 webpki-roots.workspace = true
 zip.workspace = true
+pep440_rs = { version = "0.7.3", default-features = false }
 axum.workspace = true
 ed25519-dalek = { workspace = true, features = ["pem", "pkcs8"] }
 rcgen.workspace = true

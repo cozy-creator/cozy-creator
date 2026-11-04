@@ -193,9 +193,11 @@ pub async fn update(
         mode,
     };
     let dev = matches!(ask.tensord, Some(Component::File(_)));
+    let named = ask.tensord.is_some();
     let path = format!("{}/update", route(name)?);
     let calcifer = ctx.calcifer().await?;
     let Updating { machine: m, run, warnings, .. } = calcifer.post(&path, &ask, Some(&mint_key())).await?;
+    let was = m.status.as_ref().map(|status| status.commit.clone());
     for warning in &warnings {
         output::warn(warning);
     }
@@ -219,9 +221,12 @@ pub async fn update(
         _ => now.status.clone().unwrap_or_default(),
     };
     updated(ctx, &m.name, &status);
-    if dev && m.kind == MachineKind::Local {
-        // `local` runs the installed cozy, the dev binary now: Calcifer runs it too.
+    // `local` runs the installed cozy, which just moved: Calcifer runs it too, so the CLI and
+    // Calcifer stay one build.
+    if named && m.kind == MachineKind::Local && (dev || was.as_ref() != Some(&status.commit)) {
         crate::daemon::restart(ctx).await?;
+    }
+    if dev && m.kind == MachineKind::Local {
         output::warn(&format!(
             "this computer's cozy is now {}, a dev build; `cozy update` returns it to a release",
             status.version

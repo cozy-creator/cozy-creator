@@ -24,8 +24,7 @@ use protocol::{
     error::{Envelope, Error, Kind},
 };
 use tokio::net::TcpListener;
-use hub_client::{Client, Credential};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     Calcifer,
@@ -150,7 +149,6 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let token = hex::encode(token);
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
-    tokio::spawn(newest_releases(home.clone(), loaded.config.hub_url.clone()));
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), address.port(), &token);
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
@@ -242,34 +240,6 @@ async fn drop_old_measurements(calcifer: Arc<Calcifer>) {
                 warn!("dropping old measurements: {e}");
                 tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
             }
-        }
-    }
-}
-
-/// How often [`newest_releases`] reads them again.
-const NEWEST: Duration = Duration::from_secs(300);
-
-/// The newest release of each package this computer ran or installed within the hour, read again
-/// from its Hub now and each [`NEWEST`] after (`hub_client::latest`): an unversioned run names the
-/// kept one and asks the Hub nothing, and a release published elsewhere reaches it one read late at
-/// most. A computer at rest reads nothing. Passes a slow Hub made it miss are not made up.
-/// Signed in when this computer is, for an owner's private packages.
-async fn newest_releases(home: Home, hub: config::Origin) {
-    let http = reqwest::Client::new();
-    let mut every = tokio::time::interval(NEWEST);
-    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        every.tick().await;
-        let client = match hub.device_key(&home).exists() {
-            true => Client::signed_in(&hub, &home, http.clone(), || hub.to_string()),
-            false => Ok(Client::connect(&hub, http.clone(), Credential::Anonymous)),
-        };
-        match client {
-            Ok(client) => {
-                let read = hub_client::latest::refresh_all(&client, home.root(), &hub).await;
-                debug!(read, "newest releases read again");
-            }
-            Err(e) => debug!("newest releases: {e}"),
         }
     }
 }

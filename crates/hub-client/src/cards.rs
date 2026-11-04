@@ -1,8 +1,10 @@
 //! Release cards this computer keeps under its cozy home (`root`). A release never changes, so its
-//! card is read from the Hub once and kept forever, by release; a package's newest release is kept
-//! beside them ([`crate::latest`]). Calcifer resolves runs with these, and so do the verbs that name
-//! a release.
-use std::path::{Path, PathBuf};
+//! card is read from the Hub once and kept forever, by release. Calcifer binds runs with these, and
+//! so do the verbs that name a release.
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use platform::durable;
 use protocol::error::{Error, Kind};
@@ -10,10 +12,6 @@ use protocol::interface::Interface;
 use serde_json::Value;
 
 use crate::Client;
-
-/// How long a run waits on a read of its package's newest release. It holds up a run, so a Hub
-/// slower than this leaves the run with what is kept.
-const LATE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct Card {
@@ -42,9 +40,17 @@ impl Card {
     }
 }
 
-/// Where `(hub, package)`'s cards live, beside its newest release.
+/// Where `(hub, package)`'s cards live under `root`, the cozy home.
 fn dir(root: &Path, hub: &str, package: &str) -> PathBuf {
-    crate::latest::dir(root, hub, package)
+    let host = hub.split_once("://").map_or(hub, |(_, rest)| rest);
+    let host: String = host
+        .trim_end_matches('/')
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect();
+    let mut dir = root.join("packages").join(host);
+    dir.extend(package.split('/'));
+    dir
 }
 
 /// A failed Hub call as a refusal.
@@ -71,53 +77,35 @@ pub async fn card(
     keep(root, hub, package, &document)
 }
 
-/// The newest release of `package` this computer keeps, which Calcifer refreshes in the background
-/// while it is in use: a run makes no Hub read for it then. One unused for a while is read first,
-/// and names what is kept if the Hub does not answer within [`LATE`]. One it never knew is read
-/// once ([`fresh`]).
-pub async fn latest(
-    client: impl FnOnce() -> Result<Client, Error>,
-    root: &Path,
-    hub: &str,
-    package: &str,
-) -> Result<String, Error> {
-    let at = dir(root, hub, package);
-    let release = match crate::latest::kept(&at) {
-        Some((release, true)) => release,
-        Some((release, false)) => {
-            let read = async { fresh(&client()?, root, hub, package).await };
-            match tokio::time::timeout(LATE, read).await {
-                Ok(Ok(newest)) => newest,
-                Ok(Err(error)) if error.kind == Kind::NotFound => return Err(error),
-                Ok(Err(error)) => {
-                    tracing::warn!("{package}'s newest release: {error}; naming the one kept");
-                    release
-                }
-                Err(_) => {
-                    tracing::warn!("{package}'s newest release: no answer in {}s; naming the one kept", LATE.as_secs());
-                    release
-                }
-            }
-        }
-        None => fresh(&client()?, root, hub, package).await?,
-    };
-    crate::latest::used(&at);
-    Ok(release)
+/// A package's releases as its Hub answered.
+#[derive(Debug, Default)]
+pub struct Releases {
+    /// The newest release that isn't yanked.
+    pub newest: Option<String>,
+    /// Every release it has, yanked or not.
+    pub released: HashSet<String>,
+    pub yanked: HashSet<String>,
 }
 
-/// The Hub's newest published release of `package` now, and kept: what an install names.
-pub async fn fresh(client: &Client, root: &Path, hub: &str, package: &str) -> Result<String, Error> {
+impl Releases {
+    /// The newest release, or why `package` has none to run.
+    pub fn newest(&self, package: &str) -> Result<String, Error> {
+        self.newest.clone().ok_or_else(|| {
+            Error::new(Kind::NotFound, "package_unreleased", format!("{package} has no release to run"))
+                .remedy("its owner publishes one with `cozy package publish`")
+        })
+    }
+}
+
+/// `package`'s releases at its Hub now.
+pub async fn releases(client: &Client, package: &str) -> Result<Releases, Error> {
     let (org, name) = package.split_once('/').expect("a package is org/name");
-    let release = crate::latest::read(client, &dir(root, hub, package), org, name)
-        .await
-        .map_err(|e| absent(refusal(e), package))?;
-    release.ok_or_else(|| {
-        Error::new(
-            Kind::NotFound,
-            "package_unreleased",
-            format!("{package} has no release to run"),
-        )
-        .remedy("its owner publishes one with `cozy package publish`")
+    let card = client.get_package(org, name).await.map_err(|e| absent(refusal(e), package))?;
+    let yanked = |row: &&crate::types::CatalogRelease| row.yanked == Some(true) || row.yanked_at.as_deref().is_some_and(|at| !at.is_empty());
+    Ok(Releases {
+        newest: card.package.latest_release,
+        released: card.releases.iter().map(|row| row.release.clone()).collect(),
+        yanked: card.releases.iter().filter(yanked).map(|row| row.release.clone()).collect(),
     })
 }
 

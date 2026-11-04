@@ -6,7 +6,8 @@
 //!   An object wanted twice is downloaded once. A task nothing wants leaves the queue in the
 //!   step that finds it so, then ends: a want after that starts a task of its own (cl-686).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every
-//!   byte enters the store's admission, which hashes it: wrong bytes are never admitted.
+//!   byte enters the store's admission, which hashes it: wrong bytes are never admitted. A process
+//!   sharing the store that is fetching an object is waited for, not raced (tfs-142).
 //! - **Judging a request** is relative and measured, never a timeout. Each request measures
 //!   the rate of every stretch of body it receives between two writes into the store; every
 //!   tick the watch drops one with no answer after 8× the fetch's median time to answer, or
@@ -922,8 +923,22 @@ impl Shared {
         outcome
     }
 
-    /// `task`'s object from the first tier that has it.
+    /// `task`'s object from the first tier that has it. Another process on this store fetching it
+    /// now (TensorD, for an executor's read) is waited for, so it downloads once on this machine.
     async fn fetch(self: &Arc<Self>, task: &Arc<Task>) -> Result<Tier> {
+        if self.store.has(&task.object) {
+            return Ok(Tier::Local);
+        }
+        let _claim = loop {
+            if let Some(claim) = self.store.claim(&task.object) {
+                break claim;
+            }
+            if self.unwanted(task) {
+                return refuse(Code::TRANSFER_FAILED, "nothing wants it");
+            }
+            tokio::time::sleep(self.tick).await;
+        };
+        // It may have landed while another held the claim.
         if self.store.has(&task.object) {
             return Ok(Tier::Local);
         }

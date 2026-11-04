@@ -26,14 +26,22 @@ and the seal's names, over this machine's uv cache and Pythons):
   `import` lines so the static reader never follows them.
 - The machine's Runtime/TensorFS pair over it, every other installed version a constraint. A pin the
   pair rejects keeps its version and the pair goes in without its dependencies (`sdk_fallback` says
-  so). A floor the package puts on the pair that the pair misses updates the machine to the package's
-  own versions (a software update; the run prepares again after its restart), and refuses
-  `runtime_floor_unmet` only when it cannot (a development Runtime, a refused or failed update).
-  Other `uv pip check` findings are the run's warning.
+  so). A floor the package puts on the pair that the pair misses goes in this environment alone
+  (`sdk: own`): the version its lock names when that meets the floor, else the newest that does on uv's
+  index, else among the GitHub prereleases `cozy machine update` also fetches. The machine, its pair and
+  its other environments stay as they are, with no update and no restart. `runtime_floor_unmet` says
+  what it needs when none is published. A development Runtime runs regardless, as its owner chose. Other
+  `uv pip check` findings are the run's warning.
 - The last step compiles the environment's bytecode.
 - Described inside the env by its own Runtime with `python -I -S` (no `.pth` execution): the
   environment's callees and digest, and local code's interface from its source.
 - `Service::installed`: its kernels compile and a call's imports start, for both kinds.
+
+Nothing assumes one Runtime per machine. Kernels compile under the environment's own Runtime and seal.
+The describe step asks that Runtime. The executor seam is tolerant in both directions, and a room is
+sent only to an executor whose hello offers it. `cozy package ls --on` and `cozy machine show --json`
+give each environment's Runtime beside the machine's own. Memory on a GPU is shared through the driver, with no
+state between executors.
 
 ## Calls between packages
 

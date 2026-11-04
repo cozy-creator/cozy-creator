@@ -11,7 +11,7 @@
 //! that will not land is `output_item.done` again, carrying `export_error`). A reconnect replays
 //! a landed item as `output_item.landed`, the whole item. The terminal events `run.completed`,
 //! `run.failed` and `run.canceled` end the run; its stream ends after the terminal once each of
-//! its outputs has landed or carries an `export_error`.
+//! its outputs has landed or carries an `export_error`, but for what stays on its machine.
 use std::{fmt, net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,10 @@ pub struct SubmitRun {
     /// (`object://sha256:<hex>/<file>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<StagedInput>,
-    /// Where outputs land; absent: `~/.cozy/outputs`.
+    /// Those of `spec.inputs` its machine already holds, which nothing here writes to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<Digest>,
+    /// Where its outputs land: its project's `.runs`, from which each is kept in `files/`. Absent for what is no person's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<PathBuf>,
     /// What the CLI noticed while binding the run (fields it dropped, …), kept with the run.
@@ -167,9 +170,9 @@ pub struct RunRequest {
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
-    /// Where outputs land; absent: `~/.cozy/outputs`.
+    /// The project it belongs to: a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub out: Option<PathBuf>,
+    pub project: Option<PathBuf>,
     /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recipes: bool,
@@ -234,7 +237,9 @@ pub struct Target {
 pub enum ReleaseFrom {
     /// The target named it.
     Asked,
-    /// The newest release this computer keeps of the package, refreshed from its Hub.
+    /// The newest release its machine holds that isn't yanked.
+    Installed,
+    /// The Hub's newest: its machine holds none, so it installs this.
     Latest,
     /// Local code: its source as it is now.
     Local,
@@ -244,6 +249,7 @@ impl fmt::Display for ReleaseFrom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ReleaseFrom::Asked => "asked",
+            ReleaseFrom::Installed => "installed",
             ReleaseFrom::Latest => "the Hub's latest",
             ReleaseFrom::Local => "local",
         })
@@ -299,6 +305,9 @@ pub struct Run {
     pub target: String,
     pub hub: String,
     pub machine: Option<String>,
+    /// The project folder its outputs land in; none for what is no person's run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
     pub status: Status,
     #[serde(default)]
     pub cancel_requested: bool,
@@ -431,12 +440,21 @@ pub struct OutputItem {
     /// A checkpoint already written to TensorFS; it has no output bytes to export here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<crate::machine::CheckpointRef>,
+    /// Untyped bytes, such as a model's latents, of a run that made something else: its machine keeps them, they aren't
+    /// brought here unless something needs them, and nothing waits for them. A person isn't told of them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stays: bool,
 }
 
 impl OutputItem {
     /// A checkpoint reference needs no local byte export.
     pub fn is_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
+    }
+
+    /// Still owed to this computer: its last revision neither landed nor failed.
+    pub fn owed(&self) -> bool {
+        !self.is_checkpoint() && !self.stays && self.path.is_none() && self.export_error.is_none()
     }
 }
 
@@ -949,6 +967,9 @@ pub struct Environment {
     pub release: String,
     #[serde(default)]
     pub hub: String,
+    /// The cozy-runtime installed in it: the machine's, or a newer one its package needs.
+    #[serde(default)]
+    pub runtime: String,
     /// What it holds now: `installed`, `downloaded`, `imported`, `host` or `gpu`.
     #[serde(default)]
     pub level: String,

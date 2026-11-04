@@ -12,6 +12,7 @@
 //!   doubling wait, until nothing has moved for the stall rule ([`super::ask`]).
 
 use std::fs;
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::{BTreeMap, HashSet};
@@ -60,6 +61,8 @@ enum At {
 pub enum Payload {
     Bytes(Bytes),
     File(fs::File),
+    /// The next `.1` bytes of a file, from where it is positioned.
+    Part(fs::File, u64),
 }
 
 /// What [`upload_commit`] did: the commit, the closure's objects, and those it sent.
@@ -349,6 +352,7 @@ impl Endpoint {
                 let put = tokio::task::spawn_blocking(move || match payload {
                     Payload::Bytes(bytes) => store.put(&bytes[..], Some(&object)),
                     Payload::File(file) => store.put(file, Some(&object)),
+                    Payload::Part(file, length) => store.put(file.take(length), Some(&object)),
                 });
                 let put = put.await.map_err(|e| Refusal { code: Code::IO_FAILED, detail: e.to_string() })?;
                 put.map_err(crate::store::Error::refusal)?;
@@ -447,6 +451,7 @@ impl Endpoint {
                         let length = file.metadata().map_err(|e| crate::err::classify_io(ask.url, e))?.len();
                         Body::File { file, length, sent: [Arc::clone(&watch.moved), Arc::clone(&self.sent)] }
                     }
+                    Payload::Part(file, length) => Body::File { file, length, sent: [Arc::clone(&watch.moved), Arc::clone(&self.sent)] },
                 }),
                 None => None,
             };

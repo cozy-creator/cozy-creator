@@ -36,3 +36,27 @@ pub fn to_json(text: &str) -> Result<Value, String> {
         _ => Err("more than one YAML document".into()),
     }
 }
+
+/// The keys of the mapping at `path` in one YAML document, in the order the text writes them. JSON's maps have no order.
+pub fn keys(text: &str, path: &[&str]) -> Vec<String> {
+    fn scalar(node: &Yaml) -> Option<String> {
+        match node {
+            Yaml::Value(Scalar::String(s)) | Yaml::Representation(s, ..) => Some(s.to_string()),
+            Yaml::Value(Scalar::Integer(i)) => Some(i.to_string()),
+            Yaml::Value(Scalar::FloatingPoint(f)) => Some(f.into_inner().to_string()),
+            Yaml::Value(Scalar::Boolean(b)) => Some(b.to_string()),
+            _ => None,
+        }
+    }
+    let Ok(documents) = Yaml::load_from_str(text) else { return vec![] };
+    let Some(mut at) = documents.first() else { return vec![] };
+    for part in path {
+        let Yaml::Mapping(map) = at else { return vec![] };
+        let Some(next) = map.iter().find(|(key, _)| scalar(key).as_deref() == Some(*part)).map(|(_, value)| value) else { return vec![] };
+        at = next;
+    }
+    match at {
+        Yaml::Mapping(map) => map.iter().filter_map(|(key, _)| scalar(key)).collect(),
+        _ => vec![],
+    }
+}

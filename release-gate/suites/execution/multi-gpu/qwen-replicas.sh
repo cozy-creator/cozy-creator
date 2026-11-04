@@ -8,7 +8,7 @@ for i in 1 2 3 4; do
   [ -z "$ONLY" ] || [[ $ONLY == *",$n,"* ]] || continue
   p="This is an RGBA image with transparency. $OBJECT made of ${QM[i - 1]}, semi-transparent with soft reflections. The image has alpha channel and the background is transparent."
   printf '%s\t%s\n' "$n" "$p" >> prompts.tsv
-  run_submit "$OUT" "$n" run "$QR" --on "$M" seed:=$((R + 340 + i)) prompt="$p" --gpus=1 --out "$OUT/out/$n" > /dev/null
+  run_submit "$OUT" "$n" run "$QR" --on "$M" seed:=$((R + 340 + i)) prompt="$p" --gpus=1 > /dev/null
   QN+=("$n")
 done
 for n in "${QN[@]}"; do

@@ -155,6 +155,7 @@ impl Call<'_> {
             target,
             spec: spec.clone(),
             inputs,
+            held: vec![],
             out,
             warnings,
         }

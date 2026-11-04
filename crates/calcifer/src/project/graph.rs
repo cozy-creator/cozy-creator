@@ -1,20 +1,29 @@
-//! The project core, generic over project types: nodes with versions, edges from `<Name>` mentions
-//! and declared needs, states read and written in order (SSA), topological order and out of date.
-//! A type lists its nodes; nothing here knows what they depict.
-use std::collections::{BTreeMap, HashMap};
+//! What reads what, over any assets: names, `<mentions>`, and topological order.
+use serde_json::Value;
 
-use protocol::error::{Error, Kind};
-
-use super::folder::Lock;
-
-/// How a name matches a mention: any case, with `_`, `-` and space alike (xs-135).
+/// How a name matches a mention: any case, with `_` and `-` alike. Space folds with them, so a lock from before names lost theirs
+/// still finds its versions.
 pub fn name_key(name: &str) -> String {
     name.replace(['_', '-'], " ").split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-/// Every `<…>` in `text`, as written between its brackets, in order: no brackets or line break
-/// inside.
-pub fn mentions(text: &str) -> Vec<&str> {
+fn in_a_name(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+/// Whether `text` can be a name: only letters, digits, `_`, `-` and `.`.
+pub fn is_name(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(in_a_name)
+}
+
+/// `text` as it could be a name: what a name can't hold becomes `_`.
+pub fn as_name(text: &str) -> String {
+    let parts = text.split(|c| !in_a_name(c)).filter(|part| !part.is_empty());
+    parts.collect::<Vec<_>>().join("_")
+}
+
+/// Every `<…>` in `text`, as written between its brackets, in order: no brackets or line break inside.
+fn bracketed(text: &str) -> Vec<&str> {
     let mut found = vec![];
     let mut rest = text;
     while let Some(open) = rest.find('<') {
@@ -31,260 +40,84 @@ pub fn mentions(text: &str) -> Vec<&str> {
     found
 }
 
-/// One node as its type lists it.
-pub struct Node {
-    /// Unique by `name_key`.
-    pub id: String,
-    pub kind: &'static str,
-    /// What its alternatives are called: `take` (a shot's) or `version`.
-    pub noun: &'static str,
-    /// Whether `<id>` in a text names it.
-    pub mentionable: bool,
-    /// A state: its own version is revision 0; each ordered node that writes it makes the next.
-    pub state: bool,
-    /// An ordered node's position; states are read and written in this order.
-    pub order: Option<usize>,
-    /// Texts whose mentions are edges.
-    pub texts: Vec<String>,
-    /// Edges the type declares, by id.
-    pub needs: Vec<String>,
-    /// Edges a mention implies, by id: like a mention's, one that closes a cycle is left out.
-    pub implied: Vec<String>,
-    /// States it writes, by name.
-    pub writes: Vec<String>,
-    /// Files it reads that are no node's (a shot's plate, a character's voice), by a key and
-    /// their digest: a version made from another file is out of date.
-    pub inputs: Vec<(String, String)>,
-    /// The file it reads as now (relative to the project) and its digest: the asset project.yaml pins it to, else the approved
-    /// version's primary asset, else the newest's; None before the first version.
-    pub file: Option<(String, String)>,
-    /// Its versions' primary assets, in the order they were made.
-    pub versions: Vec<String>,
-    /// What the author wrote that reaches it, by field, each a digest (`Made::text`).
-    pub text: BTreeMap<String, String>,
-    /// Its own result is a file project.yaml names: that is what it reads, and nothing is made of it.
-    pub pinned: bool,
+/// Every mention in `text`: a `<…>` holding a name.
+pub fn mentions(text: &str) -> Vec<&str> {
+    bracketed(text).into_iter().filter(|text| is_name(text)).collect()
 }
 
-/// What a node reads from another: its current file, or the frame one of its versions wrote for a state.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Edge {
-    pub node: usize,
-    /// The state whose revision it reads from a writer; None reads the node's current file.
-    pub state: Option<String>,
+/// Every mention in any text under `value`.
+pub fn mentions_in(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => mentions(text).into_iter().map(str::to_owned).collect(),
+        Value::Array(items) => items.iter().flat_map(mentions_in).collect(),
+        Value::Object(fields) => fields.values().flat_map(mentions_in).collect(),
+        _ => vec![],
+    }
+}
+
+/// How many single-character edits turn `a` into `b`.
+pub fn edits(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, y) in b.iter().enumerate() {
+            let cost = if x == y { diagonal } else { diagonal.min(row[j]).min(row[j + 1]) + 1 };
+            diagonal = row[j + 1];
+            row[j + 1] = cost;
+        }
+    }
+    row[b.len()]
 }
 
 pub struct Graph {
-    pub nodes: Vec<Node>,
-    pub upstream: Vec<Vec<Edge>>,
-    /// Topological: every node after what it reads.
+    pub upstream: Vec<Vec<usize>>,
+    /// Topological: every asset after what it reads.
     pub order: Vec<usize>,
-    /// Mentions of no node: the node, and the mention as written.
-    pub unknown: Vec<(usize, String)>,
-    /// Mentions that would close a cycle, left out: the node, and the node it mentions.
+    /// Mentions that would close a cycle, left out: the reader, and what it mentions.
     pub closing: Vec<(usize, usize)>,
 }
 
-/// Whether a node's current file still follows from what it reads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    Current,
-    /// No version yet.
-    Empty,
-    /// Out of date, and why.
-    Stale(String),
-}
-
 impl Graph {
-    /// Resolves the nodes' edges and orders them; a duplicate name, an unknown need or a cycle of
-    /// what the type declares is refused, naming it. A mention that closes a cycle is left out, the
-    /// text staying as written (`closing`).
-    pub fn new(nodes: Vec<Node>) -> Result<Self, Error> {
-        let mut index = HashMap::new();
-        for (i, node) in nodes.iter().enumerate() {
-            if index.insert(name_key(&node.id), i).is_some() {
-                return Err(invalid("name_taken", format!("two nodes are named {}", node.id))
-                    .remedy("rename one: names match in any case, with `_`, `-` and space alike"));
-            }
-        }
-        let find = |name: &str| index.get(&name_key(name)).copied();
-        let (mut upstream, mut declared) = (vec![], vec![]);
-        let mut unknown = vec![];
-        for (i, node) in nodes.iter().enumerate() {
-            let mut edges: Vec<Edge> = vec![];
-            for need in &node.needs {
-                let j = find(need).ok_or_else(|| {
-                    invalid("node_unknown", format!("{} names {need}, which is no node", node.id))
-                })?;
-                edges.push(Edge { node: j, state: None });
-            }
-            declared.push(edges.clone());
-            for need in &node.implied {
-                let j = find(need).ok_or_else(|| {
-                    invalid("node_unknown", format!("{} names {need}, which is no node", node.id))
-                })?;
-                edges.push(Edge { node: j, state: None });
-            }
-            for written in &node.writes {
-                if !find(written).is_some_and(|s| nodes[s].state) || node.order.is_none() {
-                    return Err(invalid(
-                        "state_unknown",
-                        format!("{} writes {written}, which is no state it can write", node.id),
-                    )
-                    .remedy("`writes:` names world states, and only a shot writes them"));
-                }
-            }
-            for mention in node.texts.iter().flat_map(|text| mentions(text)) {
-                match find(mention).filter(|&j| nodes[j].mentionable && j != i) {
-                    Some(s) if nodes[s].state => edges.push(revision(&nodes, &find, node, s)),
-                    Some(j) => edges.push(Edge { node: j, state: None }),
-                    None if find(mention) == Some(i) => {}
-                    None => unknown.push((i, format!("<{mention}>"))),
-                }
-            }
-            let mut seen = vec![];
-            edges.retain(|edge| {
-                !seen.contains(edge) && {
-                    seen.push(edge.clone());
-                    true
-                }
-            });
-            upstream.push(edges);
-        }
+    /// Each asset's reads ordered; a mention that closes a cycle is left out, the text staying as written (`closing`), and
+    /// `fixed` (a revision's edge to its writer) goes last.
+    pub fn new(mut upstream: Vec<Vec<usize>>, fixed: &[Vec<usize>]) -> Self {
         let mut closing = vec![];
         let order = loop {
-            let cycle = match topological(&nodes, &upstream) {
+            let cycle = match topological(&upstream) {
                 Ok(order) => break order,
                 Err(cycle) => cycle,
             };
             // The step that closes it first, among those made only of mentions.
-            let steps = (0..cycle.len()).rev().map(|n| (cycle[n], cycle[(n + 1) % cycle.len()]));
-            let mentioned = |&(reader, read): &(usize, usize)| {
-                upstream[reader].iter().all(|edge: &Edge| edge.node != read || !declared[reader].contains(edge))
-            };
-            let Some((reader, read)) = steps.into_iter().find(mentioned) else {
-                // Each reads the next, so reversed it runs the way the files flow.
-                let mut names: Vec<&str> = cycle.iter().rev().map(|&i| nodes[i].id.as_str()).collect();
-                names.push(&nodes[*cycle.last().expect("a cycle")].id);
-                return Err(invalid("cycle", format!("a cycle: {} (each is made from the one before it)", names.join(" → ")))
-                    .remedy("remove the `frame:` that closes it"));
-            };
-            upstream[reader].retain(|edge| edge.node != read);
+            let steps: Vec<(usize, usize)> = (0..cycle.len()).rev().map(|n| (cycle[n], cycle[(n + 1) % cycle.len()])).collect();
+            let (reader, read) = steps.iter().copied().find(|(reader, read)| !fixed[*reader].contains(read)).unwrap_or(steps[0]);
+            upstream[reader].retain(|edge| *edge != read);
             closing.push((reader, read));
         };
-        Ok(Self { nodes, upstream, order, unknown, closing })
-    }
-
-    pub fn find(&self, name: &str) -> Option<usize> {
-        let key = name_key(name);
-        self.nodes.iter().position(|node| name_key(&node.id) == key)
-    }
-
-    /// What `edge` reads now, its path and sha256, if it has been made.
-    pub fn read(&self, lock: &Lock, edge: &Edge) -> Option<(String, String)> {
-        let (path, digest) = self.nodes[edge.node].file.as_ref()?;
-        match &edge.state {
-            None => Some((path.clone(), digest.clone())),
-            Some(state) => {
-                let frame = lock.made(&self.nodes[edge.node].id, path)?.writes.get(state)?;
-                Some((frame.path.clone(), frame.sha256.clone()))
-            }
-        }
-    }
-
-    /// Each node's status. A made one is out of date when its text changed since it was made or approved (`Made::text`), when
-    /// it read another file than its upstream holds now, or when something it reads is out of date. A pinned one never is.
-    pub fn status(&self, lock: &Lock) -> Vec<Status> {
-        let mut status = vec![Status::Empty; self.nodes.len()];
-        for &i in &self.order {
-            let node = &self.nodes[i];
-            let Some((path, _)) = &node.file else {
-                continue;
-            };
-            if node.pinned {
-                status[i] = Status::Current;
-                continue;
-            }
-            let Some(made) = lock.made(&node.id, path) else {
-                status[i] = Status::Current;
-                continue;
-            };
-            let Some(upstream) = made.upstream.as_ref() else {
-                status[i] = Status::Current;
-                continue;
-            };
-            let mut cause = made.text_changed(&node.text).then(|| "its text changed".to_owned());
-            for edge in &self.upstream[i] {
-                let (up, noun) = (&self.nodes[edge.node].id, self.nodes[edge.node].noun);
-                let read = self.read(lock, edge);
-                cause = cause.or(match &status[edge.node] {
-                    Status::Empty => Some(format!("{up} has no {noun}")),
-                    Status::Stale(_) => Some(format!("{up} is out of date")),
-                    Status::Current if read.is_none() => {
-                        Some(format!("{up} wrote no {}", edge.state.as_deref().unwrap_or("file")))
-                    }
-                    Status::Current => (!upstream.iter().any(|u| {
-                        name_key(&u.node) == name_key(up) && u.state == edge.state && Some(&u.asset) == read.as_ref().map(|(_, sha)| sha)
-                    }))
-                    .then(|| format!("{up} changed")),
-                });
-            }
-            for (key, digest) in &node.inputs {
-                let read = upstream.iter().any(|u| u.state.is_none() && &u.node == key && &u.asset == digest);
-                cause = cause.or_else(|| (!read).then(|| format!("{key} changed")));
-            }
-            status[i] = cause.map_or(Status::Current, Status::Stale);
-        }
-        status
-    }
-
-    /// Statuses by id, to say what an act put out of date.
-    pub fn by_id(&self, status: &[Status]) -> BTreeMap<String, Status> {
-        self.nodes.iter().zip(status).map(|(node, s)| (node.id.clone(), s.clone())).collect()
+        Self { upstream, order, closing }
     }
 }
 
-/// The revision of state `s` that `reader` reads: the latest write before it in order, else the
-/// state's own (revision 0).
-fn revision(nodes: &[Node], find: &impl Fn(&str) -> Option<usize>, reader: &Node, s: usize) -> Edge {
-    let before = |node: &Node| match (node.order, reader.order) {
-        (Some(written), Some(read)) => written < read,
-        _ => false,
-    };
-    let writer = (nodes.iter().enumerate())
-        .filter(|(_, node)| before(node) && node.writes.iter().any(|w| find(w) == Some(s)))
-        .max_by_key(|(_, node)| node.order);
-    match writer {
-        Some((w, _)) => Edge { node: w, state: Some(nodes[s].id.clone()) },
-        None => Edge { node: s, state: None },
-    }
-}
-
-/// Each node after what it reads, else in the order the type listed it; what is left over holds a
-/// cycle, returned as its nodes, each reading the next and the last the first.
-fn topological(nodes: &[Node], upstream: &[Vec<Edge>]) -> Result<Vec<usize>, Vec<usize>> {
-    let mut placed = vec![false; nodes.len()];
+/// Each asset after what it reads, else in file order; what is left over holds a cycle, returned as
+/// its assets, each reading the next and the last the first.
+fn topological(upstream: &[Vec<usize>]) -> Result<Vec<usize>, Vec<usize>> {
+    let mut placed = vec![false; upstream.len()];
     let mut order = vec![];
-    while let Some(i) = (0..nodes.len()).find(|&i| !placed[i] && upstream[i].iter().all(|edge| placed[edge.node]))
-    {
+    while let Some(i) = (0..upstream.len()).find(|&i| !placed[i] && upstream[i].iter().all(|&edge| placed[edge])) {
         placed[i] = true;
         order.push(i);
     }
-    let Some(start) = (0..nodes.len()).find(|&i| !placed[i]) else {
+    let Some(start) = (0..upstream.len()).find(|&i| !placed[i]) else {
         return Ok(order);
     };
     let mut path = vec![start];
     loop {
         let at = *path.last().expect("a path");
-        let up =
-            upstream[at].iter().map(|edge| edge.node).find(|&j| !placed[j]).expect("a node left over reads one");
+        let up = upstream[at].iter().copied().find(|&j| !placed[j]).expect("an asset left over reads one");
         if let Some(from) = path.iter().position(|&i| i == up) {
             return Err(path[from..].to_vec());
         }
         path.push(up);
     }
-}
-
-fn invalid(code: &str, message: String) -> Error {
-    Error::new(Kind::Validation, code, message)
 }

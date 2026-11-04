@@ -2,11 +2,14 @@
 //! content, so what the Hub holds is never sent again, and a killed transfer goes on from what landed.
 //! Push records them as a private commit of the account's one model `project-assets`: objects no commit
 //! reaches are swept within days, and a commit stays until its owner deletes it (`cozy model delete`).
+//! A file too big for one object goes as parts, each its own object, which project.lock lists.
 //! Each runs in its own task and says how it goes on the project's events: a client that goes stops
 //! following, never the work, and a stopping Calcifer waits for no transfer.
 use std::{
     fs::File,
     future::Future,
+    io::{Read as _, Seek as _, SeekFrom},
+    path::Path as FilePath,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -30,6 +33,7 @@ use protocol::{
     hub::At,
     project::{Event, Opened, Skipped, Transferred},
 };
+use sha2::{Digest as _, Sha256};
 use tensorfs::{
     err::{Code, Refusal as Failed},
     fetch::{self, Endpoint, Payload, SourcePolicy, TokenProvider, policy::is_loopback_origin, token::Request},
@@ -47,6 +51,8 @@ const LANE: &str = "project";
 const AT_ONCE: usize = 4;
 /// The most one object at the Hub can be (a single PUT to its storage).
 const MOST: u64 = 5 << 30;
+/// What a file over `MOST` is split into, so a killed transfer goes on from the part it reached.
+const PART: u64 = 1 << 30;
 /// How often a transfer says how far it is, between files.
 const TICK: Duration = Duration::from_secs(5);
 
@@ -124,52 +130,133 @@ impl Tally {
     }
 }
 
-/// The files `lock` names, by path, each with its sha256.
-fn named(project: &Project) -> Result<Vec<(String, String)>, Error> {
-    let lock = project.folder.lock()?;
-    Ok(lock.assets().into_iter().map(|(path, sha256)| (path.to_owned(), sha256.to_owned())).collect())
+/// The files project.lock names, but what stays on a machine and isn't here: that is no file of this computer or the Hub's.
+fn named(project: &Project) -> Result<Vec<folder::File>, Error> {
+    let at = &project.folder;
+    Ok(at.lock()?.files.into_values().filter(|file| !file.stays() || at.path(&file.path).is_file()).collect())
 }
 
-/// One file sent unless the Hub holds it; not on this computer, it need only be
-/// there. None: it is left out, which stops nothing else.
-async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, path: String, sha256: String) -> Result<Option<ObjectRef>, Failed> {
-    let file = project.folder.dir.join(&path);
-    let Ok(meta) = std::fs::metadata(&file) else {
-        let held = endpoint.object(&sha256).await?;
-        if held.is_none() {
-            tally.skip(path, "it is neither on this computer nor at the Hub".into());
+/// The sha256 of the file at `path`, and its parts.
+fn parts_of(path: &FilePath) -> std::io::Result<(String, Vec<ObjectRef>)> {
+    let mut file = File::open(path)?;
+    let (mut whole, mut parts, mut buffer) = (Sha256::new(), vec![], vec![0; 1 << 20]);
+    loop {
+        let (mut part, mut length) = (Sha256::new(), 0);
+        while length < PART {
+            let most = buffer.len().min((PART - length) as usize);
+            let read = file.read(&mut buffer[..most])?;
+            if read == 0 {
+                break;
+            }
+            whole.update(&buffer[..read]);
+            part.update(&buffer[..read]);
+            length += read as u64;
         }
-        return Ok(held);
-    };
-    if meta.len() > MOST {
-        tally.skip(path, format!("it is {} bytes, and the Hub holds files up to {MOST} (5 GiB)", meta.len()));
+        if length > 0 {
+            parts.push(ObjectRef { sha256: hex::encode(part.finalize()), length });
+        }
+        if length < PART {
+            return Ok((hex::encode(whole.finalize()), parts));
+        }
+    }
+}
+
+/// A file over `MOST`'s parts: those project.lock lists, else read from the file, checked against its
+/// sha256 and listed there, so a second push need not read it again. None: the file isn't its sha256.
+async fn split(project: &Project, file: &folder::File, at: &FilePath) -> Result<Option<Vec<ObjectRef>>, Failed> {
+    if !file.parts.is_empty() {
+        return Ok(Some(file.parts.clone()));
+    }
+    let reading = at.to_owned();
+    let (sha256, parts) = tokio::task::spawn_blocking(move || parts_of(&reading)).await.map_err(local)?.map_err(local)?;
+    if sha256 != hex(&file.sha256) {
         return Ok(None);
     }
-    let object = ObjectRef { sha256: hex(&sha256).to_owned(), length: meta.len() };
-    let payload = || File::open(&file).map(Payload::File).map_err(|e| local(format!("{}: {e}", file.display())));
-    if endpoint.upload(&object, &payload).await? {
-        tally.moved.fetch_add(1, Ordering::Relaxed);
-        let bytes = tally.bytes.fetch_add(object.length, Ordering::Relaxed) + object.length;
-        let _ = project.events.send(Event::Moved { file: Some(path), bytes });
+    let listed = |lock: &mut folder::Lock| {
+        if let Some(entry) = lock.files.get_mut(&file.sha256) {
+            entry.parts.clone_from(&parts);
+        }
+    };
+    project.folder.update_lock(listed).map_err(local)?;
+    Ok(Some(parts))
+}
+
+/// What the Hub holds of `file`: the objects it goes as, or None if any is not there.
+async fn held(endpoint: &Endpoint, file: &folder::File) -> Result<Option<Vec<ObjectRef>>, Failed> {
+    if file.parts.is_empty() {
+        return Ok(endpoint.object(&file.sha256).await?.map(|object| vec![object]));
     }
-    Ok(Some(object))
+    for part in &file.parts {
+        if endpoint.object(&part.sha256).await?.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(file.parts.clone()))
+}
+
+/// One file sent unless the Hub holds it; not on this computer, it need only be there. The objects
+/// it went as: none, it is left out, which stops nothing else.
+async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, file: folder::File) -> Result<Vec<ObjectRef>, Failed> {
+    let at = project.folder.dir.join(&file.path);
+    let Ok(meta) = std::fs::metadata(&at) else {
+        let held = held(endpoint, &file).await?;
+        if held.is_none() {
+            tally.skip(file.path, "it is neither on this computer nor at the Hub".into());
+        }
+        return Ok(held.unwrap_or_default());
+    };
+    let open = || File::open(&at).map_err(|e| local(format!("{}: {e}", at.display())));
+    let objects = match meta.len() > MOST {
+        true => match split(project, &file, &at).await? {
+            Some(parts) => parts,
+            None => {
+                tally.skip(file.path, "its bytes on this computer are not its sha256".into());
+                return Ok(vec![]);
+            }
+        },
+        false => vec![ObjectRef { sha256: hex(&file.sha256).to_owned(), length: meta.len() }],
+    };
+    let (mut moved, mut start) = (false, 0);
+    for object in &objects {
+        let payload = || {
+            let mut opened = open()?;
+            match objects.len() {
+                1 => Ok(Payload::File(opened)),
+                _ => {
+                    opened.seek(SeekFrom::Start(start)).map_err(|e| local(format!("{}: {e}", at.display())))?;
+                    Ok(Payload::Part(opened, object.length))
+                }
+            }
+        };
+        if endpoint.upload(object, &payload).await? {
+            moved = true;
+            tally.bytes.fetch_add(object.length, Ordering::Relaxed);
+        }
+        start += object.length;
+    }
+    if moved {
+        tally.moved.fetch_add(1, Ordering::Relaxed);
+        let bytes = tally.bytes.load(Ordering::Relaxed);
+        let _ = project.events.send(Event::Moved { file: Some(file.path), bytes });
+    }
+    Ok(objects)
 }
 
 /// Sends every file project.lock names that the Hub lacks, then records all it can as a commit.
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
-    let (assets, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
-    let files = assets.len() as u64;
-    let sending = stream::iter(assets)
-        .map(|(path, sha256)| send(project, endpoint, &tally, path, sha256))
+    let (named, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
+    let files = named.len() as u64;
+    let sending = stream::iter(named)
+        .map(|file| send(project, endpoint, &tally, file))
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();
     let objects = ticking(project, || endpoint.sent() - before, sending).await.map_err(failed)?;
     let objects: Vec<ObjectRef> = objects.into_iter().flatten().collect();
     let (mut kept_in, mut commit) = (None, None);
     if !objects.is_empty() {
-        let tree = objects.into_iter().map(|object| (format!("{}/{}", folder::ASSETS, object.sha256), object)).collect();
+        let tree = objects.into_iter().map(|object| (format!("{}/{}", folder::FILES, object.sha256), object)).collect();
         let name = format!("{account}/{MODEL}");
         let kept = keep(endpoint, &name, &tree).await.map_err(failed)?;
         (kept_in, commit) = (Some(name), Some(kept.id()));
@@ -194,8 +281,9 @@ async fn keep(endpoint: &Endpoint, name: &str, files: &std::collections::BTreeMa
 }
 
 /// One file fetched as a real file: from the bytes an earlier pull left, held to its digest, then named.
-async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, path: String, sha256: String) -> Result<(), Failed> {
-    let Some(object) = endpoint.object(&sha256).await? else {
+async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: folder::File) -> Result<(), Failed> {
+    let (path, sha256) = (wanted.path.clone(), wanted.sha256.clone());
+    let Some(objects) = held(endpoint, &wanted).await? else {
         tally.skip(path, "it is not at the Hub: cozy project push on the computer that has it".into());
         return Ok(());
     };
@@ -203,15 +291,21 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, path: Stri
     let part = at.with_file_name(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
     let named = |e: std::io::Error| local(format!("{}: {e}", part.display()));
     let file = File::options().create(true).truncate(false).write(true).open(&part).map_err(named)?;
+    let total: u64 = objects.iter().map(|object| object.length).sum();
     let from = file.metadata().map_err(named)?.len();
-    let from = if from > object.length { 0 } else { from };
+    let from = if from > total { 0 } else { from };
     file.set_len(from).map_err(named)?;
-    if from < object.length {
-        let mut landing = |start: u64, frame: &[u8]| {
-            tally.bytes.fetch_add(frame.len() as u64, Ordering::Relaxed);
-            file.write_all_at(frame, start).map_err(named)
-        };
-        endpoint.read(&object, from, &mut landing).await?;
+    let mut start = 0;
+    for object in &objects {
+        let end = start + object.length;
+        if from < end {
+            let mut landing = |within: u64, frame: &[u8]| {
+                tally.bytes.fetch_add(frame.len() as u64, Ordering::Relaxed);
+                file.write_all_at(frame, start + within).map_err(named)
+            };
+            endpoint.read(object, from.saturating_sub(start), &mut landing).await?;
+        }
+        start = end;
     }
     file.sync_all().map_err(named)?;
     drop(file);
@@ -227,15 +321,15 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, path: Stri
     Ok(())
 }
 
-/// Fetches every file project.lock names that `assets/` lacks.
+/// Fetches every file project.lock names that `files/` lacks.
 async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let _held = project.moving.lock().await;
-    let (dir, assets) = (&project.folder.dir, named(project)?);
-    let store = dir.join(folder::ASSETS);
+    let (dir, named) = (&project.folder.dir, named(project)?);
+    let store = dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", store.display())))?;
-    let (files, tally) = (assets.len() as u64, Tally::default());
-    let fetching = stream::iter(assets.into_iter().filter(|(path, _)| !dir.join(path).is_file()))
-        .map(|(path, sha256)| fetch(project, endpoint, &tally, path, sha256))
+    let (files, tally) = (named.len() as u64, Tally::default());
+    let fetching = stream::iter(named.into_iter().filter(|file| !dir.join(&file.path).is_file()))
+        .map(|file| fetch(project, endpoint, &tally, file))
         .buffer_unordered(AT_ONCE)
         .try_collect::<Vec<_>>();
     ticking(project, || tally.bytes.load(Ordering::Relaxed), fetching).await.map_err(failed)?;

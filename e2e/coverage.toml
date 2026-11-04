@@ -81,6 +81,9 @@ test = "pr: packages"
 ["package install"]
 test = "pr: packages"
 "--on" = "pr: packages"
+["package update"]
+test = "gate: tensord unversioned-installed"
+"--on" = "gate: tensord unversioned-installed"
 ["package remove"]
 test = "pr: packages"
 "--on" = "pr: packages"
@@ -148,7 +151,6 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--file-fidelity" = "pr: run flags"
 "--describe" = "pr: run flags, the contract and no run"
 "--warm" = "pr: run flags, each warm level and off"
-"--out" = "pr: BiRefNet on the CPU"
 "--on" = "pr: BiRefNet on the CPU"
 "--lane" = "pr: run flags"
 "--gpus" = "gate: cli cells"
@@ -161,6 +163,7 @@ test = "pr: a run followed, a snapshot, a cancel"
 test = "pr: run ls filters"
 "--state" = "pr: run ls filters"
 "--package" = "pr: run ls filters"
+"--all" = "pr: a project's runs, then every run"
 "--on" = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
@@ -182,27 +185,37 @@ test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
 test = "pr: projects: the index, a moved folder missing, a DELETEd one gone"
 
 ["project status"]
-test = "pr: projects: by -p from elsewhere; references changed and missing; a rename suggested"
+test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes"
 
 ["project render"]
-test = "pr: projects: render all from a subfolder, versions by local code, re-cuts from the cut cache"
+test = "pr: projects: only what has no state; reverting runs nothing; cuts; adapters; a world-state series"
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
-"--new" = "pr: projects: a current node stays without it; new takes, approved or not, with -n"
-"--take" = "pr: projects: keeps: the take a new take keeps the start of, one it doesn't have refused"
-"--in" = "pr: projects: keeps: where it lands, the whole shot under the shortest piece, the end past it, ignored with all"
-"--preview" = "gate: project (release-gate/suites/project/cells.sh): render all --preview"
+"--missing" = "pr: projects: only what has no state; reverting runs nothing"
+"--take" = "pr: projects: keeps: the take reaches the adapter as op.keep, one it doesn't have refused"
+"--in" = "pr: projects: keeps: where it lands, ignored with all"
+"--queue" = "pr: projects: three queued, one canceled, the rest land"
+
+["project cancel"]
+test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
 
 ["project import"]
-test = "pr: projects: a path and a URL as real assets, a type refused, what it says when it copies nothing"
-"--character" = "pr: projects: cleaned here, what reads the hash gets it, reused on a second import"
-"--prop" = "pr: projects: cleaned here, as --character"
+test = "pr: projects: a path and a URL as real files, a type refused, what it says when it copies nothing"
+"--remove-background" = "pr: a project's imports: already transparent, no machine; model: a real run"
+"--on" = "pr: a project's imports: no such machine"
 
 ["project approve"]
-test = "pr: projects: version 2 approved, only in project.lock"
+test = "pr: projects: one line of project.yaml, comments surviving, an edit just before it surviving"
+
+["project unpin"]
+test = "pr: projects: gives the file back, restoring an input the pin was over"
 
 ["project rename"]
-test = "pr: projects: place renamed yard, its versions and approval kept"
+test = "pr: projects: old renamed new, its versions kept, its reader out of date"
+
+["project reclaim"]
+test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering"
+"--yes" = "pr: projects: reclaim --yes"
 
 ["project push"]
 test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"

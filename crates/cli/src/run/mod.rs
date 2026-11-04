@@ -43,6 +43,9 @@ A run is followed to its end: Ctrl-C stops following, never the run; `cozy run s
 #[derive(clap::Args, Debug)]
 #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true, arg_required_else_help = true, after_help = EXAMPLES)]
 pub struct Args {
+    /// The project's folder, if not the one you are in. A run belongs to a project; `ls` lists that project's.
+    #[arg(short = 'p', value_name = "PATH", global = true)]
+    path: Option<PathBuf>,
     #[command(subcommand)]
     verb: Option<Verb>,
     #[command(flatten)]
@@ -83,9 +86,6 @@ struct RunArgs {
     /// names one of several (strength 1 by default).
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
-    /// Where the outputs land (default ~/.cozy/outputs).
-    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
-    out: Option<PathBuf>,
     /// Keep the function ready instead of running it.
     #[arg(long, value_enum, value_name = "LEVEL")]
     warm: Option<Warm>,
@@ -139,6 +139,9 @@ enum Verb {
         /// At most N runs (default 50; 0 shows all).
         #[arg(long, value_name = "N")]
         limit: Option<u64>,
+        /// Every project's runs, not this one's.
+        #[arg(long)]
+        all: bool,
     },
     /// One run: its result, outputs, calls, logs and how it ran. A run not yet settled is
     /// followed to its end (Ctrl-C stops following, never the run); its exit code is the run's.
@@ -178,17 +181,25 @@ fn run_state(text: &str) -> Result<String, String> {
 }
 
 pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
+    let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
+    // The project is the folder, as a repository is to git.
+    let within = match &args.path {
+        Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
+        None => cwd,
+    };
     match args.verb {
         Some(Verb::Ls {
             state,
             package,
             on,
             limit,
+            all,
         }) => {
             let query = list::Query {
                 status: state,
                 package,
                 machine: on,
+                project: holding(&within).filter(|_| !all),
                 before: None,
                 limit,
             };
@@ -209,30 +220,56 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             output,
             expires,
         }) => play::exec(ctx, &run, &output, &expires).await,
-        None => run(ctx, *args.run).await,
+        None => run(ctx, *args.run, within).await,
     }
 }
 
 
-async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
+async fn run(ctx: &Context, args: RunArgs, within: PathBuf) -> Result<ExitCode, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let target = args.target.clone().unwrap_or_default();
     let inputs = !args.inputs.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
-        return describe(ctx, &target, &cwd).await;
+        return describe(ctx, &target, &cwd, args.placement.on.as_deref()).await;
     }
-    let ask = request(ctx, &args, target.clone(), &cwd)?;
+    let ask = request(ctx, &args, target.clone(), &cwd, within)?;
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, &cwd).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, &cwd, args.placement.on.as_deref()).await,
         Err(e) => Err(e),
-        Ok(run) => Ok(exit_code(&run)),
+        Ok(run) => {
+            paste(ctx, &run);
+            Ok(exit_code(&run))
+        }
+    }
+}
+
+/// The project holding `path`: it, or the nearest folder above it with a project.yaml, as git finds its repository.
+fn holding(path: &Path) -> Option<PathBuf> {
+    let start = std::fs::canonicalize(path).ok()?;
+    start.ancestors().find(|dir| dir.join("project.yaml").is_file()).map(Path::to_owned)
+}
+
+/// One line per file a run left in its project, to paste into project.yaml: `image: 65b436d4f9a3`.
+pub(crate) fn paste(ctx: &Context, run: &Run) {
+    if ctx.json || run.project.is_none() {
+        return;
+    }
+    for output in follow::for_people(run) {
+        let Some(sha256) = output.path.as_ref().and(output.sha256.as_ref()) else { continue };
+        let field = match output.media_type.split('/').next() {
+            Some(kind @ ("image" | "video" | "audio")) => kind,
+            _ => output.name.as_str(),
+        };
+        let hex = sha256.to_string();
+        let hex = hex.trim_start_matches("sha256:");
+        println!("{field}: {}", &hex[..hex.len().min(12)]);
     }
 }
 
 /// The request `args` make of `target`.
-fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path) -> Result<RunRequest, Error> {
+fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: PathBuf) -> Result<RunRequest, Error> {
     Ok(RunRequest {
         target,
         // None: Calcifer's to say, by what this OS runs and the machines there are (`default_on`).
@@ -249,7 +286,7 @@ fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path) -> Result<
         lane: args.lane.clone(),
         attention_kernel: args.attention_kernel.clone(),
         warm: args.warm.map(Warm::level),
-        out: args.out.clone(),
+        project: Some(within),
         recipes: false,
         agreed: None,
     })
@@ -274,8 +311,8 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
 }
 
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
-async fn describe(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, cwd).await?;
+async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, cwd, on).await?;
     let interface = parsed(&target)?;
     let Some(function) = &target.function else {
         print_functions(ctx, &target, &interface);
@@ -305,15 +342,16 @@ async fn describe(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Erro
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-async fn functions(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, cwd).await?;
+async fn functions(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, cwd, on).await?;
     print_functions(ctx, &target, &parsed(&target)?);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, cwd: &Path) -> Result<Target, Error> {
+async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<Target, Error> {
     let cwd = cwd.to_string_lossy();
-    let query = [("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
+    let mut query = vec![("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
+    query.extend(on.map(|on| ("on", on)));
     ctx.calcifer().await?.get_query("/v1/targets", &query).await
 }
 

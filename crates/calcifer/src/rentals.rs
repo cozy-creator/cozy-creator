@@ -439,7 +439,7 @@ impl Machines {
     /// that does not answer is asked again under the same key, paced, so one ask buys at most one
     /// pod (the Hub answers a key it holds with that rental); `told` hears the first answer, or
     /// that there was none. Until it stops ([`Self::withdraw`]): it buys nothing more once `cozy
-    /// machine end` stopped it or the run it was made for ended.
+    /// machine end` stopped it, the run it was made for ended, or [`ORDER_OPEN_FOR`] passed.
     async fn ask_hub(
         self: &Arc<Self>,
         ask: &Ask,
@@ -458,6 +458,9 @@ impl Machines {
         }
         let _asking = Asking(self, &ask.key);
         loop {
+            if self.past_open(ask)? {
+                self.stop_order(ask.clone())?;
+            }
             if self.withdrawn(ask)? {
                 let stopped = self.withdraw(ask).await;
                 tell(&stopped);
@@ -567,6 +570,12 @@ impl Machines {
         }
     }
 
+    /// Whether `ask` was made longer than [`ORDER_OPEN_FOR`] ago.
+    fn past_open(&self, ask: &Ask) -> Result<bool, Error> {
+        let asked_at = self.store().ask_made_at(&ask.key).map_err(internal)?;
+        Ok(asked_at.is_some_and(|at| crate::store::now_ms() - at > ORDER_OPEN_FOR.as_millis() as i64))
+    }
+
     /// Whether `ask` is to buy nothing more: stopped by `cozy machine end`, or its run has ended.
     fn withdrawn(&self, ask: &Ask) -> Result<bool, Error> {
         let stopped = (self.store().ask(&ask.key).map_err(internal)?)
@@ -585,7 +594,7 @@ impl Machines {
         let mut pause = Duration::ZERO;
         loop {
             let listed = match self.hubs.client(&ask.hub) {
-                Ok(client) => client.list_rentals("live").await.map_err(|e| hub_refusal(&ask.hub, e)),
+                Ok(client) => within(client.list_rentals("live")).await.map_err(|e| hub_refusal(&ask.hub, e)),
                 Err(e) => Err(e),
             };
             match listed {
@@ -684,7 +693,7 @@ impl Machines {
     async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Error> {
         let client = self.hubs.client(&ask.hub)?;
         let request = RentBody::of(ask)?.request;
-        client.create_rental(&ask.key, &request).await.map_err(|e| hub_refusal(&ask.hub, e))
+        within(client.create_rental(&ask.key, &request)).await.map_err(|e| hub_refusal(&ask.hub, e))
     }
 
     /// Rents a machine for an unplaced run (`--on new[:<sku>]`) under a key the run names, so a
@@ -1068,7 +1077,7 @@ impl Machines {
             lists.spawn(async move { me.list_hub(&origin).await });
         }
         lists.join_all().await;
-        let _ = tokio::time::timeout(HUB_READ, self.hubs.learn()).await;
+        let _ = tokio::time::timeout(HUB_ANSWER, self.hubs.learn()).await;
         self.calcifer.machine_changed();
     }
 
@@ -1289,7 +1298,7 @@ impl Machines {
                 Err(e) => return settle(Err(e.message)),
             };
             if !released {
-                let release = client.release_rental(&id).await;
+                let release = within(client.release_rental(&id)).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     Ok(_) => released = true,
                     Err(e) if e.kind == Kind::NotFound => {
@@ -1307,7 +1316,7 @@ impl Machines {
                 }
             }
             if released {
-                match client.get_rental(&id).await {
+                match within(client.get_rental(&id)).await {
                     Ok(rental) => {
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
                         self.hubs.seen(&ask.hub, rental);
@@ -1429,8 +1438,12 @@ struct RentBody {
     stopped: bool,
 }
 
+/// How long an order stays open while its Hub doesn't answer. Past it nobody is waiting on the
+/// order, and an outage's end should not buy a pod for it.
+const ORDER_OPEN_FOR: Duration = Duration::from_secs(3600);
+
 /// Why a stopped order ended.
-const STOPPED: &str = "the order was stopped before its Hub answered; nothing bills for it";
+const STOPPED: &str = "the order stopped before its Hub answered (`cozy machine end`, its run's end, or an hour unanswered); nothing bills for it";
 
 /// One ask in flight: its loop's place, and what was said of it, are gone with it.
 struct Asking<'a>(&'a Machines, &'a str);
@@ -1477,15 +1490,16 @@ fn quote_of(quote: &types::RentalQuote) -> Quote {
 /// How long a Hub may take over one read for `cozy machine ls`. A Hub working on an answer sends
 /// nothing, so there is no progress to measure: this is TensorFS's stall floor (`fetch::ask`), and
 /// what TensorD allows its own Hub calls.
-const HUB_READ: Duration = Duration::from_secs(30);
+const HUB_ANSWER: Duration = Duration::from_secs(30);
 
-/// `read`, unanswered as the Hub being unreachable once [`HUB_READ`] has passed.
+/// `call`, unanswered as the Hub being unreachable once [`HUB_ANSWER`] has passed: a Hub that takes a
+/// request and never answers holds no loop, and a call asked again under its key is the same call.
 async fn within<T>(
-    read: impl Future<Output = Result<T, hub_client::Error>>,
+    call: impl Future<Output = Result<T, hub_client::Error>>,
 ) -> Result<T, hub_client::Error> {
-    match tokio::time::timeout(HUB_READ, read).await {
+    match tokio::time::timeout(HUB_ANSWER, call).await {
         Ok(answer) => answer,
-        Err(_) => Err(hub_client::Error::Call(format!("no answer in {} s", HUB_READ.as_secs()))),
+        Err(_) => Err(hub_client::Error::Call(format!("no answer in {} s", HUB_ANSWER.as_secs()))),
     }
 }
 

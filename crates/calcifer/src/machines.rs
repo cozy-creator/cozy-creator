@@ -269,6 +269,20 @@ impl Machines {
         self.picture(&row)
     }
 
+    /// The name of the machine a run `on` goes to and the environments it holds now, its Status
+    /// read now since an install that just settled may not have reached the stream: `local` starts
+    /// for it, and `any` is the rental it would take now. None for a machine still to come.
+    pub(crate) async fn holds(self: &Arc<Self>, on: &On) -> Option<(String, Vec<v1::Environment>)> {
+        let text = match on {
+            On::Machine(text) => text.clone(),
+            On::Any => self.fitting(0).ok()??,
+            On::New(_) => return None,
+        };
+        let name = self.show(&text).await.ok()?.name;
+        let frame = self.frame(&name)?;
+        Some((name, frame.environments))
+    }
+
     /// Adds another computer's machine: it must present the leaf `fingerprint` names and admit
     /// this controller's key before anything is recorded.
     pub async fn add(
@@ -1669,6 +1683,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                 package: env.package.clone(),
                 release: env.release.clone(),
                 hub: hubs.named(&env.hub),
+                runtime: env.runtime.clone(),
                 level: env.level.clone(),
                 warning: env.warning.clone(),
             })

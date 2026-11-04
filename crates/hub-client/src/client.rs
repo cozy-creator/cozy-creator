@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use reqwest::header::{ACCEPT, ETAG, HeaderName, HeaderValue, IF_NONE_MATCH};
+use reqwest::header::{ACCEPT, HeaderName, HeaderValue};
 use reqwest::{Method, Request, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -339,30 +339,6 @@ impl Client {
     pub async fn get_package(&self, org: &str, name: &str) -> Result<PackageCard, Error> {
         self.json(self.at(Method::GET, "/v1/packages/{org}/{name}", &[org, name]))
             .await
-    }
-
-    /// `get_package` unless the card of `etag` is still current: None for unchanged (304), else
-    /// the card and its ETag.
-    pub async fn get_package_if_changed(
-        &self,
-        org: &str,
-        name: &str,
-        etag: Option<&str>,
-    ) -> Result<Option<(PackageCard, Option<String>)>, Error> {
-        let mut request = self.at(Method::GET, "/v1/packages/{org}/{name}", &[org, name]);
-        if let Some(etag) = etag {
-            request = request.header(IF_NONE_MATCH, etag);
-        }
-        let response = self.send(request).await?;
-        if response.status() == StatusCode::NOT_MODIFIED {
-            return Ok(None);
-        }
-        let etag = response
-            .headers()
-            .get(ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        Ok(Some((read(response).await?, etag)))
     }
 
     pub async fn delete_package(&self, org: &str, name: &str) -> Result<PackageDeletion, Error> {

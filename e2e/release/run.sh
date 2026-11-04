@@ -63,6 +63,7 @@ watched() {
 }
 
 if [ -z "$INSTALLED" ]; then step install; install_cozy; user_services; step candidates; candidates; fi
+run_project "$OUT/project" || fail "cozy project new failed"
 
 step sign-in
 if [ -n "$KEY" ]; then sign_in "$KEY" > "$OUT/login.json" || fail "cozy login --key failed: $(head -c 300 "$OUT/login.json")"; fi
@@ -132,6 +133,13 @@ sed -i.orig 's/^version = "0.2.0"/version = "0.3.0"/' "$dir/pyproject.toml" && r
 (cd "$dir" && cozy --json package lock > /dev/null && cozy --json package publish --yanked > "$OUT/publish-3.json") || check "package publish --yanked 0.3.0 failed"
 J '.status == "published yanked"' "$OUT/publish-3.json" || check "package publish --yanked: $(jq -r .status "$OUT/publish-3.json")"
 [[ $(resolves candidate) == *@0.2.0* ]] || check "package publish --yanked: the publisher's next unversioned run took the candidate"
+# A release its machine still holds and the Hub no longer has, as after a renumbering (birefnet 0.5.3 over 0.1.3): never chosen (cl-748).
+cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-renumber.json" || check "package delete, to renumber, failed"
+sed -i.orig 's/^version = "0.3.0"/version = "0.1.0"/' "$dir/pyproject.toml" && rm -f "$dir/pyproject.toml.orig"
+(cd "$dir" && cozy --json package lock > /dev/null && cozy --json package publish > "$OUT/publish-4.json") || check "package publish 0.1.0 again failed"
+cozy --json package ls --on "$ON" | J --arg p "fidika/$pkg" '.packages | any(.package == $p and .release == "0.2.0")' || check "the machine no longer holds 0.2.0, so this proves nothing"
+[[ $(resolves renumbered) == *@0.1.0* ]] || check "an unversioned run took a release the Hub no longer has: $(tail -c 300 "$OUT/resolve-renumbered.err")"
+[ "$(run_get "$OUT" resolve-renumbered .status)" = completed ] || check "an unversioned run, with a release the Hub no longer has held: $(run_get "$OUT" resolve-renumbered '.reason.message' | head -c 300)"
 cozy --json package delete "fidika/$pkg" -y > "$OUT/pkg-delete.json" || check "package delete failed"
 ! cozy --json package info "fidika/$pkg" > /dev/null 2>&1 || check "package delete: fidika/$pkg still answers"
 
@@ -172,10 +180,11 @@ step "BiRefNet on $M"
 watched install-birefnet package install birefnet --on "$M" \
   || check "package install birefnet --on $M failed: $(run_get "$OUT" install-birefnet '.reason.message' | head -c 300)"
 cozy --json package ls --on "$M" > "$OUT/packages-rental.json" && grep -q birefnet "$OUT/packages-rental.json" || check "package ls --on $M: no birefnet"
-# A request file beside its image, in a folder named with spaces and non-ASCII; its output lands in another such folder.
+# A request file beside its image, in a folder named with spaces and non-ASCII; its output lands in a project in another such folder.
 far="$OUT/in dir é ü" landing="$OUT/out dir é ü"
 mkdir -p "$far" && cp "$(picture dog1.jpg)" "$far/chien é.jpg" && printf 'image: chien é.jpg\n' > "$far/request é.yaml"
-if watched birefnet-yaml run birefnet/remove_background --input "$far/request é.yaml" --on "$M" --out "$landing"; then
+cozy project new "$landing" > /dev/null || check "project new '$landing' failed"
+if RUN_PROJECT=$landing watched birefnet-yaml run birefnet/remove_background --input "$far/request é.yaml" --on "$M"; then
   out=$(run_output "$OUT" birefnet-yaml webp)
   [[ $out == *"out dir é ü"* ]] && [ -s "$out" ] || check "birefnet-yaml: its output did not land in '$landing' (${out:-none})"
   white_background "$out" "$far/chien é.jpg" || check "birefnet-yaml: not a background removal"
@@ -206,7 +215,7 @@ fi
 run_wait "$OUT" cancel-wait || true
 
 step "an end while a run goes"
-(cd "$here/../cli" && cozy --json run ./weightless/wait seconds:=600 --on "$M" > "$OUT/rental-wait.ndjson" 2>&1) &
+(cd "$here/../cli" && cozy --json run -p "$RUN_PROJECT" ./weightless/wait seconds:=600 --on "$M" > "$OUT/rental-wait.ndjson" 2>&1) &
 going=$!
 until run_reached "$OUT/rental-wait.ndjson" in_progress || ! kill -0 "$going" 2> /dev/null; do sleep 0.2; done
 # `machine end` returns once the Hub affirms the pod gone.

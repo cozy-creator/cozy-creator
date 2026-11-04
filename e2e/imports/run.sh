@@ -17,7 +17,7 @@
 parse "$@"
 PROBE=$(cd "$(dirname "$0")" && pwd)/probe.py PAGING=$(cd "$(dirname "$0")" && pwd)/paging.py
 
-step install; install_cozy
+step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
 user_services
 step "the local machine"; machine_ready
 step candidates; candidates

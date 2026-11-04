@@ -156,6 +156,13 @@ impl Machines {
             payload.insert("mode".into(), mode.name().into());
         }
         let mut warnings = vec![];
+        // A dev build says the release it was built from, so `--tensord` naming that looks like no
+        // change. It replaces the dev build, and says so.
+        if let Some(status) = m.status.as_ref().filter(|status| status.dev)
+            && let Some(release) = payload.get("tensord").and_then(Value::as_str).filter(|_| !inputs.iter().any(|input: &v1::InputFile| input.field == "tensord"))
+        {
+            warnings.push(format!("{} runs a dev build of cozy {}: `--tensord {release}` replaces it with the release; without `--tensord` it stays", m.name, status.version));
+        }
         // Binary, limit and mode changes all use the ordinary drain and restart.
         let warm = m.status.as_ref().is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()));
         if (restarts || ask.gpu_memory_limit.is_some() || ask.mode.is_some()) && warm {
@@ -175,6 +182,7 @@ impl Machines {
                 ..Default::default()
             },
             inputs: staged,
+            held: vec![],
             out: None,
             warnings: vec![],
         };
@@ -299,10 +307,7 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
     if pypi.status().is_success() {
         return Ok(None);
     }
-    let base = match distribution {
-        "cozy_runtime" => format!("https://github.com/cozy-creator/cozy-runtime/releases/download/v{version}"),
-        _ => format!("https://github.com/cozy-creator/cozy-creator/releases/download/tensorfs-v{version}"),
-    };
+    let base = protocol::prerelease::base(distribution, version);
     let sums = http.get(format!("{base}/SHA256SUMS")).send().await.map_err(failed)?;
     if !sums.status().is_success() {
         return Err(Error::new(
@@ -312,29 +317,10 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
         ));
     }
     let sums = sums.text().await.map_err(failed)?;
-    let prefix = format!("{distribution}-{version}-");
-    let wheels: Vec<(&str, &str)> = sums
-        .lines()
-        .filter_map(|line| line.split_once(char::is_whitespace))
-        .map(|(sha256, file)| (sha256.trim(), file.trim().trim_start_matches('*')))
-        .filter(|(sha256, file)| sha256.len() == 64 && file.starts_with(&prefix) && file.ends_with(".whl"))
-        .collect();
-    let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
-    // A version-specific (`cp310-cp310`) wheel fits one Python only; the stable-ABI one fits all.
-    let native = |file: &str| file.contains("-abi3-") && match (os, arch) {
-        ("linux", arch) => file.contains("manylinux") && file.contains(arch),
-        ("macos", "aarch64") => file.contains("macosx") && file.contains("arm64"),
-        ("macos", arch) => file.contains("macosx") && file.contains(arch),
-        ("windows", "x86_64") => file.contains("win_amd64"),
-        ("windows", _) => file.contains("win_arm64"),
-        _ => false,
-    };
-    let chosen = (wheels.iter().find(|(_, file)| native(file)))
-        .or_else(|| wheels.iter().find(|(_, file)| file.ends_with("-none-any.whl")))
-        .ok_or_else(|| {
-            Error::new(Kind::NotFound, "release_wheel_absent", format!("{project} {version}'s prerelease holds no wheel for {platform}"))
-        })?;
-    Ok(Some((format!("{base}/{}", chosen.1), chosen.0.to_owned())))
+    let (file, sha256) = protocol::prerelease::wheel(&sums, distribution, version, platform).ok_or_else(|| {
+        Error::new(Kind::NotFound, "release_wheel_absent", format!("{project} {version}'s prerelease holds no wheel for {platform}"))
+    })?;
+    Ok(Some((format!("{base}/{file}"), sha256.to_owned())))
 }
 
 fn submission_identity(submit: &SubmitRun, originals: &[std::path::PathBuf]) -> String {

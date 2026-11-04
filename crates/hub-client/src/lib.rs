@@ -7,7 +7,6 @@
 pub mod cards;
 mod client;
 mod device;
-pub mod latest;
 pub mod types;
 pub mod workload;
 

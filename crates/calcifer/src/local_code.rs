@@ -475,7 +475,7 @@ pub async fn source(
         .map(|m| (m.name.as_str(), m.digest.as_str()))
         .collect();
     let environment = serde_json::json!({"files": built, "indexes": manifest.indexes,
-        "python": manifest.python_requires});
+        "python": manifest.python_requires, "path": manifest.path});
     let environment = Digest::of(environment.to_string().as_bytes());
     let document = serde_json::to_vec(&manifest).map_err(|e| refuse("local_source_invalid", e))?;
     let digest = Digest::of(&document);
@@ -791,6 +791,7 @@ pub fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun
         target,
         spec,
         inputs: source.inputs.clone(),
+        held: vec![],
         out: None,
         warnings: vec![],
     }

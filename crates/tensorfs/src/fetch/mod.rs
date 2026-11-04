@@ -76,6 +76,9 @@ pub trait ObjectStore: Send + Sync + 'static {
     /// The one door for `object`: its bytes in order, then `commit`, which hashes them and
     /// refuses anything but `object` (`OBJECT_ID_MISMATCH`, naming the digest it got).
     fn admit(&self, object: &ObjectRef) -> Result<Box<dyn Admission>>;
+    /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
+    /// another holds it now.
+    fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>>;
 }
 
 /// One object on its way into a store.

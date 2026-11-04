@@ -78,7 +78,7 @@ record() {
   [ -n "$n" ] || { echo "no run"; return; }
   case $1 in
     -) cozy run show "$n" --once --json ;;
-    *) sh "$1" "cozy run show $n --once --json" ;;
+    *) sh "$1" "cd /root/session && cozy run show $n --once --json" ;;
   esac > "$OUT/$2.json" 2>&1
   jq -r '.status // empty' "$OUT/$2.json"
 }
@@ -120,16 +120,18 @@ turns() {
   jq -rs 'sort_by(.started_at_ms) as [$x, $y] |
     "accepted \(((map(.accepted_at_ms) | max) - (map(.accepted_at_ms) | min)) / 1000) s apart; run \($x.number) executed \($x.started_at_ms) to \($x.settled_at_ms), run \($y.number) from \($y.started_at_ms) (\(if $y.started_at_ms < $x.settled_at_ms then "overlapping" else "\($y.started_at_ms - $x.settled_at_ms) ms after" end))"' "$OUT/$1.json" "$OUT/$2.json"
 }
+# A run belongs to a project, on A as here.
+on "$A" project "cozy project new /root/session" || fail "A: cozy project new"
 # Round 1, cold: SDXL from the runner and BiRefNet from A's shell, sent together.
 step a1-remote run sdxl/generate --on "$A" prompt="a brass telescope on a windowsill at dawn, photo" seed:=$SEED & P=$!
-on "$A" a1-local "cozy run birefnet/remove_background --file image=/root/seed.jpg" & Q=$!
+on "$A" a1-local "cd /root/session && cozy run birefnet/remove_background --file image=/root/seed.jpg" & Q=$!
 wait $P; wait $Q
 completed - a1-remote || fail "a1: the runner's run on A did not complete"
 completed "$A" a1-local || fail "a1: A's own run did not complete"
 say "a1: $(turns a1-remote a1-local)"
 # Round 2, warm, the models swapped between the two controllers.
 step a2-remote run birefnet/remove_background --on "$A" --file image="$REF/seed.jpg" & P=$!
-on "$A" a2-local "cozy run sdxl/generate prompt='a paper boat on a puddle after rain, macro photo' seed:=$((SEED + 1))" & Q=$!
+on "$A" a2-local "cd /root/session && cozy run sdxl/generate prompt='a paper boat on a puddle after rain, macro photo' seed:=$((SEED + 1))" & Q=$!
 wait $P; wait $Q
 completed - a2-remote || fail "a2: the runner's run on A did not complete"
 completed "$A" a2-local || fail "a2: A's own run did not complete"
@@ -179,11 +181,11 @@ on "$A" b-self "cozy machine add self $(jq -r .address "$OUT/show0.json") --fing
 grep -q machine_is_local "$OUT/b-self.txt" || grep -q machine_unreachable "$OUT/b-self.txt" ||
   fail "b: A's add of itself was not refused as local: $(tail -2 "$OUT/b-self.txt")"
 grep -q machine_unreachable "$OUT/b-self.txt" && say "b: A cannot reach its own public address here (no hairpin): the add of itself is not tested"
-on "$A" b-run "cozy run sdxl/generate --on b prompt='a sleeping cat on a coil of ship rope, oil painting' seed:=$((SEED + 2))"
+on "$A" b-run "cd /root/session && cozy run sdxl/generate --on b prompt='a sleeping cat on a coil of ship rope, oil painting' seed:=$((SEED + 2))"
 completed "$A" b-run || fail "b: A's run on B did not complete"
 on "$B" b-remove "cozy machine authorize $KEY --remove" || fail "b: authorize --remove on B"
 t=$(date +%s)
-on "$A" b-removed "timeout 120 cozy run sdxl/generate --on b prompt='a fox asleep under a fern, ink drawing' seed:=$((SEED + 7))"
+on "$A" b-removed "cd /root/session && timeout 120 cozy run sdxl/generate --on b prompt='a fox asleep under a fern, ink drawing' seed:=$((SEED + 7))"
 [ "$(record "$A" b-removed)" = failed ] && jq -e '.reason.code == "machine_unauthorized"' "$OUT/b-removed.json" > /dev/null ||
   fail "b: a run from A after B removed its key was not refused: $(jq -c '{status, reason}' "$OUT/b-removed.json")"
 say "b: after --remove, A's next run on B was refused in $(($(date +%s) - t)) s"
@@ -201,7 +203,7 @@ update "$A" "$OLD" "$OLD"
 end_calcifer "$A"
 on "$A" c1-version 'cozy --version; cozy machine ls' || fail "c1: cozy $OLD on A"
 [ "$(calcifer_on "$A")" = "$OLD" ] || fail "c1: A's Calcifer runs $(calcifer_on "$A"), not $OLD"
-on "$A" c1-run "cozy run sdxl/generate --on b prompt='a tin robot watering a bonsai, studio photo' seed:=$((SEED + 3))"
+on "$A" c1-run "cd /root/session && cozy run sdxl/generate --on b prompt='a tin robot watering a bonsai, studio photo' seed:=$((SEED + 3))"
 completed "$A" c1-run || fail "c1: A on $OLD did not run on B on $NEW"
 # A back on the session's cozy; its shell's Calcifer still runs $OLD and starts a run on B with the binary it runs.
 update "$A" "$(command -v cozy)" "$NEW"
@@ -219,13 +221,13 @@ say "c: run $N from A's Calcifer on $OLD is running on B; the next command on A"
 on "$A" c-restart 'cozy machine ls' || fail "c: the first command after the update"
 grep -q "restarting it on $NEW" "$OUT/c-restart.txt" || fail "c: the command did not restart Calcifer: $(head -3 "$OUT/c-restart.txt")"
 [ "$(calcifer_on "$A")" = "$NEW" ] || fail "c: A's Calcifer runs $(calcifer_on "$A") after the restart, not $NEW"
-on "$A" c-inflight "cozy run show $N"
-s=$(sh "$A" "cozy run show $N --once --json" | jq -r .status)
+on "$A" c-inflight "cd /root/session && cozy run show $N"
+s=$(sh "$A" "cd /root/session && cozy run show $N --once --json" | jq -r .status)
 [ "$s" = completed ] || fail "c: run $N, going while Calcifer restarted, is $s"
 say "c: A's Calcifer restarted itself on $NEW at the next command; run $N, going on B through it, completed"
 update "$B" "$OLD" "$OLD"
 t=$(date +%s)
-on "$A" c2-run "timeout 300 cozy run sdxl/generate --on b prompt='an origami crane on a stack of old maps, photo' seed:=$((SEED + 4))"
+on "$A" c2-run "cd /root/session && timeout 300 cozy run sdxl/generate --on b prompt='an origami crane on a stack of old maps, photo' seed:=$((SEED + 4))"
 t=$(($(date +%s) - t)); c2=$(record "$A" c2-run)
 case $c2 in
   completed) say "c2: A on $NEW ran on B on $OLD" ;;

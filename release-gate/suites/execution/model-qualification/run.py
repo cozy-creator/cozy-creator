@@ -277,6 +277,10 @@ def main():
         archive = output / f"report-before-resume-{time.time_ns()}.json"
         write(archive, previous)
         report["resumed_from"] = str(archive)
+    # A run belongs to a project.
+    project = output / "project"
+    if not (project / "project.yaml").is_file():
+        subprocess.run([cozy, "project", "new", str(project)], check=True, stdout=subprocess.DEVNULL)
     try:
         before = read_snapshot(
             cozy, output, "machine-before", ["machine", "show", args.machine]
@@ -340,8 +344,8 @@ def main():
                         "--on",
                         args.machine,
                         "--gpus=1",
-                        "--out",
-                        str(directory / "assets"),
+                        "-p",
+                        str(project),
                     ],
                 )
                 write(

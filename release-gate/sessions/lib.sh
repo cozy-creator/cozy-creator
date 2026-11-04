@@ -6,7 +6,7 @@
 # checkouts), REF (release-gate/ref).
 # Every failure is handled here (the trap ends the rental), not by bash -e.
 set +e -uo pipefail
-mkdir -p "$OUT"; R=$OUT/results.txt
+mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
 RC=0 RID='' NAME='' WD='' BG='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
@@ -40,8 +40,11 @@ trap finish EXIT
 trap 'RC=1; exit 1' INT TERM HUP
 # step <name> <cozy args…>: one call followed to its end (looked at each second, its output every 30 s); output that
 # stops growing for 15 min cancels it.
+# A run belongs to a project: this session's, wherever the session has gone (`step` names it; a direct `cozy run` says -p).
+RUN_PROJECT=$OUT/project
+[ -f "$RUN_PROJECT/project.yaml" ] || cozy project new "$RUN_PROJECT" > /dev/null 2>> "$OUT/project.err" || fail "cozy project new: $(cat "$OUT/project.err")"
 step() {
-  local n=$1; shift; say "step $n: cozy $*"
+  local n=$1; shift; [ "$1" != run ] || set -- "$@" -p "$RUN_PROJECT"; say "step $n: cozy $*"
   cozy "$@" > "$OUT/$n.txt" 2>&1 & local p=$! last=-1 still=0 size t=0
   while kill -0 "$p" 2>/dev/null; do
     sleep 1; t=$((t + 1)); [ $((t % 30)) = 0 ] || continue

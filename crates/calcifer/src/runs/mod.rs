@@ -1,5 +1,5 @@
 //! Runs as people ask for them (`POST /v1/runs`): the target resolved on its Hub (the card and the
-//! newest release this computer keeps), the request bound against the function's interface, input
+//! release its machine holds, else its Hub's newest), the request bound against the function's interface, input
 //! files sniffed, hashed and staged, video segments cut, and the machine's RunSpec built. Every
 //! client sends the same unbound request; none builds a spec.
 use std::{
@@ -86,16 +86,20 @@ pub(crate) struct Asked {
     hub: Option<String>,
     #[serde(default)]
     cwd: Option<PathBuf>,
+    /// The machine a run would go to.
+    #[serde(default)]
+    on: Option<String>,
 }
 
-/// `GET /v1/targets?target=`: what a run of the target calls, as `POST /v1/runs` resolves it.
+/// `GET /v1/targets?target=`: what a run of the target `on` its machine calls, as `POST /v1/runs` resolves it.
 pub(crate) async fn describe(
     State(api): State<Arc<Api>>,
     query: Result<Query<Asked>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<protocol::calcifer::Target>, Refusal> {
     let Query(asked) = query?;
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
-    let resolved = target::describe(&api, &hub, &asked.target, asked.cwd.as_deref()).await.map_err(Refusal)?;
+    let on = asked.on.map_or_else(|| default_on(&api), On::from);
+    let resolved = target::describe(&api, &hub, &asked.target, asked.cwd.as_deref(), &on).await.map_err(Refusal)?;
     Ok(Json(resolved))
 }
 
@@ -217,6 +221,9 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         Resolved::Release { .. } => vec![],
     };
     let (submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
+    if let Resolved::Release { moved: Some(moved), .. } = &resolved {
+        notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
+    }
     if !left.is_empty() {
         notes.push(Note { level: NoteLevel::Warning, message: format!("left out of the code it runs: {}", left.join(", ")) });
     }
@@ -276,11 +283,21 @@ async fn call(
     }
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
+    // A person's run belongs to a project, as a commit to a repository. Keeping a function warm and `cozy model quantize` are no one's run.
+    let project = ask.project.as_deref().and_then(crate::project::holding_folder);
+    if project.is_none() && ask.warm.is_none() && !ask.recipes {
+        return Err(crate::project::not_in_one());
+    }
+    // `--file image=65b436d4f9a3` names a file of the project's by its hash.
+    let mut files = vec![];
+    for term in &ask.files {
+        files.push(crate::project::file_term(&api.calcifer, project.as_deref(), term).await?);
+    }
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
         input_file: ask.input_file.clone(),
-        assets: ask.files.clone(),
+        assets: files,
         fidelities: ask.fidelities.clone(),
         loras: ask.loras.clone(),
         key: key.to_owned(),
@@ -324,7 +341,7 @@ async fn call(
             if let Some(warning) = gpuless(api, &code.on, code.interface, callable, &target).await {
                 notes.push(Note { level: NoteLevel::Warning, message: warning });
             }
-            let out = ask.out.as_ref().map(|dir| terms.place(dir)).transpose()?;
+            let out = project.as_deref().map(crate::project::landing);
             (call.spec(&bound)?, Some(bound), out)
         }
     };

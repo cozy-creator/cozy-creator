@@ -170,6 +170,7 @@ async fn retire(
                 ..Default::default()
             },
             inputs: vec![],
+            held: vec![],
             out: None,
             warnings: vec![],
         };

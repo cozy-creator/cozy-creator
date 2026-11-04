@@ -1,5 +1,5 @@
-"""A parent gives its own saved files to its child (cr-251): the child reads the bytes the parent saved. Everything else
-stays refused: a file of another attempt, and a call whose wire lies about what the parent holds, as a package could."""
+"""A parent gives its own saved files to its child (cr-251), a labeled copy of one too (cr-256, H3 labels its pictures): the
+child reads the bytes the parent saved. Everything else stays refused: a file of another attempt, and a call whose wire lies about what the parent holds, as a package could."""
 
 from __future__ import annotations
 
@@ -67,6 +67,8 @@ class Result(msgspec.Struct):
     image: ImageFile
     saved_picture: str
     seen_picture: Seen
+    saved_labeled: str
+    seen_labeled: Seen
     saved_blob: str
     seen_blob: Seen
     #: Each refusal's code; "" had it been let through.
@@ -97,6 +99,9 @@ def wire_code(saved: SavedFile) -> str:
 async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
     image = out.save_image(Image.new("RGB", (64, 48), (200, 40, 40)))
     seen_picture = await see_picture(payload=Picture(picture=image))
+    # A frame not encoded yet, labeled before it is: the copy never hears of its bytes.
+    labeled = out.save_image(Image.new("RGB", (32, 24), (40, 200, 40)))
+    seen_labeled = await see_picture(payload=Picture(picture=labeled.with_label("Picture 1")))
     data = os.urandom(4096)
     blob = out.save_bytes(data, media_type="application/octet-stream")
     seen_blob = await see_blob(payload=Blob(file=blob))
@@ -114,6 +119,8 @@ async def main(ctx: Context, payload: Nothing, out: Outputs) -> Result:
         image=image,
         saved_picture=sha(image._local.read_bytes()),
         seen_picture=seen_picture,
+        saved_labeled=sha(labeled._local.read_bytes()),
+        seen_labeled=seen_labeled,
         saved_blob=sha(data),
         seen_blob=seen_blob,
         other_attempt=await code_of(lambda: see_blob(payload=Blob(file=foreign))),

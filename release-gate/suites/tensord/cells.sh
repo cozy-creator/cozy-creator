@@ -4,13 +4,13 @@ T=$OUT/tensord; mkdir -p "$T"
 # --only names none of this suite: nothing here runs, only --cells (a suite's rows are not cells, so cell() can't skip them).
 [ -z "$ONLY" ] || [[ $ONLY == *,tensord* ]] || return 0
 # Local code's environment stays whole through reclaim's passes, 10 minutes apart: its own wheels were deleted while it ran (cl-724: 26176, 26187).
-links_resolve() { nice -n 19 "$CLI" run "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
+links_resolve() { nice -n 19 "$CLI" run -p "$RUN_PROJECT" "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
 LINKS_AT=$(date +%s); LINKS_FIRST=$(links_resolve)
 # submit <target> [inputs]: a run on $M (e2e/run.sh's run_submit), followed in the background; prints its number. Its
-# files are $T/run-*.{ndjson,json,...} and its outputs $T/out/run-*, named in $T/<number>.name.
+# files are $T/run-*.{ndjson,json,...}, named in $T/<number>.name.
 submit() {
   local nm n; nm=$(basename "$(mktemp -u "$T/run-XXXXXX")")
-  n=$(run_submit "$T" "$nm" run "$@" --on "$M" --out "$T/out/$nm") && [ -n "$n" ] && echo "$nm" > "$T/$n.name" && echo "$n"
+  n=$(run_submit "$T" "$nm" run "$@" --on "$M") && [ -n "$n" ] && echo "$nm" > "$T/$n.name" && echo "$n"
 }
 nm() { cat "$T/$1.name" 2>/dev/null; }
 # get <run> <field>: the run's record, now (status, machine_state, reason, attempt, executor, gpus, window, ms, stage, output,
@@ -22,7 +22,7 @@ get() {
     executor) q=.measurements.execution.executor.started_unix_ms;;
     gpus) q='[.measurements | .. | objects | select((.gpu | type) == "number" and .gpu >= 0) | .gpu] | unique | map(tostring) | join(",")';;
     window) q='"\(.accepted_at_ms // 0) \(.settled_at_ms // 0)"';; stage) q=.progress.stage;;
-    output) q=.output[0].path;; length) q=.output[0].length;;
+    output) q=.output[0].path;; length) q=.output[0].length;; target) q=.target;;
   esac
   run_show "$T" "$(nm "$1")" "$1"; run_get "$T" "$(nm "$1")" "$q"
 }
@@ -51,6 +51,19 @@ if [[ " $a " == *" anima@$AOLD "* && " $b " == *" anima@$ANEW "* && " $c " == *"
   expect tensord-generations PASS "anima $AOLD installed, updated to $ANEW (run $n1), rolled back to $AOLD (run $n2)"
 else
   expect tensord-generations FAIL "installed [$a] updated [$b] rolled back [$c]; run $n1 $(get "$n1" status) $(get "$n1" reason), run $n2 $(get "$n2" status) $(get "$n2" reason)"
+fi
+# An unversioned run stays on what the machine holds and `package update` moves it, with nothing published (cl-748).
+read -r newest older <<< "$(released anima)"
+if [ -n "$older" ]; then
+  "$CLI" package remove anima --on "$M" -y > "$T/unversioned-remove.log" 2>&1
+  "$CLI" package install "anima@$older" --on "$M" -y > "$T/unversioned-install.log" 2>&1
+  n1=$(submit anima/generate prompt="masterpiece, anime illustration of $CHAR, whatever is installed" seed:=$((R + 37))); until_status "$n1" terminal
+  "$CLI" package update anima --on "$M" -y > "$T/unversioned-update.log" 2>&1
+  n2=$(submit anima/generate prompt="masterpiece, anime illustration of $SCENE, after the update" seed:=$((R + 38))); until_status "$n2" terminal
+  t1=$(get "$n1" target) t2=$(get "$n2" target)
+  [[ $t1 == *"@$older" && $t2 == *"@$newest" ]] && [ "$(get "$n1" status)$(get "$n2" status)" = completedcompleted ] \
+    && expect tensord-unversioned-installed PASS "anima $older installed: run $n1 took it; package update: run $n2 took $newest" \
+    || expect tensord-unversioned-installed FAIL "with $older installed run $n1 took $t1 ($(get "$n1" status)); updated, run $n2 took $t2 ($(get "$n2" status))"
 fi
 if [ -n "$RWF$TWF" ]; then
   # Back to the last release (PyPI's newest Runtime and TensorFS, which the machine fetches by version).
@@ -145,7 +158,7 @@ fi
 
 # Output delivery: an output's landing against this computer's own download speed (5.9 MB took 4 min on 10-23).
 link=$(curl -sfL -o /dev/null -w '%{speed_download}' "https://github.com/cozy-creator/cozy-creator/releases/latest/download/cozy-x86_64-unknown-linux-gnu.tar.gz")
-"$CLI" --json run "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
+"$CLI" --json run -p "$RUN_PROJECT" "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
   | while IFS= read -r l; do jq -c --arg t "$(date +%s.%N)" '. + {at_here: ($t | tonumber)}' <<< "$l" 2>/dev/null; done > "$T/delivery.ndjson"
 end=$(date +%s.%N)
 read -r done_ bytes <<< "$(jq -r 'select(.type == "output_item.done") | "\(.at_here) \(.item.length)"' "$T/delivery.ndjson" | tail -1)"

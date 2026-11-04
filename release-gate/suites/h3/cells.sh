@@ -161,7 +161,7 @@ fi
 # generate or piece calls (generate runs one call per piece).
 named() {
   [ -f "$2.number" ] || return 0
-  local k; k=$(jq --arg l "$LORA" '[.calls[]? | select(.function | test("^generate|_piece$")) | select(tostring | contains($l))] | length' "$OUT/$2.json" 2>/dev/null)
+  local k; k=$(jq --arg l "$LORA" '[.calls[]? | select(.function | test("^generate|_piece$|_segment$")) | select(tostring | contains($l))] | length' "$OUT/$2.json" 2>/dev/null)
   expect "$1" "$([ "${k:-0}" -ge "$3" ] && echo PASS || echo FAIL)" "$LORA named in ${k:-0} generate call(s), want >= $3"
 }
 named h3-lora-named h3-lora 1
@@ -314,8 +314,9 @@ cell latents-shot "$SHOT" prompt=$'[Shot 1] A lighthouse keeper in a yellow oils
   style="soft watercolor, muted greens" \
   duration_s:=5 resolution=768p seed:=$((R + 98))
 if [ -f latents-shot.number ] && [ "$(run_get "$OUT" latents-shot .status)" = completed ]; then
-  lv=$(video_of latents-shot); lt=$(run_get "$OUT" latents-shot '.output[]? | select(.name == "latents") | .path')
-  expect latents-delivered "$([ -n "$lt" ] && [ -e "$lt" ] && echo PASS || echo FAIL)" "latents ${lt:-none}"
+  # Its latents stay on its machine: by their hash, which `--file` fetches here when it's asked for them.
+  lv=$(video_of latents-shot); lt=$(run_get "$OUT" latents-shot '.output[]? | select(.name == "latents") | .sha256'); lt=${lt#sha256:}
+  expect latents-delivered "$([ -n "$lt" ] && echo PASS || echo FAIL)" "latents ${lt:-none}"
   if [ -n "$lt" ]; then
     cell latents-upscale "$UP" --file video="$lv" --file latents="$lt" resolution=1080p 'upscale:={"model": "regenerate-2k"}' \
       preset=balanced seed:=$((R + 99))
@@ -333,10 +334,10 @@ ONLY=$SAVED
 # back, its head as latents-shot made it (the C2 proof's head SSIM was 0.989 at its lowest, runs 25270/25271), and the
 # join holds as a piece boundary does (span_seams' bar). It names no picture: the package starts it from the video's
 # last frame (h3a-098; 0.3.0 refused this request, run 25881).
-if [ -n "${lt:-}" ] && [ -e "$lt" ]; then
+if [ -n "${lt:-}" ]; then
   cell h3-continue "$SHOT" prompt=$'[Shot 1] In the lamp room of a stone lighthouse, a lighthouse keeper in a yellow oilskin sets down his lantern.\nAt 00:07.000, he lights the great lamp; its beam sweeps out over the dark sea.' \
     style="soft watercolor, muted greens" \
-    duration_s:=10 seed:=$((R + 94)) continue_from:="{\"video\": \"$lv\", \"latents\": \"$lt\"}"
+    duration_s:=10 seed:=$((R + 94)) --file continue_from.video="$lv" --file continue_from.latents="$lt"
   if [ -f h3-continue.number ] && [ "$(run_get "$OUT" h3-continue .status)" = completed ]; then
     # The head is latents-shot's frames, counted (its container duration runs a little past its last frame, and a
     # trim to it took the first continued frame too: 25905's 0.899 was frame 124, the head's own lowest 0.980).

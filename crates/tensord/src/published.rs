@@ -100,7 +100,8 @@ pub struct Request {
     /// The run's Hub: a release and a Hub-named model need it; held code and models do not.
     pub source: Option<hub::Source>,
     pub package: String,
-    /// Empty: the Hub's newest, as it named it under `catalog_revision`.
+    /// Empty: the newest this signer holds, else the Hub's newest. Whether a held one was yanked
+    /// is its controller's to know: Calcifer names a release.
     pub release: String,
     /// Unpublished code this machine already holds, in place of the release.
     pub installed: Option<Installation>,
@@ -293,8 +294,6 @@ pub struct Publisher {
     building: Mutex<HashMap<String, String>>,
     /// This machine's PyTorch layer once read (`layer`).
     layer: Mutex<Option<Arc<layer::Layer>>>,
-    /// The machine's software updates: a package needing a newer Runtime gets one (`environment`).
-    updates: Option<Arc<crate::machine::update::Updates>>,
 }
 
 /// An identity's builder, forgotten however the build ends.
@@ -306,7 +305,7 @@ impl Drop for Building<'_> {
 }
 
 impl Publisher {
-    pub fn new(sdk: PackageSdk, machine: Arc<Machine>, updates: Option<Arc<crate::machine::update::Updates>>) -> Arc<Self> {
+    pub fn new(sdk: PackageSdk, machine: Arc<Machine>) -> Arc<Self> {
         Arc::new(Self {
             sdk,
             store: machine.store().clone(),
@@ -314,7 +313,6 @@ impl Publisher {
             making: Mutex::new(HashMap::new()),
             building: Mutex::new(HashMap::new()),
             layer: Mutex::default(),
-            updates,
         })
     }
 
@@ -737,33 +735,21 @@ impl Publisher {
         Ok((named, moved))
     }
 
-    /// The installation a request names. An unnamed release is the one the Hub named under
-    /// the caller's catalog revision (`newest`), so a warm run asks the Hub nothing.
-    fn alias(&self, service: &Service, request: &Request) -> io::Result<String> {
+    /// The installation a request names. An unnamed release is the newest this signer holds, so
+    /// a machine holding one asks the Hub nothing.
+    fn alias(&self, service: &Service, actor: &str, request: &Request) -> io::Result<String> {
         if let Some(installed) = &request.installed {
             return Ok(installed.alias.clone());
         }
-        let release = match (request.release.is_empty(), request.catalog_revision.is_empty()) {
-            (true, false) => service.engine.with_journal(|j| j.named(&newest_key(request), &request.catalog_revision))?.unwrap_or_default(),
-            _ => request.release.clone(),
-        };
-        Ok(self.release_alias(request, &release))
-    }
-
-    /// The Hub's newest release of the request's package, journaled per catalog revision as a
-    /// model's name is (`resolve`): a moved revision asks once more. No revision names no catalog
-    /// state, so that ask is the Hub's every time: kept, its first answer would stand forever.
-    fn newest(&self, service: &Service, request: &Request, catalog: &Catalog, org: &str, name: &str) -> Result<String, Failure> {
-        let (key, revision) = (newest_key(request), &request.catalog_revision);
-        if revision.is_empty() {
-            return newest_release(catalog, org, name);
+        if request.release.is_empty() {
+            let origin = request.origin();
+            let held = service.engine.installations(actor)?;
+            let ours = held.iter().filter(|i| i.package == request.package && (i.hub.is_empty() || i.hub == origin));
+            if let Some(newest) = tensorfs::format::newest_by(ours, |i| i.release.as_str()) {
+                return Ok(newest.alias.clone());
+            }
         }
-        if let Some(held) = service.engine.with_journal(|j| j.named(&key, revision)).map_err(io_failure)? {
-            return Ok(held);
-        }
-        let release = newest_release(catalog, org, name)?;
-        service.engine.with_journal(|j| j.bind_named(&key, revision, &release)).map_err(io_failure)?;
-        Ok(release)
+        Ok(self.release_alias(request, &request.release))
     }
 
     /// An earlier environment of this release here, which kept its card beside it (`CARD`): an
@@ -851,7 +837,7 @@ impl Publisher {
     ) -> io::Result<Option<Prepared>> {
         let held = match &request.installed {
             Some(installed) => Some(installed.clone()),
-            None => service.engine.installation(actor, &self.alias(service, request)?)?,
+            None => service.engine.installation(actor, &self.alias(service, actor, request)?)?,
         };
         let Some(installation) = held else {
             return Ok(None);
@@ -906,7 +892,7 @@ impl Publisher {
             Some(installed) => Some(installed.clone()),
             None => service
                 .engine
-                .installation(actor, &self.alias(service, request).map_err(io_failure)?)
+                .installation(actor, &self.alias(service, actor, request).map_err(io_failure)?)
                 .map_err(io_failure)?,
         };
         let installation = match held {
@@ -946,8 +932,8 @@ impl Publisher {
 
     /// The request's release installed for this signer: its card and locked requirements as an
     /// earlier installation of it kept them, else read at its Hub by name (th-245); the Hub's
-    /// newest release when it names none (`newest`). An installation of that release this
-    /// signer holds already is the answer.
+    /// newest release when it names none. An installation of that release this signer holds
+    /// already is the answer.
     fn install(
         &self,
         service: &Service,
@@ -962,7 +948,7 @@ impl Publisher {
         let source = request.hub("a release")?;
         let catalog = || Catalog::new(source).map_err(|e| ("catalog_read_failed", e.0));
         let release = match request.release.is_empty() {
-            true => self.newest(service, request, &catalog()?, org, name)?,
+            true => newest_release(&catalog()?, org, name)?,
             false => request.release.clone(),
         };
         // The layer first: the alias names its pins.
@@ -1684,12 +1670,6 @@ fn install_stage(package: &str, release: &str, before: Option<&BTreeMap<String, 
         false => format!("updating {package} {release} on this machine: {}", moved.join(", ")),
     }
 }
-
-/// The journal name of an unnamed release of the request's package at its Hub.
-fn newest_key(request: &Request) -> String {
-    json!(["newest", request.origin(), request.package]).to_string()
-}
-
 
 /// What installing a release reads of it, from its install plan: its interface and Python, its
 /// exact pyproject and uv.lock, and the wheels its Hub hosts for it (its project wheel and carried

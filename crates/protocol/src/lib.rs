@@ -14,6 +14,7 @@ pub mod ids;
 pub mod machine;
 pub mod model_ref;
 pub mod names;
+pub mod prerelease;
 pub mod project;
 pub mod report;
 pub mod stage;

@@ -53,6 +53,8 @@ pub struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
     pub projects: crate::project::Projects,
+    /// What this computer last read of each package's releases.
+    pub(crate) releases: crate::runs::target::Releases,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
     /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
@@ -77,6 +79,7 @@ impl Api {
             calcifer,
             machines,
             projects: Default::default(),
+            releases: Default::default(),
             codes: Default::default(),
             works: Default::default(),
             hosts: [
@@ -457,6 +460,8 @@ struct Listing {
     package: Option<String>,
     /// A machine's name, former name or rental id, as a run's `--on` names it.
     machine: Option<String>,
+    /// A folder: the runs of the project holding it; in none, all of them.
+    project: Option<std::path::PathBuf>,
     before: Option<u64>,
     limit: Option<u64>,
 }
@@ -481,6 +486,7 @@ async fn list(
         status: listing.status,
         target: listing.package,
         machine: machine.clone(),
+        out_dir: listing.project.as_deref().and_then(crate::project::landing_within),
         before: listing.before,
         limit: listing.limit.unwrap_or(50).clamp(1, 1000),
     })?;
