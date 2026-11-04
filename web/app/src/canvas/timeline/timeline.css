@@ -1,5 +1,6 @@
 /* The Edit: a picture over a filmstrip. At rest it's its picture, in the same place, so a hover moves nothing. */
 .card.tl-rests .media {
+  width: 100%;
   height: 332px;
 }
 .tl {
@@ -20,13 +21,14 @@
   right: 0;
   bottom: 0;
   height: 3px;
+  overflow: hidden;
   background: #fff2;
 }
 .tl-rendering i {
   display: block;
   height: 100%;
   background: var(--ember);
-  transition: width 0.2s;
+  transition: transform 0.2s;
 }
 .tl-monitor {
   position: relative;

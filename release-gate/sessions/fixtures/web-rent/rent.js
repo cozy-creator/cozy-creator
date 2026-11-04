@@ -215,6 +215,7 @@ async function use(name, work) {
       await page.goto(machines);
       await page.waitForSelector('.switcher select');
       await until('it can be looked at', () => page.locator('.switcher option').allTextContents(), (names) => names.includes(name));
+      const doorOpened = Date.now();
       await Promise.all([page.waitForEvent('load'), page.selectOption('.switcher select', name)]);
       await page.waitForSelector('.top');
       // Its rows, not the drawer's words: the switcher itself says `local` before anything has come through the door.
@@ -222,7 +223,12 @@ async function use(name, work) {
       check('its_world_has_the_pod_as_local', rows.join() === 'local', rows);
       check('which_calcifer_shows', (await page.textContent('.top')).includes(`On ${name}`));
       check('no_rent_on_a_pod', (await page.locator('.sku').count()) === 0);
+      check('no_add_on_a_pod', (await page.locator('summary:text-is("Add another computer")').count()) === 0);
       await shot('switched');
+      // How long a fresh pod's Calcifer takes to list the tools, as a person waits for them, and that they come.
+      await until('its tools', () => page.locator('.tools .tool').count(), (n) => n > 0, 120_000);
+      seen.tools_through_the_door = { ms: Date.now() - doorOpened, tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() };
+      await shot('switched-tools');
       await Promise.all([page.waitForEvent('load'), page.selectOption('.switcher select', '')]);
       await page.waitForSelector('.top');
     });

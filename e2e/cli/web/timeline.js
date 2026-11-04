@@ -285,6 +285,30 @@ function plate(path, color, seconds, hz) {
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
   await openEdit();
 
+  // Its right click: the film's shape and size, as a render makes them, and a rate that keeps every clip's times.
+  const setting = async (label, value) => {
+    await card('Edit').locator('.nm').click({ button: 'right' });
+    await page.selectOption(`.asset-menu select[aria-label="${label}"]`, value);
+    await page.keyboard.press('Escape');
+  };
+  await setting('Aspect ratio', '1:1');
+  await setting('Resolution', '720p');
+  await until('both in the file', async () => (await edit()).fields, (fields) => fields.aspect_ratio === '1:1' && fields.resolution === '720p');
+  const shaped = (await edit()).versions;
+  await render();
+  await landed(shaped + 1);
+  const size = probe(film, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0');
+  check('menu_shapes_the_film', size === '720,720', size);
+  const timed = (await edit()).fields.timeline.tracks[0].clips;
+  await setting('Frame rate', String(FPS * 2));
+  const retimed = await until('the rate in the file', async () => (await edit()).fields, (fields) => fields.fps === FPS * 2);
+  check('rate_keeps_times', retimed.timeline.tracks[0].clips.every((clip, i) => ['in', 'out', 'frames'].every((point) => (timed[i][point] === undefined ? clip[point] === undefined : clip[point] === timed[i][point] * 2))), { timed, retimed: retimed.timeline });
+  await setting('Frame rate', String(FPS));
+  await setting('Aspect ratio', '');
+  await setting('Resolution', '');
+  await until('back as it was', async () => (await edit()).fields, (fields) => fields.fps === FPS && fields.aspect_ratio === undefined && fields.resolution === undefined);
+  await openEdit();
+
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
   await card('red').locator('.head').hover();
   await card('red').locator('button[aria-label="Delete"]').click();

@@ -20,6 +20,7 @@ import { useConnection } from "../app/Connection"
 import { loadSelection, loadToolsShut, loadViewport, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../types"
 import { say } from "../ui/notes"
+import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
@@ -52,17 +53,21 @@ function ProjectSync({ id }: { id: string }) {
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
+  const tools = useSignal(store.tools)
   useEffect(() => {
     if (state) store.applyState(state)
-    // A tool an asset names that the list didn't hold, asked for by its name, once.
+  }, [store, state])
+  useEffect(() => {
+    // A tool an asset names that the list didn't hold, asked for by its name, once. Before the list has come, that would be all of them.
+    if (!tools.size) return
     for (const tool of new Set(state?.assets.flatMap((asset) => asset.tool ?? []))) {
-      if (madeHere(tool) || asked.current.has(tool) || store.tools.get().has(tool)) continue
+      if (madeHere(tool) || asked.current.has(tool) || tools.has(tool)) continue
       asked.current.add(tool)
       // Local code is listed only once something names it, so the list is read again. Anything else can be searched for.
       if (/^[./~\\]|^\w:[\\/]/.test(tool)) void queries.invalidateQueries({ queryKey: ["tools"] })
       else client.tools(tool.split("/").slice(0, -1).join(" "), null, id).then(({ tools }) => store.addTools(tools), () => {})
     }
-  }, [store, client, id, queries, state])
+  }, [store, client, id, queries, state, tools])
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards)
   }, [store, canvas])

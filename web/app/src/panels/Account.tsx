@@ -97,7 +97,7 @@ function SignIn({ onSignedIn, keyRefused, needsName }: { onSignedIn: () => void;
   return (
     <>
       {keyRefused && <p className="warn">The Hub no longer accepts this computer's key: it was revoked from another computer.</p>}
-      <p className="muted">Signing in lets this computer rent machines, publish and yank, and read what's private to you. Public packages and models work without it, and so do machines you already have.</p>
+      <p className="muted">Sign in to rent machines and read what's private to you.</p>
       <form className="row" onSubmit={submit}>
         <input className="field" type="email" autoComplete="email" aria-label="Your email" placeholder="Your email" spellCheck={false} value={email} onChange={(event) => setEmail(event.target.value)} />
         <button type="submit" className="tb primary" disabled={send.busy || !email.trim()}>
@@ -214,7 +214,7 @@ export function Account() {
   if (remote) {
     return (
       <DrawerFrame title="Account">
-        <p className="muted">{remote}'s own Calcifer never signs in: no account's key goes to a pod. Public packages and models work there, and an account is this computer's.</p>
+        <p className="muted">{remote} never signs in. An account is this computer's.</p>
         <button type="button" className="tb" onClick={() => chooseCalcifer(null)}>
           Back to this computer
         </button>

@@ -8,7 +8,7 @@ import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { Icon, type IconName } from "../ui/Icon"
 import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
-import { clock, lineOf } from "./text"
+import { clock, lineOf, withMentions } from "./text"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -331,7 +331,19 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
-      {blank && words && <p className="words">{words}</p>}
+      {blank && words && (
+        <p className="words">
+          {withMentions(words).map((part, i) =>
+            part.mention ? (
+              <span key={i} className={`chip ${asset?.missing?.includes(part.text.slice(1, -1)) ? "missing" : ""}`}>
+                {part.text.slice(1, -1)}
+              </span>
+            ) : (
+              part.text
+            ),
+          )}
+        </p>
+      )}
       {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}
       {glyph && (

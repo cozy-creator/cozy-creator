@@ -249,10 +249,14 @@ code {
 .react-flow__node.selected {
   z-index: 1000 !important;
 }
+/* Picked up, it's only the picture. */
 .react-flow__node.dragging .card {
   transform: scale(1.015);
   opacity: 0.94;
   will-change: transform;
+}
+.react-flow__node.dragging .asset-more {
+  display: none;
 }
 .head {
   display: flex;

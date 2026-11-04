@@ -90,7 +90,7 @@ function Order({ machines }: { machines: Machine[] }) {
               {warning}
             </p>
           ))}
-          <p>It bills until you end it and the Hub affirms it gone, or after 15 minutes idle.</p>
+          <p>It bills until you end it, or after 15 minutes idle.</p>
           {pending && <p className="warn">{pending.name} is still booting. One order at a time.</p>}
           {!now.quote.agreed && <p className="warn">This Calcifer didn't say what's agreed at this price, so it can't be ordered from here.</p>}
           <div className="row">
@@ -159,7 +159,7 @@ export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: bo
           <Link className="more" to={to("account")}>
             Sign in
           </Link>{" "}
-          to rent: a rental bills your account. The prices are here either way.
+          to rent.
         </p>
       )}
       <Failure error={error} lead="The Hub didn't list its machines" />

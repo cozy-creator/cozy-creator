@@ -398,6 +398,22 @@ function linesOf(text, name) {
     await dropBox('Other', 1100, 600);
     await render('Other', 1);
 
+    // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
+    const asker = join(__dirname, '..', 'project', 'tool.py');
+    replaceFile(yamlAt, `${yaml().trimEnd()}\n  asker:\n    kind: image\n    render: {with: ${asker}}\n`);
+    await box('asker').waitFor();
+    await open('source-b');
+    const beforeCaption = yaml();
+    await box('source-b').locator('button:text-is("Caption")').click();
+    const typed = box('source-b').locator('.desc-open .mention-text');
+    await typed.waitFor({ timeout: FIRST_RUN_MS });
+    check('caption_in_the_field', (await typed.innerText()).includes('THE-PACKAGE-ASKS'), await typed.innerText());
+    check('caption_not_written', yaml() === beforeCaption);
+    await box('source-b').locator('.desc-open button:text-is("Save")').click();
+    await until('its description in the file', async () => (await of('source-b')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
+    await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
+    await until('asker gone', () => box('asker').count(), (n) => n === 0);
+
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const heldFile = (await of('Sheet')).sha256;
     await open('source-a');

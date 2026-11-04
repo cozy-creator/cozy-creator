@@ -89,7 +89,6 @@ export function RunDrawer() {
           ["Left", live ? eta(run) : null],
           ["Time", runTime(run, now)],
           ["Asked", when(run.created_at_ms)],
-          ["Project", run.project],
         ]}
       />
       {run.warnings?.map((warning) => (

@@ -49,14 +49,14 @@ export function Projects() {
       <ul className="list">
         {data?.projects.map((project) => (
           <li key={project.id}>
-            <Link to={`/projects/${project.id}`}>
+            <Link to={`/projects/${project.id}`} title={project.path}>
               <b>{project.name}</b>
-              <small>{project.missing ? "its folder is gone" : project.path}</small>
+              {project.missing && <small>Its folder is gone</small>}
             </Link>
           </li>
         ))}
       </ul>
-      {data && !data.projects.length && <p className="muted">No projects yet. Dropping a file on the canvas makes one.</p>}
+      {data && !data.projects.length && <p className="muted">Drop a file on the canvas to start one.</p>}
     </DrawerFrame>
   )
 }

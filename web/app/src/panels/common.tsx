@@ -50,7 +50,7 @@ export function Section({ title, children, actions }: { title: string; children:
 export function Bar({ fraction }: { fraction: number }) {
   return (
     <div className="bar" role="progressbar" aria-valuenow={Math.round(fraction * 100)} aria-valuemin={0} aria-valuemax={100}>
-      <i style={{ width: `${Math.min(100, Math.max(0, fraction * 100))}%` }} />
+      <i style={{ transform: `translateX(${Math.min(100, Math.max(0, fraction * 100)) - 100}%)` }} />
     </div>
   )
 }

@@ -314,7 +314,7 @@ function Description({ name, view }: { name: string; view: ElementView }) {
       {!open && (
         <div className="row">
           <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
-            Keep it
+            Save
           </button>
           <button type="button" className="act nodrag" onClick={() => store.discard(name, "description")}>
             Discard
@@ -476,7 +476,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
             <div className="row actions">
               {editing && <RenderButton name={name} view={view} />}
               <Approve view={view} name={name} />
-              {view.drafts && (
+              {Object.keys(view.drafts ?? {}).some((field) => field !== "description") && (
                 <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
                   Save
                 </button>

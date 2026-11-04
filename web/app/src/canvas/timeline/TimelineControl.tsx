@@ -525,7 +525,7 @@ export function TimelineControl({ name }: { name: string }) {
         <Monitor preview={preview} layout={layout} aspect={aspect} empty={!clips.length && caret === null} />
         {asset?.rendering !== undefined && (
           <div className="tl-rendering" role="progressbar" aria-label="Rendering" aria-valuenow={Math.round(asset.rendering * 100)}>
-            <i style={{ width: `${Math.round(asset.rendering * 100)}%` }} />
+            <i style={{ transform: `translateX(${Math.round(asset.rendering * 100) - 100}%)` }} />
           </div>
         )}
       </div>
