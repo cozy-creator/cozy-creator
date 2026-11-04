@@ -245,9 +245,9 @@ fn live(stream: &tokio::net::TcpStream) {
 }
 
 /// Bytes count as a rental's use as they're handed to the kernel (`Lifecycle::transferred`), so what it holds unsent is bytes the idle
-/// clock has already counted. Left to itself it holds as much as the host's `tcp_wmem` lets it: on door 41816382607, 136 MiB between the
-/// clock and a reader at 1 MB/s. A reader under 150 KiB/s would lose its pod with the file's tail still queued here. This much is plenty
-/// for a fast link between two wakeups, and leaves only a reader under 5 KiB/s to its luck.
+/// clock has already counted. Left to itself it can hold a lot: door 41816382607's clock stopped 139 s before a 1000 KiB/s reader's last
+/// byte. A reader slow enough to take over 15 minutes on what's left would lose its pod with the file's tail unsent. With this, door
+/// 41911501719's stopped 14 s before it, on another host. 4 MiB is plenty for a fast link between two wakeups.
 #[cfg(target_os = "linux")]
 fn little_unsent(stream: &tokio::net::TcpStream) {
     let _ = socket2::SockRef::from(stream).set_tcp_notsent_lowat(4 << 20);

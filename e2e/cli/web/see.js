@@ -296,14 +296,18 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
 
   // Playing: a file here over Range with ?media=, two at most, and the third stops the first.
   await open(page, 'clip');
+  // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
+  const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));
   await clip.locator('.play').click();
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
+  await held();
   await until('over Range with ?media=', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && answer.media));
   check('plays_by_range_and_media', true);
   await open(page, 'clip_b');
   await element(page, 'clip_b').locator('.play').click();
   await until('two videos', () => page.locator('video').count(), (n) => n === 2);
+  await held();
   await open(page, 'edit');
   await element(page, 'edit').locator('.tl-play').click();
   await until('still two, the first stopped', () => clip.locator('video').count(), (n) => n === 0);
