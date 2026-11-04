@@ -33,8 +33,8 @@ refs() {
 product_minimax_h3() {
   # One fixed request (the Skater row, H3_SEED): quality.py holds its CLIP against the last passed gate's on it. The
   # character picture goes to H3 as given (a project cleans it first).
-  local name motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r
-  IFS=$'\t' read -r name _ motion _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
+  local name who motion p="$SCENE, slow push-in, ambient sound" SAVED=$ONLY r
+  IFS=$'\t' read -r name who motion _ _ <<< "$(grep -m1 $'^Skater\t' "$HERE/scenarios.tsv")"
   [[ $ONLY == *",regen-1440p-15s,"* ]] && ONLY="$ONLY,h3,"
   cell h3 "$(pkg minimax-h3 generate)" references:="[{\"name\": \"$name\", \"kind\": \"character\", \"image\": \"$REF\"}]" \
     prompt="<$name> $motion" seed:=$H3_SEED duration_s:=15
@@ -51,7 +51,7 @@ product_minimax_h3() {
   # The largest one forward takes: Regenerate-2K over the whole 15 s shot at 1440p, one window from 24 GB up
   # (`regenerate.windows`). 5 s cells never reach it: whole Q, K and V ran a 32 GB card out of memory on nvfp4 (run 28696,
   # cr-259). About 11 min and $0.22 on a 5090 (run 28788), about 18 min and $0.30 on a 4090, past the shot it starts from.
-  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" --file video="$CLIP" resolution=1440p prompt="$name $motion" \
+  cell regen-1440p-15s "$(pkg minimax-h3 upscale)" --file video="$CLIP" resolution=1440p prompt="$who. $motion" \
     seed:=$((R + 19)) 'upscale:={"model": "regenerate-2k"}'
   av regen-1440p-15s 1440
   if [ -f regen-1440p-15s.number ]; then
