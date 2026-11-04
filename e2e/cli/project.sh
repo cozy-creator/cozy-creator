@@ -383,7 +383,7 @@ says pins "has no adapter for kind audio: it can't be made"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
 }
 
-# An entity is identity and links, no work: assets can link into hashes, whereas entities link into asset-names.
+# An entity is identity and links, no work. A link names an asset, or holds a hash, shorthand for a constant asset.
 entities() {
 step "a project: an entity's links and sub-entities, and what a read of each gets"
 local E=$OUT/entities pic voice code
@@ -408,10 +408,12 @@ entities:
     pose: <hero_pose>
     render: {with: nothing}
     badge: $pic
+    motto: Not a link.
     lost: <no_such_asset>
     primordial:
       description: The hero of old.
       image: <old_sheet>
+      mark: $pic
       deeper: {image: <hero_sheet>}
   hero_voice:
     description: A name both sections use.
@@ -440,14 +442,14 @@ said() { J --arg s "$1" '.warnings | any(contains($s))' <<< "$(status "$E")" || 
 said "hero's render: an entity holds no way of making anything"
 said "defaults.all: the only keys are image, video and audio"
 said "odd's kind: an asset is an image, a video or audio"
-said "hero's badge: an entity links to an asset's name: make an asset for it"
+said "hero's motto: an entity links to an asset"
 said "hero's lost: <no_such_asset> is nothing in the project: add an asset"
 said "hero.primordial's deeper: sub-entities go one level"
 said "hero_voice is an asset and an entity"
 said "hero_sheet mentions hero, which is made from it: that mention stays plain text"
 said "old_sheet mentions hero.primordial, which is made from it: that mention stays plain text"
 J '[.warnings[] | select(contains("hero_sheet mentions hero,"))] | length == 1' <<< "$(status "$E")" || check "entities: more than one warning of hero_sheet's mention"
-J '(.entities | map(.name)) == ["hero"] and (.entities[0] | .kind == "character" and (.links | keys) == ["image", "pose", "voice"] and (.subs | map(.name)) == ["hero.primordial"])' <<< "$(status "$E")" || check "entities: status lists $(status "$E" | jq -c .entities)"
+J '(.entities | map(.name)) == ["hero"] and (.entities[0] | .kind == "character" and (.links | keys) == ["badge", "image", "lost", "pose", "voice"] and (.subs | map(.name)) == ["hero.primordial"])' <<< "$(status "$E")" || check "entities: status lists $(status "$E" | jq -c .entities)"
 J '[.assets[].name] | index("hero") == null and index("hero.primordial") == null' <<< "$(status "$E")" || check "entities: an entity is listed as an asset"
 render "$E" hero || check "entities: render hero: $(tail -c 400 "$OUT/render.txt")"
 J '[.assets | keys[]] | sort == ["hero pose", "hero sheet", "old sheet"]' "$E/project.lock" || check "entities: render hero made $(jq -c '.assets | keys' "$E/project.lock")"
@@ -470,6 +472,15 @@ printf 'version: 2\nassets:\n  a:\n    kind: image\n    description: Prose <a b>
 J '.warnings | any(contains("<a b> is no mention"))' <<< "$(status "$N")" || check "names: <a b> was not said: $(status "$N" | jq -c .warnings)"
 code=0; cozy project -p "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q "names can't hold" "$OUT/name.txt"; } || check "names: rename took a space: exit $code: $(tail -c 300 "$OUT/name.txt")"
+
+step "a project: a hash in an entity's link is a constant asset, and approve rewrites its line"
+local red; still "$E/red.png" red; red=$(prefix "$E" "$E/red.png")
+J '[.assets[] | select(.name == "hero.badge" or .name == "hero.primordial.mark") | .pinned and .kind == "image"] == [true, true]' <<< "$(status "$E")" || check "entities: hash links: $(status "$E" | jq -c '[.assets[].name]')"
+J '.entities[0].links.badge == "hero.badge" and .entities[0].subs[0].links.mark == "hero.primordial.mark"' <<< "$(status "$E")" || check "entities: the links: $(status "$E" | jq -c .entities)"
+cozy project -p "$E" approve hero.badge "$red" > "$OUT/approve.txt" 2>&1 || check "entities: approve hero.badge: $(tail -c 300 "$OUT/approve.txt")"
+grep -q "^    badge: $red\$" "$E/project.yaml" || check "entities: approve did not rewrite the link: $(grep -n badge "$E/project.yaml")"
+cozy project -p "$E" approve hero.primordial.mark "$red" > "$OUT/approve.txt" 2>&1 || check "entities: approve hero.primordial.mark: $(tail -c 300 "$OUT/approve.txt")"
+grep -q "^      mark: $red\$" "$E/project.yaml" || check "entities: approve did not rewrite the sub-entity's link: $(grep -n mark "$E/project.yaml")"
 
 step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle

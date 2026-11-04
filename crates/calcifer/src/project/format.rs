@@ -143,6 +143,8 @@ pub struct Asset {
     pub writes: Vec<Write>,
     /// The asset whose function sends this revision: its state comes with that one's take.
     pub writer: Option<usize>,
+    /// A hash written in an entity's link: the entity or sub-entity, and the field, whose line holds it.
+    pub line: Option<(String, String)>,
     /// It is no asset but an entity, a sub-entity or a link of one: no work and no versions, its files what its links hold now.
     pub links: Option<Links>,
 }
@@ -302,6 +304,9 @@ impl Doc {
             let fields = entities.get(&name).and_then(Value::as_object).into_iter().flat_map(|body| body.keys());
             for field in fields.filter(|field| !["kind", "description", "render"].contains(&field.as_str())) {
                 named(&format!("{name}.{field}"))?;
+                for inner in entities[&name][field].as_object().into_iter().flat_map(|sub| sub.keys()).filter(|inner| !["kind", "description", "render"].contains(&inner.as_str())) {
+                    named(&format!("{name}.{field}.{inner}"))?;
+                }
             }
         }
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
@@ -328,7 +333,7 @@ impl Doc {
         }
         for name in protocol::yaml::keys(text, &["entities"]) {
             let Some(written) = entities.get(&name) else { continue };
-            doc.entity(&name, written);
+            doc.entity(text, &name, written, &defaults, folder, &lock);
         }
         for i in 0..doc.assets.len() {
             if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].links.is_none() {
@@ -428,18 +433,18 @@ impl Doc {
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
         let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, links: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, line: None, links: None });
         Some(self.assets.len() - 1)
     }
 
     /// An entity: identity and links, no work. It, each sub-entity and each link are nodes of the graph, so `<kyogre>`,
     /// `<groudon.primordial>` and `<kyogre.primordial>` read like any mention. A sub-entity takes from its parent what it doesn't have.
-    fn entity(&mut self, name: &str, written: &Value) {
+    fn entity(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let Some(body) = written.as_object() else {
             self.warnings.push(format!("{name} is no mapping of fields: it is ignored"));
             return;
         };
-        let (own, subs) = self.links_of(name, body, true);
+        let (own, subs) = self.links_of(text, name, body, true, defaults, folder, lock);
         let roles = |own: &BTreeMap<String, String>| -> BTreeMap<String, String> {
             own.iter().filter(|(field, _)| ROLES.contains(&field.as_str())).map(|(field, asset)| (field.clone(), asset.clone())).collect()
         };
@@ -451,7 +456,7 @@ impl Doc {
         let mut named = vec![];
         for (field, sub) in &subs {
             let full = format!("{name}.{field}");
-            let (mine, _) = self.links_of(&full, sub, false);
+            let (mine, _) = self.links_of(text, &full, sub, false, defaults, folder, lock);
             let mut files = roles(&own);
             files.extend(roles(&mine));
             let its_kind = match text_of(sub.get("kind")) {
@@ -467,13 +472,18 @@ impl Doc {
         let links = Links { roles: roles(&own), own: own.clone(), subs: named, parent: None };
         self.node(name, kind.clone(), description.clone(), links);
         for (field, asset) in own {
-            let links = Links { roles: BTreeMap::from([(String::new(), asset)]), parent: Some(name.to_owned()), ..Links::default() };
-            self.node(&format!("{name}.{field}"), kind.clone(), description.clone(), links);
+            let full = format!("{name}.{field}");
+            // A hash in the link made the asset of this name, so `<kyogre.image>` reads that.
+            if asset != full {
+                let links = Links { roles: BTreeMap::from([(String::new(), asset)]), parent: Some(name.to_owned()), ..Links::default() };
+                self.node(&full, kind.clone(), description.clone(), links);
+            }
         }
     }
 
-    /// An entity's links and sub-entities. Assets link into hashes, whereas entities link into asset-names.
-    fn links_of(&mut self, name: &str, body: &Map<String, Value>, nests: bool) -> (BTreeMap<String, String>, Vec<(String, Map<String, Value>)>) {
+    /// An entity's links and sub-entities. A link names an asset, or holds a hash, shorthand for a constant asset named for the link.
+    #[allow(clippy::too_many_arguments)]
+    fn links_of(&mut self, text: &str, name: &str, body: &Map<String, Value>, nests: bool, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) -> (BTreeMap<String, String>, Vec<(String, Map<String, Value>)>) {
         let (mut links, mut subs) = (BTreeMap::new(), vec![]);
         for (field, value) in body {
             match (field.as_str(), value) {
@@ -481,10 +491,25 @@ impl Doc {
                 ("render", _) => self.warnings.push(format!("{name}'s render: an entity holds no way of making anything: put it on an asset it links; it is ignored")),
                 (_, Value::Object(sub)) if nests => subs.push((field.clone(), sub.clone())),
                 (_, Value::Object(_)) => self.warnings.push(format!("{name}'s {field}: sub-entities go one level; it is ignored")),
-                (_, Value::String(text)) if matches!(mentions(text).as_slice(), [one] if text.trim() == format!("<{one}>")) => {
-                    links.insert(field.clone(), mentions(text)[0].to_owned());
+                (_, Value::String(said)) if matches!(mentions(said).as_slice(), [one] if said.trim() == format!("<{one}>")) => {
+                    links.insert(field.clone(), mentions(said)[0].to_owned());
                 }
-                _ => self.warnings.push(format!("{name}'s {field}: an entity links to an asset's name: make an asset for it, and write `{field}: <its_name>`; it is ignored")),
+                (_, Value::String(_) | Value::Number(_)) if value.as_str().is_none_or(|said| !said.is_empty() && said.bytes().all(|byte| byte.is_ascii_hexdigit())) => {
+                    let written = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                    match file_named(&written, lock) {
+                        Ok(sha256) => {
+                            let role = lock.files.get(&sha256).map_or("image", folder::File::field);
+                            let full = format!("{name}.{field}");
+                            let constant = Value::Object(Map::from_iter([(role.to_owned(), Value::String(written))]));
+                            if let Some(i) = self.declare(text, &full, &constant, defaults, folder, lock) {
+                                self.assets[i].line = Some((name.to_owned(), field.clone()));
+                                links.insert(field.clone(), full);
+                            }
+                        }
+                        Err(why) => self.warnings.push(format!("{name}'s {field}{why}")),
+                    }
+                }
+                _ => self.warnings.push(format!("{name}'s {field}: an entity links to an asset, as `{field}: <its_name>`, or a file's hash; it is ignored")),
             }
         }
         (links, subs)
@@ -511,6 +536,7 @@ impl Doc {
             reads: vec![],
             writes: vec![],
             writer: None,
+            line: None,
             links: Some(links),
         });
         true
@@ -538,6 +564,7 @@ impl Doc {
                     reads: vec![],
                     writes: vec![],
                     writer: None,
+                    line: None,
                     links: None,
                 });
                 self.assets.len() - 1
@@ -1047,7 +1074,7 @@ fn changed(was: &BTreeMap<String, String>, now: &BTreeMap<String, String>) -> Ve
 /// comment on its line, which `unpinned` restores. Err: why not, and what to write by hand.
 pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String, Error> {
     let by_hand = |why: String| invalid("project_edit", format!("{name} can't be pinned in {}: {why}", folder::PROJECT)).remedy(format!("write `{field}: {value}` under {name} yourself"));
-    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:`".into()))?;
+    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own in the file".into()))?;
     let lines = &place.lines;
     let edited = if let Some(flow) = &place.flow {
         let (head, inner) = (flow.0.as_str(), flow.1.as_str());
@@ -1082,7 +1109,7 @@ pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String
 /// were there all along.
 pub fn unpinned(text: &str, name: &str, field: &str) -> Result<String, Error> {
     let by_hand = |why: String| invalid("project_edit", format!("{name} can't be unpinned in {}: {why}", folder::PROJECT)).remedy(format!("remove its `{field}:` yourself"));
-    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:`".into()))?;
+    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own in the file".into()))?;
     let lines = &place.lines;
     let edited = if let Some(flow) = &place.flow {
         replace_line(lines, place.key, &format!("{}{{{}}}{}", flow.0, strip_flow_field(&flow.1, field), flow.2))
@@ -1127,11 +1154,20 @@ fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&st
     (before == after).then_some(()).ok_or_else(|| "the edit would change something else".into())
 }
 
-/// The value asset `name` is in a project's JSON.
+/// The value `name` is in a project's JSON: an asset, or an entity or sub-entity.
 fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
     let key_in = |map: &Value, name: &str| map.as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned();
-    let key = key_in(&doc["assets"], name)?;
-    doc["assets"].get_mut(&key)
+    for section in ["assets", "entities"] {
+        if let Some(key) = key_in(&doc[section], name) {
+            return doc[section].get_mut(&key);
+        }
+    }
+    let (entity, sub) = name.match_indices('.').map(|(at, _)| (&name[..at], &name[at + 1..])).find(|(entity, sub)| {
+        key_in(&doc["entities"], entity).is_some_and(|key| key_in(&doc["entities"][&key], sub).is_some())
+    })?;
+    let entity = key_in(&doc["entities"], entity)?;
+    let sub = key_in(&doc["entities"][&entity], sub)?;
+    doc["entities"][&entity].get_mut(&sub)
 }
 
 /// The input a pin in `field` keeps in a comment on its line.
@@ -1156,12 +1192,24 @@ struct Place<'a> {
 }
 
 impl<'a> Place<'a> {
-    /// Asset `name`'s lines under `assets:`.
+    /// The lines of `name` under `assets:`, or of an entity or sub-entity (`kyogre.primordial`), whose links can hold hashes.
     fn find(text: &'a str, name: &str) -> Option<Self> {
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == "assets:")? + 1;
-        let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
-        let (key, body, child, flow) = block(&lines, start..end, name)?;
+        let section = |section: &str| {
+            let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == section)? + 1;
+            let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+            Some(start..end)
+        };
+        let of_entity = || {
+            let entities = section("entities:")?;
+            block(&lines, entities.clone(), name).or_else(|| {
+                name.match_indices('.').find_map(|(at, _)| {
+                    let (_, entity, ..) = block(&lines, entities.clone(), &name[..at])?;
+                    block(&lines, entity, &name[at + 1..])
+                })
+            })
+        };
+        let (key, body, child, flow) = section("assets:").and_then(|assets| block(&lines, assets, name)).or_else(of_entity)?;
         Some(Self { lines, key, body, child, flow })
     }
 

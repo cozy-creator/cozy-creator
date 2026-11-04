@@ -157,7 +157,7 @@ At render, a typed adapter warns of an unknown field an asset writes itself. **A
 
 ## Entities
 
-Assets can link into hashes, whereas entities link into asset-names. An entity holds `kind`, `description`, and links: any other key whose value is `<asset_name>`. A hash there warns and is ignored: make an asset for it. It has no `render`, versions or pins; a `render` warns and is ignored. It isn't a node of work: nothing renders it.
+An entity holds `kind`, `description`, and links: any other key whose value is `<asset_name>`, or a file's hash as shorthand. `kyogre: {kind: character, image: 2aee8c40753d}` makes an ordinary constant asset named `kyogre.image`, so the graph, reads and memo don't change and it shows in `status`; `approve kyogre.image <hash>` rewrites that line, and a sub-entity's is `kyogre.primordial.image`. Anything else there warns and is ignored. It has no `render`, versions or pins; a `render` warns and is ignored. It isn't a node of work: nothing renders it.
 
 | Mention | What the adapter gets |
 |---|---|

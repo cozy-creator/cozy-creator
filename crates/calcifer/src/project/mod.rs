@@ -952,13 +952,15 @@ async fn approve(
         return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).remedy(format!("if it should be {is}, write `kind: {is}` on it"))));
     }
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
-    if !doc.declared(i) {
+    if !doc.declared(i) && asset.line.is_none() {
         let said = format!("{} is a frame its writer's beat names, with no lines of its own in {}", asset.name, folder::PROJECT);
         return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).remedy(format!("add it under assets: with `{field}: {}`", format::yaml_scalar(folder::prefix_of(&chosen))))));
     }
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    pin_in_file(folder, &name, field, &chosen).map_err(Refusal)?;
+    // A hash written in an entity's link is rewritten there.
+    let (owner, written_in) = asset.line.as_ref().map_or((name.as_str(), field), |(owner, link)| (owner.as_str(), link.as_str()));
+    pin_in_file(folder, owner, written_in, &chosen).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.to_owned(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
