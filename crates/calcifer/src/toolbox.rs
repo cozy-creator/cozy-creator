@@ -21,6 +21,7 @@ use tensorfs::format::newest_by;
 
 use crate::{
     api::{Api, Refusal},
+    local_code,
     runs::{self, target},
 };
 
@@ -38,6 +39,8 @@ pub(crate) struct Asked {
     /// The machine whose installed packages come first; `local` when absent.
     on: Option<String>,
     hub: Option<String>,
+    /// A project: the local code its nodes name comes first, and no other local code is listed.
+    project: Option<String>,
 }
 
 /// `GET /v1/tools`: installed first, each as it is on that machine, then the Hub's, each at its newest.
@@ -46,7 +49,11 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     let hub = runs::hub(&api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let mut tools: Vec<Tool> = held(&api, &hub, &on).await.into_iter().filter(|tool| q.is_none_or(|q| says(tool, q))).collect();
+    let local = match &asked.project {
+        Some(project) => named_here(&api, &hub, project, &on).await?,
+        None => vec![],
+    };
+    let mut tools: Vec<Tool> = local.into_iter().chain(held(&api, &hub, &on).await).filter(|tool| q.is_none_or(|q| says(tool, q))).collect();
     let installed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
     let note = match tokio::time::timeout(HUB_LATE, on_the_hub(&api, &hub, q)).await {
         Ok(Ok(found)) => {
@@ -59,6 +66,24 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
     Ok(Json(Tools { tools, note }))
 }
 
+/// The tools of each local package `project`'s nodes name, named by its path as they write it, and saying they're local. One that can't be
+/// read is left out, and a render says why.
+async fn named_here(api: &Arc<Api>, hub: &str, project: &str, on: &On) -> Result<Vec<Tool>, Refusal> {
+    let mut tools = vec![];
+    for (written, path) in crate::project::local_code_named(api, project)? {
+        let Ok((package, document)) = local_code::describe(api, &path, on, hub).await else { continue };
+        let Ok(interface) = Interface::parse(&document) else { continue };
+        tools.extend(tool::tools_of(&package, "local", &interface).into_iter().map(|tool| Tool {
+            id: format!("{written}/{}", tool.function),
+            package: written.clone(),
+            label: format!("{} (local)", tool.label),
+            local: true,
+            ..tool
+        }));
+    }
+    Ok(tools)
+}
+
 /// Whether every word of `q` is in what `tool` is called or says it does.
 fn says(tool: &Tool, q: &str) -> bool {
     let text = format!("{} {} {}", tool.id, tool.label, tool.description).to_lowercase();
@@ -67,6 +92,11 @@ fn says(tool: &Tool, q: &str) -> bool {
 
 /// The tools of what `on` has installed from `hub`, each package at its newest there. A release that can't be read is left out.
 async fn held(api: &Arc<Api>, hub: &str, on: &On) -> Vec<Tool> {
+    read_all(api, hub, installed_releases(api, hub, on).await).await
+}
+
+/// What `on` has installed from `hub`: each package and its newest release there.
+async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
     let Some((_, environments)) = api.machines.holds(on).await else { return vec![] };
     let canonical = |hub: &str| Origin::parse(hub).map_or_else(|_| hub.to_owned(), String::from);
     let here = canonical(hub);
@@ -76,8 +106,7 @@ async fn held(api: &Arc<Api>, hub: &str, on: &On) -> Vec<Tool> {
     let releases = |package: &'_ str| -> Option<String> {
         newest_by(environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str()), |release| release).map(str::to_owned)
     };
-    let wanted: Vec<(String, String)> = packages.into_iter().filter_map(|package| Some((package.to_owned(), releases(package)?))).collect();
-    read_all(api, hub, wanted).await
+    packages.into_iter().filter_map(|package| Some((package.to_owned(), releases(package)?))).collect()
 }
 
 /// The tools of the Hub's packages that fit `q`, or its first page, each at its newest.
@@ -102,6 +131,18 @@ async fn read_all(api: &Arc<Api>, hub: &str, wanted: Vec<(String, String)>) -> V
         }
     });
     stream::iter(reads).buffered(READS).collect::<Vec<_>>().await.into_iter().flatten().collect()
+}
+
+/// Every package a machine-side call could use, what `on` holds first, then the Hub's first page: each at its release.
+pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
+    let mut found = installed_releases(api, hub, on).await;
+    let listed = async { api.machines.hubs.reader(hub).ok()?.search_packages(None, LISTED).await.ok() };
+    if let Ok(Some(listed)) = tokio::time::timeout(HUB_LATE, listed).await {
+        let new = listed.packages.into_iter().filter_map(|row| Some((format!("{}/{}", row.org, row.name), row.latest_release?)));
+        let held: BTreeSet<String> = found.iter().map(|(package, _)| package.clone()).collect();
+        found.extend(new.filter(|(package, _)| !held.contains(package)));
+    }
+    found
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, read as a run of it on this computer would be.

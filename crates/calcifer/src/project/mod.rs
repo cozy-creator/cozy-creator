@@ -15,6 +15,8 @@ mod graph;
 pub(crate) mod host;
 mod remote;
 mod thumbs;
+mod caption;
+mod direct;
 mod tools;
 
 use std::{
@@ -63,7 +65,7 @@ use crate::api::{Api, Refusal, parse};
 use folder::{Ask, Failed, Files, Folder, Invocation, Keeps, Lock, MadeBy, Pending, ReadFrom, Take, Target, Tried, Version, Written};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
-use host::{Host, Package, Renderer};
+use host::{Host, Maker, Package, Renderer};
 use tools::Canvas;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
@@ -124,6 +126,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects", post(open).get(list))
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/imports", post(import))
+        .route("/v1/projects/{id}/assets/{name}/caption", post(caption::caption))
         .route("/v1/projects/{id}/canvas", get(canvas::read).patch(canvas::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
         .route("/v1/projects/{id}/runs", post(runs))
@@ -653,6 +656,25 @@ fn entity_row(doc: &Doc, i: usize) -> protocol::project::Entity {
     }
 }
 
+/// The local code `id`'s assets name, each once: its path as they write it, and where that is.
+pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
+    let project = api.projects.get(api, id)?;
+    let folder = &project.folder;
+    let doc = Doc::load(folder).map_err(Refusal)?;
+    let home = &api.machines.user_home;
+    let mut named = BTreeMap::new();
+    for with in (0..doc.assets.len()).map(|i| doc.target(i)).filter(|with| !with.is_empty()) {
+        if let Some(Ok((path, function))) = crate::local_code::target(&with, &folder.dir, home) {
+            let written = match function {
+                Some(function) => with.trim().trim_end_matches(['/', '\\']).strip_suffix(function.as_str()).unwrap_or(&with).trim_end_matches(['/', '\\']).to_owned(),
+                None => with.trim().trim_end_matches(['/', '\\']).to_owned(),
+            };
+            named.insert(path, written);
+        }
+    }
+    Ok(named.into_iter().map(|(path, written)| (written, path)).collect())
+}
+
 /// What can be said of each asset whose published package has been heard of: its adapter for its kind, its tags. A read waits on no
 /// Hub and writes nothing, so what isn't heard of yet is said by a later read, or a render. Local code is described only on a machine, so a render says it.
 fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<ProjectWarning> {
@@ -666,7 +688,7 @@ fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<ProjectWarning> {
         if doc.tags(i).is_none() {
             said.extend(doc.said_once_read(i, &package.reserved()));
         }
-        if doc.assets[i].pin.is_none() && package.adapter(&doc.assets[i].kind).is_none() {
+        if doc.assets[i].pin.is_none() && !matches!(package.maker(&doc.assets[i].kind), Ok(Some(_))) {
             said.push(ProjectWarning::of(&doc.assets[i].name, no_adapter(&doc.assets[i].name, &package.name, &doc.assets[i].kind)));
         }
     }
@@ -706,7 +728,7 @@ fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
 
 /// Keeps `package`'s tags in project.lock for what reads the file.
 fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) {
-    let (key, tags) = (format::plain_with(&doc.target(i)), package.reserved());
+    let (key, tags) = (doc.assets[i].tool.clone().unwrap_or_default(), package.reserved());
     let same = folder.lock().is_ok_and(|lock| lock.reserved.get(&key) == Some(&tags));
     if !same && let Err(error) = folder.update_lock(|lock| drop(lock.reserved.insert(key.clone(), tags.clone()))) {
         warn!("{}: {error}", key);
@@ -715,7 +737,7 @@ fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) {
 
 /// The line that says an asset can't be made by what names it.
 fn no_adapter(name: &str, package: &str, kind: &str) -> String {
-    format!("{name}: {package} has no adapter for kind {kind}: it can't be made")
+    format!("{name}: {package} has no adapter for kind {kind}, and no one function that makes it, so name one: `{package}/<function>`")
 }
 
 /// What a cut of asset `i` is at the root: `<name>.mp4`.
@@ -2328,10 +2350,15 @@ impl Walk {
             if let Some(why) = doc.missing_inputs(i, &package.reserved()) {
                 return Err(Error::new(Kind::Validation, "input_missing", why).remedy(format!("bring it back, or edit {name}'s text")));
             }
-            let Some(adapter) = package.adapter(&asset.kind) else {
+            let Some(maker) = package.maker(&asset.kind)? else {
                 self.say(Event::Warning { message: no_adapter(&name, &package.name, &asset.kind) });
                 return self.folder().update_lock(settle);
             };
+            if let Some(made) = package.named_kind().filter(|made| *made != asset.kind) {
+                let tool = doc.target(i);
+                self.say(Event::Warning { message: format!("{name} is a {} and {tool} makes a {made}: write `kind: {made}`, and it can be made", asset.kind) });
+                return self.folder().update_lock(settle);
+            }
             let now = self.folder().lock()?;
             let holds = now.asset(&name).and_then(|held| held.versions.iter().rev().find(|version| version.inputs == inputs)).map(|version| version.number);
             let going = now.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name) && pending.version.inputs == inputs);
@@ -2360,19 +2387,35 @@ impl Walk {
                 }
             }
             let mut warnings = vec![];
-            if let Some(signature) = &adapter.signature {
-                let unknown = (asset.own.iter()).filter(|field| asset.fields.contains_key(*field) && !signature.contains(*field));
-                warnings.extend(unknown.map(|field| format!("{name}: {} reads no field {field}", adapter.target())));
-            }
-            let operation = doc.operation(i, &reads, lock, keep.clone(), stand);
-            let (calls, said) = self.adapt(&adapter, &operation, &target.hub, &target.on).await?;
+            let (calls, said) = match &maker {
+                Maker::Adapter(adapter) => {
+                    if let Some(signature) = &adapter.signature {
+                        let unknown = (asset.own.iter()).filter(|field| asset.fields.contains_key(*field) && !signature.contains(*field));
+                        warnings.extend(unknown.map(|field| format!("{name}: {} reads no field {field}", adapter.target())));
+                    }
+                    let mut operation = doc.operation(i, package.named.as_deref(), &reads, lock, keep.clone(), stand);
+                    let typed = package.callable(&adapter.function).and_then(|adapter| adapter.typed_fields().cloned());
+                    if let (Some(typed), Some(fields)) = (typed, operation["fields"].as_object_mut()) {
+                        warnings.extend(direct::conform(&name, &typed, fields));
+                    }
+                    self.adapt(adapter, &operation, &target.hub, &target.on).await?
+                }
+                Maker::Direct(renderer) => {
+                    let unknown = || Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {}", package.name, renderer.function));
+                    let callable = package.callable(&renderer.function).ok_or_else(unknown)?;
+                    let (input, said) = direct::input(&name, &doc.target(i), &callable, &doc.node_fields(i), &reads, lock)?;
+                    (vec![Invocation { function: renderer.function.clone(), input }], said)
+                }
+            };
             warnings.extend(said);
             // No call: this asset's files are what it reads.
             if calls.is_empty() {
                 warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
                 let Some(number) = holds else {
                     let mut version = self.version(doc, standing, i, warnings, inputs.clone());
-                    version.made_by = version.made_by.map(|by| MadeBy { with: adapter.target(), ..by });
+                    if let Maker::Adapter(adapter) = &maker {
+                        version.made_by = version.made_by.map(|by| MadeBy { with: adapter.target(), ..by });
+                    }
                     self.land_read(&name, &asset.kind, version, standing, noun, approve, settle)?;
                     if next.unpin {
                         self.unpin_landed(&ask.id, &name, &asset.kind);

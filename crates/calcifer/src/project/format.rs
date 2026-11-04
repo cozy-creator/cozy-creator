@@ -31,6 +31,9 @@ const RESERVED: [&str; 10] = ["render", "with", "kind", "models", "lora", "optio
 const SECTIONS: [&str; 4] = ["version", "defaults", "entities", "assets"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
+/// What crosses a mention. A node's prompt, and whatever else went into making it, is for its maker alone (Paul, 11-04): a reader gets
+/// the words meant for it, and how to take the file.
+const FOR_READERS: [&str; 3] = ["description", "use_audio", "follow"];
 /// What `cozy` reads of a cut or a frame.
 const TOOL_FIELDS: [&str; 6] = ["pieces", "fps", "aspect_ratio", "resolution", "video", "at"];
 /// How long a beat with no `duration` lasts, where its writes are concerned; an adapter says the same.
@@ -130,6 +133,8 @@ assets:
 pub struct Asset {
     pub name: String,
     pub kind: String,
+    /// What makes it, as the memo holds it: no release, no root namespace, and local code by its directory's name.
+    pub tool: Option<String>,
     pub body: Map<String, Value>,
     /// What passes to the adapter: every field but the platform's, and a file field holding a mention.
     pub fields: Map<String, Value>,
@@ -390,7 +395,7 @@ impl Doc {
             self.warn(name, format!("{name}'s kind: an asset is an image, a video or audio, and anything else belongs on an entity: {written_kind} is ignored"));
         }
         // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind.
-        let constant = held.is_some() && body.keys().all(|key| key == "kind" || PINS.contains(&key.as_str()));
+        let constant = held.is_some() && body.keys().all(|key| key == "kind" || key == "description" || PINS.contains(&key.as_str()));
         // `defaults` fills what its `render` doesn't write, but one naming its own `with` takes nothing from there.
         let (mut merged, mut options) = (Map::new(), Map::new());
         if let Some(section) = defaults.get(&kind).and_then(Value::as_object).filter(|_| !constant && !body.contains_key("with")) {
@@ -441,10 +446,10 @@ impl Doc {
         {
             fields.insert((*field).to_owned(), json!(was));
         }
-        let with = merged.get("with").and_then(Value::as_str).map(plain_with);
+        let with = merged.get("with").and_then(Value::as_str).map(|with| plain_with(with, folder));
         let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, line: None, links: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, tool: with, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, line: None, links: None });
         Some(self.assets.len() - 1)
     }
 
@@ -537,6 +542,7 @@ impl Doc {
         self.assets.push(Asset {
             name: name.to_owned(),
             kind,
+            tool: None,
             body: Map::new(),
             fields,
             own: BTreeSet::new(),
@@ -565,6 +571,7 @@ impl Doc {
                 self.assets.push(Asset {
                     name: image.to_owned(),
                     kind: "image".into(),
+                    tool: None,
                     body: Map::new(),
                     fields: Map::new(),
                     own: BTreeSet::new(),
@@ -746,7 +753,7 @@ impl Doc {
 
     /// The tags of the package that makes asset `i`, once it has been read.
     pub fn tags(&self, i: usize) -> Option<&Vec<String>> {
-        self.reserved.get(&plain_with(&self.target(i)))
+        self.reserved.get(self.assets[i].tool.as_deref().unwrap_or_default())
     }
 
     /// What is said of a name that is nothing in the project, and no tag of `tags`.
@@ -843,7 +850,7 @@ impl Doc {
         if asset.frame {
             return Some(Tool::Frame);
         }
-        (plain_with(asset.body.get("with")?.as_str()?) == COZY).then_some(())?;
+        (asset.tool.as_deref()? == COZY).then_some(())?;
         match asset.kind.as_str() {
             "video" => Some(Tool::Cut),
             "image" => Some(Tool::Frame),
@@ -993,8 +1000,8 @@ impl Doc {
                 top.insert(field.into(), value.clone());
             }
         }
-        if let Some(with) = asset.body.get("with").and_then(Value::as_str) {
-            top.insert("with".into(), json!(plain_with(with)));
+        if let Some(tool) = &asset.tool {
+            top.insert("with".into(), json!(tool));
         }
         top.insert("kind".into(), json!(asset.kind));
         // A tool's key holds what it reads of its fields, so a style in defaults doesn't cut again.
@@ -1029,8 +1036,17 @@ impl Doc {
         (digest(&Value::Object(top)), digests)
     }
 
-    /// The operation asset `i` is, as its adapter takes it: its fields, and what it reads with what is known of each file.
-    pub fn operation(&self, i: usize, reads: &[ReadNow], lock: &Lock, keep: Option<Value>, stand: &[Standing]) -> Value {
+    /// What a node says, flat, by the names its box and its function use: the file's split between what it is and how it's made ends
+    /// here. The root wins where both say. `render`'s text is `instructions`, for adapters of this format.
+    pub fn node_fields(&self, i: usize) -> Map<String, Value> {
+        let asset = &self.assets[i];
+        let mut flat = asset.body.get("options").and_then(Value::as_object).cloned().unwrap_or_default();
+        flat.extend(asset.fields.clone());
+        flat
+    }
+
+    /// The operation asset `i` is, as its adapter takes it: the function its tool names, its fields, and what it reads with what is known of each file.
+    pub fn operation(&self, i: usize, function: Option<&str>, reads: &[ReadNow], lock: &Lock, keep: Option<Value>, stand: &[Standing]) -> Value {
         let asset = &self.assets[i];
         let file = |sha256: &String| lock.files.get(sha256).map_or_else(|| json!({"sha256": sha256}), folder::File::record);
         let reads: Vec<Value> = reads
@@ -1044,13 +1060,12 @@ impl Doc {
                 let shown = shows.and_then(|asset| self.holds(asset)).unwrap_or(read.asset);
                 let made = stand[shown].version().or(read.newest).and_then(|number| lock.asset(&self.assets[shown].name)?.version(number));
                 let made_by = made.and_then(|made| made.made_by.as_ref()).map_or("", |by| by.with.as_str());
-                let record = json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by});
-                record
+                json!({"name": read.name, "kind": of.kind, "fields": for_readers(&of.fields), "files": files, "made_by": made_by})
             })
             .collect();
-        let writes: Vec<Value> = asset.writes.iter().map(Write::record).collect();
+        let writes: Vec<Value> = asset.writes.iter().map(|write| json!({"name": write.name, "at_s": write.at_s, "fields": for_readers(&write.fields)})).collect();
         let options = asset.body.get("options").cloned().unwrap_or_else(|| json!({}));
-        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "fields": asset.fields, "options": options, "reads": reads, "writes": writes, "keep": keep})
+        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "function": function.unwrap_or_default(), "fields": self.node_fields(i), "options": options, "reads": reads, "writes": writes, "keep": keep})
     }
 
     /// `--take`, `--in`: what its adapter is told of the take a new one keeps, its files as records; None if it holds no video.
@@ -1099,13 +1114,25 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<Warning>) -
     found
 }
 
-/// `with` as the key holds it: no release, no root namespace, and local code by its directory's name, so moving from a checkout to
-/// the published package puts nothing out of date.
-pub fn plain_with(with: &str) -> String {
+/// What of a read crosses its mention.
+fn for_readers(fields: &Map<String, Value>) -> Map<String, Value> {
+    fields.iter().filter(|(field, _)| FOR_READERS.contains(&field.as_str())).map(|(field, value)| (field.clone(), value.clone())).collect()
+}
+
+/// `with` as the key holds it: no release, no root namespace, and local code by its directory's name, with the function it names, so moving
+/// from a checkout to the published package puts nothing out of date.
+pub fn plain_with(with: &str, folder: &Folder) -> String {
     let with = with.trim();
     if protocol::target::written_as_path(with) || with.ends_with(".py") {
-        let name = with.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(with);
-        return name.strip_suffix(".py").unwrap_or(name).to_owned();
+        let dir_name = |path: &str| {
+            let name = path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+            name.strip_suffix(".py").map(str::to_owned).unwrap_or(name)
+        };
+        let home = platform::paths::login_home().unwrap_or_default();
+        return match crate::local_code::target(with, &folder.dir, &home) {
+            Some(Ok((path, Some(function)))) => format!("{}/{function}", dir_name(&path.to_string_lossy())),
+            _ => dir_name(with),
+        };
     }
     let path = with.split('@').next().unwrap_or(with);
     path.strip_prefix("_/").unwrap_or(path).to_owned()

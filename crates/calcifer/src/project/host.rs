@@ -12,9 +12,10 @@ use protocol::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
-    interface::{self, ADAPTER, Slot},
+    interface::{self, ADAPTER, Interface, Slot, adapter_name},
     model_ref::ModelRef,
     project::Event,
+    tool,
 };
 use serde_json::Value;
 
@@ -38,16 +39,60 @@ pub struct Package {
     pub local: Option<PathBuf>,
     /// A yanked release this walk moved off, said once.
     pub moved: Option<String>,
+    /// The function its tool names; none: the package alone, whose adapter picks.
+    pub named: Option<String>,
     document: Value,
+}
+
+/// How a node of a package gets made.
+pub enum Maker {
+    /// Told the function, if one is named, it answers the calls.
+    Adapter(Renderer),
+    /// No adapter speaks for this function: it's called with the node's fields.
+    Direct(Renderer),
 }
 
 /// The project format its record is.
 const FORMAT: u64 = 2;
 
 impl Package {
-    /// The function of its package that turns an operation of `kind` into calls, if it reads this format. With none, this package can't make that kind.
-    pub fn adapter(&self, kind: &str) -> Option<Renderer> {
-        let name = format!("{ADAPTER}{kind}");
+    /// How a node of `kind` gets made: the adapter that speaks for its function, else that function directly. With the package alone, the
+    /// adapter that picks for itself, else its one public function that makes `kind`. None: this package can't make it.
+    pub fn maker(&self, kind: &str) -> Result<Option<Maker>, Error> {
+        if let Some(adapter) = self.adapter(kind, self.named.as_deref()) {
+            return Ok(Some(Maker::Adapter(adapter)));
+        }
+        if let Some(function) = &self.named {
+            return self.function(function).map(|renderer| Some(Maker::Direct(renderer)));
+        }
+        let interface = self.interface();
+        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let mut public = interface.public().into_iter().filter(makes);
+        match (public.next(), public.next()) {
+            (Some(only), None) => self.function(only).map(|renderer| Some(Maker::Direct(renderer))),
+            _ => Ok(None),
+        }
+    }
+
+    /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
+    pub fn named_kind(&self) -> Option<String> {
+        let interface = self.interface();
+        let callable = interface.callables.iter().find(|callable| Some(&callable.name) == self.named.as_ref())?;
+        tool::output_kind(callable).map(str::to_owned)
+    }
+
+    /// The typed inputs of `function`.
+    pub fn callable(&self, function: &str) -> Option<protocol::interface::Callable> {
+        self.interface().callables.into_iter().find(|callable| callable.name == function)
+    }
+
+    fn interface(&self) -> Interface {
+        Interface::parse(&self.document).unwrap_or_default()
+    }
+
+    /// The function of its package that turns an operation of `kind` told `function` into calls, if it reads this format.
+    pub fn adapter(&self, kind: &str, function: Option<&str>) -> Option<Renderer> {
+        let name = adapter_name(kind, function);
         let entry = interface::entrypoints(&self.document).find(|entry| interface::name(entry) == Some(name.as_str()))?;
         let version = entry["request"]["fields"].as_array()?.iter().find(|field| field["name"] == "version")?;
         let reads = version["type"]["literal"].as_array()?.iter().any(|value| value.as_u64() == Some(FORMAT));
@@ -186,7 +231,7 @@ impl Host {
     pub async fn package(&self, hub: &str, with: &str, folder: &Path, on: &[On]) -> Result<Package, Error> {
         let home = self.api.machines.hubs.home().root().parent().map(Path::to_path_buf).unwrap_or_default();
         if let Some(found) = local_code::target(with, folder, &home) {
-            let (path, _) = found?;
+            let (path, named) = found?;
             let on = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
             let prepared = self.ready(&path, &on, hub).await?;
             let Some(document) = prepared.interface else {
@@ -194,7 +239,7 @@ impl Host {
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, document });
+            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, named, document });
         }
         let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
         self.published(hub, with, Some(&first)).await
@@ -210,10 +255,10 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, card, moved, .. } = target::published(&self.api, &hub, with, on).await? else {
+        let Resolved::Release { package, function, card, moved, .. } = target::published(&self.api, &hub, with, on).await? else {
             unreachable!("a published target resolves to a release");
         };
-        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
     }

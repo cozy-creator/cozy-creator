@@ -117,7 +117,7 @@ Every other field at an asset's root, such as `summary`, `beats`, `description`,
 
 At an asset's root is what it is. In `render` is how to make it: plain text as the short form, or a map.
 
-- **`with`:** the package. **`prompt`:** the text, which reaches the adapter as `fields.instructions`. **`models`, `lora`:** added to its first call.
+- **`with`:** the function or package. **`prompt`:** the text, which reaches the adapter as `fields.instructions`. **`models`, `lora`:** added to its first call.
 - **Every other key** is the adapter's own, such as turbo or megapixels, and reaches it as `op.options`. It isn't part of this standard.
 
 A shot can hold just `render: {turbo: false}`. `with`, `models`, `lora`, `options` and `instructions` at an asset's root warn and are ignored.
@@ -271,23 +271,26 @@ cozy project render clash
 
 ## Choosing a package, and adapters
 
-`render.with` names a package, `org/package[@release]`, never a function, or local code by its path (`./dir`, `./script.py`, `~/…`), keyed by its directory's name, so moving to the published package re-renders nothing. With no `@release`, a run uses what its machine has installed, or installs the newest if it has none; `cozy package update` moves it forward. The order is the asset's own, then `defaults.<type>.with`. An asset naming its own takes no render keys from `defaults`. With neither, it has nothing to make, and `status` and `render` say so as a warning.
+`render.with` names what makes it: a function, `org/package/function[@release]` or `package/function`, or a package alone, `org/package[@release]`, or local code by its path (`./dir`, `./dir/function`, `./script.py`, `~/…`), keyed by its directory's name, so moving to the published package re-renders nothing. The function is an input, so changing it can put a take out of date. `x/y` reads as `cozy run` reads it: root package x's function y if the Hub has one, else account x's package y. With no `@release`, a run uses what its machine has installed, or installs the newest if it has none; `cozy package update` moves it forward. The order is the asset's own, then `defaults.<type>.with`. An asset naming its own takes no render keys from `defaults`. With neither, it has nothing to make, and `status` and `render` say so as a warning.
 
-A package makes a file type by providing one Python adapter for it, as `render` is about the file being produced. With no adapter for that type, it can't make that asset: `status` and `render` say so in one line and carry on. There's no fallback.
+**A function** outputs a picture, a video or a sound, and that's the asset's `kind`: write it, or a line says what to write. **An adapter** translates: it's told the function and turns the asset into that function's input, with the words around a mention or a shot as segments. A function no adapter speaks for is called directly with the asset's fields, each `<mention>` the file it names (`CALCIFER-API.md`).
 
 ```python
-@app.project_adapter("video")
-def adapt(op: Operation) -> list[Invocation]: ...
+@app.project_adapter("video", functions=["upscale"])     # project-adapter-video-upscale: told `op.function`; its typed `fields` are the tool's box
+def adapt_upscale(op: UpscaleOperation) -> list[Invocation]: ...
+
+@app.project_adapter("video")                            # project-adapter-video: only a package named, so it picks
+def adapt_video(op: VideoOperation) -> list[Invocation]: ...
 ```
 
 For each asset that needs a run, Calcifer:
-1. Finds the package and builds an `Operation`: `{version, asset, kind, fields, options, reads, writes, keep}`.
+1. Finds the package and function and builds an `Operation`: `{version, asset, kind, function, fields, options, reads, writes, keep}`.
 2. Stops there if the memo already has a result.
-3. Installs the package on the render machine and runs its adapter as a small CPU run. Adapters are pure, so they only take text, names and hashes.
+3. Installs the package on the render machine and runs its adapter as a small CPU run, or goes straight to the function if none speaks for it. Adapters are pure, so they only take text, names and hashes.
 4. Runs the invocations it returns, in order, adding the seed, and on the first its `models` and `lora`. An empty list means no run: the asset's files are what it reads. In `input`, a string that is exactly `$0.video` means that field of invocation 0's result. A failed one stops the list and makes no version, and the next render tries again with the same seed.
 5. Records all the resulting files as one new version, by output name, later over earlier.
 
-The adapter holds all model-specific words and picks the function, such as `generate_turbo` from `render: {turbo: true}`. So a long shot is one operation: H3 splits it into segments itself.
+**What crosses a mention** is a read's `description`, never what made it: `render.prompt` goes only to the function making that asset. A shot is one operation: H3 splits it into segments itself.
 
 ## Building something other than film
 

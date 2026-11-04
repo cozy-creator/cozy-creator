@@ -801,3 +801,22 @@ pub enum Event {
         rendered: Option<Rendered>,
     },
 }
+
+/// `POST /v1/projects/{id}/assets/{name}/caption`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CaptionAsked {
+    /// The machine it runs on; absent: as a run with none named goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+}
+
+/// A node's description as a package would say it. Nothing is written: it's for the page to put in the field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Captioned {
+    pub name: String,
+    pub text: String,
+    /// The run that answered.
+    pub run: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}

@@ -91,6 +91,7 @@ every_render
 keeps
 written
 adapters
+tool_functions
 cuts "$P" "$ID"
 imports
 [ -n "${ALONE:-}" ] || failures
@@ -1336,6 +1337,99 @@ heard() { cat "$T/$(jq -r --arg s "$1" '.files[.assets[$s].versions[-1].files.gi
 render "$T" both || check "adapters: two calls: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.both.versions | length == 1 and (.[0] | (.runs | length == 2) and (.invocations | length == 2) and .files.first != null and .files.second != null)' "$T/project.lock" || check "adapters: two calls are not one version: $(jq -c '.assets.both.versions' "$T/project.lock")"
 [ "$(cat "$T/$(jq -r '.files[.assets.both.versions[0].files.second].path' "$T/project.lock")")" = "$(jq -r '.assets.both.versions[0].files.first' "$T/project.lock")" ] || check "adapters: the second call was not given the first's output"
+}
+
+# A tool is a function: what a node names, what makes it, what its box shows, and what crosses a mention. Weightless, by project/tool.py.
+tool_functions() {
+step "a tool is a function: called directly with no adapter, its mentions the files they name, and past a bound clamped with a line saying so"
+local T=$OUT/tools tool=$here/project/tool.py red blue id one input read before lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+mkdir -p "$T"; still "$T/red.png" red; still "$T/blue.png" blue
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+red=$(prefix "$T" "$T/red.png"); blue=$(prefix "$T" "$T/blue.png")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  red_art: {image: $red, description: PUBLIC-RED-WORDS}
+  blue_art: {image: $blue}
+  direct:
+    kind: image
+    render: {with: $tool/still, prompt: 'Look at <red_art> and <blue_art>.', aspect_ratio: "16:9", count: 99, style: nonsense}
+  madeup:
+    kind: image
+    description: PUBLIC-MADEUP-WORDS
+    render: {with: $tool/told, prompt: SECRET-PROMPT-WORDS, shade: 0.5}
+  reader:
+    kind: image
+    render: {with: $tool/told, prompt: 'Uses <madeup>.', shade: 7, aspect_ratio: "9:16"}
+    beats: [{description: One, duration: 5}]
+  alone:
+    kind: image
+    render: {with: $tool, prompt: 'Alone <madeup>.', turbo: true}
+YAML
+render "$T" direct || check "tools: direct: $(tail -c 500 "$OUT/render.txt")"
+input=$(jq -c '.assets.direct.versions[-1].invocations[0]' "$T/project.lock")
+J '.function == "still" and (.input | .aspect_ratio == "16:9" and .count == 4 and (has("style") | not) and (.prompt | contains("<red_art>")))' <<< "$input" || check "tools: the call: $input"
+J '.input.pictures | length == 1 and .[0].name == "red_art" and (.[0].image | length == 71)' <<< "$input" || check "tools: <red_art> is not the picture it names, or its one place is overrun: $input"
+says tools "count"; says tools "nonsense isn't"; says tools "first 1"
+
+step "a tool is a function: an adapter is told it, its typed bounds clamp, and only what's meant for a reader crosses a mention"
+render "$T" madeup reader alone || check "tools: told: $(tail -c 500 "$OUT/render.txt")"
+heard() { jq -r --arg a "$1" '.assets[$a].versions[-1].invocations[0].input.prompt' "$T/project.lock"; }
+J '.function == "told" and .fields.shade == 0.5 and .fields.instructions == "SECRET-PROMPT-WORDS" and .fields.description == null' <<< "$(heard madeup)" || check "tools: what told heard: $(heard madeup)"
+J '.function == "told" and .fields.shade == 1 and (.fields.beats | length == 1)' <<< "$(heard reader)" || check "tools: a bound on the adapter's fields didn't clamp: $(heard reader)"
+says tools "shade"
+read=$(heard reader)
+grep -q PUBLIC-MADEUP-WORDS <<< "$read" || check "tools: a description didn't reach what mentions it: $read"
+! grep -q SECRET-PROMPT-WORDS <<< "$read" || check "tools: a prompt crossed its mention: $read"
+J '.reads == [{"description": "PUBLIC-MADEUP-WORDS"}]' <<< "$read" || check "tools: a read carries more than what's meant for a reader: $read"
+J '.function == "" and .options.turbo == true and .fields.turbo == true' <<< "$(heard alone)" || check "tools: a package alone is told no function, and keeps its options: $(heard alone)"
+! grep -q SECRET-PROMPT-WORDS <<< "$(heard alone)" || check "tools: a prompt crossed its mention, to a package alone: $(heard alone)"
+
+step "a tool is a function: it's an input to the memo, and what makes no difference stays out"
+before=$(row "$T" direct .standing)
+[ "$before" = '"current"' ] || check "tools: direct should be current: $before"
+sed -i "s|with: $tool/still|with: $tool/told|" "$T/project.yaml"
+[ "$(row "$T" direct .standing)" = '"out_of_date"' ] || check "tools: changing a node's function didn't put its take out of date: $(status "$T" | jq -c '.stale')"
+sed -i "s|with: $tool/told, prompt: 'Look|with: $tool/still, prompt: 'Look|" "$T/project.yaml"
+[ "$(row "$T" direct .standing)" = '"current"' ] || check "tools: the same function again isn't current"
+
+step "a tool is a function: GET /v1/tools lists the local code a project names, what each makes, and its box"
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+id=$(status "$T" | jq -r .id)
+api --get --data-urlencode "project=$id" "http://$ADDR/v1/tools" > "$OUT/tools.json"
+one() { jq -c --arg f "$1" '.tools[] | select(.local and .function == $f)' "$OUT/tools.json"; }
+J '[.tools[] | select(.local) | .function] | sort == ["clip", "need", "still", "told"]' "$OUT/tools.json" || check "tools: listed: $(jq -c '[.tools[] | select(.local) | .function]' "$OUT/tools.json")"
+J --arg t "$tool" '.id == ($t + "/still") and .kind == "image" and .local and (.label | endswith("(local)"))' <<< "$(one still)" || check "tools: still: $(one still)"
+J '.kind == "video"' <<< "$(one clip)" || check "tools: clip's kind: $(one clip)"
+J '.ui == "ui/clip.js" and .kind == "video" and (.controls[0] | .field == "video" and .type == "file" and .accept == "video" and .required)' <<< "$(one need)" || check "tools: need: $(one need)"
+control() { jq -c --arg f "$2" '.controls[] | select(.field == $f)' <<< "$(one "$1")"; }
+J '.type == "text" and .required' <<< "$(control still instructions)" || check "tools: a function's text is instructions: $(one still)"
+J '.type == "range" and .min == 1 and .max == 4 and .step == 1' <<< "$(control still count)" || check "tools: count: $(control still count)"
+J '.type == "shape" and (.options | sort == ["16:9", "1:1"])' <<< "$(control still aspect_ratio)" || check "tools: aspect_ratio: $(control still aspect_ratio)"
+J '.type == "choice" and (.options | sort == ["flat", "noise"])' <<< "$(control still style)" || check "tools: style: $(control still style)"
+J '.type == "toggle"' <<< "$(control still soft)" || check "tools: soft: $(control still soft)"
+[ -z "$(control still seed)$(control still pictures)" ] || check "tools: seed or the named pictures are a control: $(one still)"
+J '.type == "range" and .min == 0 and .max == 1' <<< "$(control told shade)" || check "tools: an adapter's typed box: $(one told)"
+J '.type == "beats" and .max_duration == 15' <<< "$(control told beats)" || check "tools: a package's own limit: $(control told beats)"
+J '.type == "file" and .accept == "video"' <<< "$(control told video)" || check "tools: a mention typed as a file: $(control told video)"
+[ -z "$(control told secret)" ] || check "tools: a hidden field shows: $(one told)"
+J '.type == "shape" and .options == ["1:1"]' <<< "$(control told aspect_ratio)" || check "tools: a shape's options: $(control told aspect_ratio)"
+
+step "a tool is a function: a node from a tool takes its kind from what it makes, and what's missing fails it before anything runs"
+one=$(api -X POST -H "Idempotency-Key: tool-$RANDOM$RANDOM" -d "$(jq -n --arg t "$tool/need" '{tool: $t, name: "kept_video"}')" "http://$ADDR/v1/projects/$id/assets")
+J '.name == "kept_video"' <<< "$one" || check "tools: POST assets: $one"
+J '.assets[] | select(.name == "kept_video") | .kind == "video"' <<< "$(status "$T")" || check "tools: its kind isn't from its output: $(row "$T" kept_video .kind)"
+before=$(runs "$T")
+render "$T" kept_video
+says tools "needs video"
+[ "$(runs "$T")" = "$before" ] || check "tools: a run went with its file missing"
+
+step "a tool is a function: Caption asks what the package says to, and writes nothing"
+before=$(sha "$T/project.yaml")
+one=$(api -X POST -d '{"on": "local"}' "http://$ADDR/v1/projects/$id/assets/red_art/caption")
+J '.name == "red_art" and (.text | contains("THE-PACKAGE-ASKS") and contains("1 pictures"))' <<< "$one" || check "tools: caption: $one"
+[ "$(sha "$T/project.yaml")" = "$before" ] || check "tools: caption wrote to the file"
+J --arg e caption_no_file '.error.code == $e' <<< "$(api -X POST "http://$ADDR/v1/projects/$id/assets/kept_video/caption")" || check "tools: a caption of nothing isn't refused"
 }
 
 # Runs that fail on purpose, on a machine with no history to keep clean: never alone.

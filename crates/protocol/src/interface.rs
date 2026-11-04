@@ -243,6 +243,9 @@ pub struct Callable {
     pub accelerator: Option<bool>,
     #[serde(default, deserialize_with = "or_default")]
     pub invocable: Invocable,
+    /// The path in its package of a component that draws its box.
+    #[serde(default, deserialize_with = "or_default")]
+    pub ui: Option<String>,
     /// A CPU function that loads no model and calls its package's GPU functions
     /// (`orchestrates`).
     #[serde(skip)]
