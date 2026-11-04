@@ -125,8 +125,8 @@ A URL is downloaded here, up to 64 MiB, from a public address.")]
 struct ImportFile {
     /// A path, or an http(s) URL.
     source: String,
-    /// Also remove a picture's background, by a run of `birefnet/remove_background`, and print the line for that file. The original
-    /// is kept. Without this, import is a plain copy and needs no machine.
+    /// Remove a picture's background, by a run of `birefnet/remove_background`, and keep only the result, printing its line. Without
+    /// this, import is a plain copy and needs no machine.
     #[arg(long)]
     remove_background: bool,
     /// The machine that run goes to (default: this computer if it can run models, else a machine you have up).
@@ -377,7 +377,6 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         return Ok(ExitCode::SUCCESS);
     }
     // One line on stdout, the one to paste; the rest goes where a run's progress goes.
-    anstream::eprintln!("{verb} {}", imported.prefix);
     if let Some(note) = &imported.note {
         output::warn(note);
     }
@@ -390,8 +389,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         crate::run::paste(ctx, &run);
         return Ok(ExitCode::SUCCESS);
     }
-    output::warn(&format!("run {} hasn't removed its background: the plain copy is kept", run.number));
-    anstream::println!("{}", imported.line);
+    output::warn(&format!("run {} hasn't removed its background, and nothing is kept: import it again", run.number));
     Ok(crate::run::exit_code(&run))
 }
 
