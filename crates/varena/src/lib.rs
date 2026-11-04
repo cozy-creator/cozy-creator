@@ -1016,7 +1016,7 @@ impl Region {
     /// Demand: anything idle may go to make room, in the one reclaim order.
     pub fn prepare(self: &Arc<Self>) -> Result<Preparation> {
         let protected = std::collections::BTreeSet::from([self.id]);
-        let protect = reclaim::Protect { regions: Some(&protected), ..Default::default() };
+        let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, ..Default::default() };
         let result = (|| loop {
             let prepared = reclaim::acquire(self.gpu.ordinal, self.rounded, reclaim::Wait::Yes, protect, || {
                 let gate = gate(self.gpu.ordinal)?;

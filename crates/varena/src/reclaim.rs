@@ -42,6 +42,9 @@ pub(crate) struct Protect<'a> {
     pub(crate) pool: Option<PoolId>,
     /// The caller's fit already counts completed working pages, or they are not its to take.
     pub(crate) keep_working: bool,
+    /// A weight's demand leaves the free pages the rest of this phase will use again: they would
+    /// only map straight back. It takes the other weights first, and these pages last.
+    pub(crate) keep_phase: bool,
     /// A guess must not take another guess.
     pub(crate) speculative: bool,
 }
@@ -126,12 +129,17 @@ impl<'a> Sequence<'a> {
                 return Ok(true);
             }
             self.step += 1;
+            if step == Step::Weights && self.protect.keep_phase {
+                self.protect.keep_phase = false;
+                self.step = 0;
+            }
         }
         Ok(false)
     }
 
     fn working(&mut self, want: usize) -> Result<()> {
         if !self.protect.keep_working {
+            let want = if self.protect.keep_phase { want.min(working::beyond_phase(self.device)?) } else { want };
             self.released += working::release_completed(self.device, want,
                 self.maximum.saturating_sub(self.released), self.protect.pool)?;
         }
@@ -158,6 +166,9 @@ impl<'a> Sequence<'a> {
                 self.weights(want, classes, waiting, waiting)
             }
             Step::PendingWorking if waiting => {
+                if self.protect.keep_phase && working::beyond_phase(self.device)? != usize::MAX {
+                    return Ok(false);
+                }
                 if !working::wait_pending(self.device, want, self.protect.pool)? {
                     return Ok(false);
                 }

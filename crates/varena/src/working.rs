@@ -2067,6 +2067,20 @@ pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> 
     Ok(answer)
 }
 
+/// Free pages beyond what the rest of this phase will use again, per its last pass. With no measure
+/// of it, usize::MAX: nothing is known to come back.
+pub(crate) fn beyond_phase(device: i32) -> Result<usize> {
+    let Some(owner) = existing(device)? else {
+        return Ok(usize::MAX);
+    };
+    let state = owner.lock()?;
+    let known = state.phases.active.as_ref().filter(|active| active.invalid.is_none() && active.mode == PhaseMode::Eager)
+        .and_then(|active| Some((state.phases.samples.get(active.key.as_ref()?).filter(|sample| sample.known)?, active)));
+    Ok(known.map_or(usize::MAX, |(sample, active)| {
+        state.reusable_eager_pages().saturating_sub(sample.peak_bytes.saturating_sub(active.owned_charged))
+    }))
+}
+
 pub(crate) fn prefetch_admitted(device: i32) -> Result<()> {
     if let Some(owner) = existing(device)? {
         owner.lock()?.stats.prefetch_admissions += 1;

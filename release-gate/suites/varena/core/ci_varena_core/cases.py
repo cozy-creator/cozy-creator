@@ -457,6 +457,32 @@ def freed_pages_back_any_block():
 
 
 @case
+def fill_keeps_phase_pages():
+    """A weight's demand leaves the free pages this phase will use again, and takes another weight;
+    with no weight left to give, it has them too."""
+    gpu = varena.Device(0)
+    key = "core/keeps"
+    token = vt.phase_enter(0, key)
+    value = torch.empty(64 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+    torch.cuda.synchronize()
+    del value
+    assert vt.phase_leave(0, token, completed=True)["published"]
+    torch.cuda.synchronize()
+    idle = filled(gpu, 16 * MIB, 3)
+    mapped = vt.stats(0)["mapped_bytes"]
+    cap(mapped + 16 * MIB, gpu)
+    token = vt.phase_enter(0, key)
+    wanted = filled(gpu, 16 * MIB, 4)
+    assert not idle.resident and wanted.resident and vt.stats(0)["mapped_bytes"] == mapped, (gpu.stats(), vt.stats(0))
+    last = filled(gpu, 32 * MIB, 5)
+    assert last.resident and vt.stats(0)["mapped_bytes"] < mapped, vt.stats(0)
+    vt.phase_leave(0, token, completed=False)
+    del idle, wanted, last
+    clear(gpu)
+    return {"kept_mib": mapped // MIB}
+
+
+@case
 def eviction_order():
     """Outside the plan first, then the phase's most recently used; its next use stays."""
     gpu = varena.Device(0)
