@@ -1086,15 +1086,21 @@ wait "$second" || check "joining: the second render: $(tail -c 300 "$OUT/join-se
 # Renders queued from one shell, seen, one canceled, and the rest land. A canceled `render all` doesn't send again what it canceled.
 # The walk (cl-770): every job known when asked, each going on its own, a deleted asset's queued job saying so, and nothing of the walk left behind.
 walking() {
-step "a project: what's queued is known at once, a slow job holds up nothing, a deleted asset's job stops and lands nothing"
-local W=$OUT/walking stream=$OUT/walking-events.txt id
+step "a project: what's queued is known at once, a long job holds up nothing it isn't read by, a deleted asset's job stops and lands nothing"
+local W=$OUT/walking stream=$OUT/walking-events.txt id run back
 mkdir -p "$W"
 cat > "$W/project.yaml" <<YAML
 version: 3
 assets:
+  running_gone:
+    tool: $here/project/shots.py/shoot
+    seconds: 900
+  reads_gone:
+    tool: $here/project/draw.py/draw
+    instructions: From <running_gone>, which is deleted as it runs.
   slow:
     tool: $here/project/shots.py/shoot
-    seconds: 40
+    seconds: 5
   beside:
     tool: $here/project/draw.py/draw
     instructions: Reads nothing, so it goes now.
@@ -1110,37 +1116,32 @@ assets:
   gone_soon:
     tool: $here/project/draw.py/draw
     instructions: Also from <slow>, and deleted while it waits.
-  running_gone:
-    tool: $here/project/shots.py/shoot
-    seconds: 900
-  reads_gone:
-    tool: $here/project/draw.py/draw
-    instructions: From <running_gone>, which is deleted as it runs.
 YAML
 id=$(cozy --json project -p "$W" status | jq -r .id)
-api -N --max-time 90 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
+api -N --max-time 120 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
 local tail=$!
 cozy project -p "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
-J '[.board.jobs[].asset] as $a | (["slow", "beside", "one", "two", "last", "gone_soon", "running_gone", "reads_gone"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
+J '[.board.jobs[].asset] as $a | (["running_gone", "reads_gone", "slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
 J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
-for _ in $(seq 120); do [ "$(made "$W" beside)" = 1 ] && break; sleep 0.25; done
-{ [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" slow)" = 0 ]; } || check "walking: beside waited for slow, or slow is done already: $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
+for _ in $(seq 240); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" | jq -r .status)" = in_progress ] && break; sleep 0.25; done
+[ "$(cozy --json run show "$run" | jq -r .status)" = in_progress ] || check "walking: running_gone isn't running: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
+# On one machine they queue there: each went as soon as it could, not after the long job.
+for _ in $(seq 120); do J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" && break; sleep 0.25; done
+J '[.board.jobs[] | select(.asset == "slow" or .asset == "beside") | .run] | all' <<< "$(status "$W")" || check "walking: what reads nothing waited for the long job: $(status "$W" | jq -c '[.board.jobs[] | {asset, run}]')"
 [ -f "$W/.runs/walk.json" ] || check "walking: what the walk owes isn't in .runs/walk.json"
 J '.walk | not' "$W/project.lock" || check "walking: project.lock holds what the walk owes"
-local run=
-for _ in $(seq 120); do run=$(status "$W" | jq -r '.board.jobs[] | select(.asset == "running_gone") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" | jq -r .status)" = in_progress ] && break; sleep 0.5; done
-[ -n "$run" ] || check "walking: running_gone never ran: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "running_gone")')"
 python3 - "$W/project.yaml" <<'PY2'
 import re, sys
 text = open(sys.argv[1]).read()
 open(sys.argv[1], "w").write(re.sub(r"  gone_soon:\n(    .*\n)+", "", text))
 PY2
-local back; back=$(api -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone")
-for _ in $(seq 40); do [ "$(cozy --json run show "$run" | jq -r .status)" = canceled ] && break; sleep 0.5; done
+for _ in $(seq 20); do J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled"' <<< "$(status "$W")" && break; sleep 0.25; done
+back=$(api -X DELETE "http://$ADDR/v1/projects/$id/assets/running_gone")
+for _ in $(seq 60); do [ "$(cozy --json run show "$run" | jq -r .status)" = canceled ] && break; sleep 0.5; done
 [ "$(cozy --json run show "$run" | jq -r .status)" = canceled ] || check "walking: a deleted asset's run goes on billing: $(cozy --json run show "$run" | jq -c '{status, progress}')"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
 kill "$tail" 2> /dev/null
-{ [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
+{ [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
 for gone in gone_soon running_gone; do
   [ "$(made "$W" "$gone")" = 0 ] || check "walking: deleted $gone has a version"
   J --arg gone "$gone" '.board.jobs[] | select(.asset == $gone) | .state == "canceled" and (.why | test("deleted"))' <<< "$(status "$W")" || check "walking: deleted $gone's job says $(status "$W" | jq -c --arg gone "$gone" '.board.jobs[] | select(.asset == $gone)')"
