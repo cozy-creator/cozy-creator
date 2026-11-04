@@ -53,8 +53,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {kindOf(view) && <span className="tag">{kindOf(view)}</span>}
-        <span className="sp" />
+        {view.draft === undefined && kindOf(view) && <span className="tag">{kindOf(view)}</span>}
+        {view.draft === undefined && <span className="sp" />}
         {view.placing && view.placing.stage !== "adding" && (
           <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={cancel}>
             ×
