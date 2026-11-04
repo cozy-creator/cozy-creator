@@ -70,6 +70,8 @@ pub struct Projects {
     index: Mutex<Option<Index>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
+    /// Each project made by name since Calcifer started, by the `Idempotency-Key` that asked: a retry makes no `_2`.
+    made: Mutex<HashMap<String, PathBuf>>,
 }
 
 /// A package as a project's read knows it: when it was last asked of, and what that found.
@@ -400,11 +402,24 @@ fn status_next(folder: &Folder) -> Vec<String> {
 /// By `name`, makes a new empty project under `~/.cozy/projects`. By `path`, opens the project holding it (the nearest folder up from
 /// it with a project.yaml), or makes one there (`create`: the folder and its project.yaml). Either way it is recorded in the index as
 /// used now.
-async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
+async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
+    let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let dir = match (&open.name, &open.path) {
-        (Some(name), _) => named_project(&api, name).map_err(Refusal)?,
+        (Some(name), _) => {
+            let made = key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned());
+            match made {
+                Some(dir) => dir,
+                None => {
+                    let dir = named_project(&api, name).map_err(Refusal)?;
+                    if let Some(key) = key {
+                        api.projects.made.lock().expect("made lock").insert(key.to_owned(), dir.clone());
+                    }
+                    dir
+                }
+            }
+        }
         (None, Some(path)) if !path.is_absolute() => {
             return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is opened by its absolute path")));
         }
