@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>Cozy project</title>
+<link rel="stylesheet" href="/page/style.css">
+<header id="top">
+  <strong id="name"></strong>
+  <span id="summary" role="status"></span>
+  <nav id="cuts" aria-label="Cuts"></nav>
+  <label>Machine <select id="machine"></select></label>
+  <button id="render-all">Render all</button>
+</header>
+<p id="banner" hidden></p>
+<nav id="list" aria-label="Production">
+  <div id="assets"></div>
+  <div id="extras">
+    <button id="whole" class="row">project.yaml</button>
+    <details id="adding">
+      <summary class="row">Add an asset</summary>
+      <input id="new-name" placeholder="Its name" aria-label="Name">
+      <select id="new-kind" aria-label="Kind">
+        <option>shot</option><option>character</option><option>environment</option><option>scene</option><option>prop</option><option>image</option><option>edit</option>
+      </select>
+      <button id="add">Add</button>
+    </details>
+  </div>
+</nav>
+<main id="middle">
+  <div id="stage"></div>
+  <p id="note"></p>
+  <div id="timeline" hidden></div>
+  <div id="strip" aria-label="Versions"></div>
+  <details id="activity">
+    <summary>Activity <span id="latest"></span></summary>
+    <ol id="log"></ol>
+  </details>
+</main>
+<aside id="text">
+  <h1 id="title"></h1>
+  <p id="about"></p>
+  <textarea id="yaml" spellcheck="false" aria-label="Its lines in project.yaml"></textarea>
+  <div id="saving">
+    <button id="save">Save</button>
+    <span id="saved" role="status"></span>
+  </div>
+  <div id="reads"></div>
+  <div id="actions">
+    <button id="render" class="main">Render</button>
+    <span class="joined">
+      <button id="new">New take</button>
+      <input id="count" type="number" min="1" max="16" value="1" aria-label="How many">
+    </span>
+    <button id="approve">Approve</button>
+    <button id="unpin">Unpin</button>
+    <button id="keep" hidden title="A new take: this one up to the playhead, the rest new">Keep up to here</button>
+  </div>
+  <p id="hint" hidden>No machine yet. Rent one in a terminal: <code>cozy machine rent</code></p>
+  <p id="said" role="alert"></p>
+</aside>
+<script type="module" src="/page/app.mjs"></script>
+</html>

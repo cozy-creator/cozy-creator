@@ -1,8 +1,9 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
 //! browser. Every request passes the guard chain in order: a loopback peer, an allowed `Host`, no
 //! foreign `Origin`, then (on the routes Calcifer serves) the bearer, from the `Authorization`
-//! header or the `cozy_session` cookie `POST /v1/session` sets, and the admission gate a stopping
-//! Calcifer closes. Refusals are `protocol::error::Envelope`s. No CORS header is ever sent.
+//! header or the `cozy_session` cookie `POST /v1/session` sets, or one project's page token, and the
+//! admission gate a stopping Calcifer closes. Refusals are `protocol::error::Envelope`s. No CORS
+//! header is ever sent.
 use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
@@ -121,13 +122,29 @@ impl Api {
 
     /// The bearer, compared by digest so the time taken says nothing about the token.
     fn admits(&self, presented: &str) -> bool {
-        let presented: [u8; 32] = Sha256::digest(presented).into();
-        presented
-            .iter()
-            .zip(&self.bearer)
-            .fold(0, |differ, (a, b)| differ | (a ^ b))
-            == 0
+        same(&Sha256::digest(presented).into(), &self.bearer)
     }
+
+    /// This server's own `host:port`.
+    pub(crate) fn host(&self) -> &str {
+        &self.hosts[0]
+    }
+
+    /// The token of project `id`'s page: `<id>.<hex>`. It is read from the bearer, so it ends with it at a restart, and nothing is kept.
+    pub(crate) fn page_token(&self, id: &str) -> String {
+        let mac = Sha256::new().chain_update(id).chain_update([0]).chain_update(self.bearer).finalize();
+        format!("{id}.{}", hex::encode(mac))
+    }
+
+    /// The project `token` is a page token of.
+    fn page_of<'t>(&self, token: &'t str) -> Option<&'t str> {
+        let (id, _) = token.split_once('.')?;
+        same(&Sha256::digest(token).into(), &Sha256::digest(self.page_token(id)).into()).then_some(id)
+    }
+}
+
+fn same(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter().zip(b).fold(0, |differ, (a, b)| differ | (a ^ b)) == 0
 }
 
 pub fn router(api: Arc<Api>) -> Router {
@@ -170,6 +187,8 @@ pub fn router(api: Arc<Api>) -> Router {
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
+        // The page's own files hold nothing secret: its token rides its link's fragment.
+        .merge(crate::page::routes())
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn_with_state(api.clone(), guard))
@@ -330,6 +349,9 @@ fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
 /// The browser session's cookie: the bearer itself, for what cannot send a header (`<video>`,
 /// `EventSource`). Scoped to the API, never readable by a page's script.
 const SESSION: &str = "cozy_session";
+/// A project page's cookie, `<this><project id>`, one per project so two open pages don't share one: its token, which reaches
+/// that project alone.
+const PAGE_SESSION: &str = "cozy_page_";
 
 /// The bearer, from `Authorization` or the session cookie, then the admission gate for every
 /// mutation but `down`, held while it runs. The cookie rides along on any request a browser makes,
@@ -342,29 +364,37 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let cookie = (headers.get_all(header::COOKIE).iter())
+    let cookies = (headers.get_all(header::COOKIE).iter())
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(SESSION)?.strip_prefix('='));
-    let admitted = match (bearer, cookie) {
-        (Some(token), _) => api.admits(token),
-        (None, Some(token)) if api.admits(token) => {
-            let safe = matches!(*request.method(), Method::GET | Method::HEAD);
-            let origin = headers.get(header::ORIGIN).is_some();
-            let cross = headers.get("sec-fetch-site").is_some_and(|site| site == "cross-site");
-            if cross || (!safe && !origin) {
-                return refuse(
-                    Kind::Forbidden,
-                    "session_cross_site",
-                    "the session cookie serves Calcifer's own pages only",
-                )
-                .into_response();
-            }
-            true
+        .filter_map(|pair| pair.trim().split_once('='));
+    let (mut session, mut pages) = (None, vec![]);
+    for (name, token) in cookies {
+        if name == SESSION {
+            session = Some(token);
+        } else if name.starts_with(PAGE_SESSION) {
+            pages.extend(api.page_of(token));
         }
-        _ => false,
-    };
-    if !admitted {
+    }
+    let by_cookie = bearer.is_none() && (session.is_some_and(|token| api.admits(token)) || !pages.is_empty());
+    if by_cookie {
+        let safe = matches!(*request.method(), Method::GET | Method::HEAD);
+        let origin = headers.get(header::ORIGIN).is_some();
+        let cross = headers.get("sec-fetch-site").is_some_and(|site| site == "cross-site");
+        if cross || (!safe && !origin) {
+            return refuse(
+                Kind::Forbidden,
+                "session_cross_site",
+                "the session cookie serves Calcifer's own pages only",
+            )
+            .into_response();
+        }
+    }
+    let owner = bearer.or(session).is_some_and(|token| api.admits(token));
+    if let Some(token) = bearer.filter(|_| !owner) {
+        pages.extend(api.page_of(token));
+    }
+    if !owner && pages.is_empty() {
         return refuse(
             Kind::Credential,
             "unauthenticated",
@@ -372,6 +402,9 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
         )
         .remedy("a browser page posts it once to /v1/session")
         .into_response();
+    }
+    if !owner && !page_may(&api, &request, &pages) {
+        return refuse(Kind::Forbidden, "page_scope", "a project's page reaches that project alone").into_response();
     }
     if request.method() == Method::GET || request.uri().path() == "/v1/down" {
         return next.run(request).await;
@@ -387,6 +420,27 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
         .into_response();
     }
     next.run(request).await
+}
+
+/// What a project's page may ask: to read and edit that project, render on a machine it names, and read the runs its lock names.
+/// It can't rent (`POST /v1/projects/{id}/runs` refuses `new`), end a machine, stop Calcifer or see another project.
+fn page_may(api: &Arc<Api>, request: &Request, projects: &[&str]) -> bool {
+    let method = match request.method().as_str() {
+        "HEAD" => "GET",
+        method => method,
+    };
+    let path: Vec<&str> = request.uri().path().trim_start_matches('/').split('/').collect();
+    match (method, path.as_slice()) {
+        ("POST", ["v1", "session"]) | ("GET", ["v1", "machines"]) => true,
+        ("GET", ["v1", "projects", id, rest @ ..]) => {
+            projects.contains(id) && matches!(rest, [] | ["yaml"] | ["events"] | ["assets", _] | ["files", _] | ["cuts", _])
+        }
+        ("PUT", ["v1", "projects", id, "yaml"]) | ("POST", ["v1", "projects", id, "runs" | "approve" | "unpin"]) => projects.contains(id),
+        ("GET", ["v1", "runs", run, rest @ ..]) if matches!(rest, [] | ["events"] | ["play"] | ["outputs", _]) => {
+            find(api, run).is_ok_and(|row| projects.iter().any(|id| api.projects.names_run(api, id, row.number)))
+        }
+        _ => false,
+    }
 }
 
 /// The `Idempotency-Key` a durable ask is recorded under; required.
@@ -552,11 +606,15 @@ async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
 /// `POST /v1/session`: the bearer a page presented in `Authorization` (from its URL's fragment,
 /// which no server or log sees), as the session cookie; `admit` already checked it. It lasts while
 /// this Calcifer runs: the next one mints another bearer.
-async fn session(headers: axum::http::HeaderMap) -> Result<Response, Refusal> {
+async fn session(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -> Result<Response, Refusal> {
     let bearer = (headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()))
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(|| refuse(Kind::Credential, "session_needs_bearer", "a session starts from the bearer itself"))?;
-    let cookie = format!("{SESSION}={bearer}; HttpOnly; SameSite=Strict; Path=/v1");
+    let name = match api.page_of(bearer) {
+        Some(project) => format!("{PAGE_SESSION}{project}"),
+        None => SESSION.to_owned(),
+    };
+    let cookie = format!("{name}={bearer}; HttpOnly; SameSite=Strict; Path=/v1");
     let value = HeaderValue::from_str(&cookie).map_err(|_| refuse(Kind::Usage, "bearer_invalid", "not a bearer"))?;
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, value)]).into_response())
 }

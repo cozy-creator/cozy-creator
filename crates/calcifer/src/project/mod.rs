@@ -24,9 +24,9 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{Path, Query, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{
-        Response,
+        IntoResponse as _, Response,
         sse::{self, KeepAlive, Sse},
     },
     routing::{get, post},
@@ -41,8 +41,8 @@ use protocol::{
     machine as v1,
     project::{
         Approve, Approved, Asset as Row, AssetVersions, Cut, Event, File as Listing, Import, Imported, Kept, Known, Open, Opened,
-        Orphan, Projects as Listed, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, State as ProjectState, Unpin, Unpinned,
-        Version as VersionRow, VersionPrefix,
+        Orphan, PageLink, Projects as Listed, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding,
+        State as ProjectState, Unpin, Unpinned, Version as VersionRow, VersionPrefix,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -113,6 +113,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/push", post(remote::pushed))
         .route("/v1/projects/{id}/pull", post(remote::pulled))
         .route("/v1/projects/{id}/events", get(events))
+        .route("/v1/projects/{id}/yaml", get(yaml).put(save))
+        .route("/v1/projects/{id}/page", post(page))
         .route("/v1/projects/{id}/assets/{name}", get(asset))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
@@ -131,6 +133,13 @@ impl Projects {
         };
         self.open(api, &entry.path).map_err(Refusal)?;
         Ok(self.open.lock().expect("projects lock").get(id).cloned().expect("just opened"))
+    }
+
+    /// Whether project `id`'s lock names run `number`: one making a version, or one that made a version.
+    pub(crate) fn names_run(&self, api: &Arc<Api>, id: &str, number: u64) -> bool {
+        let Ok(lock) = self.get(api, id).and_then(|project| project.folder.lock().map_err(Refusal)) else { return false };
+        (lock.pending.values()).any(|pending| pending.run == number || pending.version.runs.contains(&number))
+            || (lock.assets.values().flat_map(|held| &held.versions)).any(|version| version.runs.contains(&number))
     }
 
     /// The project in `dir` (canonical), opened once; its walk goes on when project.lock owes one.
@@ -437,9 +446,9 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
     let (asset, standing) = (&doc.assets[i], &stand[i]);
     let noun = noun(doc, lock, i);
     let held = lock.asset(&asset.name);
-    let making: Vec<String> = (lock.pending.values())
+    let making: Vec<u64> = (lock.pending.values())
         .filter(|pending| name_key(&pending.asset) == name_key(&asset.name) && pending.run > 0)
-        .map(|pending| pending.run.to_string())
+        .map(|pending| pending.run)
         .collect();
     let files = standing.files.clone().unwrap_or_default();
     let gone: Vec<&str> = (files.values())
@@ -448,7 +457,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         .collect();
     let status = match (making.as_slice(), &standing.state) {
         ([run], _) => format!("making (run {run})"),
-        (runs @ [_, ..], _) => format!("making (runs {})", runs.join(", ")),
+        (runs @ [_, ..], _) => format!("making (runs {})", runs.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")),
         ([], _) if !gone.is_empty() => format!("not on this computer: {}: cozy project pull", gone.join(", ")),
         ([], Stand::Pinned { version: None, .. }) => "pinned".into(),
         ([], Stand::Pinned { version: Some(version), changed }) if changed.is_empty() => format!("pinned: {noun} {version}"),
@@ -462,8 +471,16 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         ([], Stand::Missing) => format!("no {noun} yet"),
     };
     let made = standing.version().and_then(|number| held?.version(number));
+    let row_standing = match (making.is_empty(), &standing.state) {
+        (false, _) => RowStanding::Making,
+        (true, Stand::Stale(_)) => RowStanding::OutOfDate,
+        (true, Stand::Missing | Stand::Waits | Stand::Unwritten { .. }) => RowStanding::Missing,
+        (true, _) => RowStanding::Current,
+    };
     Row {
         name: asset.name.clone(),
+        standing: row_standing,
+        making,
         kind: asset.kind.clone(),
         noun: noun.into(),
         with: doc.makes(i).then(|| doc.target(i)),
@@ -645,7 +662,11 @@ async fn runs(
         let said = format!("--approve approves the one new version; -n {} makes {}", asked.n, asked.n);
         return Err(Refusal(Error::new(Kind::Usage, "approve_one", said).remedy("drop --approve, or -n")));
     }
-    Origin::parse(&asked.hub).map_err(Refusal)?;
+    let hub = match asked.hub.is_empty() {
+        true => api.machines.hubs.hub.to_string(),
+        false => asked.hub.clone(),
+    };
+    Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     if let Some(key) = headers.get("idempotency-key").and_then(|key| key.to_str().ok()) {
         let digest = hex::encode(Sha256::digest(&body));
@@ -662,7 +683,7 @@ async fn runs(
         }
     }
     let doc = Doc::load(&project.folder).map_err(Refusal)?;
-    let target = Target { on: asked.on, hub: asked.hub };
+    let target = Target { on: asked.on, hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let lock = project.folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);
@@ -952,6 +973,49 @@ async fn events(
         }
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// project.yaml's ETag, as `text` holds it.
+fn yaml_etag(text: &str) -> String {
+    format!("\"{}\"", hex::encode(Sha256::digest(text)))
+}
+
+/// `GET /v1/projects/{id}/yaml`: project.yaml as it is this moment, and the ETag a `PUT` names.
+async fn yaml(State(api): State<Arc<Api>>, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, Refusal> {
+    let project = api.projects.get(&api, &id)?;
+    let etag = yaml_etag(&project.folder.text().map_err(Refusal)?);
+    send(&project.folder.project(), &etag, &headers)
+}
+
+/// `PUT /v1/projects/{id}/yaml`: these bytes are project.yaml, if it still holds what `If-Match` read, so a save made since the
+/// page read it stands. A text that doesn't read as a project is refused, and the file left as it is.
+async fn save(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, Refusal> {
+    let Some(read) = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok()) else {
+        let said = "a save names what it read: `If-Match` with the ETag of `GET /v1/projects/{id}/yaml`";
+        return Err(Refusal(Error::new(Kind::Usage, "if_match_required", said)));
+    };
+    let body = body?;
+    let text = std::str::from_utf8(&body).map_err(|e| Refusal(Error::new(Kind::Validation, "project_yaml", format!("{}: {e}", folder::PROJECT))))?;
+    let project = api.projects.get(&api, &id)?;
+    Doc::read(&project.folder, text).map_err(Refusal)?;
+    (project.folder.edit_project(|now| match yaml_etag(now) == read {
+        true => Ok(text.to_owned()),
+        false => Err(Error::new(Kind::Conflict, "project_changed", format!("{} changed since it was read", folder::PROJECT))
+            .remedy("read it again and make the edit on what it holds")),
+    }))
+    .map_err(Refusal)?;
+    Ok((StatusCode::NO_CONTENT, [(header::ETAG, yaml_etag(text))]).into_response())
+}
+
+/// `POST /v1/projects/{id}/page`: the link to this project's page. Its token reaches this project alone (`Api::page_token`).
+async fn page(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<PageLink>, Refusal> {
+    api.projects.get(&api, &id)?;
+    Ok(Json(PageLink { url: format!("http://{}/projects/{id}/#token={}", api.host(), api.page_token(&id)) }))
 }
 
 /// One of the project's files by its name in files/ (`<sha256>.<ext>`): content-addressed, so its sha256 is its ETag.
@@ -1872,6 +1936,7 @@ fn media_type(path: &FsPath) -> &'static str {
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
         "otio" => "application/json",
+        "yaml" => "text/yaml; charset=utf-8",
         _ => "application/octet-stream",
     }
 }

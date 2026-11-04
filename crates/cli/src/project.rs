@@ -1,13 +1,16 @@
 //! `cozy project`: the CLI's side of Calcifer's projects (xs-151, cl-758). Calcifer finds the
 //! project, makes its assets' takes and versions and keeps their files; these verbs ask it and print,
 //! and `render` follows each run as `cozy run` does. Ctrl-C stops following, never the runs.
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    path::PathBuf,
+    process::{Command, ExitCode, Stdio},
+};
 
 use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Event, Import, Imported, Open, Opened, PageLink, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -20,6 +23,7 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
+  cd garden && cozy project open                opens its page in your browser
   cd garden && cozy project import ./kyogre.png --character   prints what to paste into project.yaml
   cozy project render all --on kiyui
   cozy project render fight --new -n 3 --on kiyui    three more takes of fight
@@ -72,6 +76,9 @@ enum Verb {
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
+    /// Open the project's page in your browser: its assets, their takes, their text and what renders them.
+    #[command(after_help = "Example:\n  cozy project open\n\nThe page is served by Calcifer on this computer alone. Its link reaches this project and nothing else, until Calcifer restarts.")]
+    Open,
     Import(ImportFile),
     Render(Render),
     /// Pin a take or version: its hash goes on the asset's line in project.yaml.
@@ -194,6 +201,17 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if listed.older > 0 {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
+        }
+        Verb::Open => {
+            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let path = format!("/v1/projects/{}/page", opened.id);
+            let link: PageLink = ctx.calcifer().await?.post(&path, &serde_json::json!({}), None).await?;
+            if ctx.json {
+                output::json(&link);
+                return Ok(ExitCode::SUCCESS);
+            }
+            browse(&link.url);
+            output::say(ctx, &format!("{}: {}", opened.path.display(), link.url));
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
@@ -507,6 +525,16 @@ fn retimes(retimed: &[String], fps: f64) -> String {
         [] => String::new(),
         takes => format!("; it retimes {} to {fps} fps", takes.join(", ")),
     }
+}
+
+/// Asks this computer's browser to open `url`, and doesn't wait for it. With none, the link is printed all the same.
+fn browse(url: &str) {
+    let (program, first): (&str, &[&str]) = match std::env::consts::OS {
+        "macos" => ("open", &[]),
+        "windows" => ("cmd", &["/C", "start", ""]),
+        _ => ("xdg-open", &[]),
+    };
+    let _ = Command::new(program).args(first).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
 /// The project holding `at` (else the folder you are in) as Calcifer opens it, made there first
