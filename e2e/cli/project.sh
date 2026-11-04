@@ -1476,6 +1476,9 @@ hostile_outputs
 [ "$(api -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.example' -H 'Content-Type: application/json' -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$ID/runs")" = 403 ] \
   || check "a POST with a foreign Origin was not refused 403"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/projects")" = 401 ] || check "a request with no bearer was not refused 401"
+[ "$(api -o "$OUT/calcifer-status.json" -w '%{http_code}' "http://$ADDR/v1/status")" = 200 ] || check "GET /v1/status: $(cat "$OUT/calcifer-status.json")"
+J '(.version | length > 0) and (.os | length > 0) and (.local_usable | type == "boolean") and (.signed_in | type == "boolean")' "$OUT/calcifer-status.json" || check "GET /v1/status: $(cat "$OUT/calcifer-status.json")"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/status")" = 401 ] || check "GET /v1/status answered with no credential"
 session_surface "$ID"
 # As through an SSH -L to another port: any port on a loopback name, and an Origin that matches it.
 [ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61999' "http://$ADDR/v1/projects")" = 200 ] || check "a forwarded port's Host and Origin were refused"

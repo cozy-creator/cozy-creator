@@ -1573,6 +1573,18 @@ pub struct Down {
     pub owed: Vec<String>,
 }
 
+/// `GET /v1/status`: this Calcifer at a glance. It never waits on a Hub.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalciferStatus {
+    pub version: String,
+    /// `linux`, `macos` or `windows`.
+    pub os: String,
+    /// Whether this computer runs models itself ([`local_usable`]).
+    pub local_usable: bool,
+    /// Whether this computer holds a device key for its Hub. `GET /v1/account` asks the Hub whether it still counts.
+    pub signed_in: bool,
+}
+
 /// `POST /v1/session-codes`: a code a browser trades once for a session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCode {

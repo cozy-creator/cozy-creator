@@ -100,6 +100,11 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `canvas {id, etag, cards: {name: {x, y, w?} | null}}`: the rows of a project's canvas that changed.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
+### Status
+- `GET /v1/status`: `{version, os, local_usable, signed_in}`. `os` is `linux`, `macos` or `windows`; `local_usable` is
+  whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
+  without asking the Hub (`GET /v1/account` does).
+
 ### Session
 A browser signs in with a single-use code, which `cozy web` gives it through a 0600 file so that it's in no process's
 arguments. `~/.cozy/calcifer/sessions.json` (0600) holds sessions' digests; 30 days unused ends one.

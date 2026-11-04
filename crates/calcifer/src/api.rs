@@ -20,7 +20,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use protocol::{
-    calcifer::{Down, Event, Run, RunList, Status},
+    calcifer::{CalciferStatus, Down, Event, Run, RunList, Status},
     error::{Envelope, Error, Kind},
     ids::RunId,
 };
@@ -137,6 +137,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/outputs/{name}", get(crate::outputs::serve))
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
+        .route("/v1/status", get(status))
         .route("/v1/machines", get(machines::list).post(machines::create))
         .route(
             "/v1/machines/{name}",
@@ -540,6 +541,16 @@ async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
         stopping: true,
         owed,
     })
+}
+
+async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Refusal> {
+    let hub = crate::hub::origin(&api, None)?;
+    Ok(Json(CalciferStatus {
+        version: env!("CARGO_PKG_VERSION").into(),
+        os: std::env::consts::OS.into(),
+        local_usable: platform::Os::CURRENT.local_inference(),
+        signed_in: hub.device_key(api.machines.hubs.home()).exists(),
+    }))
 }
 
 async fn unknown_route(method: Method, uri: Uri) -> Refusal {

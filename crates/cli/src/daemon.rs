@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::ValueEnum;
 use protocol::{
-    calcifer::{Holder, MachineState},
+    calcifer::{CalciferStatus, Holder, MachineState},
     error::{Error, Kind},
 };
 use jiff::{SignedDuration, Timestamp};
@@ -42,6 +42,7 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
         }
         return Ok(ExitCode::SUCCESS);
     };
+    let here: CalciferStatus = client.get("/v1/status").await?;
     let holder = client.holder().expect("a running client has a record");
     // Calcifer's picture: it never waits on a Hub here.
     let mut machines = client.machines().await?.machines;
@@ -53,12 +54,12 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     runs.sort_by_key(|run| run.number);
     if ctx.json {
         output::json(&json!({
-            "calcifer": running(ctx, &holder), "machines": machines, "runs": runs,
+            "calcifer": running(ctx, &holder, &here), "machines": machines, "runs": runs,
         }));
         return Ok(ExitCode::SUCCESS);
     }
-    calcifer_record(ctx, &holder).print(ctx);
-    if let Some(note) = crate::machine::local_note() {
+    calcifer_record(ctx, &holder, &here).print(ctx);
+    if let Some(note) = crate::machine::local_note().filter(|_| !here.local_usable) {
         println!("{note}");
     }
     if !machines.is_empty() {
@@ -297,18 +298,21 @@ fn print_line(ctx: &Context, line: &str) {
     }
 }
 
-fn running(ctx: &Context, holder: &Holder) -> serde_json::Value {
+fn running(ctx: &Context, holder: &Holder, here: &CalciferStatus) -> serde_json::Value {
     json!({
         "running": true,
         "address": holder.address,
         "pid": holder.pid,
-        "version": holder.version,
+        "version": here.version,
+        "os": here.os,
+        "local_usable": here.local_usable,
+        "signed_in": here.signed_in,
         "started_at_ms": holder.started_at_ms,
         "log": ctx.home.calcifer_log(),
     })
 }
 
-fn calcifer_record(ctx: &Context, holder: &Holder) -> output::Record {
+fn calcifer_record(ctx: &Context, holder: &Holder, here: &CalciferStatus) -> output::Record {
     output::Record::new()
         .field(
             "calcifer",
@@ -316,6 +320,7 @@ fn calcifer_record(ctx: &Context, holder: &Holder) -> output::Record {
         )
         .field("address", holder.address)
         .field("pid", holder.pid)
-        .field("version", &holder.version)
+        .field("version", &here.version)
+        .field("signed in", if here.signed_in { "yes" } else { "no" })
         .field("log", output::link(ctx, &ctx.home.calcifer_log()))
 }
