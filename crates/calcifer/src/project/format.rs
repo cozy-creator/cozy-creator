@@ -24,7 +24,7 @@ const PINS: [&str; 3] = ["image", "video", "audio"];
 /// The links of an entity that a read of it gets as files. Its other links go by name, `<kyogre.primordial>`.
 const ROLES: [&str; 4] = ["image", "video", "audio", "voice"];
 const RESERVED: [&str; 10] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio", "writes"];
-const SECTIONS: [&str; 4] = ["version", "defaults", "entities", "assets"];
+const SECTIONS: [&str; 5] = ["version", "defaults", "entities", "assets", "shots"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 /// What `cozy` reads of a cut or a frame.
@@ -38,19 +38,14 @@ pub fn starter() -> String {
 # Change anything. Each asset says what it is; `<name>` in any text reads that asset.
 version: 2
 defaults:
-  all:
+  image:
+    with: qwen-image-2
     style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
     aspect_ratio: "16:9"
-  character:
-    render: {with: qwen-image-2}
-  environment:
-    render: {with: qwen-image-2}
-  setup:
-    render: {with: qwen-image-2}
-  shot:
-    render: {with: minimax-h3}
-  edit:
-    render: {with: cozy}
+  video:
+    with: minimax-h3
+    style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
+    aspect_ratio: "16:9"
 
 entities:
   kyogre:
@@ -65,27 +60,34 @@ entities:
       Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
     image: <groudon_sheet>
 
+  coast:
+    kind: environment
+    description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
+    image: <coast_plate>
+
 assets:
   kyogre_sheet:
-    kind: character
     render: |
       Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
   groudon_sheet:
-    kind: character
     render: |
       Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
-  coast:
-    kind: environment
-    description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
+  coast_plate:
+    render: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
 
-  coast_wide:
-    kind: setup
-    camera: <coast>. The camera stands high and far back, with the sea on the left, the cliffs on the right, and the crater city small at the center.
+  edit:
+    kind: video
+    render: {with: cozy}
+    fps: 24
+    pieces:
+      - <awaken>
+      - <erupt>
+      - <clash>
 
+shots:
   awaken:
-    kind: shot
     summary: |
       <kyogre> bursts out of the stormy sea of <coast>.
     soundscape: Howling wind, crashing waves, and rolling thunder.
@@ -95,7 +97,6 @@ assets:
           A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins. The camera tilts up at slow speed as heavy rain starts to fall.
 
   erupt:
-    kind: shot
     summary: |
       <groudon> claws its way out of the lava cliffs of <coast> and roars.
     soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
@@ -105,9 +106,8 @@ assets:
           A wide shot from the rocks looks up at the lava cliffs of <coast>. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   clash:
-    kind: shot
     summary: |
-      <kyogre> and <groudon> fight on <coast_wide> in one continuous shot with no cuts.
+      <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
       - duration: 14
@@ -116,14 +116,6 @@ assets:
       - duration: 10
         description: |
           <groudon> breathes a wide torrent of orange fire across the surf, and <kyogre> erupts from the water at the shoreline. The two crash together chest to chest, and a wall of water and steam rushes toward the camera.
-
-  edit:
-    kind: edit
-    fps: 24
-    pieces:
-      - <awaken>
-      - <erupt>
-      - <clash>
 "#
     .into()
 }
@@ -149,6 +141,8 @@ pub struct Asset {
     pub writes: Vec<Write>,
     /// The asset whose function sends this revision: its state comes with that one's take.
     pub writer: Option<usize>,
+    /// It is in `shots:`: a video that can read entities.
+    pub shot: bool,
     /// It is no asset but an entity, a sub-entity or a link of one: no work and no versions, its files what its links hold now.
     pub links: Option<Links>,
 }
@@ -198,7 +192,7 @@ pub struct Doc {
     pub order: Vec<usize>,
     pub warnings: Vec<String>,
     index: HashMap<String, usize>,
-    /// How many the file declares, in order, and those after them are world_states only a beat names.
+    /// How many the file declares, in order, and those after them are images only a beat names.
     declared: usize,
 }
 
@@ -273,8 +267,8 @@ impl Doc {
             Value::Null => Map::new(),
             _ => return Err(invalid("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))),
         };
-        let old = top.get("assets").is_some_and(Value::is_array)
-            || ["shots", "world_states"].iter().any(|key| top.contains_key(*key))
+        let old = ["assets", "shots", "entities"].iter().any(|key| top.get(*key).is_some_and(Value::is_array))
+            || top.contains_key("world_states")
             || top.get("version").is_some_and(|version| version.as_u64() == Some(1));
         if old {
             let said = format!("{} is format 1, and cozy reads format 2: it is left as it is", folder::PROJECT);
@@ -286,19 +280,23 @@ impl Doc {
         }
         warnings.extend(top.keys().filter(|key| !SECTIONS.contains(&key.as_str())).map(|key| format!("{}: cozy reads no section {key}; it is ignored", folder::PROJECT)));
         let empty = Map::new();
-        let sections = top.get("defaults").and_then(Value::as_object).unwrap_or(&empty).iter();
-        let defaults: Map<String, Value> = sections
-            .map(|(section, value)| {
-                let value = value.as_object().cloned().unwrap_or_default();
-                (section.clone(), Value::Object(unfolded(&format!("defaults.{section}"), value, &mut warnings)))
-            })
-            .collect();
+        let mut defaults = Map::new();
+        for (section, value) in top.get("defaults").and_then(Value::as_object).unwrap_or(&empty) {
+            if !PINS.contains(&section.as_str()) {
+                warnings.push(format!("defaults.{section}: the only keys are image, video and audio; it is ignored"));
+                continue;
+            }
+            // Each is a default `render` block.
+            let block = Map::from_iter([("render".to_owned(), value.clone())]);
+            defaults.insert(section.clone(), Value::Object(unfolded(&format!("defaults.{section}"), block, &mut warnings)));
+        }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
         let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
-        for name in protocol::yaml::keys(text, &["assets"]) {
-            named(&name)?;
+        let shots = top.get("shots").and_then(Value::as_object).unwrap_or(&empty);
+        for name in protocol::yaml::keys(text, &["assets"]).iter().chain(&protocol::yaml::keys(text, &["shots"])) {
+            named(name)?;
         }
         for name in protocol::yaml::keys(text, &["entities"]) {
             named(&name)?;
@@ -310,19 +308,23 @@ impl Doc {
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
-            doc.declare(text, &name, written, &defaults, folder, &lock);
+            doc.declare(text, &name, written, &defaults, folder, &lock, false);
+        }
+        for name in protocol::yaml::keys(text, &["shots"]) {
+            let Some(written) = shots.get(&name) else { continue };
+            doc.declare(text, &name, written, &defaults, folder, &lock, true);
         }
         doc.declared = doc.assets.len();
         for i in 0..doc.declared {
             if doc.assets[i].body.contains_key("writes") {
-                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `world_state` with an `at` into that beat: these are ignored", doc.assets[i].name));
+                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `image` with an `at` into that beat: these are ignored", doc.assets[i].name));
             }
             let mut said = vec![];
             let writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
             doc.warnings.append(&mut said);
-            for (beat, world_state, at) in writes {
-                named(&world_state)?;
-                doc.write(i, beat, &world_state, at);
+            for (beat, image, at) in writes {
+                named(&image)?;
+                doc.write(i, beat, &image, at);
             }
         }
         for name in protocol::yaml::keys(text, &["entities"]) {
@@ -340,7 +342,7 @@ impl Doc {
     }
 
     /// An asset of the file, after defaults, its pin read. A name taken: the first stands.
-    fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) -> Option<usize> {
+    fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock, shot: bool) -> Option<usize> {
         let key = name_key(name);
         if self.index.contains_key(&key) {
             self.warnings.push(format!("two assets are named {name}: the first stands"));
@@ -359,29 +361,27 @@ impl Doc {
         };
         let body = unfolded(name, body, &mut self.warnings);
         let own: BTreeSet<String> = body.keys().cloned().collect();
-        // Every asset has a kind: what it writes, else the role of the file it holds, else `image`.
+        // An asset's kind is its file's type: what it writes, else the field holding its hash, else `image`. A shot makes a video.
         let hash = |field: &&str| match body.get(*field) {
             Some(Value::Number(_)) => true,
             Some(Value::String(text)) => mentions(text).is_empty(),
             _ => false,
         };
         let held = PINS.iter().copied().find(hash);
-        let kind = match text_of(body.get("kind")) {
-            kind if kind.is_empty() => held.unwrap_or("image").to_owned(),
-            kind => kind,
-        };
+        let written_kind = text_of(body.get("kind"));
+        let type_of = if shot { "video" } else { held.unwrap_or("image") };
+        let kind = if !shot && PINS.contains(&written_kind.as_str()) { written_kind.clone() } else { type_of.to_owned() };
+        if !written_kind.is_empty() && written_kind != kind {
+            let of = if shot { "a shot makes a video" } else { "an asset is an image, a video or audio, and anything else belongs on an entity" };
+            self.warnings.push(format!("{name}'s kind: {of}: {written_kind} is ignored"));
+        }
         // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind.
         let constant = held.is_some() && body.keys().all(|key| key == "kind" || PINS.contains(&key.as_str()));
-        // `defaults` fills what an asset doesn't write, but one naming its own `with` takes no way of making it from there.
+        // `defaults` fills what its `render` doesn't write, but one naming its own `with` takes nothing from there.
         let (mut merged, mut options) = (Map::new(), Map::new());
-        for section in ["all", kind.as_str()].into_iter().take(if constant { 1 } else { 2 }) {
-            let Some(section) = defaults.get(section).and_then(Value::as_object) else { continue };
-            let mut section = section.clone();
-            if body.contains_key("with") {
-                section.retain(|field, _| !RENDERED.contains(&field.as_str()));
-            }
+        if let Some(section) = defaults.get(&kind).and_then(Value::as_object).filter(|_| !constant && !body.contains_key("with")) {
             options.extend(section.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
-            merged.extend(section);
+            merged.extend(section.clone());
         }
         // `options` is the adapter's own map: the asset's values over its defaults', key by key.
         options.extend(body.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
@@ -403,8 +403,8 @@ impl Doc {
                 }
                 _ => continue,
             };
-            if let Some((first, _)) = &pin {
-                self.warnings.push(format!("{name}'s {field}: an asset has one main file, its {first}: make an asset for this one, and link both from an entity; it is ignored"));
+            if field != kind {
+                self.warnings.push(format!("{name}'s {field}: an asset has one main file, its {kind}: make an asset for this one, and link both from an entity; it is ignored"));
                 merged.remove(field);
                 continue;
             }
@@ -429,9 +429,9 @@ impl Doc {
             fields.insert((*field).to_owned(), json!(was));
         }
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
-        let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
+        let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, links: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, shot, links: None });
         Some(self.assets.len() - 1)
     }
 
@@ -514,24 +514,25 @@ impl Doc {
             reads: vec![],
             writes: vec![],
             writer: None,
+            shot: false,
             links: Some(links),
         });
         true
     }
 
-    /// `world_state`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
+    /// `image`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
     /// after that beat, in a later beat or in text every segment holds, its function takes it, in its one take; otherwise it is a
-    /// free frame, outside its key. A pinned world_state is read, never written. Two assets writing one name: the first stands.
-    fn write(&mut self, i: usize, beat: usize, world_state: &str, at: f64) {
-        let key = name_key(world_state);
+    /// free frame, outside its key. A pinned image is read, never written. Two assets writing one name: the first stands.
+    fn write(&mut self, i: usize, beat: usize, image: &str, at: f64) {
+        let key = name_key(image);
         let writer_name = self.assets[i].name.clone();
         let revision = match self.index.get(&key).copied() {
             Some(revision) => revision,
             None => {
                 self.index.insert(key.clone(), self.assets.len());
                 self.assets.push(Asset {
-                    name: world_state.to_owned(),
-                    kind: "world_state".into(),
+                    name: image.to_owned(),
+                    kind: "image".into(),
                     body: Map::new(),
                     fields: Map::new(),
                     own: BTreeSet::new(),
@@ -541,6 +542,7 @@ impl Doc {
                     reads: vec![],
                     writes: vec![],
                     writer: None,
+                    shot: false,
                     links: None,
                 });
                 self.assets.len() - 1
@@ -548,7 +550,7 @@ impl Doc {
         };
         let own = &mut self.assets[revision];
         if own.writer.is_some() || own.frame {
-            self.warnings.push(format!("{writer_name} writes {world_state}, which is written above: the first stands"));
+            self.warnings.push(format!("{writer_name} writes {image}, which is written above: the first stands"));
             return;
         }
         own.hollow = false;
@@ -621,11 +623,11 @@ impl Doc {
                     continue;
                 };
                 let key = name_key(&self.assets[j].name);
-                // What an entity links to can't read it: it would be made from itself. The words go in its own prompt.
-                if self.links_to(j, i) {
-                    let said_of = format!("{} mentions <{mention}>, and that entity links to it, so it can't read it: the mention stays plain text; write the words in its prompt", asset.name);
-                    if !said.contains(&said_of) {
-                        said.push(said_of);
+                // Reads go one way: entities link to assets, and assets never read entities.
+                if !asset.shot && self.assets[j].links.is_some() {
+                    let line = format!("{} mentions <{mention}>, an entity, and assets never read entities: it stays plain text; write the words in its prompt, or mention the asset", asset.name);
+                    if !said.contains(&line) {
+                        said.push(line);
                     }
                     continue;
                 }
@@ -651,14 +653,6 @@ impl Doc {
 
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
-    }
-
-    /// Whether asset `i` is what node `j`'s entity links to, directly or through a sub-entity.
-    fn links_to(&self, j: usize, i: usize) -> bool {
-        let Some(links) = &self.assets[j].links else { return false };
-        let root = links.parent.as_deref().and_then(|parent| self.find(parent)).and_then(|root| self.assets[root].links.as_ref()).unwrap_or(links);
-        let subs = root.subs.iter().filter_map(|sub| self.assets[self.find(sub)?].links.as_ref());
-        root.own.values().chain(subs.flat_map(|sub| sub.own.values())).any(|target| self.find(target) == Some(i))
     }
 
     /// The asset named `name`: what can hold versions, as an entity can't.
@@ -690,8 +684,8 @@ impl Doc {
         }
         (plain_with(asset.body.get("with")?.as_str()?) == COZY).then_some(())?;
         match asset.kind.as_str() {
-            "edit" => Some(Tool::Cut),
-            "frame" => Some(Tool::Frame),
+            "video" => Some(Tool::Cut),
+            "image" => Some(Tool::Frame),
             _ => None,
         }
     }
@@ -700,8 +694,8 @@ impl Doc {
     pub fn nothing_to_make(&self, i: usize) -> String {
         let asset = &self.assets[i];
         match asset.body.contains_key("with") {
-            true => format!("{}: the package {COZY} makes `edit` and `frame`, not {}: it has nothing to make", asset.name, asset.kind),
-            false => format!("{} has no `render.with`, and no `defaults.{}.render.with`: it has nothing to make", asset.name, asset.kind),
+            true => format!("{}: the package {COZY} makes a video (a cut) or an image (a frame), not {}: it has nothing to make", asset.name, asset.kind),
+            false => format!("{} has no `render.with`, and no `defaults.{}.with`: it has nothing to make", asset.name, asset.kind),
         }
     }
 
@@ -883,7 +877,7 @@ impl Doc {
     }
 }
 
-/// What each beat writes, soonest first: the beat, the world_state, and when on the shot's timeline. A write is `{world_state, at}`: `at` is
+/// What each beat writes, soonest first: the beat, the image, and when on the shot's timeline. A write is `{image, at}`: `at` is
 /// seconds into its beat, else its end; past the beat it clamps, which is said, as is any other field.
 fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) -> Vec<(usize, String, f64)> {
     let (mut start, mut found) = (0.0, vec![]);
@@ -895,22 +889,22 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) ->
             one => vec![one.clone()],
         };
         for item in listed {
-            let (world_state, at) = match &item {
-                Value::String(world_state) => (world_state.clone(), None),
-                item => (text_of(item.get("world_state")), item["at"].as_f64()),
+            let (image, at) = match &item {
+                Value::String(image) => (image.clone(), None),
+                item => (text_of(item.get("image")), item["at"].as_f64()),
             };
-            if world_state.is_empty() {
-                said.push(format!("{name}'s beat {} writes nothing: each write names a `world_state`", n + 1));
+            if image.is_empty() {
+                said.push(format!("{name}'s beat {} writes nothing: each write names an `image`", n + 1));
                 continue;
             }
-            for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["world_state", "at"].contains(&field.as_str())) {
-                said.push(format!("{name}'s write of {world_state}: cozy reads no field {field}; it is ignored"));
+            for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["image", "at"].contains(&field.as_str())) {
+                said.push(format!("{name}'s write of {image}: cozy reads no field {field}; it is ignored"));
             }
             let within = at.unwrap_or(length).clamp(0.0, length);
             if let Some(at) = at.filter(|at| *at != within) {
-                said.push(format!("{name} writes {world_state} at {at} s into a beat {length} s long: it is taken at {within} s"));
+                said.push(format!("{name} writes {image} at {at} s into a beat {length} s long: it is taken at {within} s"));
             }
-            found.push((n, world_state, start + within));
+            found.push((n, image, start + within));
         }
         start += length;
     }
@@ -1050,7 +1044,7 @@ fn changed(was: &BTreeMap<String, String>, now: &BTreeMap<String, String>) -> Ve
 /// comment on its line, which `unpinned` restores. Err: why not, and what to write by hand.
 pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String, Error> {
     let by_hand = |why: String| invalid("project_edit", format!("{name} can't be pinned in {}: {why}", folder::PROJECT)).remedy(format!("write `{field}: {value}` under {name} yourself"));
-    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:`".into()))?;
+    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:` or `shots:`".into()))?;
     let lines = &place.lines;
     let edited = if let Some(flow) = &place.flow {
         let (head, inner) = (flow.0.as_str(), flow.1.as_str());
@@ -1085,7 +1079,7 @@ pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String
 /// were there all along.
 pub fn unpinned(text: &str, name: &str, field: &str) -> Result<String, Error> {
     let by_hand = |why: String| invalid("project_edit", format!("{name} can't be unpinned in {}: {why}", folder::PROJECT)).remedy(format!("remove its `{field}:` yourself"));
-    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:`".into()))?;
+    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:` or `shots:`".into()))?;
     let lines = &place.lines;
     let edited = if let Some(flow) = &place.flow {
         replace_line(lines, place.key, &format!("{}{{{}}}{}", flow.0, strip_flow_field(&flow.1, field), flow.2))
@@ -1133,10 +1127,9 @@ fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&st
 /// The value asset `name` is in a project's JSON.
 fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
     let key_in = |map: &Value, name: &str| map.as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned();
-    if let Some(key) = key_in(&doc["assets"], name) {
-        return doc["assets"].get_mut(&key);
-    }
-    None
+    let section = ["assets", "shots"].into_iter().find(|section| key_in(&doc[*section], name).is_some())?;
+    let key = key_in(&doc[section], name)?;
+    doc[section].get_mut(&key)
 }
 
 /// The input a pin in `field` keeps in a comment on its line.
@@ -1161,12 +1154,15 @@ struct Place<'a> {
 }
 
 impl<'a> Place<'a> {
-    /// Asset `name`'s lines under `assets:`.
+    /// Asset `name`'s lines, under `assets:` or `shots:`.
     fn find(text: &'a str, name: &str) -> Option<Self> {
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == "assets:")? + 1;
-        let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
-        let (key, body, child, flow) = block(&lines, start..end, name)?;
+        let within = |section: &str| {
+            let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == section)? + 1;
+            let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+            block(&lines, start..end, name)
+        };
+        let (key, body, child, flow) = within("assets:").or_else(|| within("shots:"))?;
         Some(Self { lines, key, body, child, flow })
     }
 

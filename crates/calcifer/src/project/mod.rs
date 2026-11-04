@@ -497,7 +497,7 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
 fn noun(doc: &Doc, lock: &Lock, i: usize) -> &'static str {
     let asset = &doc.assets[i];
     let video = lock.asset(&asset.name).is_some_and(|held| held.versions.iter().any(|version| version.files.contains_key("video")));
-    match video || matches!(asset.kind.as_str(), "shot" | "upscale") || doc.tool(i) == Some(Tool::Cut) {
+    match video || asset.kind == "video" {
         true => "take",
         false => "version",
     }
@@ -556,7 +556,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         name: asset.name.clone(),
         standing: row_standing,
         making,
-        kind: asset.kind.clone(),
+        kind: if asset.shot { "shot".to_owned() } else { asset.kind.clone() },
         noun: noun.into(),
         with: doc.makes(i).then(|| doc.target(i)),
         versions: held.map_or(0, |held| held.versions.len() as u32),
@@ -895,23 +895,11 @@ async fn import(
     Ok(Json(Imported { path: file.path, sha256: file.sha256, prefix, line, already }))
 }
 
-/// `name` pinned to a file in project.yaml: one line in `field`, a pin in another field gone first, written over what the file holds
-/// this moment. An approved asset is the same as any pinned one.
-fn pin_in_file(folder: &Folder, name: &str, field: &str, sha256: &str, other: Option<&'static str>) -> Result<(), Error> {
+/// `name` pinned to a file in project.yaml: one line, in the field of its kind, written over what the file holds this moment. An
+/// approved asset is the same as any pinned one.
+fn pin_in_file(folder: &Folder, name: &str, field: &str, sha256: &str) -> Result<(), Error> {
     let value = format::yaml_scalar(folder::prefix_of(sha256));
-    folder.edit_project(|text| {
-        let clear = other.filter(|other| *other != field);
-        let text = match clear {
-            Some(other) => format::unpinned(text, name, other)?,
-            None => text.to_owned(),
-        };
-        format::pinned(&text, name, field, &value)
-    })
-}
-
-/// The field that pins a version, by what its main file is.
-fn pin_field(lock: &Lock, version: &Version) -> &'static str {
-    version.main().and_then(|sha256| lock.files.get(sha256)).map_or("image", folder::File::field)
+    folder.edit_project(|text| format::pinned(text, name, field, &value))
 }
 
 /// `POST /v1/projects/{id}/approve`: the version's main file, by hash, in the asset's line of project.yaml: its whole file set is the
@@ -958,7 +946,11 @@ async fn approve(
             sha256.clone()
         }
     };
-    let field = lock.files.get(&chosen).map_or("image", folder::File::field);
+    let field = asset.kind.as_str();
+    if let Some(is) = lock.files.get(&chosen).map(folder::File::field).filter(|is| asked.file.is_some() && *is != field) {
+        let said = format!("{} makes one {field}, and that file is {is}", asset.name);
+        return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).remedy(format!("if it should be {is}, write `kind: {is}` on it"))));
+    }
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
     if !doc.declared(i) {
         let said = format!("{} is a frame its writer's beat names, with no lines of its own in {}", asset.name, folder::PROJECT);
@@ -966,7 +958,7 @@ async fn approve(
     }
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    pin_in_file(folder, &name, field, &chosen, asset.pin.as_ref().map(|(field, _)| *field)).map_err(Refusal)?;
+    pin_in_file(folder, &name, field, &chosen).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.to_owned(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
@@ -1720,7 +1712,7 @@ impl Walk {
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})
     }
 
-    /// A world_state its function didn't write, cut from its landed video.
+    /// An image its function didn't write, cut from its landed video.
     async fn cut_write(&self, name: &str, version: &Version, write: &Written) -> Result<String, Error> {
         let lock = self.folder().lock()?;
         let video = version.files.get("video").and_then(|sha256| lock.files.get(sha256)).map(|file| self.folder().path(&file.path));
@@ -1879,15 +1871,11 @@ impl Walk {
             held.tried = None;
         })?;
         version.number = number.get();
-        if approve {
-            let doc = Doc::load(self.folder())?;
-            let pinned = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.0));
-            let lock = self.folder().lock()?;
-            if let Some(sha256) = version.main()
-                && let Err(error) = pin_in_file(self.folder(), name, pin_field(&lock, &version), sha256, pinned)
-            {
-                self.say(Event::Warning { message: error.message });
-            }
+        if approve
+            && let Some(sha256) = version.main()
+            && let Err(error) = pin_in_file(self.folder(), name, kind, sha256)
+        {
+            self.say(Event::Warning { message: error.message });
         }
         {
             let mut tally = self.tally.lock().expect("tally lock");

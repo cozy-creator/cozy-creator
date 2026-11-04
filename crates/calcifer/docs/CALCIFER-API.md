@@ -338,13 +338,13 @@ newest version whose `inputs` match now, else none. `inputs` is a digest of `wit
 every other field after defaults, each asset it mentions (name, kind, fields, files by sha256) and the world states it writes: exactly what its
 adapter is given. A tool's holds only what it reads of its fields, and the files. Calcifer knows no kind's meaning and no field's shape.
 
-An operation is a package (`with`, `[org/]package[@release]`, or local code) and a `kind`. Calcifer runs the package's `project-adapter-<kind>` on
+An operation is a package (`with`, `[org/]package[@release]`, or local code) and a `kind`, the file type it produces: `image`, `video` or `audio`, a shot's being `video`. Calcifer runs the package's `project-adapter-<kind>` on
 the render machine, on `{version: 2, asset, kind, fields, options, reads, writes, keep}`, and runs the `invocations` it answers in order as one version: a
 string in `input` that is exactly `$0.video` is that field of call 0's result, as its digest. `[]` is no run: the asset's files are what it
 reads. A failed call stops the list and makes no version; a function taking `seed` gets the one Calcifer drew, kept for the next try when the
-run failed. `models` and `lora` go on the first call. `options`, every key of `render` but `with`, `prompt`, `models` and `lora`, from `defaults` and the asset, the asset's values over the defaults', goes only to the adapter, and `prompt` reaches it as `fields.instructions`. The version records each call as `invocations`, and
+run failed. `models` and `lora` go on the first call. `options`, every key of `render` but `with`, `prompt`, `models` and `lora`, merged over `defaults.<type>`, goes only to the adapter, and `prompt` reaches it as `fields.instructions`. The version records each call as `invocations`, and
 each file by its output's name, later over earlier. `written`, a list, is a function's frames for `op.writes`, in order; a write with none is
-cut from the landed video. The package `cozy` is reserved: `kind: edit` and `kind: frame` run here, free, with no machine, once what they
+cut from the landed video. The package `cozy` is reserved: a `video` (a cut) and an `image` (a frame) run here, free, with no machine, once what they
 read settles and on `approve`, reading each asset's state, else its newest version, which they say. A tool keeps one version and its pinned one.
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a

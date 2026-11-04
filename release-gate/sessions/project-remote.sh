@@ -39,7 +39,7 @@ hash_of() { cozy --json project -p "$P" import "$1" | jq -r .prefix | sed 's/.*/
 version: 2
 assets:
   coast:
-    kind: environment
+    kind: image
     description: |
       A grey coast.
     image: $(hash_of "$F/coast.png")
@@ -56,7 +56,7 @@ YAML
     video: $(hash_of "$P/plates/b.mp4")
   edit:
     render: {with: cozy}
-    kind: edit
+    kind: video
     pieces:
       - {video: <a>, start: 0, end: 120}
       - {video: <b>, start: 24, end: 120}

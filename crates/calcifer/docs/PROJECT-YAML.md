@@ -7,8 +7,9 @@ A file in format 1 (`entities:`, `shots:`), or a lock from one, is refused and l
 A project is a folder of files plus a graph that says how each file was made.
 
 - **Entity:** a thing in the film, like `kyogre`: its identity, and links to the assets that show it. No work, no versions.
-- **Asset:** a stable name holding one main file, plus what the run that made it left, like `kyogre_sheet` or `clash`. The graph's nodes.
-- **Operation:** the work that makes an asset: a package, plus what the YAML says about the asset. The graph's edges. You don't write edges; `<name>` mentions in text create them.
+- **Asset:** a stable name holding one file of one type, plus what the run that made it left, like `kyogre_sheet` or `edit`.
+- **Shot:** an asset of its own section, that makes a video and can read entities, like `clash`.
+- **Operation:** the work that makes an asset: a package, plus what the YAML says about the asset. The graph's edges. You don't write edges; `<name>` mentions in text create them. Reads go one way: shots read entities and assets, entities link to assets, and assets read assets, never entities.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
 - **Version**, or **take** if it has a video: one result of an operation, recorded in `project.lock`.
 
@@ -29,26 +30,16 @@ Calcifer owns all of this. It knows no kinds and no packages by name. A package 
 ```yaml
 version: 2
 
-defaults:                      # the same shape as an asset: it fills what an asset doesn't write
-  all:
+defaults:                      # one per file type: a default `render` block
+  image:
+    with: qwen-image-2         # which package makes it
+    style: High-quality Unreal Engine graphics, realistic and detailed
+    aspect_ratio: "16:9"       # any other key is the adapter's own
+  video:
+    with: minimax-h3
     style: High-quality Unreal Engine graphics, realistic and detailed
     aspect_ratio: "16:9"
-  character:
-    render:
-      with: qwen-image-2       # which package makes this kind
-  environment:
-    render:
-      with: qwen-image-2
-  storyboard:
-    render:
-      with: qwen-image-2
-  shot:
-    render:
-      with: minimax-h3
-      turbo: true              # any other key is the adapter's own
-  edit:
-    render:
-      with: cozy
+    turbo: true
 
 entities:                      # what things are; each links to assets by name
   kyogre:
@@ -60,19 +51,22 @@ entities:                      # what things are; each links to assets by name
     primordial:                # a sub-entity: what it doesn't have comes from kyogre
       description: Kyogre in its ancient form, with glowing blue veins.
       image: <kyogre_primordial_sheet>
+  coast:
+    kind: environment
+    description: |
+      A volcanic coast with a dark blue sea on the left and a volcano on the right.
+    image: <coast_plate>
 
 assets:
   kyogre_art:                  # a constant: a file hash, and nothing to make it from
-    kind: image
     image: 65b436d4f9a3
 
   kyogre_voice:
-    kind: voice
+    kind: audio
     audio: 7c1e04a9b2d5
 
   kyogre_sheet:                # approved: `image:` pins it
     image: 2aee8c40753d
-    kind: character
     render:                    # at the root what it is; here how to make it
       prompt: |
         Kyogre, the colossal blue whale-like legendary Pokémon, from <kyogre_art>, front and back on one sheet, no text.
@@ -80,22 +74,24 @@ assets:
       megapixels: 2
 
   kyogre_primordial_sheet:
-    kind: character
     render: Kyogre in its ancient form, with glowing blue veins, from <kyogre_sheet>, in the same pose.
 
-  coast:
-    kind: environment
-    description: |
-      A volcanic coast with a dark blue sea on the left and a volcano on the right.
+  coast_plate:
+    render: A volcanic coast with a dark blue sea on the left and a volcano on the right.
 
-  clash_board:                 # a storyboard, drawn ahead of the video
-    kind: storyboard
-    description: |
-      <kyogre> in the surf on the left, <groudon> on the rocks on the right.
-    render: A wide shot of <coast>, as a single frame with no text.
+  clash_board:                 # a storyboard: a picture drawn ahead of the video
+    render: <kyogre_sheet> in the surf on the left, on <coast_plate>, as a single frame with no text.
 
+  edit:
+    kind: video
+    render: {with: cozy}       # a cut, which Calcifer makes itself
+    fps: 24
+    pieces:
+      - <awaken>
+      - { video: <clash>, start: 12, end: 132 }   # a trim, in frames at this fps
+
+shots:
   clash:                       # no hash: it renders
-    kind: shot
     summary: |
       <kyogre> and <groudon> fight on the coast in one continuous shot.
     soundscape: Crashing surf and deep impacts.
@@ -103,24 +99,17 @@ assets:
       - duration: 14
         description: |
           Following <clash_board>, a wide shot of <coast> shows <kyogre> and <groudon>.
-        writes:                # screenshots saved as world_state assets
-          - world_state: coast.1
+        writes:                # screenshots saved as image assets
+          - image: coast.1
             at: 14
       - duration: 14
         description: |
           The fight continues on <coast.1>.
-
-  edit:
-    kind: edit
-    fps: 24
-    pieces:
-      - <awaken>
-      - { video: <clash>, start: 12, end: 132 }   # a trim, in frames at this fps
 ```
 
 ## What the platform reads
 
-Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in `image`, `video` or `audio`, an entity's links, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities` and `assets`.
+Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in the field of an asset's type, an entity's links, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities`, `assets` and `shots`, one namespace.
 
 Every other field at an asset's root, such as `summary`, `beats`, `description`, `camera` or `fps`, passes through to the adapter untouched and counts as an input.
 
@@ -131,47 +120,29 @@ At an asset's root is what it is. In `render` is how to make it: plain text as t
 - **`with`:** the package. **`prompt`:** the text, which reaches the adapter as `fields.instructions`. **`models`, `lora`:** added to its first call.
 - **Every other key** is the adapter's own, such as turbo or megapixels, and reaches it as `op.options`. It isn't part of this standard.
 
-A shot can hold just `render: {turbo: false}`. `with`, `prompt`, `models` and `lora` at an asset's root warn and are ignored.
+A shot can hold just `render: {turbo: false}`. `with`, `models`, `lora`, `options` and `instructions` at an asset's root warn and are ignored.
 
 ## Defaults
 
-A section has the shape of an asset, and fills what an asset doesn't write: `defaults.character.render.with: qwen-image-2`, `defaults.shot.render.turbo: true`, and `defaults.all.style` for a root field. Render keys merge key by key. An asset naming its own `render.with` takes no render keys from there.
-
-`defaults` holds settings, not what's in the picture or sound, beyond the project-wide `style`. `soundscape` and `music` go on each shot.
+The only keys are `image`, `video` and `audio`; any other warns and is ignored. Each is a default `render` block, and merges key by key under the asset's own: `with`, `models`, `lora` and any other key, which reach the adapter as `op.options`, as `style` and `aspect_ratio` do. A shot makes a video, so `defaults.video` is a shot's too. An asset naming its own `with` takes nothing from defaults, and a constant needs none.
 
 A package chooses its own internals, such as how many context frames H3 keeps. They aren't configurable and aren't fields, so they don't go in a project file.
 
 ## Kinds
 
-Each first-party kind has a stable set of fields, defined as typed structs in cozy-runtime, so another package can read the same `beats`. Before launch they can change freely. After launch, fields are only added, and a rename gets an alias. A third party can define a new kind, like `mesh`.
+- **An asset's `kind` is its file's type:** `image` (the default), `video` or `audio`. With none written, it comes from the field holding its hash. Anything else warns and is ignored: it belongs on an entity.
+- **A shot** makes a video. Its adapter is the package's `video` one.
+- **An entity's `kind` is free:** `character`, `prop`, `environment`. Calcifer knows no kinds.
+- **On the wire:** `Operation.kind` is `image`, `video` or `audio`, what is being produced. `Read.kind` is the entity's kind for an entity mention, else the file type.
 
-| Kind | What it is | First-party package |
-|---|---|---|
-| `character`, `prop` | The subject alone, on a blank background | `qwen-image-2` |
-| `environment` | Background only, no characters | `qwen-image-2` |
-| `storyboard` | Characters in a place at a moment, drawn | `qwen-image-2` |
-| `world_state` | How things stand at a moment, by default a screenshot from a shot | a shot's `writes`, or `qwen-image-2` |
-| `image` | Any other picture; the default with no `kind` | `qwen-image-2` |
-| `shot` | Video from a `summary` and `beats` | `minimax-h3` |
-| `upscale` | A bigger take: `{kind: upscale, video: <clash>, resolution: 1440p}` | `minimax-h3` |
-| `edit` | A cut of other assets. No seed. Add as many cuts as you like. | `cozy`, run by Calcifer itself |
-
-The fields of each first-party kind, beyond what the platform reads:
-
-| Kind | Fields |
+| First-party | Fields, beyond what the platform reads |
 |---|---|
-| `shot` | `summary`, `beats` (each `description`, `duration`, `writes`), `style`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`) |
-| `character`, `prop`, `environment`, `storyboard`, `world_state`, `image` | `description`, `render.prompt`, `style`, `aspect_ratio` |
-| `setup` | Those of a picture, plus `camera`, `from_frame` |
-| `upscale` | `video`, `resolution`, `style` |
+| A shot, `minimax-h3` | `summary`, `beats` (each `description`, `duration`, `writes`), `soundscape`, `music`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`) |
+| An upscale, a `video` asset of `minimax-h3` | `video`, `resolution` |
+| An `image`, `qwen-image-2` | `description`, `render.prompt` |
+| A cut or frame, `cozy` | See below |
 
-Nothing else is a field of these kinds. At render, a typed adapter warns of an unknown field an asset writes itself. It doesn't warn of one that comes from `defaults` or sits inside a beat: that one is ignored silently, so check it against this table.
-
-**A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence.
-
-**Every asset has a kind.** With none written, it comes from the file it holds: `image:` is `image`, `video:` is `video`, `audio:` is `audio`. With no file it is `image`. `status` shows it, and a reader's adapter gets it. A constant needs no adapter or operation, whatever its kind. Calcifer knows no kinds, so `kind: voice` is just a name for what reads it.
-
-**Two texts, on `character`, `environment` and `storyboard`:** `description` goes to the picture model and the video model. `render.prompt` goes only to the picture model, for how to draw it.
+At render, a typed adapter warns of an unknown field an asset writes itself. **A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence.
 
 ## Mentions
 
@@ -183,6 +154,7 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
 - **Explicit:** `<coast>` always means what is named `coast`, and `<coast.2>` always means `coast.2`. Nothing resolves to "the newest".
 - **Of an entity:** see below.
+- **A cycle:** a mention that closes one, A mentioning B and B mentioning A, stays plain text, with a warning, and both still render.
 
 ## Entities
 
@@ -196,16 +168,16 @@ Assets can link into hashes, whereas entities link into asset-names. An entity h
 | `<kyogre_sheet>` | The asset itself. |
 
 - **Sub-entities:** a key whose value is a map, one level deep. A map inside one warns and is ignored.
-- **An asset an entity links to, directly or through a sub-entity, can't read that entity.** A mention of it stays plain text, with one warning: write the words in its prompt, even if the thing is then described in two places. Shots and storyboards read entities normally, because nothing links back to them.
+- **An asset mentioning an entity:** always plain text, with one warning. Write the words in its prompt, even if the thing is then described in two places, or mention the asset.
 - **Memo:** a read's description and file hashes count, so editing an entity's description puts what reads it out of date.
 - **Names** are shared across both sections. A clash warns, and the asset stands.
 - **`status`** lists entities apart with their links, and a link to nothing warns with the fix. **`render <entity>`** renders its linked assets and its sub-entities'.
-- **A voice** is its own asset (`kind: voice`, `audio: <hash>`, or made by a package), linked as `voice:`. Several pictures are several assets.
+- **A voice** is its own asset (`kind: audio`, `audio: <hash>`, or made by a package), linked as `voice:`. Several pictures are several assets.
 
 ## How rendering decides
 
 **An asset's state** is the first of these that applies:
-1. A hash in `image`, `video` or `audio`: a constant. Nothing is made for it, but `--new` on one with an operation makes takes to look at, its state unmoved.
+1. A hash in the field of its type: a constant. Nothing is made for it, but `--new` on one with an operation makes takes to look at, its state unmoved.
 2. Its newest version whose inputs match now.
 3. Nothing: it's missing or out of date.
 
@@ -237,9 +209,9 @@ Assets can link into hashes, whereas entities link into asset-names. An entity h
 
 Approve and pin are the same thing, so reading the file shows what's constant.
 
-An asset has one main file, from its one `render` or its one pin; any other files are what the same run left, such as a video's latents, or `image-2` from a function that returned several. A hash in `image`, `video` or `audio` pins it, and a `<mention>` in the same field is an input. A hash in a second file field warns and is ignored, as does a list: make an asset for each.
+An asset has one main file, from its one `render` or its one pin; any other files are what the same run left, such as a video's latents, or `image-2` from a function that returned several. A hash in the field of its type pins it, and a `<mention>` there is an input. A hash in another file field warns and is ignored, as does a list: make an asset for each.
 
-- **The line:** `approve` writes the role of the version's main file, `video: <hash>` for a take and `image:` for a picture, as that one line, keeping comments, order and formatting, and a save made just before it stands. A line holding an input keeps it, `video: <hash>  # was <clash>`, and `unpin` puts it back.
+- **The line:** `approve` writes the field of its type, `video: <hash>` for a shot and `image:` for a picture, as that one line, keeping comments, order and formatting, and a save made just before it stands. A line holding an input keeps it, `video: <hash>  # was <clash>`, and `unpin` puts it back.
 - **A shot's pin:** `video: <hash>` brings that take's whole set: latents and any world states it wrote. A hash that matches no version is just that file.
 - **Other fields while pinned:** `render` and the text stay in the file and are ignored for that asset. Delete the line and they apply again.
 - **A pin freezes files, not text:** editing an approved character's `description` doesn't re-render it, but shots that read it go out of date, because H3 receives those words.
@@ -249,24 +221,19 @@ An asset has one main file, from its one `render` or its one pin; any other file
 
 An asset no longer named in the YAML keeps its versions and files. Editing the graph loses nothing as long as names stay the same. Removing or renaming a name in the file orphans its files, and only `reclaim` deletes them.
 
-## World states and writes
+## Writes
 
-A world state is a continuity still: how things stand at a moment, so the next shot matches.
+A write is a screenshot taken at `at` seconds into that beat, the beat's end if left out, saved as an image asset: a continuity still, how things stand at a moment, so the next shot matches. A beat may hold several. It only matters across segments and shots: within a segment the model remembers.
 
-A write is a screenshot taken at `at` seconds into that beat, the beat's end if left out, saved as a `world_state` asset. A beat may hold several. It exists to carry the world from one run into another, so it only matters across segments and shots: within a segment the model remembers.
-
-- **Reading a world state:** a later segment or another shot gets the picture as a loose guide. H3 reads it small and adds a retention line like "use this layout of characters and background as a starting point". That wording lives in the adapter, not the YAML.
+- **Reading one:** a later segment or another shot gets the picture as a loose guide; assets read it too. That wording lives in the adapter, not the YAML.
 - **Numbers:** you write them, `coast.1`, `coast.2`, so inserting one never moves another's versions or pins.
-- **A write is `{world_state, at}`, and has no description.** A picture is the state. To add words, declare the world state as its own asset with a `description`, and the write fills in its picture. Any other field warns.
-- **Past its beat,** `at` clamps with a warning. Two assets writing one name: the first stands, with a warning.
+- **A write is `{image, at}`, and has no description.** A picture is the state. To add words, declare it as its own asset with a `description`, and the write fills in its picture. Any other field warns.
+- **Past its beat,** `at` clamps with a warning. Two shots writing one name: the first stands, with a warning.
 - **A write the shot doesn't read after its beat** is a free frame, cut from the take here, outside the shot's memo: moving it re-renders nothing. One the shot reads, in a later beat or its `summary`, goes to the function, in its one take. A package that takes no `writes` gets its frames cut from the take, with a warning.
-- **Anything can read one:** `<coast.1>` also works in a Qwen `storyboard`, so a storyboard can start from what really happened.
-
-A world state and a storyboard behave the same today. A `storyboard` is drawn; a `world_state` is, by default, captured by a shot.
 
 ## Storyboards
 
-A storyboard is drawn before the video exists. Make cheap pictures, choose one, then render the shot:
+A storyboard is an image asset drawn before the video exists. Make cheap pictures, choose one, then render the shot:
 
 ```
 cozy project render clash_board -n 4
@@ -276,12 +243,12 @@ cozy project render clash
 
 ## Choosing a package, and adapters
 
-`render.with` names a package, `org/package[@release]`, never a function, or local code by its path (`./dir`, `./script.py`, `~/…`), keyed by its directory's name, so moving to the published package re-renders nothing. With no `@release`, a run uses what its machine has installed, or installs the newest if it has none; `cozy package update` moves it forward. The order is the asset's own, then `defaults.<kind>.render.with`. An asset naming its own takes no render keys from `defaults`. With neither, it has nothing to make, and `status` and `render` say so as a warning.
+`render.with` names a package, `org/package[@release]`, never a function, or local code by its path (`./dir`, `./script.py`, `~/…`), keyed by its directory's name, so moving to the published package re-renders nothing. With no `@release`, a run uses what its machine has installed, or installs the newest if it has none; `cozy package update` moves it forward. The order is the asset's own, then `defaults.<type>.with`. An asset naming its own takes no render keys from `defaults`. With neither, it has nothing to make, and `status` and `render` say so as a warning.
 
-A package makes a kind by providing one Python adapter for it. With no adapter for that kind, it can't make that asset: `status` and `render` say so in one line and carry on. There's no fallback.
+A package makes a file type by providing one Python adapter for it, as `render` is about the file being produced. With no adapter for that type, it can't make that asset: `status` and `render` say so in one line and carry on. There's no fallback.
 
 ```python
-@app.project_adapter("shot")
+@app.project_adapter("video")
 def adapt(op: Operation) -> list[Invocation]: ...
 ```
 
@@ -296,21 +263,19 @@ The adapter holds all model-specific words and picks the function, such as `gene
 
 ## Building something other than film
 
-Nothing is film-specific except the kinds you choose. Art, then pictures, then 3D models, then a layout, with made-up packages:
+Nothing is film-specific. Art, then pictures, then a turntable, with made-up packages:
 
 ```yaml
 version: 2
 assets:
   automaton_art:
-    kind: art
     description: A bronze clockwork automaton, waist up.
     render: {with: sketchlab}
   automaton:
-    kind: mesh
     sheet: <automaton_art>
-    render: {with: meshforge, polygons: 40000}
-  layout:
-    kind: arrange
+    render: {with: portraitlab, polygons: 40000}
+  turntable:
+    kind: video
     brief: A workshop at dusk, with the <automaton> at the bench.
     render: {with: stagehand}
 ```
@@ -321,9 +286,9 @@ There are no loops, so at hundreds of assets a tool or an LLM writes the file.
 
 The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, once what it reads settles and on `approve`. A cut reads each asset's state, else its newest version, and says so. Same takes, same key, not cut again; a deleted `.mp4` or `.otio` comes back at the next render. It keeps one version, and its pinned one, being free to make again.
 
-- **`kind: edit`:** `pieces` holds `<name>`, the whole take, or `{video: <name>, start: 12, end: 132}`, frames at its `fps` (24 by default), every in and out point exact. It writes `<name>.mp4` and `<name>.otio` at the root, the same edit as an OpenTimelineIO timeline.
+- **A cut, `kind: video`:** `pieces` holds `<name>`, the whole take, or `{video: <name>, start: 12, end: 132}`, frames at its `fps` (24 by default), every in and out point exact. It writes `<name>.mp4` and `<name>.otio` at the root, the same edit as an OpenTimelineIO timeline.
 - **The canvas:** `aspect_ratio` and `resolution: 1440p` on it. Every piece fills it, center-cropped, never letterboxed or stretched. A take at another rate is retimed, and `status` names it. With no `resolution`, it's the first take's own size when that is the aspect but for a model's rounding, so such takes join with no encode.
-- **`kind: frame`:** `{kind: frame, video: <clash>, at: 3, render: {with: cozy}}` is one frame of a video.
+- **A frame, `kind: image`:** `{video: <clash>, at: 3, render: {with: cozy}}` is one frame of a video.
 
 ## Runs
 

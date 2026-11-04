@@ -1,5 +1,5 @@
-//! What Calcifer runs itself, free, with no machine, the reserved package `cozy`: `kind: edit`, a film at the project's root and
-//! its timeline, and `kind: frame`, one frame of a video. And what is measured of a file. Every in and out point is an exact frame.
+//! What Calcifer runs itself, free, with no machine, the reserved package `cozy`: a `video`, a film at the project's root and
+//! its timeline, and an `image`, one frame of a video. And what is measured of a file. Every in and out point is an exact frame.
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},

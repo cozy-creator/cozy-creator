@@ -124,7 +124,7 @@ pub struct Version {
     pub kept: Option<protocol::project::Kept>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: Files,
-    /// The frames it wrote, by the name key of the world_state each is.
+    /// The frames it wrote, by the name key of the image each is.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub writes: BTreeMap<String, Files>,
     /// A digest per field of its record, to say which changed.
@@ -196,7 +196,7 @@ pub struct Pending {
     /// Pinned in project.yaml when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// The world_states it was asked to write, in order, each with where: its result's `written` in that order.
+    /// The images it was asked to write, in order, each with where: its result's `written` in that order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writes: Vec<Written>,
     /// Where it goes, and each call after this one of the operation's list.
@@ -216,7 +216,7 @@ pub struct Invocation {
     pub input: Map<String, Value>,
 }
 
-/// A world_state a run writes: its name, and where in the video if the function doesn't.
+/// An image a run writes: its name, and where in the video if the function doesn't.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Written {
     pub name: String,

@@ -47,29 +47,12 @@ if want project-split || want project-upscale; then
   P=$(project project-split <<YAML
 version: 2
 defaults:
-  all:
+  video:
+    with: $H3
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
-  shot:
-    render: {with: $H3}
-  upscale:
-    render: {with: $H3}
-  edit:
-    render: {with: cozy}
-assets:
-  hero:
-    kind: character
-    image: hero.png
-    description: "$CHAR"
-  yard:
-    kind: environment
-    image: place.png
-    description: "$SCENE"
-  wall.1:
-    kind: storyboard
-    description: a stepladder against the wall, and fresh paint
+shots:
   mural:
-    kind: shot
     render:
       seed: $((R + 300))
     summary: |
@@ -79,17 +62,30 @@ assets:
         description: |
           <hero> rolls bright orange paint across the wall in big letters that read OPEN.
         writes:
-          - world_state: wall.1
+          - image: wall.1
             at: 5
       - duration: 4
         description: |
           <hero> steps back from <wall.1>, where the orange letters read OPEN, and says "Done."
+assets:
+  hero:
+    kind: image
+    image: hero.png
+    description: "$CHAR"
+  yard:
+    kind: image
+    image: place.png
+    description: "$SCENE"
+  wall.1:
+    kind: image
+    description: a stepladder against the wall, and fresh paint
   mural_upscale:
-    kind: upscale
+    kind: video
     video: <mural>
     resolution: 1080p
   edit:
-    kind: edit
+    kind: video
+    render: {with: cozy}
     resolution: 1080p
     pieces:
       - <mural_upscale>
@@ -129,22 +125,12 @@ if want project-segments; then
     P=$(project project-segments-$cf <<YAML
 version: 2
 defaults:
-  all:
+  video:
+    with: $H3
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
-  shot:
-    render: {with: $H3}
-assets:
-  hero:
-    kind: character
-    image: hero.png
-    description: "$CHAR"
-  yard:
-    kind: environment
-    image: place.png
-    description: "$SCENE"
+shots:
   walk:
-    kind: shot
     render:
       seed: $((R + 330 + cf))
       context_frames: $cf
@@ -155,11 +141,20 @@ assets:
         description: |
           <hero> sets off across <yard>, the camera following alongside.
         writes:
-          - world_state: yard.1
+          - image: yard.1
             at: 10
       - duration: 10
         description: |
           <hero> keeps walking across <yard.1> and stops at the far side.
+assets:
+  hero:
+    kind: image
+    image: hero.png
+    description: "$CHAR"
+  yard:
+    kind: image
+    image: place.png
+    description: "$SCENE"
 YAML
 )
     imported "$P" hero.png place.png
@@ -179,17 +174,11 @@ if want project-in; then
   P=$(project project-in <<YAML
 version: 2
 defaults:
-  all:
+  video:
+    with: $H3
     aspect_ratio: "16:9"
-  shot:
-    render: {with: $H3}
-assets:
-  yard:
-    kind: environment
-    image: place.png
-    description: "$SCENE"
+shots:
   look:
-    kind: shot
     render:
       seed: $((R + 305))
     summary: |
@@ -202,6 +191,11 @@ assets:
       - duration: 5
         description: |
           The camera keeps drifting right, past the far wall.
+assets:
+  yard:
+    kind: image
+    image: place.png
+    description: "$SCENE"
 YAML
 )
   imported "$P" place.png
@@ -228,19 +222,11 @@ if want project-plate; then
   P=$(project project-plate <<YAML
 version: 2
 defaults:
-  all:
+  video:
+    with: $H3
     aspect_ratio: "16:9"
-  shot:
-    render: {with: $H3}
-assets:
-  pattern:
-    kind: environment
-    image: plate.png
-    description: a synthetic broadcast test pattern
-  take_one:
-    video: plate.mp4
+shots:
   follow:
-    kind: shot
     render:
       seed: $((R + 301))
     summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."
@@ -248,6 +234,13 @@ assets:
       - duration: 5
     plate:
       video: <take_one>
+assets:
+  pattern:
+    kind: image
+    image: plate.png
+    description: a synthetic broadcast test pattern
+  take_one:
+    video: plate.mp4
 YAML
 )
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
@@ -264,34 +257,33 @@ if want project-voice; then
   P=$(project project-voice <<YAML
 version: 2
 defaults:
-  all:
+  video:
+    with: $H3
     aspect_ratio: "16:9"
-  shot:
-    render: {with: $H3}
 entities:
   host:
     kind: character
     description: "$CHAR"
     image: <host_sheet>
     voice: <host_voice>
-assets:
-  host_sheet:
-    kind: character
-    image: hero.png
-  host_voice:
-    kind: voice
-    audio: voice.wav
-  yard:
-    kind: environment
-    image: place.png
-    description: "$SCENE"
+shots:
   hello:
-    kind: shot
     render:
       seed: $((R + 302))
     summary: <host> stands in <yard>, looks into the camera and says "Welcome to the yard."
     beats:
       - duration: 5
+assets:
+  host_sheet:
+    kind: image
+    image: hero.png
+  host_voice:
+    kind: audio
+    audio: voice.wav
+  yard:
+    kind: image
+    image: place.png
+    description: "$SCENE"
 YAML
 )
   # The voice: 4 s of the split shot's soundtrack (its "Done."), else of the gate's H3 clip, else a tone.
@@ -312,28 +304,23 @@ if want project-stills; then
   P=$(project project-stills <<YAML
 version: 2
 defaults:
-  all:
+  image:
+    with: $STILL
     aspect_ratio: "16:9"
-  character:
-    render: {with: $STILL}
-  environment:
-    render: {with: $STILL}
-  setup:
-    render: {with: $STILL}
 assets:
   cook:
-    kind: character
+    kind: image
     description: "$CHAR"
     render:
       seed: $((R + 303))
   kitchen:
-    kind: environment
+    kind: image
     description: "$SCENE"
     render:
       seed: $((R + 304))
   kitchen_door:
-    kind: setup
-    camera: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"
+    kind: image
+    render: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"
 YAML
 )
   render project-stills "$P" all
@@ -353,7 +340,7 @@ version: 2
 assets:
   lot:
     render: {with: ./still.py}
-    kind: environment
+    kind: image
     aspect_ratio: "16:9"
     description: "$SCENE"
 YAML

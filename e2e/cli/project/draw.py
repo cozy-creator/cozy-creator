@@ -19,6 +19,6 @@ def draw(payload: ImageRequest, adj: Adjustments, out: Outputs) -> ImageResult:
     return ImageResult(image, width, height, payload.seed or 0, payload.prompt)
 
 
-@app.project_adapter("image", "picture", "environment", "character")
+@app.project_adapter("image")
 def adapt(op: Operation) -> list[Invocation]:
     return [Invocation(function="draw", input={"prompt": str(op.fields.get("description", op.asset))})]

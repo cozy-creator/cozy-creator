@@ -2,9 +2,10 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
 # ///
-"""The project cell's shot package: weightless, an adapter per kind, and each function says what it was given. `shot`: its video
-is its plate, `given` the request it got, and `written` a picture per write. `bare` takes no writes. `typed` types its operation's
-fields. `two calls` answers a list of calls, the second reading the first's output. `slow` waits, so a render can be caught going."""
+"""The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
+video is its plate, `given` the request it got, and `written` a picture per write; the field `bare` calls a function that takes no
+writes, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
+going. An `image` types its operation's fields. An `audio` says its `options`."""
 
 import hashlib
 import json
@@ -60,14 +61,20 @@ def shoot(payload: Request, out: Outputs) -> Take:
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
-@app.project_adapter("shot")
+@app.project_adapter("video")
 def adapt(op: Operation) -> list[Invocation]:
-    """Its own words, nothing the format names. A field says when to answer no run, or to refuse."""
+    """Its own words, nothing the format names. A field says what to do: answer no run, refuse, or call another of its functions."""
     if op.fields.get("refuse"):
         raise Refuse(str(op.fields["refuse"]))
+    if "seconds" in op.fields:
+        return [Invocation(function="slow", input={"seconds": op.fields.get("seconds", 20)})]
+    if op.fields.get("two_calls"):
+        return [Invocation(function="first_call", input={"prompt": op.asset}), Invocation(function="second_call", input={"of": "$0.first"})]
     plate = next((read for read in op.reads if "video" in read.files), None)
     if plate is None or op.fields.get("no_run"):
         return []
+    if op.fields.get("bare"):
+        return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
     said = [f"{read.name}={read.kind}" for read in op.reads]
     told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
     request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}, "writes": [{"name": write.name, "at_s": write.at_s} for write in op.writes]}
@@ -90,10 +97,6 @@ def bare(payload: Bare, out: Outputs) -> BareTake:
     return BareTake(out.save_bytes(payload.plate.read_bytes(), media_type="video/mp4"))
 
 
-@app.project_adapter("bare")
-def adapt_bare(op: Operation) -> list[Invocation]:
-    plate = next(read for read in op.reads if "video" in read.files)
-    return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
 
 
 class Words(msgspec.Struct, kw_only=True):
@@ -117,7 +120,7 @@ def typed(payload: Text, out: Outputs) -> Saved:
     return Saved(out.save_bytes(payload.prompt.encode() + os.urandom(4), media_type="application/json"))
 
 
-@app.project_adapter("typed")
+@app.project_adapter("image")
 def adapt_typed(op: TypedOperation) -> list[Invocation]:
     return [Invocation(function="typed", input={"prompt": op.fields.summary})]
 
@@ -144,9 +147,6 @@ def second_call(payload: Earlier, out: Outputs) -> Second:
     return Second(out.save_bytes(f"sha256:{hashlib.sha256(payload.of.read_bytes()).hexdigest()}".encode(), media_type="text/plain"))
 
 
-@app.project_adapter("two calls")
-def adapt_two(op: Operation) -> list[Invocation]:
-    return [Invocation(function="first_call", input={"prompt": op.asset}), Invocation(function="second_call", input={"of": "$0.first"})]
 
 
 @app.entrypoint()
@@ -154,7 +154,7 @@ def echo(payload: Text, out: Outputs) -> Saved:
     return Saved(out.save_bytes(payload.prompt.encode(), media_type="application/json"))
 
 
-@app.project_adapter("told")
+@app.project_adapter("audio")
 def adapt_told(op: Operation) -> list[Invocation]:
     """`options` is its own map: what it does with them is its business."""
     return [Invocation(function="echo", input={"prompt": json.dumps(op.options, sort_keys=True)})]
@@ -171,6 +171,3 @@ def slow(payload: Wait, out: Outputs) -> Saved:
     return Saved(out.save_bytes(os.urandom(8), media_type="application/json"))
 
 
-@app.project_adapter("slow")
-def adapt_slow(op: Operation) -> list[Invocation]:
-    return [Invocation(function="slow", input={"seconds": op.fields.get("seconds", 20)})]
