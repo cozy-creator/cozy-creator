@@ -1,5 +1,5 @@
 name: publish
-description: Uploads a run's output, scrubbed first (e2e/scrub.js). The repo is public, so an artifact is published; if the scrub fails, nothing goes up.
+description: Uploads a run's output, scrubbed first (scrub.js). The repo is public, so an artifact is published; if the scrub fails, nothing goes up.
 inputs:
   name:
     description: The artifact's name
