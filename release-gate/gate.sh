@@ -221,8 +221,8 @@ PY
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
-  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH (tfs_kill), and suite tensord measures the pod's link
-  # over it, with this computer's key, or a new one on a runner. A tensorfs --only without `kill` rents with no SSH.
+  # Suite tensorfs's `kill` case kills the rental's TensorD (kill-at.sh, put there over SSH), and suite tensord measures the
+  # pod's link over it, with this computer's key, or a new one on a runner. A tensorfs --only without `kill` rents with no SSH.
   SSH=
   if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
@@ -239,6 +239,13 @@ if [ -z "$ON" ]; then
     [ -z "$RID" ] || { acquisition "$RID" & AQ=$!; }
     wait "$RP"; rc=$? RP=
     [ -z "$AQ" ] || { kill "$AQ" 2>/dev/null; wait "$AQ" 2>/dev/null; AQ=; }
+    # A boot that never starts is released unbilled (th-358: `cpu` with SSH, often): a new order may place elsewhere.
+    if [ "$rc" != 0 ] && grep -q boot_idle rent.err && [ "$order" -lt "$REORDERS" ]; then
+      log "order $order ended boot_idle, nothing billed: ordering again"
+      cat rent.err >> rent-orders.err
+      RID= first=; rm -f acquisition.jsonl rental
+      continue
+    fi
     [ -s acquisition.repriced ] || break
     log "order $order, $(head -n 1 rent.err), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
     cat rent.err >> rent-orders.err
