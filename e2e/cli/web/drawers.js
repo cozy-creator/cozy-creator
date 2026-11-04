@@ -147,6 +147,7 @@ async function runs(page, base, id, folder) {
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-machines.png` });
   if (listed.includes('local')) {
     await page.click('.runrow a:has-text("local")');
+    await page.click('summary:text-is("Details")');
     await page.waitForSelector('.kv');
     check('local_has_no_end', (await page.locator('.ending button').count()) === 0);
     if (runsHere) {

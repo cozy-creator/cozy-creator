@@ -15,21 +15,21 @@ import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
 import { endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
 
-/** The idle clock: said and shown, and renewed only when a person asks. */
+/** The idle clock, and renewing it, which only a person asks for. */
 function KeepUp({ machine, now }: { machine: Machine; now: number }) {
   const { client } = useConnection()
   const ask = useAsk()
   if (machine.kind !== "rental" || machine.state !== "ready" || machine.recorded === false) return null
   const line = endsWords(machine, now)
   return (
-    <div className="row center">
+    <>
       {line && <span className={machine.status?.idle_deadline_ms ? "warn" : "muted"}>{line}</span>}
       <span className="sp" />
       <button type="button" className="tb" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
         Keep up
       </button>
       <Failure error={ask.error} lead="Couldn't keep it up" />
-    </div>
+    </>
   )
 }
 
@@ -93,18 +93,18 @@ function Update({ machine }: { machine: Machine }) {
   )
 }
 
-function Facts({ machine, now }: { machine: Machine; now: number }) {
+/** All the rest it knows, for whoever asks. */
+function Details({ machine, now }: { machine: Machine; now: number }) {
   const status = machine.status
   const rental = machine.rental
   const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb} GB` : ""
   return (
-    <KV
+    <details className="sect">
+      <summary>Details</summary>
+      <KV
       rows={[
         ["Kind", kindWords(machine)],
-        ["GPUs", gpusWords(machine)],
         ...(status?.gpus ?? []).map((gpu): [string, string] => [`GPU ${gpu.index}`, `${gpu.name} · ${bytes(gpu.memory_bytes)}${gpu.driver ? ` · driver ${gpu.driver}` : ""}`]),
-        ["Price", rental && `${usd(rental.usd_micros_per_hour)}/h`],
-        ["Spent", spentWords(machine)],
         ["Up", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
         ["Running", machine.running || machine.queued ? `${machine.running ?? 0} running, ${machine.queued ?? 0} queued` : ""],
         ["cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
@@ -119,7 +119,13 @@ function Facts({ machine, now }: { machine: Machine; now: number }) {
         ["Failure", rental?.failure],
         ["Reason", machine.reason === "release_unconfirmed" ? "" : machine.reason],
       ]}
-    />
+      />
+      {machine.ssh && (
+        <Section title="Log in">
+          <Copyable text={machine.ssh.line} />
+        </Section>
+      )}
+    </details>
   )
 }
 
@@ -149,31 +155,29 @@ export function MachineDrawer() {
         <span className={`dot ${stateClass(machine)}`} />
         <b>{stateWords(machine, now)}</b>
         <span className="sp" />
-        {machine.state !== "ended" && (
-          <Link className="more" to={`${to("runs")}?all&machine=${encodeURIComponent(machine.name)}`}>
-            Its runs
-          </Link>
-        )}
+        <small>{gpusWords(machine)}</small>
       </div>
-      {ended && <p className="muted">It's ended, and its Hub says nothing of it bills now. What landed here stays.</p>}
+      {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
       {machine.state === "booting" && (
         <p className="muted">
-          Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It goes on with this page closed, and bills once its machine is ready. End stops it.
+          Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It bills once it's ready, and goes on with this page closed.
           {machine.attempt?.replaced && ` The last attempt ended: ${machine.attempt.replaced.failure}.`}
         </p>
       )}
       {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
-      {machine.unreachable && <p className="muted">It didn't answer just now ({machine.unreachable}). Its facts are from its last report.</p>}
-      <KeepUp machine={machine} now={now} />
+      {machine.unreachable && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
+      {machine.rental && !ended && (
+        <p className="cost">
+          <b>{usd(machine.rental.usd_micros_per_hour)}/h</b>
+          {spentWords(machine) && <small>{spentWords(machine)} so far</small>}
+        </p>
+      )}
+      <div className="row center keep-up">
+        <KeepUp machine={machine} now={now} />
+      </div>
       <div className="ending">
         <End machine={machine} />
       </div>
-      <Facts machine={machine} now={now} />
-      {machine.ssh && (
-        <Section title="Log in">
-          <Copyable text={machine.ssh.line} />
-        </Section>
-      )}
       {machine.status?.gpu_problems?.map((problem) => (
         <p className="warn" key={problem}>
           {problem}
@@ -197,6 +201,14 @@ export function MachineDrawer() {
           </ul>
         </Section>
       )}
+      {machine.state !== "ended" && (
+        <p>
+          <Link className="more" to={`${to("runs")}?all&machine=${encodeURIComponent(machine.name)}`}>
+            Its runs
+          </Link>
+        </p>
+      )}
+      <Details machine={machine} now={now} />
       {machine.state === "ready" && <Update machine={machine} />}
       {!ended && <Installed machine={machine} />}
       {!ended && <MachineLogs machine={machine} />}

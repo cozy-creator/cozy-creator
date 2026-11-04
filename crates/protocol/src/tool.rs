@@ -202,10 +202,13 @@ fn capitalized(text: &str) -> String {
 }
 
 fn controls(fields: &Struct, callable: Option<&Callable>) -> Vec<Control> {
-    let text = text_input(fields).map(|field| field.name.as_str());
+    let text = text_input(fields);
     let mut controls: Vec<Control> = fields.fields.iter().filter_map(|field| control(field, callable)).collect();
-    for control in controls.iter_mut().filter(|control| Some(control.field.as_str()) == text) {
+    for control in controls.iter_mut().filter(|control| text.is_some_and(|text| text.name == control.field)) {
         control.field = TEXT.to_owned();
+        if !text.is_some_and(|text| text.extra.contains_key("label")) {
+            control.label = capitalized(TEXT);
+        }
     }
     controls
 }

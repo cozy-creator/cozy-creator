@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import type { Control } from "../types"
+import type { Control, Tool } from "../types"
+import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import { controlsOf, shapesOf } from "./controls"
 import { MentionText } from "./MentionText"
+import { faceOf, shownOf } from "./shown"
 import { BEAT_S, mentionsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 
@@ -72,7 +74,7 @@ function BeatsControl({ name, control, view }: { name: string; control: Control;
               set(beats.filter((_, at) => at !== i))
               save()
             }}>
-              ×
+              <Icon name="close" />
             </button>
           </div>
         )
@@ -135,7 +137,7 @@ function ChoiceControl({ name, control }: { name: string; control: Control }) {
         onChange={(event) => void store.setField(name, control.field, options[Number(event.target.value)])}
       >
         <option value={-1} disabled hidden>
-          Its default
+          Auto
         </option>
         {options.map((option, i) => (
           <option key={i} value={i}>
@@ -166,7 +168,7 @@ function ShapeControl({ name, control, view }: { name: string; control: Control;
     <label className="slide">
       <span className="ctl-name">{control.label}</span>
       <select className="field nodrag" aria-label={control.label} value={held} onChange={(event) => void store.setField(name, control.field, event.target.value)}>
-        {!held && <option value="">Its default</option>}
+        {!held && <option value="">Auto</option>}
         {[...new Set([...shapesOf(control), ...(held ? [held] : [])])].map((shape) => (
           <option key={shape} value={shape}>
             {shape}
@@ -254,7 +256,7 @@ function Conflict({ name }: { name: string }) {
 }
 
 /** Render. How far it's got is on the picture. On an approved box it makes one more to look at, and what's approved stays. */
-function RenderButton({ name, view }: { name: string; view: ElementView }) {
+export function RenderButton({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   // An Edit's film is only a moment's work here, and has no run to cancel.
   if (view.asset?.rendering !== undefined) return null
@@ -266,42 +268,61 @@ function RenderButton({ name, view }: { name: string; view: ElementView }) {
     )
   }
   return (
-    <button type="button" className="run nodrag" aria-label="Render" title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"} onClick={() => void store.run(name)}>
-      ▶ Render
+    <button
+      type="button"
+      className="run nodrag"
+      aria-label="Render"
+      title={view.asset?.pinned ? `Make another ${view.asset.noun} to look at: what's approved stays` : "Render"}
+      onClick={() => {
+        store.editing.set(null)
+        void store.run(name)
+      }}
+    >
+      <Icon name="play" />
+      Render
     </button>
   )
 }
 
-/** The face a box opens on: whatever its tool's controls ask for, and Render. It knows no function. */
+/** What goes in the frame while nothing's made to fill it, so you write on what you're making: its words, else the slot for its file. A tool with its own box draws all of that itself. */
+function framed(view: ElementView, controls: Control[], tool: Tool | undefined): Control | undefined {
+  if (shownOf(view) || faceOf(view) !== "edit" || tool?.ui) return undefined
+  return controls.find((control) => control.type === "text") ?? controls.find((control) => control.type === "file")
+}
+
+export function InFrame({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const control = view.asset && framed(view, controlsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
+  if (!control) return null
+  return (
+    <div className="in-frame">
+      <ControlRow name={name} control={control} view={view} focus={store.focusing === name} />
+    </div>
+  )
+}
+
+/** The face a box opens on: whatever its tool's controls ask for, or what its package draws for them. It knows no function. */
 export function AssetEdit({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const [focusing] = useState(() => {
-    const here = store.focusing === name
-    if (here) store.focusing = null
-    return here
-  })
   if (!view.asset) return null
+  const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const controls = controlsOf(view.asset, tools)
+  const inFrame = framed(view, controls, tool)
   const first = controls.find((control) => control.type === "text")
+  const rest = controls.filter((control) => control !== inFrame && control.type !== "timeline")
+  if (!rest.length && !tool?.ui && !view.conflict) return null
   return (
     <div className="edit-face">
       <ToolBox
-        tool={view.asset.tool ? tools.get(view.asset.tool) : undefined}
+        tool={tool}
         name={name}
         view={view}
-        controls={controls}
-        row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={focusing && control === first} />}
+        controls={rest}
+        row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={store.focusing === name && control === first} />}
       />
       {view.conflict && <Conflict name={name} />}
-      <div className="row foot">
-        <RenderButton name={name} view={view} />
-        {view.drafts && (
-          <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
-            Save
-          </button>
-        )}
-      </div>
     </div>
   )
 }

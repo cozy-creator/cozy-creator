@@ -948,6 +948,13 @@ export interface AssetPatched {
   warnings?: string[]
 }
 
+export interface Captioned {
+  name: string
+  text: string
+  run: number
+  warnings?: string[]
+}
+
 export interface AssetDeleted {
   name: string
   /** Opaque: what `PUT` takes to put it back. */
@@ -955,7 +962,7 @@ export interface AssetDeleted {
   at?: Row
 }
 
-export type ControlType = "text" | "beats" | "shape" | "range" | "choice" | "toggle" | "file"
+export type ControlType = "text" | "beats" | "shape" | "range" | "choice" | "toggle" | "file" | "timeline"
 
 /** One thing a box asks for. A box is built from these, and nothing about any function. */
 export interface Control {

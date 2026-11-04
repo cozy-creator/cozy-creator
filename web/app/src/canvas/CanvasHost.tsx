@@ -21,7 +21,7 @@ import { loadSelection, loadToolsShut, loadViewport, saveSelection, saveToolsShu
 import type { Tool } from "../types"
 import { say } from "../ui/notes"
 import { AssetMenu } from "./AssetMenu"
-import { CanvasStore, type ElementNode } from "./CanvasStore"
+import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore } from "./context"
 import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
@@ -31,7 +31,7 @@ import { madeHere } from "./shown"
 import { ToolPanel } from "./ToolPanel"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-const FIT = { maxZoom: 1, padding: "24px" } as const
+const fitOver = (toolsShut: boolean) => ({ maxZoom: 1, padding: { top: "56px", right: "24px", bottom: "24px", left: toolsShut ? "56px" : "220px" } as const })
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
@@ -86,10 +86,10 @@ function ProjectSync({ id }: { id: string }) {
   return null
 }
 
-/** The machines a render may go to: there's no choosing, the walk places it. With none, Render asks for one under Machines. */
-function useMachines(store: CanvasStore): string[] {
+/** The machines a render may go to: there's no choosing, the walk places it. With none, Render asks for one under Machines. Null until they're read. */
+function useMachines(store: CanvasStore): string[] | null {
   const { client, status } = useConnection()
-  const { data } = useQuery(machinesQuery(client))
+  const { data, isPending } = useQuery(machinesQuery(client))
   const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
   const names = [...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
   const key = names.join()
@@ -98,7 +98,7 @@ function useMachines(store: CanvasStore): string[] {
     store.machines = () => names
     if (names.length) store.machineUp()
   }, [store, key])
-  return names
+  return isPending ? null : names
 }
 
 /** Render all, and how many that is. Approved assets stay unless it's said. */
@@ -127,10 +127,17 @@ function RenderAll({ id }: { id: string }) {
   )
 }
 
-function Empty() {
+/** One line, and it does what it says when clicked too. */
+function Empty({ choose }: { choose: () => void }) {
   const empty = useStore((state) => state.nodes.length === 0)
   if (!empty) return null
-  return <div className="empty-canvas">Drop a file here</div>
+  return (
+    <div className="empty-canvas">
+      <button type="button" onClick={choose}>
+        Drop a file here
+      </button>
+    </div>
+  )
 }
 
 function Canvas({
@@ -157,8 +164,10 @@ function Canvas({
   const stage = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store)
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machines.at(-1) ?? null, projectId), staleTime: 60_000 })
+  const machine = machines?.at(-1) ?? null
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, projectId), enabled: machines !== null })
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
@@ -167,7 +176,7 @@ function Canvas({
     const fitOnce = async () => {
       if (fitted || !store.projectId) return
       fitted = true
-      if (openedOn) await flow.fitView(FIT)
+      if (openedOn) await flow.fitView(fitOver(loadToolsShut()))
       saveViewport(scope, store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
@@ -182,26 +191,58 @@ function Canvas({
     return () => store.detach()
   }, [store, flow, saved, scope, openedOn, bridge, navigate])
 
-  const fit = useCallback(() => void flow.fitView({ ...FIT, duration: 150 }), [flow])
+  const fit = useCallback(() => void flow.fitView({ ...fitOver(loadToolsShut()), duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])
 
-  // The middle of what's visible: the canvas less any drawer over it.
+  // The middle of what's visible: the canvas between whatever floats over it.
   const visibleCentre = useCallback(() => {
     const box = stage.current!.getBoundingClientRect()
-    const drawer = document.querySelector(".drawer")?.getBoundingClientRect().width ?? 0
-    return flow.screenToFlowPosition({ x: box.left + (box.width - drawer) / 2, y: box.top + box.height / 2 })
+    const left = document.querySelector(".tools")?.getBoundingClientRect().right ?? box.left
+    const right = document.querySelector(".drawer")?.getBoundingClientRect().left ?? box.right
+    return flow.screenToFlowPosition({ x: (left + right) / 2, y: box.top + box.height / 2 })
   }, [flow])
+
+  // A click puts a box in the middle of what's visible, or the nearest place clear of what's there, so none lands hidden under another.
+  const clearSpot = useCallback(
+    (width: number, height: number) => {
+      const { x: middle, y } = visibleCentre()
+      const box = stage.current!.getBoundingClientRect()
+      const leftmost = flow.screenToFlowPosition({ x: (document.querySelector(".tools")?.getBoundingClientRect().right ?? box.left) + 24, y: box.top }).x
+      const rightmost = flow.screenToFlowPosition({ x: (document.querySelector(".drawer")?.getBoundingClientRect().left ?? box.right) - 24, y: box.top }).x
+      const spot = { x: Math.round(middle - width / 2), y: Math.round(y - height / 2) }
+      for (let tries = 0; tries < 60; tries++) {
+        const under = flow.getIntersectingNodes({ ...spot, width, height })
+        if (!under.length) break
+        spot.x = Math.round(Math.max(...under.map((node) => node.position.x + (node.width ?? CARD_WIDTH))) + 32)
+        if (spot.x + width > rightmost) {
+          spot.x = Math.round(leftmost)
+          spot.y += Math.round(height + 48)
+        }
+      }
+      return spot
+    },
+    [flow, visibleCentre],
+  )
+  const placeTool = useCallback(
+    (tool: Tool) => {
+      const width = tool.controls.some((control) => control.type === "timeline") ? 720 : tool.kind === "video" ? 360 : 300
+      const { x, y } = clearSpot(width, width * 0.75)
+      void placer.addTool(tool, { x: x + CARD_WIDTH / 2, y: y + 16 })
+    },
+    [placer, clearSpot],
+  )
 
   const picked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const files = [...(event.target.files ?? [])]
       event.target.value = ""
-      if (files.length) placer.add(files, visibleCentre())
+      if (!files.length) return
+      const columns = Math.ceil(Math.sqrt(files.length))
+      const { x, y } = clearSpot(columns * CARD_WIDTH, Math.ceil(files.length / columns) * CARD_WIDTH)
+      placer.add(files, { x: x + CARD_WIDTH / 2, y: y + 16 })
     },
-    [placer, visibleCentre],
+    [placer, clearSpot],
   )
-
-  const placeTool = useCallback((tool: Tool) => void placer.addTool(tool, visibleCentre()), [placer, visibleCentre])
 
   const drop = useCallback(
     (event: DragEvent) => {
@@ -318,7 +359,8 @@ function Canvas({
   return (
     <CanvasStoreProvider value={store}>
       <ToolPanel
-        machine={machines.at(-1) ?? null}
+        machine={machine}
+        waiting={machines === null}
         shut={shut}
         setShut={(next) => {
           setShut(next)
@@ -363,7 +405,7 @@ function Canvas({
           nodesConnectable={false}
           onlyRenderVisibleElements
           colorMode="dark"
-          attributionPosition="bottom-left"
+          attributionPosition="bottom-right"
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onPaneClick={() => store.editing.set(null)}
@@ -380,7 +422,7 @@ function Canvas({
           onSelectionDragStop={(event, nodes) => dragStop(event, nodes)}
         >
           <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
-          <Empty />
+          <Empty choose={choose} />
         </ReactFlow>
         {veil && <div className="dropveil" />}
       </div>

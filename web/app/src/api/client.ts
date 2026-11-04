@@ -24,6 +24,7 @@ import type {
   AssetDeleted,
   AssetMade,
   AssetPatched,
+  Captioned,
   Opened,
   OrgClaim,
   PackageDetail,
@@ -287,6 +288,11 @@ export class Client {
 
   deleteAsset(id: string, name: string): Promise<AssetDeleted> {
     return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {})
+  }
+
+  /** Its description as a package would say it, from what it shows: a run on a machine that's up. Nothing is written. */
+  caption(id: string, name: string, on: string | undefined, key: string): Promise<Captioned> {
+    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/caption`, on ? { on } : {}, key)
   }
 
   /** What deleting it answered, back under its name. */

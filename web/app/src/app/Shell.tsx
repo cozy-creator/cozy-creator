@@ -7,6 +7,7 @@ import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
 import { noHash } from "../canvas/text"
 import { RunsLink } from "../panels/runs/RunsLink"
+import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
 import { useConnection } from "./Connection"
@@ -21,14 +22,27 @@ export function useTo() {
   return (rest = "") => (id ? `/projects/${id}${rest && `/${rest}`}` : `/${rest}`)
 }
 
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy web` does anywhere. A pod's Calcifer is its own. */
+const SAYS_HOW = 5
+
 function Connectivity() {
-  const { stream, attempt, bridge } = useConnection()
+  const { stream, attempt, bridge, remote } = useConnection()
   const health = useSignal(stream.health)
   const trying = useSignal(attempt)
   const version = useSignal(bridge.newVersion)
   return (
     <>
-      {health.state === "reconnecting" && <span className="pill warn">Reconnecting, attempt {health.attempt}</span>}
+      {health.state === "reconnecting" && (
+        <span className="pill warn">
+          Reconnecting, attempt {health.attempt}
+          {!remote && health.attempt >= SAYS_HOW && (
+            <>
+              {" "}
+              · run <code>cozy web</code>
+            </>
+          )}
+        </span>
+      )}
       {trying > 0 && <span className="pill warn">Trying again, attempt {trying}/{TRIES}</span>}
       {version && (
         <button type="button" className="pill warn" onClick={() => location.reload()}>
@@ -75,7 +89,7 @@ function MainMenu({ id }: { id: string | null }) {
   return (
     <details className="main-menu" ref={held}>
       <summary className="tb" aria-label="Menu">
-        ☰
+        <Icon name="menu" />
       </summary>
       <nav onClick={shut}>
         <RunsLink to={to("runs")} />

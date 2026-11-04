@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query"
+import { keepPreviousData, queryOptions } from "@tanstack/react-query"
 import type { ProjectState, Run, RunList, Status } from "../types"
 import type { Client, RunFilter } from "./client"
 
@@ -25,10 +25,14 @@ export const projectQuery = (client: Client, id: string) =>
     structuralSharing: keepAssets,
   })
 
+/** A list a late Hub left short is asked for again: what it read of the Hub so far is kept there, so it gets further each time. */
 export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null) =>
   queryOptions({
     queryKey: ["tools", q, on, project],
     queryFn: ({ signal }) => client.tools(q, on, project, signal),
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+    refetchInterval: (query) => (query.state.data?.note ? 10_000 : false),
   })
 
 export const canvasQuery = (client: Client, id: string) =>

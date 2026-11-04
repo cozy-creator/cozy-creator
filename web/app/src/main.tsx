@@ -8,7 +8,7 @@ import { RouterProvider } from "react-router-dom"
 import { Client } from "./api/client"
 import { sameOrigin } from "./api/transport"
 import { type Boot, type Connection, ConnectionProvider, chooseCalcifer, connect } from "./app/Connection"
-import { router } from "./app/routes"
+import { theRouter } from "./app/routes"
 import { saveSession, takeCode } from "./app/session"
 import { Copyable } from "./ui/Copyable"
 import { useSignal } from "./ui/signal"
@@ -75,7 +75,7 @@ function Connected({ connection }: { connection: Connection }) {
   return (
     <ConnectionProvider value={connection}>
       <QueryClientProvider client={connection.queries}>
-        <RouterProvider router={router} />
+        <RouterProvider router={theRouter()} />
       </QueryClientProvider>
     </ConnectionProvider>
   )

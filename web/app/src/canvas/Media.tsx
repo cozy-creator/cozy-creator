@@ -6,7 +6,8 @@ import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
-import { aspectOf, type Shown, shownOf } from "./shown"
+import { Icon, type IconName } from "../ui/Icon"
+import { aspectOf, faceOf, type Shown, shownOf } from "./shown"
 import { clock, lineOf } from "./text"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
@@ -253,7 +254,7 @@ export function Player({ field, path, machine, seek }: { field: string; path?: s
   if (state === "idle") {
     return (
       <button type="button" className="play nodrag" aria-label="Play" onClick={() => setState("waiting")}>
-        ▶
+        <Icon name="play" />
       </button>
     )
   }
@@ -273,9 +274,24 @@ export function Player({ field, path, machine, seek }: { field: string; path?: s
         }}
       />
       <button type="button" className="stop nodrag" aria-label="Stop" onClick={() => stopRef.current()}>
-        ×
+        <Icon name="close" />
       </button>
     </>
+  )
+}
+
+const GLYPHS: Record<string, IconName> = { image: "picture", video: "video", audio: "sound" }
+
+const leftWords = (fraction: number, seconds?: number) =>
+  `${Math.round(fraction * 100)}%${seconds === undefined ? "" : `, ${seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`} left`}`
+
+/** How far it's got, on the picture: a veil that moves and never reflows, and the number or the stage. */
+function Progress({ fraction, says }: { fraction?: number; says?: string }) {
+  return (
+    <div className={`prog ${fraction === undefined ? "unknown" : ""}`}>
+      <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 100) - 100}%)` }} />
+      {says && <b>{says}</b>}
+    </div>
   )
 }
 
@@ -286,7 +302,8 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const shown = shownOf(view)
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
-  const fraction = asset?.standing === "making" ? view.run?.progress?.done_fraction : undefined
+  const making = asset?.standing === "making"
+  const fraction = making ? view.run?.progress?.done_fraction : undefined
   const here = shown && !shown.absent ? shown : null
   const words = lineOf(asset?.fields)
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
@@ -295,8 +312,10 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const firstClip = clips?.find((clip) => clip.sha256 && !clip.missing)?.sha256
 
   const slid = view.slid !== undefined && view.slid === shown?.number
+  const blank = !preview && !shown && !firstClip
+  const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
-    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })}>
+    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })}>
       {preview && (
         <img
           src={preview}
@@ -312,17 +331,16 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
       {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
-      {!preview && !shown && !firstClip && (words ? <p className="words">{words}</p> : <span className="media-note">{clips ? "Drag videos and stills here" : field === "file" ? "A file" : ""}</span>)}
-      {placing && (
-        <div className="prog">
-          <i style={{ width: `${Math.round(placing.done * 100)}%` }} />
-        </div>
+      {blank && words && <p className="words">{words}</p>}
+      {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
+      {blank && !words && field === "file" && <span className="media-note">A file</span>}
+      {glyph && (
+        <span className="blank-glyph">
+          <Icon name={glyph} />
+        </span>
       )}
-      {fraction !== undefined && (
-        <div className="prog">
-          <i style={{ width: `${Math.round(fraction * 100)}%` }} />
-        </div>
-      )}
+      {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
+      {making && <Progress fraction={fraction} says={fraction === undefined ? undefined : leftWords(fraction, view.run?.progress?.eta_s)} />}
       {source && field && store.projectId && (
         <Player
           key={JSON.stringify(source)}

@@ -1,4 +1,5 @@
 import { Copyable } from "./Copyable"
+import { Icon } from "./Icon"
 import { dismiss, notes } from "./notes"
 import { useSignal } from "./signal"
 
@@ -27,7 +28,7 @@ export function Notes() {
             </button>
           )}
           <button type="button" className="iconb" aria-label="Dismiss" onClick={() => dismiss(note.id)}>
-            ×
+            <Icon name="close" />
           </button>
         </div>
       ))}

@@ -75,7 +75,7 @@ code {
   color: var(--ink);
 }
 
-/* Top bar */
+/* What floats over the canvas. */
 .top {
   position: fixed;
   left: 0;
@@ -84,26 +84,31 @@ code {
   height: var(--top);
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
+  gap: 8px;
+  padding: 0 8px;
+  pointer-events: none;
   z-index: 40;
 }
+.top > * {
+  pointer-events: auto;
+}
+.top > .gap {
+  pointer-events: none;
+}
+.icon {
+  display: block;
+  flex: none;
+}
 .proj {
-  font: 600 13px var(--mono);
+  padding: 5px 10px;
+  border-radius: var(--round);
+  background: var(--float);
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
 }
 .proj:hover {
   color: var(--ember2);
-}
-.path {
-  color: var(--faint);
-  font: 12px var(--mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 .sum {
   color: var(--mute);
@@ -122,22 +127,27 @@ code {
 .canvas-controls {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 .tb {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--round);
   background: var(--card);
   color: var(--ink);
   font-size: 12px;
   white-space: nowrap;
+  transition: transform 80ms ease-out;
 }
 .tb:hover {
   border-color: var(--line2);
+}
+.tb:active {
+  transform: scale(0.97);
 }
 .tb.primary {
   background: var(--ember);
@@ -147,23 +157,24 @@ code {
 }
 .pill {
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: var(--float);
   white-space: nowrap;
 }
 .pill.warn {
   color: var(--ood);
   border: 1px solid #e6c14b55;
 }
+.pill code {
+  font-size: 11px;
+}
 
-/* The canvas */
+/* The canvas: the whole window, with what floats over it. */
 .stage {
   position: fixed;
-  inset: var(--top) 0 0 var(--tools, 208px);
+  inset: 0;
   background: var(--bg);
-}
-.stage[data-tools="shut"] {
-  --tools: 30px;
 }
 .picker {
   display: none;
@@ -176,6 +187,7 @@ code {
 }
 .react-flow__attribution {
   color: var(--faint);
+  opacity: 0.5;
 }
 .react-flow__attribution a {
   color: var(--faint);
@@ -190,12 +202,8 @@ code {
   border: 2px dashed var(--ember);
   background: #ff8a3d0d;
   z-index: 25;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ember2);
-  font-size: 15px;
   pointer-events: none;
+  animation: fade-in 100ms ease-out;
 }
 .empty-canvas {
   position: absolute;
@@ -203,49 +211,68 @@ code {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--mute);
   pointer-events: none;
   z-index: 4;
 }
+.empty-canvas button {
+  padding: 28px 44px;
+  border: 1px dashed var(--line2);
+  border-radius: 16px;
+  color: var(--mute);
+  font-size: 15px;
+  pointer-events: auto;
+  transition: transform 120ms cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.empty-canvas button:hover {
+  color: var(--ink);
+  border-color: var(--ember);
+  transform: scale(1.03);
+}
 
-/* Elements */
+/* A box at rest: a name, and its picture or its text. There's no card around it, so it weighs nothing. */
 .card {
+  position: relative;
+  user-select: none;
+}
+.card.entity {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 9px;
-  user-select: none;
-  box-shadow:
-    0 1px 0 #0006,
-    0 8px 24px #0005;
-  overflow: hidden;
-}
-.card:hover {
-  border-color: var(--line2);
-}
-.react-flow__node.selected .card {
-  border-color: var(--ember);
-  box-shadow:
-    0 0 0 1px var(--ember),
-    0 10px 30px #0008;
+  border-radius: var(--round2);
 }
 .react-flow__node:focus,
 .react-flow__node:focus-visible {
   outline: none;
 }
+/* What's more opens under it, over its neighbours. */
+.react-flow__node:hover,
+.react-flow__node:focus-within,
+.react-flow__node.selected {
+  z-index: 1000 !important;
+}
+.react-flow__node.dragging .card {
+  transform: scale(1.015);
+  opacity: 0.94;
+  will-change: transform;
+}
 .head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  min-height: 30px;
+  gap: 4px;
+  padding: 0 2px;
+  height: var(--head);
 }
 .nm {
+  color: var(--mute);
   font: 12px var(--mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
   cursor: text;
+}
+.card.active .nm,
+.react-flow__node.selected .nm {
+  color: var(--ink);
 }
 .nm-field {
   user-select: text;
@@ -254,26 +281,31 @@ code {
   min-width: 0;
   background: #0f1012;
   border: 1px solid var(--ember);
-  border-radius: 4px;
+  border-radius: 5px;
   padding: 1px 4px;
   outline: 0;
 }
 .tag {
   font-size: 10px;
-  color: var(--mute);
-  border: 1px solid var(--line2);
-  border-radius: 3px;
-  padding: 0 4px;
+  color: var(--faint);
   white-space: nowrap;
 }
+/* Something's being dragged over it: it's ready to take it. */
+.card.hot .media,
+.card.hot .tl {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
+  margin: 0 2px;
   border-radius: 50%;
   flex: none;
 }
-.s-current {
-  background: var(--cur);
+/* Nothing's wrong, so nothing's said. */
+.dot.s-current {
+  display: none;
 }
 .s-ood {
   background: var(--ood);
@@ -283,8 +315,10 @@ code {
   animation: pulse 1.2s infinite;
 }
 .s-missing {
-  background: none;
-  border: 1.5px solid var(--faint);
+  display: none;
+}
+.s-failed {
+  background: var(--bad);
 }
 @keyframes pulse {
   50% {
@@ -294,7 +328,7 @@ code {
 .iconb {
   width: 22px;
   height: 22px;
-  border-radius: 4px;
+  border-radius: 5px;
   color: var(--mute);
   display: inline-flex;
   align-items: center;
@@ -306,18 +340,72 @@ code {
   background: #ffffff14;
   color: var(--ink);
 }
+.iconb.warned {
+  color: var(--ood);
+  font-weight: 600;
+}
+.count {
+  color: var(--mute);
+  font: 11px var(--mono);
+  white-space: nowrap;
+}
+
+/* Its picture: the box, at rest. */
 .media {
   position: relative;
   overflow: hidden;
+  border-radius: var(--round2);
   background: #0a0a0b;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+.card:hover > .media,
+.react-flow__node.selected .media {
+  outline: 1px solid var(--line2);
+  outline-offset: 2px;
+}
+.react-flow__node.selected .media,
+.react-flow__node.selected .tl {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
 .media.alpha {
   background-color: #2a2c30;
   background-image: conic-gradient(#33353a 25%, transparent 25% 50%, #33353a 50% 75%, transparent 75%);
   background-size: 14px 14px;
+}
+/* Nothing made yet: the marks of a viewfinder, on the canvas itself. The corner still reshapes it. */
+.media.blank {
+  --mark: #ffffff38;
+  --long: 18px;
+  --thin: 1.5px;
+  border-radius: 2px;
+  background:
+    linear-gradient(var(--mark), var(--mark)) top left / var(--long) var(--thin),
+    linear-gradient(var(--mark), var(--mark)) top left / var(--thin) var(--long),
+    linear-gradient(var(--mark), var(--mark)) top right / var(--long) var(--thin),
+    linear-gradient(var(--mark), var(--mark)) top right / var(--thin) var(--long),
+    linear-gradient(var(--mark), var(--mark)) bottom left / var(--long) var(--thin),
+    linear-gradient(var(--mark), var(--mark)) bottom left / var(--thin) var(--long),
+    linear-gradient(var(--mark), var(--mark)) bottom right / var(--long) var(--thin),
+    linear-gradient(var(--mark), var(--mark)) bottom right / var(--thin) var(--long);
+  background-repeat: no-repeat;
+}
+.card:hover > .media.blank,
+.react-flow__node.selected .media.blank {
+  --mark: #ffffff70;
+  outline: none;
+}
+.blank-glyph {
+  color: #ffffff26;
+}
+.card.editing .blank-glyph {
+  display: none;
+}
+.blank-glyph .icon {
+  width: 24px;
+  height: 24px;
 }
 .media img {
   position: absolute;
@@ -345,17 +433,27 @@ code {
   font-size: 12px;
   z-index: 1;
 }
+.media-note.over {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: #000c;
+  text-align: center;
+  z-index: 3;
+}
 .play,
 .stop {
   position: absolute;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: #000a;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
   z-index: 2;
 }
 .play {
@@ -371,86 +469,38 @@ code {
   background: var(--ember);
   color: #1b1006;
 }
+.card:not(.active) .play {
+  opacity: 0;
+}
+/* How far it's got, on the picture itself: a veil that only ever moves. */
 .prog {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 3px;
-  background: #ffffff12;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
   z-index: 2;
 }
 .prog i {
   display: block;
   height: 100%;
-  background: var(--mak);
+  background: linear-gradient(90deg, #5aa9ff14, #5aa9ff40);
+  border-right: 2px solid var(--mak);
+  transition: transform 300ms linear;
 }
-.status {
-  padding: 5px 8px;
-  font-size: 11px;
-  color: var(--mute);
-  border-top: 1px solid #ffffff08;
+.prog.unknown i {
+  transform: none;
+  border-right: 0;
+  animation: pulse 1.2s infinite;
 }
-.status.ood {
-  color: var(--ood);
-}
-.status.mak {
-  color: #9ccbff;
-}
-
-.status.bad {
-  color: var(--bad);
-}
-.status .act,
-.act {
-  color: var(--ink);
-  text-decoration: underline;
-  font-size: 11px;
-}
-.sum.bad {
-  color: var(--bad);
-}
-.s-failed {
-  background: var(--bad);
-}
-.iconb.lit {
-  color: var(--ember);
-}
-.iconb.hovered {
-  display: none;
-}
-.card:hover .iconb.hovered {
-  display: inline-flex;
-}
-.iconb.warned {
-  color: var(--ood);
-  font-weight: 600;
-}
-.count {
-  color: var(--mute);
-  font: 11px var(--mono);
-  white-space: nowrap;
-}
-
-/* A stack behind a card that has other versions. */
-.card.stacked {
-  box-shadow:
-    0 -3px 0 -1px var(--card2),
-    0 -6px 0 -2px #26282d,
-    0 1px 0 #0006,
-    0 8px 24px #0005;
-}
-
-/* A video's poster, and its frames under the pointer. */
-.scrub {
+.prog b {
   position: absolute;
-  inset: 0;
-  overflow: hidden;
-}
-.media img.strip {
-  width: 800%;
-  max-width: none;
-  object-fit: fill;
+  left: 8px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #000a;
+  color: #cfe6ff;
+  font: 500 11px var(--sans);
 }
 .tc {
   position: absolute;
@@ -462,43 +512,211 @@ code {
   font: 10px var(--mono);
   z-index: 1;
 }
+/* A video's poster, and its frames under the pointer. */
+.scrub {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.media img.strip {
+  width: 800%;
+  max-width: none;
+  object-fit: fill;
+}
+/* Words in the frame, at rest and while they're typed, so opening a box moves nothing. */
+.words,
+.in-frame .mention-text {
+  padding: 12px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 19px;
+}
 .words {
   margin: 0;
-  padding: 8px;
   align-self: flex-start;
   width: 100%;
-  max-height: 96px;
-  color: var(--mute);
-  font-size: 11.5px;
-  line-height: 16px;
+  max-height: 100%;
+  opacity: 0.72;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 7;
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-.media-note.over {
+.card.editing .words {
+  display: none;
+}
+.in-frame {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  z-index: 1;
+}
+.in-frame .mention-text {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  background: none;
+}
+.in-frame .mention-thumbs {
+  padding: 0 12px 10px;
+}
+.in-frame .slot-control {
+  margin: auto;
+  border: 0;
+  background: none;
   justify-content: center;
-  padding: 8px;
-  background: #000c;
   text-align: center;
+}
+.corner {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 22px;
+  height: 22px;
+  cursor: nwse-resize;
+  z-index: 3;
+}
+.corner::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  border-bottom-right-radius: 3px;
+  opacity: 0.75;
+  transition: transform 80ms ease-out;
+}
+.corner:hover::after {
+  border-color: var(--ember);
+  opacity: 1;
+  transform: translate(1px, 1px);
+}
+.ratio-shown {
+  position: absolute;
+  right: 22px;
+  bottom: 5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #000a;
+  font: 11px var(--mono);
   z-index: 3;
 }
 
-/* A card's versions, on hover. */
-.takes {
+/* What opens under it: asked for, there at once, and over its neighbours. */
+.asset-more {
   position: absolute;
-  left: 4px;
-  right: 4px;
-  top: 4px;
+  left: 0;
+  right: 0;
+  top: calc(100% + 8px);
+  padding: 2px 0;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  box-shadow: 0 10px 28px #0009;
+  animation: open-up 90ms ease-out;
+}
+.asset-more:empty {
+  display: none;
+}
+/* The pointer crosses the gap without leaving the box. */
+.asset-more::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -9px;
+  height: 9px;
+}
+.status {
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--mute);
+}
+.status.ood {
+  color: var(--ood);
+}
+.status.mak {
+  color: #9ccbff;
+}
+.status.bad {
+  color: var(--bad);
+}
+.act {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: 11px;
+}
+.act.going {
+  animation: pulse 1.2s infinite;
+  text-decoration: none;
+}
+.actions {
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 2px;
+}
+.actions .act {
+  padding: 4px 10px;
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  font-size: 12px;
+  text-decoration: none;
+  transition: transform 80ms ease-out;
+}
+.actions .act:hover {
+  border-color: var(--mute);
+}
+.actions .act:active {
+  transform: scale(0.96);
+}
+.actions:empty {
+  display: none;
+}
+.run {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px 5px 9px;
+  border-radius: var(--round);
+  background: var(--ember);
+  color: #1b1006;
+  font-size: 12px;
+  font-weight: 600;
+  transition: transform 80ms ease-out;
+}
+.run:hover {
+  background: var(--ember2);
+}
+.run:active {
+  transform: scale(0.96);
+}
+.from-here {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+}
+.from-here input {
+  flex: 1;
+  min-width: 0;
+}
+.tc-inline {
+  font: 10px var(--mono);
+  color: var(--mute);
+}
+/* Its takes or versions, side by side. */
+.takes {
   display: flex;
   gap: 4px;
+  padding: 6px 8px 2px;
   overflow-x: auto;
-  z-index: 3;
   scrollbar-width: none;
 }
 .take {
@@ -508,13 +726,21 @@ code {
   height: 30px;
   overflow: hidden;
   border: 1px solid var(--line2);
-  border-radius: 4px;
+  border-radius: 5px;
   background: #000c;
   color: var(--mute);
   font-size: 11px;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.take img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
 }
 .take.on {
   border-color: var(--ember);
@@ -526,12 +752,17 @@ code {
 .take.making {
   color: var(--mak);
 }
-
+.take.fresh {
+  animation: take-in 240ms cubic-bezier(0.2, 1.4, 0.4, 1);
+}
 /* A shot's beats, or a cut's pieces. */
 .beats {
   display: flex;
   height: 18px;
   gap: 1px;
+  margin: 4px 8px;
+  border-radius: 4px;
+  overflow: hidden;
   background: #0a0a0b;
 }
 .beats button {
@@ -565,6 +796,9 @@ code {
   margin: 2px 8px;
   height: 32px;
   -webkit-line-clamp: 2;
+}
+.entity .head {
+  padding: 0 8px;
 }
 .slots {
   height: 72px;
@@ -659,15 +893,18 @@ code {
 .drawer {
   position: fixed;
   top: var(--top);
-  bottom: 0;
-  right: 0;
+  bottom: 8px;
+  right: 8px;
   width: var(--drawer);
-  max-width: 100vw;
-  background: var(--panel);
-  border-left: 1px solid var(--line);
+  max-width: calc(100vw - 16px);
+  background: var(--float);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  box-shadow: 0 10px 40px #0009;
   z-index: 35;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .drawer-head {
   display: flex;
@@ -735,9 +972,10 @@ code {
 /* Lines the page says */
 .notes {
   position: fixed;
-  left: 12px;
-  bottom: 34px;
-  width: min(420px, calc(100vw - 24px));
+  left: 50%;
+  bottom: 16px;
+  width: min(460px, calc(100vw - 24px));
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -748,11 +986,13 @@ code {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   background: #22242a;
   border: 1px solid var(--line2);
-  border-radius: 7px;
+  border-radius: var(--round2);
+  box-shadow: 0 8px 24px #0008;
   font-size: 12px;
+  animation: open-up 140ms ease-out;
 }
 .note .line {
   flex: 1;
@@ -895,6 +1135,24 @@ button:disabled {
 }
 .run-head small {
   color: var(--mute);
+}
+.cost {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+.cost b {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.cost small {
+  color: var(--mute);
+  font-size: 12px;
+}
+.keep-up:empty {
+  display: none;
 }
 .kv {
   margin: 8px 0;
@@ -1298,57 +1556,129 @@ a.tab:hover {
   margin-top: 4px;
 }
 
-/* The tools, on the left. */
+/* The tools, floating on the left: what you can make. */
 .tools {
   position: fixed;
-  left: 0;
+  left: 8px;
   top: var(--top);
-  bottom: 0;
-  width: 208px;
+  width: 188px;
+  max-height: calc(100vh - var(--top) - 8px);
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  background: var(--panel);
-  border-right: 1px solid var(--line);
+  background: var(--float);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
   overflow: hidden;
   z-index: 20;
 }
 .tools.shut {
-  width: 30px;
-  padding: 4px;
-}
-.tools header {
-  display: flex;
-  align-items: center;
+  width: auto;
+  padding: 3px;
 }
 .tools .field {
   flex: none;
+  height: 26px;
+  background: none;
+  border-color: transparent;
+}
+.tools .field:hover,
+.tools .field:focus {
+  border-color: var(--line);
+}
+.tools .add {
+  flex: 1;
+  justify-content: center;
+  height: 30px;
+}
+.tools .row.center {
+  gap: 2px;
+}
+.tool-groups {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.tool-groups.stale {
+  opacity: 0.55;
+}
+.tool-groups h4 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 10px 0 2px;
+  padding: 0 6px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 500;
+}
+.tool-groups section:first-of-type h4 {
+  margin-top: 2px;
+}
+.tool-groups h4 .icon {
+  width: 12px;
+  height: 12px;
 }
 .tools ul {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
+}
+.tools p {
+  margin: 4px 6px;
+  font-size: 11px;
 }
 .tool {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px;
+  gap: 4px;
+  padding: 4px 6px;
   border-radius: 6px;
   cursor: grab;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 .tool:hover {
   background: #ffffff0d;
 }
+.tool:active {
+  cursor: grabbing;
+}
 .tool b {
-  font-weight: 500;
+  font-weight: 400;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.tool.quick {
+  flex: none;
+  padding: 2px;
+  border-radius: 4px;
+  color: var(--faint);
+}
+.tool.quick .icon {
+  width: 13px;
+  height: 13px;
+}
+.tool.quick:hover {
+  color: var(--ember);
+  background: none;
+  transform: scale(1.2);
+}
+.tool-ghost {
+  height: 18px;
+  margin: 6px;
+  border-radius: 4px;
+  background: #ffffff0c;
+  animation: pulse 1.2s infinite;
+}
+.tool-ghost:nth-child(3n) {
+  margin-right: 50px;
+}
+.tool-ghost:nth-child(3n + 1) {
+  margin-right: 24px;
 }
 
 /* The top bar: a name, Render all, the rest in a menu. */
@@ -1363,6 +1693,9 @@ a.tab:hover {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--float);
 }
 .main-menu {
   position: relative;
@@ -1374,120 +1707,33 @@ a.tab:hover {
 .main-menu summary::-webkit-details-marker {
   display: none;
 }
+.main-menu summary.tb {
+  padding: 0 7px;
+  background: var(--float);
+}
 .main-menu nav {
   position: absolute;
   right: 0;
-  top: 32px;
+  top: 34px;
   min-width: 140px;
   padding: 4px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--panel);
+  background: var(--float);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--round2);
+  box-shadow: 0 10px 28px #0009;
   z-index: 40;
+  animation: open-up 90ms ease-out;
 }
 .main-menu nav a {
   border: 0;
   background: none;
   justify-content: flex-start;
 }
-
-/* A box at rest is its picture or its text and a name. What's more opens under it, over its neighbours. */
-.react-flow__node:hover,
-.react-flow__node:focus-within,
-.react-flow__node.selected {
-  z-index: 1000 !important;
-}
-.card {
-  overflow: visible;
-}
-.card .media {
-  border-radius: 0 0 8px 8px;
-}
-.card.active .media {
-  border-radius: 0;
-}
-.dot.s-current {
-  display: none;
-}
-.card.active .dot.s-current {
-  display: inline-block;
-}
-.asset-more {
-  position: absolute;
-  left: -1px;
-  right: -1px;
-  top: 100%;
-  padding-bottom: 2px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-top: 0;
-  border-radius: 0 0 9px 9px;
-  box-shadow: 0 10px 24px #0007;
-}
-.react-flow__node.selected .asset-more {
-  border-color: var(--ember);
-}
-.card {
-  position: relative;
-}
-.takes {
-  position: static;
-  padding: 4px;
-}
-.approve-row {
-  gap: 8px;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  min-height: 0;
-}
-.approve-row:empty {
-  display: none;
-}
-.from-here {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-.from-here input {
-  flex: 1;
-  min-width: 0;
-}
-.tc-inline {
-  font: 10px var(--mono);
-  color: var(--mute);
-}
-.corner {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  cursor: nwse-resize;
-  background: linear-gradient(135deg, transparent 50%, #ffffff55 50%);
-  z-index: 3;
-}
-.ratio-shown {
-  position: absolute;
-  right: 18px;
-  bottom: 4px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #000a;
-  font: 11px var(--mono);
-  z-index: 3;
-}
-
-.card.editing .words {
-  display: none;
-}
-.card:not(.active) .play {
-  opacity: 0;
+.main-menu nav a:hover {
+  background: #ffffff0d;
 }
 
 /* Its controls. */
@@ -1495,7 +1741,10 @@ a.tab:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 6px 10px;
+}
+.edit-face .mention-text {
+  min-height: 30px;
 }
 .mention-text {
   min-height: 44px;
@@ -1595,6 +1844,10 @@ a.tab:hover {
   flex: 1;
   min-width: 0;
 }
+input[type="range"],
+input[type="checkbox"] {
+  accent-color: var(--ember);
+}
 .ctl-name {
   flex: none;
 }
@@ -1626,26 +1879,15 @@ a.tab:hover {
 .card.active [data-drop-target]:hover {
   border-color: var(--ember);
 }
-.foot {
+.desc-row {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.run {
-  padding: 6px 12px;
-  border-radius: 6px;
-  background: var(--ember);
-  color: #1b1006;
-  font-size: 12px;
-  font-weight: 600;
-}
-.run:hover {
-  background: var(--ember2);
+  padding: 3px 10px;
 }
 .desc-line {
-  display: block;
-  width: 100%;
-  padding: 3px 8px;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   font-size: 11px;
   color: var(--mute);
@@ -1653,18 +1895,24 @@ a.tab:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.desc-line:hover {
+  color: var(--ink);
+}
 .desc-line.empty {
   color: var(--faint);
 }
 .desc-open {
-  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 10px;
 }
 .next-line {
   color: var(--mute);
   margin-top: 2px;
 }
 .warned-lines {
-  padding: 2px 8px;
+  padding: 2px 10px;
   font-size: 11px;
   color: var(--ood);
 }
@@ -1683,8 +1931,9 @@ a.tab:hover {
   gap: 2px;
   background: var(--panel);
   border: 1px solid var(--line2);
-  border-radius: 8px;
+  border-radius: var(--round2);
   box-shadow: 0 10px 30px #000a;
+  animation: open-up 90ms ease-out;
 }
 .asset-menu > button,
 .menu-list button {
@@ -1702,6 +1951,20 @@ a.tab:hover {
 .menu-list button:hover {
   background: #ffffff14;
 }
+.menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 2px 8px;
+  font-size: 12px;
+}
+.menu-row .field {
+  flex: none;
+  width: 130px;
+  height: 26px;
+  font-size: 12px;
+}
 .menu-list {
   list-style: none;
   margin: 0;
@@ -1713,36 +1976,39 @@ a.tab:hover {
 
 /* Alive, and brief. Only what arrives moves, on the compositor, and coming back on screen isn't arriving. */
 .card.landing {
-  animation: land 220ms cubic-bezier(0.2, 1.4, 0.4, 1);
+  animation: land 260ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 .media img.arrives {
-  animation: arrive 180ms ease-out;
+  animation: fade-in 180ms ease-out;
 }
 .media.slid img {
-  animation: slide-in 220ms ease-out;
+  animation: slide-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
-.prog {
-  top: 0;
-  height: auto;
-  background: none;
-  pointer-events: none;
-}
-.prog i {
-  background: linear-gradient(90deg, #5aa9ff24, #5aa9ff44);
-  border-right: 2px solid var(--mak);
-  transition: width 300ms linear;
+.drawer {
+  animation: drawer-in 140ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 @keyframes land {
   0% {
-    transform: scale(0.92);
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.04);
   }
   100% {
     transform: scale(1);
   }
 }
-@keyframes arrive {
+@keyframes fade-in {
   from {
     opacity: 0;
+  }
+}
+@keyframes open-up {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
   }
 }
 @keyframes slide-in {
@@ -1751,10 +2017,25 @@ a.tab:hover {
     opacity: 0.2;
   }
 }
+@keyframes take-in {
+  from {
+    transform: translateX(-16px) scale(0.8);
+    opacity: 0;
+  }
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(14px);
+    opacity: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .card.landing,
-  .media img.arrives,
-  .media.slid img {
-    animation: none;
+  /* Still ends, so what waits on an animation's end still hears it. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

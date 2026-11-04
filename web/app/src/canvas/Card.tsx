@@ -1,13 +1,14 @@
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow, useStore } from "@xyflow/react"
-import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useRef, useState, useSyncExternalStore } from "react"
+import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { AssetEdit } from "./AssetEdit"
+import { AssetEdit, InFrame, RenderButton } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
 import { DRAGGED_FILE } from "./drag"
-import { Media, stageLine, Thumb } from "./Media"
+import { Media, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { aspectOf, faceOf, madeHere, makes, ratioOf, shownOf } from "./shown"
@@ -49,7 +50,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const shown = shownOf(view)
   const versions = asset.prefixes ?? []
   const adds = asset.tool && faceOf(view) !== "edit"
-  if ((!asset.tool && versions.length < 2) || (!adds && !versions.length && !asset.making?.length)) return null
+  if (versions.length < 2 && !adds && !(versions.length && asset.making?.length)) return null
   const takeOut = (event: DragEvent, version: (typeof versions)[number]) => {
     const description = store.valueOf(name, "description")
     const file = { sha256: version.main?.sha256, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }
@@ -67,7 +68,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         <button
           key={version.number}
           type="button"
-          className={`take ${shown?.number === version.number ? "on" : ""}`}
+          className={`take ${shown?.number === version.number ? "on" : ""} ${view.slid === version.number ? "fresh" : ""}`}
           aria-label={`${asset.noun} ${version.number}`}
           title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
           draggable={Boolean(version.main)}
@@ -120,7 +121,7 @@ function FromHere({ view, name }: { view: ElementView; name: string }) {
   if (!makes(view) || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
   const at = view.scrub ?? 0
   return (
-    <div className="row from-here">
+    <div className="from-here">
       <input
         className="nodrag nopan"
         type="range"
@@ -190,10 +191,6 @@ function usdPerHour(micros: number): string {
   return `$${(micros / 1_000_000).toFixed(2)}/h`
 }
 
-function About({ seconds }: { seconds: number }) {
-  return <>about {seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`} left</>
-}
-
 function Pull() {
   const store = useCanvasStore()
   const moving = useSignal(store.transferring)
@@ -205,8 +202,6 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const will = store.nameWillBe(name)
   if (will) return <div className="status">Will be {will}</div>
-  const stage = stageLine(view)
-  if (stage) return <div className="status mak">{stage}</div>
   const asset = view.asset
   if (!asset) return null
   const askable = Boolean(asset.tool)
@@ -229,19 +224,9 @@ function Status({ view, name }: { view: ElementView; name: string }) {
         </div>
       )
     }
-    const progress = run?.progress
     if (run?.queue_position !== undefined) return <div className="status mak">Queued, number {run.queue_position} in line</div>
-    return (
-      <div className="status mak">
-        {asset.rendering !== undefined ? `Rendering ${Math.round(asset.rendering * 100)}%` : "Making"}
-        {progress?.done_fraction !== undefined && `, ${Math.round(progress.done_fraction * 100)}%`}
-        {progress?.eta_s !== undefined && (
-          <>
-            , <About seconds={progress.eta_s} />
-          </>
-        )}
-      </div>
-    )
+    // An Edit's film shows on its own bar, and anything else's on its picture.
+    return null
   }
   if (view.queued) return <div className="status mak">Queued</div>
   const approvedFace = asset.pinned && faceOf(view) === "media"
@@ -288,18 +273,27 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   return null
 }
 
-/** What this asset is, in words of its own, whichever way it was made. It reaches what mentions it. It opens on a click, so a small picture isn't crowded. */
+/** What this asset is, in words of its own, whichever way it was made. It reaches what mentions it. It opens on a click, so a small picture isn't crowded; a caption opens it too, as an edit that's still only typed. */
 function Description({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const [open, setOpen] = useState(false)
   const held = store.valueOf(name, "description")
   const text = typeof held === "string" ? held : ""
+  const typed = view.drafts !== undefined && "description" in view.drafts
   if (!view.asset) return null
-  if (!open) {
+  if (!open && !typed) {
+    const shown = shownOf(view)
     return (
-      <button type="button" className={`desc-line nodrag ${text ? "" : "empty"}`} title={text || "Say what this is"} onClick={() => setOpen(true)}>
-        {text || "Describe"}
-      </button>
+      <div className="desc-row">
+        <button type="button" className={`desc-line nodrag ${text ? "" : "empty"}`} title={text || "Say what this is"} onClick={() => setOpen(true)}>
+          {text || "Describe"}
+        </button>
+        {shown && !shown.absent && shown.field !== "audio" && (
+          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => void store.caption(name)}>
+            {view.captioning ? "Captioning" : "Caption"}
+          </button>
+        )}
+      </div>
     )
   }
   return (
@@ -310,13 +304,23 @@ function Description({ name, view }: { name: string; view: ElementView }) {
         value={text}
         label="What this is"
         missing={[]}
-        focus
+        focus={open}
         onDraft={(words) => store.setDraft(name, "description", words)}
         onSave={() => {
-          void store.save(name)
+          if (open) void store.save(name)
           setOpen(false)
         }}
       />
+      {!open && (
+        <div className="row">
+          <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
+            Keep it
+          </button>
+          <button type="button" className="act nodrag" onClick={() => store.discard(name, "description")}>
+            Discard
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -390,17 +394,21 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   // At rest a box is its picture or its text and a name. All else comes when it's asked for, and isn't there until then, so 300 boxes cost little.
   const active = !far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name)
   const editing = face === "edit" && active
+  // A dropped tool's text has taken the keys, or isn't going to.
+  useEffect(() => {
+    if (store.focusing === name) store.focusing = null
+  })
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
-  const words = asset && !canFlip && store.projectId ? `#/projects/${encodeURIComponent(store.projectId)}/yaml` : null
   return (
     <div
-      className={`card ${versions.length > 1 ? "stacked" : ""} ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
+      data-kind={kindOf(view)}
       onClick={buttonsOnly}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
-      onFocus={() => setFocused(true)}
+      onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
       }}
@@ -416,7 +424,6 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {view.draft === undefined && active && kindOf(view) && <span className="tag">{kindOf(view)}</span>}
         {view.draft === undefined && <span className="sp" />}
         {view.draft === undefined && active && versions.length > 1 && (
           <span className="count">
@@ -436,24 +443,19 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
             title={face === "edit" ? `Show its ${asset?.noun ?? "file"}` : "Edit"}
             onClick={() => store.patch(name, { face: face === "edit" ? "media" : "edit" })}
           >
-            {face === "edit" ? "▣" : "✎"}
+            <Icon name={face === "edit" ? "picture" : "edit"} />
           </button>
-        )}
-        {view.draft === undefined && active && words && (
-          <a className="iconb nodrag" aria-label="Its words" title="Its words" href={words}>
-            {"{ }"}
-          </a>
         )}
         {view.placing && view.placing.stage !== "adding" ? (
           <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={cancel}>
-            ×
+            <Icon name="close" />
           </button>
         ) : (
           view.draft === undefined &&
           active &&
           asset && (
             <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => void store.remove([name])}>
-              ×
+              <Icon name="close" />
             </button>
           )
         )}
@@ -463,6 +465,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={width}>
+          {editing && <InFrame name={name} view={view} />}
           {active && asset && !view.placing && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
@@ -470,11 +473,17 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
         <div className="asset-more">
           {asset && !view.placing && <Takes view={view} name={name} width={width} />}
           {asset && !view.placing && (
-            <div className="row approve-row">
+            <div className="row actions">
+              {editing && <RenderButton name={name} view={view} />}
               <Approve view={view} name={name} />
-              {!asset.timeline && <FromHere view={view} name={name} />}
+              {view.drafts && (
+                <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
+                  Save
+                </button>
+              )}
             </div>
           )}
+          {asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
           {!editing && <Bar view={view} name={name} />}
           {editing && <AssetEdit name={name} view={view} />}
           {asset && !view.placing && <Description name={name} view={view} />}
@@ -488,7 +497,6 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
           <Status view={view} name={name} />
         </div>
       )}
-      {!active && view.placing && <Status view={view} name={name} />}
     </div>
   )
 })

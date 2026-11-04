@@ -58,6 +58,12 @@ export function lay(clips: ClipNow[], fps: number, scale: number): Layout {
   return { placed, frames: at, width: x }
 }
 
+/** The same cut at another rate: a clip's points are times, so their frames move with it. What no clip says stays unsaid. */
+export function retimed(timeline: { tracks: { clips: Clip[] }[] }, from: number, to: number) {
+  const at = (frame?: number) => (frame === undefined ? undefined : Math.round((frame * to) / from))
+  return { ...timeline, tracks: timeline.tracks.map((track) => ({ ...track, clips: track.clips.map((clip) => ({ ...clip, in: at(clip.in), out: at(clip.out), frames: at(clip.frames) })) })) }
+}
+
 /** The clip showing frame `frame`, the last for one past the end. */
 export function clipAt(layout: Layout, frame: number): Placed | undefined {
   const showing = layout.placed.filter((place) => place.frames > 0)

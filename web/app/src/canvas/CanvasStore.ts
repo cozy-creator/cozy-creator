@@ -76,6 +76,8 @@ export interface ElementView {
   shape?: string
   /** Its warnings are open under it. */
   warned?: boolean
+  /** A caption is being asked for. */
+  captioning?: boolean
   /** Something is being dragged over it. */
   hot?: boolean
   /** It just arrived, and lands. */
@@ -680,17 +682,51 @@ export class CanvasStore {
   }
 
   /** A slider let go, a choice made: one field, whatever else is typed. */
-  async setField(name: string, field: string, value: unknown) {
+  setField(name: string, field: string, value: unknown) {
+    return this.setFields(name, { [field]: value })
+  }
+
+  /** What belongs together, in one write. */
+  async setFields(name: string, fields: Record<string, unknown>) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset || !this.projectId) return
-    const { [field]: _, ...drafts } = view.drafts ?? {}
-    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, [field]: value } })
+    const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
+    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields } })
     try {
-      this.wrote(key, await this.client.patchAsset(this.projectId, view.asset.name, { fields: { [field]: value } }))
+      this.wrote(key, await this.client.patchAsset(this.projectId, view.asset.name, { fields }))
       this.refresh()
     } catch (error) {
-      say(`Couldn't set ${name}'s ${field}`, error)
+      say(`Couldn't set ${name}'s ${Object.keys(fields).join(", ")}`, error)
+    }
+  }
+
+  /** What's typed in one field goes, and what it holds shows again. */
+  discard(name: string, field: string) {
+    const view = this.get(name)
+    if (!view?.drafts) return
+    const { [field]: _, ...drafts } = view.drafts
+    this.patch(name, { drafts: Object.keys(drafts).length ? drafts : undefined })
+  }
+
+  /** Its description, as a package would say it: an edit in the field, not saved. It runs on a machine that's up, so with none it asks for one. */
+  async caption(name: string) {
+    const asset = this.get(name)?.asset
+    if (!asset || !this.projectId) return
+    const [on] = this.machines()
+    if (!on) {
+      say("Caption runs on a machine that's up")
+      return this.askMachine()
+    }
+    this.patch(name, { captioning: true })
+    try {
+      const answer = await this.client.caption(this.projectId, asset.name, on, `caption-${crypto.randomUUID()}`)
+      this.setDraft(name, "description", answer.text)
+      for (const warning of answer.warnings ?? []) say(warning)
+    } catch (error) {
+      say(`Couldn't caption ${name}`, error)
+    } finally {
+      this.patch(name, { captioning: undefined })
     }
   }
 

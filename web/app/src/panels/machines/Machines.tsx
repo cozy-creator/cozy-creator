@@ -31,7 +31,7 @@ function MachineRow({ machine, now }: { machine: Machine; now: number }) {
           )}
         </span>
         <small className="under">
-          {trying ? `Still trying${machine.attempt ? `, attempt ${machine.attempt.number}` : ""}: ${stateWords(machine, now)}. It goes on with this page closed.` : stateWords(machine, now)}
+          {trying ? `Still trying${machine.attempt ? `, attempt ${machine.attempt.number}` : ""}: ${stateWords(machine, now)}` : stateWords(machine, now)}
         </small>
         {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
         {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : machine.reason === "release_unconfirmed" ? "The Hub hasn't confirmed it gone: it may still be billing" : "Bills until its Hub affirms it gone"}</small>}
@@ -131,11 +131,7 @@ function Switcher() {
         <span className="sp" />
         {looked && looked.state !== "ending" && <End machine={looked} through={here} onAsked={() => lookAt(null)} />}
       </div>
-      {remote && (
-        <p className="muted">
-          This is {remote}'s own Calcifer, and here it's <code>local</code>. It never signs in: public packages and models work, and what's private stays on this computer.
-        </p>
-      )}
+      {remote && <p className="muted">It's <code>local</code> here. What's private stays on this computer.</p>}
     </div>
   )
 }
@@ -174,7 +170,7 @@ export function Machines() {
       <Failure error={error} lead="Couldn't list the machines" />
       {rentals.length > 0 && (
         <p className="muted">
-          Rentals running: {rentals.length} · {usd(hourly)}/hour now. They end themselves after 15 minutes idle.
+          {rentals.length} rented, {usd(hourly)}/h. Each ends after 15 minutes idle.
         </p>
       )}
       {data?.unanswered?.map((problem) => (
@@ -189,16 +185,16 @@ export function Machines() {
       </ul>
       {data && !machines.length && (
         <p className="muted">
-          No machines. {signedIn && renting ? "Rent one below, or add another computer." : "Add another computer, or "}
+          Renders run on a machine.{" "}
           {!signedIn && renting && (
             <Link className="more" to={to("account")}>
-              sign in to rent one
+              Sign in to rent one
             </Link>
           )}
         </p>
       )}
       {renting && <Rent machines={machines} signedIn={signedIn} />}
-      <AddMachine />
+      {!remote && <AddMachine />}
     </DrawerFrame>
   )
 }

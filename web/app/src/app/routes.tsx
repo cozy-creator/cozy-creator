@@ -42,24 +42,28 @@ const drawers: RouteObject[] = [
   drawer("projects", <Projects />),
 ]
 
-export const router = createHashRouter([
-  {
-    path: "/",
-    element: <Shell />,
-    children: [
-      { index: true, element: <Home /> },
-      ...drawers,
-      {
-        path: "projects/:id",
-        children: [
-          { index: true, element: null },
-          ...drawers,
-          drawer("new", <NewRun />),
-          drawer("files", <Stub title="Files" />),
-          drawer("yaml", <Yaml />),
-        ],
-      },
-      { path: "*", element: <Navigate replace to="/" /> },
-    ],
-  },
-])
+/** Made once boot has taken a sign-in link out of the URL: a router reads where it is as it's made, and `to` is where the link goes. */
+let router: ReturnType<typeof createHashRouter> | null = null
+
+export const theRouter = () =>
+  (router ??= createHashRouter([
+    {
+      path: "/",
+      element: <Shell />,
+      children: [
+        { index: true, element: <Home /> },
+        ...drawers,
+        {
+          path: "projects/:id",
+          children: [
+            { index: true, element: null },
+            ...drawers,
+            drawer("new", <NewRun />),
+            drawer("files", <Stub title="Files" />),
+            drawer("yaml", <Yaml />),
+          ],
+        },
+        { path: "*", element: <Navigate replace to="/" /> },
+      ],
+    },
+  ]))

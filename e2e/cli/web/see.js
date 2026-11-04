@@ -37,7 +37,7 @@ async function open(page, name) {
 }
 async function tag(page, name) {
   await open(page, name);
-  return element(page, name).locator('.tag').textContent();
+  return element(page, name).locator('.card').getAttribute('data-kind');
 }
 const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
 

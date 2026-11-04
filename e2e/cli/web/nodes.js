@@ -138,7 +138,7 @@ function linesOf(text, name) {
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
   const firstTool = page.locator('.tools .tool').first();
   const label = await firstTool.locator('b').textContent();
-  const kind = await firstTool.locator('.tag').textContent();
+  const kind = await firstTool.getAttribute('data-kind');
   const made = await dragOut(firstTool, 700, 500);
   seen.tool_dragged = made.name;
   check('tool_named_from_its_label', made.name.toLowerCase().startsWith(label.toLowerCase().slice(0, 4)), { label, name: made.name });
@@ -308,14 +308,14 @@ function linesOf(text, name) {
   await page.keyboard.type(' mine');
   replaceFile(yamlAt, yaml().replace('      Written\n', '      Rewritten\n'));
   await until('its etag read again', () => box('source-a').count(), (n) => n === 1);
-  await box('Sheet').locator('.foot button:has-text("Save")').click();
+  await box('Sheet').locator('.actions button:has-text("Save")').click();
   await until('another\'s edit is no conflict', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('mine'));
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' again');
   replaceFile(yamlAt, yaml().replace(' mine', ' theirs'));
   await page.waitForTimeout(600);
-  await box('Sheet').locator('.foot button:has-text("Save")').click();
+  await box('Sheet').locator('.actions button:has-text("Save")').click();
   await box('Sheet').locator('.status.ood:has-text("changed under this")').waitFor();
   await shot('conflict');
   check('a_conflict_writes_nothing', linesOf(yaml(), 'Sheet').includes(' theirs') && !linesOf(yaml(), 'Sheet').includes(' again'), linesOf(yaml(), 'Sheet'));
@@ -387,7 +387,7 @@ function linesOf(text, name) {
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
     const filesBefore = readdirSync(join(folder, 'files')).length;
     await open('Sheet');
-    await box('Sheet').locator('.take[aria-label="version 2"]').dragTo(page.locator('.stage'), { targetPosition: { x: 150, y: 700 } });
+    await box('Sheet').locator('.take[aria-label="version 2"]').dragTo(page.locator('.stage'), { targetPosition: { x: 320, y: 700 } });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
     check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
     check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);

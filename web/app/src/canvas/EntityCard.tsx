@@ -51,7 +51,7 @@ const EntityBody = memo(function EntityBody({ name }: { name: string }) {
   const entity = view?.entity
   if (!view || !entity) return null
   return (
-    <div className="card entity" onClick={buttonsOnly}>
+    <div className="card entity" data-kind={entity.kind} onClick={buttonsOnly}>
         <div className="head">
           <span className="nm" title={name}>
             {name}
