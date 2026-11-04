@@ -110,6 +110,7 @@ end_it() {
     # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
     "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
     "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
+    "$CLI" --json machine show "$M" >machine-end.json 2>/dev/null
     if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
   fi
   [ -z "$ON" ] || { M=; return; }

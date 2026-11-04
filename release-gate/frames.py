@@ -5,6 +5,7 @@
     frames.py still IMAGE OUTPUT first|last                # a keyframe against the output's first or last frame
     frames.py variant CONTROL OUTPUT                       # a fine-tune's or LoRA's render against a same-seed control
     frames.py seams OUTPUT --at S[,S...]                   # a several-piece shot at its piece boundaries
+    frames.py coherent OUTPUT                              # a render alone, with no reference to lose to
 
 regen: both in the original's 1344x768 frame (a 16:9 output un-stretched), over every 4th frame: mean luma PSNR and
 SSIM at full size (reported: regenerated texture, dense foliage most, rightly moves them), and at 112x64, where texture
@@ -28,6 +29,9 @@ into new frames (a reframe or cut there scores low): the largest change as a rat
 least consecutive SSIM; `inside_ssim` is the same three-pair window's least SSIM every 2.5 s away from the boundaries
 (median), the shot's own norm. A wider window would blame a piece's own last frames on its seam (se-087: h3-shot-40s's
 15.08 s dip is two frames inside piece 1, alike in every arm).
+coherent: gray at 192x108 over every frame: each frame's luma deviation (`contrast`: flat or grey scores near 0), the
+2nd to 98th percentile luma (`spread`), the mean change per frame (`motion`: a frozen picture scores 0) and the SSIM of
+consecutive frames, mean and least (`coherence`, `least`: noise scores near 0, as a kernel's garbage does).
 """
 
 import json
@@ -174,7 +178,19 @@ def seams(output: str, at: list[float]) -> dict:
             "boundaries": out, "flicker": int(len(frames)), "flicker_at_s": [round(int(f) / FPS, 2) for f in frames[:8]]}
 
 
+def coherent(output: str) -> dict:
+    a = gray(output, 192, 108)
+    pairs = [ssim(a[i - 1], a[i]) for i in range(1, len(a))]
+    return {**probe(output), "contrast": round(float(a.std(axis=(1, 2)).mean()), 2),
+            "spread": round(float(np.percentile(a, 98) - np.percentile(a, 2)), 1),
+            "motion": round(float(np.abs(np.diff(a, axis=0)).mean()), 2),
+            "coherence": round(float(np.mean(pairs)), 3), "least": round(float(np.min(pairs)), 3)}
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == "coherent":
+        print(json.dumps(coherent(sys.argv[2])))
+        sys.exit()
     mode, first, second, *rest = sys.argv[1:]
     if mode == "regen":
         print(json.dumps(regen(first, second)))

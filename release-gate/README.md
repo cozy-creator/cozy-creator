@@ -30,7 +30,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `project` | `cozy project render` on fixture projects (the walk in this computer's Calcifer): a shot whose later beat reads a world state an earlier beat writes, in one calls (`continue_from`), its upscale from latents and the 1080p edit, a new take keeping a take's start (`--take`, `--in`), a plate, a voice, stills at 16:9 and 9:16, a node rendered with local code (`with: ./still.py/draw`), and refusals before any run | rtx-4090 | ~$0.7 · ~30 min | a project, Calcifer or shot-function change |
 | `consumer` | a real 12 GB card under its own memory pressure: SDXL 1024 int8 cold, then four warm calls, all complete (cozy-runtime #1956) | rtx-3060 | ~$0.1 · ~15 min | a Runtime, varena or TensorD change |
 | `families` | the packages that send attention masks (qwen-image-2 at its prefill, ideogram-4 on every call) on the families whose kernels serve none: each completes, a refused call runs on SDPA and the record counts it (runs 26242-26244) | h100-sxm5-80gb, b200 | ~$5–8 · 30–40 min | a Runtime change to attention, kernels or selection |
-| `multi-gpu` | H3 over two GPUs: a 15 s Turbo call and a 30-step call, two ranks on two GPUs, a 768p video with audio | the cheapest listed 2-GPU card (`skus`, `gpus=2`) | every RC |
+| `multi-gpu` | H3 over two GPUs, 5 s Turbo, new prompt and seed: two ranks on two GPUs, a 768p video with audio, frames judged numerically (`frames.py coherent`). A group opens more kernels than one GPU does, so each family that takes its own group path gets a pod | one card per family, each its cheapest with two GPUs: sm120, sm90, older mma.sync (`skus`; today's cheapest: `suites/multi-gpu/pick.sh`, `-f skus=<card> -f gpus=2`). No sm100 card lists two | ~$1.50–2 · ~10 min a family, 3 pods | every release |
 | `cli` | (building) | | | a CLI change |
 
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
@@ -50,7 +50,8 @@ way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (
    on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in 786 real cells was
    7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.
 4. Ends the rental and checks that it is gone.
-5. Runs `analyze.py`. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
+5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
+   cells did. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
    driver's: TensorD reads each GPU's bytes in use (NVML) every 100 ms over a call into the record's `memory.driver`,
    and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.
