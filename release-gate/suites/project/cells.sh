@@ -129,7 +129,20 @@ defaults:
     with: $H3
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
+entities:
+  hero:
+    kind: character
+    description: "$CHAR"
+    image: <hero_art>
+  yard:
+    kind: environment
+    description: "$SCENE"
+    image: <yard_art>
 assets:
+  hero_art:
+    image: hero.png
+  yard_art:
+    image: place.png
   walk:
     kind: video
     render:
@@ -147,14 +160,6 @@ assets:
       - duration: 10
         description: |
           <hero> keeps walking across <yard.1> and stops at the far side.
-  hero:
-    kind: image
-    image: hero.png
-    description: "$CHAR"
-  yard:
-    kind: image
-    image: place.png
-    description: "$SCENE"
 YAML
 )
     imported "$P" hero.png place.png
