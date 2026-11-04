@@ -770,7 +770,9 @@ def _big_gemm(name: str, index: int) -> dict:
 
     def data(*shape):
         raw = torch.randint(0, 256, shape, generator=g, dtype=torch.uint8, device=target)
-        return (raw & 0x77).view(torch.float8_e4m3fn) if fp8 else raw.view(torch.int8)
+        # Signed, as real activations are: Hopper's fast-accumulation fp8 loses 3% at K 7168 when every
+        # operand has one sign (run 29196) and 0.2% otherwise (run 29211). 0xF7 masks off NaN.
+        return (raw & 0xF7).view(torch.float8_e4m3fn) if fp8 else raw.view(torch.int8)
 
     q, w = data(m, k), data(n, k)
     xs = torch.rand(m, generator=g, device=target, dtype=torch.float32).add_(0.5)
