@@ -66,6 +66,9 @@ pub struct File {
     pub frames: u64,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub alpha: f64,
+    /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<tensorfs::format::ObjectRef>,
 }
 
 impl File {
@@ -585,7 +588,7 @@ impl Folder {
             .filter_map(|file| {
                 let at = self.dir.join(&file.path);
                 let probed = super::tools::measured(&found.path, &ffprobe, &at, file.is_video())?;
-                Some((file.sha256.clone(), File { path: file.path.clone(), sha256: file.sha256.clone(), ..probed }))
+                Some((file.sha256.clone(), File { path: file.path.clone(), sha256: file.sha256.clone(), parts: file.parts.clone(), ..probed }))
             })
             .collect();
         if measured.is_empty() {

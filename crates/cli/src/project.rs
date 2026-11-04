@@ -107,7 +107,7 @@ enum Verb {
         yes: bool,
     },
     /// Send every file project.lock names that your Tensorhub account lacks, private to it.
-    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; files/ stays out of git\n\nA file over the 5 GiB the Hub holds is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
+    #[command(after_help = "Example:\n  cozy project push   then commit project.yaml and project.lock; files/ stays out of git\n\nA file over 5 GiB goes as parts, which project.lock lists. A file on neither this computer nor the Hub is skipped with a warning, everything else goes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Push,
     /// Fetch every file project.lock names that files/ lacks, as real files.
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]

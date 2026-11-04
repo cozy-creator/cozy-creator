@@ -231,7 +231,7 @@ Assets can link into hashes, whereas entities link into asset-names. An entity h
 | `import <file>` | Copies a file or URL into `files/` and prints the line to paste |
 | `rename <old> <new>` | Renames an asset and keeps its versions |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names, a run's among them |
-| `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
+| `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. A file over 5 GiB goes as parts, which `project.lock` lists. Commit `project.yaml` and `project.lock`, not `files/` |
 
 ## Pins
 

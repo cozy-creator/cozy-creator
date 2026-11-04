@@ -6,8 +6,10 @@
 #     key, a pull killed mid-way goes on from the bytes it had: nothing missing, real files, the lock unchanged. On one CPU
 #     (the first has them all), an edit that joins with no encode is the same file, and one that encodes its edges has
 #     the same duration and frames, each with an SSIM of at least 0.99.
-#   A sparse file over the Hub's 5 GiB (cl-730): a push sends everything else, names it in a warning and exits 3, and so does
-#     a pull of that project on the second computer, which gets everything else.
+#   A file over the Hub's 5 GiB goes as parts (cl-731), which project.lock lists: a push killed mid-way sends only the parts it
+#     had not, and a pull killed mid-way goes on inside the file and comes out its sha256.
+#   A file not at the Hub (cl-730): a pull gets everything else, names it in a warning and exits 3, and so does a push from
+#     that copy.
 # Its commit is deleted after; the Hub's GC takes its bytes.
 . "$(dirname "$0")/lib.sh"
 command -v ffmpeg > /dev/null || sudo apt-get install -y -qq ffmpeg > /dev/null 2>&1 || fail "no ffmpeg"
@@ -152,29 +154,44 @@ second --json project -p "$C" push > "$OUT/push-second.json" 2> "$OUT/push-secon
 J '.files == 16 and .moved == 1' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
 cozy --json project -p "$P" push > "$OUT/push-edges.json" 2> "$OUT/push-edges.err" || fail "push the first computer's cut: $(tail -3 "$OUT/push-edges.err")"
 
-say "a sparse file over the Hub's limit, and a new file beside it"
-printf 'RIFF\0\0\0\0WAVE' > "$P/refs/huge.wav" && truncate -s 5368709121 "$P/refs/huge.wav" || fail "no sparse file"
+say "a file over the Hub's limit goes as parts, a new file beside it, and its push killed mid-way"
+{ printf 'RIFF\0\0\0\0WAVE'; head -c 1500M /dev/urandom; } > "$P/refs/huge.wav" && truncate -s 5368709121 "$P/refs/huge.wav" || fail "no big file"
 { printf 'RIFF\0\0\0\0WAVE'; head -c 1048564 /dev/urandom; } > "$P/refs/fresh.wav" || fail "no fresh file"
-HUGE=$(hash_of "$P/refs/huge.wav") FRESH=$(hash_of "$P/refs/fresh.wav")
+HUGE=$(hash_of "$P/refs/huge.wav") FRESH=$(hash_of "$P/refs/fresh.wav") HUGE_SHA=$(sha "$P/refs/huge.wav")
 sed -i "/^  edit:$/i\  huge:\n    audio: $HUGE\n  fresh:\n    audio: $FRESH" "$P/project.yaml"
+cozy project -p "$P" push > "$OUT/push-parts-killed.txt" 2>&1 & PUSH=$!
+# Past the first part: its bytes, and the parts listed in project.lock, are what a second push goes on from.
+until grep -qE 'sent [0-9.]+ ?GB|[0-9.]+ GiB' "$OUT/push-parts-killed.txt" && jq -e --arg s "sha256:$HUGE_SHA" '.files[$s].parts | length > 0' "$P/project.lock" > /dev/null || ! kill -0 "$PUSH" 2> /dev/null; do sleep 1; done
+kill -0 "$PUSH" 2> /dev/null && { kill -9 "$(pid_of "$HOME")"; wait "$PUSH"; code=$?; say "killed mid-way, exit $code: $(tail -1 "$OUT/push-parts-killed.txt" | cut -c1-120)"; }
+KEPT=$(jq -c --arg s "sha256:$HUGE_SHA" '.files[$s].parts | map(.length)' "$P/project.lock"); say "project.lock lists the parts: $KEPT"
+J --arg s "sha256:$HUGE_SHA" '(.files[$s].parts | length == 6) and ([.files[$s].parts[].length] | add == 5368709121) and (.files[$s].parts[5].length == 1)' "$P/project.lock" || fail "project.lock does not list six parts: $KEPT"
 code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
-PARTIAL=$(jq -r '.commit // empty' "$OUT/push-huge.json"); say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/push-huge.err" | tee -a "$R" | cut -c1-200
-[ "$code" = 3 ] || fail "a push that skipped a file exited $code, not 3"
-J '.files == 18 and .moved == 1 and .bytes == 1048576 and (.skipped | length == 1) and (.skipped[0].path | test("^files/")) and (.skipped[0].why | test("5 GiB"))' "$OUT/push-huge.json" \
-  || fail "the push did not send everything else and name the file"
-grep -q 'warning: skipped files/' "$OUT/push-huge.err" || fail "no warning names the file: $(tail -3 "$OUT/push-huge.err")"
-cozy project -p "$P" push > "$OUT/push-huge-2.txt" 2>&1; code=$?
-[ "$code" = 3 ] && grep -q ': 0 sent' "$OUT/push-huge-2.txt" || fail "pushed again, exit $code: $(tail -3 "$OUT/push-huge-2.txt")"
-tail -2 "$OUT/push-huge-2.txt" | cut -c1-200 | tee -a "$R"
+PARTIAL=$(jq -r '.commit // empty' "$OUT/push-huge.json"); say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"
+[ "$code" = 0 ] || fail "a push of a file over the limit exited $code: $(tail -3 "$OUT/push-huge.err")"
+J '.files == 18 and (.skipped // [] | length == 0) and .commit != null' "$OUT/push-huge.json" || fail "the push did not send everything"
+cozy --json project -p "$P" push > "$OUT/push-huge-2.json" 2> "$OUT/push-huge-2.err"; code=$?
+{ [ "$code" = 0 ] && J '.moved == 0 and .bytes == 0' "$OUT/push-huge-2.json"; } || fail "pushed again, exit $code: $(jq -c . "$OUT/push-huge-2.json")"
+
+say "a file not at the Hub, and a pull that gets the parted file whole"
+{ printf 'RIFF\0\0\0\0WAVE'; head -c 1048564 /dev/urandom; } > "$P/refs/never.wav" || fail "no unsent file"
+NEVER=$(hash_of "$P/refs/never.wav")
+sed -i "/^  edit:$/i\  never:\n    audio: $NEVER" "$P/project.yaml"
 C2=/home/$U/film-partial
 sudo install -d -o "$U" -m 700 "$C2" && sudo install -o "$U" -m 644 "$P/project.yaml" "$P/project.lock" "$C2/" || fail "no second copy"
+sudo -u "$U" -H sh -c "echo \$\$ > '$H/pull.pid'; exec '/opt/$U/cozy' project -p '$C2' pull" > "$OUT/pull-parts-killed.txt" 2>&1 < /dev/null & PULL=$!
+until [ -n "$(sudo find "$C2/files" -name '.*.part' -size +1100M 2> /dev/null | head -1)" ] || ! kill -0 "$PULL" 2> /dev/null; do sleep 0.5; done
+[ -n "$(sudo find "$C2/files" -name '.*.part' -size +1100M 2> /dev/null | head -1)" ] || fail "the pull ended inside no part: $(tail -3 "$OUT/pull-parts-killed.txt")"
+sudo kill -9 "$(sudo cat "$H/pull.pid")" "$(pid_of "$H")"; wait "$PULL"
+LANDED=$(sudo find "$C2/files" -name '.*.part' -size +1100M -printf '%s\n' | head -1); say "killed inside the file, with $LANDED bytes of it"
 code=0; second --json project -p "$C2" pull > "$OUT/pull-huge.json" 2> "$OUT/pull-huge.err" || code=$?
 say "pull: exit $code, $(jq -c . "$OUT/pull-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/pull-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a pull that skipped a file exited $code, not 3"
-J '.files == 18 and .moved == 17 and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+J '.files == 19 and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+J --argjson l "$LANDED" '.bytes <= (5368709121 - $l + 1000000000)' "$OUT/pull-huge.json" || fail "the pull began the big file again"
+GOT=$(sudo sh -c "sha256sum '$C2/files/$HUGE_SHA'.*" | cut -c1-64); [ "$GOT" = "$HUGE_SHA" ] || fail "the parted file came out $GOT, not $HUGE_SHA"
 second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-huge.err" || fail "status: $(tail -3 "$OUT/status-huge.err")"
 J '.absent == 1' "$OUT/status-huge.json" || fail "status does not count the one file: $(jq -c '{absent, missing}' "$OUT/status-huge.json")"
 second --json project -p "$C2" push > "$OUT/push-partial-copy.json" 2> "$OUT/push-partial-copy.err"; code=$?
-{ [ "$code" = 3 ] && J '.moved == 0 and (.skipped[0].path | test("^files/"))' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
+{ [ "$code" = 3 ] && J '(.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
 
 say "PROVEN"

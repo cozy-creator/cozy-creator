@@ -377,7 +377,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   now with no versions (`409 rename_taken`, `409 project_busy` while it renders). Nothing on disk moves. What reads it goes out of date unless pinned.
 - `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, deleted?}`. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
-  project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. `transferred` on the events ends it.
+  project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
+  each its own object, which its first push lists in project.lock under the file's `parts`. `transferred` on the events ends it.
 - `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
 - `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
