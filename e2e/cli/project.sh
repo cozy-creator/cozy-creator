@@ -415,11 +415,11 @@ entities:
       deeper: {image: <hero_sheet>}
   hero_voice:
     description: A name both sections use.
-shots:
+assets:
   meeting:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: <hero> meets <hero.primordial>, in <hero.pose>.
-assets:
   odd:
     kind: character
     image: $pic
@@ -444,14 +444,14 @@ said "hero's badge: an entity links to an asset's name: make an asset for it"
 said "hero's lost: <no_such_asset> is nothing in the project: add an asset"
 said "hero.primordial's deeper: sub-entities go one level"
 said "hero_voice is an asset and an entity"
-said "hero_sheet mentions <hero>, an entity, and assets never read entities"
-said "old_sheet mentions <hero.primordial>, an entity, and assets never read entities"
-J '[.warnings[] | select(contains("hero_sheet mentions <hero>"))] | length == 1' <<< "$(status "$E")" || check "entities: more than one warning of hero_sheet's mention"
+said "hero_sheet mentions hero, which is made from it: that mention stays plain text"
+said "old_sheet mentions hero.primordial, which is made from it: that mention stays plain text"
+J '[.warnings[] | select(contains("hero_sheet mentions hero,"))] | length == 1' <<< "$(status "$E")" || check "entities: more than one warning of hero_sheet's mention"
 J '(.entities | map(.name)) == ["hero"] and (.entities[0] | .kind == "character" and (.links | keys) == ["image", "pose", "voice"] and (.subs | map(.name)) == ["hero.primordial"])' <<< "$(status "$E")" || check "entities: status lists $(status "$E" | jq -c .entities)"
 J '[.assets[].name] | index("hero") == null and index("hero.primordial") == null' <<< "$(status "$E")" || check "entities: an entity is listed as an asset"
 render "$E" hero || check "entities: render hero: $(tail -c 400 "$OUT/render.txt")"
 J '[.assets | keys[]] | sort == ["hero pose", "hero sheet", "old sheet"]' "$E/project.lock" || check "entities: render hero made $(jq -c '.assets | keys' "$E/project.lock")"
-J '(.assets["hero sheet"].versions[0].reads // []) | length == 0' "$E/project.lock" || check "entities: an asset read an entity: $(jq -c '.assets["hero sheet"].versions[0].reads' "$E/project.lock")"
+J '(.assets["hero sheet"].versions[0].reads // []) | length == 0' "$E/project.lock" || check "entities: an asset an entity links to read it: $(jq -c '.assets["hero sheet"].versions[0].reads' "$E/project.lock")"
 J '[.assets["old sheet"].versions[0].reads[].name] == ["hero_sheet"]' "$E/project.lock" || check "entities: old sheet reads $(jq -c '.assets["old sheet"].versions[0].reads' "$E/project.lock")"
 render "$E" meeting || check "entities: render meeting: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.meeting.versions[0].reads | map({(.name): (.files | keys)}) | add == {"hero": ["image", "voice"], "hero.primordial": ["image", "voice"], "hero.pose": ["image"]}' "$E/project.lock" || check "entities: meeting reads $(jq -c '.assets.meeting.versions[0].reads' "$E/project.lock")"
@@ -471,7 +471,7 @@ J '.warnings | any(contains("<a b> is no mention"))' <<< "$(status "$N")" || che
 code=0; cozy project -p "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q "names can't hold" "$OUT/name.txt"; } || check "names: rename took a space: exit $code: $(tail -c 300 "$OUT/name.txt")"
 
-step "a project: a cycle of mentions is said, and what is in it still renders"
+step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle
 mkdir -p "$Y"
 cat > "$Y/project.yaml" <<YAML
@@ -486,8 +486,20 @@ assets:
     description: From <one>.
 YAML
 J '[.warnings[] | select(contains("which is made from it: that mention stays plain text"))] | length == 1' <<< "$(status "$Y")" || check "cycle: not said once: $(status "$Y" | jq -c .warnings)"
+cat >> "$Y/project.yaml" <<YAML
+  long:
+    description: From <hub>.
+  back:
+    description: From <long>.
+entities:
+  hub:
+    kind: character
+    description: Through an entity.
+    image: <back>
+YAML
+J '.warnings | any(contains("mentions hub, which is made from it")) or any(contains("mentions long, which is made from it")) or any(contains("mentions back, which is made from it"))' <<< "$(status "$Y")" || check "cycle: through an entity not said: $(status "$Y" | jq -c .warnings)"
 render "$Y" all || check "cycle: render all: $(tail -c 300 "$OUT/render.txt")"
-{ [ "$(made "$Y" one)" = 1 ] && [ "$(made "$Y" two)" = 1 ]; } || check "cycle: made $(made "$Y" one) of one and $(made "$Y" two) of two"
+{ [ "$(made "$Y" one)" = 1 ] && [ "$(made "$Y" two)" = 1 ] && [ "$(made "$Y" long)" = 1 ] && [ "$(made "$Y" back)" = 1 ]; } || check "cycle: made $(jq -c '.assets | map_values(.versions | length)' "$Y/project.lock")"
 
 step "a project: an entity's words are in what reads it, and an entity holds no version"
 sed -i 's/description: A brave hero\./description: A braver hero./' "$E/project.yaml"
@@ -561,8 +573,8 @@ J '(.assets | has("doomed") or has("second")) | not' "$T/project.lock" || check 
 
 step "a project: reclaim refuses while the project renders"
 cat >> "$T/project.yaml" <<YAML
-shots:
   waiting:
+    kind: video
     render: {with: $here/project/shots.py}
     seconds: 15
 YAML
@@ -583,11 +595,11 @@ printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
 version: 2
-shots:
+assets:
   clash:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: Two lights meet on <look>.
-assets:
   look:
     video: $look
 YAML
@@ -616,11 +628,13 @@ printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
 version: 2
-shots:
+assets:
   first:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: Dusk on <look> and <coast>.
   long_take:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: Walking on <look>.
     beats:
@@ -637,9 +651,9 @@ shots:
           - image: harbor.1
             at: 1
   next:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: Dawn on <look> and <coast.2>, by <harbor.1>.
-assets:
   look:
     video: $look
   coast:
@@ -698,8 +712,9 @@ printf 'version: 2\nassets: {}\n' > "$B/project.yaml"
 look=$(prefix "$B" "$B/look.mp4")
 cat > "$B/project.yaml" <<YAML
 version: 2
-shots:
+assets:
   moves:
+    kind: video
     render: {with: $here/project/shots.py}
     bare: true
     plate: <look>
@@ -712,7 +727,6 @@ shots:
             at: 3
       - duration: 2
         description: It stands by <wall.1>.
-assets:
   look:
     video: $look
 YAML
@@ -735,12 +749,12 @@ defaults:
     with: $here/project/shots.py
     a: 1
     b: from defaults
-shots:
+assets:
   same:
+    kind: video
     render: {with: $here/project/shots.py}
     no_run: true
     summary: Already <look>.
-assets:
   look:
     video: $look
   checked:
@@ -791,15 +805,16 @@ printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
 version: 2
-shots:
+assets:
   no:
+    kind: video
     render: {with: $here/project/shots.py}
     refuse: Not this one.
     summary: <look>.
   reader:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: <no> and <look>.
-assets:
   look:
     video: $look
 YAML
@@ -814,13 +829,13 @@ printf 'version: 2\nassets: {}\n' > "$H/project.yaml"
 look=$(prefix "$H" "$H/look.mp4")
 cat > "$H/project.yaml" <<YAML
 version: 2
-shots:
+assets:
   clash:
+    kind: video
     render: {with: $here/project/shots.py}
     summary: <look>.
     beats:
       - duration: 6
-assets:
   look:
     video: $look
 YAML
@@ -911,13 +926,13 @@ printf 'version: 2\nassets: {}\n' > "$S/project.yaml"
 A=$(prefix "$S" "$S/look.mp4")
 cat > "$S/project.yaml" <<YAML
 version: 2
-shots:
+assets:
   shot:
+    kind: video
     render: {with: $here/project/shots.py}
     bare: true
     plate: <look>
     summary: One.
-assets:
   look:
     video: $A
   edit:

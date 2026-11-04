@@ -51,8 +51,9 @@ defaults:
     with: $H3
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
-shots:
+assets:
   mural:
+    kind: video
     render:
       seed: $((R + 300))
     summary: |
@@ -67,7 +68,6 @@ shots:
       - duration: 4
         description: |
           <hero> steps back from <wall.1>, where the orange letters read OPEN, and says "Done."
-assets:
   hero:
     kind: image
     image: hero.png
@@ -129,8 +129,9 @@ defaults:
     with: $H3
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
-shots:
+assets:
   walk:
+    kind: video
     render:
       seed: $((R + 330 + cf))
       context_frames: $cf
@@ -146,7 +147,6 @@ shots:
       - duration: 10
         description: |
           <hero> keeps walking across <yard.1> and stops at the far side.
-assets:
   hero:
     kind: image
     image: hero.png
@@ -177,8 +177,9 @@ defaults:
   video:
     with: $H3
     aspect_ratio: "16:9"
-shots:
+assets:
   look:
+    kind: video
     render:
       seed: $((R + 305))
     summary: |
@@ -191,7 +192,6 @@ shots:
       - duration: 5
         description: |
           The camera keeps drifting right, past the far wall.
-assets:
   yard:
     kind: image
     image: place.png
@@ -225,8 +225,9 @@ defaults:
   video:
     with: $H3
     aspect_ratio: "16:9"
-shots:
+assets:
   follow:
+    kind: video
     render:
       seed: $((R + 301))
     summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."
@@ -234,7 +235,6 @@ shots:
       - duration: 5
     plate:
       video: <take_one>
-assets:
   pattern:
     kind: image
     image: plate.png
@@ -266,14 +266,14 @@ entities:
     description: "$CHAR"
     image: <host_sheet>
     voice: <host_voice>
-shots:
+assets:
   hello:
+    kind: video
     render:
       seed: $((R + 302))
     summary: <host> stands in <yard>, looks into the camera and says "Welcome to the yard."
     beats:
       - duration: 5
-assets:
   host_sheet:
     kind: image
     image: hero.png

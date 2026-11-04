@@ -556,7 +556,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         name: asset.name.clone(),
         standing: row_standing,
         making,
-        kind: if asset.shot { "shot".to_owned() } else { asset.kind.clone() },
+        kind: asset.kind.clone(),
         noun: noun.into(),
         with: doc.makes(i).then(|| doc.target(i)),
         versions: held.map_or(0, |held| held.versions.len() as u32),

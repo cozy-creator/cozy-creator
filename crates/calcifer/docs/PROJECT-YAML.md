@@ -8,8 +8,7 @@ A project is a folder of files plus a graph that says how each file was made.
 
 - **Entity:** a thing in the film, like `kyogre`: its identity, and links to the assets that show it. No work, no versions.
 - **Asset:** a stable name holding one file of one type, plus what the run that made it left, like `kyogre_sheet` or `edit`.
-- **Shot:** an asset of its own section, that makes a video and can read entities, like `clash`.
-- **Operation:** the work that makes an asset: a package, plus what the YAML says about the asset. The graph's edges. You don't write edges; `<name>` mentions in text create them. Reads go one way: shots read entities and assets, entities link to assets, and assets read assets, never entities.
+- **Operation:** the work that makes an asset: a package, plus what the YAML says about the asset. The graph's edges. You don't write edges; `<name>` mentions in text create them. Assets read assets and entities, and entities link to assets. The only rule is no cycles.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
 - **Version**, or **take** if it has a video: one result of an operation, recorded in `project.lock`.
 
@@ -90,8 +89,8 @@ assets:
       - <awaken>
       - { video: <clash>, start: 12, end: 132 }   # a trim, in frames at this fps
 
-shots:
-  clash:                       # no hash: it renders
+  clash:                       # a shot, with no hash: it renders
+    kind: video
     summary: |
       <kyogre> and <groudon> fight on the coast in one continuous shot.
     soundscape: Crashing surf and deep impacts.
@@ -109,7 +108,7 @@ shots:
 
 ## What the platform reads
 
-Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in the field of an asset's type, an entity's links, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities`, `assets` and `shots`, one namespace.
+Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in the field of an asset's type, an entity's links, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities` and `assets`, one namespace.
 
 Every other field at an asset's root, such as `summary`, `beats`, `description`, `camera` or `fps`, passes through to the adapter untouched and counts as an input.
 
@@ -124,14 +123,14 @@ A shot can hold just `render: {turbo: false}`. `with`, `models`, `lora`, `option
 
 ## Defaults
 
-The only keys are `image`, `video` and `audio`; any other warns and is ignored. Each is a default `render` block, and merges key by key under the asset's own: `with`, `models`, `lora` and any other key, which reach the adapter as `op.options`, as `style` and `aspect_ratio` do. A shot makes a video, so `defaults.video` is a shot's too. An asset naming its own `with` takes nothing from defaults, and a constant needs none.
+The only keys are `image`, `video` and `audio`; any other warns and is ignored. Each is a default `render` block, and merges key by key under the asset's own: `with`, `models`, `lora` and any other key, which reach the adapter as `op.options`, as `style` and `aspect_ratio` do. An asset naming its own `with` takes nothing from defaults, and a constant needs none.
 
 A package chooses its own internals, such as how many context frames H3 keeps. They aren't configurable and aren't fields, so they don't go in a project file.
 
 ## Kinds
 
 - **An asset's `kind` is its file's type:** `image` (the default), `video` or `audio`. With none written, it comes from the field holding its hash. Anything else warns and is ignored: it belongs on an entity.
-- **A shot** makes a video. Its adapter is the package's `video` one.
+- **A shot** is a `kind: video` asset with `summary` and `beats`, pinned with `video:`.
 - **An entity's `kind` is free:** `character`, `prop`, `environment`. Calcifer knows no kinds.
 - **On the wire:** `Operation.kind` is `image`, `video` or `audio`, what is being produced. `Read.kind` is the entity's kind for an entity mention, else the file type.
 
@@ -154,7 +153,7 @@ At render, a typed adapter warns of an unknown field an asset writes itself. **A
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
 - **Explicit:** `<coast>` always means what is named `coast`, and `<coast.2>` always means `coast.2`. Nothing resolves to "the newest".
 - **Of an entity:** see below.
-- **A cycle:** a mention that closes one, A mentioning B and B mentioning A, stays plain text, with a warning, and both still render.
+- **A cycle:** a mention that closes one, A mentioning B and B mentioning A, stays plain text, with a warning, and both still render. An entity's links count: `kyogre_sheet` mentioning `<kyogre>`, which links to it, is a cycle, and so is a sub-entity's asset mentioning its parent.
 
 ## Entities
 
@@ -168,7 +167,6 @@ Assets can link into hashes, whereas entities link into asset-names. An entity h
 | `<kyogre_sheet>` | The asset itself. |
 
 - **Sub-entities:** a key whose value is a map, one level deep. A map inside one warns and is ignored.
-- **An asset mentioning an entity:** always plain text, with one warning. Write the words in its prompt, even if the thing is then described in two places, or mention the asset.
 - **Memo:** a read's description and file hashes count, so editing an entity's description puts what reads it out of date.
 - **Names** are shared across both sections. A clash warns, and the asset stands.
 - **`status`** lists entities apart with their links, and a link to nothing warns with the fix. **`render <entity>`** renders its linked assets and its sub-entities'.
@@ -211,7 +209,7 @@ Approve and pin are the same thing, so reading the file shows what's constant.
 
 An asset has one main file, from its one `render` or its one pin; any other files are what the same run left, such as a video's latents, or `image-2` from a function that returned several. A hash in the field of its type pins it, and a `<mention>` there is an input. A hash in another file field warns and is ignored, as does a list: make an asset for each.
 
-- **The line:** `approve` writes the field of its type, `video: <hash>` for a shot and `image:` for a picture, as that one line, keeping comments, order and formatting, and a save made just before it stands. A line holding an input keeps it, `video: <hash>  # was <clash>`, and `unpin` puts it back.
+- **The line:** `approve` writes the field of its type, `video: <hash>` for a take and `image:` for a picture, as that one line, keeping comments, order and formatting, and a save made just before it stands. A line holding an input keeps it, `video: <hash>  # was <clash>`, and `unpin` puts it back.
 - **A shot's pin:** `video: <hash>` brings that take's whole set: latents and any world states it wrote. A hash that matches no version is just that file.
 - **Other fields while pinned:** `render` and the text stay in the file and are ignored for that asset. Delete the line and they apply again.
 - **A pin freezes files, not text:** editing an approved character's `description` doesn't re-render it, but shots that read it go out of date, because H3 receives those words.
@@ -228,7 +226,7 @@ A write is a screenshot taken at `at` seconds into that beat, the beat's end if 
 - **Reading one:** a later segment or another shot gets the picture as a loose guide; assets read it too. That wording lives in the adapter, not the YAML.
 - **Numbers:** you write them, `coast.1`, `coast.2`, so inserting one never moves another's versions or pins.
 - **A write is `{image, at}`, and has no description.** A picture is the state. To add words, declare it as its own asset with a `description`, and the write fills in its picture. Any other field warns.
-- **Past its beat,** `at` clamps with a warning. Two shots writing one name: the first stands, with a warning.
+- **On a `video` asset's beats only.** Past its beat, `at` clamps with a warning. Two assets writing one name: the first stands, with a warning.
 - **A write the shot doesn't read after its beat** is a free frame, cut from the take here, outside the shot's memo: moving it re-renders nothing. One the shot reads, in a later beat or its `summary`, goes to the function, in its one take. A package that takes no `writes` gets its frames cut from the take, with a warning.
 
 ## Storyboards

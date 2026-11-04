@@ -24,7 +24,7 @@ const PINS: [&str; 3] = ["image", "video", "audio"];
 /// The links of an entity that a read of it gets as files. Its other links go by name, `<kyogre.primordial>`.
 const ROLES: [&str; 4] = ["image", "video", "audio", "voice"];
 const RESERVED: [&str; 10] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio", "writes"];
-const SECTIONS: [&str; 5] = ["version", "defaults", "entities", "assets", "shots"];
+const SECTIONS: [&str; 4] = ["version", "defaults", "entities", "assets"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 /// What `cozy` reads of a cut or a frame.
@@ -86,8 +86,8 @@ assets:
       - <erupt>
       - <clash>
 
-shots:
   awaken:
+    kind: video
     summary: |
       <kyogre> bursts out of the stormy sea of <coast>.
     soundscape: Howling wind, crashing waves, and rolling thunder.
@@ -97,6 +97,7 @@ shots:
           A wide shot from the water's edge looks out over the stormy sea of <coast>, with lightning flickering behind the clouds. The water bulges at the center of the frame, and <kyogre> bursts out of it, facing right, with sheets of white water pouring off its fins. The camera tilts up at slow speed as heavy rain starts to fall.
 
   erupt:
+    kind: video
     summary: |
       <groudon> claws its way out of the lava cliffs of <coast> and roars.
     soundscape: Cracking rock, hissing lava, heavy footfalls, and a deep roar.
@@ -106,6 +107,7 @@ shots:
           A wide shot from the rocks looks up at the lava cliffs of <coast>. The rock face cracks at the center of the frame, and <groudon> claws its way out, lava sliding off its stone plates in glowing strings. It rears up and roars toward the left. The camera pushes in at slow speed and shakes with each step.
 
   clash:
+    kind: video
     summary: |
       <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
@@ -141,8 +143,6 @@ pub struct Asset {
     pub writes: Vec<Write>,
     /// The asset whose function sends this revision: its state comes with that one's take.
     pub writer: Option<usize>,
-    /// It is in `shots:`: a video that can read entities.
-    pub shot: bool,
     /// It is no asset but an entity, a sub-entity or a link of one: no work and no versions, its files what its links hold now.
     pub links: Option<Links>,
 }
@@ -294,9 +294,8 @@ impl Doc {
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
         let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
-        let shots = top.get("shots").and_then(Value::as_object).unwrap_or(&empty);
-        for name in protocol::yaml::keys(text, &["assets"]).iter().chain(&protocol::yaml::keys(text, &["shots"])) {
-            named(name)?;
+        for name in protocol::yaml::keys(text, &["assets"]) {
+            named(&name)?;
         }
         for name in protocol::yaml::keys(text, &["entities"]) {
             named(&name)?;
@@ -308,11 +307,7 @@ impl Doc {
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
-            doc.declare(text, &name, written, &defaults, folder, &lock, false);
-        }
-        for name in protocol::yaml::keys(text, &["shots"]) {
-            let Some(written) = shots.get(&name) else { continue };
-            doc.declare(text, &name, written, &defaults, folder, &lock, true);
+            doc.declare(text, &name, written, &defaults, folder, &lock);
         }
         doc.declared = doc.assets.len();
         for i in 0..doc.declared {
@@ -320,8 +315,12 @@ impl Doc {
                 doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `image` with an `at` into that beat: these are ignored", doc.assets[i].name));
             }
             let mut said = vec![];
-            let writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
+            let mut writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
             doc.warnings.append(&mut said);
+            if !writes.is_empty() && doc.assets[i].kind != "video" {
+                doc.warnings.push(format!("{}'s writes: only a video writes images: these are ignored", doc.assets[i].name));
+                writes.clear();
+            }
             for (beat, image, at) in writes {
                 named(&image)?;
                 doc.write(i, beat, &image, at);
@@ -342,7 +341,7 @@ impl Doc {
     }
 
     /// An asset of the file, after defaults, its pin read. A name taken: the first stands.
-    fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock, shot: bool) -> Option<usize> {
+    fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) -> Option<usize> {
         let key = name_key(name);
         if self.index.contains_key(&key) {
             self.warnings.push(format!("two assets are named {name}: the first stands"));
@@ -361,7 +360,7 @@ impl Doc {
         };
         let body = unfolded(name, body, &mut self.warnings);
         let own: BTreeSet<String> = body.keys().cloned().collect();
-        // An asset's kind is its file's type: what it writes, else the field holding its hash, else `image`. A shot makes a video.
+        // An asset's kind is its file's type: what it writes, else the field holding its hash, else `image`.
         let hash = |field: &&str| match body.get(*field) {
             Some(Value::Number(_)) => true,
             Some(Value::String(text)) => mentions(text).is_empty(),
@@ -369,11 +368,9 @@ impl Doc {
         };
         let held = PINS.iter().copied().find(hash);
         let written_kind = text_of(body.get("kind"));
-        let type_of = if shot { "video" } else { held.unwrap_or("image") };
-        let kind = if !shot && PINS.contains(&written_kind.as_str()) { written_kind.clone() } else { type_of.to_owned() };
+        let kind = if PINS.contains(&written_kind.as_str()) { written_kind.clone() } else { held.unwrap_or("image").to_owned() };
         if !written_kind.is_empty() && written_kind != kind {
-            let of = if shot { "a shot makes a video" } else { "an asset is an image, a video or audio, and anything else belongs on an entity" };
-            self.warnings.push(format!("{name}'s kind: {of}: {written_kind} is ignored"));
+            self.warnings.push(format!("{name}'s kind: an asset is an image, a video or audio, and anything else belongs on an entity: {written_kind} is ignored"));
         }
         // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind.
         let constant = held.is_some() && body.keys().all(|key| key == "kind" || PINS.contains(&key.as_str()));
@@ -431,7 +428,7 @@ impl Doc {
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
         let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, shot, links: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, links: None });
         Some(self.assets.len() - 1)
     }
 
@@ -514,7 +511,6 @@ impl Doc {
             reads: vec![],
             writes: vec![],
             writer: None,
-            shot: false,
             links: Some(links),
         });
         true
@@ -542,7 +538,6 @@ impl Doc {
                     reads: vec![],
                     writes: vec![],
                     writer: None,
-                    shot: false,
                     links: None,
                 });
                 self.assets.len() - 1
@@ -623,9 +618,9 @@ impl Doc {
                     continue;
                 };
                 let key = name_key(&self.assets[j].name);
-                // Reads go one way: entities link to assets, and assets never read entities.
-                if !asset.shot && self.assets[j].links.is_some() {
-                    let line = format!("{} mentions <{mention}>, an entity, and assets never read entities: it stays plain text; write the words in its prompt, or mention the asset", asset.name);
+                // An entity's links are edges too, through its sub-entities as well, so what it links to can't read it.
+                if self.links_to(j, i) {
+                    let line = format!("{} mentions {}, which is made from it: that mention stays plain text", asset.name, self.assets[j].name);
                     if !said.contains(&line) {
                         said.push(line);
                     }
@@ -653,6 +648,14 @@ impl Doc {
 
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
+    }
+
+    /// Whether asset `i` is what node `j`'s entity links to, directly or through a sub-entity.
+    fn links_to(&self, j: usize, i: usize) -> bool {
+        let Some(links) = &self.assets[j].links else { return false };
+        let root = links.parent.as_deref().and_then(|parent| self.find(parent)).and_then(|root| self.assets[root].links.as_ref()).unwrap_or(links);
+        let subs = root.subs.iter().filter_map(|sub| self.assets[self.find(sub)?].links.as_ref());
+        root.own.values().chain(subs.flat_map(|sub| sub.own.values())).any(|target| self.find(target) == Some(i))
     }
 
     /// The asset named `name`: what can hold versions, as an entity can't.
@@ -1044,7 +1047,7 @@ fn changed(was: &BTreeMap<String, String>, now: &BTreeMap<String, String>) -> Ve
 /// comment on its line, which `unpinned` restores. Err: why not, and what to write by hand.
 pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String, Error> {
     let by_hand = |why: String| invalid("project_edit", format!("{name} can't be pinned in {}: {why}", folder::PROJECT)).remedy(format!("write `{field}: {value}` under {name} yourself"));
-    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:` or `shots:`".into()))?;
+    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:`".into()))?;
     let lines = &place.lines;
     let edited = if let Some(flow) = &place.flow {
         let (head, inner) = (flow.0.as_str(), flow.1.as_str());
@@ -1079,7 +1082,7 @@ pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String
 /// were there all along.
 pub fn unpinned(text: &str, name: &str, field: &str) -> Result<String, Error> {
     let by_hand = |why: String| invalid("project_edit", format!("{name} can't be unpinned in {}: {why}", folder::PROJECT)).remedy(format!("remove its `{field}:` yourself"));
-    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:` or `shots:`".into()))?;
+    let place = Place::find(text, name).ok_or_else(|| by_hand("it has no line of its own under `assets:`".into()))?;
     let lines = &place.lines;
     let edited = if let Some(flow) = &place.flow {
         replace_line(lines, place.key, &format!("{}{{{}}}{}", flow.0, strip_flow_field(&flow.1, field), flow.2))
@@ -1127,9 +1130,8 @@ fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&st
 /// The value asset `name` is in a project's JSON.
 fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
     let key_in = |map: &Value, name: &str| map.as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned();
-    let section = ["assets", "shots"].into_iter().find(|section| key_in(&doc[*section], name).is_some())?;
-    let key = key_in(&doc[section], name)?;
-    doc[section].get_mut(&key)
+    let key = key_in(&doc["assets"], name)?;
+    doc["assets"].get_mut(&key)
 }
 
 /// The input a pin in `field` keeps in a comment on its line.
@@ -1154,15 +1156,12 @@ struct Place<'a> {
 }
 
 impl<'a> Place<'a> {
-    /// Asset `name`'s lines, under `assets:` or `shots:`.
+    /// Asset `name`'s lines under `assets:`.
     fn find(text: &'a str, name: &str) -> Option<Self> {
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let within = |section: &str| {
-            let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == section)? + 1;
-            let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
-            block(&lines, start..end, name)
-        };
-        let (key, body, child, flow) = within("assets:").or_else(|| within("shots:"))?;
+        let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == "assets:")? + 1;
+        let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+        let (key, body, child, flow) = block(&lines, start..end, name)?;
         Some(Self { lines, key, body, child, flow })
     }
 
