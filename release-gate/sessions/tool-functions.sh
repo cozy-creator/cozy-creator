@@ -4,17 +4,23 @@
 # its TensorD to the pod, and `runtime` the Runtime that reads `functions=`. A completed run is no pass: each output is measured, its
 # frames kept for a person to judge in $OUT/frames, and each call's input is checked against what crossed its mentions. One rental
 # (a 4090). params:
-#   runtime     the Runtime wheel with functions=, https://…#sha256=<hex>
+#   runtime     the Runtime wheel with functions=, https://…#sha256=<hex> (default: the session's RUNTIME_WHEEL, from rc/<x>)
 #   traffic_gb  GB the provider bills (110)
 #   caption     also ask a local qwen3.5 for a description, 9 GB more ("true")
 . "$(dirname "$0")/lib.sh"
 URL=$(param runtime) PK=$PACKAGES/pk CAPTION=$(param caption true)
 for p in qwen-image-2 minimax-h3 birefnet seedvr2 qwen3.5; do [ -f "$PK/$p/pyproject.toml" ] || fail "no packages_refs checkout pk/$p"; done
 grep -q 'functions=\["upscale"\]' "$PK/minimax-h3/h3.py" || fail "pk is not rc/web-ui: minimax-h3 has no adapter per function"
-[[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex>"
-W=$OUT/wheel/$(basename "${URL%%#*}"); mkdir -p "$OUT/wheel" "$OUT/frames"
-curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
-[ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
+mkdir -p "$OUT/wheel" "$OUT/frames"
+if [ -n "$URL" ]; then
+  [[ $URL == https://*'#sha256='* ]] || fail "runtime is not https://…#sha256=<hex>"
+  W=$OUT/wheel/$(basename "${URL%%#*}")
+  curl -fsSL --retry 5 --retry-all-errors "${URL%%#*}" -o "$W" || fail "cannot fetch the runtime wheel"
+  [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
+else
+  W=${RUNTIME_WHEEL:-}
+  [ -n "$W" ] || fail "no Runtime with functions=: name \`runtime\`, or dispatch from rc/<x>"
+fi
 command -v ffprobe > /dev/null || sudo apt-get install -y -qq ffmpeg > /dev/null 2>&1 || fail "no ffmpeg"
 [ -f "$REF/seed.jpg" ] || fail "no reference image"
 J() { jq -e "$@" > /dev/null; }

@@ -144,6 +144,7 @@ door_runs() {
 # there draws nothing here, and the box is the declared one.
 door_component() {
   mark "a package's component through the door, $X"
+  [ -n "${RUNTIME_WHEEL:-}" ] || { mark "not looked at: no release's Runtime reads \`ui=\`, and this session has no RUNTIME_WHEEL"; return; }
   local a=$P/boxed id link boxed
   boxed=$(cd "$FIX/../../../../e2e/cli/project/boxed" && pwd) || { check "no fixture package"; return; }
   pod "cozy project new $a > /dev/null" || check "project new"
@@ -365,6 +366,12 @@ if [ "$REHEARSE" = true ]; then
   J '.state == "ready"' <(machine) || fail "the added machine: $(tail -c 300 "$OUT/add.txt")"
   pod "mkdir -p $P"
   one_calcifer "the second user's"
+  # A package's component needs a Runtime that reads `ui=`, which the RC's does before any release.
+  if [ -n "${RUNTIME_WHEEL:-}" ]; then
+    wheel=/opt/$U/$(basename "$RUNTIME_WHEEL")
+    sudo install -m 644 "$RUNTIME_WHEEL" "$wheel" || fail "the Runtime wheel for the second user"
+    T=900 pod "cozy machine update local --runtime $wheel -y" > "$OUT/runtime-rehearsal.txt" || fail "the second user's Runtime: $(tail -c 300 "$OUT/runtime-rehearsal.txt")"
+  fi
   answers "End of another computer's local through the door" 400 machine_local "${bearer[@]}" -X DELETE "$D/v1/machines/local"
   J 'has("rental") | not' <(api "$D/v1/status") || check "an added machine's status says it is a rental"
   door_refusals

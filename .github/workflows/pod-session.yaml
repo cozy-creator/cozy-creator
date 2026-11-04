@@ -4,7 +4,8 @@ name: pod-session
 # The runner signs in as the owner (environment release-gate, COZY_CI_DEVICE_KEY, an admin); the pod renews its own run
 # capability while its runs live (cl-675). A guard ends the pod at `cap` USD, all in. Without `rent`, the $0 pre-flight only:
 # install, sign-in, the script's own checks, the quote and the guard. Dispatches never wait on or cancel each other:
-# each session rents and ends its own pod.
+# each session rents and ends its own pod. Dispatched from `rc/<x>`, or with `runtime_ref`, a session has that Runtime as a wheel in
+# RUNTIME_WHEEL, as e2e builds it, for what no release knows yet.
 #   gh workflow run pod-session.yaml -R cozy-creator/cozy-creator -f script=model-ingest -f packages_refs=pk=<sha> \
 #     -f sku=a40 -f disk=500 -f cap=6 -f params='{"package": "qwen3.6", "sources": "…", "lanes": "int8", "version": "0.1.0"}'
 on:
@@ -37,6 +38,10 @@ on:
         description: "cozy on the runner: released, a release tag or a dev-build run id"
         type: string
         default: released
+      runtime_ref:
+        description: "A cozy-runtime ref to build RUNTIME_WHEEL from (empty: its branch of this rc/<x>, if it has one)"
+        type: string
+        default: ''
       rent:
         description: "Rent and run; without it, the $0 pre-flight only"
         type: boolean
@@ -63,6 +68,7 @@ jobs:
             release-gate/sessions
             release-gate/ref
             release-gate/suites/tensord
+            e2e/candidates
             e2e/capabilities
             e2e/cli/project/boxed
           path: creator
@@ -106,6 +112,24 @@ jobs:
             install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"
           fi
           "$bin/cozy" --version
+      - id: runtime
+        env:
+          ASKED: ${{ inputs.runtime_ref }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          ref=$ASKED
+          if [ -z "$ref" ] && [[ $BRANCH == rc/* ]] && gh api "repos/cozy-creator/cozy-runtime/branches/$BRANCH" -q .name > /dev/null 2>&1; then ref=$BRANCH; fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        if: steps.runtime.outputs.ref != ''
+        with:
+          repository: cozy-creator/cozy-runtime
+          ref: ${{ steps.runtime.outputs.ref }}
+          path: runtime.src
+      - uses: astral-sh/setup-uv@v7
+        if: steps.runtime.outputs.ref != ''
+      - if: steps.runtime.outputs.ref != ''
+        run: echo "RUNTIME_WHEEL=$(bash creator/e2e/candidates/build.sh runtime runtime.src "$RUNNER_TEMP/candidates")" >> "$GITHUB_ENV"
       - name: Sign in
         env:
           KEY: ${{ secrets.COZY_CI_DEVICE_KEY }}
