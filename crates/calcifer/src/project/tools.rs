@@ -562,14 +562,14 @@ pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Opti
 
 /// How long the video or sound at `path` lasts, as its container says.
 pub fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
-    let args = ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"];
+    let args = ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration", "-of", "csv=p=0"];
     let done = std::process::Command::new(ffprobe).args(args).arg(path).output().ok()?;
     String::from_utf8_lossy(&done.stdout).trim().parse().ok()
 }
 
 /// Whether the picture at `path` has an alpha channel, or a palette that may.
 pub fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
-    let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
+    let args = ["-v", "error", "-protocol_whitelist", "file", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
     let Ok(done) = std::process::Command::new(ffprobe).args(args).arg(path).output() else { return false };
     let format = String::from_utf8_lossy(&done.stdout);
     ["rgba", "bgra", "argb", "abgr", "ya", "gbrap", "pal8"].iter().any(|alpha| format.contains(alpha))

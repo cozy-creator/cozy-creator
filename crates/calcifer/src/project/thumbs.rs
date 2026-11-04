@@ -154,6 +154,12 @@ fn strs(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
+/// `source` as ffmpeg's input, which may read nothing else: what a machine made can be a playlist in a picture's name, and a canvas
+/// draws each file unasked.
+fn input(source: &str) -> Vec<String> {
+    strs(&["-protocol_whitelist", "file", "-i", source])
+}
+
 /// Draws `drawing` as the thumbnail called `name`, whole or not there at all.
 fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -165,7 +171,7 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
     let wave = || -> Result<(tempfile::NamedTempFile, &str), String> {
         let out = part("png")?;
         let picture = format!("showwavespic=s={width}x{}:colors={WAVE_COLOR}", (width / 4).max(16));
-        run(ffmpeg, &strs(&["-i", &source]), &strs(&["-filter_complex", &picture]), out.path())?;
+        run(ffmpeg, &input(&source), &strs(&["-filter_complex", &picture]), out.path())?;
         Ok((out, "png"))
     };
     let (out, ext) = match drawing.field {
@@ -185,7 +191,7 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
         _ => {
             let ext = if tools::has_alpha(ffprobe, &drawing.source) { "png" } else { "jpg" };
             let out = part(ext)?;
-            run(ffmpeg, &strs(&["-i", &source]), &strs(&["-vf", &scale, "-q:v", "3"]), out.path())?;
+            run(ffmpeg, &input(&source), &strs(&["-vf", &scale, "-q:v", "3"]), out.path())?;
             (out, ext)
         }
     };
@@ -198,7 +204,7 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
 fn poster(ffmpeg: &FsPath, source: &str, seconds: f64, scale: &str, out: &FsPath) -> Result<(), String> {
     let after = strs(&["-vf", scale, "-q:v", "3"]);
     let at = (seconds * 0.1).min(3.0);
-    let opening = strs(&["-i", source]);
+    let opening = input(source);
     if at > 0.0 && run(ffmpeg, &[strs(&["-ss", &format!("{at:.3}")]), opening.clone()].concat(), &after, out).is_ok() {
         return Ok(());
     }
@@ -212,7 +218,7 @@ fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, fra
         false => tools::seconds_of(ffprobe, &drawing.source).unwrap_or(0.0),
     };
     let at = |n: u32| seconds * (f64::from(n) + 0.5) / f64::from(frames);
-    let inputs: Vec<String> = (0..frames).flat_map(|n| strs(&["-threads", "1", "-ss", &format!("{:.3}", at(n)), "-i", source])).collect();
+    let inputs: Vec<String> = (0..frames).flat_map(|n| [strs(&["-threads", "1", "-ss", &format!("{:.3}", at(n))]), input(source)].concat()).collect();
     let scaled: String = (0..frames).map(|n| format!("[{n}:v:0]{scale},setsar=1[s{n}];")).collect();
     let joined: String = (0..frames).map(|n| format!("[s{n}]")).collect();
     let graph = format!("{scaled}{joined}hstack=inputs={frames}[out]");

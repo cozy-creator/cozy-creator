@@ -1267,7 +1267,9 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 }
 
 fn import_failed(source: &str, why: String) -> Refusal {
-    Refusal(Error::new(Kind::Validation, "import_failed", format!("{source}: {why}")).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
+    // A hash is no one's to read: a person dropped a file, and is told of it by its name.
+    let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
 }
 
 fn not_held(source: &str) -> Refusal {
