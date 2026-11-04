@@ -15,7 +15,7 @@ Works on any `nn.Module` or pipeline exposing `components`, with materialized CP
 ## How it works
 
 - **Weights are placeholders.** Adoption swaps each Parameter's contents for a metadata tensor, in place,
-  so Parameter identity and ties survive. Native holds the one host copy once a block first runs.
+  so Parameter identity and ties survive. Regions fill from the original storage, which stays: there is no second host copy.
 - **Blocks bind real tensors.** A unit is an outermost block (`_no_split_modules`, or a member of a repeated
   layer list), a block-free subtree between them, or a composite parent's own weights. Its forward takes a
   native Use, puts real views of the Region in the module slots and runs stock ATen with no Python per op.

@@ -49,9 +49,12 @@ capture out; replay does not block reclaim, because pins and references protect 
 
 ## Working memory
 
-Small size classes are 512-byte aligned; large blocks own whole VMM pages. Own-stream reuse does
+Small size classes are 512-byte aligned. Larger blocks are runs in segments of at least 64 MiB, cut
+best-fit and merged when free; a segment returns its pages once it is all free. Own-stream reuse does
 no driver work. A split (`split_select`, `split_begin`) caps each operation at
-`max(capacity - phase_bytes, capacity / 5)`, whatever is free right now.
+`max(capacity - phase_bytes, capacity / 5)`, and at what live working bytes and the most weights
+held this request leave, whatever is free right now. A level's size is what it was measured asking
+for, or its nearest measured sibling's ratio, so the same request picks the same level.
 
 ## Graph pools
 
