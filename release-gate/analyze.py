@@ -74,6 +74,9 @@ for name, target, number in cells:
         fails.append(f'{name}: run {number} {run and run.status} {run and run.reason or None}')
         continue
     runs[name] = run
+    # A run completes even when the test it ran failed: its own verdict is the cell's.
+    if isinstance(run.result, dict) and run.result.get('passed') is False:
+        fails.append(f'{name}: run {number} says passed: false: {str(run.result.get("detail"))[-400:]}')
     obs, gemm, attn = run.observations, run.gemm, run.attention
     for off in run.capabilities_off:
         fails.append(f'{name}: the Runtime turned off {off}')
