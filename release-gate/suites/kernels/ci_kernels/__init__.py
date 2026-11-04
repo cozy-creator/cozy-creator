@@ -152,9 +152,9 @@ def declared(row: arch.Row, sm: int) -> dict:
             continue
         names.append(f"triton:{name}")
     # A format's kernels exist where its row has it; FP8 GEMMs only where the wheel carries them.
-    names += ["native:int8", "native:norm", "decode:conform", "kitchen:int8"]
+    names += ["native:int8", "native:norm", "decode:conform", "kitchen:int8", "big:gemm-int8"]
     if row.fp8:
-        names.append("native:fp8")
+        names += ["native:fp8", "big:gemm-fp8"]
     names.append("native:w4a8")
     if row.fp4:
         names.append("kitchen:nvfp4")
@@ -733,6 +733,36 @@ def _norm(index: int) -> dict:
     return {**_verdict(verdict), "shapes": str(freqs.shape)}
 
 
+def _big_gemm(name: str, index: int) -> dict:
+    """The 8-bit GEMM at H3's largest: past 2^31 elements of its activation, sampled rows against
+    the product in float64 (M x K wraps an int32 in upstream's CUTLASS, if anywhere)."""
+    target = torch.device("cuda", index)
+    ops = _library(index)
+    fp8 = name == "fp8"
+    if fp8 and not ops.cutlass_fp8:
+        return {"passed": True, "detail": "not run: no wheel GEMM for fp8 on this card"}
+    torch.cuda.empty_cache()
+    free, _ = torch.cuda.mem_get_info(index)
+    if free < 12 << 30:
+        return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold it"}
+    g = torch.Generator(device=target).manual_seed(10)
+    m, n, k = 392_000, 7168, 7168
+
+    def data(*shape):
+        raw = torch.randint(0, 256, shape, generator=g, dtype=torch.uint8, device=target)
+        return (raw & 0x77).view(torch.float8_e4m3fn) if fp8 else raw.view(torch.int8)
+
+    q, w = data(m, k), data(n, k)
+    xs = torch.rand(m, generator=g, device=target, dtype=torch.float32).add_(0.5)
+    scale = torch.rand(n, generator=g, device=target, dtype=torch.float32).add_(0.5)
+    gemm = ops.fp8_gemm if fp8 else ops.int8_gemm
+    out = gemm(q, xs, w, scale, None, torch.bfloat16, -1)
+    rows = torch.tensor([0, 1, m // 2, m - 1], device=target)
+    want = (q[rows].double() @ w.double().T) * xs[rows, None].double() * scale[None].double()
+    error = verify.error(torch, out[rows], want)
+    return {"passed": error <= prebuilt.BUDGET, "detail": f"{m}x{k}x{n}: sampled rows vs exact {error:.2e} (budget {prebuilt.BUDGET:g})"}
+
+
 def _svdq_native(index: int) -> dict:
     return _verdict(svdq_linear.probe_native(torch, torch.device("cuda", index), _kernels._gemm))
 
@@ -756,6 +786,8 @@ def _decode(index: int) -> dict:
 
 
 EXERCISES: dict[str, Callable[[int], dict]] = {
+    "big:gemm-int8": lambda i: _big_gemm("int8", i),
+    "big:gemm-fp8": lambda i: _big_gemm("fp8", i),
     "native:int8": lambda i: _format(i, prebuilt.INT8),
     "native:fp8": lambda i: _format(i, prebuilt.FP8),
     "native:w4a8": _w4a8,
@@ -785,7 +817,7 @@ def exercise(name: str, index: int) -> dict:
     kind, _, kernel = name.partition(":")
     if kind == "attention":
         return _attention(kernel, index)
-    if kind == "big":
+    if kind == "big" and name not in EXERCISES:
         return _big(kernel, index)
     if name not in EXERCISES:
         return {"passed": False, "detail": f"{name} has no exerciser: add one to this suite"}
