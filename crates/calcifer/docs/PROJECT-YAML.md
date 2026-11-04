@@ -28,7 +28,7 @@ Calcifer owns all of this. It knows no kinds and no packages by name. A package 
 version: 2
 
 defaults:
-  all:                         # fills fields on any asset that doesn't write them
+  all:                         # only what every kind shares; fills assets that don't write it
     style: High-quality Unreal Engine graphics, realistic and detailed
     aspect_ratio: "16:9"
   character:
@@ -39,6 +39,7 @@ defaults:
     with: qwen-image-2
   shot:
     with: minimax-h3
+    turbo: true                # a model's own setting goes under its kind
   edit:
     with: cozy
 
@@ -99,6 +100,14 @@ Names, `with`, `kind`, `models`, `lora`, `options`, a hash in `image`, `video` o
 
 Every other field, such as `summary`, `beats`, `description`, `instructions`, `camera` or `fps`, passes through to the adapter untouched and counts as an input.
 
+## Defaults
+
+`defaults.all` is only for what every kind shares, such as `style`. A model's own settings go under its kind, such as `defaults.shot.turbo`.
+
+`defaults` holds settings, not what's in the picture or sound, beyond the project-wide `style`. `soundscape` and `music` go on each shot.
+
+A package chooses its own internals, such as how many context frames H3 keeps. They aren't configurable and aren't fields, so they don't go in a project file.
+
 ## Kinds
 
 Each first-party kind has a stable set of fields, defined as typed structs in cozy-runtime, so another package can read the same `beats`. Before launch they can change freely. After launch, fields are only added, and a rename gets an alias. A third party can define a new kind, like `mesh`.
@@ -113,6 +122,20 @@ Each first-party kind has a stable set of fields, defined as typed structs in co
 | `upscale` | A bigger take: `{kind: upscale, video: <clash>, resolution: 1440p}` | `minimax-h3` |
 | `clean` | A picture with its background removed. No seed. | `birefnet` |
 | `edit` | A cut of other assets. No seed. Add as many cuts as you like. | `cozy`, run by Calcifer itself |
+
+The fields of each first-party kind, beyond what the platform reads:
+
+| Kind | Fields |
+|---|---|
+| `shot` | `summary`, `beats` (each `description`, `duration`, `writes`), `style`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `turbo` |
+| `character`, `prop`, `environment`, `scene`, `image` | `description`, `instructions`, `style`, `aspect_ratio`, `turbo` |
+| `setup` | Those of a picture, plus `camera`, `from_frame` |
+| `upscale` | `video`, `resolution`, `style` |
+| `clean` | `image` |
+
+Nothing else is a field of these kinds. At render, a typed adapter warns of an unknown field an asset writes itself. It doesn't warn of one that comes from `defaults` or sits inside a beat: that one is ignored silently, so check it against this table.
+
+**A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence.
 
 **Two text fields, on `character`, `environment` and `scene`:** `description` goes to the picture model and the video model. `instructions` goes only to the picture model, for how to draw it.
 
