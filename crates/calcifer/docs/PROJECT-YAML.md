@@ -123,7 +123,6 @@ Each first-party kind has a stable set of fields, defined as typed structs in co
 | `image` | Any other picture; the default with no `kind` | `qwen-image-2` |
 | `shot` | Video from a `summary` and `beats` | `minimax-h3` |
 | `upscale` | A bigger take: `{kind: upscale, video: <clash>, resolution: 1440p}` | `minimax-h3` |
-| `clean` | A picture with its background removed. No seed. | `birefnet` |
 | `edit` | A cut of other assets. No seed. Add as many cuts as you like. | `cozy`, run by Calcifer itself |
 
 The fields of each first-party kind, beyond what the platform reads:
@@ -134,7 +133,6 @@ The fields of each first-party kind, beyond what the platform reads:
 | `character`, `prop`, `environment`, `scene`, `image` | `description`, `instructions`, `style`, `aspect_ratio` |
 | `setup` | Those of a picture, plus `camera`, `from_frame` |
 | `upscale` | `video`, `resolution`, `style` |
-| `clean` | `image` |
 
 Nothing else is a field of these kinds. At render, a typed adapter warns of an unknown field an asset writes itself. It doesn't warn of one that comes from `defaults` or sits inside a beat: that one is ignored silently, so check it against this table.
 
@@ -175,7 +173,7 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 | `approve <name> <version>` | Writes that version's hash into `project.yaml`, editing only that line |
 | `unpin <name>` | Removes that line |
 | `status` | Each asset's state and why, which version a pin is, whether its text changed since, and orphans |
-| `import <file> [--character\|--prop]` | Copies a file or URL into `files/` and prints the line to paste; with a flag, two assets: the picture and its clean |
+| `import <file>` | Copies a file or URL into `files/` and prints the line to paste |
 | `rename <old> <new>` | Renames an asset and keeps its versions |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
@@ -193,6 +191,29 @@ Approve and pin are the same thing, so reading the file shows what's constant.
 ## Orphans
 
 An asset no longer named in the YAML keeps its versions and files. Editing the graph loses nothing as long as names stay the same. Removing or renaming a name in the file orphans its files, and only `reclaim` deletes them.
+
+## States
+
+An asset can hold other forms of itself: outfits, a primal form, night and day. Each state gets its own picture, drawn from the asset's.
+
+```yaml
+kyogre:
+  image: 2aee8c40753d
+  kind: character
+  description: Kyogre, the colossal blue whale-like legendary Pokémon.
+  states:
+    primal:
+      description: Kyogre in its primal form, with glowing blue veins.
+      instructions: The same creature as the picture, in the same pose.
+```
+
+`kyogre.primal` is an ordinary asset named that way, and `<kyogre.primal>` reads it. So its versions, memo, `-n`, `render kyogre.primal` and `reclaim` work as for any asset.
+
+- **What it takes from its parent:** `kind` and `with`, unless it writes its own, and `options`, its own over the parent's. Nothing else.
+- **It always reads its parent,** mentioned or not, and the adapter gets that picture as a reference. Re-drawing the parent puts the state out of date. Adding a state changes nothing for the parent.
+- **Pins:** `approve kyogre.primal 2` writes `image: <hash>` on the state's own line inside the block, and `unpin` removes it. Writing one by hand works too.
+- **Removing one** from the file orphans its files, as with any name.
+- **States don't nest.** A `states:` inside a state warns and is ignored.
 
 ## Scenes and writes
 

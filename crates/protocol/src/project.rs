@@ -107,29 +107,23 @@ pub struct File {
     pub sha256: String,
 }
 
-/// `POST /v1/projects/{id}/imports`: the file at `source` (an absolute path, or an `http(s)` URL) kept
-/// in the project. With `clean` (`--character`, `--prop`) the words to paste are two assets, the
-/// picture and its clean.
+/// `POST /v1/projects/{id}/imports`: the file at `source` (an absolute path, or an `http(s)` URL) kept in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub source: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub clean: bool,
 }
 
-/// What an import kept, its hash prefix, and what to paste into project.yaml.
+/// What an import kept, its hash prefix, and the line to paste into project.yaml.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Imported {
     pub path: String,
     pub sha256: String,
     pub prefix: String,
-    /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is; with `clean`, both assets.
+    /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is.
     pub line: String,
     /// Its bytes were in `files/` already, so nothing was copied.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 /// A version's number and the hash prefix project.yaml can name its file by.

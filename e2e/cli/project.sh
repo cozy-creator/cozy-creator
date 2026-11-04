@@ -63,6 +63,7 @@ ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 hard_cut
 memo
 pins
+states
 orphans
 keeps
 world_states
@@ -121,14 +122,14 @@ assets:
   poster:
     kind: picture
     description: <card> as a poster.
-  cleaned:
-    with: $here/project/clean.py
-    kind: clean
+  copied:
+    with: $here/project/copy.py
+    kind: copy
     image: <card>
 YAML
 render "$T" all || check "memo: render all: $(tail -c 400 "$OUT/render.txt")"
-[ "$(jq -c '[.assets.card, .assets.poster, .assets.cleaned | .versions | length]' "$T/project.lock")" = "[1,1,1]" ] || check "memo: not one version each: $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
-J '.assets.card.versions[0].seed != null and .assets.cleaned.versions[0].seed == null' "$T/project.lock" || check "memo: a seed was not drawn for draw, or was for clean, which takes none"
+[ "$(jq -c '[.assets.card, .assets.poster, .assets.copied | .versions | length]' "$T/project.lock")" = "[1,1,1]" ] || check "memo: not one version each: $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
+J '.assets.card.versions[0].seed != null and .assets.copied.versions[0].seed == null' "$T/project.lock" || check "memo: a seed was not drawn for draw, or was for clean, which takes none"
 J '.format == 2 and (.files | to_entries | all(.value.path | test("^files/[0-9a-f]{64}")))' "$T/project.lock" || check "memo: the lock is not format 2 with files under files/"
 J '.assets.poster.versions[0].reads[0].name == "card"' "$T/project.lock" || check "memo: poster's version does not record reading card"
 first=$(runs "$T")
@@ -164,7 +165,7 @@ sed -i 's/style: Bold\./style: Plain./' "$T/project.yaml"
 cat >> "$T/project.yaml" <<YAML
   keyed:
     with: _/birefnet@9.9.9
-    kind: clean
+    kind: picture
     image: <card>
 YAML
 was=$(row "$T" keyed .inputs)
@@ -187,11 +188,11 @@ render "$T" card -n 2 || check "memo: -n 2: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" card)" = "$((first + 3))" ] || check "memo: -n 2 made $(made "$T" card) of card, from $((first + 1))"
 J '[.assets.card.versions[-3:][].seed] | unique | length == 3' "$T/project.lock" || check "memo: --new and -n did not draw new seeds"
 J '[.assets.card.versions[].number] == [range(1; (.assets.card.versions | length) + 1)]' "$T/project.lock" || check "memo: card's numbers are not in order"
-render "$T" cleaned || check "memo: cleaned over a new card"
-first=$(made "$T" cleaned)
-render "$T" cleaned --new || check "memo: --new on a function with no seed: $(tail -c 300 "$OUT/render.txt")"
+render "$T" copied || check "memo: copied over a new card"
+first=$(made "$T" copied)
+render "$T" copied --new || check "memo: --new on a function with no seed: $(tail -c 300 "$OUT/render.txt")"
 says memo "takes no seed"
-[ "$(made "$T" cleaned)" = "$first" ] || check "memo: --new on a function with no seed made a version"
+[ "$(made "$T" copied)" = "$first" ] || check "memo: --new on a function with no seed made a version"
 code=0; cozy project -p "$T" render card -n 2 --approve --on local > "$OUT/render.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && says memo --approve; } || check "memo: -n 2 --approve was not refused (exit $code)"
 }
@@ -213,9 +214,9 @@ assets:
     aspect_ratio: "16:9"
 
   flat: {with: $here/project/draw.py, kind: picture, description: A flat one.}
-  cleaned:
-    with: $here/project/clean.py
-    kind: clean
+  copied:
+    with: $here/project/copy.py
+    kind: copy
     image: <card>
   poster:
     with: $here/project/draw.py
@@ -256,26 +257,26 @@ diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin did n
 J '.assets[] | select(.name == "card") | (.pinned | not) and .approved == null' <<< "$(status "$T")" || check "pins: unpinned, status is $(row "$T" card .)"
 
 step "a project: a pin over an input keeps it, and a line of its own"
-render "$T" cleaned --new > /dev/null 2>&1 || true
-cozy project -p "$T" approve cleaned 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve cleaned 1: $(tail -c 300 "$OUT/approve.txt")"
+render "$T" copied --new > /dev/null 2>&1 || true
+cozy project -p "$T" approve copied 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve copied 1: $(tail -c 300 "$OUT/approve.txt")"
 grep -Eq '^    image: [0-9a-f"]+  # was <card>$' "$T/project.yaml" || check "pins: a pin over <card> is not one line keeping it: $(grep -n 'image:' "$T/project.yaml")"
-cozy project -p "$T" unpin cleaned > "$OUT/unpin.txt" 2>&1 || check "pins: unpin cleaned: $(tail -c 300 "$OUT/unpin.txt")"
-diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin cleaned did not give back the file: $(cat "$OUT/unpin.diff")"
+cozy project -p "$T" unpin copied > "$OUT/unpin.txt" 2>&1 || check "pins: unpin copied: $(tail -c 300 "$OUT/unpin.txt")"
+diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin copied did not give back the file: $(cat "$OUT/unpin.diff")"
 cozy project -p "$T" approve flat 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve an asset on one line: $(tail -c 300 "$OUT/approve.txt")"
 grep -Eq '^  flat: \{image: [0-9a-f"]+, with: .*/draw\.py, kind: picture, description: A flat one\.\}$' "$T/project.yaml" || check "pins: flat is $(grep -n 'flat:' "$T/project.yaml")"
 cozy project -p "$T" unpin flat > "$OUT/unpin.txt" 2>&1 || check "pins: unpin flat: $(tail -c 300 "$OUT/unpin.txt")"
 diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin flat did not give back the file: $(cat "$OUT/unpin.diff")"
 
-step "a project: re-approving art brings its clean back with no run"
-local cleans; cleans=$(made "$T" cleaned)
+step "a project: re-approving art brings what was made from it back with no run"
+local copies; copies=$(made "$T" copied)
 cozy project -p "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
-render "$T" cleaned || check "pins: render cleaned: $(tail -c 300 "$OUT/render.txt")"
+render "$T" copied || check "pins: render copied: $(tail -c 300 "$OUT/render.txt")"
 cozy project -p "$T" approve card 2 > /dev/null 2>&1 || check "pins: approve card 2"
-render "$T" cleaned || check "pins: render cleaned on 2: $(tail -c 300 "$OUT/render.txt")"
-cleans=$(made "$T" cleaned)
+render "$T" copied || check "pins: render copied on 2: $(tail -c 300 "$OUT/render.txt")"
+copies=$(made "$T" copied)
 cozy project -p "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
-render "$T" cleaned || check "pins: render cleaned on 1 again: $(tail -c 300 "$OUT/render.txt")"
-[ "$(made "$T" cleaned)" = "$cleans" ] || check "pins: re-approving art ran its clean: $(made "$T" cleaned), not $cleans"
+render "$T" copied || check "pins: render copied on 1 again: $(tail -c 300 "$OUT/render.txt")"
+[ "$(made "$T" copied)" = "$copies" ] || check "pins: re-approving art ran what reads it: $(made "$T" copied), not $copies"
 
 step "a project: a hash of a file, a constant, a hash of nothing"
 local C=$OUT/constants pic; mkdir -p "$C"; still "$C/teal.png" teal
@@ -327,6 +328,79 @@ render "$C" all || check "pins: render all with what can't be made: $(tail -c 40
 says pins "no adapter: "
 says pins "has no adapter for kind unheard: it can't be made"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
+}
+
+# States: `kyogre.primal`, written inside `kyogre`, an ordinary asset that always reads its parent.
+states() {
+step "a project: a state is its own asset, and always reads its parent"
+local T=$OUT/states before file
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+defaults:
+  character:
+    with: $here/project/draw.py
+assets:
+  hero:
+    kind: character
+    description: A hero.
+    states:
+      # the wild one
+      primal:   # stays as it is
+        description: Primal form.
+        instructions: As the picture, but wild.
+      night:
+        kind: picture
+        with: $here/project/draw.py
+        description: <hero.primal> at night.
+  poster:
+    with: $here/project/draw.py
+    kind: picture
+    description: <hero.primal> as a poster.
+  loud:
+    with: $here/project/shots.py
+    kind: told
+    options:
+      a: 1
+      b: 2
+    states:
+      louder:
+        options:
+          b: 3
+YAML
+J '[.assets[] | {name, kind}] | map(select(.name | startswith("hero"))) == [{"name": "hero", "kind": "character"}, {"name": "hero.primal", "kind": "character"}, {"name": "hero.night", "kind": "picture"}]' <<< "$(status "$T")" \
+  || check "states: status: $(status "$T" | jq -c '[.assets[] | {name, kind}]')"
+render "$T" all || check "states: render all: $(tail -c 400 "$OUT/render.txt")"
+J '.assets["hero.primal"].versions[0].reads[0].name == "hero"' "$T/project.lock" || check "states: hero.primal doesn't read hero: $(jq -c '.assets["hero.primal"].versions[0].reads' "$T/project.lock")"
+J '.assets.poster.versions[0].reads[0].name == "hero.primal"' "$T/project.lock" || check "states: <hero.primal> is not that asset: $(jq -c '.assets.poster.versions[0].reads' "$T/project.lock")"
+[ "$(cat "$T/$(jq -r '.files[.assets["loud.louder"].versions[-1].files.given].path' "$T/project.lock")" | jq -c .)" = '{"a":1,"b":3}' ] || check "states: options do not merge over the parent's"
+
+step "a project: re-drawing the parent puts a state out of date, and more of a state is -n"
+local was; was=$(row "$T" hero .inputs)
+cp "$T/project.yaml" "$OUT/states-before.yaml"
+sed -i 's/^      night:$/      dawn:\n        description: At dawn.\n&/' "$T/project.yaml"
+[ "$(row "$T" hero .inputs)" = "$was" ] || check "states: adding a state moved its parent's key"
+cp "$OUT/states-before.yaml" "$T/project.yaml"
+render "$T" hero --new || check "states: render hero --new: $(tail -c 300 "$OUT/render.txt")"
+case "$(row "$T" hero.primal .status)" in *'<hero> changed'*) ;; *) check "states: a new hero did not put hero.primal out of date: $(row "$T" hero.primal .status)" ;; esac
+render "$T" hero.primal -n 2 || check "states: render hero.primal -n 2: $(tail -c 300 "$OUT/render.txt")"
+[ "$(made "$T" hero.primal)" = 3 ] || check "states: hero.primal has $(made "$T" hero.primal) versions, not 3"
+
+step "a project: a state's pin is one line inside its block"
+before=$OUT/states-pin.yaml; cp "$T/project.yaml" "$before"
+cozy project -p "$T" approve hero.primal 2 > "$OUT/approve.txt" 2>&1 || check "states: approve hero.primal 2: $(tail -c 300 "$OUT/approve.txt")"
+file=$(jq -r '.assets["hero.primal"].versions[1].files.image' "$T/project.lock"); file=${file#sha256:}
+diff "$before" "$T/project.yaml" > "$OUT/states.diff" || true
+{ [ "$(grep -c '^[<>]' "$OUT/states.diff")" = 1 ] && grep -q "^>         image: ${file:0:12}$" "$OUT/states.diff"; } || check "states: the pin is not one line in the block: $(cat "$OUT/states.diff")"
+[ "$(row "$T" hero.primal .approved)" = 2 ] || check "states: hero.primal is not pinned to 2: $(row "$T" hero.primal .)"
+cozy project -p "$T" unpin hero.primal > "$OUT/unpin.txt" 2>&1 || check "states: unpin: $(tail -c 300 "$OUT/unpin.txt")"
+diff "$before" "$T/project.yaml" > "$OUT/states.diff" || check "states: unpin did not give back the file: $(cat "$OUT/states.diff")"
+
+step "a project: a state pinned by hand, and one removed"
+sed -i "s/^        instructions: As the picture, but wild\.\$/&\n        image: ${file:0:12}/" "$T/project.yaml"
+J '.assets[] | select(.name == "hero.primal") | .pinned and .approved == 2' <<< "$(status "$T")" || check "states: a pin by hand: $(row "$T" hero.primal .)"
+sed -i '/^      night:$/,/^        description: <hero.primal> at night\.$/d' "$T/project.yaml"
+J '[.orphans[]?.name] | index("hero.night")' <<< "$(status "$T")" || check "states: a removed state is not an orphan: $(status "$T" | jq -c .orphans)"
 }
 
 # Orphans (cl-761): what the file no longer names keeps its versions and files until `reclaim --yes`.
@@ -834,9 +908,7 @@ printf 'not a picture\n' > "$U/note.txt"
 code=0; cozy project -p "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "import: a text file was accepted"
 still "$U/kyogre.png" red
-cozy project -p "$U" import "$U/kyogre.png" --character > "$OUT/import-char.txt" 2>&1 || check "import: --character: $(tail -c 300 "$OUT/import-char.txt")"
-{ grep -q '^kyogre source:$' "$OUT/import-char.txt" && grep -q '^  with: birefnet$' "$OUT/import-char.txt" && grep -q '^  image: <kyogre source>$' "$OUT/import-char.txt"; } \
-  || check "import: --character does not print both assets: $(cat "$OUT/import-char.txt")"
+cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-first.txt" 2>&1 || check "import: a file: $(tail -c 300 "$OUT/import-first.txt")"
 cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-again.txt" 2>&1 || check "import: again: $(tail -c 300 "$OUT/import-again.txt")"
 grep -q '^already imported ' "$OUT/import-again.txt" || check "import: a second import does not say so: $(cat "$OUT/import-again.txt")"
 }

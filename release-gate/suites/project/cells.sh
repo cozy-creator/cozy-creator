@@ -7,14 +7,13 @@
 #   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
 # - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
-# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's picture at 16:9, and its
-#   clean, an asset of its own, that returns what it reads at 5% fully transparent or more (BiRefNet composites on white by design).
+# - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's picture at 16:9.
 # - project-local: an asset `with: ./still.py`, local code made ready by Calcifer.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg names the gate's folder; a project reads `with:` from its own. `with:` names a package, never a function.
 abs() { [[ $1 == ./* ]] && echo "$OUT/${1#./}" || echo "$1"; }
 package() { local at; at=$(abs "$(pkg "$1" x)"); case $at in *@*) echo "${at%/x@*}@${at##*@}" ;; *) echo "${at%/x}" ;; esac; }
-H3=$(package minimax-h3) STILL=$(package qwen-image-2) CLEAN=$(package birefnet)
+H3=$(package minimax-h3) STILL=$(package qwen-image-2)
 want() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* || $ONLY == *",project,"* ]]; }
 # project <cell>: a fresh folder for it, its project.yaml from stdin, the gate's pictures beside it.
 project() {
@@ -41,8 +40,6 @@ file_of() { [ -n "$2" ] && lockq "$1" "lock['files']['$2']['path']"; }
 made() { file_of "$1" "$(approved "$1" "$2" | jq -r '.files.video // .files.image // empty')"; }
 aspect() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1" | awk -F, '{ printf "%.4f", $1 / $2 }'; }
 near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a / b - 1; print (d < 0 ? -d : d) <= 0.03 ? "PASS" : "FAIL" }'; }
-# transparent_share <picture>: its share of fully transparent pixels, as Calcifer's clean rule reads it.
-transparent_share() { ffmpeg -v error -i "$1" -frames:v 1 -vf format=rgba,alphaextract -f rawvideo -pix_fmt gray - | python3 -c 'import sys; b = sys.stdin.buffer.read(); print(round(b.count(0) / len(b), 4))'; }
 SEAMBAR='if (.boundaries | length) >= 1 and ((([0.6, 0.9 * (.inside_ssim // 1)] | min) as $bar | [.boundaries[] | .ratio <= 3 and .ssim >= $bar] | all)) then "PASS" else "FAIL" end'
 
 if want project-split || want project-upscale; then
@@ -264,10 +261,6 @@ assets:
     kind: character
     description: "$CHAR"
     options: {seed: $((R + 303))}
-  cook clean:
-    with: $CLEAN
-    kind: clean
-    image: <cook>
   kitchen:
     kind: environment
     description: "$SCENE"
@@ -282,11 +275,6 @@ YAML
     f=$(made "$P" "$n")
     expect "project-stills-${n// /-}" "$([ -n "$f" ] && near "$(aspect "$P/$f")" 1.7778 || echo FAIL)" "${f:+aspect $(aspect "$P/$f")} want 16:9"
   done
-  drawn=$(made "$P" cook); clean=$(made "$P" "cook clean")
-  share=$([ -n "$drawn" ] && transparent_share "$P/$drawn")
-  # Drawn transparent, the clean is the same file with no run; drawn opaque, it is a new one.
-  same=$([ "$drawn" = "$clean" ] && echo True || echo False)
-  expect project-stills-transparent "$(awk -v s="${share:-x}" -v c="$same" 'BEGIN { print (s != "x" && (s >= 0.05 ? "True" : "False") == c) ? "PASS" : "FAIL" }')" "cook's picture ${share:-unread} fully transparent, its clean the same file: $same"
   sed -i '0,/aspect_ratio: "16:9"/s//aspect_ratio: "9:16"/' "$P/project.yaml"
   render project-stills-916 "$P" kitchen
   f=$(made "$P" kitchen)

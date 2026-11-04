@@ -763,8 +763,7 @@ fn keeps_of(doc: &Doc, lock: &Lock, stand: &[Standing], i: usize, take: Option<u
     }
 }
 
-/// Keeps the file at `source` as a file of the project, in project.lock, and answers what to paste: its one line, or with
-/// `--character` or `--prop` both assets, the picture and its clean, named for its file.
+/// Keeps the file at `source` as a file of the project, in project.lock, and answers the line to paste.
 async fn import(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -777,18 +776,9 @@ async fn import(
         let said = format!("{}: {why}", asked.source);
         Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
     })?;
-    let mut warnings = vec![];
-    if asked.clean && field != "image" {
-        warnings.push(format!("a{} {field} has no background to remove: it is imported as it is", if field == "audio" { "n" } else { "" }));
-    }
     let prefix = folder::prefix_of(&file.sha256).to_owned();
-    let value = format::yaml_scalar(&prefix);
-    let stem = asked.source.rsplit(['/', '\\']).next().and_then(|name| name.split('.').next()).filter(|stem| !stem.is_empty()).unwrap_or("picture").to_owned();
-    let line = match asked.clean && field == "image" {
-        true => format!("{stem} source:\n  image: {value}\n{stem}:\n  with: birefnet\n  kind: clean\n  image: <{stem} source>"),
-        false => format!("{field}: {value}"),
-    };
-    Ok(Json(Imported { path: file.path, sha256: file.sha256, prefix, line, already, warnings }))
+    let line = format!("{field}: {}", format::yaml_scalar(&prefix));
+    Ok(Json(Imported { path: file.path, sha256: file.sha256, prefix, line, already }))
 }
 
 /// The field that pins a version: what its main file is.

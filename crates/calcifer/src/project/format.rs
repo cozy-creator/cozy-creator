@@ -18,7 +18,7 @@ use super::{
 pub const ALL: &str = "all";
 const FORMAT: u64 = 2;
 const PINS: [&str; 3] = ["image", "video", "audio"];
-const RESERVED: [&str; 9] = ["with", "kind", "models", "lora", "options", "image", "video", "audio", "writes"];
+const RESERVED: [&str; 10] = ["with", "kind", "models", "lora", "options", "image", "video", "audio", "writes", "states"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
@@ -131,6 +131,8 @@ pub struct Asset {
     pub hollow: bool,
     /// A free frame a beat names: `cozy` makes it, and it stays the world state it is to what reads it.
     pub frame: bool,
+    /// The asset this is a state of (`kyogre` of `kyogre.primal`), which it always reads.
+    pub state_of: Option<usize>,
     /// What it reads, in the order its text mentions them.
     pub reads: Vec<usize>,
     /// The revisions it sends to its function.
@@ -171,7 +173,7 @@ pub struct Doc {
     pub order: Vec<usize>,
     pub warnings: Vec<String>,
     index: HashMap<String, usize>,
-    /// How many the file declares, in order; those after them are revisions only a beat names.
+    /// How many the file declares, in order, their states with them; those after them are scenes only a beat names.
     declared: usize,
 }
 
@@ -264,7 +266,17 @@ impl Doc {
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
-            doc.declare(text, &name, written, defaults, folder, &lock);
+            let Some(parent) = doc.declare(text, &name, written, defaults, folder, &lock) else { continue };
+            for state in protocol::yaml::keys(text, &["assets", &name, "states"]) {
+                let full = format!("{name}.{state}");
+                if written["states"][&state].get("states").is_some() {
+                    doc.warnings.push(format!("{full}'s states: states don't nest: these are ignored"));
+                }
+                let body = state_body(written, &written["states"][&state]);
+                if let Some(i) = doc.declare(text, &full, &body, defaults, folder, &lock) {
+                    doc.assets[i].state_of = Some(parent);
+                }
+            }
         }
         doc.declared = doc.assets.len();
         for i in 0..doc.declared {
@@ -289,11 +301,11 @@ impl Doc {
     }
 
     /// An asset of the file, after defaults, its pin read. A name taken: the first stands.
-    fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
+    fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) -> Option<usize> {
         let key = name_key(name);
         if self.index.contains_key(&key) {
             self.warnings.push(format!("two assets are named {name}: the first stands"));
-            return;
+            return None;
         }
         if key == ALL {
             self.warnings.push(format!("{name} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest"));
@@ -365,7 +377,8 @@ impl Doc {
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
         let hollow = with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, also, hollow, frame: false, reads: vec![], writes: vec![], writer: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, also, hollow, frame: false, state_of: None, reads: vec![], writes: vec![], writer: None });
+        Some(self.assets.len() - 1)
     }
 
     /// `scene`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
@@ -388,6 +401,7 @@ impl Doc {
                     also: Files::new(),
                     hollow: false,
                     frame: false,
+                    state_of: None,
                     reads: vec![],
                     writes: vec![],
                     writer: None,
@@ -434,6 +448,12 @@ impl Doc {
                 upstream[i].push(writer);
                 fixed[i].push(writer);
                 continue;
+            }
+            // A state always reads what it is a state of, mentioned or not.
+            if let Some(parent) = asset.state_of {
+                upstream[i].push(parent);
+                fixed[i].push(parent);
+                reads[i].push(parent);
             }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
@@ -616,10 +636,13 @@ impl Doc {
             .map(|read| {
                 let of = &self.assets[read.asset];
                 // A tool's key holds only files: same takes, same key, whatever their text says.
-                let record = match tool {
+                let mut record = match tool {
                     true => json!({"name": read.name, "files": read.files}),
                     false => json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": read.files}),
                 };
+                if let (false, Some(parent)) = (tool, of.state_of) {
+                    record["parent_fields"] = json!(self.assets[parent].fields);
+                }
                 digests.insert(format!("<{}>", read.name), digest(&record));
                 record
             })
@@ -644,7 +667,12 @@ impl Doc {
                 let files: Map<String, Value> = read.files.iter().map(|(name, sha256)| (name.clone(), file(sha256))).collect();
                 let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
                 let made_by = made.and_then(|made| made.made_by.as_ref()).map_or("", |by| by.with.as_str());
-                json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by})
+                let mut record = json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by});
+                // A shot reading a state doesn't mention its parent: what the file says of it comes along.
+                if let Some(parent) = of.state_of {
+                    record["parent_fields"] = json!(self.assets[parent].fields);
+                }
+                record
             })
             .collect();
         let writes: Vec<Value> = asset.writes.iter().map(Write::record).collect();
@@ -730,6 +758,24 @@ fn text_of(value: Option<&Value>) -> String {
         Some(Value::Number(number)) => number.to_string(),
         _ => String::new(),
     }
+}
+
+/// What a state's lines come to, as an asset: its parent's `kind` and `with` unless it writes its own, its `options` over the
+/// parent's, and nothing else of the parent's.
+fn state_body(parent: &Value, state: &Value) -> Value {
+    let mut body = Map::new();
+    for field in ["kind", "with"] {
+        if let Some(value) = parent.get(field) {
+            body.insert(field.into(), value.clone());
+        }
+    }
+    let mut options = parent.get("options").and_then(Value::as_object).cloned().unwrap_or_default();
+    options.extend(state.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
+    body.extend(state.as_object().cloned().unwrap_or_default());
+    if !options.is_empty() {
+        body.insert("options".into(), Value::Object(options));
+    }
+    Value::Object(body)
 }
 
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
@@ -848,10 +894,8 @@ pub fn unpinned(text: &str, name: &str, field: &str) -> Result<String, Error> {
 /// Whether `edited` reads as `text` with `name`'s `field` set to `value` (a quoted hash unquoted), or gone with None.
 fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&str>) -> Result<(), String> {
     let read = |text: &str| protocol::yaml::to_json(text).map_err(|why| format!("the edit would not read: {why}"));
-    let (mut before, after) = (read(text)?, read(edited)?);
-    let key = |assets: &Map<String, Value>| assets.keys().find(|key| name_key(key) == name_key(name)).cloned();
-    let at = before["assets"].as_object().and_then(key).ok_or("it isn't under `assets:`")?;
-    let asset = &mut before["assets"][&at];
+    let (mut before, mut after) = (read(text)?, read(edited)?);
+    let asset = slot(&mut before, name).ok_or("it isn't under `assets:`")?;
     if asset.is_null() {
         *asset = json!({});
     }
@@ -865,12 +909,27 @@ fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&st
             asset.remove(field);
         }
     }
-    let mut after = after;
-    let emptied = after["assets"][&at].is_null();
-    if emptied {
-        after["assets"][&at] = json!({});
+    if let Some(asset) = slot(&mut after, name).filter(|asset| asset.is_null()) {
+        *asset = json!({});
     }
     (before == after).then_some(()).ok_or_else(|| "the edit would change something else".into())
+}
+
+/// The value asset `name` is in a project's JSON: under `assets:`, or a state under its parent's `states:`.
+fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+    let key_in = |map: &Value, name: &str| map.as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned();
+    if let Some(key) = key_in(&doc["assets"], name) {
+        return doc["assets"].get_mut(&key);
+    }
+    let (parent, state) = split_state(name).into_iter().find(|(parent, state)| key_in(&doc["assets"], parent).is_some_and(|key| key_in(&doc["assets"][&key]["states"], state).is_some()))?;
+    let parent = key_in(&doc["assets"], parent)?;
+    let state = key_in(&doc["assets"][&parent]["states"], state)?;
+    doc["assets"][&parent]["states"].get_mut(&state)
+}
+
+/// Each way `name` could be a parent and its state, at each `.`.
+fn split_state(name: &str) -> Vec<(&str, &str)> {
+    name.match_indices('.').map(|(at, _)| (&name[..at], &name[at + 1..])).collect()
 }
 
 /// The input a pin in `field` keeps in a comment on its line.
@@ -895,27 +954,21 @@ struct Place<'a> {
 }
 
 impl<'a> Place<'a> {
+    /// Asset `name`'s lines: under `assets:`, or a state's under its parent's `states:`.
     fn find(text: &'a str, name: &str) -> Option<Self> {
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
-        let significant = |line: &str| !line.trim().is_empty() && !line.trim_start().starts_with('#');
-        let indent = |line: &str| line.len() - line.trim_start_matches(' ').len();
-        let start = lines.iter().position(|line| indent(line) == 0 && split_comment(line).0 == "assets:")? + 1;
-        let end = (start..lines.len()).find(|&n| significant(lines[n]) && indent(lines[n]) == 0).unwrap_or(lines.len());
-        let at = indent(lines[start..end].iter().find(|line| significant(line))?);
-        let key = (start..end).find(|&n| significant(lines[n]) && indent(lines[n]) == at && key_of(lines[n]).is_some_and(|key| name_key(&key) == name_key(name)))?;
-        let finish = ((key + 1)..end).find(|&n| significant(lines[n]) && indent(lines[n]) <= at).unwrap_or(end);
-        let first = ((key + 1)..finish).find(|&n| significant(lines[n]));
-        let child = first.map_or(at + 2, |n| indent(lines[n]));
-        // Where its value starts: past the colon that ends the key.
-        let after = lines[key].find(": ").map(|colon| colon + 2);
-        let flow = after.and_then(|after| {
-            let (head, value) = lines[key].split_at(after);
-            let (written, _) = split_comment(value);
-            let inner = written.strip_prefix('{')?.strip_suffix('}')?;
-            let close = value.find(written)? + written.len();
-            Some((head.to_owned(), inner.to_owned(), value[close..].to_owned()))
-        });
-        Some(Self { lines, key, body: (key + 1)..finish, child, flow })
+        let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == "assets:")? + 1;
+        let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+        if let Some((key, body, child, flow)) = block(&lines, start..end, name) {
+            return Some(Self { lines, key, body, child, flow });
+        }
+        let found = split_state(name).into_iter().find_map(|(parent, state)| {
+            let (_, parent, ..) = block(&lines, start..end, parent)?;
+            let (_, states, ..) = block(&lines, parent, "states")?;
+            block(&lines, states, state)
+        })?;
+        let (key, body, child, flow) = found;
+        Some(Self { lines, key, body, child, flow })
     }
 
     /// The line holding `field`, among its own.
@@ -926,6 +979,36 @@ impl<'a> Place<'a> {
             spaces == self.child && line[spaces..].strip_prefix(field).is_some_and(|rest| rest.trim_end().starts_with(':'))
         })
     }
+}
+
+fn significant(line: &str) -> bool {
+    !line.trim().is_empty() && !line.trim_start().starts_with('#')
+}
+
+fn spaces(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+/// The lines of the key `name` among the mapping that fills `within`: the line opening it, its body, how far its fields are
+/// indented, and for one all on one line, what is before `{`, what is inside, and what follows `}`.
+#[allow(clippy::type_complexity)]
+fn block(lines: &[&str], within: std::ops::Range<usize>, name: &str) -> Option<(usize, std::ops::Range<usize>, usize, Option<(String, String, String)>)> {
+    let (start, end) = (within.start, within.end);
+    let at = spaces(lines[start..end].iter().find(|line| significant(line))?);
+    let key = (start..end).find(|&n| significant(lines[n]) && spaces(lines[n]) == at && key_of(lines[n]).is_some_and(|key| name_key(&key) == name_key(name)))?;
+    let finish = ((key + 1)..end).find(|&n| significant(lines[n]) && spaces(lines[n]) <= at).unwrap_or(end);
+    let first = ((key + 1)..finish).find(|&n| significant(lines[n]));
+    let child = first.map_or(at + 2, |n| spaces(lines[n]));
+    // Where its value starts: past the colon that ends the key.
+    let after = lines[key].find(": ").map(|colon| colon + 2);
+    let flow = after.and_then(|after| {
+        let (head, value) = lines[key].split_at(after);
+        let (written, _) = split_comment(value);
+        let inner = written.strip_prefix('{')?.strip_suffix('}')?;
+        let close = value.find(written)? + written.len();
+        Some((head.to_owned(), inner.to_owned(), value[close..].to_owned()))
+    });
+    Some((key, (key + 1)..finish, child, flow))
 }
 
 /// The key a line opens: `name:`, `"name":`, `'name':`.

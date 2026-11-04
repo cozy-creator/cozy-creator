@@ -20,7 +20,7 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
-  cd garden && cozy project import ./kyogre.png --character   prints what to paste into project.yaml
+  cd garden && cozy project import ./kyogre.png   prints what to paste into project.yaml
   cozy project render all --on kiyui
   cozy project render fight --new -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2                 writes its hash into fight's lines in project.yaml: fight is a constant now
@@ -114,24 +114,17 @@ enum Verb {
     Pull,
 }
 
-/// Bring a picture, video or sound into the project, and print what names it in project.yaml.
+/// Bring a picture, video or sound into the project, and print the line that names it in project.yaml.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
-  cozy project import ./kyogre.png --character
-  cozy project import https://example.com/groudon.png --character
+  cozy project import ./kyogre.png
+  cozy project import https://example.com/groudon.png
   cozy project import ./coast.jpg
-  cozy project import ./sword.png --prop
 
 A URL is downloaded here, up to 64 MiB, from a public address.")]
 struct ImportFile {
     /// A path, or an http(s) URL.
     source: String,
-    /// The picture is a character's: it prints two assets to paste, the picture and its clean.
-    #[arg(long, conflicts_with = "prop")]
-    character: bool,
-    /// The picture is a prop's: as with --character.
-    #[arg(long)]
-    prop: bool,
 }
 
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
@@ -350,9 +343,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         true => args.source,
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
-    let ask = Import { source, clean: args.character || args.prop };
-    let imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &ask, None).await?;
-    imported.warnings.iter().for_each(|warning| output::warn(warning));
+    let imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &Import { source }, None).await?;
     if ctx.json {
         output::json(&imported);
         return Ok(ExitCode::SUCCESS);

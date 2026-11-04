@@ -333,7 +333,7 @@ and left as it is. `design/project-graph.md` in the tracker is the model.
 
 An asset's state is the hash in project.yaml (`image`, `video`, `audio`; a hash of a version's main file brings its whole file set), else its
 newest version whose `inputs` match now, else none. `inputs` is a digest of `with` (no release, no `_/`), `models`, `lora`, `options`, `kind`,
-every other field after defaults, each asset it mentions (name, kind, fields, files by sha256) and the revisions it writes: exactly what its
+every other field after defaults, each asset it mentions (name, kind, fields, a state's `parent_fields`, files by sha256) and the scenes it writes: exactly what its
 adapter is given. A tool's holds only what it reads of its fields, and the files. Calcifer knows no kind's meaning and no field's shape.
 
 An operation is a package (`with`, `[org/]package[@release]`, or local code) and a `kind`. Calcifer runs the package's `project-adapter-<kind>` on
@@ -348,9 +348,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
   records it in the index as used now. `404 project_not_found` when no folder up from `path` is a project.
-- `POST /v1/projects/{id}/imports` `{source, clean?}`: `{path, sha256, prefix, line, already?, warnings?}`. `already`: its bytes were in `files/`,
-  so nothing was copied. `line` is what to paste: `image: ab12cd34ef56`, or `video:`, `audio:`; with `clean`, two assets, the picture and its
-  clean. A URL: 64 MiB at most, public addresses only at every hop.
+- `POST /v1/projects/{id}/imports` `{source}`: `{path, sha256, prefix, line, already?}`. `already`: its bytes were in `files/`, so nothing was copied. `line` is what to paste: `image: ab12cd34ef56`, or `video:`, `audio:`. A URL: 64 MiB at most, public addresses only at every hop.
 - `GET /v1/projects?limit=&before=`: the index, last used first: `{projects: [{id, name, path, used_at_ms,
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
