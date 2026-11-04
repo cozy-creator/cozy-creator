@@ -3,6 +3,7 @@
 # - project-split: a 10 s shot whose later beat reads a world state an earlier beat writes: one run, one take, the written frame
 #   kept, no seam of ours; project-upscale: its upscale from those latents, at 1080p and the shot's aspect, and edit.mp4 at the
 #   1920x1080 canvas.
+# - project-segments: a shot two segments make, a write at their join, carrying 22 and 56 frames: both segments ran, no cut at the join.
 # - project-in: a new take that keeps take 1 up to `--in` and renders the rest from edited text: one run, the kept frames as
 #   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
@@ -120,6 +121,58 @@ YAML
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
     fi
   fi
+fi
+
+if want project-segments; then
+  # A shot two segments make, with a write at their join, as a long shot is: the later one carries the earlier's frames.
+  for cf in 22 56; do
+    P=$(project project-segments-$cf <<YAML
+version: 2
+defaults:
+  all:
+    style: naturalistic photo, warm late-afternoon light, handheld camera
+    aspect_ratio: "16:9"
+  shot:
+    render: {with: $H3}
+assets:
+  hero:
+    kind: character
+    image: hero.png
+    description: "$CHAR"
+  yard:
+    kind: environment
+    image: place.png
+    description: "$SCENE"
+  walk:
+    kind: shot
+    render:
+      seed: $((R + 330 + cf))
+      context_frames: $cf
+    summary: |
+      <hero> walks the length of <yard> in one continuous shot with no cuts.
+    beats:
+      - duration: 10
+        description: |
+          <hero> sets off across <yard>, the camera following alongside.
+        writes:
+          - world_state: yard.1
+            at: 10
+      - duration: 10
+        description: |
+          <hero> keeps walking across <yard.1> and stops at the far side.
+YAML
+)
+    imported "$P" hero.png place.png
+    render project-segments-$cf "$P" walk || expect project-segments-$cf FAIL "render: $(tail -c 300 project-segments-$cf.log)"
+    v=$(approved "$P" walk); f=$(made "$P" walk); n=$(jq -r '.runs[0] // empty' <<< "$v")
+    if [ -z "$f" ] || [ -z "$n" ]; then expect project-segments-$cf FAIL "no version of walk: $(tail -c 300 project-segments-$cf.log)"; continue; fi
+    labels=$("$CLI" --json run show "$n" 2>/dev/null | jq -c '[.calls[]? | {label, status}]')
+    given=$(jq -c '[.invocations[]?.input.context_frames]' <<< "$v")
+    expect project-segments-$cf "$(jq -r 'if ([.[] | select(.status == "succeeded")] | length) == 2 and (.[1].label == "Segment 2 of 2") then "PASS" else "FAIL" end' <<< "$labels" 2>/dev/null || echo FAIL)" "calls $labels, context_frames $given, want $cf"
+    r=$("${FR[@]}" seams "$P/$f" --at "$(awk 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), 10 + i / 8 }')" 2>&1 | tail -1)
+    expect project-segments-$cf-seam "$(jq -r 'if ([.boundaries[].ratio] | max) < 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "no cut within half a second of the join at 10 s: $r"
+    expect project-segments-$cf-write "$(jq -r 'if .writes["yard.1"].image != null then "PASS" else "FAIL" end' <<< "$v" 2>/dev/null || echo FAIL)" "yard.1: $(jq -r '.writes["yard.1"].image // "none"' <<< "$v")"
+  done
 fi
 
 if want project-in; then
