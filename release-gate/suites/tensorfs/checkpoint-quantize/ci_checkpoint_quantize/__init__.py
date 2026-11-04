@@ -180,7 +180,7 @@ def run(payload: Request, ctx: Context) -> Report:
                     control=tensorfs.ConversionControl(),
                 )
             except tensorfs.InvalidError as error:
-                assert "recipe changed" in str(error)
+                assert "selected by another conversion" in str(error)
             else:
                 raise AssertionError("resume accepted a different recipe")
             resumed = reopened.quantize(

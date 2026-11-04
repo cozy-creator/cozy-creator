@@ -1,5 +1,5 @@
-# Selected native-loop, kernel readiness and memory-pressure cells for the Runtime 0.35 / TensorFS 0.17 cohort.
-# Sourced by gate.sh --cells after the selected model suite; --only still applies to these names.
+# The native loop and kernel readiness, for the `execution` suite.
+# --only still applies to these names.
 # No H3 request, independent rental or SDK update is introduced here.
 CORE_READY_TARGET=$HERE/suites/execution/kernel-ready-publication/cpu
 

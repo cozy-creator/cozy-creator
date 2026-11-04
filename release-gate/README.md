@@ -32,6 +32,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `families` | the packages that send attention masks (qwen-image-2 at its prefill, ideogram-4 on every call) on the families whose kernels serve none: each completes, a refused call runs on SDPA and the record counts it (runs 26242-26244) | h100-sxm5-80gb, b200 | ~$5–8 · 30–40 min | a Runtime change to attention, kernels or selection |
 | `multi-gpu` | H3 over two GPUs, 5 s Turbo, new prompt and seed: two ranks on two GPUs, a 768p video with audio, frames judged numerically (`frames.py coherent`). A group opens more kernels than one GPU does, so each family that takes its own group path gets a pod | one card per family, each its cheapest with two GPUs: sm120, sm90, older mma.sync (`skus`; today's cheapest: `suites/multi-gpu/pick.sh`, `-f skus=<card> -f gpus=2`). No sm100 card lists two | ~$2 · 3 pods, 2 to 25 min of render a family, the longest when its card downloads H3's weights cold (0.39.6: 2× H100 2 min, 2× RTX 3090 10 min, 2× RTX 5090 25 min), plus up to 20 min to get a pod. A dispatch's `cap_minutes` under 60 can cancel it before the verdict, which runs the fault and probe checks | every release |
 | `kernels` | every kernel the Runtime ships, once, on each family it claims, through its real launch path, against a slow reference (`suites/kernels/README.md`); a new kernel with no exerciser fails | one card per family (`suites/kernels/pick.sh`) | ~$1.2 + ~$2 for B200 · ~10 min a card | **every promotion** (Paul 11-04) |
+| `execution` | every proof that reports `passed` and belongs to no other suite (`suites/execution/cells.sh`): the native loop, kernel readiness, capture, conditional bodies, LoRA overlays, child calls, TensorFS's producers and decoders, varena's stock-memory mechanisms, SDXL's qualification; a false `passed` fails its cell | rtx-5090, rtx-4090 | ~$2 each · 1–2 h | every promotion, alongside `kernels` |
 | `cli` | (building) | | | a CLI change |
 
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
@@ -88,28 +89,6 @@ A SKU and suites with no baseline need `--establish` once.
   count on every selected rental; empty keeps the existing suite selection. Optional `disk` sets every rental's
   container disk in GB (empty: each suite's `skus` disk, else 400); size it to the cells' real need, since disk
   is billed by the hour.
-
-For the Runtime 0.34 / TensorFS 0.17 core, the release owner can select one RTX 4090 and the
-existing model, native loading/cancellation, kernel readiness (CPU) and bounded-pressure cells:
-
-```sh
-gh workflow run release-gate.yml -R cozy-creator/cozy-creator \
-  -f suites=runtime -f skus=rtx-4090 -f gpus=1 \
-  -f only=sdxl,qwen,sdxl-p2,native-loaded,native-input-error,native-cancel-active,native-phases,kernel-ready-late-success,kernel-ready-late-error,kernel-ready-dropped-slot,memory-bounded,memory-retry,memory-capture,memory-physical-retry \
-  -f cells=release-gate/suites/execution/core-cells.sh \
-  -f cozy=v0.13.0 -f runtime_wheel="$RUNTIME_WHEEL_URL_AND_SHA256" \
-  -f tensorfs_wheel="$TENSORFS_WHEEL_URL_AND_SHA256" -f packages_ref="$PACKAGES_SHA" \
-  -f publish=false
-```
-
-This command spends on a fresh rental; it is not a preflight. Use the candidate assets' actual
-`URL#sha256=…` values. `publish=false` preserves the existing full-suite baseline; it does not
-prevent renting. No H3 cell is selected. Bounded-pressure cells prove real allocation/reclamation
-under their cap, not foreign-application process retirement. Broader model, platform and
-multi-GPU qualification remains separate. The workflow's existing 300-minute timeout is not
-a dollar cap; the owner must review the current GPU, disk and traffic quote before dispatch.
-Before promotion, check that all thirteen selected names appear in `cells.tsv` with real completed
-receipts: an aggregate PASS alone does not prove a cell was run rather than skipped.
 
 ## Promotion
 
