@@ -325,7 +325,8 @@ mark "harness: with no door in front, the stand-in's page ran its script and pla
 if [ "$REHEARSE" = true ]; then
   mark "rehearsal: a second user here, an added machine, at no cost"
   sudo useradd -m "$U" && sudo install -D -m 755 "$(command -v cozy)" "/opt/$U/cozy" || fail "no second user"
-  second() { sudo -u "$U" -H env "PATH=/opt/$U:$PATH" "/opt/$U/cozy" "$@" < /dev/null; }
+  # From a folder it can read: what it starts stays there, and uv reads that folder's uv.toml.
+  second() { ( cd / && sudo -u "$U" -H env "PATH=/opt/$U:$PATH" "/opt/$U/cozy" "$@" < /dev/null ); }
   put() { pod_in "cat > $2" < "$1"; }
   second --json machine show local > "$OUT/second.json" 2>> "$OUT/pod.err" || fail "the second user's machine: $(tail -c 300 "$OUT/pod.err")"
   there=$(jq -r .address "$OUT/second.json") print=$(jq -r .fingerprint "$OUT/second.json")
