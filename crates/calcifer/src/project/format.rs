@@ -766,6 +766,12 @@ impl Doc {
         names
     }
 
+    /// The name keys of what asset `i` read that is gone: mentions of nothing, and each entity with a file link to nothing.
+    fn reads_gone(&self, i: usize) -> BTreeSet<String> {
+        let mentions = self.unread.iter().filter(|(asset, _)| *asset == i).map(|(_, mention)| name_key(mention));
+        mentions.chain(self.links_to_nothing(i).map(|(j, ..)| name_key(&self.assets[j].name))).collect()
+    }
+
     fn mentions_of_nothing<'a>(&'a self, i: usize, tags: &'a [String]) -> impl Iterator<Item = &'a str> {
         self.unread.iter().filter(move |(asset, mention)| *asset == i && !tags.contains(mention)).map(|(_, mention)| mention.as_str())
     }
@@ -893,8 +899,12 @@ impl Doc {
         if let Some((field, sha256)) = &asset.pin {
             return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
                 Some(version) => {
+                    // What is gone from the project is no reason to make it again: nothing could be, and the pin is what stands.
                     let changed = match &inputs {
-                        Some(now) if !version.inputs.is_empty() && *now != version.inputs => changed(&version.digests, &digests),
+                        Some(now) if !version.inputs.is_empty() && *now != version.inputs => {
+                            let gone = self.reads_gone(i);
+                            changed(&version.digests, &digests).into_iter().filter(|name| !gone.contains(&name_key(name.trim_matches(['<', '>'])))).collect()
+                        }
                         _ => vec![],
                     };
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))

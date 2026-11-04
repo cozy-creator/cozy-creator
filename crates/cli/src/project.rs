@@ -40,6 +40,7 @@ const RENDER_EXAMPLES: &str = "Examples:
   cozy project render fight --on kiyui             a new take of fight, and of what it reads only if that has no state
   cozy project render fight -n 3 --on kiyui        three new takes of fight; pinned, its pin stays
   cozy project render fight --approve --on kiyui   a new take, pinned as it lands
+  cozy project render all --outdated --on kiyui    and of each pin whose inputs changed, as its turn comes: the new one takes its place
   cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
   cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
   cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
@@ -172,6 +173,9 @@ struct Render {
     /// Only what has no state, rather than a new version.
     #[arg(long)]
     missing: bool,
+    /// With all: also a new version of each pin out of date when its turn comes. Its pin goes when that lands, and the version it held stays.
+    #[arg(long)]
+    outdated: bool,
     /// Pin the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
@@ -437,6 +441,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let on: Vec<On> =
         args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
     let runs = Runs {
+        outdated: args.outdated,
         names: args.names,
         n: args.n,
         on,

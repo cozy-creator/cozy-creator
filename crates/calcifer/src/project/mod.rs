@@ -816,9 +816,14 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
     let measured = |number: fn(&folder::File) -> u64| main.map(number).filter(|&number| number > 0);
     let (absent, machine) = main.map_or((false, None), |file| whereabouts(folder, file));
     let failure = held.and_then(|held| held.failed.as_ref()).filter(|failed| making.is_empty() && failed.inputs == standing.inputs).map(|failed| failed.error.clone());
+    let changed = match &standing.state {
+        Stand::Pinned { changed, .. } => changed.clone(),
+        _ => vec![],
+    };
     let row_standing = match (making.is_empty(), &standing.state) {
         (false, _) => RowStanding::Making,
         (true, Stand::Stale(_)) => RowStanding::OutOfDate,
+        (true, Stand::Pinned { .. }) if !changed.is_empty() => RowStanding::OutOfDate,
         (true, Stand::Missing | Stand::Waits | Stand::Unwritten { .. }) => RowStanding::Missing,
         (true, _) => RowStanding::Current,
     };
@@ -862,6 +867,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         written_by: doc.written_by(i).map(str::to_owned),
         text: doc.text(i),
         failure,
+        changed,
         missing: tags_now(api, doc, i).map_or_else(Vec::new, |tags| doc.missing_names(i, &tags)),
     }
 }
@@ -1103,6 +1109,10 @@ async fn runs(
     if missing && n > 1 {
         say("-n makes new versions, and --missing only what has no state: it is ignored".into());
     }
+    let outdated = all && asked.outdated;
+    if asked.outdated && !all {
+        say("--outdated goes with all: naming a pin already makes a new version of it: it is ignored".into());
+    }
     let keeping = asked.take.is_some() || asked.in_s.is_some();
     if keeping && (all || asked.names.len() != 1) {
         say(format!("--take and --in keep the start of one asset: with {} they are ignored", if all { "all" } else { "several names" }));
@@ -1115,6 +1125,8 @@ async fn runs(
     // Pinned, and not named: what `all` or an entity's name covers leaves it be. Naming one is what re-renders it.
     let mut skipped = vec![];
     let mut covering = |i: usize, named: &mut Vec<usize>| match doc.assets[i].pin.is_some() {
+        // What this asks of it is judged at its turn.
+        true if outdated && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) => {}
         true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
         true => {}
         false => named.push(i),
@@ -1202,9 +1214,10 @@ async fn runs(
     }
     let joined = *project.walking.lock().expect("walking lock");
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
-    let added = takes.len() as u32 + u32::from(new_all);
+    let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
+    let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
     let before = queue(&project.folder, &lock);
-    let ask = Ask { id: new_key(), text, digest, target: target.clone(), all: all && missing, sent: BTreeSet::new(), takes };
+    let ask = Ask { id: new_key(), text, digest, target: target.clone(), all: all && missing, outdated, sent: BTreeSet::new(), takes };
     (project.folder.update_lock(|lock| {
         if !joined || added > 0 {
             lock.walk.asks.push(ask.clone());
@@ -1245,7 +1258,7 @@ fn queue(folder: &Folder, lock: &Lock) -> Vec<(Queued, Option<String>)> {
             let (name, key) = (&doc.assets[i].name, name_key(&doc.assets[i].name));
             let takes: Vec<&Take> = ask.takes.iter().filter(waiting).filter(|take| name_key(&take.asset) == key).collect();
             items.extend(takes.iter().map(|take| (item(name), Some(take.key.clone()))));
-            let owed = covered[i] && stand[i].files.is_none() && doc.makes(i) && doc.tool(i).is_none() && !ask.sent.contains(&key);
+            let owed = (covered[i] && stand[i].files.is_none() || outdated_now(&doc, &stand, ask, i)) && doc.makes(i) && doc.tool(i).is_none() && !ask.sent.contains(&key);
             let there = items.iter().any(|(there, _)| name_key(&there.name) == key);
             if takes.is_empty() && owed && !there {
                 items.push((item(name), None));
@@ -1291,6 +1304,7 @@ async fn cancel(
             for ask in &mut lock.walk.asks {
                 ask.takes.retain(|take| !wanted(&take.asset));
                 ask.all &= !all;
+                ask.outdated &= !all;
                 ask.sent.extend(owed.iter().cloned());
             }
         })
@@ -1778,6 +1792,8 @@ fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refu
 struct Next {
     i: usize,
     take: Option<Take>,
+    /// A pin out of date: a new version, and when it lands, no pin.
+    unpin: bool,
 }
 
 /// Where a run can read a file from.
@@ -1905,6 +1921,15 @@ impl Walk {
                 }
                 let stand = doc.stand(&lock);
                 let planned = plan(&doc, &stand, &lock, ask);
+                for &i in &planned.kept {
+                    let why = doc.tags(i).and_then(|tags| doc.missing_inputs(i, tags)).unwrap_or_default();
+                    let changed = match &stand[i].state {
+                        Stand::Pinned { changed, .. } => changed.join(", "),
+                        _ => String::new(),
+                    };
+                    self.say(Event::Said { message: format!("{why}: it stays pinned, though {changed} changed") });
+                    self.tried(&id, &doc.assets[i].name)?;
+                }
                 let idle = planned.send.is_empty() && planned.tools.is_empty();
                 moved |= !idle;
                 for next in planned.send {
@@ -2050,7 +2075,7 @@ impl Walk {
             }
         };
         let (target, approve, new) = match &next.take {
-            None => (ask.target.clone(), false, false),
+            None => (ask.target.clone(), false, next.unpin),
             Some(take) => (take.target.clone(), take.approve, take.new),
         };
         let standing = &stand[i];
@@ -2061,6 +2086,7 @@ impl Walk {
         match &standing.state {
             Stand::Stale(why) if !new => self.say(Event::Said { message: format!("{name}: out of date: {why}") }),
             Stand::Missing if !new => self.say(Event::Said { message: format!("{name}: no {noun} yet") }),
+            Stand::Pinned { changed, .. } if next.unpin => self.say(Event::Said { message: format!("{name}: pinned, and {} changed: a new {noun} takes its place, and the one it held stays", changed.join(", ")) }),
             _ => {}
         }
         let sent = async {
@@ -2127,7 +2153,11 @@ impl Walk {
                 let Some(number) = holds else {
                     let mut version = self.version(doc, standing, i, warnings, inputs.clone());
                     version.made_by = version.made_by.map(|by| MadeBy { with: adapter.target(), ..by });
-                    return self.land_read(&name, &asset.kind, version, standing, noun, approve, settle);
+                    self.land_read(&name, &asset.kind, version, standing, noun, approve, settle)?;
+                    if next.unpin {
+                        self.unpin_landed(&ask.id, &name, &asset.kind);
+                    }
+                    return Ok(());
                 };
                 self.say(Event::Said { message: format!("{name}: {} has nothing to make: {noun} {number} stands", package.name) });
                 return self.folder().update_lock(settle);
@@ -2162,7 +2192,7 @@ impl Walk {
             let mut calls = calls.into_iter();
             let first = calls.next().expect("at least one");
             let seed = version.seed;
-            let pending = Pending { ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, writes, target: target.clone(), rest: calls.collect(), done: vec![] };
+            let pending = Pending { ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), writes, target: target.clone(), rest: calls.collect(), done: vec![] };
             let settling = |lock: &mut Lock| {
                 settle(lock);
                 if let Some(seed) = seed {
@@ -2486,7 +2516,29 @@ impl Walk {
         let kind = folder.lock()?.asset(&name).map(|held| held.kind.clone()).unwrap_or_default();
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
-        self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})
+        self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})?;
+        if let Some(field) = &pending.unpin {
+            self.unpin_landed(&pending.ask, &name, field);
+        }
+        Ok(())
+    }
+
+    /// `name`'s re-run landed, so its pin goes: from project.yaml, and from the text its render plans on, so what reads it reads this.
+    fn unpin_landed(&self, ask: &str, name: &str, field: &str) {
+        if let Err(error) = self.folder().edit_project(|text| format::unpinned(text, name, field)) {
+            self.say(Event::Warning { message: error.message });
+        }
+        let planned = self.folder().update_lock(|lock| {
+            for mine in lock.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
+                if let Ok(text) = format::unpinned(&mine.text, name, field) {
+                    mine.digest = hex::encode(Sha256::digest(text.as_bytes()));
+                    mine.text = text;
+                }
+            }
+        });
+        if let Err(error) = planned {
+            warn!("{name}: {error}");
+        }
     }
 
     /// An image its function didn't write, cut from its landed video.
@@ -2723,9 +2775,26 @@ fn cannot(name: &str, why: String) -> Error {
     Error::new(Kind::NotFound, "file_missing", format!("{name} cannot render: {why}"))
 }
 
+/// Whether asset `i` is a pin `ask` may yet re-run: one with a version behind it, and one it hasn't tried. A dropped file has nothing to run again.
+fn judged_pin(doc: &Doc, stand: &[Standing], ask: &Ask, i: usize) -> bool {
+    doc.makes(i) && doc.tool(i).is_none() && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) && !ask.sent.contains(&name_key(&doc.assets[i].name))
+}
+
+fn pin_changed(stand: &[Standing], i: usize) -> bool {
+    matches!(&stand[i].state, Stand::Pinned { changed, .. } if !changed.is_empty())
+}
+
+/// Whether `ask` has a re-run to make of asset `i` as things stand: not if a name it reads is gone, which only fails. With its package's
+/// tags not known, that is for the run to find, which leaves the pin as it is.
+fn outdated_now(doc: &Doc, stand: &[Standing], ask: &Ask, i: usize) -> bool {
+    ask.outdated && judged_pin(doc, stand, ask, i) && pin_changed(stand, i) && doc.tags(i).is_none_or(|tags| doc.missing_names(i, tags).is_empty())
+}
+
 /// What can be done now.
 struct Plan {
     send: Vec<Next>,
+    /// Pins out of date that can't be made again, as something they read is gone: they stay, and that is said.
+    kept: Vec<usize>,
     /// Tools whose reads have settled, with no version for what they read.
     tools: Vec<usize>,
     /// Something it covers is still on its way.
@@ -2757,12 +2826,14 @@ fn plan(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Plan {
     let takes = |i: usize| ask.takes.iter().filter(move |take| name_key(&take.asset) == key(i));
     let covered = covered(doc, stand, ask);
     let mut unsettled = vec![false; doc.assets.len()];
-    let (mut send, mut tools) = (vec![], vec![]);
+    let (mut send, mut kept, mut tools) = (vec![], vec![], vec![]);
     for &i in &doc.order {
         let pinned = doc.assets[i].pin.is_some();
         let taken = takes(i).next().is_some();
+        // Asked to re-run what is out of date, a pin is judged once what it reads has settled.
+        let judged = ask.outdated && judged_pin(doc, stand, ask, i);
         // A pin needs nothing it reads, unless a take of it does.
-        let reads: &[usize] = if pinned && !taken { &[] } else { &doc.upstream[i] };
+        let reads: &[usize] = if pinned && !taken && !judged { &[] } else { &doc.upstream[i] };
         let busy = lock.pending.values().any(|pending| name_key(&pending.asset) == key(i) && (pending.approve || Some(&pending.version.inputs) == stand[i].inputs.as_ref()));
         let waiting = reads.iter().any(|&read| unsettled[read]);
         let tool = doc.tool(i).is_some();
@@ -2771,7 +2842,12 @@ fn plan(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Plan {
         let tried = ask.sent.contains(&key(i));
         let owed = covered[i] && stand[i].files.is_none() && doc.makes(i) && !tool && !tried;
         let approving = takes(i).any(|take| take.approve);
-        unsettled[i] = waiting || approving || (!pinned && (busy || taken)) || (owed && !blocked);
+        let unpinning = lock.pending.values().any(|pending| pending.unpin.is_some() && name_key(&pending.asset) == key(i));
+        let outdated = judged && outdated_now(doc, stand, ask, i);
+        if judged && !waiting && !blocked && !outdated && pin_changed(stand, i) {
+            kept.push(i);
+        }
+        unsettled[i] = waiting || approving || unpinning || (!pinned && (busy || taken)) || ((owed || outdated) && !blocked);
         if waiting || blocked {
             continue;
         }
@@ -2783,13 +2859,16 @@ fn plan(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Plan {
             }
             continue;
         }
+        if outdated && !taken {
+            send.push(Next { i, take: None, unpin: true });
+        }
         if owed && !busy && !taken {
-            send.push(Next { i, take: None });
+            send.push(Next { i, take: None, unpin: false });
         }
         // Under --missing, what is on its way with these inputs answers it. A plain render makes its own version.
-        send.extend(takes(i).filter(|take| take.new || !busy).map(|take| Next { i, take: Some(take.clone()) }));
+        send.extend(takes(i).filter(|take| take.new || !busy).map(|take| Next { i, take: Some(take.clone()), unpin: false }));
     }
-    Plan { send, tools, open: unsettled.contains(&true) }
+    Plan { send, kept, tools, open: unsettled.contains(&true) }
 }
 
 /// What a render owes that can't be made, and why: what it reads has no state and won't get one in this render.

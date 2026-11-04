@@ -693,6 +693,90 @@ sed -i 's/From <kyogee>\./From <kyogre>./' "$G/project.yaml"
 render "$G" typo || check "gone: edited: $(tail -c 300 "$OUT/render.txt")"
 J '.assets[] | select(.name == "typo") | .failure == null and .versions == 1' <<< "$(status "$G")" || check "gone: edited: $(row "$G" typo .)"
 
+step "a project: a pin out of date holds its file, says what changed, and only the Run that asks re-runs it"
+local O=$OUT/outdated; mkdir -p "$O"; still "$O/drop.png" teal; printf 'version: 2\nassets: {}\n' > "$O/project.yaml"
+pic=$(prefix "$O" "$O/drop.png")
+cat > "$O/project.yaml" <<YAML
+version: 2
+assets:
+  dropped: {image: "$pic"}
+  image_a:
+    description: The first.
+    render: {with: $draw}
+  image_b: {description: The second., render: {with: $draw}}
+  image_c:
+    description: From <image_a> and <image_b>, and <dropped>.
+    render: {with: $draw}
+  image_d:
+    description: From <image_c>.
+    render: {with: $draw}
+YAML
+render "$O" all || check "outdated: render all: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$O" approve image_c 1 > "$OUT/outdated-approve.txt" 2>&1 || check "outdated: approve image_c: $(cat "$OUT/outdated-approve.txt")"
+cozy project -p "$O" approve image_d 1 > "$OUT/outdated-approve.txt" 2>&1 || check "outdated: approve image_d: $(cat "$OUT/outdated-approve.txt")"
+J '.assets[] | select(.name == "image_c") | .pinned and .standing == "current" and .changed == null' <<< "$(status "$O")" || check "outdated: a fresh pin: $(row "$O" image_c .)"
+render "$O" image_a || check "outdated: a new image_a: $(tail -c 300 "$OUT/render.txt")"
+status "$O" > "$OUT/outdated-pinned.json"
+J '.assets[] | select(.name == "image_c") | .pinned and .standing == "out_of_date" and (.changed | length > 0) and .versions == 1 and (.status | contains("its inputs changed"))' "$OUT/outdated-pinned.json" || check "outdated: image_c should be pinned and out of date: $(jq -c '.assets[] | select(.name == "image_c")' "$OUT/outdated-pinned.json")"
+J '.assets[] | select(.name == "image_d") | .pinned and .standing == "current"' "$OUT/outdated-pinned.json" || check "outdated: image_d reads the file image_c holds: $(jq -c '.assets[] | select(.name == "image_d")' "$OUT/outdated-pinned.json")"
+render "$O" all || check "outdated: the plain run: $(tail -c 300 "$OUT/render.txt")"
+{ [ "$(made "$O" image_c)" = 1 ] && [ "$(made "$O" image_d)" = 1 ] && [ "$(made "$O" image_a)" = 3 ]; } || check "outdated: the plain run: image_a $(made "$O" image_a), image_c $(made "$O" image_c), image_d $(made "$O" image_d)"
+J '[.assets[] | select(.name == "image_c" or .name == "image_d") | .pinned] == [true, true]' <<< "$(status "$O")" || check "outdated: the plain run moved a pin"
+render "$O" all --outdated || check "outdated: --outdated: $(tail -c 400 "$OUT/render.txt")"
+cp "$OUT/render.txt" "$OUT/outdated-render.txt"; cp "$O/project.yaml" "$OUT/outdated-after.yaml"; status "$O" > "$OUT/outdated-after.json"
+{ [ "$(made "$O" image_c)" = 2 ] && [ "$(made "$O" image_d)" = 2 ]; } || check "outdated: image_c $(made "$O" image_c), image_d $(made "$O" image_d): a pin downstream of a new version counts: $(tail -c 400 "$OUT/render.txt")"
+says outdated "image_c: pinned, and"
+J '[.assets[] | select(.name == "image_c" or .name == "image_d")] | all(.pinned != true and .standing == "current" and .changed == null)' "$OUT/outdated-after.json" || check "outdated: pins left: $(jq -c '[.assets[] | {name, pinned, standing, changed}]' "$OUT/outdated-after.json")"
+J '.assets[] | select(.name == "dropped") | .pinned and .versions == 0 and .standing == "current"' "$OUT/outdated-after.json" || check "outdated: a dropped file: $(jq -c '.assets[] | select(.name == "dropped")' "$OUT/outdated-after.json")"
+! grep -E '^    image: ' "$O/project.yaml" || check "outdated: project.yaml keeps a pin: $(grep -nE '^    image: ' "$O/project.yaml")"
+J '[.assets.image_d.versions[0].reads[] | select(.name == "image_c") | .files.image] != [.assets.image_d.versions[1].reads[] | select(.name == "image_c") | .files.image]' "$O/project.lock" || check "outdated: the new image_d did not read the new image_c: $(jq -c '[.assets.image_d.versions[].reads]' "$O/project.lock")"
+cozy project -p "$O" approve image_c 1 > "$OUT/outdated-again.txt" 2>&1 || check "outdated: the version it held can't be approved again: $(cat "$OUT/outdated-again.txt")"
+J '.assets[] | select(.name == "image_c") | .pinned and .approved == 1 and .standing == "out_of_date" and .versions == 2' <<< "$(status "$O")" || check "outdated: approved again: $(row "$O" image_c .)"
+# Edited, and an input gone as well: it can't be made again, so it stays, and says why.
+sed -i '/^  image_b: /d' "$O/project.yaml"
+code=0; render "$O" all --outdated || code=$?
+cp "$OUT/render.txt" "$OUT/outdated-kept-render.txt"
+[ "$code" = 0 ] || check "outdated: a pin that can't be re-run failed the render: $(tail -c 300 "$OUT/render.txt")"
+says outdated "image_c: <image_b> is no longer in the project: it stays pinned, though"
+J '.assets[] | select(.name == "image_c") | .pinned and .approved == 1 and .versions == 2 and .failure == null and .standing == "out_of_date" and .missing == ["image_b"] and (.changed | index("<image_b>") | not)' <<< "$(status "$O")" || check "outdated: kept: $(row "$O" image_c .)"
+
+step "a project: its inputs deleted, an accepted node stands: not out of date, not re-run, and what reads it reads its file"
+local S2=$OUT/sheet one two held runs_before2; mkdir -p "$S2"; still "$S2/one.png" red; still "$S2/two.png" navy; printf 'version: 2\nassets: {}\n' > "$S2/project.yaml"
+one=$(prefix "$S2" "$S2/one.png"); two=$(prefix "$S2" "$S2/two.png")
+cat > "$S2/project.yaml" <<YAML
+version: 2
+assets:
+  image_one: {image: "$one"}
+  image_two: {image: "$two"}
+  sheet:
+    description: A character sheet from <image_one> and <image_two>.
+    render: {with: $draw}
+  poster:
+    description: From <sheet>.
+    render: {with: $draw}
+YAML
+render "$S2" all || check "sheet: render all: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$S2" approve sheet 1 > "$OUT/sheet-approve.txt" 2>&1 || check "sheet: approve: $(cat "$OUT/sheet-approve.txt")"
+cozy project -p "$S2" approve poster 1 > "$OUT/sheet-approve.txt" 2>&1 || check "sheet: approve poster: $(cat "$OUT/sheet-approve.txt")"
+held=$(jq -r '.assets.sheet.versions[0].files.image' "$S2/project.lock")
+sed -i '/^  image_one: /d; /^  image_two: /d' "$S2/project.yaml"
+status "$S2" > "$OUT/sheet-status.json"
+J --arg h "$held" '.assets[] | select(.name == "sheet") | .pinned and .standing == "current" and .changed == null and .failure == null and .missing == ["image_one", "image_two"] and .status == "pinned: version 1" and .files.image.sha256 == $h' "$OUT/sheet-status.json" || check "sheet: its inputs deleted: $(jq -c '.assets[] | select(.name == "sheet")' "$OUT/sheet-status.json")"
+J '.assets[] | select(.name == "poster") | .pinned and .standing == "current" and .changed == null and .missing == null' "$OUT/sheet-status.json" || check "sheet: what reads it: $(jq -c '.assets[] | select(.name == "poster")' "$OUT/sheet-status.json")"
+J '[.warnings[].message | select(contains("image_one"))] == []' "$OUT/sheet-status.json" || check "sheet: warned: $(jq -c .warnings "$OUT/sheet-status.json")"
+runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')
+render "$S2" all --outdated || check "sheet: --outdated: $(tail -c 300 "$OUT/render.txt")"
+{ [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs_before2" ] && [ "$(made "$S2" sheet)" = 1 ] && [ "$(made "$S2" poster)" = 1 ]; } || check "sheet: --outdated sent a run: sheet $(made "$S2" sheet), poster $(made "$S2" poster): $(tail -c 300 "$OUT/render.txt")"
+J '.assets[] | select(.name == "sheet") | .pinned and .approved == 1 and .failure == null' <<< "$(status "$S2")" || check "sheet: --outdated moved it: $(row "$S2" sheet .)"
+cozy project -p "$S2" unpin poster > "$OUT/sheet-unpin.txt" 2>&1 || check "sheet: unpin poster: $(cat "$OUT/sheet-unpin.txt")"
+render "$S2" poster || check "sheet: what reads it, again: $(tail -c 300 "$OUT/render.txt")"
+J --arg h "$held" '[.assets.poster.versions[-1].reads[] | select(.name == "sheet") | .files.image] == [$h]' "$S2/project.lock" || check "sheet: what reads it did not read its pinned file: $(jq -c '.assets.poster.versions[-1].reads' "$S2/project.lock")"
+runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')
+code=0; render "$S2" sheet || code=$?
+{ [ "$code" != 0 ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs_before2" ]; } || check "sheet: naming it (exit $code): $(tail -c 300 "$OUT/render.txt")"
+says sheet "sheet: <image_one> is no longer in the project; <image_two> is no longer in the project"
+J --arg h "$held" '.assets[] | select(.name == "sheet") | .pinned and .files.image.sha256 == $h and .failure.code == "input_missing"' <<< "$(status "$S2")" || check "sheet: named, it lost its file: $(row "$S2" sheet .)"
+
 step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle
 mkdir -p "$Y"

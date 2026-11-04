@@ -199,6 +199,7 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 | `render <name>`, `-n 4` | A new version of it, or four, and of what it reads only if that has no state. Naming a pinned asset makes a version to look at, and the pin stays |
 | `render <entity>` | Its linked assets, skipping pinned ones, as an entity's name doesn't name them |
 | `render <names\|all> --missing` | Only what has no state: continues a render that half failed without paying twice |
+| `render all --outdated` | As `render all`, and each pin out of date when its turn comes, reading the new ones before it, so a pin downstream of a new version counts. Its pin goes when the new version lands, and the version it held stays, to approve again. If it can't be made, the pin stands. A pin no version is behind, such as a dropped file, stays, and so does one with an input gone from the project: a deleted input alone doesn't put a pin out of date |
 | `render <names\|all> --queue` | Asks and returns at once, printing what it queued and what's ahead of each |
 | `cancel <names\|all>` | Drops their queued work and cancels their runs; `all` is everything the walk owes |
 | `render clash --take 2 --in 15` | Keeps take 2 up to 15 s and regenerates the rest |

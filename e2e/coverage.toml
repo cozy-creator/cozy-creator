@@ -199,6 +199,7 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; adap
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
 "--missing" = "pr: projects: only what has no state; reverting runs nothing"
+"--outdated" = "pr: a pin out of date: skipped by the plain run, re-run at its turn, its pin gone, the version it held kept"
 "--take" = "pr: projects: keeps: the take reaches the adapter as op.keep, one it doesn't have refused"
 "--in" = "pr: projects: keeps: where it lands, ignored with all"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"

@@ -449,6 +449,9 @@ pub struct Asset {
     /// What stopped its last try: until a version lands, it's tried again, or its inputs change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<Error>,
+    /// A pin's: what changed since the version it holds was made. It stands, out of date, until it is run or moved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
     /// The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
     /// A pin lists them too, for its text: it stands, and only fails if it is run again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -508,6 +511,10 @@ pub struct Runs {
     /// Make only what has no state, rather than a new version.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
+    /// With `all`: also make a new version of each pin that is out of date when its turn comes in reading order, which goes when that
+    /// lands. The version it held stays, to be approved again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outdated: bool,
     /// One asset's new take keeps the start of this take, not the one in use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub take: Option<u32>,
