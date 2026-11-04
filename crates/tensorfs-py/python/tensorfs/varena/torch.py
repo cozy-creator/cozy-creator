@@ -384,7 +384,7 @@ def _blocking_stream(device: int) -> Stream:
 
     handle = ctypes.c_void_p()
     with torch.cuda.device(device):
-        code = torch.cuda.cudart().cudaStreamCreate(ctypes.addressof(handle))
+        code = int(torch.cuda.cudart().cudaStreamCreate(ctypes.addressof(handle)))
         if code:
             raise RuntimeError(f"cudaStreamCreate failed with CUDA error {code}")
         return torch.cuda.ExternalStream(handle.value, device=device)
