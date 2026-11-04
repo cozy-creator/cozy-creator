@@ -1,5 +1,5 @@
-// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, under the same rations as any other. A frame
-// shown stays when the video lets go of its slot, drawn to a canvas, so a paused box holds no decoder.
+// The Edit played in the page, clip after clip, with no render: one `<video>` for the box, under the same rations as any other, there only
+// while it holds its slot. A frame shown stays when it lets go, drawn to a canvas, so a paused box holds no decoder and a hover opens nothing.
 import type { Client } from "../../api/client"
 import { holdMedia, playingHere } from "../../api/events"
 import type { Playback } from "../../api/transport"
@@ -27,6 +27,7 @@ export class Preview {
   private layout: Layout = { placed: [], frames: 0, width: 0 }
   private fps = 24
   private video: HTMLVideoElement | null = null
+  private holder: HTMLElement | null = null
   private still: HTMLCanvasElement | null = null
   private playback: Playback | null = null
   private loaded: string | null = null
@@ -45,10 +46,17 @@ export class Preview {
     this.projectId = projectId
   }
 
-  attach(video: HTMLVideoElement | null, still: HTMLCanvasElement | null) {
-    this.video = video
+  attach(holder: HTMLElement | null, still: HTMLCanvasElement | null) {
+    this.holder = holder
     this.still = still
-    if (!video) return this.stop()
+    if (!holder) this.stop()
+  }
+
+  private open(holder: HTMLElement): HTMLVideoElement {
+    if (this.video) return this.video
+    const video = document.createElement("video")
+    video.preload = "auto"
+    video.playsInline = true
     video.onseeked = this.seeked
     video.onended = () => {
       const place = this.place()
@@ -58,6 +66,9 @@ export class Preview {
       // Bytes this browser can't decode, it can't. Bytes that didn't come are Calcifer's to fix by coming back.
       if (video.getAttribute("src") && video.error?.code !== MediaError.MEDIA_ERR_NETWORK) this.failed.set("This browser can't play it")
     }
+    holder.append(video)
+    this.video = video
+    return video
   }
 
   edit(layout: Layout, fps: number) {
@@ -158,8 +169,8 @@ export class Preview {
 
   /** This file in the `<video>`, its slot held: false if it was let go while waiting, or can't be played. */
   private async load(path: string): Promise<boolean> {
-    const video = this.video
-    if (!video || !this.projectId || !(await this.hold())) return false
+    if (!this.holder || !this.projectId || !(await this.hold()) || !this.holder) return false
+    const video = this.open(this.holder)
     if (this.loaded !== path) {
       this.playback?.stop()
       this.loaded = path
@@ -253,6 +264,8 @@ export class Preview {
     this.gaveUp?.()
     this.playback?.stop()
     this.playback = null
+    this.video?.remove()
+    this.video = null
     this.loaded = null
     this.wanted = null
     this.release?.()

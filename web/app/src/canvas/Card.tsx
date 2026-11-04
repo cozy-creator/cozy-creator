@@ -395,7 +395,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   const words = asset && !canFlip && store.projectId ? `#/projects/${encodeURIComponent(store.projectId)}/yaml` : null
   return (
     <div
-      className={`card ${versions.length > 1 ? "stacked" : ""} ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""}`}
+      className={`card ${versions.length > 1 ? "stacked" : ""} ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       onClick={buttonsOnly}
       onPointerEnter={() => setHover(true)}
@@ -459,7 +459,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
         )}
         <span className={`dot ${dotOf(view)}`} />
       </div>
-      {asset?.timeline && face === "edit" ? (
+      {asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={width}>

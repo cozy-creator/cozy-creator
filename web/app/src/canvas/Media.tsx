@@ -290,6 +290,9 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const here = shown && !shown.absent ? shown : null
   const words = lineOf(asset?.fields)
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
+  // An Edit with no film yet is its first clip, and with no clip, what it's for.
+  const clips = asset?.timeline?.tracks[0]?.clips
+  const firstClip = clips?.find((clip) => clip.sha256 && !clip.missing)?.sha256
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   return (
@@ -308,7 +311,8 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
       {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} />}
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
-      {!preview && !shown && (words ? <p className="words">{words}</p> : <span className="media-note">{field === "file" ? "A file" : ""}</span>)}
+      {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
+      {!preview && !shown && !firstClip && (words ? <p className="words">{words}</p> : <span className="media-note">{clips ? "Drag videos and stills here" : field === "file" ? "A file" : ""}</span>)}
       {placing && (
         <div className="prog">
           <i style={{ width: `${Math.round(placing.done * 100)}%` }} />

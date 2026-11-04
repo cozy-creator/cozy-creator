@@ -78,4 +78,12 @@ async function drop(page, files, x, y) {
   }
 }
 
-module.exports = { MP4, STEP_MS, drop, png, until, wav };
+// The tab a proof is on, and what it looked like when the proof died: a thrown wait says only what it waited for.
+let looking;
+const lookAt = (page) => { looking = page; };
+async function lastLook() {
+  if (!looking || !process.env.SHOT) return;
+  await looking.screenshot({ path: `${process.env.SHOT}-died.png`, timeout: 10_000 }).catch(() => {});
+}
+
+module.exports = { MP4, STEP_MS, drop, lastLook, lookAt, png, until, wav };

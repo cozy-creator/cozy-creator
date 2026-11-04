@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, drop, png, until } = require('./page');
+const { MP4, STEP_MS, drop, lastLook, lookAt, png, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -46,6 +46,7 @@ function linesOf(text, name) {
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
+  lookAt(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const refused = [];
@@ -545,8 +546,9 @@ function linesOf(text, name) {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(async (error) => {
   console.error(error);
+  await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
   process.exit(2);
 });

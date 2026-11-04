@@ -159,7 +159,7 @@ function Playhead({ preview, layout }: { preview: Preview; layout: Layout }) {
 /** What's at the playhead, center-cropped as a render is, exact once it's been sought. */
 function Monitor({ preview, layout, aspect, empty }: { preview: Preview; layout: Layout; aspect: number; empty: boolean }) {
   const store = useCanvasStore()
-  const video = useRef<HTMLVideoElement>(null)
+  const holder = useRef<HTMLDivElement>(null)
   const still = useRef<HTMLCanvasElement>(null)
   const showing = useSignal(preview.showing)
   const live = useSignal(preview.live)
@@ -168,7 +168,7 @@ function Monitor({ preview, layout, aspect, empty }: { preview: Preview; layout:
   const playing = useSignal(preview.playing)
   const frame = useSignal(preview.frame)
   useLayoutEffect(() => {
-    preview.attach(video.current, still.current)
+    preview.attach(holder.current, still.current)
     return () => preview.attach(null, null)
   }, [preview])
   const place = layout.placed[showing ?? -1]
@@ -183,8 +183,8 @@ function Monitor({ preview, layout, aspect, empty }: { preview: Preview; layout:
         moving && tile > 0 ? <Thumb sha256={clip.sha256} cardWidth={512} strip={POSTER_FRAMES} exact frame={tile} className="tl-poster" /> : <Thumb sha256={clip.sha256} cardWidth={1024} />
       )}
       <canvas ref={still} className={drawn ? "" : "off"} />
-      {/* One for the box: what plays is whatever it holds now. */}
-      <video ref={video} className={moving && live ? "" : "off"} preload="auto" playsInline />
+      {/* One for the box, there only while it holds its slot: what plays is whatever it holds now. */}
+      <div ref={holder} className={`tl-video ${moving && live ? "" : "off"}`} />
       {empty && <p className="tl-empty">Drag videos and stills here</p>}
       {failed && <p className="tl-empty">{failed}</p>}
       {!empty && (

@@ -13,7 +13,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, STEP_MS, png, until, wav } = require('./page');
+const { MP4, STEP_MS, lastLook, lookAt, png, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -102,6 +102,7 @@ function summary(frames) {
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
+  lookAt(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const thumbs = [];
@@ -241,7 +242,7 @@ entities:
   check('wire_entity', read.entities?.[0]?.links?.image === 'hero_art' && read.entities?.[0]?.subs?.[0]?.links?.image === 'older_art', read.entities);
 
   // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'cut', hero: 'character' };
+  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'edit', hero: 'character' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   check('entity_sub_row', (await element(page, 'hero').locator('.sub-name').textContent()) === 'hero.older');
   check('entity_slots', (await element(page, 'hero').locator('.slot').count()) === 2);
@@ -295,7 +296,9 @@ entities:
   await until('the cut landed', () => asset('edit'), (held) => held.standing === 'current');
   await until('its film shows', () => element(page, 'edit').locator('.media img').count(), (n) => n > 0);
   await open(page, 'edit');
-  check('piece_strip', (await element(page, 'edit').locator('.beats button').allTextContents()).join() === 'clip,clip_b');
+  await element(page, 'edit').locator('.tl').waitFor();
+  check('its_clips_on_a_hover', (await element(page, 'edit').locator('.tl-clip').evaluateAll((clips) => clips.map((held) => held.dataset.name))).join() === 'clip,clip_b');
+  check('hover_on_an_edit_opens_no_video', (await page.locator('video').count()) === 0);
   const landedVersion = (await asset('picture')).prefixes?.at(-1);
   check('wire_version_main', landedVersion?.main?.field === 'image' && /^files\//.test(landedVersion?.main?.path ?? '') && landedVersion?.main?.sha256?.startsWith('sha256:'), landedVersion);
   await shot('landed');
@@ -311,7 +314,7 @@ entities:
   await element(page, 'clip_b').locator('.play').click();
   await until('two videos', () => page.locator('video').count(), (n) => n === 2);
   await open(page, 'edit');
-  await element(page, 'edit').locator('.play').click();
+  await element(page, 'edit').locator('.tl-play').click();
   await until('still two, the first stopped', () => clip.locator('video').count(), (n) => n === 0);
   await page.waitForTimeout(300);
   check('two_videos_at_most', (await page.locator('video').count()) === 2, await page.locator('video').count());
@@ -506,8 +509,9 @@ entities:
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(async (error) => {
   console.error(error);
+  await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
 });

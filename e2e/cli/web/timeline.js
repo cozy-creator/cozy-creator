@@ -1,7 +1,8 @@
-// The Edit, in a real browser on a real Calcifer: real short clips and a still dropped in from the canvas, trimmed, reordered, played in
-// the page with no render, and rendered, free, with no machine. The film's frames are counted, its `.otio` read back with OpenTimelineIO's
-// own reader. Two different edits make two versions, each with its own clips, and the same edit twice makes one; a version carries on and
-// drags out to its own asset; a clip whose asset is deleted says so on the clip, and a render goes on without it.
+// The Edit, in a real browser on a real Calcifer: at rest its picture, on a hover its filmstrip, with no <video> until it plays. Real short
+// clips and a still dropped in from the canvas, trimmed, reordered, played in the page with no render, and rendered, free, with no machine.
+// The film's frames are counted, its `.otio` read back with OpenTimelineIO's own reader. Two different edits make two versions, each with
+// its own clips, and the same edit twice makes one; a version carries on and drags out to its own asset; a clip whose asset is deleted says
+// so on the clip, and a render goes on without it.
 //   node timeline.js <sign-in link from `cozy web --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep its
 // screenshots; ffmpeg, ffprobe and uv on PATH. Prints what it saw as JSON and exits 1 if anything failed.
@@ -10,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, drop, until } = require('./page');
+const { STEP_MS, drop, lastLook, lookAt, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -44,6 +45,7 @@ function plate(path, color, seconds, hz) {
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
   const context = await browser.newContext({ viewport: { width: 1900, height: 1000 } });
   const page = await context.newPage();
+  lookAt(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
@@ -87,11 +89,26 @@ function plate(path, color, seconds, hz) {
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.label === 'Edit' && tool.kind === 'video' && tool.controls[0]?.type === 'timeline', tool);
   await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1000, y: 100 } });
-  await page.waitForSelector('.tl');
+  const card = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
+  await card('Edit').waitFor();
   check('its_name', Boolean(await edit()), (await read()).assets.map((asset) => asset.name));
+  // At rest it's its picture, or what it's for: on a hover, its filmstrip, in the same place, and still no video.
+  const away = () => page.mouse.move(2, 500);
+  const openEdit = async () => {
+    await card('Edit').locator('.head').hover();
+    await page.waitForSelector('.tl-clips');
+  };
+  await card('Edit').locator('.head').hover();
+  await away();
+  await until('an Edit at rest', () => card('Edit').locator('.tl').count(), (n) => n === 0);
+  check('at_rest_says_what_it_is_for', (await card('Edit').locator('.media-note').textContent()) === 'Drag videos and stills here');
+  const atRest = await card('Edit').locator('.card').boundingBox();
+  await openEdit();
+  const onHover = await card('Edit').locator('.tl').boundingBox();
+  check('a_hover_moves_nothing', Math.abs(onHover.height - (atRest.height - (onHover.y - atRest.y))) < 2, { atRest, onHover });
+  check('hover_opens_no_video', (await page.locator('video').count()) === 0);
   const clips = () => page.$$eval('.tl-clip', (els) => els.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames), missing: el.dataset.missing })));
   const order = async () => (await clips()).map((clip) => clip.name).join(' ');
-  const card = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   // A real drag, by its head, on a real mouse: back where it started, and in the box.
   const dragIn = async (name, x, y) => {
     const before = await card(name).boundingBox();
@@ -105,7 +122,13 @@ function plate(path, color, seconds, hz) {
     const after = await card(name).boundingBox();
     return Math.abs(before.x - after.x) < 1 && Math.abs(before.y - after.y) < 1;
   };
-  const strip = async () => page.locator('.tl-clips').boundingBox();
+  // Clips close up with a little overshoot: a person takes hold of what has stopped.
+  const settled = () => page.evaluate(() => Promise.all(document.querySelector('.tl').getAnimations({ subtree: true }).map((held) => held.finished.catch(() => {}))));
+  const strip = async () => {
+    await openEdit();
+    await settled();
+    return page.locator('.tl-clips').boundingBox();
+  };
   let track = await strip();
   check('dragged_back', await dragIn('red', track.x + track.width / 2, track.y + 30));
   track = await strip();
@@ -118,11 +141,18 @@ function plate(path, color, seconds, hz) {
   check('whole_takes', JSON.stringify(start.map((clip) => clip.frames)) === JSON.stringify([3 * FPS, 2 * FPS, 3 * FPS]), start);
   await until('the file holds them', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => /<title>[\s\S]*<red>[\s\S]*<blue>/.test(text));
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
+  await away();
+  check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card('Edit').locator('.media img').count(), (n) => n === 1));
+  check('at_rest_nothing_to_press', (await card('Edit').locator('.tl, button').count()) === 0, await card('Edit').innerText());
+  await openEdit();
 
   // Pull an end: the bubble says the timecode, the clips stay snapped.
   const pull = async (name, side, by) => {
+    await settled();
     const handle = await page.locator(`.tl-clip[data-name="${name}"] .tl-handle.${side}`).boundingBox();
     await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    const under = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.className, { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 });
+    if (!`${under}`.includes('tl-handle')) throw new Error(`${name}'s ${side} handle is under ${under}`);
     await page.mouse.down();
     await page.mouse.move(handle.x + handle.width / 2 + by, handle.y + handle.height / 2, { steps: 5 });
     const bubble = await page.locator('.tl-bubble').textContent();
@@ -140,10 +170,11 @@ function plate(path, color, seconds, hz) {
   await pull('title', 'out', -60);
   await until('three trims saved', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => (text.match(/frames:|start:|end:/g) ?? []).length >= 3);
   // Reorder: blue goes first.
+  const first = await strip();
   const body = await page.locator('.tl-clip[data-name="blue"]').boundingBox();
   await page.mouse.move(body.x + body.width / 2, body.y + 24);
   await page.mouse.down();
-  await page.mouse.move((await strip()).x + 4, body.y + 24, { steps: 12 });
+  await page.mouse.move(first.x + 4, body.y + 24, { steps: 12 });
   await page.mouse.up();
   await until('reordered', order, (now) => now === 'blue title red');
   const cut = await until('the edit reads back', async () => (await edit()).timeline?.tracks[0].clips, (now) => now?.[0]?.name === 'blue');
@@ -157,12 +188,12 @@ function plate(path, color, seconds, hz) {
   const monitor = () => page.evaluate(() => {
     const el = document.querySelector('.tl-monitor');
     const video = el.querySelector('video');
-    return { clip: el.dataset.clip, live: el.dataset.live !== undefined, videos: document.querySelectorAll('.tl video').length, src: video.getAttribute('src'), t: video.currentTime, frame: Number(document.querySelector('.tl-playhead').dataset.frame) };
+    return { clip: el.dataset.clip, live: el.dataset.live !== undefined, videos: document.querySelectorAll('.tl video').length, src: video?.getAttribute('src'), t: video?.currentTime, frame: Number(document.querySelector('.tl-playhead').dataset.frame) };
   });
   const scrubbed = await until('a live video on that frame', monitor, (now) => now.live && now.clip === 'blue' && now.t > 0);
   check('one_video', scrubbed.videos === 1, scrubbed);
   check('frame_shown', Math.abs(scrubbed.t - (placed[0].in + scrubbed.frame + 0.5) / FPS) < 0.05, scrubbed);
-  await until('it lets go', monitor, (now) => !now.live && !now.src);
+  await until('it lets go, and no video is left', monitor, (now) => !now.live && now.videos === 0);
 
   // Plays in order in the page, with no render, every clip's turn.
   await page.evaluate(() => {
@@ -252,11 +283,12 @@ function plate(path, color, seconds, hz) {
   await card('Edit').locator('.head').hover();
   await card('Edit').locator('button:text-is("Unapprove")').click();
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
-  await page.waitForSelector('.tl');
+  await openEdit();
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
   await card('red').locator('.head').hover();
   await card('red').locator('button[aria-label="Delete"]').click();
+  await openEdit();
   await until('the clip says it\'s offline', clips, (now) => now.some((clip) => clip.name === 'red' && clip.missing === 'no longer in the project'));
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-offline.png` : undefined });
   check('offline_on_the_clip', /no longer in the project/.test(await page.locator('.tl-clip[data-name="red"]').textContent()));
@@ -277,8 +309,9 @@ function plate(path, color, seconds, hz) {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(async (error) => {
   console.error(error);
+  await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
 });

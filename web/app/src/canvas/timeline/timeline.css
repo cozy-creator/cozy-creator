@@ -1,4 +1,7 @@
-/* The Edit: a picture over a filmstrip. */
+/* The Edit: a picture over a filmstrip. At rest it's its picture, in the same place, so a hover moves nothing. */
+.card.tl-rests .media {
+  height: 332px;
+}
 .tl {
   display: flex;
   flex-direction: column;
@@ -34,7 +37,8 @@
 /* As a render does: it fills the frame, center-cropped. */
 .tl-monitor img,
 .tl-monitor canvas,
-.tl-monitor video {
+.tl-monitor video,
+.tl-video {
   position: absolute;
   inset: 0;
   width: 100%;

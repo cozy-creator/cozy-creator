@@ -61,7 +61,9 @@ jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
 step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
 web_proof nodes "$chrome" "$pw" ''
 step "web-timeline: real clips and a still in an Edit, trims and a reorder, rendered free, frame-exact, read back in its .otio, its versions"
-web_proof timeline "$chrome" "$pw" ''
+# Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
+local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
+PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
