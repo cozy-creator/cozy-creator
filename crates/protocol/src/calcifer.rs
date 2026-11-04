@@ -1599,6 +1599,18 @@ pub struct CalciferStatus {
     pub local_usable: bool,
     /// Whether this computer holds a device key for its Hub. `GET /v1/account` asks the Hub whether it still counts.
     pub signed_in: bool,
+    /// This computer is a rental: which, and when it releases itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rental: Option<StatusRental>,
+}
+
+/// `GET /v1/status` on a rental: a pod has no rental id of its own, so its Hub's worker id names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusRental {
+    pub machine_id: String,
+    /// None while a job is queued or running there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_deadline_ms: Option<i64>,
 }
 
 /// `POST /v1/session-codes`: a code a browser trades once for a session.

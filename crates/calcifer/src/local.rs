@@ -104,6 +104,11 @@ impl Local {
             let message = format!("this computer's machine did not start: {why} (its log: {})", log.display());
             Error::new(Kind::Unavailable, "machine_start_failed", message)
         };
+        // A pod's machine is its image's, a rental with a Hub and an idle clock. One this starts would
+        // own its root as neither.
+        if config::image_machine() {
+            return Err(failed("on a pod its image starts it, and it isn't running now".into()));
+        }
         let program = self.home.launcher().ok_or_else(|| {
             failed(format!("no cozy is installed in {}", self.home.root().display()))
         })?;

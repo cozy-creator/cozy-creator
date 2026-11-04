@@ -22,6 +22,8 @@ pub struct MachineIdentity {
     pub lifecycle: Option<Arc<crate::machine::lifecycle::Lifecycle>>,
     /// The Hubs this machine is registered with: (origin, worker id there).
     pub hubs: Vec<(String, String)>,
+    /// This machine's own Calcifer, behind `/v1/calcifer`; None on development front doors.
+    pub calcifer: Option<Arc<crate::machine::calcifer::Calcifer>>,
     /// `runtime-update/1`; None on development front doors.
     pub updates: Option<Arc<crate::machine::update::Updates>>,
     /// The WebRTC listener: `cozy/1` for browsers (ICE-TCP).
@@ -69,6 +71,7 @@ impl MachineIdentity {
                 .as_millis() as u64,
             lifecycle: None,
             hubs: vec![],
+            calcifer: None,
             updates: None,
             store: None,
             gpus: vec![],

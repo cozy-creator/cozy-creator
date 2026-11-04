@@ -5,6 +5,7 @@
 //! project.lock (people write project.yaml; cozy writes one line of it, at `approve` and `unpin`). The reserved package `cozy` runs
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in
 //! project.lock, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
+mod archive;
 mod folder;
 mod format;
 mod graph;
@@ -116,6 +117,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/assets/{name}", get(asset))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
+        .route("/v1/projects/{id}/archive", get(archive::archive))
 }
 
 impl Projects {

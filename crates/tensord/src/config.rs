@@ -97,6 +97,16 @@ pub fn forget_receipt_key() {
     }
 }
 
+/// What a process this service leaves running inherits. A rental's Calcifer never holds the worker
+/// credential, and reads its rental's Hub. Called in the service alone, before any thread: its stable
+/// parent keeps the credential for the machine it may exec again.
+pub fn for_what_it_starts(grant: &Grant) {
+    std::env::remove_var("COZY_WORKER_AUTH_TOKEN");
+    if let Some(hub) = &grant.hub {
+        std::env::set_var("COZY_HUB_URL", &hub.origin);
+    }
+}
+
 /// The load over a given environment and user home (what the tests drive).
 pub fn load_from(lifetime: Lifetime, environment: &BTreeMap<String, String>, user_home: PathBuf) -> io::Result<Config> {
     let loaded = shared::load_from(environment, user_home).map_err(|e| invalid(&named(&e.message)))?;

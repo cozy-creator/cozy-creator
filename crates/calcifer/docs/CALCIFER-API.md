@@ -111,7 +111,7 @@ media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none';
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 
 ### Status
-- `GET /v1/status`: `{version, os, local_usable, signed_in}`. `os` is `linux`, `macos` or `windows`; `local_usable` is
+- `GET /v1/status`: `{version, os, local_usable, signed_in, rental?: {machine_id, idle_deadline_ms?}}`. `rental` is there on a rental: `machine_id` is its Hub's name for this pod, which has no rental id of its own, and `idle_deadline_ms` when it releases itself unless a job comes, absent while one is queued or running. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
   without asking the Hub (`GET /v1/account` does).
 
@@ -205,7 +205,23 @@ A machine is this computer's (`local`, started when used), a rental, or another 
       pod at most. Until it answers, the order is a `booting` machine in the list, under the name it was asked
       with and with no `rental_id`. Another rent of the same thing joins it (`503 rental_order_pending`).
   - `{"kind": "add", name, address, fingerprint}` answers `Machine`.
-- `DELETE /v1/machines/{name}[?force=true]`: `Ended {machine, changed, abandoned}`, `202` while `ending`.
+- `ANY /v1/machines/{name}/calcifer/{*path}`: that machine's own Calcifer through its TensorD (`Link::forward`,
+  machine scope), with both bodies streaming, so another Calcifer's API is this one's under a base path. `local` is
+  refused `machine_is_here`, and a path with an empty, `.` or `..` segment `calcifer_path_refused`. The machine
+  refuses `/v1/down` and writes to `/v1/account*` the same way, and answers `503 calcifer_down` while its Calcifer
+  isn't answering. A key it doesn't admit answers `401 capability_invalid` there, passed on as it is, like any answer
+  but this route's own `machine_*` refusals. `?media=` opens this route's reads of files too, and goes no further. **Its
+  answers are hostile data on this computer's origin:** a request carries only `Accept`, `Content-Type`,
+  `Content-Length`, `Content-Range`, `Range`, `If-Match`, `If-None-Match`, `If-Range`, `Last-Event-ID`,
+  `Idempotency-Key` and `Cozy-*`, and never `?media=`; an answer brings back only `Content-Type` (its one
+  `type/subtype`, else `application/octet-stream`), `Content-Length`, `Content-Range`, `Accept-Ranges`, `ETag` and
+  `Cozy-*`, always with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, and with
+  `Content-Disposition: attachment` unless it is JSON, SSE or a picture (not SVG), video or sound. A redirect's
+  `Location` is dropped and never followed.
+- `DELETE /v1/machines/{name}[?force=true]`: `Ended {machine, changed, abandoned}`, `202` while `ending`. On a rental,
+  `DELETE /v1/machines/local` asks its own machine to release itself: `202` with `ending`, or `409 machine_refused`
+  (`machine_working`) while a job is queued or running, whatever `force` says, since a forced End is the renting
+  computer's. It can't read the Hub, so nothing here can say the pod is gone. Elsewhere `local` is refused `machine_local`.
   - The end is recorded at once and survives a restart. Calcifer carries it out once the outputs of the
     machine's runs have landed here, and `machine.ending` says what it waits for.
   - `force` ends it now; `abandoned` names the outputs given up. Asked again with `force`, it stops the wait.
@@ -417,6 +433,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?}`. Drops their queued work and cancels their runs; nothing dropped is sent again. It needs no file but to follow an entity's name, using the newest render's text if project.yaml doesn't read.
 - `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
+- `GET /v1/projects/{id}/archive`: `application/x-tar`, streamed as it is read: every regular file in the project's folder on this machine as `<folder>/<path>`, symlinks left out. A file the lock names that isn't here (kept on a machine, or needing a pull) is named first in `<folder>/elsewhere.json`, `{elsewhere: [{sha256, machine, length?}]}`, and `Cozy-Elsewhere` counts them. A read that fails fails the stream, so a tar never ends cleanly and short.
 
 ### Tools and Calcifer
 Calcifer fetches the tools it runs on first need, pinned builds held to their sha256, into `~/.cozy/tools`:

@@ -539,10 +539,11 @@ impl Machines {
     /// Ends a rental at its Hub (`ending` until the Hub affirms it), or removes an added machine
     /// from this controller, once the outputs of its runs have landed here: the end is recorded
     /// at once and carried out then (`end_here`). `force` ends it now and names the outputs given
-    /// up. `local` is never ended.
+    /// up. `local` is this computer's and never ended, unless this computer is a rental: then it
+    /// asks its own machine to release itself (`release_here`).
     pub async fn end(self: &Arc<Self>, text: &str, force: bool) -> Result<Ended, Error> {
         if text.eq_ignore_ascii_case("local") {
-            return Err(local_refusal());
+            return self.release_here().await;
         }
         if let Some(order) = self.order_named(text)? {
             return self.stop_order(order);
@@ -552,7 +553,7 @@ impl Machines {
             Named::Other(machine) => return self.end_other(*machine),
         };
         if row.kind == MachineKind::Local {
-            return Err(local_refusal());
+            return self.release_here().await;
         }
         if row.state == MachineState::Ended {
             return Ok(Ended {
@@ -562,6 +563,27 @@ impl Machines {
             });
         }
         self.end_here(row, force)
+    }
+
+    /// What `GET /v1/status` says of this computer when it is a rental, as its machine last said.
+    pub(crate) fn rental_here(&self) -> Option<protocol::calcifer::StatusRental> {
+        let frame = self.frame("local")?;
+        let hub = frame.hubs.first()?;
+        Some(protocol::calcifer::StatusRental { machine_id: hub.machine_id.clone(), idle_deadline_ms: deadline(&frame) })
+    }
+
+    /// `local`, on a rental: what reached this Calcifer through its machine's door can't reach the
+    /// machine's own API, so this relays. The machine refuses while it works and tells its Hub
+    /// within a second. Nothing here reads the Hub, so `ending` is as far as this can say.
+    async fn release_here(&self) -> Result<Ended, Error> {
+        let (row, link) = self.linked("local").map_err(|_| local_refusal())?;
+        if !link.status().await.is_ok_and(|frame| !frame.hubs.is_empty()) {
+            return Err(local_refusal());
+        }
+        link.release().await.map_err(|e| refusal(&row.name, e))?;
+        let mut machine = self.picture(&row)?;
+        machine.state = MachineState::Ending;
+        Ok(Ended { machine, changed: true, abandoned: vec![] })
     }
 
     /// Starts a rental's 15-minute idle clock over, once the machine acknowledges it.
@@ -1801,7 +1823,7 @@ fn log_refusal(name: &str, log: MachineLog, e: LinkError) -> Error {
 }
 
 /// A machine's refusal, as the API answers it.
-fn refusal(name: &str, e: LinkError) -> Error {
+pub(crate) fn refusal(name: &str, e: LinkError) -> Error {
     match e {
         LinkError::Refused { code, message } => Error::new(
             Kind::Conflict,

@@ -364,6 +364,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "tar",
  "tempfile",
  "tensorfs",
  "thiserror 2.0.21",

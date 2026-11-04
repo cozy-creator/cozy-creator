@@ -11,6 +11,7 @@
 mod access;
 pub mod api;
 mod authorized;
+mod door;
 pub mod events;
 mod files;
 mod hub;

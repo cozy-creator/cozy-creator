@@ -15,6 +15,10 @@ pub mod path {
     pub const STATUS: &str = "/v1/status";
     /// `POST`: renews a rental's idle deadline; answers the frame.
     pub const KEEPALIVE: &str = "/v1/keepalive";
+    /// `POST`: a rental releases itself now, refused while it works.
+    pub const RELEASE: &str = "/v1/release";
+    /// Any method: forwarded to the machine's own Calcifer, whose answer this is.
+    pub const CALCIFER: &str = "/v1/calcifer/{*path}";
     /// `POST` a [`super::RunRequest`].
     pub const RUNS: &str = "/v1/runs";
     /// `GET`: SSE of the run's [`super::RunEvent`]s after `Last-Event-ID`.
@@ -29,6 +33,25 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
+}
+
+/// `path` as the door to a machine's Calcifer judges it, percent-decoded: under `/v1/`, with no
+/// empty, `.` or `..` segment for a URL parser or a router to resolve into another route. None:
+/// the door carries it nowhere.
+pub fn calcifer_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let escape = (bytes[at] == b'%').then(|| bytes.get(at + 1..at + 3)).flatten();
+        let byte = escape.and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        decoded.push(byte.unwrap_or(bytes[at]));
+        at += if byte.is_some() { 3 } else { 1 };
+    }
+    let decoded = String::from_utf8_lossy(&decoded).into_owned();
+    let mut segments = decoded.strip_prefix("/v1/")?.split('/');
+    let clean = !decoded.contains('\\') && segments.all(|segment| !matches!(segment, "" | "." | ".."));
+    clean.then_some(decoded)
 }
 
 /// The header naming the byte ranges of an object the machine holds: `0-1048575,2097152-4194303`

@@ -64,7 +64,7 @@ pub fn send(
         .expect("a response"))
 }
 
-fn shown_in_place(media_type: &str) -> bool {
+pub(crate) fn shown_in_place(media_type: &str) -> bool {
     let kind = media_type.split('/').next().unwrap_or_default();
     ["image", "video", "audio"].iter().any(|shown| kind.eq_ignore_ascii_case(shown))
 }
