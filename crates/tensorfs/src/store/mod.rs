@@ -675,6 +675,25 @@ impl fetch::ObjectStore for Store {
         let admission = Store::admit(self, Some(object)).map_err(Error::refusal)?;
         Ok(Box::new(admission))
     }
+
+    /// A lock on `tmp/fetching-<sha256>`, which an exit lets go. A claim that can't be made is no
+    /// reason to wait: the worst of one is a second download.
+    fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>> {
+        struct Claim(#[allow(dead_code)] File, PathBuf);
+        impl Drop for Claim {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.1);
+            }
+        }
+        let path = self.root.join("tmp").join(format!("fetching-{}", object.sha256));
+        let Ok(file) = OpenOptions::new().write(true).create(true).truncate(false).open(&path) else {
+            return Some(Box::new(()));
+        };
+        match platform::lock::try_claim(&file) {
+            Ok(false) => None,
+            _ => Some(Box::new(Claim(file, path))),
+        }
+    }
 }
 
 impl fetch::Admission for Admission {
