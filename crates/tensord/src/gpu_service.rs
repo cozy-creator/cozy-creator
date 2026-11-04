@@ -3210,7 +3210,16 @@ impl Pool {
     }
 
     fn cooperation_settings(&self, lane: std::ops::Range<usize>) -> io::Result<Vec<Cooperation>> {
-        let directory = PathBuf::from(format!("/dev/shm/cozy-varena-{}", rustix::process::geteuid().as_raw()));
+        #[cfg(unix)]
+        let directory = {
+            let directory = PathBuf::from(format!("/dev/shm/cozy-varena-{}", rustix::process::geteuid().as_raw()));
+            std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&directory)
+                .or_else(|error| if error.kind() == io::ErrorKind::AlreadyExists { Ok(()) } else { Err(error) })?;
+            directory
+        };
+        #[cfg(not(unix))]
+        let directory: PathBuf = return Err(io::Error::new(io::ErrorKind::Unsupported,
+            "native cooperation requires Linux with 64-bit atomics"));
         let mut settings = Vec::with_capacity(lane.len());
         for index in lane {
             let gpu = self.devices.get(index).and_then(|d| self.inventory(&d.entry))
