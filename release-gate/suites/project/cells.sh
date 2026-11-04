@@ -13,7 +13,7 @@
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
 # A checkout's ./pkg names the gate's folder; a project reads `with:` from its own. `with:` names a package, never a function.
 abs() { [[ $1 == ./* ]] && echo "$OUT/${1#./}" || echo "$1"; }
-package() { local at; at=$(abs "$(pkg "$1" x)"); echo "${at/\/x/}"; }
+package() { local at; at=$(abs "$(pkg "$1" x)"); case $at in *@*) echo "${at%/x@*}@${at##*@}" ;; *) echo "${at%/x}" ;; esac; }
 H3=$(package minimax-h3) STILL=$(package qwen-image-2) CLEAN=$(package birefnet)
 want() { [ -z "$ONLY" ] || [[ $ONLY == *",$1,"* || $ONLY == *",project,"* ]]; }
 # project <cell>: a fresh folder for it, its project.yaml from stdin, the gate's pictures beside it.

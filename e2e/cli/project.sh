@@ -467,7 +467,7 @@ assets:
           - scene: coast.2
             at: 3
       - duration: 4
-        description: She stands on <coast.2>.
+        description: She stands on <coast.1>, then <coast.2>.
         writes:
           - scene: harbor.1
             at: 1
@@ -580,7 +580,7 @@ render "$T" same || check "adapters: no run: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.same.versions[0] | (.runs // [] | length == 0) and .files.video != null' "$T/project.lock" || check "adapters: None is not what it reads, with no run: $(jq -c '.assets.same.versions' "$T/project.lock")"
 [ "$(jq -r .assets.same.versions[0].files.video "$T/project.lock")" = "$(row "$T" look '.files.video.sha256' | tr -d '"')" ] || check "adapters: None's files are not what it reads"
 render "$T" same --new || check "adapters: no run, --new"
-says adapters "takes no seed"
+says adapters "has nothing to make"
 [ "$(made "$T" same)" = 1 ] || check "adapters: a second version of what is its reads"
 render "$T" checked || check "adapters: typed: $(tail -c 400 "$OUT/render.txt")"
 says adapters "reads no field no_such_field"
@@ -710,7 +710,7 @@ assets:
 YAML
 render "$S" all || check "recut: render all: $(tail -c 300 "$OUT/render.txt")"
 [ -s "$S/edit.mp4" ] || check "recut: no edit.mp4"
-sed -i 's/summary: One\./summary: Two./' "$S/project.yaml"
+sed -i 's/summary: One\./summary: Two./; s/^    pieces:$/    fps: 30\n&/' "$S/project.yaml"
 render "$S" look || check "recut: render look"
 says recut "which is out of date"
 cozy project -p "$S" approve shot 1 > "$OUT/approve.txt" 2>&1 || check "recut: approve: $(tail -c 300 "$OUT/approve.txt")"

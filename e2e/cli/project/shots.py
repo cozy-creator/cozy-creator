@@ -6,6 +6,7 @@
 is its plate, `given` the request it got, and `written` a picture per write. `bare` takes no writes. `typed` types its operation's
 fields. `two calls` answers a list of calls, the second reading the first's output. `slow` waits, so a render can be caught going."""
 
+import hashlib
 import json
 import os
 import time
@@ -140,7 +141,7 @@ def first_call(payload: Text, out: Outputs) -> First:
 
 @app.entrypoint()
 def second_call(payload: Earlier, out: Outputs) -> Second:
-    return Second(out.save_bytes(payload.of.sha256.encode(), media_type="text/plain"))
+    return Second(out.save_bytes(f"sha256:{hashlib.sha256(payload.of.read_bytes()).hexdigest()}".encode(), media_type="text/plain"))
 
 
 @app.project_adapter("two calls")
