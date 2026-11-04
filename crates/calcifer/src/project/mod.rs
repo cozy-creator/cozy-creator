@@ -1772,7 +1772,7 @@ impl Walk {
             let name = cut_name(&doc.assets[i].name);
             let Some(file) = stand[i].files.as_ref().and_then(|files| files.get("video")).and_then(|sha256| lock.files.get(sha256)) else { continue };
             let at = self.folder().dir.join(&name);
-            if !at.is_file() {
+            if !at.is_file() || tools::shares_bytes(&at) {
                 let _ = tools::publish(&self.folder().path(&file.path), &at);
             }
             if !at.with_extension("otio").is_file() {
@@ -2410,15 +2410,23 @@ impl Walk {
     /// had fails the cut, with the command that makes it again.
     async fn bring_pieces(&self, asset: &format::Asset, pieces: &[tools::Piece], lock: &Lock, target: &Target) -> Result<(), Error> {
         let mut lost = vec![];
-        for piece in pieces.iter().filter(|piece| !piece.path.is_file()) {
+        for piece in pieces {
             let Some(file) = lock.files.get(&piece.digest) else { continue };
-            self.say(Event::Said { message: format!("{}: {} is not on this computer: fetching it", asset.name, piece.asset) });
+            // A file is named for its bytes, and a cut reads them all anyway.
+            let here = piece.path.is_file();
+            let (path, digest) = (piece.path.clone(), piece.digest.clone());
+            let changed = here && tokio::task::spawn_blocking(move || folder::hash(&path).is_ok_and(|got| got != digest)).await.unwrap_or(false);
+            if here && !changed {
+                continue;
+            }
+            let state = if changed { "isn't what project.lock says, its bytes changed" } else { "is not on this computer" };
+            self.say(Event::Said { message: format!("{}: {} {state}: fetching it", asset.name, piece.asset) });
             let brought = match file.stays() && self.host.fetchable(&file.sha256, &file.machine) {
                 true => self.host.fetch(&file.sha256, &file.machine).await,
                 false => self.host.pull_one(&self.project, &target.hub, file.clone()).await,
             };
             if let Err(why) = brought {
-                lost.push((piece.asset.clone(), format!("{} is not on this computer, and can't be had: {why}", piece.asset)));
+                lost.push((piece.asset.clone(), format!("{} {state}, and can't be had: {why}", piece.asset)));
             }
         }
         let Some((piece, _)) = lost.first() else { return Ok(()) };

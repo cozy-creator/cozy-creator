@@ -529,8 +529,9 @@ impl Folder {
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
-                if std::fs::hard_link(dest, &at).is_err() {
-                    self.store(&path, |part| std::fs::copy(dest, part).map(drop))?;
+                match std::fs::hard_link(dest, &at) {
+                    Ok(()) => sealed(&at),
+                    Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
             }
             self.tabled(path.clone(), digest)?;
@@ -642,6 +643,7 @@ impl Folder {
         let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
         let _ = std::fs::remove_file(&part);
         write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))?;
+        sealed(&at);
         Ok(true)
     }
 
@@ -873,6 +875,15 @@ fn walked(dir: &Path) -> (u64, u64) {
 
 fn read(path: &Path) -> Result<String, Error> {
     std::fs::read_to_string(path).map_err(|e| io_at(path, e))
+}
+
+/// A file in `files/` is named for its bytes: read-only, so that writing to it fails rather than make its name a lie.
+pub(super) fn sealed(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut permissions = meta.permissions();
+        permissions.set_readonly(true);
+        let _ = std::fs::set_permissions(path, permissions);
+    }
 }
 
 pub fn hash(path: &Path) -> Result<String, Error> {

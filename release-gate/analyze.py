@@ -212,6 +212,15 @@ for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]
     if vals:
         notes.append(f'host {leg}: median {sorted(vals)[len(vals) // 2] / 1000:.1f} s, max {max(vals) / 1000:.1f} s over {len(vals)} executors')
+# A GPU fault, or a kernel self-check that crashed its process, fails the gate even when every cell passed: a group walked
+# into a faulting kernel on corteo with only the machine's record saying so. The machine's own log and record, kept by end_it.
+LOG = os.path.join(out, 'machine-tensord.log')
+for line in (l for l in open(LOG, errors='replace') if re.search(r'GPU \d+ (reported Xid|was lost).*: failing', l)) if os.path.exists(LOG) else ():
+    fails.append(f'gpu fault: {line.strip()[:200]}')
+END = os.path.join(out, 'machine-end.json')
+for kernel in (json.load(open(END)).get('status', {}).get('kernels', []) if os.path.getsize(END) else []) if os.path.exists(END) else []:
+    if not kernel.get('ok'):
+        fails.append(f"kernel probe crashed: {kernel.get('kernel')} sm{kernel.get('sm')} driver {kernel.get('driver')}: {kernel.get('detail', '')[:160]}")
 gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'baseline': base}
 # CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL, what happened).
 EXPECT = os.path.join(out, 'expect.tsv')

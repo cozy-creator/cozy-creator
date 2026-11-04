@@ -698,10 +698,36 @@ pub fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result
 
 /// `from`, a file of the project's, as `to` at its root: a hard link, else a copy; a reader never meets half a file.
 pub fn publish(from: &Path, to: &Path) -> std::io::Result<()> {
-    let part = to.with_file_name(format!(".{}.link", to.file_name().expect("a name").to_string_lossy()));
+    let part = to.with_file_name(format!(".{}.part", to.file_name().expect("a name").to_string_lossy()));
     let _ = std::fs::remove_file(&part);
-    if std::fs::hard_link(from, &part).is_err() {
-        std::fs::copy(from, &part)?;
-    }
+    // A real file of its own, whatever a person does to it; `copy` clones where the filesystem can.
+    std::fs::copy(from, &part)?;
+    writable(&part)?;
     std::fs::rename(&part, to)
+}
+
+#[cfg(unix)]
+fn writable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn writable(path: &Path) -> std::io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions)
+}
+
+/// Whether the film at `path` still shares its bytes with `files/`, as one a cozy before this published does: writing to it would write there.
+#[cfg(unix)]
+pub fn shares_bytes(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
+}
+
+#[cfg(not(unix))]
+pub fn shares_bytes(_: &Path) -> bool {
+    false
 }

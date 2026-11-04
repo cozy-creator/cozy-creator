@@ -316,6 +316,7 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; pull again") });
     }
     std::fs::rename(&part, &at).map_err(named)?;
+    folder::sealed(&at);
     tally.moved.fetch_add(1, Ordering::Relaxed);
     let _ = project.events.send(Event::Moved { file: Some(path), bytes: tally.bytes.load(Ordering::Relaxed) });
     Ok(())
