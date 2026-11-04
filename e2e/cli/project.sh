@@ -322,7 +322,7 @@ J --arg p "$real" 'any(.runs[]; .project != $p)' "$OUT/runs-all.json" || check "
 
 step "a project: approve takes any file of its, by hash"
 cozy project -p "$R" approve kyogre "$hash" > "$OUT/approve.txt" 2>&1 || check "runs: approve by hash: $(tail -c 300 "$OUT/approve.txt")"
-grep -q "^    image: $hash\$" "$R/project.yaml" || check "runs: approve wrote: $(grep -n 'image' "$R/project.yaml")"
+grep -Eq "^    image: \"?$hash\"?\$" "$R/project.yaml" || check "runs: approve wrote: $(grep -n 'image' "$R/project.yaml")"
 J '.assets[] | select(.name == "kyogre") | .pinned and (.status | startswith("pinned"))' <<< "$(status "$R")" || check "runs: kyogre: $(row "$R" kyogre .)"
 J '.run_files == 2' <<< "$(status "$R")" || check "runs: a pinned file still counts as loose: $(status "$R" | jq -c .run_files)"
 
@@ -405,7 +405,7 @@ grep -q '# the end, as edited just now' "$T/project.yaml" || check "pins: an edi
 file=$(jq -r '.assets.card.versions[0].files.image' "$T/project.lock"); file=${file#sha256:}
 sed -i 's/^# the end, as edited just now$/# the end/' "$T/project.yaml"
 diff "$before" "$T/project.yaml" > "$OUT/approve.diff" || true
-{ [ "$(grep -c '^[<>]' "$OUT/approve.diff")" = 1 ] && grep -q "^> *image: ${file:0:12}$" "$OUT/approve.diff"; } || check "pins: approve changed more than its one line: $(cat "$OUT/approve.diff")"
+{ [ "$(grep -c '^[<>]' "$OUT/approve.diff")" = 1 ] && grep -Eq "^> *image: \"?${file:0:12}\"?$" "$OUT/approve.diff"; } || check "pins: approve changed more than its one line: $(cat "$OUT/approve.diff")"
 J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status == "pinned: version 1"' <<< "$(status "$T")" || check "pins: status does not say card is pinned to 1: $(row "$T" card .)"
 ! jq -e '.assets.card | has("pin")' "$T/project.lock" > /dev/null || check "pins: the lock holds an approval"
 
@@ -1820,6 +1820,60 @@ still "$U/kyogre.png" red
 cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-first.txt" 2>&1 || check "import: a file: $(tail -c 300 "$OUT/import-first.txt")"
 cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-again.txt" 2>&1 || check "import: again: $(tail -c 300 "$OUT/import-again.txt")"
 grep -q '^already imported ' "$OUT/import-again.txt" || check "import: a second import does not say so: $(cat "$OUT/import-again.txt")"
+
+step "a project: a hash that reads as a number is that hash, whatever a person's file writes"
+local V=$OUT/numbers over fits digits zero; mkdir -p "$V"; still "$V/base.png" teal; printf 'version: 2\nassets: {}\n' > "$V/project.yaml"
+# The same picture, with bytes after its end until its hash starts as each shape does. One prefix in about 150 has one of them.
+python3 - "$V" > "$OUT/numbers.txt" <<'PY' || check "numbers: the fixtures: $(cat "$OUT/numbers.txt")"
+import hashlib, pathlib, re, sys
+v = pathlib.Path(sys.argv[1])
+base = (v / "base.png").read_bytes()
+shapes = {"over": r"[1-9][0-9]{0,6}e[0-9]{4,10}", "fits": r"[1-9][0-9]{8,9}e[0-9]{1,2}", "digits": r"[1-9][0-9]{11}", "zero": r"0[0-9]{11}"}
+found, n = {}, 0
+while len(found) < len(shapes):
+    n += 1
+    data = base + n.to_bytes(8, "big")
+    prefix = hashlib.sha256(data).hexdigest()[:12]
+    for name, shape in shapes.items():
+        if name not in found and re.fullmatch(shape, prefix):
+            found[name] = prefix
+            (v / f"{name}.png").write_bytes(data)
+for name, prefix in found.items():
+    print(name, prefix)
+PY
+over=$(awk '$1 == "over" { print $2 }' "$OUT/numbers.txt") fits=$(awk '$1 == "fits" { print $2 }' "$OUT/numbers.txt")
+digits=$(awk '$1 == "digits" { print $2 }' "$OUT/numbers.txt") zero=$(awk '$1 == "zero" { print $2 }' "$OUT/numbers.txt")
+for name in over fits digits zero; do
+  cozy project -p "$V" import "$V/$name.png" > "$OUT/numbers-$name.txt" 2>&1 || check "numbers: importing $name: $(tail -c 300 "$OUT/numbers-$name.txt")"
+  grep -Eq '^image: "[0-9a-fe]{12}"$' "$OUT/numbers-$name.txt" || check "numbers: cozy did not quote $name: $(cat "$OUT/numbers-$name.txt")"
+done
+cat > "$V/project.yaml" <<YAML
+version: 2
+entities:
+  hero:
+    kind: character
+    image: $fits
+    young:
+      image: $zero
+assets:
+  over: {image: $over}
+  fits:
+    image: $fits
+  digits:
+    image: $digits
+  zero: {image: $zero}
+  reader:
+    render: {with: $here/project/draw.py, prompt: "from <over>, <fits>, <digits>, <zero> and <hero>"}
+YAML
+status "$V" > "$OUT/numbers-status.json" || check "numbers: a person's file was refused: $(cozy project -p "$V" status 2>&1 | tail -c 300)"
+for name in over fits digits zero; do
+  J --arg n "$name" --arg p "sha256:$(eval echo "\$$name")" '[.assets[] | select(.name == $n)][0] | .pinned and (.sha256 | startswith($p))' "$OUT/numbers-status.json" || check "numbers: $name is not its file: $(jq -c --arg n "$name" '.assets[] | select(.name == $n) | {sha256, status}' "$OUT/numbers-status.json")"
+done
+J --arg p "sha256:$fits" --arg z "sha256:$zero" '([.assets[] | select(.name == "hero.image")][0].sha256 | startswith($p)) and ([.assets[] | select(.name == "hero.young.image")][0].sha256 | startswith($z))' "$OUT/numbers-status.json" || check "numbers: an entity's links: $(jq -c '[.assets[] | {name, sha256}]' "$OUT/numbers-status.json")"
+J '[.assets[] | select(.name == "reader")][0].inputs != null' "$OUT/numbers-status.json" || check "numbers: what mentions them has no inputs: $(jq -c '.assets[] | select(.name == "reader")' "$OUT/numbers-status.json")"
+! jq -c .warnings "$OUT/numbers-status.json" | grep -Eq "is not a hash|no file's hash" || check "numbers: warned: $(jq -c .warnings "$OUT/numbers-status.json")"
+cozy project -p "$V" approve zero "$over" > "$OUT/numbers-approve.txt" 2>&1 || check "numbers: approving over one: $(cat "$OUT/numbers-approve.txt")"
+grep -Eq "^  zero: \{image: \"$over\"\}$" "$V/project.yaml" || check "numbers: approve wrote: $(grep -n 'zero:' "$V/project.yaml")"
 
 step "a project: import --remove-background"
 local clear runs_before line cleaned original
