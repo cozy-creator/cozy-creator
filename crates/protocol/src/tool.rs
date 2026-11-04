@@ -135,9 +135,14 @@ pub fn edit() -> Tool {
     }
 }
 
-/// What `callable` makes: the first field of its output that is a picture, a video or a sound. None: it makes no media.
+/// What `callable` makes: the first field of its output that is a picture, a video or a sound, by its type, or a plain file by its name, as a
+/// version takes it. None: it makes no media.
 pub fn output_kind(callable: &Callable) -> Option<&str> {
-    callable.result.fields.iter().find_map(|field| field.ty.media().map(|(kind, _)| kind).filter(|kind| MEDIA.contains(kind)))
+    let of = |field: &'_ Field| {
+        let (kind, _) = field.ty.media()?;
+        MEDIA.iter().copied().find(|media| *media == kind || (kind == "file" && *media == field.name))
+    };
+    callable.result.fields.iter().find_map(of)
 }
 
 /// What `callable` answered in words: its output's first text, or a list of texts' first. `warnings` is no answer.

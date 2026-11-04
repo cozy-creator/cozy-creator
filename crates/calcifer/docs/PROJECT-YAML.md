@@ -95,7 +95,7 @@ Every other key is an **input**: it passes through to the function and counts in
 
 ## Defaults
 
-`defaults` holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool makes: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
+`defaults` holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
 
 ## First-party inputs
 
@@ -125,12 +125,12 @@ Every other key is an **input**: it passes through to the function and counts in
 **An asset's state** is the first of these that applies:
 1. `approved`: that file, and with it the whole file set of the version it is. Naming one with a tool makes a version to look at, its state unmoved.
 2. Its newest version whose key matches now.
-3. A version whose own half of the key matches when a read no longer exists: that is no change, as nothing could make it again.
+3. A version whose key differs only by a read that no longer exists: that is no change, as nothing could make it again.
 4. Nothing: it's missing or out of date.
 
 An asset that is only a `description`, with no tool and no file, stands as words: what mentions it reads them.
 
-**The key** is 16 hex: eight of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, and eight of each read's `name`, `asset_type`, `description` and `files`. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
+**The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, so a read gone hides no change in the others. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
 **Not in the key:** its own `description`, `asset_type` and `voice`; package, adapter and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 

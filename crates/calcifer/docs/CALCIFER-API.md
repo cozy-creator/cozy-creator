@@ -393,8 +393,8 @@ parts, and what's measured of a file is kept in `.measured.json`, which can be l
 and left as it is, `next` naming `cozy project upgrade`.
 
 An asset's state is its `approved` hash (a hash of a version's main file brings its whole file set), else its
-newest version whose `inputs` match now, else none. `inputs` is 16 hex: eight of its `tool` (no release, no `_/`), `models`, `lora` and
-its inputs after defaults, and eight of each asset it mentions, only `name`, `asset_type`, `description` and files by sha256. A tool Calcifer runs holds only what it reads of its inputs, and the files. A read gone from the project is no change. Calcifer knows no input's shape.
+newest version whose `inputs` match now, else none. `inputs` is eight hex digits of its `tool` (no release, no `_/`), `models`, `lora` and
+its inputs after defaults, then twelve for each asset it mentions: four of its name, and eight of only its `asset_type`, `description` and files by sha256. A tool Calcifer runs holds only what it reads of its inputs, and the files. A read gone from the project is no change. Calcifer knows no input's shape.
 
 An operation is a tool (`[org/]package/function[@release]`, or local code, `./dir/function`), and its `kind` is the file type it produces, `image`, `video` or `audio`, by its output, its file or its version, never by the file saying so. `x/y` is root package x's function y where the Hub has one, else account x's package y, as `GET /v1/targets` resolves it. An adapter, `project-adapter-<function>`, runs on the render machine. It gets `{version: 3, asset, kind, function, inputs, reads, keep}`: `inputs` is the asset's, flat, after defaults, and each of `reads` is `{name, kind, asset_type, description, files, inputs, made_by}`, with its `voice` asset's main file in `files.voice`, and `inputs` holding only `use_audio` and `follow`: what made it is for its maker alone. It answers `invocations`, run in order as one version: a
 string in `input` that is exactly `$0.video` is that field of call 0's result, as its digest. `[]` is no run: the asset's files are what it

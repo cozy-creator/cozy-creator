@@ -785,7 +785,7 @@ fn read_tags(doc: &Doc, folder: &Folder, lock: &Lock, i: usize, package: &Packag
     {
         warn!("{}: {error}", key);
     }
-    !doc.assets[i].kind_known && makes.is_some()
+    !doc.assets[i].tool_makes && makes.is_some()
 }
 
 /// The line that says an asset's tool names a package and no function.

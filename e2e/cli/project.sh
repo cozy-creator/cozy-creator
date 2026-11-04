@@ -284,7 +284,7 @@ cp "$U/project.yaml" "$OUT/upgrade-v2.yaml"; cp "$U/project.lock" "$OUT/upgrade-
 cozy --json project -p "$U" upgrade --status "$U/status.json" > "$OUT/upgraded.json" 2> "$OUT/upgraded.err" || check "upgrade: it said $(tail -c 400 "$OUT/upgraded.err")"
 cmp -s "$U/project.yaml.v2" "$OUT/upgrade-v2.yaml" && cmp -s "$U/project.lock.v2" "$OUT/upgrade-v2.lock" || check "upgrade: the old files aren't kept beside the new"
 grep -q '^version: 3$' "$U/project.yaml" || check "upgrade: the file: $(cat "$U/project.yaml")"
-J '.format == 3 and (.assets | has("hero sheet") | not) and (.assets.hero.versions | length == 1) and (.assets["hero.old"].versions | length == 1) and (.assets["table.1"].versions[0].number == 7) and (.assets.hero.versions[0].inputs | length == 16) and (.assets.hero.versions[0] | has("reads") or has("invocations") or has("digests") or has("made_by") | not)' "$U/project.lock" || check "upgrade: the lock: $(jq -c '.assets | map_values(.versions[0])' "$U/project.lock")"
+J '.format == 3 and (.assets | has("hero sheet") | not) and (.assets.hero.versions | length == 1) and (.assets["hero.old"].versions | length == 1) and (.assets["table.1"].versions[0].number == 7) and (.assets.hero.versions[0].inputs | test("^[0-9a-f]{8}([0-9a-f]{12})+$")) and (.assets.hero.versions[0] | has("reads") or has("invocations") or has("digests") or has("made_by") | not)' "$U/project.lock" || check "upgrade: the lock: $(jq -c '.assets | map_values(.versions[0])' "$U/project.lock")"
 status "$U" > "$OUT/upgraded-status.json"
 for name in art hero hero.old wall table.1; do
   J --arg n "$name" '.assets[] | select(.name == $n) | .standing == "current"' "$OUT/upgraded-status.json" || check "upgrade: $name went out of date: $(jq -c --arg n "$name" '.assets[] | select(.name == $n)' "$OUT/upgraded-status.json")"
@@ -2238,8 +2238,8 @@ code=0; cozy project -p "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 |
 [ "$code" != 0 ] || check "import: a text file was accepted"
 still "$U/Kyogre Art (1).png" red
 [ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1 ] || check "import: a stem is not lower-cased and made a name"
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero_Sheet_one ] || check "import: a written name does not keep its case with . and space as _"
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" hero-sheet.one)" = hero-sheet_one_2 ] || check "import: a name taken in another case and with - for _ does not take _2"
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero.Sheet_one ] || check "import: a written name does not keep its case and its dot, with space as _"
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" hero.sheet-one)" = hero.sheet-one_2 ] || check "import: a name taken in another case and with - for _ does not take _2"
 [ "$(ls "$U/files" | grep -c "^$(sha "$U/Kyogre Art (1).png")")" = 1 ] || check "import: three elements of one file are not one file: $(ls "$U/files")"
 [ "$(cozy --json project -p "$U" import "$U/Kyogre Art (1).png" | jq -r .already)" = true ] || check "import: a file the project has does not say already"
 
