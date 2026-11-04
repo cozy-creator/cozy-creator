@@ -124,7 +124,8 @@ async function use(name, work) {
   writeFileSync(process.env.ORDER, JSON.stringify({ name: rented.machine.name, rental_id: rented.machine.rental_id ?? null }));
   seen.order = { name: rented.machine.name, rental_id: rented.machine.rental_id ?? null, replay: rented.replay };
   check('a_first_order', rented.replay === false, rented.replay);
-  check('the_order_is_of_the_sku', rented.machine.rental?.sku?.toLowerCase() === sku, rented.machine.rental);
+  // An order its Hub hasn't answered yet has no rental to read.
+  check('the_order_is_of_the_sku', !rented.machine.rental || rented.machine.rental.sku.toLowerCase() === sku, rented.machine.rental);
   await page.waitForURL(/#\/machines\/.+/);
   await pause(2000);
   check('one_order', mine().length === 1, mine().map((machine) => machine.name));
@@ -196,7 +197,8 @@ async function use(name, work) {
       await whileMoving('run', async () => `${exited}:${out.length}`, (text) => !text.startsWith('null:'));
       seen.run_said = out.slice(-400);
       check('run_ended_well', exited === 0, exited);
-      const number = out.match(/^run (\d+)$/m)?.[1] ?? (await page.locator('.runrow b').first().textContent()).slice(1);
+      // The last it names is its own, after local code's install.
+      const number = [...out.matchAll(/^run (\d+)$/gm)].pop()?.[1] ?? (await page.locator('.runrow b').first().textContent()).slice(1);
       await page.goto(`${base}/#/runs/${number}`);
       await until('its end in the page', () => page.textContent('.run-head'), (text) => text.includes('completed'));
       await page.click('summary:text-is("Result")');
@@ -222,8 +224,10 @@ async function use(name, work) {
     });
   }
 
-  // End, through the page: what it says, what it waits for, and the Hub's word.
+  // End, through the page: what it says, what it waits for, and the Hub's word. On this computer's Calcifer, whatever the switcher was left on.
+  await page.evaluate(() => sessionStorage.removeItem('cozy.calcifer'));
   await page.goto(drawer);
+  await page.reload();
   await page.waitForSelector('.ending button:text-is("End")');
   await page.click('.ending button:text-is("End")');
   await page.waitForSelector('dialog[open]');
