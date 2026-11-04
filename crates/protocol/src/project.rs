@@ -175,10 +175,31 @@ pub struct Cut {
     pub skips: Vec<String>,
 }
 
+/// How an asset stands, for a client that shows it rather than says it (`status` says it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Standing {
+    /// It has a state: a pin, or a version with these inputs.
+    Current,
+    /// It has versions, none with these inputs.
+    OutOfDate,
+    /// A run is making a version of it now.
+    Making,
+    /// It has no state and no version to show for it. Also what a reader shows of a standing it doesn't know.
+    #[default]
+    #[serde(other)]
+    Missing,
+}
+
 /// An asset: a stable name holding a set of files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Asset {
     pub name: String,
+    #[serde(default)]
+    pub standing: Standing,
+    /// The runs making a version of it now (`GET /v1/runs/{id}` says how far).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub making: Vec<u64>,
     /// Free text from project.yaml.
     pub kind: String,
     /// What its alternatives are called: `take` (one that holds a video) or `version`.
@@ -254,7 +275,8 @@ pub struct Runs {
     #[serde(default = "one")]
     pub n: u32,
     pub on: Vec<On>,
-    /// The Hub its functions are read from and its runs belong to.
+    /// The Hub its functions are read from and its runs belong to. Absent: Calcifer's configured Hub.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hub: String,
     /// The new version is approved when it lands; only with `n` 1.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -279,6 +301,9 @@ fn one() -> u32 {
 pub struct Entity {
     pub name: String,
     pub kind: String,
+    /// What it is, as the file says; a sub-entity with none has its parent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub links: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

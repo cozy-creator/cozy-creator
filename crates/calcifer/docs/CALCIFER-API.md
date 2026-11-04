@@ -354,15 +354,17 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
-- `GET /v1/projects/{id}`: `{id, path, assets, entities: [{name, kind, links, subs}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
-  absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?}], warnings}`. Each asset is `{name, kind, noun, with?, versions, prefixes?,
-  approved?, pinned?, inputs?, files, path?, made_by?, status}`: `approved` is the version a pin is, `pinned` that a hash in project.yaml is its state,
+- `GET /v1/projects/{id}`: `{id, path, assets, entities: [{name, kind, description?, links, subs}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
+  absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?}], warnings}`. Each asset is `{name, standing, making?, kind, noun, with?, versions, prefixes?,
+  approved?, pinned?, inputs?, files, path?, made_by?, status}`: `standing` is `current`, `out_of_date`, `missing` or `making`, for a client that shows it, `making` the runs making it now, `approved` is the version a pin is, `pinned` that a hash in project.yaml is its state,
   `files` its state by output name, `path` its main file, and `status` is for people, in the asset's noun. An orphan is an asset project.lock keeps
   versions of that project.yaml no longer names; its `bytes` count what `reclaim` would free of it, each file once; `renamed_to` the one new asset of
   its kind with none. `absent` counts files the lock names that are not here. `warnings` holds what project.yaml's reading said, what each
   state's version says, and each asset whose known published package has no adapter for its kind.
 - `GET /v1/projects/{id}/assets/{name}`: `{asset, versions: [{number, files, made_by?, seed?, runs, approved?, warnings?, kept?}]}`.
-- `POST /v1/projects/{id}/runs` `{names, n?, on, hub, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or `all`, and what it reads: run
+- `GET /v1/projects/{id}/yaml`: project.yaml's bytes, its `ETag` the digest of them (`If-None-Match` is `304`).
+- `PUT /v1/projects/{id}/yaml` with `If-Match` (`400 if_match_required` without): the body becomes project.yaml, if it still holds what that ETag read, else `409 project_changed` and it stands. `204`, the new `ETag`. A body that doesn't read as a project is `400 project_yaml`, the file untouched. A client keeps comments and formatting by changing only the lines it means to. It renders nothing, though a walk going reads the file as it goes.
+- `POST /v1/projects/{id}/runs` `{names, n?, on, hub?, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or `all`, and what it reads: run
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`); the adapter gets it as `keep`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its events.
