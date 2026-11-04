@@ -887,7 +887,14 @@ async fn runs(
             continue;
         }
         if doc.tool(i).is_some() {
-            said(format!("{name} is made here, free, when what it reads settles"));
+            match missing {
+                true => said(format!("{name} is made here, free, when what it reads settles")),
+                // Named, it is made again, as anything named is.
+                false => takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, keeps: None }),
+            }
+            if approve {
+                say(format!("--approve pins what a run lands: `cozy project approve {name}` pins this once it is made"));
+            }
             continue;
         }
         if asset.hollow {
@@ -1585,26 +1592,31 @@ impl Walk {
     }
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
-    /// again under that key, each attempt said; one its Hub says stopped or ended is refused at once.
+    /// again under that key; one its Hub says stopped or ended is refused at once.
     async fn send_run(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
-        const WAITS: [u64; 4] = [3, 6, 12, 24];
-        for (attempt, wait) in WAITS.iter().enumerate() {
-            match self.host.submit(key, run.clone()).await {
-                Err(e) if e.code == "machine_unreachable" => {
-                    let message = format!("{}; attempt {}/{} in {wait} s", e.message, attempt + 2, WAITS.len() + 1);
-                    self.say(Event::Warning { message });
-                    tokio::time::sleep(std::time::Duration::from_secs(*wait)).await;
         self.again(|| self.host.submit(key, run.clone())).await
     }
 
     /// `ask`, and again while its machine answers no connect or the Hub doesn't answer, each attempt said. Everything asked this way
     /// is a read, or goes under a key.
     async fn again<T, F: Future<Output = Result<T, Error>>>(&self, ask: impl Fn() -> F) -> Result<T, Error> {
+        const WAITS: [u64; 4] = [3, 6, 12, 24];
+        let again = |e: &Error| e.code == "machine_unreachable" || e.hub_transient();
+        for (attempt, wait) in WAITS.iter().enumerate() {
+            match ask().await {
+                Err(e) if again(&e) => {
+                    let wait = e.wait_or(std::time::Duration::from_secs(*wait));
+                    let message = format!("{}; attempt {}/{} in {} s", e.message, attempt + 2, WAITS.len() + 1, wait.as_secs());
+                    self.say(Event::Warning { message });
+                    tokio::time::sleep(wait).await;
                 }
                 answer => return answer,
             }
         }
-        self.host.submit(key, run).await
+        ask().await.map_err(|e| match again(&e) {
+            true => Error { message: format!("{}, after {} attempts", e.message, WAITS.len() + 1), ..e },
+            false => e,
+        })
     }
 
     fn say(&self, event: Event) {
@@ -1652,7 +1664,13 @@ impl Walk {
                     self.landed_now(&mut following, &mut followed, &mut first)?;
                 }
                 for i in planned.tools {
-                    if let Err(error) = self.tool(ask, &doc, &stand, &lock, i).await {
+                    let made = self.tool(ask, &doc, &stand, &lock, i).await;
+                    self.folder().update_lock(|lock| {
+                        for mine in lock.walk.asks.iter_mut().filter(|mine| mine.id == id) {
+                            mine.takes.retain(|take| name_key(&take.asset) != name_key(&doc.assets[i].name));
+                        }
+                    })?;
+                    if let Err(error) = made {
                         self.missed.lock().expect("missed lock").names.insert(doc.assets[i].name.clone());
                         self.failed(error, &mut first);
                         self.tried(&id, &doc.assets[i].name)?;
@@ -2304,9 +2322,9 @@ impl Walk {
         }, ..Default::default() });
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
-                let Some(files) = self.cut_tool(asset, standing, &ask.target).await? else {
-                    return self.tried(&ask.id, &name);
-                };
+                // Once a walk: what it cuts stands, or says why not.
+                self.tried(&ask.id, &name)?;
+                let Some(files) = self.cut_tool(asset, standing, &ask.target).await? else { return Ok(()) };
                 version.files = files;
             }
             Tool::Frame => {
@@ -2371,6 +2389,7 @@ impl Walk {
         })
         .await
         .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
+        let before = folder.lock()?.asset(&asset.name).and_then(|held| held.versions.last()?.files.get("video").cloned());
         let sha256 = folder.take(&part)?;
         let path = folder.lock()?.files.get(&sha256).map(|file| folder.path(&file.path));
         if let Some(path) = path {
@@ -2378,9 +2397,12 @@ impl Walk {
         }
         // What the film is, not what its pieces add up to.
         let frames = folder.film_frames(&folder.dir.join(&name)).unwrap_or(made.frames);
+        if frames.abs_diff(made.frames) > 1 + standing.reads.len() as u64 {
+            self.say(Event::Warning { message: format!("{name} holds {frames} frames, and its pieces add up to {}", made.frames) });
+        }
         let (retimed, took_s) = (made.retimed, began.elapsed().as_secs_f64());
         self.cut.lock().expect("cut lock").insert(name.clone());
-        self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: false });
+        self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256) });
         Ok(Some(Files::from([("video".to_owned(), sha256)])))
     }
 
@@ -2566,7 +2588,8 @@ fn plan(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Plan {
             continue;
         }
         if tool {
-            if doc.makes(i) && stand[i].files.is_none() && stand[i].inputs.is_some() && !tried {
+            // Named, it is made though it has a state.
+            if doc.makes(i) && stand[i].inputs.is_some() && (taken || (stand[i].files.is_none() && !tried)) {
                 unsettled[i] = true;
                 tools.push(i);
             }
