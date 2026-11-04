@@ -554,7 +554,11 @@ fn summary(ctx: &Context, state: &State) {
         output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");
     }
     for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
-        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}", asset.noun, made.number, made.prefix)).collect();
+        let from = |made: &protocol::project::VersionPrefix| match made.from.as_slice() {
+            [] => String::new(),
+            pieces => format!(" (from {})", pieces.join(", ")),
+        };
+        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}{}", asset.noun, made.number, made.prefix, from(made))).collect();
         output::say(ctx, &format!("{}: {}", asset.name, made.join(", ")));
         for made in &asset.prefixes {
             if let Some(kept) = made.kept {

@@ -534,6 +534,18 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
     Cut { cut: name, path, fps: canvas.fps, cut_at_ms, frames, retimed, skips }
 }
 
+/// What a cut's version was cut from: each piece's asset, and its version when it was one.
+fn cut_from(lock: &Lock, version: &Version) -> Vec<String> {
+    if version.made_by.as_ref().is_none_or(|by| by.with != "cozy/cut") {
+        return vec![];
+    }
+    let took = |read: &ReadFrom| {
+        let number = lock.asset(&read.name)?.versions.iter().find(|held| held.main() == folder::main_of(&read.files))?.number;
+        Some(format!("{} {number}", read.name))
+    };
+    version.reads.iter().map(|read| took(read).unwrap_or_else(|| read.name.clone())).collect()
+}
+
 /// What its versions are called.
 fn noun(doc: &Doc, lock: &Lock, i: usize) -> &'static str {
     let asset = &doc.assets[i];
@@ -602,7 +614,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         with: doc.makes(i).then(|| doc.target(i)),
         versions: held.map_or(0, |held| held.versions.len() as u32),
         prefixes: (held.into_iter().flat_map(|held| &held.versions))
-            .filter_map(|version| Some(VersionPrefix { number: version.number, prefix: folder::prefix_of(version.main()?).to_owned(), kept: version.kept }))
+            .filter_map(|version| Some(VersionPrefix { number: version.number, prefix: folder::prefix_of(version.main()?).to_owned(), kept: version.kept, from: cut_from(lock, version) }))
             .collect(),
         approved: asset.pin.as_ref().and(standing.version()),
         pinned: asset.pin.is_some(),
@@ -1244,6 +1256,9 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
         };
         let tools: Vec<usize> = tools.into_iter().filter(|&i| tried.insert(doc.assets[i].name.clone())).collect();
         if tools.is_empty() {
+            for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
+                walker.film_follows(&doc, &stand, &lock, i).await;
+            }
             return vec![];
         }
         for i in tools {
@@ -1771,13 +1786,7 @@ impl Walk {
         for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
             let name = cut_name(&doc.assets[i].name);
             let Some(file) = stand[i].files.as_ref().and_then(|files| files.get("video")).and_then(|sha256| lock.files.get(sha256)) else { continue };
-            let at = self.folder().dir.join(&name);
-            if !at.is_file() || tools::shares_bytes(&at) {
-                let _ = tools::publish(&self.folder().path(&file.path), &at);
-            }
-            if !at.with_extension("otio").is_file() {
-                self.timeline_again(&doc.assets[i], &stand[i], &lock, &name).await;
-            }
+            self.film_follows(doc, stand, &lock, i).await;
             if self.cut.lock().expect("cut lock").contains(&name) {
                 continue;
             }
@@ -2303,7 +2312,8 @@ impl Walk {
         self.folder().keep(frame.path())
     }
 
-    /// Makes tool `i` here, from what it reads now, and lists what it made. A tool keeps one version, free to make again, and its pinned one.
+    /// Makes tool `i` here, from what it reads now, and lists what it made. A frame keeps one version, free to make again, and its pinned one. A cut keeps
+    /// every one with new bytes, as anything else does: the same pieces coming out the same make none.
     async fn tool(&self, ask: &Ask, doc: &Doc, stand: &[Standing], lock: &Lock, i: usize) -> Result<(), Error> {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -2325,6 +2335,11 @@ impl Walk {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
                 let Some(files) = self.cut_tool(asset, standing, &ask.target).await? else { return Ok(()) };
+                let now = self.folder().lock()?;
+                let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
+                if again {
+                    return Ok(());
+                }
                 version.files = files;
             }
             Tool::Frame => {
@@ -2389,12 +2404,17 @@ impl Walk {
         })
         .await
         .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
-        let before = folder.lock()?.asset(&asset.name).and_then(|held| held.versions.last()?.files.get("video").cloned());
+        let now = folder.lock()?;
+        let held = now.asset(&asset.name);
+        let before = held.and_then(|held| held.versions.last()?.files.get("video").cloned());
         let sha256 = folder.take(&part)?;
         let path = folder.lock()?.files.get(&sha256).map(|file| folder.path(&file.path));
         if let Some(path) = path {
+            self.keep_aside(&asset.name, &folder.dir.join(&name), &now);
             tools::publish(&path, &folder.dir.join(&name)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{name}: {e}")))?;
         }
+        // The timeline it's the film of, kept with it: a version chosen later brings its own.
+        let timeline = folder.keep(&folder.dir.join(&name).with_extension("otio"))?;
         // What the film is, not what its pieces add up to.
         let frames = folder.film_frames(&folder.dir.join(&name)).unwrap_or(made.frames);
         if frames.abs_diff(made.frames) > 1 + standing.reads.len() as u64 {
@@ -2403,7 +2423,48 @@ impl Walk {
         let (retimed, took_s) = (made.retimed, began.elapsed().as_secs_f64());
         self.cut.lock().expect("cut lock").insert(name.clone());
         self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256) });
-        Ok(Some(Files::from([("video".to_owned(), sha256)])))
+        Ok(Some(Files::from([("video".to_owned(), sha256), ("timeline".to_owned(), timeline)])))
+    }
+
+    /// A file at `at`, where a film goes, that is no version of `asset`: someone made it there. It is kept beside it, and said.
+    fn keep_aside(&self, asset: &str, at: &FsPath, lock: &Lock) {
+        let Ok(got) = tokio::task::block_in_place(|| folder::hash(at)) else { return };
+        if lock.asset(asset).is_some_and(|held| held.versions.iter().any(|version| version.main() == Some(&got))) {
+            return;
+        }
+        let stem = at.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        let aside = at.with_file_name(format!("{stem}.edited-{}.mp4", folder::prefix_of(&got)));
+        if std::fs::rename(at, &aside).is_ok() {
+            self.say(Event::Warning { message: format!("{} isn't a version of {asset}: it is kept as {}", at.display(), aside.display()) });
+        }
+    }
+
+    /// The film and timeline at the root as asset `i`'s state has them: a version chosen, a memo gone back to, one deleted, or one
+    /// still linked into `files/` by a cozy before this.
+    async fn film_follows(&self, doc: &Doc, stand: &[Standing], lock: &Lock, i: usize) {
+        let Some(files) = stand[i].files.as_ref() else { return };
+        let Some(file) = files.get("video").and_then(|sha256| lock.files.get(sha256)) else { return };
+        let (at, from) = (self.folder().dir.join(cut_name(&doc.assets[i].name)), self.folder().path(&file.path));
+        if !from.is_file() {
+            return;
+        }
+        let same = !tools::shares_bytes(&at) && tokio::task::block_in_place(|| folder::hash(&at)).is_ok_and(|got| got == file.sha256);
+        if !same {
+            self.keep_aside(&doc.assets[i].name, &at, lock);
+            if let Err(e) = tools::publish(&from, &at) {
+                self.say(Event::Warning { message: format!("{}: {e}", at.display()) });
+            }
+        }
+        let timeline = at.with_extension("otio");
+        match files.get("timeline").and_then(|sha256| lock.files.get(sha256)) {
+            Some(kept) if !same || !timeline.is_file() => {
+                if let Err(e) = tools::publish(&self.folder().path(&kept.path), &timeline) {
+                    self.say(Event::Warning { message: format!("{}: {e}", timeline.display()) });
+                }
+            }
+            None if !timeline.is_file() => self.timeline_again(&doc.assets[i], &stand[i], lock, &cut_name(&doc.assets[i].name)).await,
+            _ => {}
+        }
     }
 
     /// Each of `pieces` not on this computer fetched: from the machine that keeps it while that lives, else the Hub. What can't be
@@ -2442,7 +2503,7 @@ impl Walk {
         Err(Error::new(Kind::NotFound, "piece_absent", format!("{} cannot render: {why}: the film that stands stays", asset.name)).next(first).next(second))
     }
 
-    /// Lists a tool's version, its older ones gone unless pinned, and whatever files only they named.
+    /// Lists a tool's version: a cut's join its others, and a frame's older ones go unless pinned, with whatever files only they named.
     fn record_free(&self, doc: &Doc, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
         let number = version.number;
         let old = std::cell::RefCell::new(vec![]);
@@ -2450,9 +2511,10 @@ impl Walk {
         let now = Doc::load(self.folder());
         let doc = now.as_ref().unwrap_or(doc);
         let pin = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.1.clone()));
+        let cut = doc.find(name).is_some_and(|i| doc.tool(i) == Some(Tool::Cut));
         self.folder().update_lock(|lock| {
             let held = lock.asset_mut(name, kind);
-            let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| version.main() == pin.as_ref());
+            let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| cut || version.main() == pin.as_ref());
             held.versions = keep;
             held.versions.push(version.clone());
             held.versions.sort_by_key(|version| version.number);

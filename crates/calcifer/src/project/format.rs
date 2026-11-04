@@ -855,8 +855,11 @@ impl Doc {
         let Some(now) = &inputs else { return stand(State::Waits, None) };
         // A film short of its pieces isn't its state, though the memo would say so: it cuts again.
         let off = |version: &folder::Version| Some(self.tool(i)? == Tool::Cut).filter(|cut| *cut).and_then(|_| super::tools::film_off(&asset.fields, &reads, lock, &version.files));
-        match (versions.iter().rev().find(|version| version.inputs == *now), versions.last()) {
-            (Some(version), _) if off(version).is_some() => stand(State::Stale(off(version).unwrap_or_default()), None),
+        let holding = || versions.iter().rev().filter(|version| version.inputs == *now);
+        if let Some(why) = holding().next().filter(|_| holding().all(|version| off(version).is_some())).and_then(off) {
+            return stand(State::Stale(why), None);
+        }
+        match (holding().find(|version| off(version).is_none()), versions.last()) {
             (Some(version), _) => stand(State::Current(version.number), Some(version.files.clone())),
             (None, None) => stand(State::Missing, None),
             (None, Some(last)) => {

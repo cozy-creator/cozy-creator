@@ -345,7 +345,7 @@ reads. A failed call stops the list and makes no version; a function taking `see
 run failed. `models` and `lora` go on the first call. `options`, every key of `render` but `with`, `prompt`, `models` and `lora`, merged over `defaults.<type>`, goes only to the adapter, and `prompt` reaches it as `fields.instructions`. The version records each call as `invocations`, and
 each file by its output's name, later over earlier. `written`, a list, is a function's frames for `op.writes`, in order; a write with none is
 cut from the landed video. The package `cozy` is reserved: a `video` (a cut) and an `image` (a frame) run here, free, with no machine, once what they
-read settles and on `approve`, reading each asset's state, else its newest version, which they say. A tool keeps one version and its pinned one.
+read settles and on `approve`, reading each asset's state, else its newest version, which they say. A cut keeps its versions, a frame one and its pinned one.
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and

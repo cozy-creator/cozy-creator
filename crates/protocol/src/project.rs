@@ -207,6 +207,9 @@ pub struct VersionPrefix {
     /// What it keeps of another take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// A cut's: what it was cut from, `<asset> <version>` each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<String>,
 }
 
 /// The start of another take that a take keeps (`render --take --in`): which, and up to where. What follows is new.

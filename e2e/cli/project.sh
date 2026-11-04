@@ -64,6 +64,7 @@ cut_of_takes
 said_once
 film_is_its_file
 short_film_heals
+cut_versions
 hard_cut
 memo
 pins
@@ -1193,7 +1194,7 @@ n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_r
 version=$(jq '.assets.edit.versions[-1].number' "$T/project.lock")
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
-[ "$(jq '.assets.edit.versions[-1].number' "$T/project.lock")" -gt "$version" ] || check "healing: naming it made no new version: $(tail -c 400 "$OUT/render.txt")"
+[ "$(jq '.assets.edit.versions[-1].number' "$T/project.lock")" = "$version" ] || check "healing: the same bytes made a new version: $(tail -c 400 "$OUT/render.txt")"
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also
@@ -1333,6 +1334,44 @@ stored=$(jq -r '.files[.assets.film.versions[-1].files.video].path' "$T/project.
 cp "$T/short.mp4" "$T/film.mp4"
 J '.cuts[0].frames == 24' <<< "$(status "$T")" || check "truth: status doesn't read the file: $(status "$T" | jq -c .cuts)"
 [ "$(sha "$T/$stored")" = "$(basename "${stored%.*}")" ] || check "truth: writing over film.mp4 changed $stored"
+}
+
+# A cut's versions are all kept and listed; approving an older one brings it and its timeline to the root, and unpinning goes back.
+cut_versions() {
+step "a project: a cut keeps its versions, and the film follows the state"
+local T=$OUT/edits a b one first_timeline two
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  b: {video: $b}
+  edit:
+    kind: video
+    render: {with: cozy}
+    pieces:
+      - <a>
+YAML
+render "$T" edit || check "edits: first cut: $(tail -c 400 "$OUT/render.txt")"
+one=$(sha "$T/edit.mp4"); first_timeline=$(sha "$T/edit.otio")
+sed -i 's/^      - <a>$/      - <a>\n      - <b>/' "$T/project.yaml"
+render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
+two=$(sha "$T/edit.mp4")
+[ "$one" != "$two" ] || check "edits: the second cut is the first"
+J '.assets[] | select(.name == "edit") | (.prefixes | length) == 2 and (.prefixes[0].from == ["a"]) and (.prefixes[1].from == ["a", "b"])' <<< "$(status "$T")" || check "edits: status: $(row "$T" edit .prefixes)"
+ls "$T/files/$one"* > /dev/null 2>&1 || check "edits: the first film is gone from files/"
+render "$T" edit || check "edits: naming it: $(tail -c 400 "$OUT/render.txt")"
+says edits "(unchanged)"
+[ "$(made "$T" edit)" = 2 ] || check "edits: the same pieces made a version: $(made "$T" edit)"
+cozy project -p "$T" approve edit "$(jq '.assets.edit.versions[0].number' "$T/project.lock")" > "$OUT/edits-approve.txt" 2>&1 || check "edits: approve: $(tail -c 300 "$OUT/edits-approve.txt")"
+[ "$(sha "$T/edit.mp4")" = "$one" ] || check "edits: edit.mp4 isn't the approved film: $(tail -c 300 "$OUT/edits-approve.txt")"
+[ "$(sha "$T/edit.otio")" = "$first_timeline" ] || check "edits: edit.otio isn't the approved film's"
+cozy project -p "$T" unpin edit > "$OUT/edits-unpin.txt" 2>&1 || check "edits: unpin: $(tail -c 300 "$OUT/edits-unpin.txt")"
+[ "$(sha "$T/edit.mp4")" = "$two" ] || check "edits: edit.mp4 didn't go back to the state: $(tail -c 300 "$OUT/edits-unpin.txt")"
+[ "$(made "$T" edit)" = 2 ] || check "edits: choosing made a version: $(made "$T" edit)"
 }
 
 # A rename asked while a render goes happens as it ends.
