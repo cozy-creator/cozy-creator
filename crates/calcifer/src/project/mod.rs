@@ -2550,7 +2550,8 @@ fn covered(doc: &Doc, stand: &[Standing], ask: &Ask) -> Vec<bool> {
     let taken = |i: usize| ask.takes.iter().any(|take| name_key(&take.asset) == key(i));
     let mut covered = vec![ask.all; doc.assets.len()];
     for &i in doc.order.iter().rev() {
-        covered[i] |= taken(i);
+        // Naming a cut cuts what stands, free: it pays for nothing it reads.
+        covered[i] |= taken(i) && doc.tool(i).is_none();
         let tool = doc.tool(i).is_some() && doc.assets[i].pin.is_none();
         if covered[i] && (stand[i].files.is_none() || taken(i) || tool) {
             for &read in &doc.upstream[i] {
