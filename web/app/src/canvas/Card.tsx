@@ -15,8 +15,8 @@ function kindOf(view: ElementView): string {
   const asset = view.asset
   if (!asset) return ""
   if (asset.written_by) return "written"
-  if (asset.with === "cozy") return asset.kind === "video" ? "cut" : "frame"
-  if (asset.field && !asset.with) return "file"
+  if (asset.tool === "cozy") return asset.kind === "video" ? "cut" : "frame"
+  if (asset.field && !asset.tool) return "file"
   return asset.kind === "video" ? "shot" : asset.kind
 }
 
@@ -63,7 +63,7 @@ function PinIcon() {
 function Pin({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const asset = view.asset
-  if (!asset || asset.written_by || (asset.pinned && !asset.with && !asset.prefixes?.length)) return null
+  if (!asset || asset.written_by || (asset.pinned && !asset.tool && !asset.prefixes?.length)) return null
   const shown = shownOf(view)
   const lit = Boolean(asset.pinned) && (asset.approved === undefined ? view.viewed === undefined : shown?.number === asset.approved)
   if (!lit && shown?.number === undefined) return null
@@ -86,7 +86,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const asset = view.asset!
   const shown = shownOf(view)
   const versions = asset.prefixes ?? []
-  if (!asset.with && !versions.length) return null
+  if (!asset.tool && !versions.length) return null
   if (asset.written_by) return null
   return (
     <div className="takes nodrag nopan nowheel">
@@ -107,7 +107,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
           {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
         </span>
       ))}
-      {asset.with && (
+      {asset.tool && (
         <button type="button" className="take add" aria-label={`New ${asset.noun}`} title={`New ${asset.noun}`} onClick={() => void store.newTake(name)}>
           +
         </button>
@@ -119,7 +119,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
 /** A shot's beats, each as wide as it lasts, or a cut's pieces. Read only: clicking a beat opens its words, a piece plays from there. */
 function Bar({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
-  const beats = beatsOf(view.asset?.text)
+  const beats = beatsOf(view.asset?.fields)
   if (beats.length) {
     return (
       <div className="beats">
@@ -131,7 +131,7 @@ function Bar({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
-  const pieces = piecesOf(view.asset?.text)
+  const pieces = piecesOf(view.asset?.fields)
   if (!pieces.length) return null
   const lasts = pieces.map((piece) => {
     const held = store.get(piece)
@@ -187,7 +187,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   const asset = view.asset
   if (!asset) return null
   // What a shot writes comes with its take: there's nothing to ask of it alone.
-  const makes = asset.with && !asset.written_by
+  const makes = asset.tool && !asset.written_by
   if (asset.standing === "making") {
     const run = view.run
     const stalled = run?.stalled

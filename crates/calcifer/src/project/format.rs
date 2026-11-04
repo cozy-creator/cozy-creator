@@ -699,11 +699,16 @@ impl Doc {
         self.warnings.push(Warning::of(name, message));
     }
 
-    /// Asset `i`'s words as the file writes them: its own fields, with no platform field but a file field holding a mention, and `render`'s text as `prompt`.
-    pub fn text(&self, i: usize) -> Map<String, Value> {
+    /// Asset `i`'s inputs as a node has them, flat: what it passes to its function, whichever part of the file says it, defaults too, and a beat's `writes`.
+    pub fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];
-        let written = |(field, value): &(&String, &Value)| asset.own.contains(field.as_str()) && (!RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty()));
-        asset.body.iter().filter(written).map(|(field, value)| (said_as(field).to_owned(), value.clone())).collect()
+        let passes = |(field, value): &(&String, &Value)| !RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty());
+        let mut flat: Map<String, Value> = asset.body.iter().filter(passes).map(|(field, value)| (said_as(field).to_owned(), value.clone())).collect();
+        flat.extend(asset.body.get("options").and_then(Value::as_object).into_iter().flatten().map(|(field, value)| (field.clone(), value.clone())));
+        // A pin over an input keeps it, and it is what the box shows.
+        flat.extend(PINS.iter().filter_map(|field| Some(((*field).to_owned(), asset.fields.get(*field)?.clone()))));
+        flat.extend(["models", "lora"].iter().filter_map(|field| Some(((*field).to_owned(), asset.body.get(*field)?.clone()))));
+        flat
     }
 
     /// The shot whose beat writes asset `i`: its take's frame, or a free frame cut from its video.
@@ -1210,7 +1215,7 @@ fn quoted(text: &str) -> String {
 /// Whether a scalar at this path names a file, so that a number's shape is a hash's prefix by its text: an entity's fields, and an
 /// asset's `image`, `video` or `audio`, wherever in it. `12345678e012` isn't 1.2345678e19, and `012345678901` isn't 12345678901,
 /// which is another file's prefix.
-fn names_a_file(path: &[&str]) -> bool {
+pub(super) fn names_a_file(path: &[&str]) -> bool {
     match path {
         ["entities", ..] => true,
         ["assets", .., field] => PINS.contains(field),
@@ -1263,34 +1268,34 @@ pub fn constant(text: &str, name: &str, field: &str, value: &str) -> Result<Stri
     }
     let written = read(value).unwrap_or_else(|_| json!(value));
     assets.as_object_mut().ok_or_else(|| by_hand("its `assets:` is no mapping"))?.insert(name.to_owned(), json!({field: written}));
+    under_section(text, "assets", &format!("{one}\n")).into_iter().find(|edited| read(edited).is_ok_and(|read| read == wanted)).ok_or_else(|| by_hand("the edit would change something else"))
+}
+
+/// The ways to add `block`, a key's lines written from column 0, to `section`, keeping what is there, to try in turn. A mapping all on one
+/// line takes only a single line, and a block of several needs lines of its own.
+pub(super) fn under_section(text: &str, section: &str, block: &str) -> Vec<String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let header = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some("assets"));
-    let tries: Vec<String> = match header {
-        None => {
-            let glue = if text.is_empty() { "" } else if text.ends_with('\n') { "\n" } else { "\n\n" };
-            vec![format!("{text}{glue}assets:\n  {one}\n")]
-        }
-        Some(at) => {
-            let (written, comment) = split_comment(&lines[at][lines[at].find(':').expect("a key") + 1..]);
-            let comment = comment.map_or(String::new(), |comment| format!("  {comment}"));
-            match written {
-                "" => {
-                    let end = ((at + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
-                    let last = ((at + 1)..end).rev().find(|&n| significant(lines[n]));
-                    let indent = ((at + 1)..end).find(|&n| significant(lines[n])).map_or(2, |n| spaces(lines[n]));
-                    let line = format!("{}{one}\n", " ".repeat(indent));
-                    // Past a text's last line unless that isn't the text's end, then at the section's end.
-                    [last.unwrap_or(at), end - 1].iter().map(|&after| insert_line(&lines, after, &line)).collect()
-                }
-                "{}" | "~" | "null" => vec![replace_line(&lines, at, &format!("assets:{comment}\n  {one}\n"))],
-                written => match written.strip_prefix('{').and_then(|inner| inner.strip_suffix('}')) {
-                    Some(inner) => vec![replace_line(&lines, at, &format!("assets: {{{one}, {}}}{comment}\n", inner.trim_start()))],
-                    None => vec![],
-                },
-            }
-        }
+    let indented = |indent: usize| block.split_inclusive('\n').map(|line| if line.trim().is_empty() { line.to_owned() } else { format!("{}{line}", " ".repeat(indent)) }).collect::<String>();
+    let Some(at) = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some(section)) else {
+        let glue = if text.is_empty() { "" } else if text.ends_with('\n') { "\n" } else { "\n\n" };
+        return vec![format!("{text}{glue}{section}:\n{}", indented(2))];
     };
-    tries.into_iter().find(|edited| read(edited).is_ok_and(|read| read == wanted)).ok_or_else(|| by_hand("the edit would change something else"))
+    let (written, comment) = split_comment(&lines[at][lines[at].find(':').expect("a key") + 1..]);
+    let comment = comment.map_or(String::new(), |comment| format!("  {comment}"));
+    match written {
+        "" => {
+            let end = ((at + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+            let indent = ((at + 1)..end).find(|&n| significant(lines[n])).map_or(2, |n| spaces(lines[n]));
+            let last = ((at + 1)..end).rev().find(|&n| significant(lines[n]) || (!lines[n].trim().is_empty() && spaces(lines[n]) > indent));
+            // Past a text's last line, and what comments on it, unless that isn't the text's end, then at the section's end.
+            [last.unwrap_or(at), end - 1].iter().map(|&after| insert_line(&lines, after, &indented(indent))).collect()
+        }
+        "{}" | "~" | "null" => vec![replace_line(&lines, at, &format!("{section}:{comment}\n{}", indented(2)))],
+        written => match written.strip_prefix('{').and_then(|inner| inner.strip_suffix('}')) {
+            Some(inner) if block.trim_end().lines().count() == 1 => vec![replace_line(&lines, at, &format!("{section}: {{{}, {}}}{comment}\n", block.trim_end(), inner.trim_start()))],
+            _ => vec![],
+        },
+    }
 }
 
 /// `text` with asset `from` called `to`: its key, and every `<from>`. Comments and formatting stay.
@@ -1327,7 +1332,7 @@ pub fn yaml_scalar(value: &str) -> String {
 }
 
 /// Text trimmed, numbers as floats, keys sorted: a comment, a reformat or key order changes nothing.
-fn canonical(value: &Value) -> Value {
+pub(super) fn canonical(value: &Value) -> Value {
     match value {
         Value::String(text) => Value::String(text.trim().to_owned()),
         Value::Number(number) => number.as_f64().map_or_else(|| value.clone(), |float| json!(float)),
@@ -1436,7 +1441,7 @@ fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&st
 }
 
 /// The value `name` is in a project's JSON: an asset, or an entity or sub-entity.
-fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+pub(super) fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
     let key_in = |map: &Value, name: &str| map.as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned();
     for section in ["assets", "entities"] {
         if let Some(key) = key_in(&doc[section], name) {
@@ -1460,21 +1465,21 @@ fn pinned_over(text: &str, name: &str, field: &str) -> Option<String> {
 }
 
 /// Where an asset's lines are in the text.
-struct Place<'a> {
-    lines: Vec<&'a str>,
+pub(super) struct Place<'a> {
+    pub lines: Vec<&'a str>,
     /// The line that names it.
-    key: usize,
+    pub key: usize,
     /// The lines after it that are its body.
-    body: std::ops::Range<usize>,
+    pub body: std::ops::Range<usize>,
     /// How far its fields are indented.
-    child: usize,
+    pub child: usize,
     /// All on one line, `name: {…}`: what is before `{`, what is inside, what follows `}`.
-    flow: Option<(String, String, String)>,
+    pub flow: Option<(String, String, String)>,
 }
 
 impl<'a> Place<'a> {
     /// The lines of `name` under `assets:`, or of an entity or sub-entity (`kyogre.primordial`), whose links can hold hashes.
-    fn find(text: &'a str, name: &str) -> Option<Self> {
+    pub fn find(text: &'a str, name: &str) -> Option<Self> {
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
         let section = |section: &str| {
             let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == section)? + 1;
@@ -1504,11 +1509,11 @@ impl<'a> Place<'a> {
     }
 }
 
-fn significant(line: &str) -> bool {
+pub(super) fn significant(line: &str) -> bool {
     !line.trim().is_empty() && !line.trim_start().starts_with('#')
 }
 
-fn spaces(line: &str) -> usize {
+pub(super) fn spaces(line: &str) -> usize {
     line.len() - line.trim_start_matches(' ').len()
 }
 
@@ -1535,7 +1540,7 @@ fn block(lines: &[&str], within: std::ops::Range<usize>, name: &str) -> Option<(
 }
 
 /// The key a line opens: `name:`, `"name":`, `'name':`.
-fn key_of(line: &str) -> Option<String> {
+pub(super) fn key_of(line: &str) -> Option<String> {
     let line = line.trim();
     if let Some(quote @ ('"' | '\'')) = line.chars().next() {
         let rest = &line[1..];
@@ -1547,13 +1552,13 @@ fn key_of(line: &str) -> Option<String> {
 }
 
 /// A field's line as its indent and what follows `field:`.
-fn field_rest<'a>(line: &'a str, field: &str) -> (&'a str, &'a str) {
+pub(super) fn field_rest<'a>(line: &'a str, field: &str) -> (&'a str, &'a str) {
     let spaces = line.len() - line.trim_start_matches(' ').len();
     (&line[..spaces], line[spaces + field.len()..].trim_start_matches(':').trim())
 }
 
 /// What a value writes, and its comment. A `#` in quotes is no comment, and neither is one with no space before it.
-fn split_comment(rest: &str) -> (&str, Option<&str>) {
+pub(super) fn split_comment(rest: &str) -> (&str, Option<&str>) {
     let (mut quote, bytes) = (None, rest.as_bytes());
     for (n, byte) in bytes.iter().enumerate() {
         match (quote, *byte) {
@@ -1599,7 +1604,7 @@ fn insert_line(lines: &[&str], after: usize, line: &str) -> String {
     [head.concat().as_str(), glue, line, tail.concat().as_str()].concat()
 }
 
-fn invalid(code: &str, message: String) -> Error {
+pub(super) fn invalid(code: &str, message: String) -> Error {
     Error::new(Kind::Validation, code, message)
 }
 

@@ -37,7 +37,7 @@ const clipped = (text: string) => (text.length > 160 ? `${text.slice(0, 160).tri
 /** The words that made an edge, named. */
 function said(store: CanvasStore, edge: EdgeSpec): { where: string; words?: string } {
   if (edge.kind === "link") return { where: `${edge.reader}'s ${edge.at[0]}`, words: `<${edge.read}>` }
-  const text = store.get(edge.reader)?.asset?.text
+  const text = store.get(edge.reader)?.asset?.fields
   if (edge.kind === "write") {
     const beats = beatsOf(text)
     const beat = beats.findIndex((held) => held.writes.some((write) => write.image === edge.read))

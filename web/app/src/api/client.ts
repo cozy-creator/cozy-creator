@@ -21,6 +21,9 @@ import type {
   ModelReleased,
   ModelSearch,
   ModelUploading,
+  NodeDeleted,
+  NodeMade,
+  NodePatched,
   Opened,
   OrgClaim,
   PackageDetail,
@@ -45,6 +48,7 @@ import type {
   Status,
   Submitted,
   Target,
+  Tools,
   Unpinned,
   Updating,
 } from "../types"
@@ -263,9 +267,38 @@ export class Client {
     return this.write("POST", `${project(id)}/unpin`, { name })
   }
 
-  /** A new version of each of `names`, on these machines. */
-  render(id: string, names: string[], on: string[], key: string): Promise<Asked> {
-    return this.write("POST", `${project(id)}/runs`, { names, on }, key)
+  /** A new version of each of `names`, on these machines. `take` and `in_s` keep one video's start; `outdated`, with `all`, re-runs pins that are. */
+  render(id: string, names: string[], on: string[], key: string, also: { take?: number; in_s?: number; outdated?: boolean } = {}): Promise<Asked> {
+    return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key)
+  }
+
+  /** A tool dropped on the canvas. */
+  newNode(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown> }): Promise<NodeMade> {
+    return this.write("POST", `${project(id)}/nodes`, body, key)
+  }
+
+  /** These inputs set. With `read`, only if its own lines are still what that read. */
+  patchNode(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string): Promise<NodePatched> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (read) headers["If-Match"] = read
+    return this.json(`${project(id)}/nodes/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) })
+  }
+
+  deleteNode(id: string, name: string): Promise<NodeDeleted> {
+    return this.write("DELETE", `${project(id)}/nodes/${encodeURIComponent(name)}`, {})
+  }
+
+  /** What deleting it answered, back under its name. */
+  putNodeBack(id: string, name: string, text: string, at?: Row): Promise<NodeMade> {
+    return this.write("PUT", `${project(id)}/nodes/${encodeURIComponent(name)}`, { text, at })
+  }
+
+  /** What can be dropped on a canvas: what `on` has installed, then the Hub's. */
+  tools(q: string, on: string | null, signal?: AbortSignal): Promise<Tools> {
+    const asked = new URLSearchParams()
+    if (q) asked.set("q", q)
+    if (on) asked.set("on", on)
+    return this.json(`/v1/tools?${asked}`, { signal })
   }
 
   /** These assets' queued work dropped and their runs canceled. */

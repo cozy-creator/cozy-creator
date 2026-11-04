@@ -208,7 +208,7 @@ const constants = (folder) => {
   // The terminal sees the same project.
   if (process.env.COZY) {
     const status = JSON.parse(execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
-    const held = status.assets.map((asset) => asset.name);
+    const held = status.nodes.map((node) => node.name);
     check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_1_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
   }
 

@@ -44,7 +44,7 @@ function ProjectName({ id }: { id: string | null }) {
   const to = useTo()
   const { data } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) })
   const name = data?.path.split(/[/\\]/).filter(Boolean).pop() ?? (id ? "…" : "untitled")
-  const assets = data?.assets ?? []
+  const assets = data?.nodes ?? []
   const making = assets.filter((asset) => asset.standing === "making").length
   const late = assets.filter((asset) => asset.standing === "out_of_date").length
   const failed = assets.filter((asset) => asset.failure && asset.standing !== "making").length

@@ -71,13 +71,13 @@ export interface Read {
   at?: string[]
 }
 
-export interface Asset {
+export interface ProjectNode {
   name: string
   standing: Standing
   making?: number[]
   kind: string
   noun: string
-  with?: string
+  tool?: string
   versions: number
   prefixes?: VersionPrefix[]
   /** The version that is its state. */
@@ -99,9 +99,15 @@ export interface Asset {
   machine?: string
   reads?: Read[]
   written_by?: string
-  /** Its words as the file writes them. A person wrote them, so nothing here is more than text. */
-  text?: Record<string, unknown>
+  /** Its inputs, flat, by each control's `field`. A person wrote them, so nothing here is more than text. */
+  fields?: Record<string, unknown>
+  /** What `PATCH`'s `If-Match` names. */
+  etag?: string
   failure?: ErrorBody
+  /** A pin's: what changed since the version it holds was made. */
+  changed?: string[]
+  /** What its text reads that is nothing in the project. */
+  missing?: string[]
 }
 
 export interface Queued {
@@ -146,7 +152,7 @@ export interface ProjectState {
   id: string
   path: string
   name?: string
-  assets: Asset[]
+  nodes: ProjectNode[]
   entities?: Entity[]
   queue?: Queued[]
   missing?: string[]
@@ -889,3 +895,57 @@ export type ServerEvent =
   | { type: "project.changed"; id: string; rev: string }
   | { type: "canvas"; id: string; etag: string; cards: Record<string, Row | null> }
   | { type: "resync" }
+
+export interface NodeMade {
+  name: string
+  etag: string
+}
+
+export interface NodePatched {
+  name: string
+  etag: string
+  was: string
+  warnings?: string[]
+}
+
+export interface NodeDeleted {
+  name: string
+  /** Opaque: what `PUT` takes to put it back. */
+  text: string
+  at?: Row
+}
+
+export type ControlType = "text" | "beats" | "shape" | "range" | "choice" | "toggle" | "file"
+
+/** One thing a box asks for. A box is built from these, and nothing about any function. */
+export interface Control {
+  field: string
+  type: ControlType
+  label: string
+  options?: unknown[]
+  min?: number
+  max?: number
+  step?: number
+  accept?: string
+  multiple?: boolean
+  max_duration?: number
+  default?: unknown
+  required?: boolean
+}
+
+export interface Tool {
+  id: string
+  package: string
+  function: string
+  release: string
+  label: string
+  kind: string
+  description?: string
+  controls: Control[]
+}
+
+export interface Tools {
+  tools: Tool[]
+  /** Why it holds only what's installed. */
+  note?: string
+}
