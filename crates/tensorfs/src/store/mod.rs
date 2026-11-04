@@ -355,7 +355,8 @@ impl Store {
         let Some((file, found)) = partial(&temp) else {
             return self.admit(Some(object));
         };
-        if !self.maintain(object.length)? {
+        let held = file.metadata().map_or(0, |metadata| metadata.len());
+        if !self.maintain(object.length.saturating_sub(held))? {
             return Err(Error::Full { op: "admit", path: self.root.clone() });
         }
         let mut admission = Admission {

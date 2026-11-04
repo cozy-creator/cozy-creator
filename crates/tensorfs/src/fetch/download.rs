@@ -561,6 +561,9 @@ impl<'s> Sink<'s> {
                 detail: error.to_string(),
             })??;
         let (reached, ahead) = admission.held();
+        if reached + ahead > 0 {
+            tracing::info!(object = %task.object.sha256, reached, ahead, "an earlier fetch's bytes taken up");
+        }
         task.kept.store(reached + ahead, Ordering::Release);
         task.reached.fetch_max(reached + ahead, Ordering::AcqRel);
         Ok(Sink {
