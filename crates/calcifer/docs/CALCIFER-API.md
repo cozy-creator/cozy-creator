@@ -30,18 +30,15 @@ Every request passes, in order:
 2. **`Host`** is `127.0.0.1`, `localhost` or `[::1]`, on any port, so an SSH `-L` to another port works
    (`host_not_allowed`): a DNS-rebinding page's `Host` is its own name, and it's turned away before anything else.
 3. **`Origin`**, when present, is `http://<Host>` (`origin_not_allowed`). No CORS header is ever sent.
-4. **The bearer** (`unauthenticated`), on every route, from either carrier of the one secret:
-   - `Authorization: Bearer <token>`, the lock record's token (the CLI);
-   - the `cozy_session` cookie, for a browser page, which cannot put a header on a `<video>` or an
-     `EventSource`. A page receives the token in its URL's fragment (`http://127.0.0.1:<port>/#token=…`, which no
-     server or log sees) and posts it once as `Authorization: Bearer` to `POST /v1/session`, which answers
-     `Set-Cookie: cozy_session=<token>; HttpOnly; SameSite=Strict; Path=/v1`. On the cookie, an unsafe method
-     (POST, PUT, PATCH, DELETE) must carry Calcifer's own `Origin`, and a read (GET, HEAD) must not be
-     `Sec-Fetch-Site: cross-site` (`session_cross_site`). `DELETE /v1/session` ends it.
+4. **A credential** (`unauthenticated`), on every route but the page and `POST /v1/session`:
+   - `Authorization: Bearer <token>`, either the lock record's token (the CLI) or a session's (a browser);
+   - `?media=<media>`, a session's second secret, on `GET` and `HEAD` of a file route only (`/v1/runs/{id}/outputs/{name}`,
+     `/v1/projects/{id}/files/{file}`, `cuts/{cut}`, `thumbs/{sha256}`), as `<img>` and `<video>` can't send a header.
 5. **Admission**: a stopping Calcifer refuses new mutations (`503 calcifer_stopping`); `POST /v1/down` and reads
    pass.
 
-The token is minted at every start: a restart ends every session.
+There are no cookies: a cookie reaches every port of a host, and a page's `localStorage` only its own. The lock
+record's token is minted at every start; a session outlives restarts.
 
 ## Conventions
 
@@ -102,8 +99,13 @@ and `audio/`, else `attachment`: what a run wrote never runs as script in Calcif
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
 ### Session
-- `POST /v1/session` (the bearer in `Authorization`): `204` and the `cozy_session` cookie.
-- `DELETE /v1/session`: `204`, the cookie cleared.
+A browser signs in with a single-use code, which `cozy web` gives it through a 0600 file so that it's in no process's
+arguments. `~/.cozy/calcifer/sessions.json` (0600) holds sessions' digests; 30 days unused ends one.
+- `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
+  `{code, url, expires_ms}`, 32 random bytes in hex, good for 60 s. `url` is `http://<Host>/#code=<code>`.
+- `POST /v1/session` `{code}`, needing no credential: `{token, media}`, new for each code. `400 session_code_invalid`
+  when it's unknown, used or expired.
+- `DELETE /v1/session`: `204`, the session whose token this carries has ended.
 
 ### Runs
 A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds it against the function's

@@ -1472,10 +1472,41 @@ hostile_outputs
 [ "$(api -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.example' -H 'Content-Type: application/json' -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$ID/runs")" = 403 ] \
   || check "a POST with a foreign Origin was not refused 403"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/projects")" = 401 ] || check "a request with no bearer was not refused 401"
+session_surface "$ID"
 # As through an SSH -L to another port: any port on a loopback name, and an Origin that matches it.
 [ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61999' "http://$ADDR/v1/projects")" = 200 ] || check "a forwarded port's Host and Origin were refused"
 [ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61998' "http://$ADDR/v1/projects")" = 403 ] || check "an Origin on another port than Host was not refused 403"
 yaml_routes "$P" "$ID"
+}
+
+# A browser session by hand: a code once, its token and media secret and what each opens, its end, and a code's 60 s.
+session_surface() {
+step "a project: a browser session's code, token and media secret"
+local ID=$1 B=http://$ADDR code token media sessions=$HOME/.cozy/calcifer/sessions.json U
+U=$B/v1/projects/$ID/cuts/edit.mp4
+as() { local who=$1; shift; curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $who" "$@"; }
+anon() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+[ "$(api -o "$OUT/code.json" -w '%{http_code}' -X POST "$B/v1/session-codes")" = 200 ] || check "session: no code: $(cat "$OUT/code.json")"
+code=$(jq -r .code "$OUT/code.json")
+J --arg url "$B/#code=$code" '.url == $url' "$OUT/code.json" || check "session: the code's url: $(jq -c .url "$OUT/code.json")"
+[ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: a code was not traded: $(cat "$OUT/session.json")"
+token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")
+[ "$(curl -sS -o "$OUT/session-again.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 400 ] && J '.error.code == "session_code_invalid"' "$OUT/session-again.json" \
+  || check "session: a code worked twice: $(cat "$OUT/session-again.json")"
+[ "$(as "$token" "$B/v1/projects")" = 200 ] || check "session: its token does not read"
+[ "$(as "$token" -X POST "$B/v1/session-codes")" = 403 ] || check "session: a session minted a code"
+[ "$(anon -r 0-0 "$U?media=$media")" = 206 ] && [ "$(anon -I "$U?media=$media")" = 200 ] || check "session: ?media= does not read a file"
+[ "$(anon "$B/v1/machines?media=$media")" = 401 ] || check "session: ?media= read GET /v1/machines"
+[ "$(anon -X POST -d '{}' "$B/v1/projects/$ID/runs?media=$media")" = 401 ] || check "session: ?media= reached a POST"
+[ "$(anon "$U?media=$token")" = 401 ] && [ "$(as "$media" "$B/v1/projects")" = 401 ] || check "session: its two secrets are interchangeable"
+[ "$(stat -c %a "$sessions")" = 600 ] || check "session: sessions.json is $(stat -c %a "$sessions")"
+! grep -qE "$token|$media" "$sessions" || check "session: sessions.json holds a secret, not its digest"
+[ "$(as "$token" -X DELETE "$B/v1/session")" = 204 ] || check "session: DELETE did not answer 204"
+[ "$(as "$token" "$B/v1/projects")" = 401 ] && [ "$(anon "$U?media=$media")" = 401 ] || check "session: an ended session still opens something"
+[ -n "${ALONE:-}" ] && return 0
+code=$(api -X POST "$B/v1/session-codes" | jq -r .code)
+sleep 61
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 400 ] || check "session: a code outlived its 60 s"
 }
 
 # What a run wrote can't be script in Calcifer's origin: sandboxed, and a page is a download. The browser opens them too.
@@ -1524,8 +1555,8 @@ cp "$OUT/yaml-kept.yaml" "$P/project.yaml"
 
 # The browser session (project/browser.js) on the runner's Google Chrome, with playwright-core to drive it.
 browser_session() {
-step "a project: a browser on Calcifer's session cookie, and another site refused"
-local P=$1 ID=$2 port pw=$OUT/playwright server
+step "a project: a browser on a Calcifer session, past a restart, and other origins refused"
+local P=$1 ID=$2 port pw=$OUT/playwright server code_got lock=$HOME/.cozy/calcifer/calcifer.lock.holder was_addr=$ADDR
 CHROME=$(command -v google-chrome || true)
 [ -n "$CHROME" ] || { check "no Google Chrome on this runner"; return; }
 npm install -s --prefix "$pw" playwright-core@1.55.0 > "$OUT/npm.log" 2>&1 || { check "npm install playwright-core failed: $(tail -c 300 "$OUT/npm.log")"; return; }
@@ -1534,25 +1565,35 @@ python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
 sed 's/      - <a>/      - {video: <a>, start: 0, end: 120}/' "$P/project.yaml" > "$OUT/recut.yaml"
-local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen
+code_got=$(api -X POST "http://$ADDR/v1/session-codes" | jq -r .code)
+local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
-CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/browser.js" "$ADDR" "$TOKEN" "$ID" "$port" \
-  "cp '$OUT/recut.yaml' '$P/project.yaml' && '$COZY' project -p '$P' render all --on local" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
+pid=$(jq -r .pid "$lock")
+CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/browser.js" "$ADDR" "$code_got" "$ID" "$HOSTILE" "$port" \
+  "cp '$OUT/recut.yaml' '$P/project.yaml' && '$COZY' project -p '$P' render all --on local" \
+  "kill -TERM $pid; while kill -0 $pid 2> /dev/null; do sleep 0.1; done; '$COZY' project ls > /dev/null" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
 kill "$server" 2> /dev/null || true
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+[ "$ADDR" = "$was_addr" ] || check "browser: a restart moved Calcifer from $was_addr to $ADDR"
 [ "$code" = 0 ] || { check "the browser failed: $(tail -c 400 "$OUT/browser.err")"; return; }
-J '.session == 204 and (.cookie | any(.name == "cozy_session" and .httpOnly and .sameSite == "Strict")) and .read_on_cookie.status == 200' "$OUT/browser.json" \
-  || check "browser: no HttpOnly SameSite=Strict session read the project: $(jq -c '{session, cookie, read_on_cookie}' "$OUT/browser.json")"
-J '.video.seeked_to > 0 and (.same_site_ranges | any(.status == 206 and .cookie))' "$OUT/browser.json" \
-  || check "browser: <video> did not seek edit.mp4 by Range on the cookie: $(jq -c '{video, same_site_ranges}' "$OUT/browser.json")"
-J '(.events_on_cookie | index("open")) and (.events_on_cookie | any(startswith("cut "))) and (.events_on_cookie | index("ended"))' "$OUT/browser.json" \
-  || check "browser: EventSource on the cookie did not follow the re-cut: $(jq -c .events_on_cookie "$OUT/browser.json")"
-# What Calcifer saw of the other site (its log names each refusal): the fetch and both POSTs refused, none carried out.
+J '.session.status == 200 and .session.token and .session.media and .session.again == 400 and .session.again_code == "session_code_invalid"' "$OUT/browser.json" \
+  || check "browser: a code did not work exactly once: $(jq -c .session "$OUT/browser.json")"
+J '(.cookies | length == 0) and .read.status == 200' "$OUT/browser.json" || check "browser: no cookie and a read on the token: $(jq -c '{cookies, read}' "$OUT/browser.json")"
+J '.video.seeked_to > 0 and (.ranges | any(.status == 206))' "$OUT/browser.json" \
+  || check "browser: <video> did not seek edit.mp4 by Range on ?media=: $(jq -c '{video, ranges}' "$OUT/browser.json")"
+J '.media_elsewhere | .machines == 401 and .project == 401 and .post == 401' "$OUT/browser.json" || check "browser: ?media= opened more than a file: $(jq -c .media_elsewhere "$OUT/browser.json")"
+J '(.events | index("open")) and (.events | any(startswith("cut "))) and (.events | index("ended"))' "$OUT/browser.json" \
+  || check "browser: the event stream did not follow the re-cut: $(jq -c .events "$OUT/browser.json")"
+J '.after_restart == 200' "$OUT/browser.json" || check "browser: a Calcifer restart ended the session: $(jq -c .after_restart "$OUT/browser.json")"
+J '.hostile.page.download and (.hostile.page.reached | length == 0)' "$OUT/browser.json" || check "browser: a run's HTML output: $(jq -c .hostile.page "$OUT/browser.json")"
+J '(.hostile.drawing.download | not) and .hostile.drawing.status == 200 and (.hostile.drawing.reached | length == 0)' "$OUT/browser.json" || check "browser: a run's SVG output: $(jq -c .hostile.drawing "$OUT/browser.json")"
+# What Calcifer saw of the others (its log names each refusal): each fetch and POST refused, none carried out, no credential sent.
 tail -c +$((seen + 1)) "$log" | grep 'refused ' > "$OUT/browser-refused.txt" || true
-{ grep -qE 'refused GET /v1/projects code="(origin_not_allowed|session_cross_site|unauthenticated)"' "$OUT/browser-refused.txt" \
-  && [ "$(grep -cE "refused POST /v1/projects/$ID/runs code=\"origin_not_allowed\"" "$OUT/browser-refused.txt")" -ge 2 ] \
-  && J '(.cross_site_page.fetch_get | startswith("not readable")) and (.cross_site_at_calcifer | all(.cookie | not))' "$OUT/browser.json"; } \
-  || check "browser: another site was not refused by Calcifer: $(cat "$OUT/browser-refused.txt" | cut -c1-200 | paste -sd' '); page $(jq -c .cross_site_page "$OUT/browser.json")"
-J '(.pending // {}) | length == 0' "$P/project.lock" && ! grep -q nothing "$P/project.lock" || check "another site's POST started a render"
+{ grep -qE 'refused GET /v1/projects code="origin_not_allowed"' "$OUT/browser-refused.txt" \
+  && [ "$(grep -cE "refused POST /v1/projects/$ID/runs code=\"origin_not_allowed\"" "$OUT/browser-refused.txt")" -ge 4 ] \
+  && J '(.other_pages | all(.results.fetch_get | startswith("not readable"))) and (.other_pages | all(.kept == 0)) and (.others_at_calcifer | all(.credential | not))' "$OUT/browser.json"; } \
+  || check "browser: another origin was not refused by Calcifer: $(cat "$OUT/browser-refused.txt" | cut -c1-200 | paste -sd' '); pages $(jq -c .other_pages "$OUT/browser.json")"
+J '(.pending // {}) | length == 0' "$P/project.lock" && ! grep -q nothing "$P/project.lock" || check "another origin's POST started a render"
 }
 
 # The projects this run opened, out of the owner's list; their folders are gone with $OUT.

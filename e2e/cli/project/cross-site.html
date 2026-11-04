@@ -3,7 +3,7 @@
 <iframe name="sink"></iframe>
 <form id="f" method="POST" target="sink" enctype="text/plain"><input name='{"names":["nothing"],"on":["local"],"hub":"x","pad":"' value='"}'></form>
 <script>
-// Another site's page, opened in the browser that holds Calcifer's session cookie: every way it can reach Calcifer.
+// Another origin's page, opened in the browser that holds a Calcifer session: every way it can reach Calcifer.
 const q = new URLSearchParams(location.search), target = q.get('target'), id = q.get('id');
 window.results = {};
 (async () => {

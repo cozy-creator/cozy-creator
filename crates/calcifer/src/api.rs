@@ -1,8 +1,8 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
 //! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
-//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer, from the `Authorization`
-//! header or the `cozy_session` cookie `POST /v1/session` sets, and the admission gate a stopping
-//! Calcifer closes. Refusals are `protocol::error::Envelope`s. No CORS header is ever sent.
+//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
+//! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
+//! `protocol::error::Envelope`s. No CORS header is ever sent.
 use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
@@ -17,7 +17,7 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, Sse},
     },
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use protocol::{
     calcifer::{Down, Event, Run, RunList, RunsEvent, Status},
@@ -59,6 +59,7 @@ pub struct Api {
     pub(crate) codes: crate::hub::Codes,
     /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
     pub(crate) works: crate::hub::Works,
+    pub(crate) sessions: crate::sessions::Sessions,
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
@@ -73,6 +74,7 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         Arc::new(Self {
+            sessions: crate::sessions::Sessions::open(calcifer.home().join("sessions.json")),
             calcifer,
             machines,
             projects: Default::default(),
@@ -115,7 +117,7 @@ impl Api {
     }
 
     /// The bearer, compared by digest so the time taken says nothing about the token.
-    fn admits(&self, presented: &str) -> bool {
+    pub(crate) fn admits(&self, presented: &str) -> bool {
         let presented: [u8; 32] = Sha256::digest(presented).into();
         presented
             .iter()
@@ -163,11 +165,13 @@ pub fn router(api: Arc<Api>) -> Router {
                 .head(crate::runs::files::head)
                 .layer(DefaultBodyLimit::disable()),
         )
-        .route("/v1/session", post(session).delete(end_session))
+        .route("/v1/session-codes", post(crate::sessions::code))
+        .route("/v1/session", delete(crate::sessions::end))
         .merge(crate::project::routes())
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
+        .route("/v1/session", post(crate::sessions::start))
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn(guard))
@@ -330,51 +334,36 @@ fn refusal(peer: &SocketAddr, request: &Request) -> Option<Refusal> {
     }
 }
 
-/// The browser session's cookie: the bearer itself, for what cannot send a header (`<video>`,
-/// `EventSource`). Scoped to the API, never readable by a page's script.
-const SESSION: &str = "cozy_session";
+/// The secret of `Authorization: Bearer`.
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
+}
 
-/// The bearer, from `Authorization` or the session cookie, then the admission gate for every
-/// mutation but `down`, held while it runs. The cookie rides along on any request a browser makes,
-/// so a cookie-borne request must also prove it is Calcifer's own page: an unsafe method carries
-/// Calcifer's own `Origin` (the guard already refused a foreign one), and a read is never
-/// `Sec-Fetch-Site: cross-site`.
+/// The `?media=` secret of a read of a file: what `<img>` and `<video>` can't put in a header, so it
+/// opens nothing else.
+fn media_secret(request: &Request) -> Option<&str> {
+    let reads = matches!(*request.method(), Method::GET | Method::HEAD);
+    let path: Vec<&str> = request.uri().path().split('/').collect();
+    let file = matches!(
+        path[..],
+        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
+    );
+    if !reads || !file {
+        return None;
+    }
+    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix("media="))
+}
+
+/// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
 async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
-    let headers = request.headers();
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let cookie = (headers.get_all(header::COOKIE).iter())
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(SESSION)?.strip_prefix('='));
-    let admitted = match (bearer, cookie) {
-        (Some(token), _) => api.admits(token),
-        (None, Some(token)) if api.admits(token) => {
-            let safe = matches!(*request.method(), Method::GET | Method::HEAD);
-            let origin = headers.get(header::ORIGIN).is_some();
-            let cross = headers.get("sec-fetch-site").is_some_and(|site| site == "cross-site");
-            if cross || (!safe && !origin) {
-                return refuse(
-                    Kind::Forbidden,
-                    "session_cross_site",
-                    "the session cookie serves Calcifer's own pages only",
-                )
-                .into_response();
-            }
-            true
-        }
-        _ => false,
+    let admitted = match bearer(request.headers()) {
+        Some(token) => api.admits(token) || api.sessions.admits_token(token),
+        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(media)),
     };
     if !admitted {
-        return refuse(
-            Kind::Credential,
-            "unauthenticated",
-            "Calcifer's API needs the bearer from its lock record",
-        )
-        .remedy("a browser page posts it once to /v1/session")
-        .into_response();
+        let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
+        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy web");
+        return Refusal(error).into_response();
     }
     if request.method() == Method::GET || request.uri().path() == "/v1/down" {
         return next.run(request).await;
@@ -553,24 +542,6 @@ async fn down(State(api): State<Arc<Api>>) -> Json<Down> {
         stopping: true,
         owed,
     })
-}
-
-/// `POST /v1/session`: the bearer a page presented in `Authorization` (from its URL's fragment,
-/// which no server or log sees), as the session cookie; `admit` already checked it. It lasts while
-/// this Calcifer runs: the next one mints another bearer.
-async fn session(headers: axum::http::HeaderMap) -> Result<Response, Refusal> {
-    let bearer = (headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()))
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| refuse(Kind::Credential, "session_needs_bearer", "a session starts from the bearer itself"))?;
-    let cookie = format!("{SESSION}={bearer}; HttpOnly; SameSite=Strict; Path=/v1");
-    let value = HeaderValue::from_str(&cookie).map_err(|_| refuse(Kind::Usage, "bearer_invalid", "not a bearer"))?;
-    Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, value)]).into_response())
-}
-
-/// `DELETE /v1/session`: the cookie gone from this browser.
-async fn end_session() -> Response {
-    let gone = format!("{SESSION}=; HttpOnly; SameSite=Strict; Path=/v1; Max-Age=0");
-    (StatusCode::NO_CONTENT, [(header::SET_COOKIE, HeaderValue::from_str(&gone).expect("a cookie"))]).into_response()
 }
 
 async fn unknown_route(method: Method, uri: Uri) -> Refusal {

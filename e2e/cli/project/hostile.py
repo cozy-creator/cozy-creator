@@ -2,13 +2,13 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
 # ///
-"""The project cell's hostile outputs, weightless: a page and a drawing whose script would mark itself and read Calcifer's runs if it ran."""
+"""The project cell's hostile outputs, weightless: a page and a drawing whose script would ask for Calcifer's runs if it ran."""
 
 import msgspec
 from cozy_runtime.author import App, File, Outputs
 
 app = App()
-REACH = b"document.documentElement.setAttribute('data-ran', 'yes'); fetch('/v1/runs');"
+REACH = b"fetch('/v1/runs');"
 
 
 class Ask(msgspec.Struct, kw_only=True):

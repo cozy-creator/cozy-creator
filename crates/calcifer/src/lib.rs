@@ -27,6 +27,7 @@ pub mod project;
 mod rentals;
 pub mod runs;
 pub mod serve;
+mod sessions;
 pub mod store;
 mod update;
 
