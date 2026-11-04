@@ -259,7 +259,7 @@ impl Doc {
 
     /// The project `text` says, of the files and tags `lock` holds.
     pub(super) fn of(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
-        let value = protocol::yaml::to_json_keeping(text, names_a_file).map_err(|why| {
+        let (value, listed) = protocol::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
             let (line, written) = at_line(text, &why);
             let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
             match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
@@ -298,13 +298,13 @@ impl Doc {
             defaults.insert(section.clone(), Value::Object(filled));
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
-        for name in protocol::yaml::keys(text, &["assets"]) {
-            named(&name)?;
+        for name in &listed {
+            named(name)?;
         }
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], dir: folder.dir.clone() };
-        for name in protocol::yaml::keys(text, &["assets"]) {
-            let Some(written) = declared.get(&name) else { continue };
-            doc.declare(&name, written, &defaults, folder, lock);
+        for name in &listed {
+            let Some(written) = declared.get(name) else { continue };
+            doc.declare(name, written, &defaults, folder, lock);
         }
         for i in 0..doc.assets.len() {
             if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() {

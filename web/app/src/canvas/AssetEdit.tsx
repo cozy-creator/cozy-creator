@@ -237,7 +237,7 @@ function ControlRow({ name, control, view, focus, named }: { name: string; contr
 }
 
 /** The file changed under what's typed. */
-function Conflict({ name }: { name: string }) {
+export function Conflict({ name }: { name: string }) {
   const store = useCanvasStore()
   return (
     <div className="status ood">

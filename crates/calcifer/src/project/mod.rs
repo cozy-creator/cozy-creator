@@ -14,6 +14,7 @@ mod format;
 mod graph;
 pub(crate) mod host;
 mod jobs;
+pub(crate) mod model;
 mod remote;
 mod thumbs;
 mod caption;
@@ -27,7 +28,7 @@ use std::{
     path::{Path as FsPath, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -81,6 +82,8 @@ pub struct Projects {
     index: Mutex<Option<Index>>,
     /// What was last heard of each published package projects name, by `with`.
     heard: Mutex<HashMap<String, Heard>>,
+    /// How many times that changed: what a read said of them is good until then.
+    heard_changes: AtomicU64,
     /// Each project made by name since Calcifer started, by the `Idempotency-Key` that asked: a retry makes no `_2`.
     made: Mutex<HashMap<String, PathBuf>>,
 }
@@ -89,7 +92,7 @@ pub struct Projects {
 #[derive(Default)]
 struct Heard {
     asked: Option<Instant>,
-    package: Option<Package>,
+    package: Option<Arc<Package>>,
 }
 
 /// Every project folder Calcifer opened, by id.
@@ -110,6 +113,10 @@ struct Entry {
 
 struct Project {
     folder: Folder,
+    /// What its files say, as last read.
+    model: tokio::sync::Mutex<Option<Arc<model::Model>>>,
+    /// What streams were last told of it.
+    told: Mutex<Option<model::Told>>,
     events: broadcast::Sender<Event>,
     /// What its render is doing, asset by asset.
     jobs: Jobs,
@@ -179,6 +186,8 @@ impl Projects {
                 let (events, asked) = (broadcast::channel(256).0, Notify::new());
                 Arc::new(Project {
                     folder,
+                    model: tokio::sync::Mutex::default(),
+                    told: Mutex::default(),
                     events,
                     jobs: Jobs::default(),
                     walking: Mutex::new(false),
@@ -204,6 +213,7 @@ impl Projects {
         drop(open);
         for dir in dirs {
             crate::events::project_changed(&dir);
+            canvas::look(&dir);
         }
     }
 }
@@ -349,16 +359,18 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
 /// than it was, or a file comes to or goes from `files/`, as a pull's do with no write to either. Read from their stats alone, so a look at it
 /// costs nothing: every write replaces the file, so its inode tells two writes in one clock tick apart.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    let stamp = |name: &str| {
-        let Ok(meta) = std::fs::metadata(dir.join(name)) else { return "none".to_owned() };
-        let modified = meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
-        #[cfg(unix)]
-        let file = std::os::unix::fs::MetadataExt::ino(&meta);
-        #[cfg(not(unix))]
-        let file = 0;
-        format!("{file}-{}-{}", modified.map_or(0, |since| since.as_nanos()), meta.len())
-    };
-    format!("{}.{}.{}", stamp(folder::PROJECT), stamp(folder::LOCK), stamp(folder::FILES))
+    format!("{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
+}
+
+/// What a file's stats say of it: another text whenever it's another file than it was.
+fn stamp(path: &FsPath) -> String {
+    let Ok(meta) = std::fs::metadata(path) else { return "none".to_owned() };
+    let modified = meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+    #[cfg(unix)]
+    let file = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let file = 0;
+    format!("{file}-{}-{}", modified.map_or(0, |since| since.as_nanos()), meta.len())
 }
 
 /// Walks again each project an earlier Calcifer was walking.
@@ -619,63 +631,39 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
 }
 
 /// Its assets as they stand.
-async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<ProjectState>, Refusal> {
+async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked): Query<Read>) -> Result<Json<ProjectState>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let lock = folder.lock().map_err(Refusal)?;
-    let text = folder.text().map_err(Refusal)?;
-    let doc = match Doc::read(folder, &text) {
-        Ok(doc) => doc,
-        Err(error) if !lock.owes() => return Err(Refusal(error)),
-        // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
+    let model = match model::of(&api, &project).await {
+        Ok(model) => model,
         Err(error) => {
+            let lock = folder.lock().map_err(Refusal)?;
+            if !lock.owes() {
+                return Err(Refusal(error));
+            }
+            // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
             let queue = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![], board: board_of(&project) }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project) }));
         }
     };
-    let stand = doc.stand(&lock);
-    let mut warnings = doc.warnings.clone();
-    warnings.extend(doc.said_of_known());
-    warnings.extend(unadapted(&api, &doc));
-    for (i, standing) in stand.iter().enumerate() {
-        let held = lock.asset(&doc.assets[i].name);
-        let made = standing.version().and_then(|number| held?.version(number));
-        warnings.extend(made.into_iter().flat_map(|made| made.warnings.iter().map(|message| ProjectWarning::of(&doc.assets[i].name, message.clone()))));
-    }
-    warnings.dedup();
-    let (mut missing, mut stale) = (vec![], vec![]);
-    let etags = assetfile::etags(&text);
-    let assets: Vec<Row> = (0..doc.assets.len())
-        .map(|i| {
-            let mut row = row(&api, &doc, folder, &lock, &stand, i);
-            row.etag = etags.get(&name_key(&row.name)).cloned();
-            row.rendering = project.rendering.lock().expect("rendering lock").get(&row.name).copied();
-            if row.rendering.is_some() {
-                row.standing = RowStanding::Making;
-            }
-            match &stand[i].state {
-                Stand::Stale(why) => stale.push(Stale { name: row.name.clone(), why: why.clone() }),
-                Stand::Missing | Stand::Waits if doc.makes(i) => missing.push(row.name.clone()),
-                _ => {}
-            }
-            row
-        })
-        .collect();
-    let cuts = (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).map(|i| cut_row(&doc, folder, &lock, &stand, i)).collect();
-    let busy = *project.walking.lock().expect("walking lock");
-    let moving = project.moving.try_lock().is_err();
-    let absent = lock.files.values().filter(|file| folder.missing(file)).count() as u64;
-    let orphans = orphans(&doc, folder, &lock);
-    let kept = kept_files(&doc, &lock);
-    let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
-    let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
-    let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
-    let kept: BTreeSet<&str> = assets.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
-    warnings.retain(|warning| !kept.contains(warning.message.as_str()));
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, cuts, warnings, next, board: board_of(&project) }))
+    // What a reader now holds is what any change from here is told against.
+    project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
+    Ok(Json(model.state(&project, asked.assets)))
+}
+
+/// `GET /v1/projects/{id}`.
+#[derive(Deserialize)]
+struct Read {
+    /// Without them, what's said of the project besides its assets, whatever it holds.
+    #[serde(default = "yes")]
+    assets: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
@@ -719,41 +707,55 @@ pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, 
 
 /// What can be said of each asset whose published package has been heard of: what makes it, its tags. A read waits on no
 /// Hub and writes nothing, so what isn't heard of yet is said by a later read, or a render. Local code is described only on a machine, so a render says it.
-fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<ProjectWarning> {
+fn unadapted(doc: &Doc, known: &HeardOf) -> Vec<ProjectWarning> {
     let mut said = vec![];
     for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()) {
-        let with = doc.target(i);
-        if protocol::target::written_as_path(&with) || with.ends_with(".py") {
-            continue;
-        }
-        let Some(package) = heard_of(api, &with) else { continue };
+        let Some(heard) = known.get(&doc.target(i)) else { continue };
         if doc.tags(i).is_none() {
-            said.extend(doc.said_once_read(i, &package.reserved()));
+            said.extend(doc.said_once_read(i, &heard.tags));
         }
-        if doc.assets[i].pin.is_none() && !matches!(package.maker(), Ok(Some(_))) {
-            said.push(ProjectWarning::of(&doc.assets[i].name, no_function(&doc.assets[i].name, &package.name)));
+        if doc.assets[i].pin.is_none() && !heard.makes {
+            said.push(ProjectWarning::of(&doc.assets[i].name, no_function(&doc.assets[i].name, &heard.name)));
         }
     }
     said
 }
 
+/// What one read says of a published package its assets name, worked out once for all of them.
+struct HeardPackage {
+    name: String,
+    tags: Vec<String>,
+    makes: bool,
+}
+
+/// Each published package a read's assets name that's been heard of, by what they call it.
+type HeardOf = HashMap<String, HeardPackage>;
+
+fn known_packages(api: &Arc<Api>, doc: &Doc) -> HeardOf {
+    let targets: BTreeSet<String> = (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()).map(|i| doc.target(i)).collect();
+    let local = |with: &str| with.is_empty() || protocol::target::written_as_path(with) || with.ends_with(".py");
+    (targets.into_iter().filter(|with| !local(with)))
+        .filter_map(|with| {
+            let package = heard_of(api, &with)?;
+            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))) };
+            Some((with, heard))
+        })
+        .collect()
+}
+
 /// The tags of what makes asset `i`, this moment: none of what Calcifer makes itself. None: they aren't known yet, and its names held back.
-fn tags_now(api: &Arc<Api>, doc: &Doc, i: usize) -> Option<Vec<String>> {
+fn tags_now<'a>(doc: &'a Doc, known: &'a HeardOf, i: usize) -> Option<&'a [String]> {
     if doc.tool(i).is_some() {
-        return Some(vec![]);
+        return Some(&[]);
     }
     if let Some(tags) = doc.tags(i) {
-        return Some(tags.clone());
+        return Some(tags);
     }
-    let with = doc.target(i);
-    if with.is_empty() || protocol::target::written_as_path(&with) || with.ends_with(".py") {
-        return None;
-    }
-    Some(heard_of(api, &with)?.reserved())
+    known.get(&doc.target(i)).map(|heard| heard.tags.as_slice())
 }
 
 /// What was last heard of the package `with`, this moment. If that isn't recent, it is asked again in the background.
-fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
+fn heard_of(api: &Arc<Api>, with: &str) -> Option<Arc<Package>> {
     let mut heard = api.projects.heard.lock().expect("heard lock");
     let entry = heard.entry(with.to_owned()).or_default();
     if entry.asked.is_none_or(|asked| asked.elapsed() > HEARD_FOR) {
@@ -761,7 +763,10 @@ fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
         let (api, with) = (api.clone(), with.to_owned());
         tokio::spawn(async move {
             if let Ok(package) = Host::new(&api).published("", &with, None).await {
-                api.projects.heard.lock().expect("heard lock").entry(with).or_default().package = Some(package);
+                api.projects.heard.lock().expect("heard lock").entry(with).or_default().package = Some(Arc::new(package));
+                api.projects.heard_changes.fetch_add(1, Ordering::Relaxed);
+                let open: Vec<PathBuf> = api.projects.open.lock().expect("projects lock").values().map(|project| project.folder.dir.clone()).collect();
+                open.iter().for_each(|dir| crate::events::project_settled(dir));
             }
         });
     }
@@ -769,9 +774,9 @@ fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
 }
 
 /// Keeps `package`'s tags, and what its function outputs, in project.lock for what reads the file. Whether that says what asset `i` is for the first time.
-fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) -> bool {
+fn read_tags(doc: &Doc, folder: &Folder, lock: &Lock, i: usize, package: &Package) -> bool {
     let (key, tags, makes) = (doc.assets[i].tool.clone().unwrap_or_default(), package.reserved(), package.named_kind());
-    let same = folder.lock().is_ok_and(|lock| lock.reserved.get(&key) == Some(&tags) && (makes.is_none() || lock.makes.get(&key) == makes.as_ref()));
+    let same = lock.reserved.get(&key) == Some(&tags) && (makes.is_none() || lock.makes.get(&key) == makes.as_ref());
     if !same
         && let Err(error) = folder.update_lock(|lock| {
             lock.reserved.insert(key.clone(), tags.clone());
@@ -893,15 +898,34 @@ fn main_path(lock: &Lock, files: &Files) -> Option<String> {
     folder::main_of(files).and_then(|sha256| lock.files.get(sha256)).map(|file| file.path.clone())
 }
 
+/// What a read of a project works out once, for all its rows.
+#[derive(Clone, Copy)]
+struct Reading<'a> {
+    doc: &'a Doc,
+    folder: &'a Folder,
+    lock: &'a Lock,
+    stand: &'a [Standing],
+    known: &'a HeardOf,
+    /// The runs making each asset, by name key.
+    making: &'a HashMap<String, Vec<u64>>,
+}
+
+/// The runs making each asset, by name key.
+fn making_now(lock: &Lock) -> HashMap<String, Vec<u64>> {
+    let mut making: HashMap<String, Vec<u64>> = HashMap::new();
+    for pending in lock.pending.values().filter(|pending| pending.run > 0) {
+        making.entry(name_key(&pending.asset)).or_default().push(pending.run);
+    }
+    making
+}
+
 /// Asset `i` as `GET /v1/projects/{id}` lists it.
-fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) -> Row {
+fn row(reading: &Reading, i: usize) -> Row {
+    let Reading { doc, folder, lock, stand, known, making } = *reading;
     let (asset, standing) = (&doc.assets[i], &stand[i]);
     let noun = noun(doc, lock, i);
     let held = lock.asset(&asset.name);
-    let making: Vec<u64> = (lock.pending.values())
-        .filter(|pending| name_key(&pending.asset) == name_key(&asset.name) && pending.run > 0)
-        .map(|pending| pending.run)
-        .collect();
+    let making: Vec<u64> = making.get(&name_key(&asset.name)).cloned().unwrap_or_default();
     let files = standing.files.clone().unwrap_or_default();
     let gone: Vec<&str> = (files.values())
         .filter(|sha256| lock.files.get(*sha256).is_none_or(|file| folder.missing(file)))
@@ -988,7 +1012,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         etag: None,
         failure,
         changed,
-        missing: tags_now(api, doc, i).map_or_else(Vec::new, |tags| doc.missing_names(i, &tags)),
+        missing: tags_now(doc, known, i).map_or_else(Vec::new, |tags| doc.missing_names(i, tags)),
         timeline: (doc.tool(i) == Some(Tool::Cut)).then(|| {
             let files = |name: &str| {
                 let read = standing.reads.iter().find(|read| name_key(&read.name) == name_key(name));
@@ -1100,7 +1124,12 @@ async fn rename(
     let mut doc = Doc::load(folder).map_err(Refusal)?;
     let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
     if doc.find(&asked.from).is_some() && free {
-        folder.edit_project(|text| assetfile::renamed(text, &asked.from, &asked.to)).map_err(Refusal)?;
+        // Its row first: a page that reads the new name knows it's the same box, where it was.
+        canvas::moved(folder, &id, &asked.from, &asked.to).map_err(Refusal)?;
+        if let Err(error) = folder.edit_project(|text| assetfile::renamed(text, &asked.from, &asked.to)) {
+            canvas::moved(folder, &id, &asked.to, &asked.from).map_err(Refusal)?;
+            return Err(Refusal(error));
+        }
         doc = Doc::load(folder).map_err(Refusal)?;
     }
     let lock = folder.lock().map_err(Refusal)?;
@@ -1373,7 +1402,7 @@ fn owed(folder: &Folder, lock: &Lock) -> Vec<Owed> {
     let mut items = vec![];
     for ask in &lock.walk.asks {
         let waiting = |take: &&Take| !lock.pending.contains_key(&take.key);
-        let Ok(doc) = Doc::read(folder, &ask.text) else {
+        let Ok(doc) = Doc::of(folder, &ask.text, lock) else {
             for take in ask.takes.iter().filter(waiting) {
                 going.insert(name_key(&take.asset));
                 let job = Job { asset: take.asset.clone(), noun: "version".into(), ..Job::default() };
@@ -1427,10 +1456,15 @@ async fn cancel(
 ) -> Result<Json<Cancelled>, Refusal> {
     let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
+    Ok(Json(cancelled(&api, &project, &asked.names)?))
+}
+
+/// `names`' queued work dropped and their runs canceled, or with `all` everything's.
+fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String]) -> Result<Cancelled, Refusal> {
     let folder = &project.folder;
     let lock = folder.lock().map_err(Refusal)?;
-    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
-    let keys: BTreeSet<String> = asked.names.iter().map(|name| name_key(name)).collect();
+    let all = matches!(names, [only] if name_key(only) == name_key(ALL));
+    let keys: BTreeSet<String> = names.iter().map(|name| name_key(name)).collect();
     let wanted = |name: &str| all || keys.contains(&name_key(name));
     let (mut dropped, mut owed) = (vec![], vec![]);
     for (item, take) in queue(folder, &lock).into_iter().filter(|(item, _)| !item.running && wanted(&item.name)) {
@@ -1459,8 +1493,8 @@ async fn cancel(
         }
     }
     project.asked.notify_one();
-    sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
-    Ok(Json(Cancelled { dropped, canceled }))
+    sync_jobs(project, numbered(api)).map_err(Refusal)?;
+    Ok(Cancelled { dropped, canceled })
 }
 
 /// What `--take` and `--in` ask of asset `i`: the take a new one keeps the start of, the one that is its state, else its newest, if
@@ -1537,6 +1571,11 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
         return Ok(done);
     }
     let lock = folder.lock().map_err(Refusal)?;
+    // Its row before its lines: a page that reads the name has somewhere to put it, and places nothing of its own.
+    let first = format::free_name(&Doc::load(folder).map_err(Refusal)?, &lock, wanted);
+    if let Some(card) = at {
+        canvas::set(folder, id, BTreeMap::from([(first.clone(), Some(card))])).map_err(Refusal)?;
+    }
     let name = std::cell::RefCell::new(String::new());
     (folder.edit_project(|text| {
         let free = format::free_name(&Doc::read(folder, text)?, &lock, wanted);
@@ -1550,6 +1589,9 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
     }))
     .map_err(Refusal)?;
     let name = name.into_inner();
+    if at.is_some() && name != first {
+        canvas::moved(folder, id, &first, &name).map_err(Refusal)?;
+    }
     let answer = Imported { name: name.clone(), sha256: kept.file.sha256, field: kept.field.to_owned(), path: kept.file.path, already: kept.already };
     if let Some((key, digest)) = key {
         let at_ms = now_ms();
@@ -1558,9 +1600,6 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
             lock.imported.insert(key.clone(), folder::Keyed { digest: digest.clone(), at_ms, answer: answer.clone() });
         }))
         .map_err(Refusal)?;
-    }
-    if let Some(card) = at {
-        canvas::set(folder, id, BTreeMap::from([(name, Some(card))])).map_err(Refusal)?;
     }
     Ok(answer)
 }
@@ -2445,7 +2484,7 @@ impl Walk {
                 self.say(Event::Warning { message: moved.clone(), name: None });
             }
             // What it outputs says what `defaults` fill, and so its key: planned again knowing that.
-            if read_tags(doc, self.folder(), i, &package) {
+            if read_tags(doc, self.folder(), lock, i, &package) {
                 self.project.asked.notify_one();
                 return Ok(());
             }

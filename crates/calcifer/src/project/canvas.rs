@@ -1,7 +1,13 @@
 //! `project.canvas.yaml`: where a project's elements sit. Only the page reads it, and `Doc::read` never opens it, so nothing in it is an
 //! input. One line per card, sorted by name, so git merges it, and read a line at a time, so a merge's markers cost only themselves.
 //! Losing it loses only the arrangement.
-use std::{collections::BTreeMap, fmt::Write as _, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::Write as _,
+    path::Path as FsPath,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use axum::{
     Json,
@@ -14,10 +20,18 @@ use protocol::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{folder::Folder, format::yaml_key, graph::name_key};
+use super::{
+    folder::{CANVAS, Folder},
+    format::yaml_key,
+    graph::name_key,
+    project_id, stamp,
+};
 use crate::api::{Api, Refusal, parse};
 
 const HEAD: &str = "# Where cards sit. Only the page reads this. Nothing here is an input.\nversion: 1\ncards:\n";
+
+/// Each project's rows as last told, and what its file's stats said then: a look reads a file only once they say another's there.
+static TOLD: LazyLock<Mutex<HashMap<String, (String, BTreeMap<String, Card>)>>> = LazyLock::new(Mutex::default);
 
 /// Each row `text` holds; what doesn't read as one is left out.
 fn rows(text: &str) -> BTreeMap<String, Card> {
@@ -55,15 +69,39 @@ fn etag(text: &str) -> String {
 /// any case, with `_` and `-` alike.
 pub(super) fn set(folder: &Folder, id: &str, changed: BTreeMap<String, Option<Card>>) -> Result<String, Error> {
     let changed: BTreeMap<String, Option<Card>> = changed.into_iter().map(|(name, card)| (name, card.map(tidied))).collect();
+    let keys: HashSet<String> = changed.keys().map(|name| name_key(name)).collect();
+    let now = RefCell::new((BTreeMap::new(), String::new()));
     folder.edit_canvas(|text| {
         let mut cards = rows(text);
-        cards.retain(|there, _| !changed.keys().any(|name| name_key(there) == name_key(name)));
+        cards.retain(|there, _| !keys.contains(&name_key(there)));
         cards.extend(changed.iter().filter_map(|(name, card)| Some((name.clone(), (*card)?))));
-        Ok(if cards.is_empty() && text.is_empty() { String::new() } else { written(&cards) })
+        let written = if cards.is_empty() && text.is_empty() { String::new() } else { written(&cards) };
+        *now.borrow_mut() = (cards, written.clone());
+        Ok(written)
     })?;
-    let etag = etag(&folder.canvas_text()?);
+    let (cards, text) = now.into_inner();
+    let etag = etag(&text);
+    TOLD.lock().expect("told lock").insert(id.to_owned(), (stamp(&folder.dir.join(CANVAS)), cards));
     crate::events::canvas(id, &etag, changed);
     Ok(etag)
+}
+
+/// Tells every stream what changed of `dir`'s rows outside Calcifer: a hand, or a `git pull`.
+pub(super) fn look(dir: &FsPath) {
+    let id = project_id(dir);
+    let stamped = stamp(&dir.join(CANVAS));
+    let mut told = TOLD.lock().expect("told lock");
+    if told.get(&id).is_some_and(|(held, _)| *held == stamped) {
+        return;
+    }
+    let Ok(text) = Folder::at(dir).canvas_text() else { return };
+    let now = rows(&text);
+    let Some((_, was)) = told.insert(id.clone(), (stamped, now.clone())) else { return };
+    let gone = was.keys().filter(|name| !now.contains_key(*name)).map(|name| (name.clone(), None));
+    let changed: BTreeMap<String, Option<Card>> = now.iter().filter(|(name, card)| was.get(*name) != Some(card)).map(|(name, card)| (name.clone(), Some(*card))).chain(gone).collect();
+    if !changed.is_empty() {
+        crate::events::canvas(&id, &etag(&text), changed);
+    }
 }
 
 /// `name`'s row, if it has one.

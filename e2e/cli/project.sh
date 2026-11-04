@@ -100,6 +100,7 @@ keeps
 frames
 adapters
 tool_functions
+by_the_cli
 cuts "$P" "$ID"
 imports
 [ -n "${ALONE:-}" ] || failures
@@ -624,7 +625,7 @@ J '.standing == "current"' <<< "$(row "$T" card .)" || check "pins: a descriptio
 sed -i '/^    description: Words for a reader\.$/d' "$T/project.yaml"
 
 step "a project: unpin takes the line away"
-cozy project -p "$T" unpin card > "$OUT/unpin.txt" 2>&1 || check "pins: unpin card: $(tail -c 300 "$OUT/unpin.txt")"
+cozy project -p "$T" unapprove card > "$OUT/unpin.txt" 2>&1 || check "pins: unpin card: $(tail -c 300 "$OUT/unpin.txt")"
 diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin did not give back the file: $(cat "$OUT/unpin.diff")"
 J '.assets[] | select(.name == "card") | (.pinned | not) and .approved == null' <<< "$(status "$T")" || check "pins: unpinned, status is $(row "$T" card .)"
 
@@ -632,11 +633,11 @@ step "a project: a pin over an input keeps it, and a line of its own"
 render "$T" copied > /dev/null 2>&1 || true
 cozy project -p "$T" approve copied 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve copied 1: $(tail -c 300 "$OUT/approve.txt")"
 { grep -q '^    image: <card>$' "$T/project.yaml" && grep -q '^    approved: ' "$T/project.yaml"; } || check "pins: a pin over <card> lost it: $(grep -n 'image:' "$T/project.yaml")"
-cozy project -p "$T" unpin copied > "$OUT/unpin.txt" 2>&1 || check "pins: unpin copied: $(tail -c 300 "$OUT/unpin.txt")"
+cozy project -p "$T" unapprove copied > "$OUT/unpin.txt" 2>&1 || check "pins: unpin copied: $(tail -c 300 "$OUT/unpin.txt")"
 diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin copied did not give back the file: $(cat "$OUT/unpin.diff")"
 cozy project -p "$T" approve flat 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve an asset on one line: $(tail -c 300 "$OUT/approve.txt")"
 [ "$(row "$T" flat .approved)" = 1 ] || check "pins: flat: $(grep -n -A3 'flat:' "$T/project.yaml")"
-cozy project -p "$T" unpin flat > "$OUT/unpin.txt" 2>&1 || check "pins: unpin flat: $(tail -c 300 "$OUT/unpin.txt")"
+cozy project -p "$T" unapprove flat > "$OUT/unpin.txt" 2>&1 || check "pins: unpin flat: $(tail -c 300 "$OUT/unpin.txt")"
 grep -q '^# the end$' "$T/project.yaml" || check "pins: a comment went: $(cat "$T/project.yaml")"
 
 step "a project: re-approving art brings what was made from it back with no run"
@@ -681,7 +682,7 @@ J '.assets[] | select(.name == "teal") | .kind == "image"' <<< "$(status "$C")" 
 J '[.warnings[].message] | any(contains("no file'"'"'s hash starts with cafe0000")) and any(contains("is not a hash"))' <<< "$(status "$C")" || check "pins: a bad pin is not warned of: $(status "$C" | jq -c .warnings)"
 render "$C" teal || check "pins: render a constant: $(tail -c 300 "$OUT/render.txt")"
 says pins "is a constant"
-code=0; cozy project -p "$C" unpin teal > "$OUT/unpin.txt" 2>&1 || code=$?
+code=0; cozy project -p "$C" unapprove teal > "$OUT/unpin.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "pins: unpinning a constant took its one line"
 render "$C" wrong || check "pins: wrong's bad pin stopped it: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$C" wrong)" = 1 ] || check "pins: wrong was not made without its bad pin"
@@ -951,7 +952,7 @@ runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')
 render "$S2" all --outdated || check "sheet: --outdated: $(tail -c 300 "$OUT/render.txt")"
 { [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$runs_before2" ] && [ "$(made "$S2" sheet)" = 1 ] && [ "$(made "$S2" poster)" = 1 ]; } || check "sheet: --outdated sent a run: sheet $(made "$S2" sheet), poster $(made "$S2" poster): $(tail -c 300 "$OUT/render.txt")"
 J '.assets[] | select(.name == "sheet") | .pinned and .approved == 1 and .failure == null' <<< "$(status "$S2")" || check "sheet: --outdated moved it: $(row "$S2" sheet .)"
-cozy project -p "$S2" unpin poster > "$OUT/sheet-unpin.txt" 2>&1 || check "sheet: unpin poster: $(cat "$OUT/sheet-unpin.txt")"
+cozy project -p "$S2" unapprove poster > "$OUT/sheet-unpin.txt" 2>&1 || check "sheet: unpin poster: $(cat "$OUT/sheet-unpin.txt")"
 render "$S2" poster || check "sheet: what reads it, again: $(tail -c 300 "$OUT/render.txt")"
 grep -qF "$held" <<< "$(asked "$S2" poster | jq -r .input.prompt)" || check "sheet: what reads it did not read its pinned file: $(asked "$S2" poster)"
 runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')
@@ -1236,7 +1237,7 @@ render "$T" fixed || check "every render: fixed: $(tail -c 300 "$OUT/render.txt"
 cozy project -p "$T" approve fixed 1 > "$OUT/approve.txt" 2>&1 || check "every render: approve: $(tail -c 300 "$OUT/approve.txt")"
 line=$(grep -n '^    approved: ' "$T/project.yaml")
 render "$T" all || check "every render: render all: $(tail -c 300 "$OUT/render.txt")"
-says every-render "fixed is pinned: skipped. Name it to make a new version, or unpin it"
+says every-render "fixed is approved: skipped. Name it to make a new version, or unapprove it"
 render "$T" all || check "every render: render all again: $(tail -c 300 "$OUT/render.txt")"
 { [ "$(made "$T" card)" = 2 ] && [ "$(made "$T" poster)" = 2 ] && [ "$(made "$T" fixed)" = 1 ]; } || check "every render: two passes made $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
 grep -qF "$(jq -r '.assets.card.versions[-1].files.image' "$T/project.lock")" <<< "$(asked "$T" poster | jq -r .input.prompt)" || check "every render: the poster did not read the newest card"
@@ -1408,6 +1409,80 @@ J '.assets.both.versions | length == 1 and (.[0] | .run != null and .files.first
 }
 
 # A tool is a function: what a node names, what makes it, what its box shows, and what crosses a mention. Weightless, by project/tool.py.
+# What the canvas does, with no page: each verb is its route, with its fields, and a refusal names what's next. web/live.js holds these against an open canvas.
+by_the_cli() {
+step "a project by the CLI alone: tools, add, set, canvas, show, delete and restore, caption"
+local T=$OUT/by-cli tool=$here/project/tool.py line code etag
+mkdir -p "$T"; still "$T/red.png" red
+printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
+refuses() { # refuses <what> <what it says> <command…>
+  local what=$1 says=$2 code=0; shift 2
+  cozy project -p "$T" "$@" > "$OUT/by-cli.txt" 2>&1 || code=$?
+  [ "$code" != 0 ] && grep -qF -- "$says" "$OUT/by-cli.txt" || check "by the CLI: $what: exit $code: $(tail -c 300 "$OUT/by-cli.txt")"
+}
+[ "$(cozy project -p "$T" import "$T/red.png" red_art --at 10,-20,300)" = red_art ] || check "by the CLI: import --at did not print its name"
+# Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
+(cd "$T" && cozy --json run "$tool/still" prompt=primed --on local > /dev/null 2>&1) || check "by the CLI: a run to read the tool"
+
+cozy --json project -p "$T" tools > "$OUT/by-cli-tools.json" || check "by the CLI: tools"
+J '.tools | any(.id == "cozy/edit" and .kind == "video")' "$OUT/by-cli-tools.json" || check "by the CLI: tools has no Edit: $(jq -c '[.tools[].id]' "$OUT/by-cli-tools.json")"
+cozy project -p "$T" tools edit --on local > "$OUT/by-cli-tools.txt" || check "by the CLI: tools edit --on local"
+grep -q cozy/edit "$OUT/by-cli-tools.txt" || check "by the CLI: tools edit: $(head -c 300 "$OUT/by-cli-tools.txt")"
+
+printf 'instructions: From a file\ncount: 2\n' > "$T/fields.yaml"
+[ "$(cozy project -p "$T" add "$tool/still" drawn --input "$T/fields.yaml" count=3 style=flat soft:=true --at 400,120,360)" = drawn ] || check "by the CLI: add: no name"
+J '.assets[] | select(.name == "drawn") | .tool != null and .fields.instructions == "From a file" and .fields.count == 3 and .fields.style == "flat" and .fields.soft == true' <<< "$(status "$T")" || check "by the CLI: add: $(row "$T" drawn .fields)"
+J '.tools | any(.local and .function == "still")' <<< "$(cozy --json project -p "$T" tools)" || check "by the CLI: tools leaves out the local code the project names"
+[ "$(cozy project -p "$T" add "$tool/still" drawn)" = drawn_2 ] || check "by the CLI: a name taken didn't take _2"
+cozy project -p "$T" delete drawn_2 > /dev/null || check "by the CLI: delete drawn_2"
+refuses "two names" "one name, not" add "$tool/still" one two
+refuses "a tool that makes nothing" "makes no picture" add "$tool/words" nothing
+
+cozy project -p "$T" set drawn instructions='Plain words' count=4 'seed:=7' > /dev/null || check "by the CLI: set"
+J '.assets[] | select(.name == "drawn") | .fields.instructions == "Plain words" and .fields.count == 4 and .fields.seed == 7' <<< "$(status "$T")" || check "by the CLI: set: $(row "$T" drawn .fields)"
+cozy project -p "$T" set drawn style= > /dev/null || check "by the CLI: set style="
+J '.assets[] | select(.name == "drawn") | .fields | has("style") | not' <<< "$(status "$T")" || check "by the CLI: style= did not clear it: $(row "$T" drawn .fields)"
+printf 'aspect_ratio: "16:9"\n' | cozy project -p "$T" set drawn --input - > /dev/null || check "by the CLI: set --input -"
+[ "$(row "$T" drawn .fields.aspect_ratio)" = '"16:9"' ] || check "by the CLI: set --input -: $(row "$T" drawn .fields)"
+cozy project -p "$T" set drawn "tool=$tool/told" > /dev/null || check "by the CLI: set tool="
+[ "$(row "$T" drawn .tool)" = "\"$tool/told\"" ] || check "by the CLI: tool= did not change what makes it: $(row "$T" drawn .tool)"
+cozy project -p "$T" set drawn "tool=$tool/still" > /dev/null || check "by the CLI: set tool= back"
+refuses "nothing to set" "nothing to set" set drawn
+refuses "not a term" "isn't field=value" set drawn instructions
+refuses "nothing named that" "cozy project status" set no_such words=here
+etag=$(cozy --json project -p "$T" show drawn | jq -r .asset.etag) || check "by the CLI: show --json"
+J '.asset.name == "drawn" and (.versions | length == 0)' <<< "$(cozy --json project -p "$T" show drawn)" || check "by the CLI: show --json: $(cozy --json project -p "$T" show drawn | head -c 300)"
+cozy project -p "$T" show drawn | grep -q 'Plain words' || check "by the CLI: show does not say its words"
+cozy project -p "$T" set drawn count=1 --if-match "$etag" > /dev/null || check "by the CLI: set --if-match on what it read"
+refuses "an old etag" "cozy project show drawn" set drawn count=2 --if-match "$etag"
+
+J '.cards.drawn == {"x": 400, "y": 120, "w": 360} and .cards.red_art == {"x": 10, "y": -20, "w": 300}' <<< "$(cozy --json project -p "$T" canvas)" || check "by the CLI: canvas: $(cozy --json project -p "$T" canvas | head -c 300)"
+cozy project -p "$T" canvas drawn -50 75 > /dev/null || check "by the CLI: canvas drawn -50 75"
+J '.cards == {"drawn": {"x": -50, "y": 75}}' <<< "$(cozy --json project -p "$T" canvas drawn)" || check "by the CLI: canvas drawn: $(cozy --json project -p "$T" canvas drawn | head -c 300)"
+cozy project -p "$T" canvas | grep -qE '^drawn +-50 +75' || check "by the CLI: canvas's table: $(cozy project -p "$T" canvas | head -c 300)"
+printf 'drawn: {x: 1, y: 2, w: 320}\nred_art: null\n' > "$T/cards.yaml"
+cozy project -p "$T" canvas --input "$T/cards.yaml" > /dev/null || check "by the CLI: canvas --input"
+J '.cards == {"drawn": {"x": 1, "y": 2, "w": 320}}' <<< "$(cozy --json project -p "$T" canvas)" || check "by the CLI: canvas --input: $(cozy --json project -p "$T" canvas | head -c 300)"
+refuses "no row" "cozy project -p $T open" canvas red_art
+
+[ "$(cozy project -p "$T" add "$tool/still" made_nothing)" = made_nothing ] || check "by the CLI: add made_nothing"
+render "$T" drawn || check "by the CLI: render drawn: $(tail -c 300 "$OUT/render.txt")"
+line=$(cozy project -p "$T" delete drawn 2> /dev/null) || check "by the CLI: delete"
+J '.assets | all(.name != "drawn")' <<< "$(status "$T")" || check "by the CLI: delete left it"
+case $line in "cozy project -p $T restore drawn "*) ;; *) check "by the CLI: delete did not print what restores it: $line" ;; esac
+refuses "not what delete printed" "cozy project status" restore drawn nonsense
+refuses "nothing named that" "cozy project status" delete no_such
+eval "$line" > /dev/null || check "by the CLI: what delete printed: $line"
+J '.assets[] | select(.name == "drawn") | .versions == 1 and .fields.instructions == "Plain words"' <<< "$(status "$T")" || check "by the CLI: restore lost it: $(row "$T" drawn .)"
+J '.cards.drawn == {"x": 1, "y": 2, "w": 320}' <<< "$(cozy --json project -p "$T" canvas)" || check "by the CLI: restore lost its place"
+eval "$line" > "$OUT/by-cli.txt" 2>&1 && check "by the CLI: restored twice"
+grep -qF "cozy project rename drawn" "$OUT/by-cli.txt" || check "by the CLI: a name taken names no next step: $(tail -c 300 "$OUT/by-cli.txt")"
+J '.next[0] | startswith("cozy project") and contains(" restore drawn ")' <<< "$(cozy --json project -p "$T" delete drawn)" || check "by the CLI: delete --json names no next"
+
+refuses "no machine" "cozy machine rent" caption red_art --on no_such_machine
+refuses "nothing to say it of" "cozy project render" caption made_nothing
+}
+
 tool_functions() {
 step "a tool is a function: called directly with no adapter, its mentions the files they name, and past a bound clamped with a line saying so"
 local T=$OUT/tools tool=$here/project/tool.py red blue id one input read before lock=$HOME/.cozy/calcifer/calcifer.lock.holder
@@ -1463,7 +1538,7 @@ was=$(row "$T" reader .inputs)
 sed -i 's/instructions: SECRET-PROMPT-WORDS/instructions: SECRET-WORDS-EDITED/' "$T/project.yaml"
 [ "$(row "$T" reader .inputs)" = "$was" ] || check "tools: an approved read's instructions moved its reader's key"
 sed -i 's/instructions: SECRET-WORDS-EDITED/instructions: SECRET-PROMPT-WORDS/' "$T/project.yaml"
-cozy project -p "$T" unpin madeup > /dev/null 2>&1 || check "tools: unpin madeup"
+cozy project -p "$T" unapprove madeup > /dev/null 2>&1 || check "tools: unapprove madeup"
 render "$T" alone || check "tools: a package alone stopped the render: $(tail -c 400 "$OUT/render.txt")"
 says tools "alone: a tool is a function, and"
 
@@ -1480,7 +1555,7 @@ ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 id=$(status "$T" | jq -r .id)
 api --get --data-urlencode "project=$id" "http://$ADDR/v1/tools" > "$OUT/tools.json"
 one() { jq -c --arg f "$1" '.tools[] | select(.local and .function == $f)' "$OUT/tools.json"; }
-J '[.tools[] | select(.local) | .function] | sort == ["clip", "need", "still", "told"]' "$OUT/tools.json" || check "tools: listed: $(jq -c '[.tools[] | select(.local) | .function]' "$OUT/tools.json")"
+J '[.tools[] | select(.local) | .function] | sort == ["clip", "need", "slow", "still", "told"]' "$OUT/tools.json" || check "tools: listed: $(jq -c '[.tools[] | select(.local) | .function]' "$OUT/tools.json")"
 J --arg t "$tool" '.id == ($t + "/still") and .kind == "image" and .local and (.label | endswith("(local)"))' <<< "$(one still)" || check "tools: still: $(one still)"
 J '.kind == "video"' <<< "$(one clip)" || check "tools: clip's kind: $(one clip)"
 J '.ui == "ui/clip.js" and .kind == "video" and (.controls[0] | .field == "video" and .type == "file" and .accept == "video" and .required)' <<< "$(one need)" || check "tools: need: $(one need)"
@@ -1899,7 +1974,7 @@ says edits "(unchanged)"
 cozy project -p "$T" approve edit "$(jq '.assets.edit.versions[0].number' "$T/project.lock")" > "$OUT/edits-approve.txt" 2>&1 || check "edits: approve: $(tail -c 300 "$OUT/edits-approve.txt")"
 [ "$(sha "$T/edit.mp4")" = "$one" ] || check "edits: edit.mp4 isn't the approved film: $(tail -c 300 "$OUT/edits-approve.txt")"
 [ "$(sha "$T/edit.otio")" = "$first_timeline" ] || check "edits: edit.otio isn't the approved film's"
-cozy project -p "$T" unpin edit > "$OUT/edits-unpin.txt" 2>&1 || check "edits: unpin: $(tail -c 300 "$OUT/edits-unpin.txt")"
+cozy project -p "$T" unapprove edit > "$OUT/edits-unpin.txt" 2>&1 || check "edits: unpin: $(tail -c 300 "$OUT/edits-unpin.txt")"
 [ "$(sha "$T/edit.mp4")" = "$two" ] || check "edits: edit.mp4 didn't go back to the state: $(tail -c 300 "$OUT/edits-unpin.txt")"
 [ "$(made "$T" edit)" = 2 ] || check "edits: choosing made a version: $(made "$T" edit)"
 }

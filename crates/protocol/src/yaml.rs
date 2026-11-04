@@ -33,6 +33,11 @@ pub fn to_json(text: &str) -> Result<Value, String> {
 /// `to_json`, where a number `as_written` says of its path, the mapping keys above it, is its text: `007`, `12345678e012` and
 /// `80644e452548` are three hashes' prefixes there, and three numbers anywhere else.
 pub fn to_json_keeping(text: &str, as_written: impl Fn(&[&str]) -> bool) -> Result<Value, String> {
+    Ok(to_json_and_keys(text, &[], as_written)?.0)
+}
+
+/// `to_json_keeping`, and what `keys` says of `path`, of the one read of `text` that both come from.
+pub fn to_json_and_keys(text: &str, path: &[&str], as_written: impl Fn(&[&str]) -> bool) -> Result<(Value, Vec<String>), String> {
     fn json<'n>(node: &'n Yaml<'_>, path: &mut Vec<&'n str>, as_written: &dyn Fn(&[&str]) -> bool) -> Result<Value, String> {
         Ok(match node {
             Yaml::Representation(text, style, tag) => {
@@ -62,8 +67,8 @@ pub fn to_json_keeping(text: &str, as_written: impl Fn(&[&str]) -> bool) -> Resu
         })
     }
     match documents(text)?.as_slice() {
-        [document] => json(document, &mut vec![], &as_written),
-        [] => Ok(Value::Null),
+        [document] => Ok((json(document, &mut vec![], &as_written)?, keys_of(document, path))),
+        [] => Ok((Value::Null, vec![])),
         _ => Err("more than one YAML document".into()),
     }
 }
@@ -71,7 +76,11 @@ pub fn to_json_keeping(text: &str, as_written: impl Fn(&[&str]) -> bool) -> Resu
 /// The keys of the mapping at `path` in one YAML document, as written, in the order the text writes them. JSON's maps have no order.
 pub fn keys(text: &str, path: &[&str]) -> Vec<String> {
     let Ok(documents) = documents(text) else { return vec![] };
-    let Some(mut at) = documents.first() else { return vec![] };
+    documents.first().map_or_else(Vec::new, |document| keys_of(document, path))
+}
+
+fn keys_of(document: &Yaml<'_>, path: &[&str]) -> Vec<String> {
+    let mut at = document;
     for part in path {
         let Yaml::Mapping(map) = at else { return vec![] };
         let Some(next) = map.iter().find(|(key, _)| written(key) == Some(*part)).map(|(_, value)| value) else { return vec![] };

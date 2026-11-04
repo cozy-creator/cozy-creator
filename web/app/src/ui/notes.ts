@@ -14,13 +14,14 @@ export interface Note {
 export const notes = signal<Note[]>([])
 let last = 0
 
-export function say(message: string, error?: unknown, offer?: { action: NonNullable<Note["action"]>; ms: number }) {
+export function say(message: string, error?: unknown, offer?: { action: NonNullable<Note["action"]>; ms: number }): number {
   const body = error instanceof ApiError ? error.body : undefined
   const reason = error instanceof Error ? error.message : undefined
   const text = reason && reason !== message ? `${message}: ${reason}` : message
   const id = ++last
   notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy, next: body?.next, action: offer?.action }])
   if (offer) setTimeout(() => dismiss(id), offer.ms)
+  return id
 }
 
 export function dismiss(id: number) {

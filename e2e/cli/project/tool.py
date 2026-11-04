@@ -2,16 +2,17 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
 # ///
-"""The tool cell's package: weightless functions as a canvas drops them. `still` has no adapter, so it's called directly. `told` has an
+"""The tool cell's package: weightless functions as a canvas drops them. `still` has no adapter, so it's called directly, and `slow` too, saying how far it's got. `told` has an
 adapter, whose answer says what it saw of what it reads. `need` wants a file it may not get, `clip` makes a video, `words`
 makes no media, and `ask` answers text, by an adapter of kind `text`."""
 
 import json
 import os
+import time
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import App, File, ImageFile, ImageFrame, Invocation, Operation, Outputs, VideoFile
+from cozy_runtime.author import App, File, ImageFile, ImageFrame, Invocation, Operation, Outputs, Telemetry, VideoFile
 
 app = App()
 SIDE = 16
@@ -44,6 +45,21 @@ def _picture(out: Outputs) -> ImageFile:
 @app.entrypoint()
 def still(payload: StillInput, out: Outputs) -> Picture:
     """A still of one colour."""
+    return Picture(_picture(out), payload.prompt)
+
+
+class SlowInput(msgspec.Struct, kw_only=True):
+    prompt: str
+    seconds: float = 4.0
+    seed: int | None = None
+
+
+@app.entrypoint()
+def slow(payload: SlowInput, out: Outputs, tel: Telemetry) -> Picture:
+    """A still that takes its time, saying how far it's got."""
+    for step in range(10):
+        tel.progress(step / 10, stage="drawing")
+        time.sleep(payload.seconds / 10)
     return Picture(_picture(out), payload.prompt)
 
 

@@ -246,6 +246,7 @@ async fn send(project: &Project, endpoint: &Endpoint, tally: &Tally, file: folde
 async fn push(project: &Project, hub: &Origin, client: &Client, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let account = client.get_current_account().await.map_err(|e| crate::hub::refusal(hub, e).0)?.name;
     let _held = project.moving.lock().await;
+    crate::events::project_settled(&project.folder.dir);
     let (named, tally, before) = (named(project)?, Tally::default(), endpoint.sent());
     let files = named.len() as u64;
     let sending = stream::iter(named)
@@ -329,6 +330,7 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
 /// Fetches every file project.lock names that `files/` lacks.
 async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Error> {
     let _held = project.moving.lock().await;
+    crate::events::project_settled(&project.folder.dir);
     let (dir, named) = (&project.folder.dir, named(project)?);
     let store = dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", store.display())))?;
@@ -350,6 +352,7 @@ pub(super) async fn pull_one(api: &Api, project: &Project, hub: &str, file: fold
     };
     let (_, endpoint) = signed(api, &hub).map_err(|e| e.message)?;
     let _held = project.moving.lock().await;
+    crate::events::project_settled(&project.folder.dir);
     let store = project.folder.dir.join(folder::FILES);
     std::fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
     let tally = Tally::default();

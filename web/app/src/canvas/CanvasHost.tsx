@@ -19,7 +19,7 @@ import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/que
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../types"
-import { say } from "../ui/notes"
+import { dismiss, say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
@@ -71,10 +71,12 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards)
   }, [store, canvas])
+  // A file that doesn't read, said once, and gone when it does: someone's still saving it.
   useEffect(() => {
     if (!stateError) return
-    say("Couldn't read this project", stateError)
+    const note = say("Couldn't read this project", stateError)
     if (stateError instanceof ApiError && stateError.status === 404) navigate("/", { replace: true })
+    return () => dismiss(note)
   }, [stateError, navigate])
   useEffect(() => {
     if (canvasError) say("Couldn't read where things sit", canvasError)
@@ -83,7 +85,7 @@ function ProjectSync({ id }: { id: string }) {
     () =>
       stream.subscribe((event) => {
         if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
-        if (event.type === "resync" || event.type === "hello") store.clearMasks()
+        if (event.type === "resync" || event.type === "hello") store.fellBehind()
       }),
     [stream, store, id],
   )
@@ -162,7 +164,7 @@ function Canvas({
   const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId), loadMore(scope, projectId)))
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
-  const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id), refresh: (id) => bridge.refresh(id) }))
+  const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id) }))
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
@@ -190,9 +192,6 @@ function Canvas({
     store.onPlaced = fitOnce
     store.onMore = (names) => {
       if (store.projectId) saveMore(scope, store.projectId, names)
-    }
-    store.refresh = () => {
-      if (store.projectId) bridge.refresh(store.projectId)
     }
     store.askMachine = () => navigate(store.projectId ? `/projects/${store.projectId}/machines` : "/machines")
     store.attach(flow)

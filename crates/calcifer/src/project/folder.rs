@@ -496,7 +496,8 @@ pub struct Keeps {
 impl Lock {
     /// The files whose hash starts with `prefix`.
     pub fn matching(&self, prefix: &str) -> Vec<&File> {
-        self.files.values().filter(|file| hex_of(&file.sha256).starts_with(prefix)).collect()
+        let from = format!("sha256:{prefix}");
+        self.files.range(from.clone()..).take_while(|(sha256, _)| sha256.starts_with(&from)).map(|(_, file)| file).collect()
     }
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.

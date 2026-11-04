@@ -3,7 +3,7 @@ import { useReactFlow, useStore } from "@xyflow/react"
 import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { AssetEdit, InFrame, RenderButton } from "./AssetEdit"
+import { AssetEdit, Conflict, InFrame, RenderButton } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { controlsOf, shapesOf, snapped } from "./controls"
@@ -499,6 +499,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
               {asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
               <Bar view={view} name={name} />
               {asset && !view.placing && <Description name={name} view={view} />}
+              {view.conflict && <Conflict name={name} />}
             </>
           )}
           {view.warned && warned ? (

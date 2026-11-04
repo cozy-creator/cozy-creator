@@ -233,6 +233,22 @@ impl Client {
         self.exchange(|c, base| c.patch(format!("{base}{path}")).json(body)).await
     }
 
+    /// A PATCH, only if what's there is still what `read` read.
+    pub async fn patch_if<B, T>(&self, path: &str, body: &B, read: Option<&str>) -> Result<T, Error>
+    where
+        B: Serialize + ?Sized,
+        T: DeserializeOwned,
+    {
+        self.exchange(|c, base| {
+            let request = c.patch(format!("{base}{path}")).json(body);
+            match read {
+                Some(read) => request.header(reqwest::header::IF_MATCH, read),
+                None => request,
+            }
+        })
+        .await
+    }
+
     /// A plain-text answer, such as a log.
     pub async fn text(&self, path: &str) -> Result<String, Error> {
         let answer = self.opened(|c, base| c.get(format!("{base}{path}"))).await?;

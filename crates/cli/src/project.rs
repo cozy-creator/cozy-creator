@@ -1,6 +1,7 @@
 //! `cozy project`: the CLI's side of Calcifer's projects (xs-151, cl-758). Calcifer finds the
 //! project, makes its assets' takes and versions and keeps their files; these verbs ask it and print,
 //! and `render` draws what Calcifer says of it (`render.rs`). Ctrl-C stops following, never the runs.
+mod assets;
 pub(crate) mod render;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -9,7 +10,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Card, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -24,10 +25,15 @@ const EXAMPLES: &str = "Examples:
   cozy project new garden
   cozy project open garden                     in your browser
   cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
+  cozy project tools                           what can make an asset, and each one's fields
+  cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
+  cozy project set whale megapixels=1          as its box's controls; --input takes a file of them
+  cozy project delete whale                    prints the command that puts it back
+  cozy project canvas whale 400 120            where it sits, as dragging it
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2                 fight holds that file, as its `approved` in project.yaml
-  cozy project unpin fight                     it follows its inputs again
+  cozy project unapprove fight                  it follows its inputs again
   cozy project rename theo mara                in project.yaml, its <mentions> and its versions
   cozy project reclaim --yes                   deletes what project.yaml no longer names
   cozy project push                            its files to your Tensorhub account
@@ -47,7 +53,7 @@ const RENDER_EXAMPLES: &str = "Examples:
   cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
   cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
 
-An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unpin` removes it), else its newest
+An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unapprove` removes it), else its newest
 version with these inputs, else none. Reverting a text returns the old output with no run. Every render makes new versions, except of what is pinned and not named.
 
 Ctrl-C stops following, never the runs.";
@@ -85,9 +91,36 @@ enum Verb {
         no_open: bool,
     },
     Import(ImportFile),
+    Add(assets::Add),
+    Set(assets::Set),
+    /// Delete assets, as the X on a box: their work stops, what they made stays until `reclaim`, and it prints what puts each back.
+    #[command(after_help = "Example:\n  cozy project delete whale\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line it printed")]
+    Delete {
+        /// The assets.
+        #[arg(required = true, value_name = "NAME")]
+        names: Vec<String>,
+    },
+    /// Put a deleted asset back as it was, where it was, with what it made.
+    #[command(after_help = "Example:\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line `delete` printed")]
+    Restore {
+        /// The asset.
+        name: String,
+        /// What `delete` printed for it.
+        #[arg(value_name = "KEPT")]
+        kept: String,
+    },
+    Canvas(assets::CanvasArgs),
+    Caption(assets::Caption),
+    Tools(assets::ToolsArgs),
+    /// One asset: its fields, the etag `set --if-match` takes, and each take or version.
+    #[command(after_help = "Examples:\n  cozy project show fight\n  cozy project show fight --json")]
+    Show {
+        /// The asset.
+        name: String,
+    },
     Render(Render),
-    /// Pin a take or version: its hash goes on the asset's line in project.yaml.
-    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
+    /// Approve a take or version: its hash goes on the asset's line in project.yaml.
+    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unapprove fight` removes it.")]
     Approve {
         /// The asset: `theo`, `dock_b`, `fight`, `fight_upscale`, …
         name: String,
@@ -101,9 +134,9 @@ enum Verb {
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
     },
-    /// Take an asset's pin out of project.yaml: its state follows its inputs again.
-    #[command(after_help = "Example:\n  cozy project unpin fight")]
-    Unpin {
+    /// Take back an asset's approval: its line in project.yaml goes, and its state follows its inputs again.
+    #[command(after_help = "Example:\n  cozy project unapprove fight")]
+    Unapprove {
         /// The asset.
         name: String,
     },
@@ -158,6 +191,9 @@ struct ImportFile {
     /// The words for whatever mentions it.
     #[arg(long)]
     description: Option<String>,
+    /// Where it sits on the canvas, and how wide. Default: the page puts it somewhere free.
+    #[arg(long, value_name = "X,Y[,W]", value_parser = assets::card, allow_hyphen_values = true)]
+    at: Option<Card>,
 }
 
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
@@ -236,6 +272,14 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
         Verb::Upgrade { status } => return upgrade(ctx, args.path.as_ref(), status.as_ref()),
+        Verb::Add(add) => return assets::add(ctx, args.path.as_ref(), add).await,
+        Verb::Set(set) => return assets::set(ctx, args.path.as_ref(), set).await,
+        Verb::Delete { names } => return assets::delete(ctx, args.path.as_ref(), names).await,
+        Verb::Restore { name, kept } => return assets::restore(ctx, args.path.as_ref(), name, kept).await,
+        Verb::Canvas(canvas) => return assets::canvas(ctx, args.path.as_ref(), canvas).await,
+        Verb::Caption(caption) => return assets::caption(ctx, args.path.as_ref(), caption).await,
+        Verb::Tools(tools) => return assets::tools(ctx, args.path.as_ref(), tools).await,
+        Verb::Show { name } => return assets::show(ctx, args.path.as_ref(), name).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
@@ -248,15 +292,15 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
                 let path = output::link(ctx, &opened.path.join(&approved.path));
                 match number {
-                    0 => output::say(ctx, &format!("{name}: pinned in project.yaml ({path})")),
-                    number => output::say(ctx, &format!("{name}: {noun} {number} pinned in project.yaml ({path})")),
+                    0 => output::say(ctx, &format!("{name}: approved in project.yaml ({path})")),
+                    number => output::say(ctx, &format!("{name}: {noun} {number} approved in project.yaml ({path})")),
                 }
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
                 }
             }
         }
-        Verb::Unpin { name } => {
+        Verb::Unapprove { name } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/unpin", opened.id);
             let unpinned: Unpinned = ctx.calcifer().await?.post(&path, &Unpin { name }, None).await?;
@@ -264,8 +308,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&unpinned);
             } else {
                 match unpinned.version {
-                    Some(version) => output::say(ctx, &format!("{}: no longer pinned to {version}", unpinned.name)),
-                    None => output::say(ctx, &format!("{}: no longer pinned", unpinned.name)),
+                    Some(version) => output::say(ctx, &format!("{}: no longer approved at {version}", unpinned.name)),
+                    None => output::say(ctx, &format!("{}: no longer approved", unpinned.name)),
                 }
                 if !unpinned.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", unpinned.stale.join(", ")));
@@ -313,7 +357,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
             }
-            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "PINNED", "MADE BY", "STATUS", "FILE"]);
+            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "APPROVED", "MADE BY", "STATUS", "FILE"]);
             let rows = state.assets.iter().map(|a| {
                 let made = match a.versions {
                     1 => format!("1 {}", a.noun),
@@ -409,7 +453,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
     let path = format!("/v1/projects/{}/imports", opened.id);
-    let ask = Import { source, name: args.name, at: None, description: args.description };
+    let ask = Import { source, name: args.name, at: args.at, description: args.description };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);
@@ -468,8 +512,8 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     match asked.skipped.as_slice() {
         [] => {}
-        [one] => output::say(ctx, &format!("{one} is pinned: skipped. Name it to make a new version, or unpin it")),
-        many => output::say(ctx, &format!("{} are pinned: skipped. Name them to make new versions, or unpin them", many.join(", "))),
+        [one] => output::say(ctx, &format!("{one} is approved: skipped. Name it to make a new version, or unapprove it")),
+        many => output::say(ctx, &format!("{} are approved: skipped. Name them to make new versions, or unapprove them", many.join(", "))),
     }
     if events.is_none() {
         if ctx.json {

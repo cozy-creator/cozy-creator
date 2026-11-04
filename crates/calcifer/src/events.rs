@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     convert::Infallible,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
@@ -21,47 +21,82 @@ use protocol::{
 };
 use tokio::{
     sync::{
+        Notify,
         broadcast::{
             self,
             error::{RecvError, TryRecvError},
         },
         watch,
     },
-    time::{Interval, MissedTickBehavior},
+    time::{Instant, Interval, MissedTickBehavior},
 };
 use tracing::warn;
 
 use crate::{api::Api, machines::Machines, project};
 
-/// How often an open stream looks for edits made outside Calcifer.
-const LOOK: Duration = Duration::from_secs(1);
+/// How often an open stream looks for edits made outside Calcifer. A look is a few stats, on every OS and on any filesystem, and a hand's
+/// save shows on an open canvas within this and the page's one read.
+const LOOK: Duration = Duration::from_millis(250);
 
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
-static PROJECTS: LazyLock<Projects> =
-    LazyLock::new(|| Projects { said: broadcast::channel(1024).0, revs: Mutex::default() });
+static PROJECTS: LazyLock<Projects> = LazyLock::new(|| Projects {
+    said: broadcast::channel(1024).0,
+    revs: Mutex::default(),
+    owed: Mutex::default(),
+    wake: Notify::new(),
+});
 
 struct Projects {
     said: broadcast::Sender<StreamEvent>,
-    /// Each project's `rev` as last said, so a write and the look after it say it once.
+    /// Each project's `rev` as last noticed, so a write and the look after it say it once.
     revs: Mutex<HashMap<String, String>>,
+    /// The projects to say something of, each by id: its folder, and whether it's to be said though neither file changed.
+    owed: Mutex<BTreeMap<String, (PathBuf, bool)>>,
+    wake: Notify,
 }
 
-/// Tells every stream if project.yaml or project.lock in `dir` changed since it last did.
+fn owe(dir: &Path, settled: bool) {
+    PROJECTS.owed.lock().expect("owed lock").entry(project::project_id(dir)).or_insert_with(|| (dir.to_owned(), false)).1 |= settled;
+    PROJECTS.wake.notify_one();
+}
+
+/// Tells every stream if project.yaml or project.lock in `dir` changed since it last did. A write is never held up working out what it changed.
 pub(crate) fn project_changed(dir: &Path) {
     let id = project::project_id(dir);
     let mut revs = PROJECTS.revs.lock().expect("revs lock");
     let rev = project::revision(dir);
     if revs.get(&id) != Some(&rev) {
-        revs.insert(id.clone(), rev.clone());
-        let _ = PROJECTS.said.send(StreamEvent::ProjectChanged { id, rev });
+        revs.insert(id, rev);
+        drop(revs);
+        owe(dir, false);
     }
 }
 
-/// Tells every stream to read `dir`'s project again though neither file changed: `moving` ended, say. A new text, so a client that keeps the last hears it.
+/// Tells every stream to read `dir`'s project again though neither file changed: `moving` ended, say.
 pub(crate) fn project_settled(dir: &Path) {
-    let rev = format!("{}+{}", project::revision(dir), crate::store::now_ms());
-    let _ = PROJECTS.said.send(StreamEvent::ProjectChanged { id: project::project_id(dir), rev });
+    owe(dir, true);
+}
+
+/// Says what's owed, one project at a time, however many changes that is by now. A project with no one listening isn't worked out: whoever
+/// comes next reads it whole.
+pub(crate) fn tell(api: Arc<Api>) {
+    tokio::spawn(async move {
+        loop {
+            PROJECTS.wake.notified().await;
+            let began = Instant::now();
+            let owed = std::mem::take(&mut *PROJECTS.owed.lock().expect("owed lock"));
+            for (id, (dir, settled)) in owed {
+                if PROJECTS.said.receiver_count() == 0 {
+                    project::model::forget(&api, &id);
+                    continue;
+                }
+                let _ = PROJECTS.said.send(project::model::told(&api, id, &dir, settled).await);
+            }
+            // As long again before the next: however big a project, telling of it doesn't keep a core busy.
+            tokio::time::sleep(began.elapsed()).await;
+        }
+    });
 }
 
 /// `dir`'s project opens, before anything reads it: only a change from here on is news.

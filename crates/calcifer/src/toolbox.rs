@@ -162,8 +162,8 @@ pub(crate) async fn kind(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<Strin
     let name = found.function.as_deref().map(str::to_owned).or_else(|| target::only_function(&interface).map(str::to_owned));
     let Some(name) = name else {
         let functions = interface.public().iter().map(|name| format!("{package}/{name}")).collect::<Vec<_>>().join(", ");
-        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")));
+        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")).next("cozy project tools"));
     };
     let made = interface.callables.iter().find(|callable| callable.name == name).and_then(tool::output_kind);
-    made.map(str::to_owned).ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} makes no picture, video or sound")))
+    made.map(str::to_owned).ok_or_else(|| Error::new(Kind::Usage, "tool_makes_no_media", format!("{package}/{name} makes no picture, video or sound")).next("cozy project tools"))
 }

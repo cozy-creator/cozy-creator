@@ -1,5 +1,5 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query"
-import type { ProjectState, Run, RunList, Status } from "../types"
+import type { Asset, ProjectState, Run, RunList, Status } from "../types"
 import type { Client, RunFilter } from "./client"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
@@ -14,8 +14,22 @@ function kept<T extends { name: string }>(before: T[], after: T[]): T[] {
   const known = new Map(before.map((row) => [row.name, row]))
   return after.map((row) => {
     const was = known.get(row.name)
-    return was && JSON.stringify(was) === JSON.stringify(row) ? was : row
+    return was && (was === row || JSON.stringify(was) === JSON.stringify(row)) ? was : row
   })
+}
+
+/** A state with these assets as they now are, these gone, and what's said of the project besides them. Nothing else is touched. */
+export function withAssets(state: ProjectState, rows: Asset[], gone: Iterable<string>, head?: ProjectState): ProjectState {
+  const fresh = new Map(rows.map((row) => [row.name, row]))
+  const left = new Set(gone)
+  const assets = state.assets.flatMap((row) => {
+    if (left.has(row.name)) return []
+    const now = fresh.get(row.name)
+    fresh.delete(row.name)
+    return [now ?? row]
+  })
+  assets.push(...fresh.values())
+  return { ...state, ...head, assets }
 }
 
 export const projectQuery = (client: Client, id: string) =>
