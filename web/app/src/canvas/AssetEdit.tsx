@@ -6,6 +6,7 @@ import { useCanvasStore } from "./context"
 import { controlsOf, shapesOf } from "./controls"
 import { MentionText } from "./MentionText"
 import { BEAT_S, mentionsIn } from "./text"
+import { ToolBox } from "./ToolBox"
 
 type Beat = Record<string, unknown>
 
@@ -285,9 +286,13 @@ export function AssetEdit({ name, view }: { name: string; view: ElementView }) {
   const first = controls.find((control) => control.type === "text")
   return (
     <div className="edit-face">
-      {controls.map((control) => (
-        <ControlRow key={control.field} name={name} control={control} view={view} focus={focusing && control === first} />
-      ))}
+      <ToolBox
+        tool={view.asset.tool ? tools.get(view.asset.tool) : undefined}
+        name={name}
+        view={view}
+        controls={controls}
+        row={(control) => <ControlRow key={control.field} name={name} control={control} view={view} focus={focusing && control === first} />}
+      />
       {view.conflict && <Conflict name={name} />}
       <div className="row foot">
         <RenderButton name={name} view={view} />

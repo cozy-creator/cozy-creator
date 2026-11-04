@@ -48,6 +48,7 @@ import type {
   Status,
   Submitted,
   Target,
+  ToolUi,
   Tools,
   Unpinned,
   Updating,
@@ -300,6 +301,12 @@ export class Client {
     if (on) asked.set("on", on)
     if (project) asked.set("project", project)
     return this.json(`/v1/tools?${asked}`, { signal })
+  }
+
+  /** Where to import a tool's component from. `project`: local code it names can answer. */
+  toolUi(id: string, project: string | null): Promise<ToolUi> {
+    const asked = project ? `?${new URLSearchParams({ project })}` : ""
+    return this.json(`/v1/tools/${encodeURIComponent(id)}/ui${asked}`)
   }
 
   /** These assets' queued work dropped and their runs canceled. */

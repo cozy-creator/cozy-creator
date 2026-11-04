@@ -984,6 +984,13 @@ export interface Tool {
   /** Local code a project's assets name. */
   local?: boolean
   controls: Control[]
+  /** The path in its package of a component that draws its box. */
+  ui?: string
+}
+
+/** Where a tool's component is, for `import()`. */
+export interface ToolUi {
+  module: string
 }
 
 export interface Tools {
