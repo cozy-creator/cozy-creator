@@ -121,8 +121,9 @@ async fn make(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
     if let Ok(why) = std::fs::read_to_string(&marked) {
         return Err(unreadable_file(why));
     }
-    let (ffmpeg, ffprobe) = host.ffmpeg().await?;
+    // Its turn first: finding ffmpeg runs it, and blocks, so that too is a few at a time.
     let permit = FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+    let (ffmpeg, ffprobe) = host.ffmpeg().await?;
     let drawn = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         draw(&ffmpeg, &ffprobe, &drawing, &dir, &name)

@@ -1565,13 +1565,13 @@ plate "$OUT/parts.mp4" testsrc2 440 800 2
 len=$(stat -c %s "$OUT/parts.mp4") hex=$(sha "$OUT/parts.mp4") mid=$((len / 2))
 url=http://$ADDR/v1/files/sha256:$hex
 tail -c +$((mid + 1)) "$OUT/parts.mp4" > "$OUT/parts.tail"; head -c "$mid" "$OUT/parts.mp4" > "$OUT/parts.head"
-code=$(api -o /dev/null -D "$OUT/part.hdr" -w '%{http_code}' -X PUT -H "Content-Range: bytes $mid-$((len - 1))/$len" --data-binary "@$OUT/parts.tail" "$url")
-{ [ "$code" = 204 ] && grep -qi "^cozy-held: $mid-$((len - 1))" "$OUT/part.hdr"; } || check "a part: $code, $(cat "$OUT/part.hdr")"
+code=$(api -o /dev/null -D "$OUT/part-first.hdr" -w '%{http_code}' -X PUT -H "Content-Range: bytes $mid-$((len - 1))/$len" --data-binary "@$OUT/parts.tail" "$url")
+{ [ "$code" = 204 ] && grep -qi "^cozy-held: $mid-$((len - 1))" "$OUT/part-first.hdr"; } || check "a part: $code, $(cat "$OUT/part-first.hdr")"
 code=$(api -o /dev/null -D "$OUT/part.hdr" -w '%{http_code}' -I "$url")
 { [ "$code" = 404 ] && grep -qi "^cozy-held: $mid-$((len - 1))" "$OUT/part.hdr"; } || check "HEAD of a partial file: $code, $(cat "$OUT/part.hdr")"
-code=$(api -o "$OUT/part.json" -w '%{http_code}' -X PUT -H "Content-Range: bytes 0-$((mid - 1))/$len" --data-binary "@$OUT/parts.head" "$url")
-{ [ "$code" = 201 ] && J --arg d "sha256:$hex" --argjson l "$len" '.digest == $d and .length == $l and .media_type == "video/mp4"' "$OUT/part.json"; } || check "the last part: $code, $(cat "$OUT/part.json")"
-[ "$(api -o /dev/null -w '%{http_code}' -I "$url")" = 200 ] || check "HEAD of a file whole by parts is not 200"
+code=$(api -o "$OUT/part-last.json" -D "$OUT/part-last.hdr" -w '%{http_code}' -X PUT -H "Content-Range: bytes 0-$((mid - 1))/$len" --data-binary "@$OUT/parts.head" "$url")
+{ [ "$code" = 201 ] && J --arg d "sha256:$hex" --argjson l "$len" '.digest == $d and .length == $l and .media_type == "video/mp4"' "$OUT/part-last.json"; } || check "the last part: $code, $(cat "$OUT/part-last.json")"
+[ "$(api -o /dev/null -D "$OUT/part-whole.hdr" -w '%{http_code}' -I "$url")" = 200 ] || check "HEAD of a file whole by parts is not 200"
 big=$OUT/killed.bin n=$((20 << 20)); head -c "$n" /dev/urandom > "$big"
 hash=$(sha "$big"); url=http://$ADDR/v1/files/sha256:$hash
 api -o /dev/null -X PUT --limit-rate 2M -H "Content-Range: bytes 0-$((n - 1))/$n" -T "$big" "$url" & local pid=$!
@@ -1579,19 +1579,25 @@ sleep 2; kill "$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true
 held=$(api -o /dev/null -D - -I "$url" | tr -d '\r' | sed -n 's/^[Cc]ozy-[Hh]eld: 0-//p')
 [ -n "$held" ] && [ "$held" -lt $((n - 1)) ] || check "a killed upload: it held $held of $n"
 tail -c +$((held + 2)) "$big" > "$big.rest"
-[ "$(api -o /dev/null -w '%{http_code}' -X PUT -H "Content-Range: bytes $((held + 1))-$((n - 1))/$n" -T "$big.rest" "$url")" = 201 ] || check "a killed upload did not resume from byte $((held + 1))"
+echo "held 0-$held of $n after the kill" > "$OUT/resume.txt"
+[ "$(api -o "$OUT/resume.json" -w '%{http_code}' -X PUT -H "Content-Range: bytes $((held + 1))-$((n - 1))/$n" -T "$big.rest" "$url")" = 201 ] || check "a killed upload did not resume from byte $((held + 1))"
+J --arg d "sha256:$hash" --argjson n "$n" '.digest == $d and .length == $n' "$OUT/resume.json" || check "a resumed upload's answer: $(cat "$OUT/resume.json")"
 head -c 100 "$big" > "$big.other"
-[ "$(api -o "$OUT/part.json" -w '%{http_code}' -X PUT -T "$big.other" "http://$ADDR/v1/files/sha256:$(sha "$OUT/parts.head")")" = 400 ] || check "bytes of another digest: $(cat "$OUT/part.json")"
+[ "$(api -o "$OUT/part-mismatch.json" -w '%{http_code}' -X PUT -T "$big.other" "http://$ADDR/v1/files/sha256:$(sha "$OUT/parts.head")")" = 400 ] || check "bytes of another digest: $(cat "$OUT/part-mismatch.json")"
 code=$(api -o "$OUT/by-hash.json" -w '%{http_code}' -X POST -H 'Idempotency-Key: place-1' -d "{\"source\":\"sha256:$hex\",\"name\":\"my clip\",\"at\":{\"x\":10.5,\"y\":-20,\"w\":320}}" "http://$ADDR/v1/projects/$ID/imports")
 { [ "$code" = 200 ] && J --arg s "sha256:$hex" --arg p "files/$hex.mp4" '.name == "my_clip" and .sha256 == $s and .field == "video" and .path == $p' "$OUT/by-hash.json"; } || check "import by hash: $code, $(cat "$OUT/by-hash.json")"
 [ -f "$X/files/$hex.mp4" ] || check "import by hash: no file in the project"
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "import by hash: the held file was copied, not moved"
 api -o "$OUT/by-hash-2.json" -X POST -H 'Idempotency-Key: place-1' -d "{\"source\":\"sha256:$hex\",\"name\":\"my clip\",\"at\":{\"x\":10.5,\"y\":-20,\"w\":320}}" "http://$ADDR/v1/projects/$ID/imports" > /dev/null
 { diff -q "$OUT/by-hash.json" "$OUT/by-hash-2.json" > /dev/null && [ "$(grep -c my_clip "$X/project.yaml")" = 1 ]; } || check "the same Idempotency-Key made another element: $(cat "$OUT/by-hash-2.json")"
-[ "$(api -o /dev/null -w '%{http_code}' -X POST -H 'Idempotency-Key: place-1' -d '{"source":"sha256:'"$hex"'","name":"other"}' "http://$ADDR/v1/projects/$ID/imports")" = 409 ] || check "one Idempotency-Key, another import: not refused"
-[ "$(api -X POST -d "{\"source\":\"sha256:$hex\"}" "http://$ADDR/v1/projects/$ID/imports" | jq -r '.name + " " + (.already | tostring)')" = "file true" ] || check "the same file by hash: not a second element with no new bytes"
-[ "$(api -o /dev/null -w '%{http_code}' -X POST -d "{\"source\":\"sha256:$(sha "$big.other")\"}" "http://$ADDR/v1/projects/$ID/imports")" = 404 ] || check "a hash held nowhere is not 404 file_not_held"
-[ "$(api -o /dev/null -w '%{http_code}' -X POST -d "{\"source\":\"sha256:$hash\"}" "http://$ADDR/v1/projects/$ID/imports")" = 400 ] || check "a held file that is no media is not 400 import_failed"
+cp "$X/project.yaml" "$OUT/named-after-replay.yaml"
+[ "$(api -o "$OUT/by-hash-conflict.json" -w '%{http_code}' -X POST -H 'Idempotency-Key: place-1' -d '{"source":"sha256:'"$hex"'","name":"other"}' "http://$ADDR/v1/projects/$ID/imports")" = 409 ] || check "one Idempotency-Key, another import: not refused"
+api -o "$OUT/by-hash-again.json" -X POST -d "{\"source\":\"sha256:$hex\"}" "http://$ADDR/v1/projects/$ID/imports" > /dev/null
+[ "$(jq -r '.name + " " + (.already | tostring)' "$OUT/by-hash-again.json")" = "file true" ] || check "the same file by hash: not a second element with no new bytes: $(cat "$OUT/by-hash-again.json")"
+[ "$(ls "$X/files" | wc -l | tr -d ' ')" = 1 ] || check "two elements of one file are not one file: $(ls "$X/files")"
+[ "$(api -o "$OUT/by-hash-unheld.json" -w '%{http_code}' -X POST -d "{\"source\":\"sha256:$(sha "$big.other")\"}" "http://$ADDR/v1/projects/$ID/imports")" = 404 ] || check "a hash held nowhere is not 404 file_not_held: $(cat "$OUT/by-hash-unheld.json")"
+[ "$(api -o "$OUT/by-hash-no-media.json" -w '%{http_code}' -X POST -d "{\"source\":\"sha256:$hash\"}" "http://$ADDR/v1/projects/$ID/imports")" = 400 ] || check "a held file that is no media is not 400 import_failed: $(cat "$OUT/by-hash-no-media.json")"
+! grep -q "$hash" "$OUT/by-hash-no-media.json" || check "refusing a dropped file shows its hash: $(cat "$OUT/by-hash-no-media.json")"
 
 step "a project: the canvas moves elements and nothing else"
 local inputs C=http://$ADDR/v1/projects/$ID/canvas E2
@@ -1605,11 +1611,14 @@ wait "$pid" 2> /dev/null || true
 grep -q '"type":"canvas"' "$E2" && grep -q '"my_clip"' "$E2" || check "PATCH canvas: no canvas event: $(tail -c 300 "$E2")"
 [ "$(sed -n '/^cards:/,$p' "$X/project.canvas.yaml" | tail -n +2 | cut -d: -f1 | tr -d ' ' | paste -sd,)" = apple,my_clip,zebra ] || check "canvas: not one line per card, sorted: $(cat "$X/project.canvas.yaml")"
 grep -qF '  my_clip: {x: -5.13, y: 0}' "$X/project.canvas.yaml" || grep -qF '  my_clip: {x: -5.12, y: 0}' "$X/project.canvas.yaml" || check "canvas: a move: $(cat "$X/project.canvas.yaml")"
+cp "$X/project.canvas.yaml" "$OUT/named-canvas-moved.yaml"
 [ "$(status "$X" | jq -c '[.assets[] | [.name, .inputs]]')" = "$inputs" ] || check "canvas: a move changed inputs"
 api -o /dev/null -X PATCH -d '{"cards":{"zebra":null}}' "$C"; J '.cards | has("zebra") | not' <<< "$(api "$C")" || check "canvas: a null did not remove a row"
 cozy project -p "$X" rename my_clip the_clip > "$OUT/rename-clip.txt" 2>&1 || check "rename of an element: $(cat "$OUT/rename-clip.txt")"
 { grep -q '^  the_clip: {x:' "$X/project.canvas.yaml" && ! grep -q my_clip "$X/project.canvas.yaml" && grep -q '^  the_clip: {video: ' "$X/project.yaml" && ! grep -q my_clip "$X/project.yaml"; } || check "rename did not move the key and the row: $(cat "$X/project.yaml" "$X/project.canvas.yaml")"
+cp "$X/project.yaml" "$OUT/named-renamed.yaml"; cp "$X/project.canvas.yaml" "$OUT/named-canvas-renamed.yaml"
 cozy project -p "$X" reclaim --yes > "$OUT/reclaim-canvas.txt" 2>&1 || check "reclaim: $(cat "$OUT/reclaim-canvas.txt")"
+cp "$X/project.canvas.yaml" "$OUT/named-canvas-reclaimed.yaml"
 grep -q '^  apple:' "$X/project.canvas.yaml" && check "reclaim did not prune a row nothing names: $(cat "$X/project.canvas.yaml")"
 grep -q '^  the_clip:' "$X/project.canvas.yaml" || check "reclaim pruned a row something names"
 
@@ -1623,15 +1632,27 @@ api -o "$OUT/thumb.png" -D "$OUT/thumb.hdr" "$T/$name?w=128" || true
 { grep -qi '^content-type: image/png' "$OUT/thumb.hdr" && grep -qi 'immutable' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,pix_fmt -of csv=p=0 "$OUT/thumb.png")" = '128,rgba' ]; } \
   || check "a picture's thumbnail: $(cat "$OUT/thumb.hdr"); $(ffprobe -v error -select_streams v:0 -show_entries stream=width,pix_fmt -of csv=p=0 "$OUT/thumb.png" 2>&1)"
 thumb=$(tr -d '\r' < "$OUT/thumb.hdr" | sed -n 's/^[Ee][Tt]ag: //p')
-[ "$(api -o /dev/null -w '%{http_code}' -H "If-None-Match: $thumb" "$T/$name?w=128")" = 304 ] || check "a thumbnail's ETag: not 304"
-[ "$(api -o /dev/null -w '%{http_code}' -I "$T/$name?w=128")" = 200 ] || check "HEAD of a thumbnail"
+code=$(api -o /dev/null -w '%{http_code}' -H "If-None-Match: $thumb" "$T/$name?w=128"); echo "if-none-match $code" > "$OUT/thumb-codes.txt"; [ "$code" = 304 ] || check "a thumbnail's ETag: not 304"
+code=$(api -o /dev/null -w '%{http_code}' -I "$T/$name?w=128"); echo "head $code" >> "$OUT/thumb-codes.txt"; [ "$code" = 200 ] || check "HEAD of a thumbnail"
 api -o "$OUT/thumb.jpg" -D "$OUT/thumb.hdr" "$T/$hex?w=100" || true
 { grep -qi '^content-type: image/jpeg' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$OUT/thumb.jpg")" = 100 ]; } || check "a video's poster: $(cat "$OUT/thumb.hdr")"
 api -o "$OUT/strip.jpg" "$T/sha256:$hex?w=100&strip=4" || true
 [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$OUT/strip.jpg")" = 400 ] || check "a video's strip of 4 at 100 is not 400 wide"
 api -o "$OUT/wave.png" -D "$OUT/thumb.hdr" "$T/$hash?w=200" || true
 { grep -qi '^content-type: image/png' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$OUT/wave.png")" = 200 ]; } || check "a sound's waveform: $(cat "$OUT/thumb.hdr")"
-[ "$(api -o /dev/null -w '%{http_code}' "$T/$(sha "$OUT/parts.head")")" = 404 ] || check "a thumbnail of no such file is not 404"
+code=$(api -o /dev/null -w '%{http_code}' "$T/$(sha "$OUT/parts.head")"); echo "no such file $code" >> "$OUT/thumb-codes.txt"; [ "$code" = 404 ] || check "a thumbnail of no such file is not 404"
+step "a project: many thumbnails at once: each answers, ffmpegs stay few, and a read goes on meanwhile"
+local w pids=() most=0 now read_took calcifer; calcifer=$(jq -r .pid "$lock")
+: > "$OUT/thumb-many.txt"
+for w in $(seq 200 20 440); do api -o /dev/null -w "$w %{http_code} %{time_total}\n" "$T/$hex?w=$w&strip=8" >> "$OUT/thumb-many.txt" & pids+=($!); done
+read_took=$(api -o /dev/null -w '%{time_total}' "http://$ADDR/v1/projects/$ID") || read_took=failed
+while [ -n "$(jobs -r -p | grep -xF -f <(printf '%s\n' "${pids[@]}"))" ]; do now=$(pgrep -c -x -P "$calcifer" ffmpeg || true); [ "${now:-0}" -le "$most" ] || most=$now; sleep 0.02; done
+wait "${pids[@]}" || true
+echo "most ffmpegs at once $most; a read meanwhile took $read_took s" | tee -a "$OUT/thumb-many.txt"
+[ "$(grep -c ' 200 ' "$OUT/thumb-many.txt")" = "${#pids[@]}" ] || check "many thumbnails: not all answered: $(cat "$OUT/thumb-many.txt")"
+{ [ "$most" -ge 1 ] && [ "$most" -le 2 ]; } || check "many thumbnails: $most ffmpegs at once, not one or two"
+awk -v t="$read_took" 'BEGIN { exit !(t + 0 < 2) }' || check "many thumbnails held up a read: $read_took s"
+! grep -q 'another cozy command is fetching' "$HOME/.cozy/calcifer/calcifer.log" || check "Calcifer raced itself for ffmpeg: $(grep -m1 'another cozy command' "$HOME/.cozy/calcifer/calcifer.log")"
 J --arg s "$name" '[.assets[] | select(.name == "alpha")][0] | .sha256 == $s and .field == "image"' <<< "$(status "$X")" || check "reading: an element's hash and field: $(status "$X" | jq -c .assets)"
 local tries=0; until J '[.assets[] | select(.name == "alpha" or .name == "sound" or .name == "file")] | map(.width // .duration_ms) | all' <<< "$(status "$X")" || [ "$tries" = 40 ]; do sleep 0.5; tries=$((tries + 1)); done
 J '([.assets[] | select(.name == "alpha")][0] | .width == 1024 and .height == 512)
@@ -1641,8 +1662,30 @@ cat >> "$X/project.yaml" <<'YAML'
   made:
     render: {with: no-such-package-of-ours, prompt: Anything.}
 YAML
-hash=$(sha256sum "$X/project.lock"); status "$X" > /dev/null; status "$X" > /dev/null
+hash=$(sha256sum "$X/project.lock"); status "$X" > "$OUT/named-status.json"; status "$X" > /dev/null
 [ "$(sha256sum "$X/project.lock")" = "$hash" ] || check "reading a project wrote project.lock"
+cp "$X/project.yaml" "$OUT/named-final.yaml"
+# The Hub reachable and not answering, as a stopped hubcheck is: packages never heard of, each of which a read once waited 3 s for.
+if [ -n "${HUB_CHECK:-}" ]; then
+  step "a project: reading it with the Hub not answering"
+  cat >> "$X/project.yaml" <<'YAML'
+  frozen_one:
+    render: {with: hub-frozen-one, prompt: Anything.}
+  frozen_two:
+    render: {with: hub-frozen-two, prompt: Anything.}
+YAML
+  local first second
+  hash=$(sha256sum "$X/project.lock")
+  kill -STOP "$HUB_CHECK" || true
+  first=$(api --max-time 30 -o "$OUT/read-hub-frozen.json" -w '%{http_code} %{time_total}' "http://$ADDR/v1/projects/$ID") || first="failed $first"
+  second=$(api --max-time 30 -o /dev/null -w '%{http_code} %{time_total}' "http://$ADDR/v1/projects/$ID") || second="failed $second"
+  kill -CONT "$HUB_CHECK" || true
+  echo "first $first; second $second" | tee "$OUT/read-hub-frozen.txt"
+  [ "${first%% *}" = 200 ] && [ "${second%% *}" = 200 ] && awk -v a="${first##* }" -v b="${second##* }" 'BEGIN { exit !(a + 0 < 2 && b + 0 < 2) }' \
+    || check "a read with the Hub not answering: $first; $second"
+  J '.assets | any(.name == "frozen_one")' "$OUT/read-hub-frozen.json" || check "a read with the Hub not answering: no assets: $(head -c 300 "$OUT/read-hub-frozen.json")"
+  [ "$(sha256sum "$X/project.lock")" = "$hash" ] || check "a read with the Hub not answering wrote project.lock"
+fi
 api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$ID"; api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$(jq -r .id <<< "$(cozy --json project -p "$P2" status)")"
 
 step "a project: import --remove-background"

@@ -331,6 +331,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
                 true => output::json(&renamed),
+                false if renamed.versions == 0 => output::say(ctx, &format!("{} is {} now", renamed.from, renamed.to)),
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }

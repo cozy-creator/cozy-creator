@@ -1414,10 +1414,10 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
         if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
             return;
         }
+        let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
         if let Err(error) = host.ffmpeg().await {
             return warn!("measuring a project's files: {}", error.message);
         }
-        let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
         let measuring = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock))
