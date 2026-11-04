@@ -308,7 +308,6 @@ def owner_wait(physical):
     waited = time.monotonic() - began
     after = vt.stats(0)
     assert calls and int(value[-1]) == 5, calls
-    if physical:
     del value, filler, owner
     settle()
     return {"waited_s": waited, "owner_calls": len(calls), "physical_ooms": after["driver_physical_ooms"] - before["driver_physical_ooms"]}
