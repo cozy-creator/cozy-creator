@@ -61,6 +61,7 @@ ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
 
 cut_of_takes
+said_once
 hard_cut
 memo
 pins
@@ -1193,6 +1194,32 @@ render "$T" all || check "landed: render all: $(tail -c 400 "$OUT/render.txt")"
 filmed "render all"
 render "$T" two || check "landed: render two: $(tail -c 400 "$OUT/render.txt")"
 filmed "a new take of the last piece"
+}
+
+# Three assets failing alike, a package that isn't there, so no run is made.
+said_once() {
+step "a project: a failure several assets share is said once"
+local T=$OUT/once code=0
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  one:
+    kind: image
+    render: {with: $T/missing.py}
+    description: A coast.
+  two:
+    kind: image
+    render: {with: $T/missing.py}
+    description: A harbor.
+  three:
+    kind: image
+    render: {with: $T/missing.py}
+    description: A wall.
+YAML
+render "$T" all || code=$?
+[ "$code" != 0 ] || check "once: render exited 0"
+[ "$(grep -c 'pyproject.toml' "$OUT/render.txt")" = 1 ] || check "once: not said once: $(tail -c 400 "$OUT/render.txt")"
 }
 
 # The two kinds of pieces, in frames; two cuts side by side, each its own film and timeline; an edit recut on approve with no machine;

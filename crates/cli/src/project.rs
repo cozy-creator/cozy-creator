@@ -497,8 +497,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                 }
             }
             Event::Failed { error } => {
-                output::failure(ctx, &error.message, &error.next);
-                failed.insert(error.message);
+                if failed.insert(error.message.clone()) {
+                    output::failure(ctx, &error.message, &error.next);
+                }
             }
             Event::Moved { .. } | Event::Transferred { .. } => {}
             Event::Cut { cut, frames, fps, retimed, unchanged, .. } => {
