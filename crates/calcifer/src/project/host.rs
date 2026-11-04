@@ -154,6 +154,11 @@ impl Host {
         Self { events: Some(events), ..Self::new(api) }
     }
 
+    /// What it runs in, for what outlives one of its calls.
+    pub fn api(&self) -> Arc<Api> {
+        self.api.clone()
+    }
+
     /// What local code at `path` going `on` a machine is keyed under (`local_code::prepare`).
     pub fn key(&self, path: &Path, on: &On) -> String {
         let at = Sha256::digest(format!("{}\n{on:?}", path.display()));
@@ -240,6 +245,15 @@ impl Host {
 
     /// The run once it ended and each output landed here or failed to.
     pub async fn wait(&self, id: &RunId) -> Result<Run, Error> {
+        self.until(id, |run| !run.output.iter().any(OutputItem::owed)).await
+    }
+
+    /// The run once it ended on its machine, whatever of its outputs is still on its way here.
+    pub async fn ended(&self, id: &RunId) -> Result<Run, Error> {
+        self.until(id, |_| true).await
+    }
+
+    async fn until(&self, id: &RunId, and: impl Fn(&Run) -> bool) -> Result<Run, Error> {
         let calcifer = &self.api.calcifer;
         let mut tail = calcifer.subscribe();
         loop {
@@ -247,7 +261,7 @@ impl Host {
             let row =
                 row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
             let run = calcifer.record(&row).map_err(refused)?;
-            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && !run.output.iter().any(OutputItem::owed) {
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
             }
             tokio::select! {
@@ -255,6 +269,16 @@ impl Host {
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             }
         }
+    }
+
+    /// Whether this computer reaches the Hub at all: a connect, no call, so the Hub learns nothing. With no network here, what didn't
+    /// answer says nothing of itself.
+    pub async fn online(&self) -> bool {
+        // A connect gives no other word of a path that swallows it: the one signal-less wait here, and it only delays the next look.
+        const CONNECT: Duration = Duration::from_secs(10);
+        let Ok(hub) = reqwest::Url::parse(self.api.machines.hubs.hub.as_str()) else { return true };
+        let (Some(host), Some(port)) = (hub.host_str(), hub.port_or_known_default()) else { return true };
+        matches!(tokio::time::timeout(CONNECT, tokio::net::TcpStream::connect((host, port))).await, Ok(Ok(_)))
     }
 
     /// The machine among `on` that already holds these bytes for this computer.

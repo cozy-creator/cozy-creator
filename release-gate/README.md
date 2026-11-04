@@ -122,6 +122,7 @@ more than one pod calls `order` per pod, then `ready` per pod; the guard and the
 `project-remote` (xs-143) proves `cozy project push` and `pull`: a second user on the runner, holding only project.yaml
 and project.lock, pulls and cuts the same `edit.mp4`; kills on both sides resume.
 `h3-8gb` is the 8 GB tier: H3 Turbo 15 s on one RTX 3070 must complete, 362 frames, under its time bar.
+`client-gone` is a run on a pod finishing with its client gone: a second user on one pod asks over a line the session throttles and cuts, and what comes next doesn't wait on that line. `-f params='{"before": "<cozy>"}'` shows what its parts did on an earlier cozy.
 `vram-yield` (xs-088) starts a stand-in game (`fixtures/game.py`) on an 8 GB card in shared mode, with models idle and
 mid-call: it must have its memory within 2 s, and the call must complete, never ended for it. The game must start
 outside cozy's process tree (the session rents with SSH; a root shell starts it over `cozy machine ssh`): started by

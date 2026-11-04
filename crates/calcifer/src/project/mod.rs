@@ -1589,6 +1589,16 @@ struct Missed {
 /// A run being followed to its end.
 type Following<'a> = BoxFuture<'a, Followed>;
 
+/// How often a walk with no network looks again.
+const OFFLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// A version listed with files on their way here.
+struct Coming {
+    name: String,
+    number: u32,
+    take: bool,
+}
+
 /// A run followed to its end: its key, its asset and number if it was still owed, and what landing it came to.
 struct Followed {
     key: String,
@@ -1701,15 +1711,20 @@ impl Walk {
             .collect()
     }
 
-    /// Sizes an adapter reads are ffprobe's: with files to measure and none here, this computer's first need fetches it, or says what goes without.
-    async fn measuring(&self, lock: &Lock) {
+    /// Sizes an adapter reads are ffprobe's: with files to measure and none here, this computer's first need fetches it behind the walk, which
+    /// waits for no download here, or says what goes without.
+    fn measuring(&self, lock: &Lock) {
         if !self.folder().wants_ffprobe(lock) || self.measuring.swap(true, Ordering::Relaxed) {
             return;
         }
         self.say(Event::Said { message: "fetching ffmpeg and ffprobe, which measure this project's files".into(), name: None });
-        if let Err(error) = self.host.ffmpeg().await {
-            self.say(Event::Warning { message: format!("adapters see no sizes for this project's files: {}: cozy doctor", error.message), name: None });
-        }
+        let (api, project) = (self.host.api(), self.project.clone());
+        tokio::spawn(async move {
+            match Host::new(&api).ffmpeg().await {
+                Ok(_) => project.asked.notify_one(),
+                Err(error) => drop(project.events.send(Event::Warning { message: format!("adapters see no sizes for this project's files: {}: cozy doctor", error.message), name: None })),
+            }
+        });
     }
 
     /// What it landed and how long it took, if it landed anything.
@@ -1780,10 +1795,24 @@ impl Walk {
                 answer => return answer,
             }
         }
-        ask().await.map_err(|e| match again(&e) {
-            true => Error { message: format!("{}, after {} attempts", e.message, WAITS.len() + 1), ..e },
-            false => e,
-        })
+        // This computer with no network tells nothing of its machine, and its job is never failed for it: it goes when the network does.
+        let mut said = false;
+        loop {
+            match ask().await {
+                Err(e) if again(&e) && self.elsewhere() && !self.host.online().await => {
+                    if !std::mem::replace(&mut said, true) {
+                        self.say(Event::Warning { message: format!("{}; this computer reaches nothing: it goes on once it does", e.message), name: None });
+                    }
+                    tokio::time::sleep(OFFLINE).await;
+                }
+                answer => {
+                    return answer.map_err(|e| match again(&e) {
+                        true => Error { message: format!("{}, after {} attempts", e.message, WAITS.len() + 1), ..e },
+                        false => e,
+                    });
+                }
+            }
+        }
     }
 
     fn say(&self, event: Event) {
@@ -1814,7 +1843,7 @@ impl Walk {
         let mut greeted = HashSet::new();
         loop {
             let mut moved = false;
-            self.measuring(&self.folder().lock()?).await;
+            self.measuring(&self.folder().lock()?);
             // Each render on its own text, all going at once: what is independent goes together.
             let asks: Vec<String> = self.folder().lock()?.walk.asks.into_iter().map(|ask| ask.id).collect();
             for id in asks {
@@ -2056,7 +2085,10 @@ impl Walk {
             let holds = now.asset(&name).and_then(|held| held.versions.iter().rev().find(|version| version.inputs == inputs)).map(|version| version.number);
             let going = now.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name) && pending.version.inputs == inputs);
             let keeps = next.take.as_ref().and_then(|take| take.keeps);
-            let keep = keeps.and_then(|keeps| doc.keep(i, lock, keeps));
+            let keep = match keeps {
+                Some(keeps) => self.keeping(doc, i, keeps).await?,
+                None => None,
+            };
             if keeps.is_some() && keep.is_none() {
                 self.say(Event::Warning { message: format!("{name}: that take holds no video to keep: the whole {noun} renders"), name: None });
             }
@@ -2155,6 +2187,38 @@ impl Walk {
             self.folder().update_lock(settle)?;
         }
         sent
+    }
+
+    /// Whether this walk sends anywhere but this computer's own machine, which needs no network.
+    fn elsewhere(&self) -> bool {
+        let Ok(lock) = self.folder().lock() else { return false };
+        let on = lock.walk.asks.iter().map(|ask| &ask.target).chain(lock.pending.values().map(|pending| &pending.target));
+        on.flat_map(|target| &target.on).any(|on| !matches!(on, On::Machine(name) if name.eq_ignore_ascii_case("local")))
+    }
+
+    /// `sha256` from `machine`, here. This computer with no network says nothing of whether it can be had: that waits for the network.
+    async fn fetching(&self, sha256: &str, machine: &str) -> Result<(), String> {
+        loop {
+            match self.host.fetch(sha256, machine).await {
+                Err(_) if self.elsewhere() && !self.host.online().await => tokio::time::sleep(OFFLINE).await,
+                fetched => return fetched,
+            }
+        }
+    }
+
+    /// `--take`: what asset `i`'s adapter is told of the take it keeps. Where a take ends is measured from its bytes, so they are waited for.
+    async fn keeping(&self, doc: &Doc, i: usize, keeps: Keeps) -> Result<Option<Value>, Error> {
+        let mut lock = self.folder().lock()?;
+        let held = lock.asset(&doc.assets[i].name).and_then(|held| held.version(keeps.take)).and_then(|version| version.files.get("video"));
+        let coming = held.and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays() && !self.folder().path(&file.path).is_file()).cloned();
+        if let Some(file) = coming {
+            let brought = self.host.fetch(&file.sha256, &file.machine).await;
+            brought.map_err(|why| cannot(&doc.assets[i].name, format!("take {}'s video can't be had: {why}", keeps.take)))?;
+            self.host.ffmpeg().await?;
+            lock = self.folder().lock()?;
+            self.folder().measure(&mut lock)?;
+        }
+        Ok(doc.keep(i, &lock, keeps))
     }
 
     /// Where a run going `on` can read `file` from.
@@ -2274,7 +2338,7 @@ impl Walk {
                 }
                 Reach::Fetch => {
                     self.say(Event::Said { message: format!("{name}: fetching {field} from {}", file.machine), name: Some(name.clone()) });
-                    let fetched = self.host.fetch(&digest, &file.machine).await;
+                    let fetched = self.fetching(&digest, &file.machine).await;
                     fetched.map_err(|why| cannot(&name, format!("{field} is on {}, and can't be had: {why}", file.machine)))?;
                 }
                 Reach::Gone => return Err(cannot(&name, format!("{field} is gone from its machine {}", file.machine))),
@@ -2362,8 +2426,11 @@ impl Walk {
         let (name, run) = owed.unzip();
         let landed = async {
             let Some(run) = self.host.sent(&key)? else { return Ok(()) };
-            let run = self.host.wait(&run.id).await?;
-            self.land(&key, &run).await
+            let ended = self.host.ended(&run.id).await?;
+            let version = self.land(&key, &ended).await?;
+            // What reads it goes now, on its machine. The walk isn't over until the bytes are here.
+            self.project.asked.notify_one();
+            self.host.wait(&run.id).await.and_then(|run| self.arrived(&run, version))
         };
         let landed = landed.await;
         let landed = match self.folder().update_lock(|lock| drop(lock.pending.remove(&key))) {
@@ -2373,11 +2440,35 @@ impl Walk {
         Followed { key, name, run: run.filter(|run| *run > 0), landed }
     }
 
-    /// The run sent under `key`, once it ended, into the project: its outputs kept as files, and listed as its asset's newest
-    /// version in project.lock. A run that did not complete is no version, with its reason, and is never run again this walk.
-    async fn land(&self, key: &str, run: &Run) -> Result<(), Error> {
+    /// Run `run` has nothing more on its way here. What landed after its version was listed is that version's, no loose file of the
+    /// project's. One of its files that never came means no version: there's nothing of it to see, and a render makes it again.
+    fn arrived(&self, run: &Run, version: Option<Coming>) -> Result<(), Error> {
         let folder = self.folder();
-        let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(()) };
+        let lost = run.output.iter().find(|output| !output.stays && output.export_error.is_some());
+        folder.update_lock(|lock| {
+            lock.runs.retain(|row| row.run != run.number);
+            if let (Some(coming), true) = (&version, lost.is_some()) {
+                lock.asset_mut(&coming.name, "").versions.retain(|version| version.number != coming.number);
+            }
+        })?;
+        let Some(Coming { name, number, take }) = version else { return Ok(()) };
+        self.project.jobs.arrived(&name, number, lost.is_none());
+        let Some(output) = lost else { return Ok(()) };
+        let mut tally = self.tally.lock().expect("tally lock");
+        match take {
+            true => tally.takes -= 1,
+            false => tally.versions -= 1,
+        }
+        let said = format!("{name}: run {} made its file, and it can't be brought here: {}", run.number, output.export_error.clone().unwrap_or_default());
+        Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run show {}", run.number)))
+    }
+
+    /// The run sent under `key`, once it ended on its machine, into the project: its outputs listed as its asset's newest version in
+    /// project.lock, kept as files once they land, and read on its machine by their hashes until then. A run that did not complete is
+    /// no version, with its reason, and is never run again this walk. What it listed, if its files are on their way.
+    async fn land(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
+        let folder = self.folder();
+        let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(None) };
         let name = pending.asset.clone();
         // What this run landed is its version's, not a loose file of the project's.
         folder.update_lock(|lock| lock.runs.retain(|row| row.run != run.number))?;
@@ -2385,7 +2476,7 @@ impl Walk {
             // Canceled because its machine stopped: not sent, as far as anyone paid for it.
             if run.status == RunStatus::Canceled && run.started_at_ms.is_none() && run.machine.as_deref().is_some_and(|machine| self.stopped.lock().expect("stopped lock").contains_key(machine)) {
                 self.not_sent(&name);
-                return Ok(());
+                return Ok(None);
             }
             self.missed.lock().expect("missed lock").names.insert(name.clone());
             if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
@@ -2415,7 +2506,7 @@ impl Walk {
             }
         }
         // Every file the run saved, by its output's name (a list's items as `<name>-<n>`). `written` is the frames it was asked for, in order.
-        let (mut saved, mut stayed) = (Files::new(), Files::new());
+        let (mut saved, mut stayed, mut coming) = (Files::new(), Files::new(), false);
         for output in &run.output {
             // The first of a list goes by its name, so a reader that takes one takes it.
             let file = match output.index {
@@ -2430,14 +2521,25 @@ impl Walk {
                 }
                 continue;
             }
-            let Some(path) = output.path.as_ref().filter(|path| path.is_file()) else { continue };
+            let sha256 = match output.path.as_ref().filter(|path| path.is_file()) {
+                Some(path) => folder.keep(path)?,
+                // On its way here: its machine holds it, and whatever reads it there needn't wait for this computer.
+                None if output.owed() && output.media_type != protocol::tree::MEDIA => {
+                    let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) else { continue };
+                    let name = crate::outputs::file_name(run.number, &output.name, output.index, &output.media_type);
+                    folder.coming(&sha256.to_string(), machine, output.length, &name)?;
+                    coming = true;
+                    sha256.to_string()
+                }
+                None => continue,
+            };
             if output.name == "written" {
                 if let Some(write) = pending.writes.get(output.index as usize) {
-                    version.writes.insert(name_key(&write.name), Files::from([("image".to_owned(), folder.keep(path)?)]));
+                    version.writes.insert(name_key(&write.name), Files::from([("image".to_owned(), sha256)]));
                 }
                 continue;
             }
-            saved.insert(file, folder.keep(path)?);
+            saved.insert(file, sha256);
         }
         if saved.is_empty() && pending.rest.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} saved no file", run.number);
@@ -2460,7 +2562,11 @@ impl Walk {
             let package = self.again(|| self.host.package(&pending.target.hub, &with, &folder.dir, &pending.target.on)).await?;
             let carried = Pending { version, rest, done, run: 0, ..pending.clone() };
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
-            return self.submit(&new_key(), next, &package, &doc.assets[i], carried, &settle).await;
+            return self.submit(&new_key(), next, &package, &doc.assets[i], carried, &settle).await.map(|()| None);
+        }
+        // A frame its function didn't write is cut from the video, here.
+        if pending.writes.iter().any(|write| !version.writes.contains_key(&name_key(&write.name))) {
+            self.host.wait(&run.id).await?;
         }
         for write in &pending.writes {
             if !version.writes.contains_key(&name_key(&write.name)) {
@@ -2472,14 +2578,18 @@ impl Walk {
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
         let wrote = version.writes.clone();
+        let number = version.number;
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})?;
+        if coming {
+            self.project.jobs.why(&name, number, "its file is on its way here".into());
+        }
         // What its take wrote comes with it, and has no version of its own.
         let lock = folder.lock()?;
         for write in &pending.writes {
             let path = wrote.get(&name_key(&write.name)).and_then(|files| main_path(&lock, files));
             self.project.jobs.ended(Job { asset: write.name.clone(), state: JobState::Done, noun: "version".into(), why: Some(format!("came with {name}")), path, ..Job::default() });
         }
-        Ok(())
+        Ok(coming.then_some(Coming { name, number, take: noun == "take" }))
     }
 
     /// An image its function didn't write, cut from its landed video.
@@ -2543,6 +2653,10 @@ impl Walk {
                 let Some(read) = standing.reads.first() else { return Ok(()) };
                 let file = folder::main_of(&read.files).and_then(|sha256| lock.files.get(sha256));
                 let Some(file) = file else { return Err(cannot(&name, format!("{} has no file", read.name))) };
+                if file.stays() && !self.folder().path(&file.path).is_file() {
+                    let brought = self.host.fetch(&file.sha256, &file.machine).await;
+                    brought.map_err(|why| cannot(&name, format!("{} can't be had: {why}", read.name)))?;
+                }
                 let at = asset.fields.get("at").and_then(Value::as_f64);
                 let frame = self.frame(&name, &self.folder().path(&file.path), at).await?;
                 version.files = Files::from([("image".to_owned(), frame)]);
