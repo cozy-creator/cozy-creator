@@ -384,6 +384,8 @@ fn fits(
 struct Menu {
     plans: Vec<Fit>,
     capacity: usize,
+    /// What no eviction can touch: live working bytes and pinned weights.
+    live: usize,
 }
 
 /// Settle completions, then fit each choice. Holds nothing on return.
@@ -401,17 +403,23 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     owner.sample()?;
     let (free, total) = owner.driver().memory_info()?;
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
-    Ok(Menu { plans, capacity: total.min(owner.capacity()) })
+    let working: usize = state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch)
+        .map(|block| block.capacity).sum();
+    let pinned: usize = state.entries.values().filter(|entry| entry.handle.is_some() && entry.uses.pins() != 0)
+        .map(|entry| entry.bytes).sum();
+    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: working + pinned })
 }
 
 impl Menu {
     /// The level this operation should run at, whatever is free right now: the largest under
     /// what the card leaves beside the phase's weights, or a fifth of it on a card that streams
-    /// them anyway. Weights make room for it. Following free memory instead runs at the finest
-    /// level whenever weights fill the card, and makes millions of allocations.
+    /// them anyway. Weights make room for it, but what's live can't: the op gets no more than the
+    /// rest of the card. Following free memory instead runs at the finest level whenever weights
+    /// fill the card, and makes millions of allocations.
     fn target(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        let cap = self.capacity.saturating_sub(weights).max(self.capacity / 5);
+        let cap = self.capacity.saturating_sub(weights).max(self.capacity / 5)
+            .min(self.capacity.saturating_sub(self.live));
         self.plans.iter().position(|plan| plan.full <= cap).unwrap_or(self.plans.len() - 1)
     }
 

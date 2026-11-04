@@ -3834,7 +3834,8 @@ fn unsettled(reply: &Frame, lost: &str) -> Refused {
         return Refused { code: "group_broken".into(), detail: format!("{lost} during the call") };
     }
     let (code, detail) = match &reply.outcome {
-        Some(o) if !o.code.is_empty() => (o.code.as_str(), o.message.as_str()),
+        // A successful outcome's `ok` names no fault: what ended the executor comes below.
+        Some(o) if !o.code.is_empty() && o.code != "ok" => (o.code.as_str(), o.message.as_str()),
         _ if !reply.ok && !reply.code.is_empty() => (reply.code.as_str(), reply.detail.as_str()),
         _ if !reply.poisoned.is_empty() => ("executor_poisoned", reply.poisoned.as_str()),
         _ => ("executor_poisoned", "the executor named no reason"),
