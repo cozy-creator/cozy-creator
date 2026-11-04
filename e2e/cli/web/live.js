@@ -469,6 +469,19 @@ function linesOf(text, name) {
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
 
+    // What waits its turn says so, and when it has landed no longer does: what's said of the project besides its assets goes when it's over.
+    await project('set', 'live_shot', 'seconds:=3');
+    place = spot();
+    await project('add', `${TOOL}/still`, 'live_after', '--at', `${place.x},${place.y},260`, 'instructions=After <live_shot>.');
+    const waiting = page.evaluate((asked) => window.shown(asked), { name: 'live_after', dot: 's-making' });
+    await project('render', 'live_shot', 'live_after', '--on', 'local', '--queue');
+    await waiting;
+    const afterAt = await until('what waited landed', async () => (await held('live_after')).versions, (versions) => versions === 1, FIRST_RUN_MS).then(() => Date.now());
+    const afterDone = await page.evaluate((asked) => window.shown(asked), { name: 'live_after', dot: 's-current' });
+    times.queued_goes = afterDone.when - afterAt;
+    check('queued_goes_when_it_lands', times.queued_goes <= LIVE_MS, times.queued_goes);
+    await project('delete', 'live_after');
+
     // Deleted while it renders: its run stops, nothing's left queued, and the box goes. The line it printed brings it back with its takes.
     await project('set', 'live_shot', 'seconds:=60');
     await timed('long_render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
@@ -477,7 +490,7 @@ function linesOf(text, name) {
     const going = await until('nothing owed', async () => (await status()).queue ?? [], (queue) => queue.length === 0, 30_000);
     check('delete_stops_its_render', going.length === 0, going);
     await timed('restore_after_a_render', { name: 'live_shot' }, () => project('restore', 'live_shot', stopped.stdout.trim().split(' ').at(-1)));
-    check('restore_keeps_its_takes', (await held('live_shot')).versions === 2, await held('live_shot'));
+    check('restore_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
 
     // A description from a run: printed, and put in the field by the next command.
     const said = (await project('caption', 'live_pic', '--on', 'local')).stdout.trim();
