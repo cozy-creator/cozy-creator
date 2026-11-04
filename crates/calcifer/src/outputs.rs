@@ -227,6 +227,23 @@ impl Calcifer {
         let Some((run, item)) = made else {
             return Err(format!("Calcifer knows of no run on {machine} that made it"));
         };
+        // On its way here already: that export's landing, and no second read of it.
+        let mut events = self.subscribe();
+        let mut exporting = false;
+        while (self.store.outputs_to_export(run.id.as_str()).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
+            exporting = true;
+            tokio::select! {
+                _ = events.recv() => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            }
+        }
+        if exporting {
+            let now = self.store.output(run.id.as_str(), &item.name, item.index).map_err(|e| e.to_string())?;
+            return match now.and_then(|now| now.export_error) {
+                Some(why) => Err(why),
+                None => Ok(()),
+            };
+        }
         if run.machine.as_deref() == Some("local")
             && let Some(machines) = self.machines()
         {
