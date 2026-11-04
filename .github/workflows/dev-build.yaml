@@ -100,6 +100,20 @@ jobs:
           path: dist/tensord/tensord-linux-*
           if-no-files-found: error
           retention-days: 7
+      # The page the dev cozy's Calcifer embeds, built here: the container below mounts the checkout read-only. A ref
+      # from before web/app has none.
+      - uses: actions/setup-node@v4
+        if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
+        with:
+          node-version: 24
+      - uses: pnpm/setup@v1
+        if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
+        with:
+          package-json-file: web/app/package.json
+          install: false
+      - name: Build the page
+        if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
+        run: web/build.sh
       # The dev `cozy` a machine runs (`cozy machine update --tensord <path>`): dist's manylinux_2_28 build, so
       # it runs on every pod, stamped <version>+dev.g<sha8> with its commit.
       - name: Build the dev cozy

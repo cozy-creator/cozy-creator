@@ -35,8 +35,11 @@ case $what in
 esac
 sha=$(git -C "$src" rev-parse HEAD)
 inputs=$sha
+# cozy embeds the page, web/app, which imports web/player. A ref from before web has none.
+web=''
+[ "$what" != cozy ] || ! git -C "$src" rev-parse -q --verify HEAD:web > /dev/null || web=HEAD:web
 [ "$repo" != cozy-creator ] || inputs=$(git -C "$src" rev-parse HEAD:crates HEAD:vendor HEAD:Cargo.toml HEAD:Cargo.lock \
-  HEAD:rust-toolchain.toml HEAD:e2e/candidates | sha256sum | cut -c1-40)
+  HEAD:rust-toolchain.toml HEAD:e2e/candidates $web | sha256sum | cut -c1-40)
 # Another OS's or CPU's build (macOS, Windows: e2e.yaml's cli-os legs build their own) is named for it, and outside
 # candidate-*, the Linux set every Linux job takes whole: a macOS `cozy` merged into it replaces the Linux one.
 plat=$(printf '%s-%s' "${RUNNER_OS:-Linux}" "${RUNNER_ARCH:-X64}" | tr '[:upper:]' '[:lower:]')
@@ -48,6 +51,7 @@ if [ -n "${REUSE:-}" ]; then
 elif [ "$what" = cozy ]; then
   # The dev build `cozy machine update --tensord` takes, dev-build.yaml's stamp.
   (cd "$src"
+    [ ! -f web/build.sh ] || bash web/build.sh
     cargo fetch --locked
     uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline

@@ -306,6 +306,16 @@ jobs:
           key: ${{ matrix.what }}
           # A merge group's cache is its own ref's, which nothing restores.
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The page cozy embeds; build.sh builds it. A ref from before web/app has none.
+      - if: matrix.what == 'cozy' && matrix.take == '' && steps.reuse.outputs.name == '' && hashFiles('.build/web/app/package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: matrix.what == 'cozy' && matrix.take == '' && steps.reuse.outputs.name == '' && hashFiles('.build/web/app/package.json') != ''
+        uses: pnpm/setup@v1
+        with:
+          package-json-file: .build/web/app/package.json
+          install: false
       - id: build
         if: matrix.take == '' && steps.reuse.outputs.name == ''
         env:
