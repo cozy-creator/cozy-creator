@@ -31,6 +31,24 @@ export type Standing = "current" | "out_of_date" | "making" | "missing"
 export interface ProjectFile {
   path: string
   sha256: string
+  /** Its bytes aren't on this computer. */
+  absent?: boolean
+  /** The machine that keeps them, when one does. */
+  machine?: string
+}
+
+/** The file people mean by a version. */
+export interface MainFile {
+  output: string
+  path: string
+  sha256: string
+  field: string
+  width?: number
+  height?: number
+  duration_ms?: number
+  alpha?: boolean
+  absent?: boolean
+  machine?: string
 }
 
 export interface Kept {
@@ -42,6 +60,15 @@ export interface VersionPrefix {
   number: number
   prefix: string
   kept?: Kept
+  execution_ms?: number
+  run?: number
+  main?: MainFile
+}
+
+/** A mention that names something, and the places its text says it: `summary`, `beats.0.description`. */
+export interface Read {
+  name: string
+  at?: string[]
 }
 
 export interface Asset {
@@ -53,6 +80,8 @@ export interface Asset {
   with?: string
   versions: number
   prefixes?: VersionPrefix[]
+  /** The version that is its state. */
+  version?: number
   approved?: number
   pinned?: boolean
   inputs?: string
@@ -65,6 +94,14 @@ export interface Asset {
   width?: number
   height?: number
   duration_ms?: number
+  alpha?: boolean
+  absent?: boolean
+  machine?: string
+  reads?: Read[]
+  written_by?: string
+  /** Its words as the file writes them. A person wrote them, so nothing here is more than text. */
+  text?: Record<string, unknown>
+  failure?: ErrorBody
 }
 
 export interface Queued {
@@ -120,7 +157,13 @@ export interface ProjectState {
   absent?: number
   run_files?: number
   cuts?: Cut[]
-  warnings?: string[]
+  warnings?: ProjectWarning[]
+}
+
+/** What reading a project said, of a name, or with none of the file as a whole. */
+export interface ProjectWarning {
+  name?: string
+  message: string
 }
 
 export interface ProjectRow {
@@ -141,6 +184,21 @@ export interface Opened {
   id: string
   path: string
   name?: string
+}
+
+export interface Asked {
+  id: string
+  path: string
+  joined?: boolean
+  added: number
+  skipped?: string[]
+  queued?: { name: string; ahead?: string[] }[]
+}
+
+export interface Unpinned {
+  name: string
+  version?: number
+  stale: string[]
 }
 
 export interface Approved {

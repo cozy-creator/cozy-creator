@@ -2,6 +2,7 @@ import type {
   Account,
   Agreed,
   Approved,
+  Asked,
   Canvas,
   Code,
   Ended,
@@ -44,6 +45,7 @@ import type {
   Status,
   Submitted,
   Target,
+  Unpinned,
   Updating,
 } from "../types"
 import type { Transport } from "./transport"
@@ -254,6 +256,26 @@ export class Client {
   /** Pins `name` to `version`: a short run of digits is its version, anything else a hash prefix of a file of the project. */
   approve(id: string, name: string, version: string): Promise<Approved> {
     return this.write("POST", `${project(id)}/approve`, { name, version })
+  }
+
+  /** Its pin's line gone, so its state follows its inputs again. */
+  unpin(id: string, name: string): Promise<Unpinned> {
+    return this.write("POST", `${project(id)}/unpin`, { name })
+  }
+
+  /** A new version of each of `names`, on these machines. */
+  render(id: string, names: string[], on: string[], key: string): Promise<Asked> {
+    return this.write("POST", `${project(id)}/runs`, { names, on }, key)
+  }
+
+  /** These assets' queued work dropped and their runs canceled. */
+  cancelRender(id: string, names: string[]): Promise<unknown> {
+    return this.write("POST", `${project(id)}/cancel`, { names })
+  }
+
+  /** Every file `files/` lacks, from the Hub; a project's `moving` says it's going. */
+  pull(id: string): Promise<Opened> {
+    return this.write("POST", `${project(id)}/pull`, {})
   }
 
   rename(id: string, from: string, to: string): Promise<Renamed> {

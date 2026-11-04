@@ -12,17 +12,22 @@ import {
 } from "@xyflow/react"
 import { type ChangeEvent, type DragEvent, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
-import { canvasQuery, projectQuery } from "../api/queries"
+import { canvasQuery, machinesQuery, projectQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { loadSelection, loadViewport, saveSelection, saveViewport } from "../app/view"
+import { loadMachine, loadSelection, loadViewport, saveMachine, saveSelection, saveViewport } from "../app/view"
 import { say } from "../ui/notes"
 import { signal, useSignal } from "../ui/signal"
-import { CanvasStore, type ElementNode } from "./CanvasStore"
-import { nodeTypes } from "./Card"
+import { CanvasStore, type ElementNode, type GraphEdge } from "./CanvasStore"
+import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore } from "./context"
+import { EdgeTip, edgeTypes } from "./Edges"
+import { EntityCard } from "./EntityCard"
 import { Placer } from "./place"
+import { TextSheet } from "./TextSheet"
+
+const nodeTypes = { element: Card, entity: EntityCard }
 
 const ACCEPT = "image/*,video/*,audio/*"
 const MULTI = ["Shift", "Meta", "Control"]
@@ -64,14 +69,52 @@ function ProjectSync({ id }: { id: string }) {
   return null
 }
 
-function Controls({ fit, choose }: { fit: () => void; choose: () => void }) {
+/** The machine a new take goes to: the last used, else this computer if it runs models, else one that's up. Renting is under Machines. */
+function CurrentMachine({ store, machinesLink }: { store: CanvasStore; machinesLink: string }) {
+  const { client, scope, status } = useConnection()
+  const { data } = useQuery(machinesQuery(client))
+  const [chosen, choose] = useState(() => loadMachine(scope))
+  const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
+  const current = up.find((machine) => machine.name === chosen)?.name ?? up.find((machine) => machine.kind === "local")?.name ?? up[0]?.name ?? null
+  useEffect(() => {
+    store.machine = () => current
+  }, [store, current])
+  if (!current) {
+    return (
+      <Link className="tb" to={machinesLink}>
+        No machine up
+      </Link>
+    )
+  }
+  return (
+    <select
+      className="tb"
+      aria-label="The machine new takes go to"
+      value={current}
+      onChange={(event) => {
+        choose(event.target.value)
+        saveMachine(scope, event.target.value)
+      }}
+    >
+      {up.map((machine) => (
+        <option key={machine.name} value={machine.name}>
+          {machine.name}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function Controls({ store, fit, choose }: { store: CanvasStore; fit: () => void; choose: () => void }) {
   const zoom = useStore((state) => Math.round(state.transform[2] * 100))
+  const id = store.projectId
   return (
     <>
       <span className="sum">{zoom}%</span>
       <button type="button" className="tb" title="Fit everything (F)" onClick={fit}>
         Fit
       </button>
+      <CurrentMachine store={store} machinesLink={id ? `/projects/${id}/machines` : "/machines"} />
       <button type="button" className="tb primary" onClick={choose}>
         Add file
       </button>
@@ -117,7 +160,7 @@ function Canvas({
   onAdopt: (id: string) => void
 }) {
   const connection = useConnection()
-  const flow = useReactFlow<ElementNode>()
+  const flow = useReactFlow<ElementNode, GraphEdge>()
   const { scope, client, bridge } = connection
   const [saved] = useState(() => loadViewport(scope, projectId))
   const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId)))
@@ -133,14 +176,24 @@ function Canvas({
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
-    store.onFirstRead = async (held) => {
-      if (saved || !store.projectId) return
-      if (held && openedOn) await flow.fitView({ maxZoom: 1, padding: 0.12 })
+    // A project with no rows has nothing to fit at its first read: its first placing is what to look at.
+    let fitted = Boolean(saved)
+    const fitOnce = async () => {
+      if (fitted || !store.projectId) return
+      fitted = true
+      if (openedOn) await flow.fitView({ maxZoom: 1, padding: 0.12 })
       saveViewport(scope, store.projectId, flow.getViewport())
+    }
+    store.onFirstRead = async () => {
+      if (flow.getNodes().length || !store.projectId) return fitOnce()
+    }
+    store.onPlaced = fitOnce
+    store.refresh = () => {
+      if (store.projectId) bridge.refresh(store.projectId)
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, scope, openedOn])
+  }, [store, flow, saved, scope, openedOn, bridge])
 
   const fit = useCallback(() => void flow.fitView({ maxZoom: 1, padding: 0.12, duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])
@@ -180,8 +233,10 @@ function Canvas({
   )
 
   const selectionChanged = useCallback(
-    ({ nodes }: OnSelectionChangeParams<ElementNode>) => {
+    ({ nodes }: OnSelectionChangeParams<ElementNode, GraphEdge>) => {
       selected.set(nodes.length)
+      store.select(nodes.map((node) => node.data.name))
+      if (stage.current) stage.current.dataset.focus = nodes.length ? "on" : ""
       clearTimeout(settling.current)
       settling.current = setTimeout(() => {
         if (store.projectId) saveSelection(scope, store.projectId, nodes.map((node) => node.data.name))
@@ -201,6 +256,7 @@ function Canvas({
       if (typing(event.target)) return
       const command = event.metaKey || event.ctrlKey
       if (event.key === "Escape") {
+        store.open.set(null)
         for (const node of flow.getNodes()) {
           const placing = store.get(node.data.name)?.placing
           if (node.selected && placing && placing.stage !== "adding") store.cancel(store.resolveName(node.data.name))
@@ -248,10 +304,13 @@ function Canvas({
         }}
         onDrop={drop}
       >
-        <ReactFlow<ElementNode>
+        <ReactFlow<ElementNode, GraphEdge>
           defaultNodes={[]}
           defaultEdges={[]}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          edgesFocusable={false}
+          edgesReconnectable={false}
           defaultViewport={saved ?? undefined}
           panOnScroll
           panOnScrollSpeed={1}
@@ -279,10 +338,12 @@ function Canvas({
           <Empty choose={choose} />
         </ReactFlow>
         {veil && <div className="dropveil">Drop to add to this project</div>}
+        <EdgeTip />
       </div>
+      <TextSheet />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       <Dock choose={choose} selected={selected} />
-      {slot && createPortal(<Controls fit={fit} choose={choose} />, slot)}
+      {slot && createPortal(<Controls store={store} fit={fit} choose={choose} />, slot)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
   )

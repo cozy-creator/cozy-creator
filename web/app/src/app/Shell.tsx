@@ -45,6 +45,8 @@ function ProjectName({ id }: { id: string | null }) {
   const assets = data?.assets ?? []
   const making = assets.filter((asset) => asset.standing === "making").length
   const late = assets.filter((asset) => asset.standing === "out_of_date").length
+  const failed = assets.filter((asset) => asset.failure && asset.standing !== "making").length
+  const saidOfFile = (data?.warnings ?? []).filter((warning) => !warning.name)
   return (
     <>
       <Link className="proj" to={to("projects")} title="Projects">
@@ -53,6 +55,12 @@ function ProjectName({ id }: { id: string | null }) {
       {data && <span className="path">{data.path}</span>}
       {making > 0 && <span className="sum mak">{making} making</span>}
       {late > 0 && <span className="sum ood">{late} out of date</span>}
+      {failed > 0 && <span className="sum bad">{failed} failed</span>}
+      {saidOfFile.length > 0 && (
+        <span className="sum ood" title={saidOfFile.map((warning) => warning.message).join("\n")}>
+          {saidOfFile.length} {saidOfFile.length === 1 ? "warning" : "warnings"}
+        </span>
+      )}
     </>
   )
 }

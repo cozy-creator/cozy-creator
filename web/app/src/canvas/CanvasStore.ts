@@ -1,11 +1,16 @@
-import type { Node, ReactFlowInstance } from "@xyflow/react"
+import type { Edge, Node, ReactFlowInstance } from "@xyflow/react"
 import type { Client } from "../api/client"
-import type { Asset, Imported, ProjectState, Row, Run } from "../types"
+import type { Asset, Entity, Imported, ProjectState, Row, Run, Standing } from "../types"
 import { say } from "../ui/notes"
+import { signal } from "../ui/signal"
+import { type Box, type EdgeKind, type EdgeSpec, edgesOf, homesFor } from "./graph"
 import { asName, freeName } from "./names"
+import { anchorsFor, heightFor, widthFor } from "./shown"
+import { beatsOf } from "./text"
 
 export type ElementData = { name: string }
-export type ElementNode = Node<ElementData, "element">
+export type ElementNode = Node<ElementData, "element" | "entity">
+export type GraphEdge = Edge<{ kind: EdgeKind }, "graph">
 
 export type MediaKind = "image" | "video" | "audio" | "file"
 export type Stage = "waiting" | "reading" | "sending" | "adding"
@@ -27,6 +32,17 @@ export interface Placing {
 export interface ElementView {
   name: string
   asset?: Asset
+  entity?: Entity
+  /** An entity's: how the assets it links stand, the worst of them. */
+  linked?: Standing | "failed"
+  /** The version being looked at, which changes only this page, until it's pinned. */
+  viewed?: number
+  /** Its turn hasn't come: nothing is making it yet. */
+  queued?: boolean
+  /** What reading the project said of it. */
+  warnings?: string[]
+  /** A piece of a cut was clicked: where to play from. `at` is seconds, `ask` tells one click from the next. */
+  seek?: { at: number; ask: number }
   /** Known from the import's answer until the project is read again. */
   landed?: { sha256: string; field: string }
   placing?: Placing
@@ -39,15 +55,28 @@ export interface ElementView {
 }
 
 export const CARD_WIDTH = 240
-const GAP = 32
 
-type Flow = ReactFlowInstance<ElementNode>
+type Flow = ReactFlowInstance<ElementNode, GraphEdge>
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
 
 export function toRow(node: ElementNode): Row {
   return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: node.width ?? CARD_WIDTH }
 }
+
+/** What the state says of one element: an asset, or an entity. */
+type Element = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued" | "warnings">
+
+const viewOf = (element: Element): ElementView => ({ ...element })
+
+function linksOf(entity: Entity): string[] {
+  return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
+}
+
+const WORST = ["making", "failed", "out_of_date", "missing", "current"] as const
+
+/** How an entity stands: the worst of what it links. */
+const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((standing) => standings.includes(standing)) ?? "current"
 
 /**
  * What the canvas knows beyond React Flow's positions, viewport and selection: a plain store with per-name subscribers. `node.data` is
@@ -60,6 +89,22 @@ export class CanvasStore {
   private views = new Map<string, ElementView>()
   private aliases = new Map<string, string>()
   private subscribers = new Map<string, Set<() => void>>()
+  private edgeSubscribers = new Map<string, () => void>()
+  private edges = new Map<string, EdgeSpec>()
+  private lit = new Set<string>()
+  private shapes = new Map<string, string>()
+  private asked = new Set<number>()
+  private runs = new Map<number, Run>()
+  /** The text open beside the canvas, and the place to show. */
+  readonly open = signal<{ name: string; at?: string } | null>(null)
+  /** The edge under the pointer, and where. */
+  readonly tip = signal<{ id: string; x: number; y: number } | null>(null)
+  /** A push or pull is going. */
+  readonly transferring = signal(false)
+  /** Whatever machine a new take should go to, or none up. */
+  machine: () => string | null = () => null
+  /** The first thing a take asked for after this needs no reload to show. */
+  refresh: () => void = () => {}
   private ids = new Map<string, string>()
   private nextId = 0
   private state: ProjectState | null = null
@@ -77,6 +122,8 @@ export class CanvasStore {
   private named = new Set<() => void>()
   /** The project was read for the first time; whether it held anything. */
   onFirstRead?: (held: boolean) => void
+  /** Elements with no row were just placed. */
+  onPlaced?: () => void
 
   constructor(client: Client, projectId: string | null, selected: Iterable<string>) {
     this.client = client
@@ -143,6 +190,7 @@ export class CanvasStore {
 
   applyState(state: ProjectState) {
     this.state = state
+    this.transferring.set(Boolean(state.moving))
     if (this.rows && this.flow) this.reconcile()
   }
 
@@ -179,6 +227,7 @@ export class CanvasStore {
     }
     const id = this.ids.get(name)
     if (id) this.flow?.updateNode(id, { position: { x: row.x, y: row.y }, ...(row.w ? { width: row.w } : {}) })
+    if (row.w) this.reshape(name)
   }
 
   /** Fell behind: what the stream would have told us is about to be read again. */
@@ -186,47 +235,91 @@ export class CanvasStore {
     this.masks.clear()
   }
 
-  /** What a run says of the asset it's making. */
+  /** What a run says of the asset it's making: the lowest going, when there are several. */
   applyRun(run: Run) {
+    this.runs.set(run.number, run)
     const owner = this.owners.get(run.number)
-    if (owner) this.patch(owner, { run })
+    if (!owner) return
+    const making = this.get(owner)?.asset?.making ?? []
+    if (run.number === Math.min(...making)) this.patch(owner, { run })
   }
 
   private reconcile() {
     const state = this.state!
     const rows = this.rows!
-    const present = new Set(state.assets.map((asset) => asset.name))
+    const entities = state.entities ?? []
+    const present = new Set([...state.assets, ...entities].map((element) => element.name))
     for (const [from, to] of this.renames) if (present.has(to)) this.renames.delete(from)
     const becoming = new Set(this.renames.values())
-    const fresh: Asset[] = []
+    const fresh: Element[] = []
+    const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
+    const warnings = new Map<string, string[]>()
+    for (const warning of state.warnings ?? []) if (warning.name) warnings.set(warning.name, [...(warnings.get(warning.name) ?? []), warning.message])
     this.owners.clear()
+    const said = (view: ElementView, name: string) => {
+      const now = warnings.get(name)
+      return (view.warnings ?? []).join("\n") === (now ?? []).join("\n") ? {} : { warnings: now }
+    }
     for (const asset of state.assets) {
-      for (const number of asset.making ?? []) this.owners.set(number, asset.name)
+      for (const number of asset.making ?? []) {
+        this.owners.set(number, asset.name)
+        this.askRun(number)
+      }
       if (this.renames.has(asset.name)) continue
       const view = this.views.get(asset.name)
       if (view) {
+        const change: Partial<ElementView> = { ...said(view, asset.name) }
+        if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.asset !== asset || view.landed) {
-          this.patch(asset.name, { asset, landed: undefined, ...(asset.making?.length ? {} : { run: undefined }) })
+          Object.assign(change, { asset, landed: undefined })
+          if (!asset.making?.length) change.run = undefined
+          // Pinned where it was being looked: there's nothing left to look at.
+          if (view.viewed !== undefined && (view.viewed === asset.version || !asset.prefixes?.some((held) => held.number === view.viewed))) change.viewed = undefined
+        }
+        if (Object.keys(change).length) {
+          this.patch(asset.name, change)
+          this.reshape(asset.name)
         }
       } else if (this.adding === 0) {
         // While an import is being asked, a new name may be that import's: its answer says, then this runs again.
-        fresh.push(asset)
+        fresh.push({ name: asset.name, asset, queued: queued.has(asset.name), warnings: warnings.get(asset.name) })
+      }
+    }
+    const standing = new Map(state.assets.map((asset) => [asset.name, asset.failure ? ("failed" as const) : asset.standing]))
+    for (const entity of entities) {
+      const linked = worst(linksOf(entity).map((name) => standing.get(name)))
+      const view = this.views.get(entity.name)
+      if (view) {
+        if (view.entity !== entity || view.linked !== linked || Object.keys(said(view, entity.name)).length) {
+          this.patch(entity.name, { entity, linked, ...said(view, entity.name) })
+          this.reshape(entity.name)
+        }
+      } else if (this.adding === 0) {
+        fresh.push({ name: entity.name, entity, linked, warnings: warnings.get(entity.name) })
       }
     }
     for (const [name, view] of this.views) {
       if (!present.has(name) && !view.placing && !view.landed && !becoming.has(name)) this.removeNode(name)
     }
-    this.addNodes(fresh.filter((asset) => rows.has(asset.name)).map((asset) => ({ asset, row: rows.get(asset.name)! })))
-    const homeless = fresh.filter((asset) => !rows.has(asset.name)).map((asset) => asset.name)
+    this.addNodes(fresh.filter((element) => rows.has(element.name)).map((element) => ({ element, row: rows.get(element.name)! })))
+    const homeless = fresh.filter((element) => !rows.has(element.name))
     if (homeless.length) void this.findHomes(homeless)
+    this.syncEdges()
     if (!this.seen) {
       this.seen = true
-      this.onFirstRead?.(state.assets.length > 0)
+      this.onFirstRead?.(present.size > 0)
     }
   }
 
+  /** A run this page hasn't heard of: its progress comes on the stream, but what it says now has to be read. */
+  private askRun(number: number) {
+    if (this.asked.has(number)) return
+    this.asked.add(number)
+    this.client.run(number).then((run) => this.applyRun(run), () => {})
+  }
+
   /** A name with no row may just be ahead of its row on the stream, so ask once. Still none: place it, once, and write the row. */
-  private async findHomes(names: string[]) {
+  private async findHomes(elements: Element[]) {
     if (!this.projectId) return
     let cards: Record<string, Row> = {}
     try {
@@ -236,37 +329,47 @@ export class CanvasStore {
     }
     const rows = this.rows!
     const state = this.state!
-    const wanted = names.filter((name) => !this.views.has(name) && state.assets.some((asset) => asset.name === name))
-    const assets = new Map(state.assets.map((asset) => [asset.name, asset]))
-    const found = wanted.filter((name) => cards[name])
-    for (const name of found) rows.set(name, cards[name])
-    this.addNodes(found.map((name) => ({ asset: assets.get(name)!, row: cards[name] })))
-    const left = wanted.filter((name) => !cards[name])
-    if (!left.length) return
-    const homes = this.nextHomes(left.length)
-    this.addNodes(left.map((name, i) => ({ asset: assets.get(name)!, row: homes[i] })))
-    left.forEach((name, i) => this.move(name, homes[i]))
+    const named = new Set([...state.assets, ...(state.entities ?? [])].map((element) => element.name))
+    const wanted = elements.filter(({ name }) => !this.views.has(name) && named.has(name))
+    const found = wanted.filter(({ name }) => cards[name])
+    for (const { name } of found) rows.set(name, cards[name])
+    this.addNodes(found.map((element) => ({ element, row: cards[element.name] })))
+    const left = wanted.filter(({ name }) => !cards[name])
+    if (!left.length) return this.syncEdges()
+    const homes = this.homes(left)
+    this.addNodes(left.map((element) => ({ element, row: homes.get(element.name)! })))
+    this.syncEdges()
+    for (const [name, row] of homes) this.move(name, row)
+    // Opened here for the first time, with nothing placed yet: its whole new layout is what to look at.
+    this.onPlaced?.()
   }
 
-  /** Right of what's there, top down. Reading order stands in for graph depth until `reads` is in the state. */
-  private nextHomes(count: number): Row[] {
-    const nodes = this.flow?.getNodes() ?? []
-    const right = nodes.length ? Math.max(...nodes.map((node) => node.position.x + (node.width ?? CARD_WIDTH))) + GAP : 0
-    const top = nodes.length ? Math.min(...nodes.map((node) => node.position.y)) : 0
-    const perColumn = 6
-    return Array.from({ length: count }, (_, i) => ({
-      x: right + Math.floor(i / perColumn) * (CARD_WIDTH + GAP),
-      y: top + (i % perColumn) * (CARD_WIDTH * 0.75 + GAP),
-      w: CARD_WIDTH,
+  private homes(left: Element[]): Map<string, Row> {
+    const boxes = new Map<string, Box>()
+    for (const [name, id] of this.ids) {
+      const node = this.flow?.getNode(id)
+      const view = this.views.get(name)
+      if (!node || !view) continue
+      const w = node.width ?? widthFor(view)
+      boxes.set(name, { x: node.position.x, y: node.position.y, w, h: node.measured?.height ?? heightFor(view, w) })
+    }
+    const sizes = new Map(left.map((element) => {
+      const view = viewOf(element)
+      const w = widthFor(view)
+      return [element.name, { w, h: heightFor(view, w) }]
     }))
+    const names = left.map((element) => element.name)
+    return homesFor(names, edgesOf(this.state!), boxes, (name) => sizes.get(name)!)
   }
 
-  private addNodes(items: { asset: Asset; row: Row }[]) {
+  private addNodes(items: { element: Element; row: Row }[]) {
     if (!items.length) return
-    const nodes = items.map(({ asset, row }) => {
-      this.views.set(asset.name, { name: asset.name, asset })
-      for (const number of asset.making ?? []) this.owners.set(number, asset.name)
-      return this.node(asset.name, row, this.selected.has(asset.name))
+    const nodes = items.map(({ element, row }) => {
+      const making = element.asset?.making ?? []
+      // Its card may be placed after what its run said came back.
+      this.views.set(element.name, { ...viewOf(element), run: making.length ? this.runs.get(Math.min(...making)) : undefined })
+      for (const number of making) this.owners.set(number, element.name)
+      return this.node(element.name, row, this.selected.has(element.name))
     })
     this.flow?.addNodes(nodes)
   }
@@ -274,15 +377,167 @@ export class CanvasStore {
   private node(name: string, row: Row, selected = false): ElementNode {
     const id = `e${++this.nextId}`
     this.ids.set(name, id)
-    const width = row.w ?? CARD_WIDTH
+    const view = this.views.get(name)!
+    const width = row.w ?? widthFor(view)
+    const handles = anchorsFor(view, width)
+    this.shapes.set(name, JSON.stringify(handles))
     return {
       id,
-      type: "element",
+      type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y },
       data: { name },
       width,
-      initialHeight: Math.round(width * 0.75) + 30,
+      // Its size from the row and the lock: a culled node never gets measured, and React Flow's fit leaves out what isn't.
+      measured: { width, height: heightFor(view, width) },
+      handles,
       selected,
+    }
+  }
+
+  /** Where edges land on a card moves with its shape: the node hears only when it did, so a change of state costs no edge a thing. */
+  private reshape(name: string) {
+    const key = this.resolveName(name)
+    const id = this.ids.get(key)
+    const view = this.views.get(key)
+    const node = id ? this.flow?.getNode(id) : undefined
+    if (!id || !view || !node) return
+    const width = node.width ?? widthFor(view)
+    const handles = anchorsFor(view, width)
+    const shape = JSON.stringify(handles)
+    if (this.shapes.get(key) === shape) return
+    this.shapes.set(key, shape)
+    this.flow?.updateNode(id, { handles, measured: { width, height: heightFor(view, width) } })
+  }
+
+  // Edges
+
+  /** The edges the state says, with both ends on the canvas. React Flow hears only what came or went. */
+  private syncEdges() {
+    if (!this.state || !this.flow) return
+    const next = new Map<string, EdgeSpec>()
+    for (const spec of edgesOf(this.state)) if (this.ids.has(spec.source) && this.ids.has(spec.target)) next.set(spec.id, spec)
+    const added = [...next.values()].filter((spec) => !this.edges.has(spec.id))
+    const gone = [...this.edges.keys()].some((id) => !next.has(id))
+    this.edges = next
+    if (added.length || gone) {
+      const made = added.map((spec): GraphEdge => ({
+        id: spec.id,
+        type: "graph",
+        source: this.ids.get(spec.source)!,
+        target: this.ids.get(spec.target)!,
+        sourceHandle: spec.sourceHandle ?? null,
+        targetHandle: spec.targetHandle ?? null,
+        data: { kind: spec.kind },
+        selectable: false,
+        focusable: false,
+      }))
+      this.flow.setEdges((edges) => [...edges.filter((edge) => next.has(edge.id)), ...made])
+    }
+    this.light()
+  }
+
+  edge = (id: string): EdgeSpec | undefined => this.edges.get(id)
+
+  subscribeEdge(id: string, listener: () => void): () => void {
+    this.edgeSubscribers.set(id, listener)
+    return () => this.edgeSubscribers.delete(id)
+  }
+
+  isLit = (id: string) => this.lit.has(id)
+
+  /** Opens the words that made an edge. A shot's write is said on the beat that says it. */
+  openEdge(id: string) {
+    const spec = this.edges.get(id)
+    if (!spec) return
+    this.tip.set(null)
+    const beat = spec.kind === "write" ? beatsOf(this.get(spec.reader)?.asset?.text).findIndex((held) => held.writes.some((write) => write.image === spec.read)) : -1
+    // A link is on its entity's card, whichever of its rows says it.
+    this.open.set({ name: spec.kind === "link" ? spec.target : spec.reader, at: beat >= 0 ? `beats.${beat}` : spec.at[0] })
+  }
+
+  /** What's selected now. It lights its edges; the rest dim by one attribute on the stage, so only these edges hear. */
+  select(names: string[]) {
+    this.selected = new Set(names)
+    this.light()
+  }
+
+  private light() {
+    const lit = new Set<string>()
+    if (this.selected.size) {
+      for (const spec of this.edges.values()) if (this.selected.has(spec.source) || this.selected.has(spec.target)) lit.add(spec.id)
+    }
+    const was = this.lit
+    this.lit = lit
+    for (const id of lit) if (!was.has(id)) this.edgeSubscribers.get(id)?.()
+    for (const id of was) if (!lit.has(id)) this.edgeSubscribers.get(id)?.()
+  }
+
+  // Looking at versions, and asking for them
+
+  /** Looks at version `number`, or with none its state again. Nothing leaves this page. */
+  view(name: string, number?: number) {
+    this.patch(name, { viewed: number })
+    this.reshape(name)
+  }
+
+  seek(name: string, at: number) {
+    const held = this.get(name)
+    if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
+  }
+
+  /** A new take, on the machine that's up; what Calcifer runs itself needs none. */
+  async newTake(name: string) {
+    const asset = this.get(name)?.asset
+    if (!asset || !this.projectId) return
+    const on = asset.with === "cozy" ? "local" : this.machine()
+    if (!on) return say(`No machine is up to make ${name}: rent one under Machines`)
+    try {
+      await this.client.render(this.projectId, [asset.name], [on], `take-${crypto.randomUUID()}`)
+      this.refresh()
+    } catch (error) {
+      say(`Couldn't ask for a new take of ${name}`, error)
+    }
+  }
+
+  /** Writes the one hash line: this version is what `name` is, until unpinned. */
+  async pin(name: string, number: number) {
+    if (!this.projectId) return
+    try {
+      const pinned = await this.client.approve(this.projectId, this.get(name)?.asset?.name ?? name, String(number))
+      if (pinned.stale.length) say(`That puts ${pinned.stale.join(", ")} out of date`)
+      this.refresh()
+    } catch (error) {
+      say(`Couldn't pin ${name}`, error)
+    }
+  }
+
+  async unpin(name: string) {
+    if (!this.projectId) return
+    try {
+      const unpinned = await this.client.unpin(this.projectId, this.get(name)?.asset?.name ?? name)
+      if (unpinned.stale.length) say(`That puts ${unpinned.stale.join(", ")} out of date`)
+      this.refresh()
+    } catch (error) {
+      say(`Couldn't unpin ${name}`, error)
+    }
+  }
+
+  async cancelRender(name: string) {
+    if (!this.projectId) return
+    try {
+      await this.client.cancelRender(this.projectId, [name])
+    } catch (error) {
+      say(`Couldn't cancel ${name}`, error)
+    }
+  }
+
+  async pull() {
+    if (!this.projectId) return
+    try {
+      await this.client.pull(this.projectId)
+      this.refresh()
+    } catch (error) {
+      say("Couldn't pull this project's files", error)
     }
   }
 
@@ -291,6 +546,7 @@ export class CanvasStore {
     this.views.delete(name)
     this.ids.delete(name)
     this.masks.delete(name)
+    this.shapes.delete(name)
     this.notify(name)
     if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
   }
@@ -307,6 +563,9 @@ export class CanvasStore {
     this.ids.set(to, id)
     this.aliases.set(from, to)
     this.aliases.delete(to)
+    const shape = this.shapes.get(from)
+    this.shapes.delete(from)
+    if (shape) this.shapes.set(to, shape)
     const row = this.rows?.get(from)
     if (row) {
       this.rows!.delete(from)
@@ -400,6 +659,14 @@ export class CanvasStore {
     view?.placing?.abort.abort()
     if (view?.preview) URL.revokeObjectURL(view.preview)
     this.removeNode(key)
+  }
+
+  /** A picture says its shape before it's measured. */
+  setAspect(name: string, aspect: number) {
+    const view = this.get(name)
+    if (!view || view.aspect === aspect) return
+    this.patch(name, { aspect })
+    this.reshape(name)
   }
 
   /** Its thumbnail is up. */

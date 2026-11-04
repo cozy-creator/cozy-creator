@@ -7,12 +7,15 @@ function keepAssets(old: unknown, next: unknown): unknown {
   const before = old as ProjectState | undefined
   const after = next as ProjectState
   if (!before) return after
-  const known = new Map(before.assets.map((asset) => [asset.name, asset]))
-  const assets = after.assets.map((asset) => {
-    const was = known.get(asset.name)
-    return was && JSON.stringify(was) === JSON.stringify(asset) ? was : asset
+  return { ...after, assets: kept(before.assets, after.assets), entities: kept(before.entities ?? [], after.entities ?? []) }
+}
+
+function kept<T extends { name: string }>(before: T[], after: T[]): T[] {
+  const known = new Map(before.map((row) => [row.name, row]))
+  return after.map((row) => {
+    const was = known.get(row.name)
+    return was && JSON.stringify(was) === JSON.stringify(row) ? was : row
   })
-  return { ...after, assets }
 }
 
 export const projectQuery = (client: Client, id: string) =>
