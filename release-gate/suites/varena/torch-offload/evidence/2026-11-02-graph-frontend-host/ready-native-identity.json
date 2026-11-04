@@ -1,8 +1,0 @@
-{
-  "native_feature": "186165d9fa07af7c27583d179ce2e24fe8b92c98",
-  "artifact_source": "1761c0612f6aa2f69f6841a62806ff8dce3c3f4e",
-  "copied_from": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-graph-native-ready",
-  "core_sha256": "216349fcccdf2821e12ebf3cfbfb32d5de0b199d3a52656b317538894fe43c51",
-  "extension_sha256": "1c9cd7e7c022a003fc18309687754b6090333ac5bfce77b3ac9230ddb3af15ba",
-  "scope": "read-only copy into owned package, no shared cache/artifact changes; host checks only"
-}

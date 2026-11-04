@@ -289,14 +289,12 @@ it does not assume that sleeping or GC alone drained native destruction. The opt
 concurrent-retirement refusal is recorded as unexercised when the existing mutex serializes the
 attempt until retirement finishes. It is not manufactured as a timing pass.
 
-See `crates/varena/cooperative-gpu.md` for the native ownership/lock contract and remaining P3
-scope. Normal fixture cleanup may synchronize; measured peer service may not. Keep all run
+Normal fixture cleanup may synchronize; measured peer service may not. Keep all run
 receipts and distinguish this mechanism check from real model/foreign-pressure qualification.
 
 Run **24919** passed all nine explicit mechanism groups on one RTX 4090, using native TensorFS
 `1c6b1c15b` and fixture `e25a46b75`; the native wheel was unchanged after the initial fixture
-failure 24917. The [full result and boundaries](../evidence/p3-cooperative-24919.md) retain that
-failure, numeric accounting, GC/capture proof and actual concurrent retirement refusal.
+failure 24917.
 This proves same-UID/user/PID/mount-namespace explicit service, not automatic policy or TensorD
 migration. Always check `Report.passed` and nested `child_exit_code`, not run completion alone.
 
@@ -341,7 +339,6 @@ The initial fixture `fa13b2ef8` ran against unchanged native `9ccb36a2` in actua
 run **25143** and was red: while the 24 MiB output was live, other free working backing
 was **zero**; after output retirement, only 24 MiB was cached. All output and weight
 bytes were correct, weights had no eviction/refill, and final ownership was zero.
-The full report and independent audit are in `../evidence/bounded-trim-20261101/`.
 
 Product fix `bda123e7b` removes the first OOM arm's `trim(device)` call. The existing
 second attempt still trims only the requested mapping's bytes from completed whole

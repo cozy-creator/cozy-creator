@@ -1,6 +1,0 @@
-{
-  "passed": true,
-  "scope": "real CPU public eager/error path; NO native admission/graphs",
-  "body_calls": 2,
-  "cuda_initialized": false
-}

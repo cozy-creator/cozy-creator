@@ -1,8 +1,7 @@
 # Torch and Diffusers eager offload
 
 Draft adapter, implemented at the Python boundary; CUDA execution and stock SDXL
-qualification remain pending with the coordinator. Native dependencies and lifetime
-contracts: [TORCH-NATIVE-EXPORTS.md](TORCH-NATIVE-EXPORTS.md).
+qualification remain pending with the coordinator.
 
 ```python
 import torch
@@ -144,4 +143,4 @@ python sdxl_gpu.py /existing/local/sdxl   # coordinator GPU, no model downloads
 The SDXL client compares a stock baseline and adopted pipeline, retaining normal VAE
 conversion and Parameter identities. Its default two steps are correctness smoke;
 model quality, constrained-memory behavior and performance require separate actual
-GPU receipts. Earlier CPU feasibility receipts remain preserved under `evidence`.
+GPU receipts.

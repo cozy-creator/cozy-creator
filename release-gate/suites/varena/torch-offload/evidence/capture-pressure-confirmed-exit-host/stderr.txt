@@ -1,3 +1,0 @@
-/torch-site/torch/_subclasses/functional_tensor.py:377: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:82.)
-  cpu = _conversion_method_template(device=torch.device("cpu"))
-VARENA_RETURN_EVIDENCE_UNAVAILABLE {"available":false,"reason":"capture_or_replay_completion_unconfirmed"}

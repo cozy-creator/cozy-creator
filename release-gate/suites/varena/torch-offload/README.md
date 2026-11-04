@@ -4,11 +4,6 @@ Use an installed TensorFS package built from the offload branch. The CPU client 
 Torch and Diffusers; GPU clients additionally require the matching native Torch shim.
 No client downloads weights. GPU execution belongs to the coordinator.
 
-- `inventory_cpu.py`, `diffusers_inventory_cpu.py`: non-mutating discovery clients.
-- `adapter_cpu.py`: public `vt.offload`, actual tied/direct/alias reads, immutable dtype
-  versions, mutation refusals and real tiny VAE encode/decode on CPU Sources.
-- `review_cpu.py`: real stock comparisons for ordinary writable outputs, all four
-  floating-only convenience casts, and explicit complex dtype conversion.
 - `intent.py`: real CPU forwards through repeated/declared nested boundaries,
   exception cleanup and dtype refresh. `--device 0` additionally observes the actual
   native phase view on the coordinator GPU; that mode remains unrun in this lane.
@@ -17,15 +12,6 @@ No client downloads weights. GPU execution belongs to the coordinator.
   `--device 0` uses the real `Gpu.region_parts` factory to check shared Regions,
   direct-read singleton stability, grouped version refresh and trim/refill.
   It requires the matching native factory and is not qualified by CPU results.
-- `../native-tensor-export/parts_contract.c`: actual public C ABI host refusals;
-  its GPU mode checks malformed/overflowing descriptors and a valid constructor
-  after refusal. `parts_gpu.py` additionally checks real native bounds, output
-  preservation, typed aliases, capture, refill and final-alias retirement.
-- The original metadata-only mock checks were removed from maintained clients.
-  Their historical receipts remain unchanged in `evidence/2026-11-02-packing-cpu`.
-- `plan_retirement_cpu.py`: real CPU conversion/alias/rollback plus actual absent-handle
-  native close refusal and public unsupported dtype refusal. No injected setter,
-  substitute Plan success, CUDA Plan construction or native retirement proof.
 - `plan_retirement_gpu.py --device 0`: prepared actual packed-Plan retirement and
   escaped native/managed alias controls, existing trim and old/new-version refill.
   This lane does not execute it or claim physical reclamation from CPU checks.
@@ -40,6 +26,4 @@ HF_HUB_OFFLINE=1`, and `nice -n 19` on the shared host. CPU receipts do not qual
 native residency, Source publication, consumer fences or GPU model behavior.
 
 [Torch adapter contract](../../../../crates/varena/TORCH-OFFLOAD.md) describes
-supported behavior and refusals. The native failed-tail/producer/lifetime fixtures
-remain in the adjacent `native-tensor-export` suite; no mocked allocator substitutes
-for those GPU gates.
+supported behavior and refusals. No mocked allocator substitutes for GPU gates.

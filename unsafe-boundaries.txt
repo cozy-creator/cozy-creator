@@ -85,8 +85,4 @@ release-gate/suites/varena/cache-pages/src/main.rs
 release-gate/suites/varena/cache-pages/src/multi_plan.rs
 release-gate/suites/varena/cache-pages/src/owner_retirement.rs
 release-gate/suites/varena/cache-pages/src/probes.rs
-release-gate/suites/varena/evidence/shared-python-owner/retirement-host-harness.rs
-release-gate/suites/varena/multi-arena-plan-cpu/inventory.rs
-release-gate/suites/varena/native-owner-cpu/default_service.rs
-release-gate/suites/varena/native-owner-cpu/lifecycle.rs
 release-gate/suites/varena/public-api/src/lib.rs

@@ -1,1 +1,0 @@
-{"passed": true, "extension": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-graph-native-ready/.task/target/debug/lib_ext.so", "invalid_handles": [{"handle": 0, "status": 5, "error": "invalid or closed handle"}, {"handle": 18446744073709551615, "status": 5, "error": "invalid or closed handle"}], "cuda_loaded": false, "gpu_qualified": false}

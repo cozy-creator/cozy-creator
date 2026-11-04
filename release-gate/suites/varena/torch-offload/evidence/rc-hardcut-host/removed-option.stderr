@@ -1,2 +1,0 @@
-usage: automatic_two_block.py [-h] [--device DEVICE] [--timeout-s TIMEOUT_S]
-automatic_two_block.py: error: unrecognized arguments: --phase-control none

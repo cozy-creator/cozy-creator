@@ -1,9 +1,0 @@
-usage: automatic_semantics.py [-h] [--device DEVICE]
-
-Actual public automatic-mode alias/container/RNG exclusions, no fake graphs.
-CPU exercises real eager wrappers only; operator GPU mode checks controller
-selection counters and the original callable's exact return/RNG semantics.
-
-options:
-  -h, --help       show this help message and exit
-  --device DEVICE

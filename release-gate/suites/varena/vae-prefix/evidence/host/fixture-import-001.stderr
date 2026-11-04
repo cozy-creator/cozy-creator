@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "<stdin>", line 12, in <module>
-  File "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p2-vae-prefix/release-gate/suites/varena/vae-prefix/ci_varena_prefix/__init__.py", line 151, in compare
-    assert relative_l2 <= 0.001
-           ^^^^^^^^^^^^^^^^^^^^
-AssertionError

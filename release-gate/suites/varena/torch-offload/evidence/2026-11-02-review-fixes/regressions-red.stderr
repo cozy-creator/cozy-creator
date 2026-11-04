@@ -1,9 +1,0 @@
-/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/.task/host-package/tensorfs/varena/sources.py:191: UserWarning: Casting complex values to real discards the imaginary part (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/Copy.cpp:308.)
-  converted = values.to(dtype=getattr(torch, target))
-/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/release-gate/suites/varena/torch-offload/review_cpu.py:68: UserWarning: Complex modules are a new feature under active development whose design may change, and some modules might not work as expected when using complex tensors as parameters or buffers. Please file an issue at https://github.com/pytorch/pytorch/issues/new?template=bug-report.yml if a complex module does not work as expected.
-  stock.to(dtype=dtype)
-Traceback (most recent call last):
-  File "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-offload/release-gate/suites/varena/torch-offload/review_cpu.py", line 90, in <module>
-    assert all(row['pass'] for row in results), 'review regressions failed'
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: review regressions failed

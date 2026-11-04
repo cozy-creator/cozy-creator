@@ -1,8 +1,0 @@
-{
-  "platform_dependency": "dev",
-  "installer_target": [
-    "example"
-  ],
-  "installer_source_unchanged": "src/install.rs",
-  "scope": "Cargo metadata only; archive example has not executed"
-}

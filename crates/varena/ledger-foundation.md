@@ -97,9 +97,6 @@ proof is reported only when an actual namespace transition can run; a fabricated
 No CUDA test, foreign-game latency or complete P3 acceptance is implied by these CPU checks.
 
 
-The separate [GPU integration checkpoint](cooperative-gpu.md) adds an explicit native participant
-on top of this metadata API. It does not change the metadata-only CPU proof into GPU evidence or
-activate TensorD/allocator policy automatically.
 
 ## Automatic-owner connection mode
 
@@ -117,7 +114,5 @@ while the former owner process stays alive. Row disappearance never counts as
 GPU release and never changes an observed driver-capacity sample. GPU `Peer`
 open, service and sample perform that separate reaping; asks already did so.
 
-Real stopped-holder and live-owner-close proof is in
-`release-gate/suites/varena/ledger-cpu/nonblocking.py`. The fork/open race example
-also verifies departed row lock availability after exact child waits before
+The fork/open race example verifies departed row lock availability after exact child waits before
 reaping and checking its strict one-live-row invariant.

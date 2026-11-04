@@ -1,9 +1,7 @@
 # Varena external API, ABI 1 development checkpoint
 
 This is the **unreleased P4 interface**, composed onto the coordinator's native
-retirement/async-fill/shared-service cohort. See
-[native-client-contracts.md](native-client-contracts.md) for the implemented native
-seams and the [P4 tracker](https://github.com/cozy-creator/tracker/blob/master/tracker/cross-cutting/xs-138-p4-public-api.md)
+retirement/async-fill/shared-service cohort. See the [P4 tracker](https://github.com/cozy-creator/tracker/blob/master/tracker/cross-cutting/xs-138-p4-public-api.md)
 for exact source, host and GPU boundaries. No merge or release is authorized.
 
 The exported contract is [include/varena.h](include/varena.h): `vr_v1_*` symbols,

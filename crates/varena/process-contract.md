@@ -95,7 +95,6 @@ authentication, publication windows/races and real mmap ENOMEM fallback pass.
 The shared-VM/copied-TLS child acceptance remains recorded for the default kernel
 path, while strict/feature-off paths reject. No child executes CUDA.
 
-[Original CPU receipts](../../release-gate/suites/varena/evidence/process-guard-contract-20261101)
-keep `gpu_qualified=false`. The benchmark's timed-pair and entire timed-sample-loop
+The benchmark's timed-pair and entire timed-sample-loop
 AST match the frozen experiment, and its2× numerical threshold is unchanged.
 This coherent default candidate has not yet had a GPU/model release qualification.

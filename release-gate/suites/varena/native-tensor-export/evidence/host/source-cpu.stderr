@@ -1,4 +1,0 @@
-/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-native-exports/crates/tensorfs-py/python/tensorfs/varena/sources.py:191: UserWarning: Casting complex values to real discards the imaginary part (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/Copy.cpp:308.)
-  converted = values.to(dtype=getattr(torch, target))
-/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-torch-native-exports/release-gate/suites/varena/native-tensor-export/source_cpu.py:135: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/Context.cpp:848.)
-  torch.sparse_coo_tensor([[0]], [1.0], (2,)),

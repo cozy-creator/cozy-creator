@@ -48,7 +48,3 @@ The private `varena_torch_workspace_cache_enabled` export reads
 ABI. It reports Torch's actual latched setting without initializing CUDA or allocating
 GPU memory. Managed graph frontends require this same-cohort export and refuse cached
 library workspaces; low-level graph owners retain their own workspace lifetime contract.
-`release-gate/suites/varena/torch-offload/workspace_cache_host.py` exercises the real
-accessor and shared eligibility check with unset/0/1 in fresh processes, then changes
-the environment to verify that the actual state remains latched. It creates no CUDA
-device and does not establish GPU capture/replay qualification.

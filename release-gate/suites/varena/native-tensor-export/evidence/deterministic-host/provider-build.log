@@ -1,7 +1,0 @@
-Final helper compile completed successfully with exit status 0:
-TORCH_SOURCE_RUST_LIBDIR=$(rustc --print target-libdir)
-nice -n 19 cc -std=c11 -Wall -Wextra -Werror -fPIC -shared -I crates/varena/include release-gate/suites/varena/native-tensor-export/source_provider.c -L target/debug -Wl,-rpath,'$ORIGIN/../target/debug' -Wl,-rpath-link,"$TORCH_SOURCE_RUST_LIBDIR" -Wl,-z,defs -lvarena -ldl -pthread -o .task/libtyped_source_provider.so
-
-Final C sources include observation-only wrappers around the existing source.c prepare/submit/retire/drop callbacks. No CUDA execution was performed.
-ELF DT_NEEDED: libvarena.so, libc.so.6, ld-linux-x86-64.so.2
-ELF RUNPATH: $ORIGIN/../target/debug

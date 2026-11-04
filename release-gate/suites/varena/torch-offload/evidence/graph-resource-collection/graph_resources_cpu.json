@@ -1,1 +1,0 @@
-{"passed": true, "scope": "real CPU Offload +Torch retained-holder finalizer; NO CUDAGraph or GPU simulation", "owner_model_versions_sources_collected": true, "ordinary_tensor_backref_not_retained": true, "resources_stay_live_without_control_owner_until_holder_fires": true, "torch_cuda_initialized": false}

@@ -1,1 +1,0 @@
-{"torch": "2.14.1+cpu", "native_host_exclusion": "pass", "nested_scope_preserves_outer": true, "finally_releases_on_exception": true, "native_capture_guard_refuses_replay_and_reverse": true, "cuda": false, "weight_pins_or_gpu_completion": "not exercised"}
