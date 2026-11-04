@@ -872,6 +872,8 @@ class NoStream(torch.nn.Module):
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         middle = self.first(value)
+        if not middle.is_cuda:  # The reference, computed before any CUDA.
+            return self.second(middle.add(1.0))
         with torch.cuda.stream(torch.cuda.default_stream(DEVICE)):
             middle = middle.add(1.0)
         return self.second(middle)
