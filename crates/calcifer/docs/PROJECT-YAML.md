@@ -214,9 +214,11 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 
 A project has one walker, and each render adds to it: a second `render all` is a second pass of new versions, joining the first, and `--queue` adds without following. Without `--queue` a render follows until it ends, and its exit code says how it went; Ctrl-C only stops following, and the work stays queued. `status` shows what is running and what is queued, and queued work outlives a Calcifer restart until `cancel` drops it.
 
-- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `.runs/` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and an asset you delete from the file is still made by a render that had it.
+- **A render uses the file as it was when you asked, so keep editing.** Each ask keeps that text in `.runs/` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and a queued job of an asset you delete from the file isn't made, and says so; one already running goes on, and its version stays with the orphan.
 - **A save that can't be read** refuses a new `render`, and does nothing else. `status` says what's wrong, and `cancel` works.
-- **`--on`:** each render's work goes where it said.
+- **`--on`:** each render's work goes where it said. With several machines, a job goes to the one where the plan has it ending soonest, once that has its GPUs free.
+- **Everything at once, up to 32 jobs per render going:** what doesn't read each other goes side by side, each sent, installed and made on its own. What fails stops what reads it, there and then, and nothing else. How wide a job goes, how many GPUs of its machine, comes from how long things took there: it never changes once a job has started.
+- **Ahead of its turn,** a machine fetches the code and weights of what's queued for it, behind whatever a run is waiting on: the function named in `with`, or the first of its package that makes the kind. It's a guess, so a wrong one costs bytes and its job's run fetches what it needs. It holds no GPU, doesn't show in `cozy run ls`, and a machine with no room for it stays as it is, saying so in one line. `status` and the render's view show it; `cancel all` stops it.
 - **`--missing`** doesn't make again what another render is making with the same inputs. A plain render makes its own version.
 
 ## Pins

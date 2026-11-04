@@ -334,10 +334,10 @@ impl Host {
         Ok(Package { moved, ..found })
     }
 
-    /// How many GPUs a machine has, as it last said.
+    /// How many GPUs a machine has, as it last said. One that hasn't said is taken as wide: a job's width is a cap, which its machine brings down to what there is.
     pub fn gpus(&self, on: &On) -> u32 {
-        let On::Machine(name) = on else { return 1 };
-        self.api.machines.frame(name).map_or(1, |frame| (frame.gpus.len() as u32).max(1))
+        let On::Machine(name) = on else { return 64 };
+        self.api.machines.frame(name).map_or(64, |frame| (frame.gpus.len() as u32).max(1))
     }
 
     /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.
