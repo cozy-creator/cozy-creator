@@ -5,8 +5,8 @@ node scheduling and executor supervision. Package code runs in Python executors 
 inside each package environment. TensorFS is a library embedded in TensorD and used inside
 Runtime; it is not a separate daemon. TensorD has no CUDA context: executors own device
 contexts, allocations and operations. Runtime manages weight residency through process-local native Varena regions; Torch retains
-its ordinary caching allocator for activations. TensorD reads GPU availability and cooperatively offloads eligible idle executors through
-`Map(Ram)`; it owns no GPU chunks, lease listener, page-revocation policy or shared derived-weight cache.
+its ordinary caching allocator for activations. TensorD reads GPU availability and ends an idle executor when a core's ask for memory went
+unanswered; it owns no GPU chunks, lease listener, page-revocation policy or shared derived-weight cache.
 
 Model loading spans storage, shared CPU buffers and executor GPU memory:
 

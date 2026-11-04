@@ -3,9 +3,9 @@
 `gpu_service.rs` (`Pool`) coordinates published, cached GPU callables through retained
 Runtime executors. TensorD supplies model references and schedules GPU call permits. Each
 executor owns its GPU allocations, process-local Varena residency and ordinary Torch cache.
-TensorD records measurements, offloads whole idle executors and observes exact process exits;
-it has no Varena manager, GPU allocation custody or second memory-admission queue. Nothing
-ends an executor for a stall.
+TensorD records measurements and observes exact process exits; it decides no GPU bytes and has no
+Varena manager, GPU allocation custody or memory-admission queue. It ends an idle executor for GPU
+memory only when a core's ask went unanswered. Nothing ends an executor for a stall.
 Acceptance, journal, progress and output custody stay in `Engine`; scheduling stays in `service.rs`.
 
 ## Configuration
@@ -68,7 +68,7 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   `ref2va_turbo` and `motion_segment`; Klein's base and Turbo), on one CUDA context, import and
   group. TensorD sends `Activate` when a call's construction is not the active one. The process's
   Runtime decides where all their weights live and evicts an idle construction's blocks when a
-  stage needs room; TensorD's offloads and ends act on other processes only. A fault, cancel or kill
+  stage needs room. A fault, cancel or kill
   ends every construction the process held, and the next call starts a fresh one. A plan
   constructing nothing keeps its construction as its key. A plan binding a model is
   journaled as a `Preparation`, and `submit` records `preparation_id`; one binding none is
@@ -81,13 +81,12 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   startup fence or an active GPU record this machine run does not supervise. CPU dispatch continues.
 - Placement (`Pool::place`), inside the root's lane (else on unallocated, unclaimed GPUs): a
   group takes a free contiguous lane of K GPUs. It prefers a permitted lane already hosting
-  its plan, then any other permitted lane. Measured peaks are hints for offloading idle
-  executors before loading, never a reason to refuse a nested call. A waiting standalone call
+  its plan, then any other permitted lane. A waiting standalone call
   claims the GPUs it waits for. A prefetch loads only
   inside its root's bound lane, after queued requests of that root and older ones, and ends at
   its release. A new executor's GPU is logged as `{"event": "place"}` in the memory log;
   `loads.jsonl` and `invokes.jsonl` name each line's `gpus`.
-- Memory observations, offloads, pressure holds, returns and placements are lines of the store's
+- Memory observations, ended executors and placements are lines of the store's
   `logs/memory.log` (rotated once past 4 MiB), machine log `memory`
   (`cozy machine logs <name> memory`; `local` names this computer's). Each call's own memory is
   the run's `memory` measurements (`cozy run show`): torch's peaks and the executor's `stats`
@@ -116,23 +115,12 @@ The machine builds its `GpuConfig` at start (`serve.rs`) from its GPUs and `conf
   executor on that GPU, warm sets last, since only an exit returns a CUDA context. In shared mode an
   executor holding idle memory also gives it back when the driver's free bytes fall below a fixed
   reserve, so another program on the card gets its memory; it regrows at a pass boundary.
-- A measured peak is a hint a call can outgrow. While a call holds a GPU and the driver's free
-  bytes fall under the pressure headroom (the larger of 512 MiB and 10%), the reclaim loop
-  offloads idle neighbours on that GPU (`Map(Ram)`, LRU and warm sets last, `running_call`), so
-  the active call pages its own weights only after every idle neighbour has given its back.
-  Sibling Cozy executors are never foreign pressure, so ending idle processes and cancelling stay
-  the external-pressure rungs below.
 - Warming: a warm member's executor is loaded, then `Map{construction, level}` has it load its
   models at `gpu` or `ram`; varena fills them, and its priority is in use > warm > idle.
   On this computer's machine a member at `imported` or above keeps TensorD from its 15-minute idle
   exit, the 5-minute release leaves a `host`/`gpu` member's executor, and a kept-up machine's
   parent release (`release_parents`) leaves a member's parent. Pressure still takes them.
   `--warm off` takes a member out of the set; what it holds stays until something needs the room.
-- External pressure uses driver-attributed process usage on the existing reclaim loop: offload
-  idle executors first, then end idle processes, then cancel affected active roots if headroom
-  remains low. Cancellation kills their executors and scopes; weights are reloaded on later
-  requests. Missing attribution is unknown. The pressure hold and exact exit requirements are
-  described in [Device executor](DEVICE-EXECUTOR.md#external-gpu-pressure).
 - An executor's failed terminal (its own refusal before entry, or a failed invoke) first keeps a
   triage bundle (`triage.rs`: terminal, traceback, executor pid and stderr tail; canonical JSON
   under `execution/triage/`, fsynced) and binds it in the journal; the outcome body names it as

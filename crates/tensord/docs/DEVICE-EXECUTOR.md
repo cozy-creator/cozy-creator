@@ -77,43 +77,11 @@ read. Hello's version fields are provenance only. There is no SDK or TensorFS ve
 
 ## External GPU pressure
 
-The existing machine reclaim thread samples driver-attributed compute **and graphics** process
-memory every 500 ms, apart from time spent in the existing disk sweep, offload or exit. It establishes a foreign
-usage baseline before Cozy occupies the card and refreshes it downward while Cozy runs. When
-foreign use grows at least 128 MiB over that baseline and driver free memory falls below the
-larger of 512 MiB or 10% of capacity, the existing GPU scheduler holds new roots and warming.
-An existing family's calls remain permitted so a parent is never stranded awaiting its child.
-
-TensorD offloads idle executors in LRU order through `Map(Ram)`, checking fresh driver readings
-after acknowledgement. If headroom remains low, it ends still-idle executors to
-release contexts and package globals too. If it is still low, TensorD journals cancellation of
-the affected running roots, using the same family-aware path as explicit user cancellation.
-Cancellation kills each affected executor and its scope; process exit releases its locally
-owned GPU allocations. No canceled package call is restarted automatically.
-
-The pressure hold clears only when observed foreign use returns to within 64 MiB of its original
-baseline and free headroom is restored. Cozy's own offload cannot clear it. Missing per-PID byte
-accounting, failed graphics enumeration, and PID namespaces that cannot be reconciled remain
-unknown: they neither trigger nor clear an automatic hold. This includes WDDM configurations
-where NVML cannot report process bytes; automatic Windows pressure response is not claimed.
-Another application's allocation request is invisible until the driver reports actual use.
-
-`cozy run cancel RUN_ID` is the explicit alternative on those machines. Every canceled GPU
-invocation ends its exact executor and scope immediately, then observes their exit before
-releasing its accounting. Exact leader/follower exit releases context and library memory, whereas `empty_cache`
-releases only unused Torch allocator blocks. Other sessions and successful warm executors remain
-untouched by that explicit cancellation.
-
-The existing memory log records observation availability, first trigger/clear, attributed
-foreign/own bytes, actual sampling gaps, cancellation, offload start/ack duration, exact exit duration and driver free
-bytes before/after. A free-byte difference is an observation, not a claim that all of it came from
-Cozy. The observer sleeps 500 ms between passes. Signaling a kill does not guarantee an immediate
-driver teardown or observed exit; exact exit supervision retains unproven resources. There is
-no new timeout or VRAM-ownership authority.
-
-Real release-gate proof is required for a foreign graphics/compute allocation crossing the
-threshold, idle-first offload, cancellation, no restart while foreign demand persists, safe
-parent/child completion, explicit cancellation with unknown accounting, and later clean reuse.
+TensorD takes no part: another program on the card is the executors' concern. In shared mode an
+executor holding idle memory reads the driver's free bytes every 500 ms and, below a fixed reserve,
+gives back idle memory until twice that is free (`crates/varena/src/cooperative.rs`). A running call
+is never canceled for it. Another application's allocation request is invisible until the driver
+reports actual use.
 
 ## Observations
 
