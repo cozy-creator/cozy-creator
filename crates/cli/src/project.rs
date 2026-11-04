@@ -42,19 +42,19 @@ const EXAMPLES: &str = "Examples:
 project.yaml's comments and the README explain the rest.";
 
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy project render all --on kiyui               a new version of everything not pinned, each reading the new ones before it
+  cozy project render all --on kiyui               a new version of everything not approved, each reading the new ones before it
   cozy project render all --on kiyui,jitae         spread over two machines
   cozy project render all --missing --on kiyui     only what has no state: continues a render that half failed
   cozy project render fight --on kiyui             a new take of fight, and of what it reads only if that has no state
-  cozy project render fight -n 3 --on kiyui        three new takes of fight; pinned, its pin stays
-  cozy project render fight --approve --on kiyui   a new take, pinned as it lands
-  cozy project render all --outdated --on kiyui    and of each pin whose inputs changed, as its turn comes: the new one takes its place
+  cozy project render fight -n 3 --on kiyui        three new takes of fight; approved, what it approved stays
+  cozy project render fight --approve --on kiyui   a new take, approved as it lands
+  cozy project render all --outdated --on kiyui    and of each approved asset whose inputs changed, as its turn comes: the new one takes its place
   cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
   cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
   cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
 
 An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unapprove` removes it), else its newest
-version with these inputs, else none. Reverting a text returns the old output with no run. Every render makes new versions, except of what is pinned and not named.
+version with these inputs, else none. Reverting a text returns the old output with no run. Every render makes new versions, except of what is approved and not named.
 
 Ctrl-C stops following, never the runs.";
 
@@ -215,10 +215,10 @@ struct Render {
     /// Only what has no state, rather than a new version.
     #[arg(long)]
     missing: bool,
-    /// With all: also a new version of each pin out of date when its turn comes. Its pin goes when that lands, and the version it held stays.
+    /// With all: also a new version of each approved asset out of date when its turn comes. Its approval goes when that lands, and the version it held stays.
     #[arg(long)]
     outdated: bool,
-    /// Pin the new take or version when it lands (only with -n 1).
+    /// Approve the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
     /// One shot: a new take keeping this take's start, not the one in use. Without --in, it goes on from this take's end.

@@ -935,9 +935,9 @@ fn row(reading: &Reading, i: usize) -> Row {
         ([run], _) => format!("making (run {run})"),
         (runs @ [_, ..], _) => format!("making (runs {})", runs.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")),
         ([], _) if !gone.is_empty() => format!("not on this computer: {}: cozy project pull", gone.join(", ")),
-        ([], Stand::Pinned { version: None, .. }) => "pinned".into(),
-        ([], Stand::Pinned { version: Some(version), changed }) if changed.is_empty() => format!("pinned: {noun} {version}"),
-        ([], Stand::Pinned { version: Some(version), changed }) => format!("pinned: {noun} {version}; its inputs changed: {}", changed.join(", ")),
+        ([], Stand::Pinned { version: None, .. }) => "approved".into(),
+        ([], Stand::Pinned { version: Some(version), changed }) if changed.is_empty() => format!("approved: {noun} {version}"),
+        ([], Stand::Pinned { version: Some(version), changed }) => format!("approved: {noun} {version}; its inputs changed: {}", changed.join(", ")),
         ([], Stand::Current(_)) => "current".into(),
         ([], Stand::Words) => "only words".into(),
         ([], Stand::Waits) => "waits for what it reads".into(),
@@ -1325,7 +1325,7 @@ async fn runs(
         if missing && keeps.is_none() && stand[i].files.is_some() {
             said(&name, match &stand[i].state {
                 Stand::Pinned { changed, .. } if !changed.is_empty() => format!("{name} is pinned, though {} changed: unpin to make it again", changed.join(", ")),
-                Stand::Pinned { .. } => format!("{name} is pinned: without --missing, naming it makes another {noun} to look at"),
+                Stand::Pinned { .. } => format!("{name} is approved: without --missing, naming it makes another {noun} to look at"),
                 Stand::Current(version) => format!("{name} is current, {noun} {version}; without --missing it makes another"),
                 _ => format!("{name} has its state; without --missing it makes another {noun}"),
             });

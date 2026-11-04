@@ -459,7 +459,7 @@ J --arg p "$real" 'any(.runs[]; .project != $p)' "$OUT/runs-all.json" || check "
 step "a project: approve takes any file of its, by hash"
 cozy project -p "$R" approve kyogre "$hash" > "$OUT/approve.txt" 2>&1 || check "runs: approve by hash: $(tail -c 300 "$OUT/approve.txt")"
 grep -Eq "^    approved: \"?$hash\"?\$" "$R/project.yaml" || check "runs: approve wrote: $(grep -n 'approved' "$R/project.yaml")"
-J '.assets[] | select(.name == "kyogre") | .pinned and (.status | startswith("pinned"))' <<< "$(status "$R")" || check "runs: kyogre: $(row "$R" kyogre .)"
+J '.assets[] | select(.name == "kyogre") | .pinned and (.status | startswith("approved"))' <<< "$(status "$R")" || check "runs: kyogre: $(row "$R" kyogre .)"
 J '.run_files == 2' <<< "$(status "$R")" || check "runs: a pinned file still counts as loose: $(status "$R" | jq -c .run_files)"
 
 step "a project: reclaim takes a run's file once nothing names it"
@@ -625,7 +625,7 @@ file=$(jq -r '.assets.card.versions[0].files.image' "$T/project.lock"); file=${f
 sed -i 's/^# the end, as edited just now$/# the end/' "$T/project.yaml"
 diff "$before" "$T/project.yaml" > "$OUT/approve.diff" || true
 { [ "$(grep -c '^[<>]' "$OUT/approve.diff")" = 1 ] && grep -Eq "^> *approved: \"?${file:0:12}\"?$" "$OUT/approve.diff"; } || check "pins: approve changed more than its one line: $(cat "$OUT/approve.diff")"
-J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status == "pinned: version 1"' <<< "$(status "$T")" || check "pins: status does not say card is pinned to 1: $(row "$T" card .)"
+J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status == "approved: version 1"' <<< "$(status "$T")" || check "pins: status does not say card is pinned to 1: $(row "$T" card .)"
 ! jq -e '.assets.card | has("pin")' "$T/project.lock" > /dev/null || check "pins: the lock holds an approval"
 
 step "a project: a pin stops a run, and status says it's out of date"
@@ -634,7 +634,7 @@ version=$(made "$T" card)
 render "$T" card --missing || check "pins: render a pinned card: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" card)" = "$version" ] || check "pins: a text edit re-rendered a pinned card"
 changed=$(row "$T" card .status)
-[ "$changed" = '"pinned: version 1; its inputs changed: its inputs"' ] || check "pins: status of an edited pin is $changed"
+[ "$changed" = '"approved: version 1; its inputs changed: its inputs"' ] || check "pins: status of an edited pin is $changed"
 J '.standing == "out_of_date"' <<< "$(row "$T" card .)" || check "pins: an approved asset with new inputs doesn't show out of date: $(row "$T" card .)"
 render "$T" card || check "pins: naming a pinned card: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" card)" = "$((version + 1))" ] || check "pins: naming it did not make a take to look at"
@@ -972,7 +972,7 @@ cozy project -p "$S2" approve poster 1 > "$OUT/sheet-approve.txt" 2>&1 || check 
 held=$(jq -r '.assets.sheet.versions[0].files.image' "$S2/project.lock")
 sed -i '/^  image_one: /d; /^  image_two: /d' "$S2/project.yaml"
 status "$S2" > "$OUT/sheet-status.json"
-J --arg h "$held" '.assets[] | select(.name == "sheet") | .pinned and .standing == "current" and .changed == null and .failure == null and .missing == ["image_one", "image_two"] and .status == "pinned: version 1" and .files.image.sha256 == $h' "$OUT/sheet-status.json" || check "sheet: its inputs deleted: $(jq -c '.assets[] | select(.name == "sheet")' "$OUT/sheet-status.json")"
+J --arg h "$held" '.assets[] | select(.name == "sheet") | .pinned and .standing == "current" and .changed == null and .failure == null and .missing == ["image_one", "image_two"] and .status == "approved: version 1" and .files.image.sha256 == $h' "$OUT/sheet-status.json" || check "sheet: its inputs deleted: $(jq -c '.assets[] | select(.name == "sheet")' "$OUT/sheet-status.json")"
 J '.assets[] | select(.name == "poster") | .pinned and .standing == "current" and .changed == null and .missing == null' "$OUT/sheet-status.json" || check "sheet: what reads it: $(jq -c '.assets[] | select(.name == "poster")' "$OUT/sheet-status.json")"
 J '[.warnings[]?.message | select(contains("image_one"))] == []' "$OUT/sheet-status.json" || check "sheet: warned: $(jq -c .warnings "$OUT/sheet-status.json")"
 runs_before2=$(cozy --json run ls --limit 0 | jq '.runs | length')

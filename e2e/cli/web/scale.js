@@ -36,7 +36,8 @@ const BARS = {
   open_settled_s: 10,
   edit_shows_ms: 1500,
   landing_shows_ms: 1500,
-  pan_p95_ms: 50,
+  // A runner draws with no GPU: macOS's takes 117 ms over a frame on a project of ten boxes (web-live's burst), so this says only that size adds nothing.
+  pan_p95_ms: 150,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
