@@ -230,34 +230,29 @@ fn canceled() -> Failure {
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
 /// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
 pub const UNREACHABLE: &str = "hub_unreachable";
-/// The wait before an unanswered lookup is asked again: doubling from the first to the most.
-const FIRST_WAIT: Duration = Duration::from_secs(1);
-const MOST_WAIT: Duration = Duration::from_secs(30);
+/// How many times an unanswered lookup is asked before its run says it had no answer.
+const ATTEMPTS: u32 = 5;
+/// The wait before it is asked again, doubling: about a minute and a quarter over all of them.
+const FIRST_WAIT: Duration = Duration::from_secs(5);
 /// How often a wait looks at its run's cancel.
 const TICK: Duration = Duration::from_millis(100);
 
-/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), for as long as
-/// its run lives: its cancel ends the wait, and the run shows what it waits for. Nothing has
-/// executed, so asking again re-executes nothing, and what an earlier ask resolved is held. A
-/// hint (no run to stop) is asked once.
+/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), up to [`ATTEMPTS`]
+/// times: its cancel ends the wait, and the run shows each attempt and why. Nothing has executed, so
+/// asking again re-executes nothing, and what an earlier ask resolved is held. A hint (no run to
+/// stop) is asked once.
 pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
     let Some(stop) = &job.stop else { return prepare() };
-    let (mut wait, mut waited) = (FIRST_WAIT, false);
-    loop {
+    let mut wait = FIRST_WAIT;
+    for attempt in 1..ATTEMPTS {
         let why = match prepare() {
             Err((UNREACHABLE, why)) => why,
-            answered => {
-                if waited {
-                    job.waiting(None);
-                }
-                return answered;
-            }
+            answered => return answered,
         };
-        let said = format!("unreachable, retrying: {why}");
+        let said = format!("unreachable, retrying in {} s (attempt {}/{ATTEMPTS}): {why}", wait.as_secs(), attempt + 1);
         tracing::warn!(run = %job.caller, retry_in_s = wait.as_secs(), "{said}");
         job.stage(said.clone());
         job.waiting(Some(said));
-        waited = true;
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if stop.is_cancelled() {
@@ -266,8 +261,14 @@ pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Fai
             }
             std::thread::sleep(TICK);
         }
-        wait = (wait * 2).min(MOST_WAIT);
+        // Asked again: what it does now is what it shows.
+        job.waiting(None);
+        wait *= 2;
     }
+    prepare().map_err(|(code, why)| match code {
+        UNREACHABLE => (code, format!("no answer after {ATTEMPTS} attempts: {why}. Nothing else is wrong with this run: send it again once that answers")),
+        _ => (code, why),
+    })
 }
 
 /// What one environment generation is built from: the release's card (its exact pyproject and

@@ -230,7 +230,7 @@ impl Lifecycle {
         if state.ledger.released || (self.rental && self.due(&state, now_ms())) {
             return Err(Error::unavailable(
                 "machine_released",
-                "this machine released itself after 15 minutes idle",
+                format!("this machine released itself after {} minutes idle", self.grace / 60_000),
             ));
         }
         self.admissions.fetch_add(1, Ordering::AcqRel);

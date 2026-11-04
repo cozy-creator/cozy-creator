@@ -4566,7 +4566,12 @@ fn materialize_tree(
 /// what it raised, a blank line, its traceback), its traceback.
 fn import_lines(refusal: &Refused) -> (&str, &str) {
     match refusal.code.as_str() {
-        "import_failed" | "missing_dependency" => refusal.detail.split_once("\n\n").unwrap_or((&refusal.detail, "")),
+        "import_failed" | "missing_dependency" => {
+            let (said, traceback) = refusal.detail.split_once("\n\n").unwrap_or((&refusal.detail, ""));
+            // The exception's name and its code again: the reason names its code.
+            let said = said.strip_prefix("DiscoveryError: ").unwrap_or(said);
+            (said.strip_prefix(refusal.code.as_str()).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(said), traceback)
+        }
         _ => (&refusal.detail, ""),
     }
 }

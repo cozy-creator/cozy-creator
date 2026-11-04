@@ -387,7 +387,7 @@ impl Publisher {
                     })?;
                     let (version, wheel) = found.ok_or_else(|| match &unread {
                         Some(said) => (super::UNREACHABLE, format!("{label} needs {requirement}: no GitHub prerelease meets it, and uv's index can't be read now ({said})")),
-                        None => ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't published: neither uv's index nor a GitHub prerelease has a version that meets it. {}", floor_remedy(label))),
+                        None => ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't published: neither uv's index nor a GitHub prerelease has a version that meets it: {}", floor_remedy(label))),
                     })?;
                     asked.extend(wheel_requires(&wheel).map_err(io_failure)?.into_iter().filter(|required| {
                         Floor::parse(required).is_some_and(|needed| !held.get(&needed.name).is_some_and(|version| needed.meets(version)))
