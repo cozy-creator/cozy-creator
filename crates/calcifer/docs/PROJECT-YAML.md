@@ -22,7 +22,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `project.canvas.yaml` | Cozy, for the page | Where each box sits. Nothing else reads it, and nothing in it is an input |
 | `files/` | Cozy only | Every file, by hash |
 | `<edit_name>.mp4`, `.otio` | Cozy | Each edit |
-| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and while a render goes what its walk owes (`walk.json`, `asked/`) |
+| `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and while a render goes what its walk owes (`walk.json`, `asked/`), of this folder and this Calcifer only: a copy goes on with none of it, and `push` and `pull` don't carry it |
 | `.measured.json` | Cozy only | What was measured of each file. Disposable: it's measured again |
 
 **A machine write changes only its own lines.** Comments, `|` blocks and everything else in the file stay as a hand left them. An unknown key warns when the file is read.

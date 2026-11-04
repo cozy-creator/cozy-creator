@@ -125,6 +125,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
+    crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)
         .announce("calcifer")

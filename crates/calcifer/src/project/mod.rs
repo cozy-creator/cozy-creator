@@ -1533,18 +1533,23 @@ async fn runs(
     let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
     project.folder.keep_text(&digest, &text).map_err(Refusal)?;
     let ask = Ask { id: new_key(), text: String::new(), digest, target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
-    (project.folder.update_lock(|lock| {
+    (project.folder.update_walk(|walk| {
         if !joined || added > 0 {
-            lock.walk.asks.push(ask.clone());
+            walk.walk.asks.push(ask.clone());
         }
-        lock.walk.asked.extend(idempotency.iter().cloned());
-        for take in &ask.takes {
-            if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
-                held.failed = None;
-            }
-        }
+        walk.walk.asked.extend(idempotency.iter().cloned());
     }))
     .map_err(Refusal)?;
+    if ask.takes.iter().any(|take| lock.asset(&take.asset).is_some_and(|held| held.failed.is_some())) {
+        (project.folder.update_lock(|lock| {
+            for take in &ask.takes {
+                if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
+                    held.failed = None;
+                }
+            }
+        }))
+        .map_err(Refusal)?;
+    }
     let made = project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &made);
     walk(&api, &project);
@@ -3122,9 +3127,9 @@ impl Walk {
     /// this walker going or starts the next.
     fn over(&self) -> Result<bool, Error> {
         let mut walking = self.project.walking.lock().expect("walking lock");
-        let lock = self.folder().lock()?;
-        *walking = !lock.walk.asks.is_empty() || !lock.pending.is_empty();
-        if !*walking && !lock.walk.renames.is_empty() {
+        let walk = self.folder().walk_now()?;
+        *walking = !walk.walk.asks.is_empty() || !walk.pending.is_empty();
+        if !*walking && !walk.walk.renames.is_empty() {
             self.folder().update_lock(|lock| {
                 for (from, to) in std::mem::take(&mut lock.walk.renames) {
                     // A render of it since made versions of its own: nothing overwrites those.
@@ -3218,8 +3223,8 @@ impl Walk {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
         let key = next.key.clone();
-        let settle = |lock: &mut Lock| {
-            let Some(mine) = lock.walk.asks.iter_mut().find(|mine| mine.id == ask.id) else { return };
+        let settle = |owed: &mut folder::Owed| {
+            let Some(mine) = owed.asks.iter_mut().find(|mine| mine.id == ask.id) else { return };
             // Tried once either way: a take that fails isn't owed again for what reads it. Only a new render asks again.
             mine.sent.insert(name_key(&name));
             if next.take.is_some() {
@@ -3233,12 +3238,12 @@ impl Walk {
         target.on = self.sending(&ask.id, &target.on);
         if target.on.is_empty() {
             self.not_sent(&name);
-            return self.folder().update_lock(settle);
+            return self.folder().update_walk(|walk| settle(&mut walk.walk));
         }
         let standing = &stand[i];
         let noun = noun(doc, lock, i);
         if !new && standing.files.is_some() {
-            return self.folder().update_lock(settle);
+            return self.folder().update_walk(|walk| settle(&mut walk.walk));
         }
         match &standing.state {
             Stand::Stale(why) if !new => self.say(Event::Said { message: format!("{name}: out of date: {why}"), name: Some(name.clone()) }),
@@ -3273,7 +3278,7 @@ impl Walk {
             }
             let Some(maker) = package.maker()? else {
                 self.say(Event::Warning { message: no_function(&name, &package.name), name: None });
-                return self.folder().update_lock(settle);
+                return self.folder().update_walk(|walk| settle(&mut walk.walk));
             };
             let now = self.folder().lock()?;
             let holds = now.asset(&name).and_then(|held| held.versions.iter().rev().find(|version| version.inputs == inputs)).map(|version| version.number);
@@ -3334,14 +3339,14 @@ impl Walk {
                     if let Maker::Adapter(adapter, _) = &maker {
                         version.tool = format::other_than(&adapter.target(), asset.tool.as_deref());
                     }
-                    self.land_read(&name, &asset.kind, version, standing, noun, approve, settle)?;
+                    self.land_read(&name, &asset.kind, version, standing, noun, approve, |lock: &mut Lock| settle(&mut lock.walk))?;
                     if next.unpin {
                         self.unpin_landed(&ask.id, &name);
                     }
                     return Ok(());
                 };
                 self.stands(&name, noun, number, format!("{} has nothing to make", package.name));
-                return self.folder().update_lock(settle);
+                return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             let renderers = calls.iter().map(|call| package.function(&call.function)).collect::<Result<Vec<_>, _>>()?;
             // A function with no seed has one result per inputs.
@@ -3355,7 +3360,7 @@ impl Walk {
                     Some(number) => self.stands(&name, noun, number, format!("{} {why}, so it has one result per inputs", package.name)),
                     None => self.say(Event::Said { message: format!("{name}: {} {why}, so it has one result per inputs: {stands}", package.name), name: Some(name.clone()) }),
                 }
-                return self.folder().update_lock(settle);
+                return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
             let mut version = Version { inputs: inputs.clone(), warnings, ..Default::default() };
@@ -3366,22 +3371,25 @@ impl Walk {
             }
             version.kept = keep.and_then(|keep| Some(Kept { take: keep["take"].as_u64()? as u32, until_s: keep["at_s"].as_f64().or(keep["ends_s"].as_f64())? }));
             // Its number now, so the first of several sent is the lowest, whichever lands first.
+            let listed = now.listed_number(&name);
             let number = std::cell::Cell::new(0);
-            self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
+            self.folder().update_walk(|walk| {
+                let last = walk.walk.numbered.entry(name_key(&name)).or_default();
+                *last = (*last).max(listed) + 1;
+                number.set(*last);
+            })?;
             version.number = number.get();
             let mut calls = calls.into_iter();
             let first = calls.next().expect("at least one");
-            let seed = version.seed;
-            let pending = Pending { job: key.clone(), gpus: 0, ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
-            let settling = |lock: &mut Lock| {
-                settle(lock);
-                if let Some(seed) = seed {
-                    lock.asset_mut(&name, &asset.kind).tried = Some(Tried { inputs: inputs.clone(), seed });
-                }
-                if let Some(held) = lock.assets.get_mut(&name_key(&name)) {
-                    held.failed = None;
-                }
-            };
+            let pending = Pending { job: key.clone(), kind: asset.kind.clone(), gpus: 0, ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
+            let settling = |walk: &mut folder::WalkFile| settle(&mut walk.walk);
+            if now.asset(&name).is_some_and(|held| held.failed.is_some()) {
+                self.folder().update_lock(|lock| {
+                    if let Some(held) = lock.assets.get_mut(&name_key(&name)) {
+                        held.failed = None;
+                    }
+                })?;
+            }
             // Canceled while its adapter ran: not sent.
             let now = self.folder().lock()?;
             let mine = now.walk.asks.iter().find(|mine| mine.id == ask.id);
@@ -3397,13 +3405,13 @@ impl Walk {
             pending.target.on = self.sending(&ask.id, &pending.target.on);
             if pending.target.on.is_empty() {
                 self.not_sent(&name);
-                return self.folder().update_lock(settle);
+                return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             self.submit(&key, first, &package, asset, pending, &settling).await
         };
         let sent = sent.await;
         if sent.is_err() {
-            self.folder().update_lock(settle)?;
+            self.folder().update_walk(|walk| settle(&mut walk.walk))?;
         }
         sent
     }
@@ -3497,7 +3505,7 @@ impl Walk {
     /// Sends `call` to its function of `package` on one of the pending's machines, as an ordinary run under `key`, recorded as pending
     /// (with `settle`: what it settles of the walk) in one write before it is sent. The seed, and on the first call the asset's
     /// `models` and `lora`, as `cozy run --input` takes them, go on top.
-    async fn submit(&self, key: &str, call: Invocation, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut Lock)) -> Result<(), Error> {
+    async fn submit(&self, key: &str, call: Invocation, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile)) -> Result<(), Error> {
         let renderer = package.function(&call.function)?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
         let first = pending.done.is_empty();
@@ -3619,23 +3627,24 @@ impl Walk {
             agreed: None,
         };
         let _on_the_way = OnTheWay::new(&self.on_the_way, key);
-        self.folder().update_lock(|lock| {
-            lock.pending.insert(key.into(), pending.clone());
-            settle(lock);
+        self.folder().update_walk(|walk| {
+            walk.pending.insert(key.into(), pending.clone());
+            settle(walk);
         })?;
         let run = match self.send_run(key, submit).await {
             Ok(run) => run,
             Err(error) => {
-                self.folder().update_lock(|lock| {
-                    lock.pending.remove(key);
+                self.folder().update_walk(|walk| {
+                    walk.pending.remove(key);
                 })?;
                 return Err(error);
             }
         };
-        self.folder().update_lock(|lock| {
-            if let Some(pending) = lock.pending.get_mut(key) {
+        self.folder().update_walk(|walk| {
+            if let Some(pending) = walk.pending.get_mut(key) {
                 pending.run = run.number;
             }
+            walk.walk.runs.insert(run.number);
         })?;
         self.say(Event::Started { name, run: run.id.to_string(), number: run.number });
         Ok(())
@@ -3644,7 +3653,7 @@ impl Walk {
     /// Follows the run sent under `key` to its end and lands it, its pending entry gone however it ends (a lock that cannot be
     /// written ends the walk).
     async fn follow(&self, key: String) -> Followed {
-        let owed = self.folder().lock().ok().and_then(|lock| lock.pending.get(&key).map(|pending| (pending.asset.clone(), pending.version.inputs.clone(), pending.run)));
+        let owed = self.folder().walk_now().ok().and_then(|walk| walk.pending.get(&key).map(|pending| (pending.asset.clone(), pending.version.inputs.clone(), pending.run)));
         let (name, inputs, run) = match owed {
             Some((name, inputs, run)) => (Some(name), Some(inputs), Some(run)),
             None => (None, None, None),
@@ -3656,7 +3665,7 @@ impl Walk {
             Ok(Some((run.id, self.land(&key, &ended).await?)))
         };
         let landed = landed.await;
-        let landed = match self.folder().update_lock(|lock| drop(lock.pending.remove(&key))) {
+        let landed = match self.folder().update_walk(|walk| drop(walk.pending.remove(&key))) {
             Ok(()) => Ok(landed),
             Err(error) => Err(error),
         };
@@ -3668,6 +3677,10 @@ impl Walk {
     fn arrived(&self, run: &Run, version: Option<Coming>) -> Result<(), Error> {
         let folder = self.folder();
         let lost = run.output.iter().find(|output| !output.stays && output.export_error.is_some());
+        folder.update_walk(|walk| {
+            walk.walk.runs.remove(&run.number);
+            walk.walk.landing.retain(|row| row.run != run.number);
+        })?;
         folder.update_lock(|lock| {
             lock.runs.retain(|row| row.run != run.number);
             if let (Some(coming), true) = (&version, lost.is_some()) {
@@ -3691,10 +3704,8 @@ impl Walk {
     /// no version, with its reason, and is never run again this walk. What it listed, if its files are on their way.
     async fn land(&self, key: &str, run: &Run) -> Result<Option<Coming>, Error> {
         let folder = self.folder();
-        let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(None) };
+        let Some(pending) = folder.walk_now()?.pending.remove(key) else { return Ok(None) };
         let name = pending.asset.clone();
-        // What this run landed is its version's, not a loose file of the project's.
-        folder.update_lock(|lock| lock.runs.retain(|row| row.run != run.number))?;
         // Nothing lands under a name that's gone: a later asset of that name would inherit it.
         if self.gone(&name) {
             self.deleted(pending.job_of(key), &name);
@@ -3707,6 +3718,11 @@ impl Walk {
                 return Ok(None);
             }
             self.missed.lock().expect("missed lock").names.insert(name.clone());
+            // Made again with what it asked, its seed too.
+            if let Some(seed) = pending.version.seed {
+                let tried = Tried { inputs: pending.version.inputs.clone(), seed };
+                folder.update_lock(|lock| lock.asset_mut(&name, &pending.kind).tried = Some(tried.clone()))?;
+            }
             if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
                 self.fault(machine, &reason.code, &reason.message)?;
             }
@@ -3735,7 +3751,7 @@ impl Walk {
             }
         }
         // Every file the run saved, by its output's name (a list's items as `<name>-<n>`).
-        let (mut saved, mut stayed, mut coming) = (Files::new(), Files::new(), false);
+        let (mut saved, mut stayed, mut coming, mut away) = (Files::new(), Files::new(), false, vec![]);
         for output in &run.output {
             // The first of a list goes by its name, so a reader that takes one takes it.
             let file = match output.index {
@@ -3745,7 +3761,7 @@ impl Walk {
             // What stays on its machine is listed with who holds it, and no file.
             if output.stays && output.path.as_ref().is_none_or(|path| !path.is_file()) {
                 if let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) {
-                    folder.stays(&sha256.to_string(), machine, output.length)?;
+                    away.push((sha256.to_string(), machine.clone(), output.length, None));
                     stayed.insert(file, sha256.to_string());
                 }
                 continue;
@@ -3756,7 +3772,7 @@ impl Walk {
                 None if output.owed() && output.media_type != protocol::tree::MEDIA => {
                     let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) else { continue };
                     let name = crate::outputs::file_name(run.number, &output.name, output.index, &output.media_type);
-                    folder.coming(&sha256.to_string(), machine, output.length, &name)?;
+                    away.push((sha256.to_string(), machine.clone(), output.length, Some(name)));
                     coming = true;
                     sha256.to_string()
                 }
@@ -3770,6 +3786,7 @@ impl Walk {
         }
         saved.append(&mut stayed);
         version.files.extend(saved.clone());
+        let list_away = |lock: &mut Lock| away.iter().for_each(|(sha256, machine, length, name)| lock.away(sha256, machine, *length, name.as_deref()));
         // Its next call, if the adapter answered several: one version, whichever call makes what.
         if !pending.rest.is_empty() {
             let doc = self.doc_of(&pending.ask)?;
@@ -3784,14 +3801,17 @@ impl Walk {
             let with = doc.target(i);
             let package = self.again(|| self.host.package(&pending.target.hub, &with, &folder.dir, &pending.target.on)).await?;
             let carried = Pending { version, rest, done, run: 0, ..pending.clone() };
-            let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
+            if !away.is_empty() {
+                folder.update_lock(list_away)?;
+            }
+            let settle = |walk: &mut folder::WalkFile| drop(walk.pending.remove(key));
             return self.submit(&new_key(), next, &package, &doc.assets[i], carried, &settle).await.map(|()| None);
         }
-        let kind = folder.lock()?.asset(&name).map(|held| held.kind.clone()).unwrap_or_default();
+        let kind = pending.kind.clone();
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
         let number = version.number;
-        self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})?;
+        self.record(Some(&key), &name, &kind, version, noun, pending.approve, list_away)?;
         if coming {
             self.project.jobs.why(&name, number, "its file is on its way here".into());
         }
@@ -3902,8 +3922,8 @@ impl Walk {
     /// `name` is tried this walk: it is not tried again until the next.
     fn tried(&self, ask: &str, name: &str) -> Result<(), Error> {
         let key = name_key(name);
-        self.folder().update_lock(|lock| {
-            for mine in lock.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
+        self.folder().update_walk(|walk| {
+            for mine in walk.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
                 mine.sent.insert(key.clone());
             }
         })
@@ -4116,6 +4136,7 @@ impl Walk {
             let given = if version.number == 0 { lock.number(name, kind) } else { version.number };
             number.set(given);
             let held = lock.asset_mut(name, kind);
+            held.numbered = held.numbered.max(given);
             let mut listed = version.clone();
             listed.number = given;
             held.versions.retain(|version| version.number != given);
@@ -4236,6 +4257,11 @@ fn new_key() -> String {
     let mut key = [0u8; 16];
     getrandom::fill(&mut key).expect("the OS has randomness");
     format!("project-{}", hex::encode(key))
+}
+
+/// This Calcifer's id, from its home's `dir`, which binds what a walk owes to it. Before any project is read.
+pub(crate) fn bind_calcifer(dir: &FsPath) -> Result<(), Error> {
+    folder::bind_calcifer(dir)
 }
 
 /// A fresh seed, recorded on its version.

@@ -20,6 +20,7 @@ use protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tracing::warn;
 use tensorfs::err::{Code, Refusal};
 
 use super::graph::name_key;
@@ -275,6 +276,9 @@ impl Without {
 /// until it lands: whatever stops the walk, the next one follows it and never sends it again.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
+    /// What its asset is, as its version is listed when it lands.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
     /// The job it is of: the key of its first call, when empty.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub job: String,
@@ -364,8 +368,8 @@ pub struct Lock {
     /// renamed or reclaimed.
     #[serde(default)]
     pub assets: BTreeMap<String, Asset>,
-    /// By idempotency key.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// By idempotency key. Never in project.lock, which a copy or a `push` carries: `Folder::lock` reads it from `WALK`.
+    #[serde(skip)]
     pub pending: BTreeMap<String, Pending>,
     /// What `cozy run`s left here: they belong to no asset, and no memo holds them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -376,7 +380,8 @@ pub struct Lock {
     /// What each tool outputs, `image`, `video` or `audio`, as its interface last said, for what `defaults` fill before it has a version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub makes: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Owed::is_empty")]
+    /// As `pending`.
+    #[serde(skip)]
     pub walk: Owed,
     /// What each import under an `Idempotency-Key` answered, for its retries, by that key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -429,15 +434,51 @@ pub struct Owed {
     /// `rename`s asked while a render went, (from, to): each done as that walk ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(String, String)>,
+    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project, and one that never lands is free again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub numbered: BTreeMap<String, u32>,
+    /// This walk's runs not over: what they land is their version's.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub runs: BTreeSet<u64>,
+    /// What those landed so far, each output's newest: what its next revision takes the place of.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub landing: Vec<RunFile>,
 }
 
 /// What a walk owes: what it sent and what its renders asked. Kept apart from the project, so it changes as often as it likes.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WalkFile {
+    /// The folder and Calcifer it is of: a copy of the folder, or another Calcifer, doesn't go on with paid work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound: Option<Bound>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
-    #[serde(default, skip_serializing_if = "Owed::is_empty")]
+    #[serde(default)]
     pub walk: Owed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Bound {
+    pub path: PathBuf,
+    pub calcifer: String,
+}
+
+/// This Calcifer's id, the same across its restarts, once it has said it.
+static CALCIFER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Reads this Calcifer's id from `dir`, or makes it. Before any project is read.
+pub fn bind_calcifer(dir: &Path) -> Result<(), Error> {
+    let path = dir.join("id");
+    let id = match std::fs::read_to_string(&path) {
+        Ok(id) if !id.trim().is_empty() => id.trim().to_owned(),
+        _ => {
+            let id = super::new_key();
+            durable::replace(&path, id.as_bytes(), 0o600).map_err(io)?;
+            id
+        }
+    };
+    let _ = CALCIFER.set(id);
+    Ok(())
 }
 
 impl WalkFile {
@@ -540,6 +581,11 @@ impl Lock {
         !self.walk.asks.is_empty() || !self.pending.is_empty() || !self.walk.renames.is_empty()
     }
 
+    /// The number the next version of `name` would take, as far as what's listed says.
+    pub fn listed_number(&self, name: &str) -> u32 {
+        self.asset(name).map_or(0, |held| held.numbered.max(held.versions.iter().map(|version| version.number).max().unwrap_or(0)))
+    }
+
     pub fn asset(&self, name: &str) -> Option<&Asset> {
         self.assets.get(&name_key(name))
     }
@@ -570,6 +616,19 @@ impl Lock {
             files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
         }
         serde_json::to_string_pretty(&value).expect("a lock serializes") + "\n"
+    }
+
+    /// `sha256` is on `machine`, and not here: for good, or with `name`, on its way here as the file that makes.
+    pub fn away(&mut self, sha256: &str, machine: &str, length: u64, name: Option<&str>) {
+        let path = file_of(sha256, Path::new(name.unwrap_or_default()));
+        let ext = path.rsplit_once('.').map(|(_, ext)| format!(".{ext}")).unwrap_or_default();
+        let held = self.files.entry(sha256.to_owned()).or_default();
+        if name.is_none() || !held.stays() {
+            (held.machine, held.length) = (machine.to_owned(), length);
+            if name.is_some() {
+                held.ext = ext;
+            }
+        }
     }
 
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
@@ -649,6 +708,8 @@ impl Folder {
                 let file = lock.files.entry(format!("sha256:{hex}")).or_default();
                 file.path = format!("{FILES}/{name}");
                 file.sha256 = format!("sha256:{hex}");
+                // It's here: the machine that kept it keeps it no longer, and the next write says so, with no write of its own.
+                (file.ext, file.machine, file.length) = Default::default();
             }
         }
         let measured: BTreeMap<String, Measured> = std::fs::read(self.dir.join(MEASURED)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
@@ -661,11 +722,13 @@ impl Folder {
 
     /// What the walk owes, with no need to read the rest. A lock from before holds its own until its next write.
     pub fn walk_now(&self) -> Result<WalkFile, Error> {
-        if let Some(walk) = self.walk_kept()? {
-            return Ok(walk);
-        }
-        let lock = self.lock()?;
-        Ok(WalkFile { pending: lock.pending, walk: lock.walk })
+        Ok(self.walk_kept()?.unwrap_or_default())
+    }
+
+    /// Who may go on with this folder's walk: this path, under this Calcifer. None where no Calcifer runs, which judges nothing.
+    fn bound(&self) -> Option<Bound> {
+        let path = durable::canonical(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        CALCIFER.get().map(|calcifer| Bound { path, calcifer: calcifer.clone() })
     }
 
     fn walk_kept(&self) -> Result<Option<WalkFile>, Error> {
@@ -673,10 +736,17 @@ impl Folder {
         if !path.exists() {
             return Ok(None);
         }
-        serde_json::from_str(&read(&path)?).map(Some).map_err(|e| Error::new(Kind::Validation, "walk_unreadable", format!("{WALK}: {e}")))
+        let walk: WalkFile = serde_json::from_str(&read(&path)?).map_err(|e| Error::new(Kind::Validation, "walk_unreadable", format!("{WALK}: {e}")))?;
+        if let Some(here) = self.bound().filter(|here| walk.bound.as_ref() != Some(here)) {
+            warn!("{}: its walk is of {:?}, so it doesn't go on here", here.path.display(), walk.bound);
+            let _ = std::fs::remove_file(&path);
+            self.drop_texts();
+            return Ok(None);
+        }
+        Ok(Some(walk))
     }
 
-    fn keep_walk(&self, walk: &WalkFile) -> Result<(), Error> {
+    fn keep_walk(&self, walk: &mut WalkFile) -> Result<(), Error> {
         let path = self.dir.join(WALK);
         if walk.is_empty() {
             return match std::fs::remove_file(&path) {
@@ -684,6 +754,7 @@ impl Folder {
                 _ => Ok(()),
             };
         }
+        walk.bound = self.bound();
         std::fs::create_dir_all(self.dir.join(RUNS)).map_err(|e| io_at(&path, e))?;
         durable::replace(&path, serde_json::to_string(walk).expect("a walk serializes").as_bytes(), 0o644).map_err(io)
     }
@@ -713,33 +784,31 @@ impl Folder {
 
     /// Applies `change` to what the walk owes, touching nothing of what the project is.
     pub fn update_walk(&self, change: impl Fn(&mut WalkFile)) -> Result<(), Error> {
-        // The lock's first write moves what it holds out to the walk's file.
-        if !self.dir.join(WALK).exists() && self.lock()?.owes() {
-            self.update_lock(|_| {})?;
-        }
         let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         let mut walk = self.walk_kept()?.unwrap_or_default();
         change(&mut walk);
-        self.keep_walk(&walk)
+        self.keep_walk(&mut walk)
     }
 
     /// Applies `change` to project.lock as it is now, what the walk owes among it.
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
-        let kept = self.walk_kept()?;
         self.rewrite(&self.dir.join(LOCK), |text| {
             let mut lock: Lock = match text {
                 "" => Lock::default(),
                 text => parse_lock(text)?,
             };
             self.fill(&mut lock);
-            if let Some(walk) = self.walk_kept()? {
+            let kept = self.walk_kept()?;
+            let before = kept.as_ref().map(|walk| (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes")));
+            if let Some(walk) = kept {
                 (lock.pending, lock.walk) = (walk.pending, walk.walk);
             }
             change(&mut lock);
-            let walk = WalkFile { pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
-            // Under the lock's writer: asked again after a save that lands first, it writes what that one holds.
-            if !walk.is_empty() || kept.is_some() {
-                self.keep_walk(&walk)?;
+            let mut walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
+            let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
+            // Under the lock's writer: asked again after a save that lands first, it writes what that one holds. Unchanged, it isn't written.
+            if before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty()) {
+                self.keep_walk(&mut walk)?;
             }
             Ok(lock.written())
         })
@@ -770,7 +839,6 @@ impl Folder {
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
         self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
-        self.tabled(path, &sha256)?;
         Ok(sha256)
     }
 
@@ -788,7 +856,7 @@ impl Folder {
             true => Ok(()),
             false => std::fs::copy(source, part).map(drop),
         })?;
-        self.tabled(path, sha256)
+        Ok(())
     }
 
     /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
@@ -799,7 +867,6 @@ impl Folder {
         if !self.store(&path, |part| std::fs::rename(source, part))? {
             let _ = std::fs::remove_file(source);
         }
-        self.tabled(path, &sha256)?;
         Ok(sha256)
     }
 
@@ -818,15 +885,19 @@ impl Folder {
                     Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
             }
-            self.tabled(path.clone(), digest)?;
             let old = std::cell::RefCell::new(vec![]);
-            self.update_lock(|lock| {
-                let earlier = lock.runs.iter().position(|row| row.run == made.run && row.output == made.output);
+            let listed = |rows: &mut Vec<RunFile>| {
+                let earlier = rows.iter().position(|row| row.run == made.run && row.output == made.output);
                 match earlier {
-                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut lock.runs[at], made.clone()).sha256],
-                    None => lock.runs.push(made.clone()),
+                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut rows[at], made.clone()).sha256],
+                    None => rows.push(made.clone()),
                 }
-            })?;
+            };
+            // A walk's run lands on its version: nothing of the project moves until then.
+            match self.walk_kept()?.is_some_and(|walk| walk.walk.runs.contains(&made.run)) {
+                true => self.update_walk(|walk| listed(&mut walk.walk.landing))?,
+                false => self.update_lock(|lock| listed(&mut lock.runs))?,
+            }
             (self.path(&path), old.into_inner())
         };
         self.drop_unused(&old)?;
@@ -835,32 +906,7 @@ impl Folder {
 
     /// An output its machine keeps, in the lock's table: its hash, which machine, and no file.
     pub fn stays(&self, sha256: &str, machine: &str, length: u64) -> Result<(), Error> {
-        let file = File { path: format!("{FILES}/{}", hex_of(sha256)), sha256: sha256.to_owned(), ..Default::default() };
-        self.update_lock(|lock| {
-            let held = lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
-            (held.machine, held.length) = (machine.to_owned(), length);
-        })
-    }
-
-    /// An output on its way here, in the lock's table: the file `name` makes it, and the machine that holds it meanwhile.
-    pub fn coming(&self, sha256: &str, machine: &str, length: u64, name: &str) -> Result<(), Error> {
-        let path = file_of(sha256, Path::new(name));
-        let ext = path.rsplit_once('.').map(|(_, ext)| format!(".{ext}")).unwrap_or_default();
-        let file = File { path, sha256: sha256.to_owned(), ext, machine: machine.to_owned(), length, ..Default::default() };
-        self.update_lock(|lock| {
-            lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
-        })
-    }
-
-    /// The file at `path` is here: a machine that kept it keeps it no longer, and `written` lists it if nothing else names it.
-    fn tabled(&self, _path: String, sha256: &str) -> Result<(), Error> {
-        self.update_lock(|lock| {
-            if let Some(row) = lock.files.get_mut(sha256).filter(|row| row.stays()) {
-                row.machine.clear();
-                row.ext.clear();
-                row.length = 0;
-            }
-        })
+        self.update_lock(|lock| lock.away(sha256, machine, length, None))
     }
 
     /// The file `sha256` as the project has it, here or kept by a machine: nothing need come for it.
@@ -920,7 +966,6 @@ impl Folder {
             return Ok(kept);
         }
         let already = !self.store(&path, write).map_err(|e| e.message)?;
-        self.tabled(path.clone(), &sha256).map_err(|e| e.message)?;
         Ok(Kept { file: File { path, sha256, ..Default::default() }, field, already })
     }
 

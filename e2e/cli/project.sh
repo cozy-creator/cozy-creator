@@ -68,6 +68,7 @@ says() { grep -qF -- "$2" "$OUT/render.txt" || check "$1: render does not say '$
 projects() {
 step "a project: new, walk-up, -p"
 local P=$OUT/garden code ID
+[ "$(cozy calcifer --help | grep -c 'takes no arguments')" = 1 ] || check "cozy calcifer --help doesn't say what it is"
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null)" = project.yaml ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.yaml"
 grep -q 'cozy project render all' "$OUT/project-new.txt" || check "project new does not say what's next: $(tail -c 300 "$OUT/project-new.txt")"
@@ -1176,6 +1177,12 @@ YAML
 cozy project -p "$R" render all --queue --on local > "$OUT/walk-restarted.txt" 2>&1 || check "restarted: render: $(tail -c 300 "$OUT/walk-restarted.txt")"
 for _ in $(seq 240); do run=$(status "$R" | jq -r '.board.jobs[] | select(.asset == "first") | .run // empty'); [ -n "$run" ] && [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] && break; sleep 0.25; done
 [ "$(cozy --json run show "$run" --once | jq -r .status)" = in_progress ] || check "restarted: first isn't running: $(status "$R" | jq -c .board.jobs)"
+# A copy of the folder is a project, and goes on with none of what its render owes.
+local copy=$OUT/walk-restarted-copy
+cp -a "$R" "$copy"
+J '(.busy | not) and ((.board.jobs // []) | length == 0) and ((.queue // []) | length == 0)' <<< "$(status "$copy")" || check "restarted: a copy goes on with its render: $(status "$copy" | jq -c '{busy, queue}')"
+[ ! -e "$copy/.runs/walk.json" ] || check "restarted: a copy kept what the render owes"
+J '.pending == null and .walk == null' "$R/project.lock" || check "restarted: project.lock holds what the render owes"
 pid=$(jq -r .pid "$lock")
 kill -9 "$pid"; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
 cozy project ls > /dev/null || check "restarted: cozy doesn't answer after Calcifer was killed"
@@ -1185,6 +1192,7 @@ for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5
 { [ "$(made "$R" first)" = 1 ] && [ "$(made "$R" second)" = 1 ] && [ "$(made "$R" reader)" = 1 ]; } || check "restarted: made $(jq -c '.assets | map_values(.versions | length)' "$R/project.lock")"
 local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] | select(.project == $r and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
 J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
+[ "$(cozy --json run ls --limit 0 | jq -c --arg r "$copy" '[.runs[] | select(.project == $r)] | length')" = 0 ] || check "restarted: a copy sent a run"
 [ ! -e "$R/.runs/walk.json" ] || check "restarted: .runs/walk.json outlived the render"
 }
 
