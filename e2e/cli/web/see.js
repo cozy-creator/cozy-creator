@@ -281,7 +281,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await picture.locator('.take.add').click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
-  await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1);
+  await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
+    // Which of them is behind: the page, or what Calcifer says is still to do.
+    const now = await state();
+    seen.at_its_dot = { dot: await picture.locator('.dot').getAttribute('class'), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
+    throw error;
+  });
   check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
   check('landed_with_no_reload', await notReloaded());
   // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it.
