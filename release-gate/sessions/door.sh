@@ -284,9 +284,10 @@ door_big() {
   api -D "$OUT/tail.hdr" -o "$OUT/tail.bin" -H 'Range: bytes=-1024' "$url" || check "the last KiB"
   [ "$(stat -c %s "$OUT/tail.bin")" = 1024 ] || check "the last KiB's size"
   rm -f "$OUT/range.bin" "$OUT/tail.bin"
-  # What each side holds as it goes: TensorD's, the machine's Calcifer's and this computer's, and the deadline.
+  # What each side holds as it goes: TensorD's, the machine's Calcifer's and this computer's, the deadline, and the most any connection
+  # there has in its kernel's send queue (hex, /proc/net/tcp): bytes the idle clock counted that haven't left.
   ( while :; do
-      echo "$(date +%s) deadline $([ "$RENTAL" = 0 ] && echo 0 || deadline) rss_kb $(pod "for p in \$(WHO=tensord; $PIDS) $CALCIFER; do awk '/VmRSS/{print \$2}' /proc/\$p/status; done | xargs echo") $(awk '/VmRSS/{print $2}' "/proc/$(jq -r .pid < "$lock")/status")"
+      echo "$(date +%s) deadline $([ "$RENTAL" = 0 ] && echo 0 || deadline) queued $(pod "awk '\$4 == \"01\" {print substr(\$5, 1, 8)}' /proc/net/tcp /proc/net/tcp6 2> /dev/null | sort | tail -1") rss_kb $(pod "for p in \$(WHO=tensord; $PIDS) $CALCIFER; do awk '/VmRSS/{print \$2}' /proc/\$p/status; done | xargs echo") $(awk '/VmRSS/{print $2}' "/proc/$(jq -r .pid < "$lock")/status")"
       sleep "$every"
     done ) > "$OUT/samples-$X.txt" 2>&1 & sampler=$!
   BG="$BG $sampler"
@@ -295,7 +296,7 @@ door_big() {
   got=$(curl -sS --limit-rate "${rate}k" --speed-time 300 --speed-limit 1024 "${bearer[@]}" "$url" | sha256sum | cut -d' ' -f1)
   LAST_BYTE=$(date +%s)
   kill "$sampler" 2> /dev/null
-  say "1 GiB took $((LAST_BYTE - began)) s; samples: $(wc -l < "$OUT/samples-$X.txt")"
+  say "1 GiB took $((LAST_BYTE - began)) s; samples: $(wc -l < "$OUT/samples-$X.txt"); most queued in the pod's kernel: $(awk '{print $5}' "$OUT/samples-$X.txt" | sort | tail -1) bytes, hex"
   [ "$got" = "$big" ] || check "the whole read through the door: $got, not $big"
   python3 - "$OUT/samples-$X.txt" <<'PY' || check "memory grew under the slow read: $(sed -n '1p;$p' "$OUT/samples-$X.txt")"
 import re, sys
@@ -426,7 +427,7 @@ for _ in $(seq 180); do [ "$(deadline)" = 0 ] && break; sleep 2; done
 [ "$(deadline)" = 0 ] || check "with a job queued or running, status still names an idle deadline: $(deadline)"
 answers "End while a job runs" 409 machine_working "${bearer[@]}" -X DELETE "$D/v1/machines/local"
 WAIT=$(api "$D/v1/runs?limit=1" | jq -r '.runs[0].id')
-answers "cancel the waiting run" 200 - "${bearer[@]}" -X POST "$D/v1/runs/$WAIT/cancel"
+answers "cancel the waiting run" 202 - "${bearer[@]}" -X POST "$D/v1/runs/$WAIT/cancel"
 for _ in $(seq 60); do [ "$(deadline)" != 0 ] && break; sleep 2; done
 [ "$(deadline)" != 0 ] || check "a cancelled job left no idle deadline"
 door_hostile
