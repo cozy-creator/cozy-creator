@@ -2868,6 +2868,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   parse "$@"
   ALONE=1
   hub_checked() { :; }
+  run_project "$OUT/project" || fail "cozy project new failed"
   projects
   finish project
 fi
