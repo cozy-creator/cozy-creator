@@ -35,7 +35,7 @@ pub use volume::VolumeOrigin;
 
 use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::{self, Header, ObjectRef, Tree};
-pub use download::{Fetching, Phase};
+pub use download::{Fetching, Phase, DEAD_PEER};
 use download::{Shared, Task};
 
 /// GET `url` from byte `from` into `sink`, for bytes the caller holds to a digest: any public host,

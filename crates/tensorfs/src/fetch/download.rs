@@ -42,7 +42,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -69,8 +69,8 @@ const HEAD_TICKS: u32 = 8;
 /// Ticks over which a body's rate is judged.
 const JUDGE_TICKS: usize = 4;
 /// Attempts in a row the origin answered nothing at all (no connection, no answer) before an
-/// object ends: a dead peer. Any answer or byte starts the count again.
-const DEAD_PEER: u32 = 8;
+/// object ends: a dead peer. Any answer, or a byte landing anywhere in the fetch, starts the count again.
+pub const DEAD_PEER: u32 = 8;
 /// The most a re-ask that moved nothing waits before the next, doubling from one tick.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Rate samples needed before any request is judged slow.
@@ -126,6 +126,8 @@ pub(crate) struct Task {
     /// Where it is (`Phase`), and when it last moved: its phase changed or its bytes grew (Unix ms).
     phase: AtomicU8,
     moved_ms: AtomicU64,
+    /// Attempts in a row the origin answered nothing (`DEAD_PEER`).
+    unanswered: AtomicU32,
     done: watch::Sender<Option<std::result::Result<Tier, Refusal>>>,
 }
 
@@ -140,6 +142,9 @@ impl Task {
     }
 
     fn enter(&self, phase: Phase) {
+        if phase == Phase::Receiving {
+            self.unanswered.store(0, Ordering::Release);
+        }
         self.phase.store(phase as u8, Ordering::Release);
         self.moved_ms.store(unix_ms(), Ordering::Release);
     }
@@ -183,7 +188,8 @@ impl std::fmt::Display for Phase {
 }
 
 /// An object's task as its waiters see it (`Fetcher::fetching`): where it is, its bytes so far
-/// of its length, when it last moved (Unix ms), and how many wait for it.
+/// of its length, when it last moved (Unix ms), how many wait for it, and the attempts in a row
+/// the origin answered nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fetching {
     pub phase: Phase,
@@ -191,6 +197,7 @@ pub struct Fetching {
     pub length: u64,
     pub moved_unix_ms: u64,
     pub waiters: usize,
+    pub unanswered: u32,
 }
 
 fn unix_ms() -> u64 {
@@ -476,7 +483,8 @@ impl From<Refusal> for Attempt {
 
 /// An object's re-asks. A request that stalls is dropped and asked again from the byte reached
 /// (`judge`), and an origin that answers "not now" is asked again when it says. Two things end
-/// it: a dead peer, `DEAD_PEER` attempts in a row that it answered nothing at all; and an origin
+/// it: a dead peer, `DEAD_PEER` attempts in a row that it answered nothing at all while nothing in
+/// the fetch landed; and an origin
 /// that says "not now" once nothing in the fetch has landed for the stall rule, or for twice the
 /// longest wait it stated. A re-ask that moved nothing waits longer each time, up to `MAX_BACKOFF`.
 struct Retry {
@@ -509,13 +517,19 @@ impl Retry {
             return refuse(Code::ORIGIN_REFUSED, detail);
         }
         self.unheard = 0;
+        task.unanswered.store(0, Ordering::Release);
         self.quiet = (self.quiet + 1).min(16);
         Ok(wait.unwrap_or((self.tick * (1 << (self.quiet - 1))).min(allowed / 8)))
     }
 
     /// The pause before the next attempt (None: at once), or the dead peer's refusal.
-    fn again(&mut self, task: &Task, why: &str, heard: bool, moved: bool, wait: Option<Duration>) -> Result<Option<Duration>> {
-        self.unheard = if heard || moved { 0 } else { self.unheard + 1 };
+    fn again(&mut self, task: &Task, why: &str, heard: bool, moved: bool, wait: Option<Duration>, landed: u64) -> Result<Option<Duration>> {
+        let progress = landed != self.landed;
+        if progress {
+            (self.landed, self.still) = (landed, Instant::now());
+        }
+        self.unheard = if heard || moved || progress { 0 } else { self.unheard + 1 };
+        task.unanswered.store(self.unheard, Ordering::Release);
         if self.unheard >= DEAD_PEER {
             let detail = format!("{}: the origin answered none of {DEAD_PEER} attempts in a row; the last: {why}", task.object.sha256);
             return refuse(Code::TRANSFER_FAILED, detail);
@@ -878,6 +892,7 @@ impl Shared {
                     kept: AtomicU64::new(0),
                     phase: AtomicU8::new(Phase::Queued as u8),
                     moved_ms: AtomicU64::new(unix_ms()),
+                    unanswered: AtomicU32::new(0),
                     done: watch::channel(None).0,
                 });
                 queue.seq += 1;
@@ -933,6 +948,7 @@ impl Shared {
             length: task.object.length,
             moved_unix_ms: task.moved_ms.load(Ordering::Acquire),
             waiters: task.waiters.load(Ordering::Acquire),
+            unanswered: task.unanswered.load(Ordering::Acquire),
         })
     }
 
@@ -1093,7 +1109,7 @@ impl Shared {
                         // The origin's weather is asked again, as any unanswered attempt is.
                         Err(refusal) => match Attempt::from(refusal) {
                             Attempt::Again { why, .. } => {
-                                let pause = retry.again(task, &why, false, false, None)?;
+                                let pause = retry.again(task, &why, false, false, None, self.stats.landed.load(Ordering::Relaxed))?;
                                 tokio::time::sleep(pause.unwrap_or(self.tick)).await;
                                 continue;
                             }
@@ -1182,7 +1198,7 @@ impl Shared {
                         slow = if dripped && sink.reached.saturating_sub(from) < PART_BYTES { slow + 1 } else { 0 };
                         tracing::info!(object = %task.object.sha256, at = sink.reached, %why, "restart");
                     }
-                    if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait)? {
+                    if let Some(pause) = retry.again(task, &why, heard, moved || dropped, wait, self.stats.landed.load(Ordering::Relaxed))? {
                         tokio::time::sleep(pause).await;
                     }
                 }
@@ -1202,7 +1218,7 @@ impl Shared {
                 }
                 Attempt::Stale(why) => {
                     delivery = None;
-                    if let Some(pause) = retry.again(task, &why, true, false, None)? {
+                    if let Some(pause) = retry.again(task, &why, true, false, None, self.stats.landed.load(Ordering::Relaxed))? {
                         tokio::time::sleep(pause).await;
                     }
                 }
@@ -1309,7 +1325,7 @@ impl Shared {
                         self.stats.restarts.fetch_add(1, Ordering::Relaxed);
                         doublings = if moved { PART_DOUBLINGS } else { (doublings + 1).min(MAX_DOUBLINGS) };
                     }
-                    retry.again(task, &why, heard, moved || dropped, wait).map(|pause| pause.unwrap_or_default())
+                    retry.again(task, &why, heard, moved || dropped, wait, self.stats.landed.load(Ordering::Relaxed)).map(|pause| pause.unwrap_or_default())
                 }
                 Attempt::Weather { why, wait } => {
                     retry.weather(task, &why, wait, self.stats.landed.load(Ordering::Relaxed), self.patience.get())
