@@ -25,7 +25,7 @@ use crate::{
     runs::target::{self, Resolved},
 };
 
-/// A package as the Hub has it (its newest release, or the one `@release` names), or local code on this computer (`with: ./dir`,
+/// A package as the Hub has it (the release its machine holds, else its newest, or the one `@release` names), or local code on this computer (`with: ./dir`,
 /// from the project's folder).
 #[derive(Clone)]
 pub struct Package {

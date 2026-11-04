@@ -1,5 +1,5 @@
 //! Runs as people ask for them (`POST /v1/runs`): the target resolved on its Hub (the card and the
-//! newest release this computer keeps), the request bound against the function's interface, input
+//! release its machine holds, else its Hub's newest), the request bound against the function's interface, input
 //! files sniffed, hashed and staged, video segments cut, and the machine's RunSpec built. Every
 //! client sends the same unbound request; none builds a spec.
 use std::{

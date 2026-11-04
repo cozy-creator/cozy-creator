@@ -238,7 +238,7 @@ cozy project render clash
 
 ## Choosing a package, and adapters
 
-`with:` names a package, `org/package[@release]`, never a function, or local code by its path (`./dir`, `./script.py`, `~/…`), keyed by its directory's name, so moving to the published package re-renders nothing. The order is the asset's own `with:`, then `defaults.<kind>.with`. An asset naming its own `with:` takes nothing from `defaults`. With neither, it has nothing to make, and `status` and `render` say so as a warning.
+`with:` names a package, `org/package[@release]`, never a function, or local code by its path (`./dir`, `./script.py`, `~/…`), keyed by its directory's name, so moving to the published package re-renders nothing. With no `@release`, a run uses what its machine has installed, or installs the newest if it has none; `cozy package update` moves it forward. The order is the asset's own `with:`, then `defaults.<kind>.with`. An asset naming its own `with:` takes nothing from `defaults`. With neither, it has nothing to make, and `status` and `render` say so as a warning.
 
 A package makes a kind by providing one Python adapter for it. With no adapter for that kind, it can't make that asset: `status` and `render` say so in one line and carry on. There's no fallback.
 

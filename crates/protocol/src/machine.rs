@@ -318,7 +318,7 @@ pub struct ProviderAccess {
 pub struct Release {
     /// org/name
     pub package: String,
-    /// Empty: the Hub's newest.
+    /// Empty: the newest its signer holds here, else the Hub's newest.
     pub release: String,
 }
 
