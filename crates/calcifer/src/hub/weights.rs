@@ -86,11 +86,10 @@ async fn source(raw: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal
 /// bytes, since a held file has no name to read. Its digest is its name.
 fn held(api: &Api, named: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
     let digest: Digest = named.parse().map_err(|why: &str| usage("file_name_invalid", format!("{named:?}: {why}")))?;
-    let path = crate::runs::files::dir(&api.calcifer).join(hex::encode(digest.bytes()));
-    if !path.is_file() {
+    let Some(path) = crate::runs::files::held(&api.calcifer, &digest) else {
         let said = format!("Calcifer holds no file {named}");
         return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("PUT its bytes to /v1/files/{named} first"))));
-    }
+    };
     let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
     let mut file = std::fs::File::open(&path).map_err(|e| refused(e.to_string()))?;
     let length = file.metadata().map_err(|e| refused(e.to_string()))?.len();

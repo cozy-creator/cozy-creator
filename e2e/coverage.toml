@@ -116,7 +116,7 @@ test = "pr: models"
 test = "release: throwaway model, family set and cleared"
 "--clear" = "release: throwaway model, family set and cleared"
 ["model upload"]
-test = "release: throwaway model, uploaded from a file and from a run's output"
+test = "release: throwaway model, uploaded from a file, from a held file, from a run's output, and a commit recorded"
 "--on" = "release: throwaway model"
 "--lane" = "release: throwaway model, two lanes"
 "--source-format" = "release: throwaway model, its files kept as-is"

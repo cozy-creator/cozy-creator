@@ -36,6 +36,7 @@ cleanup() {
   fi
   cozy --json package delete "fidika/$pkg" -y > /dev/null 2>&1
   cozy --json model delete "$model" -y > /dev/null 2>&1
+  cozy --json model delete "$model-copy" -y > /dev/null 2>&1
   # Calcifer's log holds each Hub answer about the rental (a boot that failed, why).
   [ -n "$INSTALLED" ] || (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf "$OUT/cozy-logs.tgz" -T -) > /dev/null 2>&1
 }
@@ -160,6 +161,27 @@ open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urand
 PY
 watched upload-b model upload "$OUT/tiny-b.safetensors" "$model" --lane f32 --source-format as-is --on "$ON" || check "model upload --lane f32 failed"
 commit_b=$(jq -r '.. | objects | .commit? // empty' "$OUT/upload-b.ndjson" 2> /dev/null | tail -1) || true
+# One route takes any source. A held file, with no path sent:
+uv run -q --no-project python -I - "$OUT/tiny-c.safetensors" <<'PY'
+import json, os, struct, sys
+header = json.dumps({"w": {"dtype": "F16", "shape": [4, 4], "data_offsets": [0, 32]}}).encode()
+header += b" " * (-len(header) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(header)) + header + os.urandom(32))
+PY
+held=$(sha256sum "$OUT/tiny-c.safetensors" | cut -c1-64) addr=$(jq -r .address ~/.cozy/calcifer/calcifer.lock.holder) token=$(jq -r .token ~/.cozy/calcifer/calcifer.lock.holder)
+curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $token" --data-binary "@$OUT/tiny-c.safetensors" "http://$addr/v1/files/sha256:$held" || check "PUT the held model file failed"
+curl -sS -X POST -H "Authorization: Bearer $token" -H "Idempotency-Key: held-$run" \
+  -d "$(jq -n --arg s "sha256:$held" --arg d "$model" --arg o "$ON" '{source: $s, destination: $d, lane: "f16", source_format: "as-is", on: $o}')" "http://$addr/v1/model-uploads" > "$OUT/upload-held.json"
+held_run=$(jq -r '.run.number // empty' "$OUT/upload-held.json")
+if [ -n "$held_run" ]; then
+  cozy --json run show "$held_run" > /dev/null 2>&1 || true
+  cozy --json run show "$held_run" 2> /dev/null | J '.status == "completed"' || check "model upload of a held file: run $held_run did not complete"
+else check "model upload of a held file: $(head -c 300 "$OUT/upload-held.json")"; fi
+# And a Hub commit, recorded with nothing uploaded.
+cozy --json model upload "$model@$commit" "$model-copy" --lane f16 > "$OUT/upload-recorded.json" 2> "$OUT/upload-recorded.err" \
+  && J --arg f "$model@$commit" '.from == $f and .lane == "f16"' "$OUT/upload-recorded.json" \
+  || check "model upload of a Hub commit: $(tail -c 300 "$OUT/upload-recorded.json") $(tail -c 300 "$OUT/upload-recorded.err")"
+cozy --json model delete "$model-copy" -y > /dev/null 2>&1 || check "model delete of the recorded copy failed"
 # While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-675).
 # Its own process: `cozy` there is the installed binary, not this suite's logging function.
 PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \

@@ -35,6 +35,18 @@ J() { jq -e "$@" > /dev/null; }
 prefix() { (cd "$1" && cozy --json project import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
 # api <curl args…>: Calcifer, with the bearer of its lock record.
 api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
+# ask <json>: POST /v1/runs under a new key, its answer on stdout; a local function's install is followed, then asked again under that key.
+ask() {
+  local key=idem-$RANDOM$RANDOM$RANDOM answer
+  while :; do
+    answer=$(api -X POST -H "Idempotency-Key: $key" -d "$1" "http://$ADDR/v1/runs")
+    [ "$(jq -r '.preparing // false' <<< "$answer")" = true ] || break
+    cozy --json run show "$(jq -r .run.number <<< "$answer")" > /dev/null 2>&1 || true
+  done
+  printf '%s\n' "$answer"
+}
+# ended <number>: the run at its end with its outputs landed, whole.
+ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 status() { cozy --json project -p "$1" status 2> /dev/null; }
 # row <project> <asset> <jq>: that of its row in status.
@@ -52,6 +64,7 @@ step "a project: new, walk-up, -p"
 local P=$OUT/garden code ID
 cozy project new "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
 [ "$(ls -A "$P" 2>/dev/null)" = project.yaml ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.yaml"
+grep -q 'cozy project render all' "$OUT/project-new.txt" || check "project new does not say what's next: $(tail -c 300 "$OUT/project-new.txt")"
 cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
 for name in kyogre kyogre_sheet groudon coast coast_plate awaken erupt clash edit; do grep -q "$name" "$OUT/project-new-status.txt" || check "a new project's status names no $name"; done
 mkdir -p "$P/sub"
@@ -66,6 +79,7 @@ hard_cut
 memo
 pins
 project_runs
+path_free
 entities
 orphans
 joining
@@ -248,12 +262,89 @@ J '.run_files == 2' <<< "$(status "$R")" || check "runs: a pinned file still cou
 
 step "a project: reclaim takes a run's file once nothing names it"
 lines=$(cozy --json project -p "$R" reclaim | jq .files); [ "$lines" -ge 2 ] || check "runs: reclaim lists $lines files"
+J '.next == ["cozy project reclaim --yes"]' <<< "$(cozy --json project -p "$R" reclaim)" || check "runs: reclaim does not say what's next"
 ls "$R/files/$other"* > /dev/null 2>&1 || check "runs: reclaim with no --yes deleted"
 cozy project -p "$R" reclaim --yes > "$OUT/reclaim.txt" 2>&1 || check "runs: reclaim --yes: $(tail -c 300 "$OUT/reclaim.txt")"
 ! ls "$R/files/$other"* > /dev/null 2>&1 || check "runs: reclaim --yes left a file nothing names"
 ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: reclaim --yes took the pinned file"
 J --arg h "$hash" '.runs | length == 1 and (.[0].sha256 | ltrimstr("sha256:") | startswith($h))' "$R/project.lock" || check "runs: rows left: $(jq -c .runs "$R/project.lock")"
 J '.run_files == 0' <<< "$(status "$R")" || check "runs: status after reclaim: $(status "$R" | jq -c .run_files)"
+}
+
+# What a page sends: a project by its id, a payload as text, a file by its hash, and no path. A file given to a run joins its project, so
+# the run can be asked again once what held it is gone.
+path_free() {
+step "a project: a run with no path sent"
+local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id real pic hex other n asked input code w h url
+cozy project new "$R" > /dev/null || check "path-free: project new"
+real=$(cd "$R" && pwd -P)
+id=$(cozy --json project -p "$R" status 2> /dev/null | jq -r .id)
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+asked=$(ask "$(jq -n --arg t "$here/project/draw.py" --arg p "$id" '{target: $t, project: $p, on: "local", input_text: "prompt: with no path\nseed: 7\n"}')")
+n=$(jq -r '.run.number // empty' <<< "$asked")
+[ -n "$n" ] || { check "path-free: a run by the project's id and input_text: $asked"; return; }
+ended "$n" > "$OUT/free-draw.json"
+J --arg i "$id" --arg p "$real" '.status == "completed" and .project_id == $i and .project == $p' "$OUT/free-draw.json" || check "path-free: the run: $(jq -c '{status, project, project_id, reason}' "$OUT/free-draw.json")"
+J '.request.input.prompt == "with no path" and .request.seed == 7 and (.request.target | endswith("/draw"))' "$OUT/free-draw.json" || check "path-free: request: $(jq -c .request "$OUT/free-draw.json")"
+pic=$(jq -r '.output[0].path' "$OUT/free-draw.json")
+w=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$pic") h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$pic")
+J --argjson w "$w" --argjson h "$h" '.output[0] | .width == $w and .height == $h' "$OUT/free-draw.json" || check "path-free: measured $(jq -c '.output[0] | {width, height}' "$OUT/free-draw.json"), not $w x $h"
+url=$(jq -r '.output[0].url' "$OUT/free-draw.json")
+[ "$(api -o "$OUT/free-output.png" -w '%{http_code}' "http://$ADDR$url")" = 200 ] && cmp -s "$OUT/free-output.png" "$pic" || check "path-free: $url does not serve its output"
+[ "$(api --get --data-urlencode "project=$id" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" = "$(api --get --data-urlencode "project=$R" "http://$ADDR/v1/runs" | jq -c '[.runs[].number]')" ] || check "path-free: GET /v1/runs by id and by folder differ"
+[ "$(api -o "$OUT/free-unknown.json" -w '%{http_code}' "http://$ADDR/v1/runs?project=project-0000000000000000")" = 404 ] && J '.error.code == "project_unknown"' "$OUT/free-unknown.json" || check "path-free: GET /v1/runs of an unknown id: $(head -c 200 "$OUT/free-unknown.json")"
+J '.error.code == "project_unknown"' <<< "$(ask "$(jq -n --arg t "$here/project/draw.py" '{target: $t, project: "project-0000000000000000", on: "local", input_text: "prompt: nowhere"}')")" || check "path-free: POST /v1/runs of an unknown id was not refused"
+
+step "a project: a file by its hash joins the project, and the run can be asked again"
+pic=$OUT/free.png
+ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf %06x $((RANDOM * RANDOM % 16777216))):size=64x48" -frames:v 1 "$pic"
+hex=$(sha "$pic")
+code=$(api -o "$OUT/free-put.json" -w '%{http_code}' -X PUT --data-binary "@$pic" "http://$ADDR/v1/files/sha256:$hex")
+{ [ "$code" = 201 ] || [ "$code" = 200 ]; } || check "path-free: PUT: $code $(head -c 200 "$OUT/free-put.json")"
+asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: sha256:$hex" '{target: $t, project: $p, on: "local", input_text: $x}')")
+n=$(jq -r '.run.number // empty' <<< "$asked")
+[ -n "$n" ] || { check "path-free: a run given a held file: $asked"; return; }
+J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: run $n given a held file did not complete"
+[ -f "$R/files/$hex.png" ] || check "path-free: the file a run was given is not in files/: $(ls "$R/files")"
+J --arg s "sha256:$hex" '.files | has($s)' "$R/project.lock" || check "path-free: the file a run was given is not in the lock"
+# What held it is gone, as a day later.
+rm -f "$HOME/.cozy/calcifer/files/$hex"
+[ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "path-free: the held file is still held"
+input=$(cozy --json run show "$n" | jq -c .request.input)
+J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request.input: $input"
+asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --argjson i "$input" '{target: $t, project: $p, on: "local", input: $i}')")
+n=$(jq -r '.run.number // empty' <<< "$asked")
+[ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: asking it again: $asked"
+# A hash prefix, in text and in a request file, with a cwd that must not take it for a path.
+asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: ${hex:0:12}" --arg c "$R" '{target: $t, project: $p, on: "local", input_text: $x, cwd: $c}')")
+n=$(jq -r '.run.number // empty' <<< "$asked")
+[ -n "$n" ] && J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: a hash prefix in input_text: $asked"
+printf 'image: %s\n' "${hex:0:12}" > "$R/req.yaml"
+cozy run -p "$R" "$here/project/copied.py" --input "$R/req.yaml" > "$OUT/free-input.txt" 2>&1 || check "path-free: a hash prefix in --input: $(tail -c 300 "$OUT/free-input.txt")"
+J '.error.code == "file_not_held"' <<< "$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --arg x "image: sha256:$(printf %064d 1)" '{target: $t, project: $p, on: "local", input_text: $x}')")" || check "path-free: a hash nothing holds was not refused file_not_held"
+# A person's own file is copied: changing it later changes nothing of the project's.
+other=$OUT/free-other.png
+ffmpeg -v error -y -f lavfi -i "color=c=0x$(printf %06x $((RANDOM * RANDOM % 16777216))):size=48x64" -frames:v 1 "$other"
+hex=$(sha "$other")
+cozy run -p "$R" "$here/project/copied.py" --file "image=$other" > "$OUT/free-other.txt" 2>&1 || check "path-free: a run given a person's file: $(tail -c 300 "$OUT/free-other.txt")"
+printf x >> "$other"
+[ "$(sha "$R/files/$hex.png")" = "$hex" ] || check "path-free: the project's copy changed with the person's file"
+
+step "a project: GET /v1/targets says what a person runs and a function's contract, and the CLI prints them"
+api --get --data-urlencode "target=$here/project/shots.py" "http://$ADDR/v1/targets" > "$OUT/free-target.json"
+J '(.functions | length > 1) and all(.functions[]; .function | startswith("project-adapter-") | not) and (.next | length > 0) and (has("contract") | not)' "$OUT/free-target.json" || check "path-free: targets of a package: $(jq -c '{functions, next}' "$OUT/free-target.json")"
+api --get --data-urlencode "target=$here/project/shots.py/shoot" "http://$ADDR/v1/targets" > "$OUT/free-function.json"
+J '.function == "shoot" and (.contract | contains("/shoot")) and (.request.fields | length > 0)' "$OUT/free-function.json" || check "path-free: targets of a function: $(jq -c '{function, contract}' "$OUT/free-function.json")"
+cozy run "$here/project/shots.py/shoot" --describe > "$OUT/free-describe.txt" 2>&1 && grep -q '/shoot' "$OUT/free-describe.txt" || check "path-free: --describe: $(tail -c 300 "$OUT/free-describe.txt")"
+
+step "a project: what a machine holds, and Calcifer's log, by their routes"
+J '.machine == "local" and (.packages | type == "array")' <<< "$(api "http://$ADDR/v1/machines/local/packages")" || check "path-free: GET /v1/machines/local/packages"
+J '.machine == "local" and (.models | type == "array")' <<< "$(api "http://$ADDR/v1/machines/local/models")" || check "path-free: GET /v1/machines/local/models"
+api "http://$ADDR/v1/machines/local/logs/calcifer?lines=5" > "$OUT/free-log.txt"
+{ [ -s "$OUT/free-log.txt" ] && [ "$(wc -l < "$OUT/free-log.txt")" -le 5 ]; } || check "path-free: logs/calcifer?lines=5: $(wc -l < "$OUT/free-log.txt") lines"
+[ "$(api -o "$OUT/free-nolog.json" -w '%{http_code}' "http://$ADDR/v1/machines/hikaru/logs/calcifer")" = 400 ] && J '.error.code == "log_not_kept"' "$OUT/free-nolog.json" || check "path-free: logs/calcifer elsewhere: $(head -c 200 "$OUT/free-nolog.json")"
+api --max-time 3 -N -H 'Accept: text/event-stream' "http://$ADDR/v1/machines/local/logs/calcifer?lines=5" > "$OUT/free-log.sse" 2> /dev/null || true
+grep -q '"type":"lines"' "$OUT/free-log.sse" || check "path-free: logs/calcifer did not follow: $(head -c 200 "$OUT/free-log.sse")"
 }
 
 # Approved and pinned are one thing, a hash in project.yaml: one line changes, and everything else stands.
@@ -576,6 +667,7 @@ sed -i 's/^  old:$/  new:/; s/<old>/<new>/' "$T/project.yaml"
 J '.orphans[0] | .name == "old" and .versions == 1 and .bytes > 0 and .renamed_to == "new"' <<< "$(status "$T")" || check "orphans: status does not list old with its bytes: $(status "$T" | jq -c .orphans)"
 cozy project -p "$T" status > "$OUT/orphan.txt" 2>&1 || true
 grep -q 'cozy project rename old new' "$OUT/orphan.txt" || check "orphans: status does not suggest the rename"
+J 'any(.next[]; . == "cozy project rename old new") and any(.next[]; . == "cozy project reclaim")' <<< "$(status "$T")" || check "orphans: status's next: $(status "$T" | jq -c .next)"
 cozy project -p "$T" rename old new > "$OUT/rename.txt" 2>&1 || check "orphans: rename: $(tail -c 300 "$OUT/rename.txt")"
 { J '.orphans == null or (.orphans | length == 0)' <<< "$(status "$T")" && [ "$(made "$T" new)" = 1 ] && [ "$(row "$T" new .status)" = '"current"' ]; } || check "orphans: renamed, new is $(row "$T" new .)"
 case "$(row "$T" reader .status)" in *'out of date'*) ;; *) check "orphans: renaming did not put its reader's text out of date: $(row "$T" reader .status)" ;; esac

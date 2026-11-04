@@ -189,7 +189,10 @@ pub(crate) fn asked(row: &crate::store::RunRow) -> Option<protocol::calcifer::Ru
         let lora: Vec<_> = (choice.adapters.iter())
             .map(|a| serde_json::json!({"ref": reference(&a.source, &a.model, &a.manifest, &a.release), "strength": a.scale.parse::<f64>().unwrap_or(1.0)}))
             .collect();
-        let mut chosen = serde_json::json!({"lora": lora});
+        let mut chosen = serde_json::json!({});
+        if !lora.is_empty() {
+            chosen["lora"] = lora.into();
+        }
         if !choice.repository.is_empty() || !choice.source.is_empty() {
             chosen["ref"] = reference(&choice.source, &choice.repository, &choice.manifest, &choice.release).into();
         }
