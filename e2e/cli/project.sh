@@ -1188,16 +1188,18 @@ J '.assets.both.versions | length == 1 and (.[0] | (.runs | length == 2) and (.i
 
 # Runs that fail on purpose, on a machine with no history to keep clean: never alone.
 failures() {
-step "a project: a piece ffprobe can't read fails its cut, and no film stands short of it"
-local U=$OUT/unreadable look code=0
-mkdir -p "$U"; plate "$U/look.mp4" testsrc2 440 800 4
+step "a project: a clip ffprobe can't read, or a picture, is left out and the rest is cut"
+local U=$OUT/unreadable look pic code=0
+mkdir -p "$U"; plate "$U/look.mp4" testsrc2 440 800 4; still "$U/pic.png" navy
 printf 'version: 2\nassets: {}\n' > "$U/project.yaml"
-look=$(prefix "$U" "$U/look.mp4")
+look=$(prefix "$U" "$U/look.mp4"); pic=$(prefix "$U" "$U/pic.png")
 cat > "$U/project.yaml" <<YAML
 version: 2
 assets:
   look:
     video: $look
+  pic:
+    image: $pic
   good:
     kind: video
     render: {with: $here/project/shots.py}
@@ -1214,12 +1216,32 @@ assets:
     pieces:
       - <good>
       - <bad>
+      - <pic>
+  hopeless:
+    kind: video
+    render: {with: cozy}
+    pieces:
+      - <bad>
 YAML
 cozy project -p "$U" render all --on local > "$OUT/render.txt" 2>&1 || code=$?
-[ "$code" != 0 ] || check "unreadable: render exited 0"
-says unreadable "film cannot render: bad: "
+[ "$code" = 0 ] || check "unreadable: render exited $code: $(tail -c 400 "$OUT/render.txt")"
+says unreadable "film.mp4 is cut without bad: "
 says unreadable "holds no video ffprobe reads"
-[ ! -e "$U/film.mp4" ] || check "unreadable: a film was made without bad"
+says unreadable "film.mp4 is cut without pic: "
+says unreadable "(without bad: ffprobe can't read it; pic: it's no video)"
+[ "$(frames_of "$U/film.mp4")" = 96 ] || check "unreadable: the film is $(frames_of "$U/film.mp4") frames, not good's 96"
+J --arg bad "bad: ffprobe can't read it" --arg pic "pic: it's no video" '.cuts[] | select(.cut == "film.mp4") | .without == [$bad, $pic]' <<< "$(status "$U")" || check "unreadable: status: $(status "$U" | jq -c .cuts)"
+cozy project -p "$U" status 2>&1 | grep -qF "(without bad: ffprobe can't read it" || check "unreadable: status doesn't say what it went without"
+step "a project: with no clip to use, there is no film, or the one that stands stays, and no version is made"
+says unreadable "hopeless.mp4 isn't cut, and no version is made: none of its clips can be used"
+[ ! -e "$U/hopeless.mp4" ] || check "unreadable: a film was made of nothing"
+[ "$(made "$U" hopeless)" = 0 ] || check "unreadable: nothing cut made a version: $(made "$U" hopeless)"
+sed -i 's/      - <good>/      - <bad>/' "$U/project.yaml"
+code=0; render "$U" film || code=$?
+[ "$code" = 0 ] || check "unreadable: no clip to use exited $code: $(tail -c 400 "$OUT/render.txt")"
+says unreadable "film.mp4 isn't cut, and no version is made: none of its clips can be used: the film that stands stays"
+[ "$(frames_of "$U/film.mp4")" = 96 ] || check "unreadable: the film that stood went: $(frames_of "$U/film.mp4") frames"
+[ "$(made "$U" film)" = 1 ] || check "unreadable: nothing cut made a version: $(made "$U" film)"
 step "a project: a failed run is no version, and its seed is kept for the next try"
 local T=$OUT/failing look seed
 mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800

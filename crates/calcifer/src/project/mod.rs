@@ -1976,6 +1976,9 @@ impl Walk {
     async fn timeline_again(&self, asset: &format::Asset, standing: &Standing, lock: &Lock, name: &str) {
         let canvas = Canvas::of(&asset.fields, &mut vec![]);
         let (mut pieces, _) = tools::pieces(&asset.fields, &standing.reads, self.folder(), lock);
+        if let Some(version) = standing.version().and_then(|number| lock.asset(&asset.name)?.version(number)) {
+            pieces.retain(|piece| !version.without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
+        }
         tools::past_end(&mut pieces, canvas.fps);
         let project = self.project.clone();
         let (cut, fps) = (name.to_owned(), canvas.fps);
@@ -2561,10 +2564,11 @@ impl Walk {
         })
     }
 
-    /// Cuts `asset`'s pieces, its film and timeline at the root, and what it went without. None: nothing to cut. A piece not here is
-    /// fetched from the machine that keeps it, or the Hub. One that can't be had, or has no version yet, is left out, warned of and said
-    /// with the film: Paul, "it'd generate the edit without them", and the film before it stays a version. One here that ffprobe can't
-    /// read fails it: nothing is cut, and the film that stands stays.
+    /// Cuts `asset`'s pieces, its film and timeline at the root, and what it went without. A piece not here is fetched from the machine
+    /// that keeps it, or the Hub. One that can't be had, has no version yet, or that ffprobe or ffmpeg can't take is left out, warned of
+    /// and said with the film (Paul: "it'd generate the edit without them", "why would it ever fail the cut?"), and the film before it
+    /// stays a version. None: no clip can be used, so there is no new version and the film that stands stays. Err is what isn't a clip's
+    /// doing: ffmpeg that can't be had, or a full disk.
     async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
         let folder = self.folder();
         let mut said = vec![];
@@ -2584,25 +2588,27 @@ impl Walk {
             self.say(Event::Warning { message: format!("{name} is cut without {piece}, which has no version yet: cozy project render {piece} --on {on}"), name: None });
             without.push(folder::Without { piece, why: "no version yet".into(), absent: false });
         }
-        let unreadable = tools::unreadable(&ffprobe, &pieces);
-        if !unreadable.is_empty() {
-            return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: the film that stands stays", asset.name, unreadable.join("; "))).next("cozy project status"));
-        }
+        self.leave_out(&name, &on, tools::unreadable(&ffprobe, &pieces)?, &mut without);
+        pieces.retain(|piece| piece.shape.is_some());
         said.extend(tools::past_end(&mut pieces, canvas.fps));
         said.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
-        if pieces.is_empty() {
-            return Ok(None);
-        }
         let (project, cutting, began) = (self.project.clone(), self.project.cutting.clone(), Instant::now());
         let cache = self.host.cache().join("cuts");
         let cutting_name = name.clone();
         let fps = canvas.fps;
-        let (made, part) = tokio::task::spawn_blocking(move || {
+        let (made, left) = tokio::task::spawn_blocking(move || {
             let _held = cutting.lock().expect("cutting lock");
-            tools::cut(&ffmpeg, &ffprobe, &project.folder, &pieces, &canvas, &cutting_name, &cache)
+            tools::cut_around(&ffmpeg, &ffprobe, &project.folder, pieces, &canvas, &cutting_name, &cache)
         })
         .await
-        .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
+        .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))?
+        .map_err(|e| e.next(format!("cozy project render {} --on {on}", asset.name)))?;
+        self.leave_out(&name, &on, left, &mut without);
+        let Some((made, part)) = made else {
+            let stands = if folder.dir.join(&name).is_file() { ": the film that stands stays" } else { "" };
+            self.say(Event::Warning { message: format!("{name} isn't cut, and no version is made: none of its clips can be used{stands}"), name: None });
+            return Ok(None);
+        };
         let now = folder.lock()?;
         let held = now.asset(&asset.name);
         let before = held.and_then(|held| held.versions.last()?.files.get("video").cloned());
@@ -2624,6 +2630,17 @@ impl Walk {
         let said = without.iter().map(folder::Without::said).collect();
         self.say(Event::Cut { name: asset.name.clone(), cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256), without: said });
         Ok(Some((Files::from([("video".to_owned(), sha256), ("timeline".to_owned(), timeline)]), without)))
+    }
+
+    /// Each clip a cut goes without, warned of with what was said of it, and recorded.
+    fn leave_out(&self, name: &str, on: &str, left: Vec<tools::LeftOut>, without: &mut Vec<folder::Without>) {
+        for tools::LeftOut { asset: piece, why, answer } in left {
+            if without.iter().any(|held| name_key(&held.piece) == name_key(&piece)) {
+                continue;
+            }
+            self.say(Event::Warning { message: format!("{name} is cut without {piece}: {answer}: cozy project render {piece} --on {on}"), name: None });
+            without.push(folder::Without { piece, why, absent: false });
+        }
     }
 
     /// A file at `at`, where a film goes, that is no version of `asset`: someone made it there. It is kept beside it, and said.
@@ -2668,8 +2685,7 @@ impl Walk {
     }
 
     /// Each of `pieces` not on this computer, or whose bytes aren't its hash, fetched: from the machine that keeps it while that lives, else
-    /// the Hub. What can't be had, warned of with what to run, is what the cut goes without. One whose bytes changed that ffprobe can't read
-    /// fails it, with ffprobe's answer.
+    /// the Hub. What can't be had, warned of with what to run, is what the cut goes without; one whose bytes changed says what ffprobe says of it.
     async fn bring_pieces(&self, asset: &format::Asset, pieces: &[tools::Piece], lock: &Lock, target: &Target, ffprobe: &FsPath, on: &str) -> Result<Vec<folder::Without>, Error> {
         let (mut without, mut seen) = (vec![], BTreeSet::new());
         for piece in pieces.iter().filter(|piece| seen.insert(name_key(&piece.asset))) {
@@ -2688,11 +2704,9 @@ impl Walk {
                 false => self.host.pull_one(&self.project, &target.hub, file.clone()).await,
             };
             let Err(reason) = brought else { continue };
-            if let Some(answer) = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten() {
-                return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: {answer}: the film that stands stays", asset.name, piece.asset)).next("cozy project status"));
-            }
+            let answer = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten().map_or(String::new(), |answer| format!(" ({answer})"));
             let piece = piece.asset.clone();
-            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)), name: None });
+            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}{answer}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)), name: None });
             without.push(folder::Without { piece, why: why.into(), absent: !here });
         }
         Ok(without)
