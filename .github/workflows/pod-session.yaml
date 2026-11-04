@@ -64,6 +64,7 @@ jobs:
             release-gate/ref
             release-gate/suites/tensord
             e2e/capabilities
+            e2e/cli/project/boxed
           path: creator
       - uses: actions/checkout@v5
         if: inputs.packages_refs != ''
