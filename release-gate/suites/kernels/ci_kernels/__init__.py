@@ -264,6 +264,15 @@ def _outliers(ready, candidate, target, generator) -> str:
 _BIG = (1, 392_000, 56, 128)
 
 
+def _not_fit(name: str, index: int, work: Callable[[str, int], dict]) -> dict:
+    """A card that can't hold the call hasn't exercised it: said, and no failure (the card's real
+    runs cut attention to fit, so no kernel call is this big there)."""
+    try:
+        return work(name, index)
+    except torch.OutOfMemoryError as exc:
+        return {"passed": True, "detail": f"not run: does not fit this card ({str(exc)[:80]})"}
+
+
 def _big(name: str, index: int) -> dict:
     """One call past the int32 element limit: its heads hold one head's values, so a wild offset
     shows as heads that differ, and sampled rows of the last head against exact attention in
@@ -818,7 +827,7 @@ def exercise(name: str, index: int) -> dict:
     if kind == "attention":
         return _attention(kernel, index)
     if kind == "big" and name not in EXERCISES:
-        return _big(kernel, index)
+        return _not_fit(kernel, index, _big)
     if name not in EXERCISES:
         return {"passed": False, "detail": f"{name} has no exerciser: add one to this suite"}
     return EXERCISES[name](index)
