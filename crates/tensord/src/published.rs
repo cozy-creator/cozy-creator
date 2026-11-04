@@ -1007,8 +1007,10 @@ impl Publisher {
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,
         // and with them what only they held.
+        let unsettled = service.engine.with_journal(|j| j.unsettled_generations()).map_err(io_failure)?;
         let earlier = |i: &Installation| {
             i.package == installed.package && i.release == installed.release && i.hub == installed.hub && i.alias != installed.alias
+                && !unsettled.contains(&i.generation)
         };
         match service.uninstall(actor, earlier) {
             Ok((gone, bytes, _)) if !gone.is_empty() => tracing::info!(

@@ -609,6 +609,17 @@ impl Journal {
              WHERE state NOT IN ('completed','failed','canceled')",
         )
     }
+    /// Every generation a run still needs its installation for: an unfinished run's, and a finished
+    /// one's whose outcome has not been read, since it is made at its first read from that
+    /// installation's interface. Taken away first, the read fails for good (cl-773).
+    pub fn unsettled_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+        self.generations(
+            "SELECT json_extract(invocation,'$.generation') FROM executions
+             WHERE state NOT IN ('completed','failed','canceled')
+                OR (COALESCE(json_extract(invocation,'$.parent'),'')=''
+                    AND id NOT IN (SELECT execution FROM public_terminals))",
+        )
+    }
     fn generations(&self, query: &str) -> io::Result<std::collections::HashSet<String>> {
         let mut statement = self.connection.prepare(query).map_err(db_error)?;
         let rows = statement

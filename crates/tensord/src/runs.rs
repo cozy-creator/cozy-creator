@@ -1144,13 +1144,13 @@ impl Runs {
     /// ones, whose executors end and environments' records leave. One an unfinished run names
     /// stays until a later install finds it idle.
     fn supersede(&self, actor: &str, current: &Installation) -> Result<(), Refused> {
-        let running = self.service.engine.with_journal(|j| j.running_generations())?;
+        let unsettled = self.service.engine.with_journal(|j| j.unsettled_generations())?;
         let preparing = self.local.preparing();
         self.service.uninstall(actor, |prior| {
             prior.package == current.package
                 && prior.alias != current.alias
                 && prior.alias.starts_with("local-")
-                && !running.contains(&prior.generation)
+                && !unsettled.contains(&prior.generation)
                 && !preparing.contains(&prior.generation)
         })?;
         Ok(())
