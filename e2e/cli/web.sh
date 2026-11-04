@@ -2,8 +2,8 @@
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
-# `kill -9` of Calcifer (web/reconnect.js), and the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js).
+# `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
+# models (web/drawers.js), and any project as a live graph (web/see.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -53,14 +53,19 @@ local restart=''
 web_proof reconnect "$chrome" "$pw" "$restart"
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
+step "web-see: a real project as a live graph: elements, edges, a landed take with no reload, a kept failure, 300 elements measured"
+local no_hub=''
+[ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" 'COZY_HUB_URL=http://127.0.0.1:9 ')
+NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
+jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
-# reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer.
+# reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. $2 goes before that verb.
 web_restart() {
   local kill="kill -9 \$(jq -r .pid < '$1')"
   [ "${RUNNER_OS:-}" != Windows ] || kill="taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"
-  echo "$kill; sleep 1; '$COZY' machine ls > /dev/null 2>&1"
+  echo "$kill; sleep 1; ${2:-}'$COZY' machine ls > /dev/null 2>&1"
 }
 
 # A fresh sign-in link in $link, or a failed check.
