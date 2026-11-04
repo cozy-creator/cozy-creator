@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "platform-signal"
-version = "0.18.5"
+version = "0.19.1"
 dependencies = [
  "rustix",
  "windows-sys 0.61.2",
@@ -4467,14 +4467,14 @@ dependencies = [
 
 [[package]]
 name = "varena-ledger"
-version = "0.18.5"
+version = "0.19.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "varena-ledger-cells"
-version = "0.18.5"
+version = "0.19.1"
 dependencies = [
  "libc",
  "varena-ledger",
