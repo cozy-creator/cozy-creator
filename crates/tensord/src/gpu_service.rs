@@ -2227,14 +2227,20 @@ impl Pool {
     /// Whether `held` imports, as a warm install asks once it holds the code: its import-only
     /// parent's first import, waited for. Its refusal's code and line; None where nothing imports
     /// ahead for it (no fork, it binds no model, the host has no room): its first call says then.
-    pub fn import_verdict(self: &Arc<Self>, held: &HeldGeneration) -> Option<(&'static str, String)> {
+    pub fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
-        parent.wait_started();
-        let reason = match &*parent.state.lock().unwrap() {
-            ZygoteState::Failed(reason) => reason.clone(),
-            _ => return None,
-        };
+        // Package code runs here, and may not end: the install's cancel still does.
+        let mut state = parent.state.lock().unwrap();
+        while matches!(*state, ZygoteState::Starting) {
+            if stop.is_cancelled() {
+                return None;
+            }
+            state = parent.changed.wait_timeout(state, std::time::Duration::from_millis(250)).unwrap().0;
+        }
+        let ZygoteState::Failed(reason) = &*state else { return None };
+        let reason = reason.clone();
+        drop(state);
         let (code, detail) = reason.strip_prefix("import-only start refused: ")?.split_once(": ")?;
         let code = ["import_failed", "missing_dependency"].into_iter().find(|known| *known == code)?;
         let refusal = Refused { code: code.into(), detail: detail.into() };

@@ -799,7 +799,10 @@ impl Runs {
         if spec.warm {
             // A package that does not import says so now, not at its first call. When its environment
             // already knows why (a floor its development Runtime missed), nothing else can come of it.
-            if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation)) {
+            if install_only && self.service.gpu().is_some() {
+                observe("importing it", 0, 0);
+            }
+            if let Some((code, said)) = self.service.gpu().filter(|_| install_only).and_then(|gpu| gpu.import_verdict(&generation, &stoppable.stop)) {
                 if !generation.record.floors_missed.is_empty() {
                     return Err(refused(code, said));
                 }

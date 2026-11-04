@@ -1135,7 +1135,7 @@ impl Publisher {
             .map_err(|e| match stop.is_cancelled() {
                 true => canceled(),
                 // Named by its file: a plan's URL is presigned, its query a credential.
-                false => ("package_file_download_failed", format!("{}: {}", file.name, e.to_string().replace(&file.url, &file.name))),
+                false => (refused("package_file_download_failed", e.clone()).0, format!("{}: {}", file.name, e.to_string().replace(&file.url, &file.name))),
             })?;
         let path = wheels.join(&file.name);
         fs::hard_link(&blob, &path)
