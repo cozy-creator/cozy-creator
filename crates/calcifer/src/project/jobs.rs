@@ -97,7 +97,13 @@ impl Jobs {
 
     /// The board of a render another machine holds, as it draws it: nothing here walks it.
     pub fn mirror(&self, board: Board) {
-        self.board.send_replace(board);
+        self.board.send_if_modified(|held| {
+            let newer = board.seq >= held.seq && *held != board;
+            if newer {
+                *held = board;
+            }
+            newer
+        });
     }
 
     /// One job of that board, as it changed: a client keeping the board hears it as its job.

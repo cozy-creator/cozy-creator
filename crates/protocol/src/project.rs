@@ -1099,6 +1099,9 @@ pub struct Holding {
     /// Its walk owes something.
     #[serde(default)]
     pub busy: bool,
+    /// Its render going, or its last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<Board>,
 }
 
 /// A file by its path in a project, and its hash. `machine`: one of its machines keeps it, not its folder.

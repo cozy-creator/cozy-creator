@@ -28,7 +28,7 @@ use protocol::{
     calcifer::{Machine, NewMachine, On},
     error::{Envelope, Error, Kind},
     machine::{HELD, missing, parse_held},
-    project::{Asked, Event, HeldBy, HeldFile, Holding, Runs, Take, Taken},
+    project::{Asked, Board, Event, HeldBy, HeldFile, Holding, JobState, Rendered, Runs, Take, Taken},
 };
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
@@ -127,7 +127,7 @@ pub(super) async fn taken(State(api): State<Arc<Api>>, Path(id): Path<String>) -
         })
         .collect();
     let busy = *project.walking.lock().expect("walking lock");
-    Ok(Json(Holding { etag: yaml_etag(&yaml), yaml, lock: lock.written(), files, busy }))
+    Ok(Json(Holding { etag: yaml_etag(&yaml), yaml, lock: lock.written(), files, busy, board: super::board_of(&project) }))
 }
 
 /// The asset names a text holds, by key.
@@ -205,7 +205,12 @@ pub(super) async fn render(api: &Arc<Api>, project: &Arc<Project>, asked: &Runs,
         (None, Some(first)) if !*project.walking.lock().expect("walking lock") => first.clone(),
         _ => return Ok(None),
     };
-    let machine = api.machines.linked(&machine).map_err(Refusal)?.0.name;
+    // A rental still booting takes it: the watcher hands it over once it answers.
+    let row = api.machines.here(&machine).map_err(Refusal)?.ok_or_else(|| Refusal(crate::machines::not_found(&machine)))?;
+    if row.state == protocol::calcifer::MachineState::Ended {
+        return Err(Refusal(Error::new(Kind::Conflict, "machine_ended", format!("{} has ended", row.name)).next("cozy machine ls")));
+    }
+    let machine = row.name;
     Doc::load(&project.folder).map_err(Refusal)?;
     let mut on = vec![];
     for named in &asked.on {
@@ -351,6 +356,9 @@ async fn step(api: &Arc<Api>, project: &Arc<Project>, held: &Held) -> Result<Nex
     };
     if let Some(holding) = &holding {
         project.heard.store(now_ms(), Ordering::Relaxed);
+        if let Some(board) = holding.board.clone() {
+            mirrored(api, project, &row.name, Event::Board { board });
+        }
         take_in(folder, &row.name, holding)?;
         project.jobs.held(held_by(api, project));
         if holding.yaml != held.base {
@@ -641,10 +649,26 @@ async fn release(api: &Arc<Api>, project: &Project, error: Option<Error>) {
     let ended = match (error, ended) {
         (Some(error), _) => Event::Ended { error: Some(error), rendered: None },
         (None, Some(ended)) => ended,
-        (None, None) => Event::Ended { error: None, rendered: None },
+        (None, None) => ended_of(&project.jobs.board()),
     };
     let _ = project.events.send(ended);
     crate::events::project_changed(&project.folder.dir);
+}
+
+/// A render's end as its last board says it, when the holder's own word of it never came here.
+fn ended_of(board: &Board) -> Event {
+    let done = |noun: &str| board.jobs.iter().filter(|job| job.state == JobState::Done && job.noun == noun && job.number.is_some()).count() as u32;
+    let rendered = Rendered { takes: done("take"), versions: done("version"), elapsed_ms: board.elapsed_ms.unwrap_or_default(), execution_ms: 0 };
+    let failed: Vec<&Error> = board.jobs.iter().filter(|job| job.state == JobState::Failed).filter_map(|job| job.error.as_ref()).collect();
+    let error = match failed.as_slice() {
+        [] => None,
+        [one] => Some((*one).clone()),
+        [first, ..] => {
+            let said = format!("rendered {} of {}; {} failed: {}", rendered.takes + rendered.versions, board.jobs.len(), failed.len(), first.message);
+            Some(Error::new(first.kind, "render_incomplete", said).cause(first.code.clone()))
+        }
+    };
+    Event::Ended { error, rendered: Some(rendered).filter(|rendered| rendered.takes + rendered.versions > 0) }
 }
 
 /// The holder's events for this project, drawn here as this project's: its board, each job, what it says. Its end is kept until what it
