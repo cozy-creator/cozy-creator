@@ -48,7 +48,8 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const asset = view.asset!
   const shown = shownOf(view)
   const versions = asset.prefixes ?? []
-  if (!asset.tool && versions.length < 2) return null
+  const adds = asset.tool && faceOf(view) !== "edit"
+  if ((!asset.tool && versions.length < 2) || (!adds && !versions.length && !asset.making?.length)) return null
   const takeOut = (event: DragEvent, version: (typeof versions)[number]) => {
     const description = store.valueOf(name, "description")
     const file = { sha256: version.main?.sha256, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }
@@ -81,7 +82,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
           {view.run?.number === run && view.run.progress?.done_fraction !== undefined ? `${Math.round(view.run.progress.done_fraction * 100)}%` : "…"}
         </span>
       ))}
-      {asset.tool && (
+      {adds && (
         <button type="button" className="take add" aria-label={`New ${asset.noun}`} title={`New ${asset.noun}`} onClick={() => void store.run(name)}>
           +
         </button>
@@ -475,8 +476,8 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
             </div>
           )}
           {!editing && <Bar view={view} name={name} />}
-          {asset && !view.placing && <Description name={name} view={view} />}
           {editing && <AssetEdit name={name} view={view} />}
+          {asset && !view.placing && <Description name={name} view={view} />}
           {view.warned && warned ? (
             <div className="warned-lines">
               {view.warnings!.map((warning) => (

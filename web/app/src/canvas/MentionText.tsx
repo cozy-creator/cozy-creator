@@ -74,7 +74,8 @@ export function MentionText({
   // biome-ignore lint/correctness/useExhaustiveDependencies: names tells it a chip may have come or gone
   useLayoutEffect(() => {
     const el = box.current
-    if (!el || (document.activeElement === el && read(el) === value)) return
+    // What ends a text is its file's to say: what's typed, and the caret in it, stand.
+    if (!el || (document.activeElement === el && read(el).trimEnd() === value.trimEnd())) return
     const nodes = withMentions(value).map((part) => {
       const inner = part.text.slice(1, -1)
       if (part.mention && missing.includes(inner)) return chip(inner, true)
@@ -82,7 +83,11 @@ export function MentionText({
       return document.createTextNode(part.text)
     })
     const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}\u0000` : node.textContent), "")
-    if (merged([...el.childNodes]) !== merged(nodes)) el.replaceChildren(...nodes)
+    const trimmed = (said: string) => said.replace(/\s+$/, "")
+    if (trimmed(merged([...el.childNodes])) === trimmed(merged(nodes))) return
+    el.replaceChildren(...nodes)
+    // What it pointed into is gone: a name dropped now goes at the end.
+    caret.current = null
   }, [value, missing, store, names])
 
   const emit = useCallback(() => {

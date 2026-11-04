@@ -53,8 +53,9 @@ function linesOf(text, name) {
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   page.on('response', (answer) => {
-    if (answer.status() < 400) return;
     const url = new URL(answer.url());
+    // HEAD on a file asks whether it's held, and no is an answer: what then doesn't get sent shows on a PUT or at the import.
+    if (answer.status() < 400 || (answer.request().method() === 'HEAD' && url.pathname.startsWith('/v1/files/'))) return;
     const refusal = { status: answer.status(), url: url.pathname, during };
     refused.push(refusal);
     answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
@@ -76,7 +77,7 @@ function linesOf(text, name) {
   seen.ran = local;
 
   await page.goto(`${base}/#/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-nodes-${Date.now()}`);
+  await page.fill('input[aria-label="New project\'s name"]', `web-assets-${Date.now()}`);
   await page.click('form button[type=submit]');
   await page.waitForURL(/#\/projects\/[^/]+$/);
   const id = page.url().match(/#\/projects\/([^/]+)/)[1];
@@ -164,7 +165,7 @@ function linesOf(text, name) {
     await until(`named ${name}`, () => of(name), Boolean);
     return fresh;
   };
-  let tool = 'nodes-no-such-package';
+  let tool = 'no-such-package-here';
   if (local) {
     await fromTheList.waitFor({ timeout: FIRST_RUN_MS });
     const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
@@ -252,7 +253,7 @@ function linesOf(text, name) {
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
   // Controls from what it holds: a slider, a toggle, a shape, beats. Each writes one field and moves nothing else.
-  replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    kind: video\n    summary: |\n      <source-b> walks.\n    render: {with: nodes-no-such-package, aspect_ratio: "3:2", megapixels: 1, turbo: true}  # how\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
+  replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    kind: video\n    summary: |\n      <source-b> walks.\n    render: {with: no-such-package-here, aspect_ratio: "3:2", megapixels: 1, turbo: true}  # how\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
@@ -534,9 +535,12 @@ function linesOf(text, name) {
   const hashes = [...yaml().matchAll(/(?:image|video): "?([0-9a-f]{12})/g)].map((m) => m[1]);
   const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((node) => node.title + node.ariaLabel).join(' '));
   check('hash_not_shown', hashes.every((hash) => !shown.includes(hash)), hashes.filter((hash) => shown.includes(hash)));
-  check('no_word_says_node', !/\bnodes?\b/i.test(shown), shown.match(/.{30}\bnodes?\b.{30}/i)?.[0]);
+  check('no_word_says_node', !/\bnodes?\b/i.test(shown), shown.match(/[\s\S]{0,40}\bnodes?\b[\s\S]{0,40}/i)?.[0]);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
+  // Only the conflict it asked for: anything else a project's route refused is a fault, however the page took it.
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')));
+  check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();

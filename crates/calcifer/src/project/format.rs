@@ -617,6 +617,7 @@ impl Doc {
             let timeline = Timeline { tracks: vec![Track { clips: super::tools::clips_of(&pieces) }] };
             flat.insert("timeline".to_owned(), serde_json::to_value(timeline).expect("clips serialize"));
         }
+        flat.values_mut().for_each(end_trimmed);
         flat
     }
 
@@ -992,6 +993,16 @@ fn said_in(value: &Value, place: String, found: &mut Vec<(String, String)>) {
 }
 
 /// What passes to the adapter.
+/// Each text under `value` with nothing after its last word: a `|` text's last newline is the file's, not anyone's words.
+fn end_trimmed(value: &mut Value) {
+    match value {
+        Value::String(text) => text.truncate(text.trim_end().len()),
+        Value::Array(items) => items.iter_mut().for_each(end_trimmed),
+        Value::Object(fields) => fields.values_mut().for_each(end_trimmed),
+        _ => {}
+    }
+}
+
 fn fields_of(body: &Map<String, Value>) -> Map<String, Value> {
     (body.iter())
         .filter(|(field, value)| !RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty()))

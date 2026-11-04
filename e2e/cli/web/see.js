@@ -114,8 +114,8 @@ function summary(frames) {
     tab.on('console', (m) => { if (m.type() === 'error' && !/net::ERR_/.test(m.text())) errors.push(`console: ${m.text()} ${shownUrl(m.location().url)}`); });
     tab.on('response', (answer) => {
       const url = new URL(answer.url());
-      // Whatever Calcifer refused, and in its words: its console line says only the status.
-      if (answer.status() >= 400) {
+      // Whatever Calcifer refused, and in its words: its console line says only the status. HEAD asks whether a file is held, and no is an answer.
+      if (answer.status() >= 400 && answer.request().method() !== 'HEAD') {
         const refusal = { status: answer.status(), url: shownUrl(url.pathname + url.search), during };
         refused.push(refusal);
         answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
@@ -349,8 +349,8 @@ entities:
   const older = await asset('older_art');
   const olderAt = join(folder, older.path);
   renameSync(olderAt, `${olderAt}.away`);
-  const away = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
-  check('wire_absent_per_file', Object.values(away.files).every((file) => file.absent === true) && (await state()).absent > 0, away.files);
+  const absent = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
+  check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
   await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
   await open(page, 'older_art');
   check('pull_offered', (await element(page, 'older_art').locator('.status .act').textContent()) === 'Pull');
@@ -376,7 +376,7 @@ entities:
     const versions = async () => (await asset('card')).prefixes?.length ?? 0;
     const take = async (count) => {
       await open(page, 'card');
-      await card.locator('.take.add').click();
+      await card.locator('button[aria-label=Render]').click();
       await until(`version ${count}`, versions, (n) => n === count, FIRST_RUN_MS);
     };
     await take(1);
@@ -448,7 +448,7 @@ entities:
     const bigState = await api(`/v1/projects/${made.id}`);
     const read_ms = Date.now() - began;
     check('scale_state', bigState.assets.length === COUNT, bigState.assets?.length);
-    const open = async (zoom, x) => {
+    const openTab = async (zoom, x) => {
       const tab = await context.newPage();
       watch(tab);
       tab.setDefaultTimeout(STEP_MS);
@@ -465,7 +465,7 @@ entities:
     const onScreen = (tab) => tab.evaluate(() => ({ cards: document.querySelectorAll('.react-flow__node').length, edges: document.querySelectorAll('.react-flow__edge').length }));
     seen.scale = { elements: COUNT, read_ms };
 
-    let tab = await open(0.7, 40);
+    let tab = await openTab(0.7, 40);
     const near = await panning(tab, 3000);
     seen.scale.pan_70 = { ...(await onScreen(tab)), fewest_cards: near.fewest, ...summary(near.frames) };
     check('scale_near_panned', near.places > 10, near.places);
@@ -473,14 +473,14 @@ entities:
 
     // At 11% the 18 columns are about 630 px of this 1800 px window. From here its pan, 480 px left and back, keeps them all on screen,
     // so every frame measured draws all 300.
-    tab = await open(0.11, 800);
+    tab = await openTab(0.11, 800);
     const far = await panning(tab, 3000);
     seen.scale.pan_11 = { ...(await onScreen(tab)), fewest_cards: far.fewest, ...summary(far.frames) };
     check('scale_far_panned', far.places > 10, far.places);
     check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
     await tab.close();
 
-    tab = await open(0.7, 40);
+    tab = await openTab(0.7, 40);
     const name = element(tab, 'n39').locator('.nm');
     const box = await name.boundingBox();
     let frames;

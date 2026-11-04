@@ -64,6 +64,8 @@ export interface ElementView {
   sent?: Record<string, unknown>
   /** The `etag` the drafts began from, moved along by writes of its own. */
   base?: string
+  /** The `etag` its own last write left, until a read catches up: what a new draft begins from. */
+  known?: string
   /** The file moved under the drafts. */
   conflict?: boolean
   /** Its render waits for a machine, and what it keeps. */
@@ -159,8 +161,10 @@ export class CanvasStore {
   private dragFrom = new Map<string, { x: number; y: number }>()
   /** On its way out: a read from before that doesn't bring it back. */
   private deleting = new Set<string>()
-  /** Each save of a node goes after the last. */
+  /** Each save of an asset goes after the last. */
   private saving = new Map<string, Promise<boolean>>()
+  /** The etags an asset's own writes left, since a read last caught up. */
+  private own = new Map<string, Set<string>>()
   /** Names about to land: what was dropped here, and nothing a read found. */
   private landings = new Set<string>()
   /** A position of ours that the stream hasn't echoed: it wins until then. */
@@ -335,8 +339,12 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) change.slid = newest
-          // Read back: what was sent is what it holds, or someone wrote since.
-          if (asset.etag !== view.asset?.etag) Object.assign(change, { sent: undefined, ...(view.drafts ? {} : { base: undefined }) })
+          // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
+          const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
+          if (asset.etag !== view.asset?.etag && !between) {
+            Object.assign(change, { sent: undefined, known: undefined, ...(view.drafts ? {} : { base: undefined }) })
+            this.own.delete(asset.name)
+          }
           // Pinned where it was being looked: there's nothing left to look at.
           if (view.viewed !== undefined && (view.viewed === asset.version || !asset.prefixes?.some((held) => held.number === view.viewed))) change.viewed = undefined
         }
@@ -620,7 +628,7 @@ export class CanvasStore {
   /** Typed, and not saved: a walk going reads the file, so a save is explicit, or on leaving the text. */
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
-    if (view) this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.asset?.etag })
+    if (view) this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag })
   }
 
   /** Writes what's typed. Whether it stands: a refusal leaves it typed. */
@@ -655,7 +663,8 @@ export class CanvasStore {
   /** A write of its own moves what the drafts began from; anyone else's doesn't, so that still conflicts. */
   private wrote(key: string, answer: AssetPatched) {
     const view = this.views.get(key)
-    if (view && view.base === answer.was) this.patch(key, { base: answer.etag })
+    if (view) this.patch(key, { known: answer.etag, ...(view.base === answer.was ? { base: answer.etag } : {}) })
+    this.own.set(key, (this.own.get(key) ?? new Set()).add(answer.etag))
     for (const warning of answer.warnings ?? []) say(warning)
   }
 
