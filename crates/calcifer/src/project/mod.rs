@@ -1594,6 +1594,12 @@ impl Walk {
                     let message = format!("{}; attempt {}/{} in {wait} s", e.message, attempt + 2, WAITS.len() + 1);
                     self.say(Event::Warning { message });
                     tokio::time::sleep(std::time::Duration::from_secs(*wait)).await;
+        self.again(|| self.host.submit(key, run.clone())).await
+    }
+
+    /// `ask`, and again while its machine answers no connect or the Hub doesn't answer, each attempt said. Everything asked this way
+    /// is a read, or goes under a key.
+    async fn again<T, F: Future<Output = Result<T, Error>>>(&self, ask: impl Fn() -> F) -> Result<T, Error> {
                 }
                 answer => return answer,
             }
@@ -1827,7 +1833,8 @@ impl Walk {
                     return Err(cannot(&name, format!("{} of {} is not on this computer: cozy project pull", gone.join(", "), read.name)));
                 }
             }
-            let package = self.host.package(&target.hub, &doc.target(i), &self.folder().dir, &target.on).await?;
+            let with = doc.target(i);
+            let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on)).await?;
             if let Some(moved) = &package.moved {
                 self.say(Event::Warning { message: moved.clone() });
             }
@@ -1982,7 +1989,7 @@ impl Walk {
         let (source, inputs) = match &adapter.local {
             None => (v1::Source::Release(v1::Release { package: adapter.package.clone(), release: adapter.release.clone() }), vec![]),
             Some(path) => {
-                let prepared = self.host.ready(path, &placed, hub).await?;
+                let prepared = self.again(|| self.host.ready(path, &placed, hub)).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };
@@ -2085,12 +2092,12 @@ impl Walk {
         let source = match &renderer.local {
             None => {
                 if let On::Machine(machine) = &placed {
-                    self.host.release_ready(machine, &renderer.package, &renderer.release, &hub).await.map_err(named)?;
+                    self.again(|| self.host.release_ready(machine, &renderer.package, &renderer.release, &hub)).await.map_err(named)?;
                 }
                 v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() })
             }
             Some(path) => {
-                let prepared = self.host.ready(path, &placed, &hub).await.map_err(named)?;
+                let prepared = self.again(|| self.host.ready(path, &placed, &hub)).await.map_err(named)?;
                 staged.extend(prepared.files);
                 v1::Source::Local(prepared.source)
             }
@@ -2234,7 +2241,8 @@ impl Walk {
             let mut done = pending.done.clone();
             done.push(saved);
             next.input = earlier(next.input, &done).map_err(|why| cannot(&name, why))?;
-            let package = self.host.package(&pending.target.hub, &doc.target(i), &folder.dir, &pending.target.on).await?;
+            let with = doc.target(i);
+            let package = self.again(|| self.host.package(&pending.target.hub, &with, &folder.dir, &pending.target.on)).await?;
             let carried = Pending { version, rest, done, run: 0, ..pending.clone() };
             let settle = |lock: &mut Lock| drop(lock.pending.remove(key));
             return self.submit(&new_key(), next, &package, &doc.assets[i], carried, &settle).await;

@@ -595,7 +595,7 @@ impl Machines {
         let mut pause = Duration::ZERO;
         loop {
             let listed = match self.hubs.client(&ask.hub) {
-                Ok(client) => within(client.list_rentals("live")).await.map_err(|e| hub_refusal(&ask.hub, e)),
+                Ok(client) => within("listing rentals", client.list_rentals("live")).await.map_err(|e| hub_refusal(&ask.hub, e)),
                 Err(e) => Err(e),
             };
             match listed {
@@ -694,7 +694,7 @@ impl Machines {
     async fn ask_once(&self, ask: &Ask) -> Result<types::Rental, Error> {
         let client = self.hubs.client(&ask.hub)?;
         let request = RentBody::of(ask)?.request;
-        within(client.create_rental(&ask.key, &request)).await.map_err(|e| hub_refusal(&ask.hub, e))
+        within("ordering a rental", client.create_rental(&ask.key, &request)).await.map_err(|e| hub_refusal(&ask.hub, e))
     }
 
     /// Rents a machine for an unplaced run (`--on new[:<sku>]`) under a key the run names, so a
@@ -1095,7 +1095,7 @@ impl Machines {
                 return;
             }
         };
-        let rentals = match within(client.list_rentals("live")).await {
+        let rentals = match within("listing rentals", client.list_rentals("live")).await {
             Ok(listing) => listing.rentals,
             Err(e) => {
                 let error = hub_refusal(origin, e);
@@ -1302,7 +1302,7 @@ impl Machines {
                 Err(e) => return settle(Err(e.message)),
             };
             if !released {
-                let release = within(client.release_rental(&id)).await;
+                let release = within("releasing a rental", client.release_rental(&id)).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     Ok(_) => released = true,
                     Err(e) if e.kind == Kind::NotFound => {
@@ -1320,7 +1320,7 @@ impl Machines {
                 }
             }
             if released {
-                match within(client.get_rental(&id)).await {
+                match within("reading a rental", client.get_rental(&id)).await {
                     Ok(rental) => {
                         let gone_now = gone(&rental.state).then(|| cause(&rental));
                         self.hubs.seen(&ask.hub, rental);
@@ -1349,7 +1349,7 @@ impl Hubs {
     /// One rental as its Hub says it now.
     async fn read(&self, origin: &str, id: &str) -> Result<types::Rental, Error> {
         let client = self.client(origin)?;
-        let rental = within(client.get_rental(id)).await.map_err(|e| hub_refusal(origin, e))?;
+        let rental = within("reading a rental", client.get_rental(id)).await.map_err(|e| hub_refusal(origin, e))?;
         self.seen(origin, rental.clone());
         Ok(rental)
     }
@@ -1499,11 +1499,15 @@ const HUB_ANSWER: Duration = Duration::from_secs(30);
 /// `call`, unanswered as the Hub being unreachable once [`HUB_ANSWER`] has passed: a Hub that takes a
 /// request and never answers holds no loop, and a call asked again under its key is the same call.
 async fn within<T>(
+    what: &str,
     call: impl Future<Output = Result<T, hub_client::Error>>,
 ) -> Result<T, hub_client::Error> {
     match tokio::time::timeout(HUB_ANSWER, call).await {
         Ok(answer) => answer,
-        Err(_) => Err(hub_client::Error::Call(format!("no answer in {} s", HUB_ANSWER.as_secs()))),
+        Err(_) => {
+            warn!(call = what, "the Hub gave no answer in {} s", HUB_ANSWER.as_secs());
+            Err(hub_client::Error::Call(format!("{what}: no answer in {} s", HUB_ANSWER.as_secs())))
+        }
     }
 }
 
