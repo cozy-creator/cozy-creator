@@ -5,7 +5,7 @@ import { TRIES } from "../api/client"
 import { projectQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { RunsLink } from "../panels/runs/RunsLink"
-import { Notes } from "../ui/Notes"
+import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
 import { useConnection } from "./Connection"
 

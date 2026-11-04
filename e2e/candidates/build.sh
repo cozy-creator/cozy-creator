@@ -51,7 +51,8 @@ if [ -n "${REUSE:-}" ]; then
 elif [ "$what" = cozy ]; then
   # The dev build `cozy machine update --tensord` takes, dev-build.yaml's stamp.
   (cd "$src"
-    [ ! -f web/build.sh ] || bash web/build.sh
+    # To stderr: this script's stdout is its file, and callers drop it. A page that doesn't build must say why.
+    [ ! -f web/build.sh ] || bash web/build.sh >&2
     cargo fetch --locked
     uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
