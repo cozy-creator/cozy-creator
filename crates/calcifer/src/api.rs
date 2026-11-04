@@ -1,6 +1,6 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, an allowed `Host`, no
-//! foreign `Origin`, then (on the routes Calcifer serves) the bearer, from the `Authorization`
+//! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
+//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer, from the `Authorization`
 //! header or the `cozy_session` cookie `POST /v1/session` sets, and the admission gate a stopping
 //! Calcifer closes. Refusals are `protocol::error::Envelope`s. No CORS header is ever sent.
 use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
@@ -59,8 +59,6 @@ pub struct Api {
     pub(crate) codes: crate::hub::Codes,
     /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
     pub(crate) works: crate::hub::Works,
-    /// The three spellings of this server's own `host:port`.
-    hosts: [String; 3],
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
@@ -72,7 +70,6 @@ impl Api {
     pub fn new(
         calcifer: Arc<Calcifer>,
         machines: Arc<Machines>,
-        port: u16,
         token: &str,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -82,11 +79,6 @@ impl Api {
             releases: Default::default(),
             codes: Default::default(),
             works: Default::default(),
-            hosts: [
-                format!("127.0.0.1:{port}"),
-                format!("localhost:{port}"),
-                format!("[::1]:{port}"),
-            ],
             bearer: Sha256::digest(token).into(),
             stopping: RwLock::new(false),
             stop: watch::channel(false).0,
@@ -176,7 +168,7 @@ pub fn router(api: Arc<Api>) -> Router {
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
-        .layer(middleware::from_fn_with_state(api.clone(), guard))
+        .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(api)
 }
@@ -257,12 +249,11 @@ impl From<BytesRejection> for Refusal {
 /// Loopback peer, `Host`, then `Origin`, on every request. A rebinding page is turned away before
 /// anything asks whether it holds a credential.
 async fn guard(
-    State(api): State<Arc<Api>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
     next: Next,
 ) -> Response {
-    let refused = refusal(&api, &peer, &request);
+    let refused = refusal(&peer, &request);
     let mut response = match refused {
         Some(refusal) => {
             warn!(
@@ -292,7 +283,16 @@ async fn guard(
     response
 }
 
-fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
+/// A loopback name on any port: an SSH `-L` chooses its own. A rebinding page's `Host` is its own name.
+fn on_loopback(host: &str) -> bool {
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|name| {
+        host.strip_prefix(name).is_some_and(|rest| {
+            rest.is_empty() || rest.strip_prefix(':').is_some_and(|port| port.parse::<u16>().is_ok())
+        })
+    })
+}
+
+fn refusal(peer: &SocketAddr, request: &Request) -> Option<Refusal> {
     let header = |name| {
         request
             .headers()
@@ -305,21 +305,18 @@ fn refusal(api: &Api, peer: &SocketAddr, request: &Request) -> Option<Refusal> {
             "not_loopback",
             "Calcifer serves the loopback interface only",
         ))
-    } else if !header(header::HOST).is_some_and(|host| api.hosts.contains(&host)) {
+    } else if !header(header::HOST).is_some_and(|host| on_loopback(&host)) {
         Some(
             refuse(
                 Kind::Forbidden,
                 "host_not_allowed",
                 format!("Host {:?} is not this Calcifer", header(header::HOST)),
             )
-            .remedy("reach it as 127.0.0.1, localhost or [::1] on its own port"),
+            .remedy("reach it as 127.0.0.1, localhost or [::1]"),
         )
     // Checked on every request, mutations and stream opens included; an absent Origin passes.
     } else if let Some(origin) = header(header::ORIGIN)
-        && !api
-            .hosts
-            .iter()
-            .any(|host| origin == format!("http://{host}"))
+        && origin.strip_prefix("http://") != header(header::HOST).as_deref()
     {
         Some(refuse(
             Kind::Forbidden,

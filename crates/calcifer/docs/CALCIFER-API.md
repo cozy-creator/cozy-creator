@@ -7,8 +7,8 @@ offers is one or more of the calls below. Written by hand and changed in the sam
 
 ## Clients and discovery
 
-Calcifer listens on `127.0.0.1` only, on `calcifer.port` from `~/.cozy/config.toml` (0: any free port), and
-publishes a lock record at `~/.cozy/calcifer/calcifer.lock` (owner-only): `{address, token, pid, version,
+Calcifer listens on `127.0.0.1` only: on `calcifer.port` from `~/.cozy/config.toml` and no other if it's set, else
+on 7317 or the next free port, so a page's origin outlives a restart. It publishes a lock record at `~/.cozy/calcifer/calcifer.lock` (owner-only): `{address, token, pid, version,
 started_at_ms}`. A client reads the record for the address and the bearer. The CLI starts Calcifer when none
 answers, and restarts it when it runs another cozy than the installed one.
 
@@ -27,10 +27,9 @@ reads an answer that shows this as a version skew and never shows it as a bare 4
 
 Every request passes, in order:
 1. **Loopback peer** (`not_loopback`).
-2. **`Host`** is one of Calcifer's own `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>`
-   (`host_not_allowed`): a DNS-rebinding page is turned away before anything else.
-3. **`Origin`**, when present, is Calcifer's own `http://<host>` (`origin_not_allowed`). No CORS header is ever
-   sent.
+2. **`Host`** is `127.0.0.1`, `localhost` or `[::1]`, on any port, so an SSH `-L` to another port works
+   (`host_not_allowed`): a DNS-rebinding page's `Host` is its own name, and it's turned away before anything else.
+3. **`Origin`**, when present, is `http://<Host>` (`origin_not_allowed`). No CORS header is ever sent.
 4. **The bearer** (`unauthenticated`), on every route, from either carrier of the one secret:
    - `Authorization: Bearer <token>`, the lock record's token (the CLI);
    - the `cozy_session` cookie, for a browser page, which cannot put a header on a `<video>` or an
