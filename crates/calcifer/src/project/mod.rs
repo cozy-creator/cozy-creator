@@ -39,9 +39,9 @@ use protocol::{
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
-    project::{Asked, 
-        Approve, Approved, Asset as Row, AssetVersions, Cut, Event, File as Listing, Import, Imported, Kept, Known, Open, Opened,
-        Orphan, Projects as Listed, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
+    project::{
+        Approve, Approved, Asked, Asset as Row, AssetVersions, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Kept, Known, Open, Opened,
+        Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         Version as VersionRow, VersionPrefix,
     },
 };
@@ -106,6 +106,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/runs", post(runs))
+        .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
         .route("/v1/projects/{id}/unpin", post(unpin))
         .route("/v1/projects/{id}/rename", post(rename))
@@ -430,7 +431,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings }))
+    let queued = queue(&doc, &stand, &lock).into_iter().map(|(item, _)| item).collect();
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings }))
 }
 
 /// Entity `i` as `GET /v1/projects/{id}` lists it, with its links and sub-entities.
@@ -771,7 +773,7 @@ async fn runs(
         let mut keys = project.keys.lock().expect("keys lock");
         match keys.get(key) {
             Some(seen) if *seen == digest => {
-                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0 })));
+                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0, queued: vec![] })));
             }
             Some(_) => {
                 let said = format!("Idempotency-Key {key} asked another render already");
@@ -871,14 +873,90 @@ async fn runs(
         let on: Vec<String> = going.on.iter().map(On::to_string).collect();
         said(format!("what this render reads, or is already owed, stays on {}, where it began", on.join(", ")));
     }
+    let before = queue(&doc, &stand, &lock);
     (project.folder.update_lock(|lock| {
         lock.walk.target.get_or_insert_with(|| target.clone());
         lock.walk.all |= all;
         lock.walk.takes.extend(takes.iter().cloned());
     }))
     .map_err(Refusal)?;
+    let after = queue(&doc, &stand, &project.folder.lock().map_err(Refusal)?);
+    let queued = (after.iter().enumerate())
+        .filter(|(_, item)| !before.contains(item))
+        .map(|(at, (item, _))| QueuedNow { name: item.name.clone(), ahead: after[..at].iter().map(|(ahead, _)| ahead.name.clone()).collect() })
+        .collect();
     walk(&api, &project);
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, queued })))
+}
+
+/// What the project has to do, in the order it goes: what is running, then each queued take and what the walk owes, each with its
+/// take's key if it is one.
+fn queue(doc: &Doc, stand: &[Standing], lock: &Lock) -> Vec<(Queued, Option<String>)> {
+    let mut items: Vec<(Queued, Option<String>)> = (lock.pending.iter())
+        .map(|(key, pending)| (Queued { name: pending.asset.clone(), running: true, run: (pending.run > 0).then_some(pending.run) }, Some(key.clone())))
+        .collect();
+    let covered = covered(doc, stand, &lock.walk);
+    for &i in &doc.order {
+        let (name, key) = (&doc.assets[i].name, name_key(&doc.assets[i].name));
+        let mine = |pending: &Pending| name_key(&pending.asset) == key;
+        let takes: Vec<&Take> = lock.walk.takes.iter().filter(|take| name_key(&take.asset) == key && !lock.pending.contains_key(&take.key)).collect();
+        items.extend(takes.iter().map(|take| (Queued { name: name.clone(), running: false, run: None }, Some(take.key.clone()))));
+        let owed = covered[i] && stand[i].files.is_none() && doc.makes(i) && doc.tool(i).is_none() && !lock.walk.sent.contains(&key);
+        if takes.is_empty() && owed && !lock.pending.values().any(mine) {
+            items.push((Queued { name: name.clone(), running: false, run: None }, None));
+        }
+    }
+    items
+}
+
+/// `POST /v1/projects/{id}/cancel`: the names' queued work dropped and their runs canceled, as `cozy run cancel` does. `all` is
+/// everything, and what the walk owes for it. What is dropped isn't sent again: what the walk owes beyond its takes is marked sent.
+async fn cancel(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Cancelled>, Refusal> {
+    let asked: Cancel = parse(&body?)?;
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+    let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
+    let mut keys = BTreeSet::new();
+    if !all {
+        for name in &asked.names {
+            match doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
+                Some(i) => keys.extend(doc.linked(i).into_iter().map(|j| name_key(&doc.assets[j].name))),
+                None => drop(keys.insert(name_key(&doc.assets[find(&doc, name).map_err(Refusal)?].name))),
+            }
+        }
+    }
+    let wanted = |name: &str| all || keys.contains(&name_key(name));
+    let stand = doc.stand(&lock);
+    let (mut dropped, mut owed) = (vec![], vec![]);
+    for (item, take) in queue(&doc, &stand, &lock).into_iter().filter(|(item, _)| !item.running && wanted(&item.name)) {
+        if take.is_none() {
+            owed.push(name_key(&item.name));
+        }
+        dropped.push(item.name);
+    }
+    folder
+        .update_lock(|lock| {
+            lock.walk.takes.retain(|take| !wanted(&take.asset));
+            lock.walk.all &= !all;
+            lock.walk.sent.extend(owed.iter().cloned());
+        })
+        .map_err(Refusal)?;
+    let store = api.calcifer.store();
+    let mut canceled = vec![];
+    for pending in lock.pending.values().filter(|pending| pending.run > 0 && wanted(&pending.asset)) {
+        let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
+        if row.state != crate::store::State::Settled {
+            api.calcifer.cancel(&row.id).map_err(|e| Refusal(Error::new(Kind::Internal, "run_cancel", e.to_string())))?;
+            canceled.push(pending.run);
+        }
+    }
+    project.asked.notify_one();
+    Ok(Json(Cancelled { dropped, canceled }))
 }
 
 /// What `--take` and `--in` ask of asset `i`: the take a new one keeps the start of, the one that is its state, else its newest, if
@@ -1536,6 +1614,15 @@ impl Walk {
                     lock.asset_mut(&name, &asset.kind).tried = Some(Tried { inputs: inputs.clone(), seed });
                 }
             };
+            // Canceled while its adapter ran: not sent.
+            let now = self.folder().lock()?;
+            let stands = match &next.take {
+                Some(take) => now.walk.takes.iter().any(|still| still.key == take.key),
+                None => !now.walk.sent.contains(&name_key(&name)),
+            };
+            if !stands {
+                return Ok(());
+            }
             self.submit(&key, first, &package, asset, pending, &mine).await
         };
         let sent = sent.await;
@@ -2018,6 +2105,23 @@ struct Plan {
     tools: Vec<usize>,
 }
 
+/// What a walk covers: everything, for `all`; each take; and through each with no state or with a take, or a tool, what it reads.
+fn covered(doc: &Doc, stand: &[Standing], walk: &folder::Owed) -> Vec<bool> {
+    let key = |i: usize| name_key(&doc.assets[i].name);
+    let taken = |i: usize| walk.takes.iter().any(|take| name_key(&take.asset) == key(i));
+    let mut covered = vec![walk.all; doc.assets.len()];
+    for &i in doc.order.iter().rev() {
+        covered[i] |= taken(i);
+        let tool = doc.tool(i).is_some() && doc.assets[i].pin.is_none();
+        if covered[i] && (stand[i].files.is_none() || taken(i) || tool) {
+            for &read in &doc.upstream[i] {
+                covered[read] = true;
+            }
+        }
+    }
+    covered
+}
+
 /// What can be sent now, in file order: what the walk covers with no state, and each take, once all it reads is settled and has a
 /// state. What a walk covers: everything, for `all`; each take; and through each with no state or with a take, what it reads. A
 /// tool has no state until made, whether asked or not, once what it reads has settled.
@@ -2025,18 +2129,7 @@ fn plan(doc: &Doc, stand: &[Standing], lock: &Lock) -> Plan {
     let walk = &lock.walk;
     let key = |i: usize| name_key(&doc.assets[i].name);
     let takes = |i: usize| walk.takes.iter().filter(move |take| name_key(&take.asset) == key(i));
-    let mut covered = vec![walk.all; doc.assets.len()];
-    for &i in doc.order.iter().rev() {
-        if takes(i).next().is_some() {
-            covered[i] = true;
-        }
-        let tool = doc.tool(i).is_some() && doc.assets[i].pin.is_none();
-        if covered[i] && (stand[i].files.is_none() || takes(i).next().is_some() || tool) {
-            for &read in &doc.upstream[i] {
-                covered[read] = true;
-            }
-        }
-    }
+    let covered = covered(doc, stand, walk);
     let mut unsettled = vec![false; doc.assets.len()];
     let (mut send, mut tools) = (vec![], vec![]);
     for &i in &doc.order {

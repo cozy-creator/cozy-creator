@@ -35,6 +35,42 @@ pub struct Asked {
     /// What it added to the walk; 0 with `joined` is no new work.
     #[serde(default)]
     pub added: u32,
+    /// What it added, each with what is ahead of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<QueuedNow>,
+}
+
+/// One thing an ask queued, and the names ahead of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QueuedNow {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<String>,
+}
+
+/// One thing a project has to do: running, with its run's number once it has one, else queued.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Queued {
+    pub name: String,
+    #[serde(default)]
+    pub running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+}
+
+/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cancel {
+    pub names: Vec<String>,
+}
+
+/// What a cancel did: the names dropped from the queue, and the runs asked to stop.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Cancelled {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canceled: Vec<u64>,
 }
 
 /// `GET /v1/projects`: the projects this computer's Calcifer has opened, last used first.
@@ -71,6 +107,9 @@ pub struct State {
     /// Identity and links, no work: they make nothing and hold no version.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<Entity>,
+    /// What is running and what is queued, in the order it goes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue: Vec<Queued>,
     /// Assets with no state and no version yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,

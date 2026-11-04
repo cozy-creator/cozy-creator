@@ -7,7 +7,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -82,6 +82,13 @@ enum Verb {
         /// Its take or version, 1 first, or a hash prefix of any file in the project's `files/`.
         version: String,
     },
+    /// Drop assets' queued work and cancel their runs, or `all`.
+    #[command(after_help = "Examples:\n  cozy project cancel clash\n  cozy project cancel all")]
+    Cancel {
+        /// The assets, or `all`.
+        #[arg(required = true, value_name = "NAME")]
+        names: Vec<String>,
+    },
     /// Take an asset's pin out of project.yaml: its state follows its inputs again.
     #[command(after_help = "Example:\n  cozy project unpin fight")]
     Unpin {
@@ -144,6 +151,9 @@ struct Render {
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
     #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',', default_value = "local")]
     on: Vec<String>,
+    /// Ask and return at once: what it queued and what's ahead of each is printed, and `status` shows how it goes.
+    #[arg(long)]
+    queue: bool,
     /// How many new takes or versions of each asset named: over 1 draws new seeds as --new does.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
@@ -234,6 +244,20 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 if !unpinned.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", unpinned.stale.join(", ")));
                 }
+            }
+        }
+        Verb::Cancel { names } => {
+            let opened = open(ctx, args.path.as_ref(), false).await?;
+            let path = format!("/v1/projects/{}/cancel", opened.id);
+            let cancelled: Cancelled = ctx.calcifer().await?.post(&path, &Cancel { names }, None).await?;
+            if ctx.json {
+                output::json(&cancelled);
+                return Ok(ExitCode::SUCCESS);
+            }
+            cancelled.dropped.iter().for_each(|name| output::say(ctx, &format!("dropped {name} from the queue")));
+            cancelled.canceled.iter().for_each(|run| output::say(ctx, &format!("canceled run {run}")));
+            if cancelled.dropped.is_empty() && cancelled.canceled.is_empty() {
+                output::say(ctx, "nothing of that was queued or running");
             }
         }
         Verb::Reclaim { yes } => {
@@ -396,7 +420,12 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
 async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
-    let mut events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
+    let queued = args.queue;
+    // Opened before the ask, so nothing it sets going is missed.
+    let mut events = match queued {
+        true => None,
+        false => Some(calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?),
+    };
     let on: Vec<On> =
         args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
     let runs = Runs {
@@ -411,6 +440,25 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
     let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
+    let status = format!("cozy project -p {} status", opened.path.display());
+    let Some(events) = events.as_mut() else {
+        if ctx.json {
+            output::json(&asked);
+            return Ok(ExitCode::SUCCESS);
+        }
+        for item in &asked.queued {
+            match item.ahead.as_slice() {
+                [] => output::say(ctx, &format!("queued {}, next", item.name)),
+                ahead => output::say(ctx, &format!("queued {}, after {}", item.name, ahead.join(", "))),
+            }
+        }
+        if asked.queued.is_empty() {
+            output::say(ctx, "nothing to queue: what that names has its state, or is going already");
+        }
+        output::next(ctx, &[&status]);
+        return Ok(ExitCode::SUCCESS);
+    };
+    output::say(ctx, "following the render: Ctrl-C leaves it queued");
     if asked.joined {
         let name = opened.path.file_name().map_or_else(|| opened.path.display().to_string(), |name| name.to_string_lossy().into_owned());
         output::say(ctx, &match asked.added {
@@ -418,7 +466,6 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             _ => format!("a render is already going in {name}: joining it"),
         });
     }
-    let status = format!("cozy project -p {} status", opened.path.display());
     let (mut failed, mut warned) = (std::collections::HashSet::new(), std::collections::HashSet::new());
     // `/events` opens with the runs going, and one that began just then can be told twice.
     let mut followed = std::collections::HashSet::new();
@@ -485,6 +532,18 @@ fn finished(rendered: &Rendered) -> String {
 
 /// Under the table: what is missing, what is out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
+    let (running, queued): (Vec<_>, Vec<_>) = state.queue.iter().partition(|item| item.running);
+    if !running.is_empty() {
+        let shown: Vec<String> = running.iter().map(|item| item.run.map_or_else(|| item.name.clone(), |run| format!("{} (run {run})", item.name))).collect();
+        output::say(ctx, &format!("running: {}", shown.join(", ")));
+    }
+    if !queued.is_empty() {
+        let shown: Vec<&str> = queued.iter().map(|item| item.name.as_str()).collect();
+        output::say(ctx, &format!("queued: {}", shown.join(", ")));
+    }
+    if !state.queue.is_empty() && !state.busy {
+        output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");
+    }
     for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
         let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}", asset.noun, made.number, made.prefix)).collect();
         output::say(ctx, &format!("{}: {}", asset.name, made.join(", ")));

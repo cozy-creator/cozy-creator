@@ -67,6 +67,7 @@ project_runs
 entities
 orphans
 joining
+queueing
 keeps
 written
 adapters
@@ -655,6 +656,65 @@ done
 wait "$first" || check "joining: the first render: $(tail -c 300 "$OUT/join-first.txt")"
 wait "$second" || check "joining: the second render: $(tail -c 300 "$OUT/join-second.txt")"
 [ "$(made "$T" waiting)" = 1 ] || check "joining: two renders of one ask made $(made "$T" waiting)"
+}
+
+# Renders queued from one shell, seen, one canceled, and the rest land. A canceled `render all` doesn't send again what it canceled.
+queueing() {
+step "a project: three renders queued from one shell, one canceled, the rest land"
+local T=$OUT/queueing
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+defaults:
+  image:
+    with: $here/project/draw.py
+assets:
+  first:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 8
+  second:
+    description: From <first>.
+  third:
+    description: Also from <first>.
+YAML
+cozy project -p "$T" render first --queue --on local > "$OUT/queue-1.txt" 2>&1 || check "queue: first: $(tail -c 300 "$OUT/queue-1.txt")"
+cozy project -p "$T" render second --queue --on local > "$OUT/queue-2.txt" 2>&1 || check "queue: second: $(tail -c 300 "$OUT/queue-2.txt")"
+cozy project -p "$T" render third --queue --on local > "$OUT/queue-3.txt" 2>&1 || check "queue: third: $(tail -c 300 "$OUT/queue-3.txt")"
+grep -q 'queued first' "$OUT/queue-1.txt" || check "queue: first said $(cat "$OUT/queue-1.txt")"
+grep -q 'queued third, after .*first' "$OUT/queue-3.txt" || check "queue: third said $(cat "$OUT/queue-3.txt")"
+J '[.queue[].name] == ["first", "second", "third"]' <<< "$(status "$T")" || check "queue: status shows $(status "$T" | jq -c .queue)"
+cozy project -p "$T" status > "$OUT/queue-status.txt" 2>&1
+grep -q '^queued: .*second, third' "$OUT/queue-status.txt" || check "queue: status says $(cat "$OUT/queue-status.txt")"
+cozy project -p "$T" cancel third > "$OUT/queue-cancel.txt" 2>&1 || check "queue: cancel: $(tail -c 300 "$OUT/queue-cancel.txt")"
+grep -q 'dropped third' "$OUT/queue-cancel.txt" || check "queue: cancel said $(cat "$OUT/queue-cancel.txt")"
+J '[.queue[].name] | index("third") == null' <<< "$(status "$T")" || check "queue: third is still queued: $(status "$T" | jq -c .queue)"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$T")" && break; sleep 0.5; done
+{ [ "$(made "$T" first)" = 1 ] && [ "$(made "$T" second)" = 1 ] && [ "$(made "$T" third)" = 0 ]; } || check "queue: made $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
+[ -n "${ALONE:-}" ] && return 0
+step "a project: a canceled render all sends nothing again"
+local A=$OUT/queue-all
+mkdir -p "$A"
+cat > "$A/project.yaml" <<YAML
+version: 2
+defaults:
+  image:
+    with: $here/project/draw.py
+assets:
+  long:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 120
+  after:
+    description: From <long>.
+YAML
+cozy project -p "$A" render all --queue --on local > "$OUT/queue-all.txt" 2>&1 || check "queue: render all: $(tail -c 300 "$OUT/queue-all.txt")"
+for _ in $(seq 120); do [ "$(status "$A" | jq '[.queue[] | select(.run != null)] | length')" = 1 ] && break; sleep 0.5; done
+cozy project -p "$A" cancel all > "$OUT/queue-all-cancel.txt" 2>&1 || check "queue: cancel all: $(tail -c 300 "$OUT/queue-all-cancel.txt")"
+{ grep -q 'canceled run' "$OUT/queue-all-cancel.txt" && grep -q 'dropped after' "$OUT/queue-all-cancel.txt"; } || check "queue: cancel all said $(cat "$OUT/queue-all-cancel.txt")"
+for _ in $(seq 120); do J '(.busy | not) and (.queue // [] | length == 0)' <<< "$(status "$A")" && break; sleep 0.5; done
+J '(.busy | not) and (.queue // [] | length == 0)' <<< "$(status "$A")" || check "queue: after cancel all: $(status "$A" | jq -c '{busy, queue}')"
+{ [ "$(made "$A" long)" = 0 ] && [ "$(made "$A" after)" = 0 ]; } || check "queue: cancel all made $(jq -c '.assets | map_values(.versions | length)' "$A/project.lock")"
 }
 
 # --take and --in: another draw of the same inputs, the take resolved here, the rest the adapter's.

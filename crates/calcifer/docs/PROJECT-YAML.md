@@ -196,6 +196,8 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 |---|---|
 | `render <names\|all> [--on <machine>]` | Makes what has no state |
 | `render <name> --new`, `-n 4` | Draws new seeds and makes more versions |
+| `render <names\|all> --queue` | Asks and returns at once, printing what it queued and what's ahead of each |
+| `cancel <names\|all>` | Drops their queued work and cancels their runs; `all` is everything the walk owes |
 | `render clash --take 2 --in 15` | Keeps take 2 up to 15 s and regenerates the rest |
 | `approve <name> <version>` | Writes that version's hash into `project.yaml`, editing only that line |
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
@@ -206,6 +208,14 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 | `rename <old> <new>` | Renames an asset and keeps its versions |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names, a run's among them |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. A file over 5 GiB goes as parts, which `project.lock` lists. Commit `project.yaml` and `project.lock`, not `files/` |
+
+## Queueing
+
+A project has one walker, and each render adds to it: a second one joins the first, and `--queue` adds without following. Without `--queue` a render follows until it ends, and its exit code says how it went; Ctrl-C only stops following, and the work stays queued. `status` shows what is running and what is queued, and queued work outlives a Calcifer restart until `cancel` drops it.
+
+- **Text:** the walker reads `project.yaml` again each time round, so a take waiting on something unsettled uses the text as it is when it's sent. One sent at once to its machine has its text fixed then.
+- **A save that can't be read** stops the walker, and running runs go on: the queue stays, and any render takes it up again. `status` says so.
+- **`--on`:** each take goes where its own ask said. What the walk owes beyond its takes, such as what a take reads, stays where the ask that began it said.
 
 ## Pins
 
