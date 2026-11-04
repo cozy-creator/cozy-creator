@@ -234,7 +234,9 @@ pub struct Target {
 pub enum ReleaseFrom {
     /// The target named it.
     Asked,
-    /// The newest release this computer keeps of the package, refreshed from its Hub.
+    /// The newest release its machine holds that isn't yanked.
+    Installed,
+    /// The Hub's newest: its machine holds none, so it installs this.
     Latest,
     /// Local code: its source as it is now.
     Local,
@@ -244,6 +246,7 @@ impl fmt::Display for ReleaseFrom {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             ReleaseFrom::Asked => "asked",
+            ReleaseFrom::Installed => "installed",
             ReleaseFrom::Latest => "the Hub's latest",
             ReleaseFrom::Local => "local",
         })

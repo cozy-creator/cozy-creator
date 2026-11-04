@@ -54,7 +54,7 @@ warning each). A model-only upload's lane labels the commit it makes.
   `hub_credential_refused`, naming its expiry. If the machine restarts before
   preparation completes, the run ends FAILED with a typed reason; started work is never re-run.
 - **Names** (th-245): the machine resolves them at the run's Hub. A release (`org/name`, its
-  release or none for the newest) installs from the card and locked requirements it reads there
+  release, or none for the newest this signer holds, else the Hub's newest) installs from the card and locked requirements it reads there
   by name. A model slot is the run's choice, else its declared `default` release (a callee's
   too): `repository` at `release` (none: the newest) in its `lane`, else the commit the Hub picks for
   the hardware (`GET /v1/models/{org}/{name}/resolve`); the commit's tree names its one header.

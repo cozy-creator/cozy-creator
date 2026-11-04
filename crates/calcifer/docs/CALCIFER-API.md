@@ -101,8 +101,8 @@ a spec.
 
 - `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing}`:
-  - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release this computer keeps, refreshed from its Hub;
-    `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
+  - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
+    Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
     `./script.py[/fn]`.
   - `on` (`local`, a machine, `any`, `new[:sku]`), `hub`, `gpus`, `lane`, `attention_kernel`, `out`, `warm`
     (a level, instead of running), `agreed` (a `new` run's quote).
@@ -126,8 +126,8 @@ a spec.
     each); `machine_offline` and `machine_ended` are the Hub's word, and asking again won't help.
 - `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
   (`RunQuote`). Nothing is rented or recorded.
-- `GET /v1/targets?target=&cwd=&hub=`: what a run of `target` calls, resolved as `POST /v1/runs` resolves it:
-  `{package, function?, release, release_from: asked|latest|local, summary, interface}` (the package's interface
+- `GET /v1/targets?target=&cwd=&hub=&on=`: what a run of `target` on that machine calls, resolved as `POST /v1/runs` resolves it:
+  `{package, function?, release, release_from: asked|installed|latest|local, summary, interface}` (the package's interface
   document; local code's read from its source, installing nothing). A named function is checked as a run checks
   it.
 - `PUT /v1/files/sha256:<hex>`: a file's bytes, which must hash to its name: `201`, or `200` when held, with
@@ -424,7 +424,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy package ls [query]` | `GET /v1/packages` |
 | `cozy package ls --on` | `GET /v1/machines`, `GET /v1/machines/{name}?fresh=true` |
 | `cozy package info` | `GET /v1/packages/{org}/{name}` |
-| `cozy package install` | `POST /v1/package-installs` (`/v1/package-install-quotes` first for `new`); `GET /v1/runs/{id}/events` |
+| `cozy package install`, `update` | `POST /v1/package-installs` (`/v1/package-install-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy package remove` | `POST /v1/package-removals`; `GET /v1/runs/{id}/events` for each |
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
 | `cozy package delete` | `DELETE /v1/packages/{org}/{name}` |

@@ -133,14 +133,6 @@ fn missing(error: Error, package: &str, name: &str, hub: &Origin) -> Refusal {
     )
 }
 
-/// A yank or un-yank moves the Hub's newest: this computer's next unversioned run takes it now, not
-/// one refresh later. One that cannot be read is the next refresh's.
-async fn newest_changed(api: &Api, hub: &protocol::config::Origin, org: &str, name: &str) {
-    if let Ok(reader) = reader(api, hub) {
-        let _ = hub_client::cards::fresh(&reader, api.machines.hubs.home().root(), hub, &format!("{org}/{name}")).await;
-    }
-}
-
 /// `POST /v1/packages/{org}/{name}/releases/{release}/yank`.
 pub(super) async fn yank(
     State(api): State<Arc<Api>>,
@@ -151,7 +143,7 @@ pub(super) async fn yank(
     let hub = origin(&api, hub.as_deref())?;
     let yanked = (signed_in(&api, &hub)?.yank_package_release(&org, &name, &release).await)
         .map_err(|e| refusal(&hub, e))?;
-    newest_changed(&api, &hub, &org, &name).await;
+    api.releases.forget(&hub, &format!("{org}/{name}"));
     Ok(Json(PackageYanked {
         package: format!("{org}/{name}"),
         release: yanked.release,
@@ -170,7 +162,7 @@ pub(super) async fn unyank(
     let hub = origin(&api, query?.0.hub.as_deref())?;
     let unyanked = (signed_in(&api, &hub)?.unyank_package_release(&org, &name, &release).await)
         .map_err(|e| refusal(&hub, e))?;
-    newest_changed(&api, &hub, &org, &name).await;
+    api.releases.forget(&hub, &format!("{org}/{name}"));
     Ok(Json(PackageUnyanked { package: format!("{org}/{name}"), release: unyanked.release, changed: unyanked.changed }))
 }
 
@@ -232,7 +224,7 @@ impl Ask for PackageInstall {
         let root = home.root().to_owned();
         let chosen = match self.release {
             Some(release) => release,
-            None => hub_client::cards::fresh(&reader, &root, &hub, &package).await.map_err(Refusal)?,
+            None => api.releases.now(api, &hub, &package).await.and_then(|read| read.newest(&package)).map_err(Refusal)?,
         };
         // The release's card, kept while its machine installs: the first run after an install
         // binds against it with no Hub read on its path (an RTX 4090's cold SDXL run waited 0.55 s

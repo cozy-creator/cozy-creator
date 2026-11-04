@@ -220,12 +220,12 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
     let target = args.target.clone().unwrap_or_default();
     let inputs = !args.inputs.is_empty() || args.input_file.is_some();
     if args.describe && !inputs {
-        return describe(ctx, &target, &cwd).await;
+        return describe(ctx, &target, &cwd, args.placement.on.as_deref()).await;
     }
     let ask = request(ctx, &args, target.clone(), &cwd)?;
     match send(ctx, ask).await {
         // A package's functions, when the run names none and gives it nothing.
-        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, &cwd).await,
+        Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, &cwd, args.placement.on.as_deref()).await,
         Err(e) => Err(e),
         Ok(run) => Ok(exit_code(&run)),
     }
@@ -274,8 +274,8 @@ async fn send(ctx: &Context, ask: RunRequest) -> Result<Run, Error> {
 }
 
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.
-async fn describe(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, cwd).await?;
+async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, cwd, on).await?;
     let interface = parsed(&target)?;
     let Some(function) = &target.function else {
         print_functions(ctx, &target, &interface);
@@ -305,15 +305,16 @@ async fn describe(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Erro
 }
 
 /// `cozy run [org/]pkg`: the package's public functions.
-async fn functions(ctx: &Context, raw: &str, cwd: &Path) -> Result<ExitCode, Error> {
-    let target = target(ctx, raw, cwd).await?;
+async fn functions(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<ExitCode, Error> {
+    let target = target(ctx, raw, cwd, on).await?;
     print_functions(ctx, &target, &parsed(&target)?);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn target(ctx: &Context, raw: &str, cwd: &Path) -> Result<Target, Error> {
+async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Result<Target, Error> {
     let cwd = cwd.to_string_lossy();
-    let query = [("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
+    let mut query = vec![("target", raw), ("hub", ctx.hub().as_str()), ("cwd", &cwd)];
+    query.extend(on.map(|on| ("on", on)));
     ctx.calcifer().await?.get_query("/v1/targets", &query).await
 }
 

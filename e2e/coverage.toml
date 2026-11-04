@@ -80,6 +80,9 @@ test = "pr: packages"
 ["package install"]
 test = "pr: packages"
 "--on" = "pr: packages"
+["package update"]
+test = "gate: tensord unversioned-installed"
+"--on" = "gate: tensord unversioned-installed"
 ["package remove"]
 test = "pr: packages"
 "--on" = "pr: packages"

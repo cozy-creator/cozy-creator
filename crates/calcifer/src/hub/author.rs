@@ -354,11 +354,7 @@ pub(super) async fn publish(api: &Arc<Api>, ask: PublishAsk, work: &Work) -> Res
     result.status = if ask.yanked { "published yanked" } else { "published" }.into();
     result.changed = true;
     result.warnings = state.warnings;
-    // This computer's next unversioned run takes the Hub's newest (never a yanked release) now, not
-    // one refresh later. It reads after any yank above: it keeps what it reads.
-    if let Ok(reader) = reader(api, &hub) {
-        let _ = hub_client::cards::fresh(&reader, api.machines.hubs.home().root(), &hub, &result.package).await;
-    }
+    api.releases.forget(&hub, &result.package);
     Ok(result)
 }
 

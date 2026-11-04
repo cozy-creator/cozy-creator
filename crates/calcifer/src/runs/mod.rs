@@ -86,16 +86,20 @@ pub(crate) struct Asked {
     hub: Option<String>,
     #[serde(default)]
     cwd: Option<PathBuf>,
+    /// The machine a run would go to.
+    #[serde(default)]
+    on: Option<String>,
 }
 
-/// `GET /v1/targets?target=`: what a run of the target calls, as `POST /v1/runs` resolves it.
+/// `GET /v1/targets?target=`: what a run of the target `on` its machine calls, as `POST /v1/runs` resolves it.
 pub(crate) async fn describe(
     State(api): State<Arc<Api>>,
     query: Result<Query<Asked>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<protocol::calcifer::Target>, Refusal> {
     let Query(asked) = query?;
     let hub = hub(&api, asked.hub.as_deref().unwrap_or_default());
-    let resolved = target::describe(&api, &hub, &asked.target, asked.cwd.as_deref()).await.map_err(Refusal)?;
+    let on = asked.on.map_or_else(|| default_on(&api), On::from);
+    let resolved = target::describe(&api, &hub, &asked.target, asked.cwd.as_deref(), &on).await.map_err(Refusal)?;
     Ok(Json(resolved))
 }
 
@@ -217,6 +221,9 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         Resolved::Release { .. } => vec![],
     };
     let (submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
+    if let Resolved::Release { moved: Some(moved), .. } = &resolved {
+        notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
+    }
     if !left.is_empty() {
         notes.push(Note { level: NoteLevel::Warning, message: format!("left out of the code it runs: {}", left.join(", ")) });
     }

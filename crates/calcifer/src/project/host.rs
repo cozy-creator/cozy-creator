@@ -34,6 +34,8 @@ pub struct Package {
     pub release: String,
     /// Local code: its package directory or script, made ready on the machine each call goes to.
     pub local: Option<PathBuf>,
+    /// A yanked release this walk moved off, said once.
+    pub moved: Option<String>,
     document: Value,
 }
 
@@ -120,8 +122,8 @@ impl Renderer {
 
 pub struct Host {
     api: Arc<Api>,
-    /// Read once a walk, by Hub and `with`.
-    packages: Mutex<HashMap<(String, String), Package>>,
+    /// Read once a walk, by Hub, `with` and machine.
+    packages: Mutex<HashMap<(String, String, String), Package>>,
     /// This walk's: the installs its local code asks for are keyed under it, so a failed one is
     /// asked again by the next walk, never replayed.
     walk: String,
@@ -158,25 +160,28 @@ impl Host {
                 return Err(Error::new(Kind::Unavailable, "renderer_not_described", said));
             };
             let release = prepared.source.manifest.trim_start_matches("sha256:").chars().take(12).collect();
-            return Ok(Package { name: prepared.package, release, local: Some(path), document });
+            return Ok(Package { name: prepared.package, release, local: Some(path), moved: None, document });
         }
-        self.published(hub, with).await
+        let first = on.first().cloned().unwrap_or_else(|| On::Machine("local".into()));
+        self.published(hub, with, Some(&first)).await
     }
 
-    /// A published package, by `[org/]package[@release]`.
-    pub async fn published(&self, hub: &str, with: &str) -> Result<Package, Error> {
-        let at = (hub.to_owned(), with.to_owned());
+    /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
+    /// walk's first; another installs the release); none: as this computer knows it, for a read
+    /// that runs nothing.
+    pub async fn published(&self, hub: &str, with: &str, on: Option<&On>) -> Result<Package, Error> {
+        let at = (hub.to_owned(), with.to_owned(), on.map(On::to_string).unwrap_or_default());
         if let Some(found) = self.packages.lock().expect("packages lock").get(&at) {
             return Ok(found.clone());
         }
-        // As `cozy run` resolves it: the release named, else the newest this computer keeps.
+        // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, card, .. } = target::published(&self.api, &hub, with).await? else {
+        let Resolved::Release { package, card, moved, .. } = target::published(&self.api, &hub, with, on).await? else {
             unreachable!("a published target resolves to a release");
         };
-        let found = Package { name: package, release: card.release.clone(), local: None, document: card.interface_document().clone() };
+        let found = Package { name: package, release: card.release.clone(), local: None, moved: None, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
-        Ok(found)
+        Ok(Package { moved, ..found })
     }
 
     /// Sends `run` under `key`: one key is one run, however often it is sent.

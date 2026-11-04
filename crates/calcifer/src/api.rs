@@ -53,6 +53,8 @@ pub struct Api {
     pub calcifer: Arc<Calcifer>,
     pub machines: Arc<Machines>,
     pub projects: crate::project::Projects,
+    /// What this computer last read of each package's releases.
+    pub(crate) releases: crate::runs::target::Releases,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
     /// Package locks and publications this Calcifer started (`POST /v1/package-locks`, …).
@@ -77,6 +79,7 @@ impl Api {
             calcifer,
             machines,
             projects: Default::default(),
+            releases: Default::default(),
             codes: Default::default(),
             works: Default::default(),
             hosts: [

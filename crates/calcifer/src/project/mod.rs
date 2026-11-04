@@ -372,7 +372,7 @@ async fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<String> {
             continue;
         }
         if !known.contains_key(&with) {
-            let asked = tokio::time::timeout(std::time::Duration::from_secs(3), host.published("", &with)).await;
+            let asked = tokio::time::timeout(std::time::Duration::from_secs(3), host.published("", &with, None)).await;
             known.insert(with.clone(), asked.ok().and_then(Result::ok));
         }
         if let Some(package) = &known[&with]
@@ -1214,6 +1214,9 @@ impl Walk {
                 }
             }
             let package = self.host.package(&target.hub, &doc.target(i), &self.folder().dir, &target.on).await?;
+            if let Some(moved) = &package.moved {
+                self.say(Event::Warning { message: moved.clone() });
+            }
             let Some(adapter) = package.adapter(&asset.kind) else {
                 self.say(Event::Warning { message: no_adapter(&name, &package.name, &asset.kind) });
                 return self.folder().update_lock(settle);
