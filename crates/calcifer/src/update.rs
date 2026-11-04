@@ -148,6 +148,13 @@ impl Machines {
             payload.insert("gpu_memory_limit".into(), limit.into());
         }
         let mut warnings = vec![];
+        // A dev build says the release it was built from, so `--tensord` naming that looks like no
+        // change. It replaces the dev build, and says so.
+        if let Some(status) = m.status.as_ref().filter(|status| status.dev)
+            && let Some(release) = payload.get("tensord").and_then(Value::as_str).filter(|_| !inputs.iter().any(|input: &v1::InputFile| input.field == "tensord"))
+        {
+            warnings.push(format!("{} runs a dev build of cozy {}: `--tensord {release}` replaces it with the release; without `--tensord` it stays", m.name, status.version));
+        }
         // A new binary or a limit restarts the machine: either way its warm models reload.
         let warm = m.status.as_ref().is_some_and(|s| s.warm.iter().any(|w| !w.level.is_empty()));
         if (restarts || ask.gpu_memory_limit.is_some()) && warm {
