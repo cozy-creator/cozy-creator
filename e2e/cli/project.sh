@@ -1163,6 +1163,7 @@ cozy project -p "$T" reclaim > "$OUT/reclaim-stays.txt" 2>&1 || check "stays: re
 
 # One frame of a video is an asset of its own, made here, free: moved, only it is made again. A shot makes no pictures: `writes:`, on a
 # beat or an asset, is said and ignored and stays out of its key, and a mention of what it named names nothing, which fails only that asset.
+# A name with nothing under it, as a still used to be declared, has nothing to make: no style alone goes to a model.
 frames() {
 step "a project: a frame of a shot, moved, re-renders nothing"
 local T=$OUT/frames look made was before
@@ -1212,6 +1213,11 @@ cat >> "$T/project.yaml" <<YAML
     kind: video
     render: {with: $here/project/shots.py}
     summary: Noon on <look>.
+  bare_still:
+  waits:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: Dusk on <look>, by <bare_still>.
 YAML
 J '[.warnings[] | select(.name == "long_take") | .message | select(contains("writes: a shot no longer makes pictures"))] | length == 1' <<< "$(status "$T")" || check "frames: writes: did not warn once: $(status "$T" | jq -c .warnings)"
 [ "$(row "$T" long_take .inputs)" = "$was" ] || check "frames: writes: moved its shot's key"
@@ -1221,6 +1227,8 @@ J '[.assets[].name] | (index("coast.1") or index("coast.9")) | not' <<< "$(statu
 before=$(runs "$T")
 render "$T" all --missing && check "frames: render all exited 0 with a mention of nothing"
 says frames "next: <coast.1> is no longer in the project"
+says frames "waits cannot render: bare_still has nothing to make"
+J '[.warnings[].message] | any(contains("bare_still says nothing"))' <<< "$(status "$T")" || check "frames: a name alone was not said: $(status "$T" | jq -c .warnings)"
 J '.assets[] | select(.name == "next") | .failure.code == "input_missing" and .missing == ["coast.1"]' <<< "$(status "$T")" || check "frames: next: $(row "$T" next .)"
 [ "$(made "$T" next)" = 0 ] || [ "$(made "$T" next)" = null ] || check "frames: next has a version"
 [ "$(made "$T" other)" = 1 ] || check "frames: other did not land: $(tail -c 300 "$OUT/render.txt")"

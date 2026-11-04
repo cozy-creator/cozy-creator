@@ -147,7 +147,7 @@ pub struct Asset {
     pub own: BTreeSet<String>,
     /// A pin, the line `approve` writes: its field and sha256. Its `render` and text stay in the file, ignored while it stands.
     pub pin: Option<(&'static str, String)>,
-    /// It has no operation: no `with`, of its own or from defaults, or no `kind` for its package's adapter.
+    /// It has no operation: no `with`, of its own or from defaults, no `kind` for its package's adapter, or the file says nothing of it.
     pub hollow: bool,
     /// What it reads, in the order its text mentions them.
     pub reads: Vec<usize>,
@@ -412,7 +412,7 @@ impl Doc {
             fields.insert((*field).to_owned(), json!(was));
         }
         let with = merged.get("with").and_then(Value::as_str).map(|with| plain_with(with, folder));
-        let hollow = constant || with.is_none() || (with.as_deref().is_some_and(made_here) && !["video", "image"].contains(&kind.as_str()));
+        let hollow = constant || with.is_none() || own.is_empty() || (with.as_deref().is_some_and(made_here) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
         self.assets.push(Asset { name: name.to_owned(), kind, tool: with, body: merged, fields, own, pin, hollow, reads: vec![], line: None, links: None });
         Some(self.assets.len() - 1)
@@ -750,6 +750,9 @@ impl Doc {
     /// The one line that says why asset `i` has no operation.
     pub fn nothing_to_make(&self, i: usize) -> String {
         let asset = &self.assets[i];
+        if asset.own.is_empty() {
+            return format!("{} says nothing: it has nothing to make", asset.name);
+        }
         match asset.body.contains_key("with") {
             true => format!("{}: the package {COZY} makes a video (a cut) or an image (a frame), not {}: it has nothing to make", asset.name, asset.kind),
             false => format!("{} has no `render.with`, and no `defaults.{}.with`: it has nothing to make", asset.name, asset.kind),

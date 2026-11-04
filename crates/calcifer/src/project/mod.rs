@@ -3277,8 +3277,8 @@ fn unread(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask, i: usize) -> St
     }
     match &stand[j].state {
         _ if ask.sent.contains(&name_key(name)) => format!("{name} failed in this render"),
-        Stand::Stale(why) => format!("{name} is out of date: {why}"),
         _ if doc.assets[j].hollow => format!("{name} has nothing to make"),
+        Stand::Stale(why) => format!("{name} is out of date: {why}"),
         _ if lock.asset(name).is_some_and(|held| !held.versions.is_empty()) => format!("{name} has no version with these inputs"),
         _ => format!("{name} has no version"),
     }
