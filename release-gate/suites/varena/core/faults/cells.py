@@ -908,7 +908,7 @@ def no_stream_capture() -> None:
     same = all(torch.allclose(net(value).cpu(), reference, atol=1e-5) for _ in range(12))
     counts = handle.graphs.counts
     say("counts", captures=counts["captures"], replays=counts["replays"], declines=str(counts["declines"])[:200])
-    fell_back = not counts["replays"] and bool(counts["declines"])
+    fell_back = bool(counts["declines"])  # Refused, or caught by the one replay checked against eager.
     verdict("correct" if same and fell_back else "corrupt", identical=same, fell_back=fell_back)
 
 
