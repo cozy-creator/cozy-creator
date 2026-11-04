@@ -863,42 +863,51 @@ def lazy_workspace() -> None:
     verdict("correct" if raw(eager) == control else "corrupt")
 
 
+class NoStream(torch.nn.Module):
+    """A model whose library launches a kernel with no stream argument, as Sage does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first, self.second = torch.nn.Linear(256, 256), torch.nn.Linear(256, 256)
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        middle = self.first(value)
+        with torch.cuda.stream(torch.cuda.default_stream(DEVICE)):
+            middle = middle.add(1.0)
+        return self.second(middle)
+
+
+def no_stream_adopted(graphs: str):
+    torch.manual_seed(138)
+    net = NoStream().eval()
+    value = torch.randn(8, 256)
+    reference = net(value)
+    handle = vt.offload(net, device=DEVICE, graphs=graphs)
+    handle.owner.current()
+    return net, value.to(device), reference, handle
+
+
 def no_stream_eager() -> None:
-    """A kernel with no stream argument (the legacy default stream) after work on the execution
-    stream: program order, or a clean failure, never silent wrong output (Sage; runs 28451, 28772)."""
-    stream, _ = setup()
+    """On the execution stream: program order, with no fault and no silent wrong output."""
+    net, value, reference, _ = no_stream_adopted("eager")
     target = torch.empty(64 * MIB, dtype=torch.uint8, device=device)
     torch.cuda._sleep(2_000_000_000)  # So work queued on the stream runs well after this returns.
     target.fill_(1)
     with torch.cuda.stream(torch.cuda.default_stream(DEVICE)):
         target.add_(6)
-    copy = target.clone()
-    stream.synchronize()
-    torch.cuda.synchronize()
-    seen = torch.unique(copy).tolist()
-    verdict("correct" if seen == [7] else "corrupt", seen=seen)
+    seen = torch.unique(target.clone()).tolist()
+    same = all(torch.allclose(net(value).cpu(), reference, atol=1e-5) for _ in range(4))
+    verdict("correct" if seen == [7] and same else "corrupt", seen=seen, identical=same)
 
 
 def no_stream_capture() -> None:
-    """The same inside a capture: replay agrees with eager, or the capture refuses cleanly."""
-    stream, _ = setup()
-    net = model(seed=23)
-    static = sample(0)
-    reference = raw(net(static))
-    graph, pool = torch.cuda.CUDAGraph(), tuple(torch.cuda.graph_pool_handle())
-    try:
-        with vt.graph(graph, pool=pool, stream=stream, reserve_bytes=256 * MIB):
-            offset = torch.full(SHAPE, 1.0, dtype=HALF, device=device)
-            with torch.cuda.stream(torch.cuda.default_stream(DEVICE)):
-                offset.sub_(1.0)
-            output = net(static + offset)
-    except (torch.AcceleratorError, RuntimeError) as error:
-        verdict("typed", detail=str(error)[:200])
-        return
-    replay(graph, stream)
-    stream.synchronize()
-    same = raw(output) == reference
-    verdict("correct" if same else "corrupt", identical=same)
+    """Under capture: it can't be in the graph, so the capture falls back to eager, output correct."""
+    net, value, reference, handle = no_stream_adopted("auto")
+    same = all(torch.allclose(net(value).cpu(), reference, atol=1e-5) for _ in range(12))
+    counts = handle.graphs.counts
+    say("counts", captures=counts["captures"], replays=counts["replays"], declines=str(counts["declines"])[:200])
+    fell_back = not counts["replays"] and bool(counts["declines"])
+    verdict("correct" if same and fell_back else "corrupt", identical=same, fell_back=fell_back)
 
 
 def workspace_graphs(stream):
