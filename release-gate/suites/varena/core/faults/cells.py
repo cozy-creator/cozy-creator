@@ -325,6 +325,8 @@ def donor() -> None:
 
 def asker() -> None:
     setup()
+    if os.environ.get("FAULT_CAP"):
+        vt.set_limit(DEVICE, torch.cuda.mem_get_info(DEVICE)[1] + vt.stats(DEVICE)["driver_reservation"])
     say("ready", pid=os.getpid())
     while not (DIR / "go").exists():
         time.sleep(0.005)

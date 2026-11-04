@@ -210,13 +210,13 @@ def idle_bytes() -> str:
     return str((int(total) // 2) << 20)
 
 
-def donor_answers(ctx: Context) -> None:
+def donor_answers(ctx: Context, **env: str) -> None:
     """The control for kill_donor_trim: with no kill the asker gets its memory from the donor."""
     idle = idle_bytes()
     donor = ctx.child("donor", FAULT_IDLE=idle)
     if donor.step("ready", stall=120) is None:
         return
-    asker = ctx.child("asker", FAULT_IDLE=idle)
+    asker = ctx.child("asker", FAULT_IDLE=idle, **env)
     if asker.step("ready") is None:
         donor.kill()
         return
@@ -225,6 +225,11 @@ def donor_answers(ctx: Context) -> None:
     donor.kill()
     if result and result["outcome"] != "correct":
         ctx.problem(f"a live idle donor did not cover the asker: {result['outcome']}")
+
+
+def donor_answers_capped(ctx: Context) -> None:
+    """Under a machine's limit too: a peer's idle bytes count against it, so it is asked."""
+    donor_answers(ctx, FAULT_CAP="1")
 
 
 def kill_donor(ctx: Context) -> None:
@@ -280,6 +285,7 @@ CELLS = {
     "kill_fill_gated": killed_during(),
     "kill_donor_trim": kill_donor,
     "donor_answers": donor_answers,
+    "donor_answers_capped": donor_answers_capped,
     "source_partial": main_only,
     "source_prepare_error": main_only,
     "capture_oom_pool": main_only,

@@ -534,6 +534,14 @@ impl Device {
         Ok(())
     }
 
+    /// Other processes' bytes stand between us and `more`, so asking them can help. They count
+    /// against a machine's ceiling, never against a limit on this process's own bytes.
+    fn peers_can_lift(&self, more: usize) -> bool {
+        let wanted = self.owned().saturating_add(more);
+        wanted <= self.limit.load(Ordering::Acquire)
+            && wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
+    }
+
     /// A limit someone set: other processes' memory cannot lift it, unlike the card's own.
     fn capped(&self) -> bool {
         self.ceiling.load(Ordering::Acquire) != usize::MAX || self.limit.load(Ordering::Acquire) != usize::MAX
