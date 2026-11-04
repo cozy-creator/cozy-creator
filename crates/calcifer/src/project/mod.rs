@@ -1127,6 +1127,9 @@ async fn rename(
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let mut doc = Doc::load(folder).map_err(Refusal)?;
+    if doc.find(&asked.from).is_some_and(|i| doc.assets[i].text.is_some()) {
+        format::refuse_tag(&folder.lock().map_err(Refusal)?, &asked.to).map_err(Refusal)?;
+    }
     let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
     if doc.find(&asked.from).is_some() && free {
         // Its row first: a page that reads the new name knows it's the same box, where it was.
@@ -1663,6 +1666,12 @@ async fn import(
         return Ok(Json(done));
     }
     let wanted = element_name(asked.name.as_deref(), &asked.source);
+    if asked.exact {
+        let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+        if format::free_name(&doc, &lock, &wanted) != wanted {
+            return Err(Refusal(format::name_taken(&doc, &wanted)));
+        }
+    }
     let kept = keep_file(&api, folder, &asked.source).await?;
     let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, key.as_ref())?;
     measure_soon(&api, &project);

@@ -21,7 +21,7 @@ use super::{
     assetfile::mentions_renamed,
     canvas,
     folder::{self, Folder, Lock, MEASURED},
-    format::{Doc, FORMAT, State, canonical, invalid, made_here, names_a_file, plain_tool, yaml_key},
+    format::{Doc, FORMAT, State, TEXT, canonical, invalid, made_here, names_a_file, plain_tool, yaml_key},
     graph::{mentions, mentions_in, name_key},
     holding,
 };
@@ -255,9 +255,115 @@ fn tracks_of(pieces: &Value) -> Value {
     json!([{"clips": pieces.as_array().into_iter().flatten().map(clip).collect::<Vec<_>>()}])
 }
 
+/// What the sections of `defaults` shared that goes on as text assets.
+#[derive(Default)]
+struct Shared {
+    /// By section, the text asset its style is now, and that style.
+    style: BTreeMap<String, (String, String)>,
+    /// By section, the text asset its soundscape is now.
+    soundscape: BTreeMap<String, (String, String)>,
+    assets: Vec<(String, Map<String, Value>)>,
+}
+
+impl Shared {
+    fn of(defaults: &Map<String, Value>, mut taken: Vec<String>) -> Self {
+        let mut shared = Self::default();
+        shared.style = shared.text_assets("style", defaults, &mut taken);
+        shared.soundscape = shared.text_assets("soundscape", defaults, &mut taken);
+        shared
+    }
+
+    /// `field` of each section as a text asset: the first called that, and another that extends it as `<field>` and the rest of its words.
+    fn text_assets(&mut self, field: &str, defaults: &Map<String, Value>, taken: &mut Vec<String>) -> BTreeMap<String, (String, String)> {
+        let mut named: BTreeMap<String, (String, String)> = BTreeMap::new();
+        let mut first: Option<(String, String)> = None;
+        for kind in KINDS {
+            let Some(text) = defaults.get(kind).and_then(|section| section.get(field)?.as_str()).map(str::trim).filter(|text| !text.is_empty()) else { continue };
+            if let Some((name, _)) = named.values().find(|(_, held)| held == text) {
+                named.insert(kind.to_owned(), (name.clone(), text.to_owned()));
+                continue;
+            }
+            let wanted = if first.is_none() { field.to_owned() } else { format!("{kind}_{field}") };
+            let name = (1..).map(|n| if n == 1 { wanted.clone() } else { format!("{wanted}_{n}") }).find(|name| !taken.iter().any(|held| name_key(held) == name_key(name))).expect("a free name");
+            taken.push(name.clone());
+            let written = match &first {
+                Some((of, words)) if text.strip_prefix(words.as_str()).is_some_and(|rest| rest.starts_with(char::is_whitespace)) => format!("<{of}>{}", &text[words.len()..]),
+                _ => text.to_owned(),
+            };
+            self.assets.push((name.clone(), Map::from_iter([(TEXT.to_owned(), json!(written))])));
+            first.get_or_insert((name.clone(), text.to_owned()));
+            named.insert(kind.to_owned(), (name, text.to_owned()));
+        }
+        named
+    }
+}
+
+/// Whether `with` names `package`, as a package or as a path to one, with a function or none.
+fn names_package(with: &str, package: &str) -> bool {
+    with.split('@').next().unwrap_or(with).trim_end_matches('/').rsplit(['/', '\\']).take(2).any(|part| part == package)
+}
+
+/// What `section` of `defaults` gave an asset, in the asset: its own values stand, shared words are mentions, and a style goes into the text
+/// that took it, as each package put it there. Nothing is prepended at render: it's only where it's mentioned.
+fn filled_in(inputs: &mut Map<String, Value>, section: Option<&Map<String, Value>>, kind: &str, with: &str, tool: &str, shared: &Shared, notes: &mut Vec<String>) {
+    let (qwen, h3) = (names_package(with, "qwen-image-2"), names_package(with, "minimax-h3"));
+    for (field, value) in section.into_iter().flatten() {
+        match field.as_str() {
+            "with" | "turbo" | "models" | "lora" | "style" => {}
+            "transparent" if qwen => {}
+            "options" => {
+                for (field, value) in value.as_object().into_iter().flatten() {
+                    inputs.entry(field.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            field if inputs.contains_key(field) => {}
+            "soundscape" if shared.soundscape.contains_key(kind) => drop(inputs.insert(field.clone(), json!(format!("<{}>", shared.soundscape[kind].0)))),
+            // An empty field says the same.
+            "music" if value.as_str().is_some_and(|music| music.trim().eq_ignore_ascii_case("n/a")) => {}
+            _ => drop(inputs.insert(field.clone(), value.clone())),
+        }
+    }
+    let style = section.and_then(|_| shared.style.get(kind)).filter(|_| !inputs.contains_key("style"));
+    let clear = if qwen { inputs.remove("transparent").or_else(|| section?.get("transparent").cloned()) } else { None };
+    let upscale = tool.split('@').next().is_some_and(|tool| tool.ends_with("/upscale"));
+    let said = |inputs: &Map<String, Value>, field: &str| inputs.get(field).and_then(Value::as_str).filter(|text| !text.trim().is_empty()).map(str::to_owned);
+    if qwen || (h3 && upscale) {
+        if let Some(words) = said(inputs, "instructions") {
+            inputs.insert("instructions".to_owned(), json!(worded(&words, style, clear.and_then(|clear| clear.as_bool()) == Some(true))));
+        }
+    } else if let (true, Some((name, _))) = (h3, style) {
+        let field = if said(inputs, "summary").is_none() && said(inputs, "instructions").is_some() { "instructions" } else { "summary" };
+        let front = match said(inputs, field) {
+            Some(words) => format!("<{name}>\n{words}"),
+            None => format!("<{name}>"),
+        };
+        inputs.insert(field.to_owned(), json!(front));
+        let line = "H3 shots now carry the style in their summary: it was a field of its own, and the same words made these versions, so none goes out of date".to_owned();
+        if !notes.contains(&line) {
+            notes.push(line);
+        }
+    } else if let Some((name, _)) = style {
+        inputs.insert("style".to_owned(), json!(format!("<{name}>")));
+    }
+}
+
+/// `words` as Qwen's adapter said them, with `style` and a clear background: the words it has to be asked for in.
+fn worded(words: &str, style: Option<&(String, String)>, clear: bool) -> String {
+    let words = words.trim();
+    let styled = match style {
+        Some((name, text)) if text.ends_with('.') => format!("Style: <{name}>\n\n{words}"),
+        Some((name, _)) => format!("Style: <{name}>.\n\n{words}"),
+        None => words.to_owned(),
+    };
+    match clear {
+        true => format!("This is an RGBA image with transparency. {styled}\n\nThe image has alpha channel and the background is transparent."),
+        false => styled,
+    }
+}
+
 /// One asset of format 2 as format 3 writes it, under its old name, and what it was.
 #[allow(clippy::too_many_arguments)]
-fn asset_of(name: &str, body: &Map<String, Value>, defaults: &Map<String, Value>, text: &str, old: &Value, folder: &Folder, notes: &mut Vec<String>) -> (Map<String, Value>, String) {
+fn asset_of(name: &str, body: &Map<String, Value>, defaults: &Map<String, Value>, text: &str, old: &Value, folder: &Folder, shared: &Shared, notes: &mut Vec<String>) -> (Map<String, Value>, String) {
     let mut render = match body.get("render") {
         Some(Value::Object(render)) => render.clone(),
         Some(Value::String(prompt)) => Map::from_iter([("prompt".to_owned(), json!(prompt))]),
@@ -312,15 +418,6 @@ fn asset_of(name: &str, body: &Map<String, Value>, defaults: &Map<String, Value>
         // Named alone, a package could take these words for what to draw.
         inputs.insert("instructions".to_owned(), json!(description));
     }
-    // A picture with no background is asked for in its words, Qwen's, as its adapter put them.
-    let qwen = with.split('@').next().unwrap_or(&with).trim_end_matches('/').rsplit(['/', '\\']).take(2).any(|part| part == "qwen-image-2");
-    let clear = inputs.get("transparent").or_else(|| section.filter(|_| own_with.is_none())?.get("transparent")).and_then(Value::as_bool);
-    if qwen && clear.is_some() {
-        inputs.remove("transparent");
-        if let (Some(true), Some(said)) = (clear, inputs.get("instructions").and_then(Value::as_str).map(|said| said.trim().to_owned())) {
-            inputs.insert("instructions".to_owned(), json!(format!("This is an RGBA image with transparency. {said}\n\nThe image has alpha channel and the background is transparent.")));
-        }
-    }
     if !description.is_empty() {
         let said = versions.and_then(|versions| versions.last()?["invocations"][0]["input"]["prompt"].as_str());
         if !inputs.values().any(|value| value == description.as_str()) && said.is_some_and(|prompt| prompt.contains(description.trim())) {
@@ -330,11 +427,13 @@ fn asset_of(name: &str, body: &Map<String, Value>, defaults: &Map<String, Value>
     }
     if !with.is_empty() {
         let made_by = versions.and_then(|versions| versions.last()?["made_by"]["with"].as_str());
-        let h3 = with.split('@').next().unwrap_or(&with).trim_end_matches('/').rsplit(['/', '\\']).take(2).any(|part| part == "minimax-h3");
+        let h3 = names_package(&with, "minimax-h3");
         if h3 && (turbo == Some(false) || (turbo.is_none() && inputs.get("steps").is_some_and(|steps| !steps.is_null()))) {
             inputs.insert("turbo".to_owned(), json!(false));
         }
-        out.insert("tool".to_owned(), json!(tool_of(&with, kind, &inputs, turbo, made_by, folder, notes, name)));
+        let tool = tool_of(&with, kind, &inputs, turbo, made_by, folder, notes, name);
+        filled_in(&mut inputs, section.filter(|_| own_with.is_none()), kind, &with, &tool, shared, notes);
+        out.insert("tool".to_owned(), json!(tool));
     }
     out.extend(inputs);
     (out, kind.to_owned())
@@ -400,14 +499,10 @@ fn split_comment(rest: &str) -> (&str, Option<&str>) {
 }
 
 /// The file whole, its comments back. Err: it wouldn't read back as what it says.
-fn written(defaults: &Map<String, Value>, assets: &[(String, Map<String, Value>)], head: &[String], before: &HashMap<String, Vec<String>>, tail: &[String]) -> Result<String, Error> {
+fn written(assets: &[(String, Map<String, Value>)], head: &[String], before: &HashMap<String, Vec<String>>, tail: &[String]) -> Result<String, Error> {
     let mut out = String::new();
     head.iter().for_each(|line| out.push_str(&format!("{line}\n")));
     out.push_str(&format!("version: {FORMAT}\n"));
-    if !defaults.is_empty() {
-        out.push_str("\ndefaults:\n");
-        KINDS.iter().filter_map(|kind| Some((kind, defaults.get(*kind)?))).for_each(|(kind, value)| write_field(&mut out, kind, value, 2));
-    }
     out.push_str("\nassets:\n");
     for (at, (name, body)) in assets.iter().enumerate() {
         if at > 0 {
@@ -424,9 +519,6 @@ fn written(defaults: &Map<String, Value>, assets: &[(String, Map<String, Value>)
     }
     tail.iter().for_each(|line| out.push_str(&format!("{line}\n")));
     let mut wanted = Map::from_iter([("version".to_owned(), json!(FORMAT))]);
-    if !defaults.is_empty() {
-        wanted.insert("defaults".to_owned(), Value::Object(defaults.clone()));
-    }
     wanted.insert("assets".to_owned(), Value::Object(assets.iter().map(|(name, body)| (name.clone(), Value::Object(body.clone()))).collect()));
     let read = to_json_keeping(&out, names_a_file).map_err(|why| invalid("project_yaml", format!("what it would write: {why}")))?;
     (canonical(&read) == canonical(&Value::Object(wanted))).then_some(out).ok_or_else(|| invalid("project_edit", format!("{} wouldn't read back as what it says, so it is left as it is", folder::PROJECT)))
@@ -452,7 +544,7 @@ fn write_field(out: &mut String, key: &str, value: &Value, at: usize) {
             out.push_str(&format!("{head}\n"));
             ordered(fields, &INSIDE, &[]).into_iter().for_each(|(field, value)| write_field(out, field, value, at + 2));
         }
-        Value::String(text) if as_block(text) => {
+        Value::String(text) if as_block(text) || key == TEXT => {
             out.push_str(&format!("{head} |\n"));
             write_text(out, text, at + 2);
         }
@@ -624,20 +716,13 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         stills.push((key.clone(), shown, folder::prefix_of(main).to_owned()));
     }
 
-    let mut defaults = Map::new();
-    for (kind, section) in old_defaults {
-        let mut section = section.as_object().cloned().unwrap_or_default();
-        section.remove("with");
-        section.remove("turbo");
-        section.remove("transparent");
-        if !section.is_empty() {
-            defaults.insert(kind.clone(), Value::Object(section));
-        }
-    }
     let renames = folding.renames.clone();
     let renamed = |name: &str| renames.get(&name_key(name)).cloned();
     let mut assets: Vec<(String, Map<String, Value>)> = std::mem::take(&mut folding.made);
     let mut notes = std::mem::take(&mut folding.notes);
+    let taken: Vec<String> = written_names.iter().cloned().chain(renames.keys().cloned()).chain(renames.values().cloned()).chain(stills.iter().map(|(_, new, _)| new.clone())).collect();
+    let shared = Shared::of(old_defaults, taken);
+    assets.splice(0..0, shared.assets.iter().cloned());
     for (_, new, hash) in &stills {
         assets.push((new.clone(), Map::from_iter([("approved".to_owned(), json!(hash))])));
     }
@@ -652,7 +737,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
             continue;
         }
         let Some(body) = declared.get(name).and_then(Value::as_object) else { continue };
-        let (mut asset, kind) = asset_of(name, body, old_defaults, &text, &old, &folder, &mut notes);
+        let (mut asset, kind) = asset_of(name, body, old_defaults, &text, &old, &folder, &shared, &mut notes);
         if let Some(tool) = asset.get("tool").and_then(Value::as_str) {
             kinds.push((plain_tool(tool, &folder), kind));
         }
@@ -684,6 +769,12 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         }
     }
     assets.extend(voices);
+    let mut seen: HashMap<String, &str> = HashMap::new();
+    let twice: Vec<String> = assets.iter().filter_map(|(name, _)| Some(format!("{} and {name}", seen.insert(name_key(name), name)?))).collect();
+    if !twice.is_empty() {
+        let said = format!("{} are one name, as a name matches in any case, with `_` and `-` alike", twice.join(", "));
+        return Err(refused("project_name_twice", said).remedy(format!("rename one in {}, then upgrade again", folder::PROJECT)));
+    }
     for (_, body) in &mut assets {
         // A voice is under its new name already.
         let voice = body.remove("voice");
@@ -697,7 +788,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
             before.entry(name_key(to)).or_default().extend(lines);
         }
     }
-    let new_text = written(&defaults, &assets, &head, &before, &tail)?;
+    let new_text = written(&assets, &head, &before, &tail)?;
 
     // The lock under the new names, in what a version keeps. Only the versions that stand get the new key.
     let was_key: HashMap<String, (u32, String)> = old["assets"].as_object().into_iter().flatten().flat_map(|(key, held)| {

@@ -128,6 +128,7 @@ by_asset
 hard_cut
 upgrades
 lock_kept
+text_assets
 memo
 pins
 project_runs
@@ -339,17 +340,131 @@ for name in art hero hero.old wall table.1; do
 done
 J '.assets[] | select(.name == "wall") | .approved == 1' "$OUT/upgraded-status.json" || check "upgrade: wall holds no version: $(row "$U" wall .)"
 J '.assets[] | select(.name == "clear") | .fields.instructions == "This is an RGBA image with transparency. A cat.\n\nThe image has alpha channel and the background is transparent." and (.fields | has("transparent") | not)' "$OUT/upgraded-status.json" || check "upgrade: Qwen's transparent: $(row "$U" clear .fields)"
-J '.assets[] | select(.name == "hero") | .fields.asset_type == "character" and .fields.description == "A brave hero." and .fields.instructions == "From <art>." and .fields.style == "Plain."' "$OUT/upgraded-status.json" || check "upgrade: hero: $(row "$U" hero .fields)"
+J '.assets[] | select(.name == "hero") | .fields.asset_type == "character" and .fields.description == "A brave hero." and .fields.instructions == "From <art>." and .fields.style == "<style>"' "$OUT/upgraded-status.json" || check "upgrade: hero: $(row "$U" hero .fields)"
 J '.assets[] | select(.name == "hero.old") | .fields.description == "The hero of old." and .fields.instructions == "From <hero>." and .fields.asset_type == "character"' "$OUT/upgraded-status.json" || check "upgrade: hero.old: $(row "$U" hero.old .fields)"
 J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .versions == 1' "$OUT/upgraded-status.json" || check "upgrade: what was out of date: $(row "$U" poster .)"
 J '.assets[] | select(.name == "poster") | .fields.instructions == "After an edit, with <table.1> and <coast.1>."' "$OUT/upgraded-status.json" || check "upgrade: a mention: $(row "$U" poster .fields)"
-{ grep -q 'cozy/edit' "$U/project.yaml" && grep -q '<hero.old>' "$U/project.yaml" && ! grep -qE '^ *(kind|with|render|pieces):|^entities' "$U/project.yaml"; } || check "upgrade: the file: $(cat "$U/project.yaml")"
+{ grep -q 'cozy/edit' "$U/project.yaml" && grep -q '<hero.old>' "$U/project.yaml" && ! grep -qE '^ *(kind|with|render|pieces):|^entities|^defaults' "$U/project.yaml"; } || check "upgrade: the file: $(cat "$U/project.yaml")"
 { grep -q "^# A hand's note\.$" "$U/project.yaml" && grep -q '^  # Its art\.$' "$U/project.yaml" && grep -q '^  #ken$' "$U/project.yaml"; } || check "upgrade: a comment went: $(cat "$U/project.yaml")"
 J '[.said[] | select(contains("poster mentions <coast.1>"))] | length == 1' "$OUT/upgraded.json" || check "upgrade: a mention of nothing wasn't said: $(jq -c .said "$OUT/upgraded.json")"
 render "$U" all --missing > /dev/null 2>&1 || true
 [ "$(status "$U" | jq '[.assets[] | select(.name != "poster") | .prefixes[]?.run // empty] | length')" = "$((before - 1))" ] || check "upgrade: something ran: $(runs "$U") runs, was $before"
 code=0; cozy project -p "$U" upgrade > "$OUT/upgraded-twice.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 3 already' "$OUT/upgraded-twice.txt"; } || check "upgrade: a second one: exit $code: $(tail -c 300 "$OUT/upgraded-twice.txt")"
+
+step "a project: cozy project upgrade: \`defaults\` go, a style and a soundscape are text assets, each mentioned where it was used"
+local W=$OUT/upgrade-defaults
+mkdir -p "$W"
+cat > "$W/project.yaml" <<YAML
+version: 2
+defaults:
+  image: {with: /nowhere/qwen-image-2, style: Plain, aspect_ratio: "16:9"}
+  video: {with: /nowhere/minimax-h3, style: Plain and bold., soundscape: Rain., music: N/A, aspect_ratio: "16:9", turbo: true}
+assets:
+  clear: {render: {prompt: A cat., transparent: true}}
+  dull: {render: {prompt: A dog., aspect_ratio: "3:2"}}
+  shot:
+    kind: video
+    summary: <clear> walks.
+    beats: [{duration: 5, description: It rains.}]
+  plain_shot:
+    kind: video
+    soundscape: Quiet.
+    beats: [{duration: 5, description: It stops.}]
+YAML
+cozy --json project -p "$W" upgrade > "$OUT/upgraded-defaults.json" 2> "$OUT/upgraded-defaults.err" || check "upgrade: defaults: $(tail -c 300 "$OUT/upgraded-defaults.err")"
+status "$W" > "$OUT/upgraded-defaults-status.json"
+of() { jq -c --arg n "$1" '.assets[] | select(.name == $n) | .fields' "$OUT/upgraded-defaults-status.json"; }
+J '.text == "Plain"' <<< "$(of style)" || check "upgrade: style: $(of style)"
+J '.text == "<style> and bold."' <<< "$(of video_style)" || check "upgrade: video_style: $(of video_style)"
+J '.text == "Rain."' <<< "$(of soundscape)" || check "upgrade: soundscape: $(of soundscape)"
+J '.instructions == "This is an RGBA image with transparency. Style: <style>.\n\nA cat.\n\nThe image has alpha channel and the background is transparent." and .aspect_ratio == "16:9"' <<< "$(of clear)" || check "upgrade: clear: $(of clear)"
+J '.instructions == "Style: <style>.\n\nA dog." and .aspect_ratio == "3:2"' <<< "$(of dull)" || check "upgrade: an asset's own value went: $(of dull)"
+J '.summary == "<video_style>\n<clear> walks." and .soundscape == "<soundscape>" and (has("music") | not) and (has("style") | not) and .aspect_ratio == "16:9"' <<< "$(of shot)" || check "upgrade: shot: $(of shot)"
+J '.summary == "<video_style>" and .soundscape == "Quiet."' <<< "$(of plain_shot)" || check "upgrade: a shot with no summary: $(of plain_shot)"
+! grep -q '^defaults' "$W/project.yaml" || check "upgrade: defaults stayed: $(cat "$W/project.yaml")"
+J '[.said[] | select(contains("H3 shots now carry the style in their summary"))] | length == 1' "$OUT/upgraded-defaults.json" || check "upgrade: the move wasn't said once: $(jq -c .said "$OUT/upgraded-defaults.json")"
+
+step "a project: cozy project upgrade: names that fold to one are said, by name, and nothing is written"
+local N=$OUT/upgrade-names
+mkdir -p "$N"
+printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' > "$N/project.yaml"
+cp "$N/project.yaml" "$OUT/upgrade-names.yaml"
+code=0; cozy project -p "$N" upgrade > "$OUT/upgrade-names.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'Amy_one and amy-ONE are one name' "$OUT/upgrade-names.txt" && cmp -s "$N/project.yaml" "$OUT/upgrade-names.yaml"; } || check "upgrade: names that are one (exit $code): $(tail -c 300 "$OUT/upgrade-names.txt")"
+}
+
+# A text asset: its words go where it's mentioned, once, in Doc, and the key follows them.
+text_assets() {
+step "a project: a text asset's words go where it's mentioned, in any case, and what they mention is read"
+local T=$OUT/text draw=$here/project/draw.py was
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 3
+assets:
+  style:
+    text: |
+      Soft light.
+  mood:
+    text: <style> And <card>.
+  card: {tool: $draw/draw, instructions: A card.}
+  poster: {tool: $draw/draw, instructions: <STYLE> A poster.}
+  sheet: {tool: $draw/draw, instructions: "<Mood> A sheet."}
+  ring_a: {text: A <ring_b>}
+  ring_b: {text: B <ring_a>}
+  ringed: {tool: $draw/draw, instructions: <ring_a>}
+  lost: {tool: $draw/draw, instructions: Without <nothing_here>.}
+YAML
+J '.assets[] | select(.name == "style") | .kind == "text" and .standing == "current" and .fields.text == "Soft light." and .versions == 0' <<< "$(status "$T")" || check "text: style: $(row "$T" style .)"
+render "$T" poster sheet ringed || check "text: render: $(tail -c 400 "$OUT/render.txt")"
+[ "$(prompt "$T" poster)" = 'Soft light. A poster.' ] || check "text: poster was told: $(prompt "$T" poster)"
+grep -q '^Soft light\. And ' <<< "$(prompt "$T" sheet)" || check "text: sheet was told: $(prompt "$T" sheet)"
+grep -qF "[card image=$(take_file "$T" card image)]" <<< "$(prompt "$T" sheet)" || check "text: a mention inside a text isn't a read: $(prompt "$T" sheet)"
+[ "$(row "$T" poster .fields.instructions)" = '"<STYLE> A poster."' ] || check "text: what's shown isn't what's written: $(row "$T" poster .fields)"
+J '[.[].name] | index("card") != null and index("Mood") == null and index("mood") != null and index("style") != null' <<< "$(row "$T" sheet .reads)" || check "text: reads: $(row "$T" sheet .reads)"
+J '[.warnings[].message] | any(contains("mentions itself, through what it mentions"))' <<< "$(status "$T")" || check "text: a cycle isn't said: $(status "$T" | jq -c .warnings)"
+grep -q '<ring_a>' <<< "$(prompt "$T" ringed)" || check "text: a cycle didn't stay text: $(prompt "$T" ringed)"
+render "$T" lost > /dev/null 2>&1 || true
+says text "<nothing_here> is no longer in the project"
+
+step "a project: editing a text marks what reaches it, an approved asset stays approved, and a deleted one is gone, not changed"
+cozy project -p "$T" approve poster 1 > /dev/null 2>&1 || check "text: approve poster"
+was=$(runs "$T")
+sed -i 's/^      Soft light\.$/      Hard light./' "$T/project.yaml"
+J '.assets[] | select(.name == "sheet") | .standing == "out_of_date"' <<< "$(status "$T")" || check "text: an edit didn't reach sheet, through mood: $(row "$T" sheet .)"
+J '.assets[] | select(.name == "poster") | .standing == "out_of_date" and .pinned and (.status | contains("<style>"))' <<< "$(status "$T")" || check "text: poster: $(row "$T" poster .)"
+sed -i 's/^      Hard light\.$/      Soft light./' "$T/project.yaml"
+J '.assets[] | select(.name == "sheet") | .standing == "current"' <<< "$(status "$T")" || check "text: words back didn't bring it back: $(row "$T" sheet .)"
+sed -i '/^  ring_a: /d; /^  ring_b: /d; /^  ringed: /d; /^  lost: /d' "$T/project.yaml"
+sed -i '/^  style:$/,/^      Soft light\.$/d' "$T/project.yaml"
+J '.assets[] | select(.name == "poster") | .standing == "current" and .pinned' <<< "$(status "$T")" || check "text: a deleted text changed what it was in: $(row "$T" poster .)"
+[ "$(runs "$T")" = "$was" ] || check "text: something ran"
+
+step "a project: a name is one name in any case, a text can't be a tag, and a typed name that's taken is refused"
+local N=$OUT/text-names id code
+mkdir -p "$N"
+printf 'version: 3\nassets:\n  Amy:\n    description: One.\n  amy:\n    description: Two.\n' > "$N/project.yaml"
+code=0; cozy project -p "$N" status > "$OUT/one-name.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'Amy, on line 3, and amy, on line 5, are one name' "$OUT/one-name.txt"; } || check "names: two keys of one name (exit $code): $(tail -c 300 "$OUT/one-name.txt")"
+printf 'version: 3\nassets: {}\n' > "$N/project.yaml"
+[ "$(cozy project -p "$N" add text note text='Some words.')" = note ] || check "names: add text with no name"
+[ "$(cozy project -p "$N" add text Note_2 text='More words.')" = Note_2 ] || check "names: add text with a name"
+code=0; cozy project -p "$N" add text NOTE text=Again. > "$OUT/typed.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'note is in the project already' "$OUT/typed.txt"; } || check "names: a typed name that's taken (exit $code): $(tail -c 300 "$OUT/typed.txt")"
+[ "$(cozy project -p "$N" add text text='Picked for it.')" = text ] || check "names: a picked name"
+[ "$(cozy project -p "$N" add text text='Picked again.')" = text_2 ] || check "names: a picked name is numbered"
+J '.assets[] | select(.name == "note") | .kind == "text" and .fields.text == "Some words."' <<< "$(status "$N")" || check "names: a text from the CLI: $(row "$N" note .)"
+step "a project: a text asset can't take a package's tag"
+local R=$OUT/text-tags
+mkdir -p "$R"
+cat > "$R/project.yaml" <<YAML
+version: 3
+assets:
+  look: {tool: $here/project/shots.py/shoot, seconds: 0}
+  D: {text: A tag.}
+YAML
+render "$R" look > /dev/null 2>&1 || true
+J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: cozy project rename D"))' <<< "$(status "$R")" || check "tags: not said: $(status "$R" | jq -c .warnings)"
 }
 
 # A lock that can't be read is kept, and said. A name the file lost, and a render since, leaves its versions an orphan, and that name starts over.
@@ -2357,7 +2472,9 @@ code=0; cozy project -p "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 |
 still "$U/Kyogre Art (1).png" red
 [ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1 ] || check "import: a stem is not lower-cased and made a name"
 [ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero.Sheet_one ] || check "import: a written name does not keep its case and its dot, with space as _"
-[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" hero.sheet-one)" = hero.sheet-one_2 ] || check "import: a name taken in another case and with - for _ does not take _2"
+code=0; cozy project -p "$U" import "$U/Kyogre Art (1).png" hero.sheet-one > "$OUT/import-taken.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'Hero.Sheet_one is in the project already' "$OUT/import-taken.txt"; } || check "import: a typed name taken in another case, with - for _ (exit $code): $(tail -c 300 "$OUT/import-taken.txt")"
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1_2 ] || check "import: a picked name is not numbered"
 [ "$(ls "$U/files" | grep -c "^$(sha "$U/Kyogre Art (1).png")")" = 1 ] || check "import: three elements of one file are not one file: $(ls "$U/files")"
 [ "$(cozy --json project -p "$U" import "$U/Kyogre Art (1).png" | jq -r .already)" = true ] || check "import: a file the project has does not say already"
 

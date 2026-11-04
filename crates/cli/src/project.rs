@@ -453,7 +453,8 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
     let path = format!("/v1/projects/{}/imports", opened.id);
-    let ask = Import { source, name: args.name, at: args.at, description: args.description };
+    let exact = args.name.is_some();
+    let ask = Import { source, name: args.name, at: args.at, description: args.description, exact };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);

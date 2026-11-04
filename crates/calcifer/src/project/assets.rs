@@ -41,7 +41,12 @@ pub(super) async fn create(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
-    let kind = crate::toolbox::kind(&api, &asked.tool, &folder.dir).await.map_err(Refusal)?;
+    // With no tool, it's a text asset.
+    let kind = match asked.tool.is_empty() {
+        true if !asked.fields.contains_key(format::TEXT) => return Err(Refusal(Error::new(Kind::Validation, "asset_says_nothing", "an asset needs a tool, or a text").remedy("name a tool from GET /v1/tools, or set `fields.text`"))),
+        true => None,
+        false => Some(crate::toolbox::kind(&api, &asked.tool, &folder.dir).await.map_err(Refusal)?),
+    };
     let _one = project.importing.lock().expect("importing lock");
     let lock = folder.lock().map_err(Refusal)?;
     let told = key.as_ref().and_then(|(key, _)| lock.assets_made.get(key));
@@ -53,8 +58,16 @@ pub(super) async fn create(
     let name = match told {
         Some(told) => told.name.clone(),
         None => {
-            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| "asset".to_owned());
-            format::free_name(&Doc::load(folder).map_err(Refusal)?, &lock, &wanted)
+            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| kind.as_ref().map_or(format::TEXT, |_| "asset").to_owned());
+            let doc = Doc::load(folder).map_err(Refusal)?;
+            if kind.is_none() {
+                format::refuse_tag(&lock, &wanted).map_err(Refusal)?;
+            }
+            let free = format::free_name(&doc, &lock, &wanted);
+            if asked.exact && free != wanted {
+                return Err(Refusal(format::name_taken(&doc, &wanted)));
+            }
+            free
         }
     };
     if let (None, Some((key, digest))) = (told, &key) {
@@ -75,8 +88,10 @@ pub(super) async fn create(
     }))
     .map_err(Refusal)?;
     // What it outputs: what `defaults` fill of it before it has a version.
-    let plain = format::plain_tool(&asked.tool, folder);
-    folder.update_lock(|lock| drop(lock.makes.insert(plain.clone(), kind.clone()))).map_err(Refusal)?;
+    if let Some(kind) = &kind {
+        let plain = format::plain_tool(&asked.tool, folder);
+        folder.update_lock(|lock| drop(lock.makes.insert(plain.clone(), kind.clone()))).map_err(Refusal)?;
+    }
     let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok((StatusCode::CREATED, Json(AssetMade { name, etag })))
 }
