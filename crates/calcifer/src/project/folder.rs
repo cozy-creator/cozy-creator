@@ -315,21 +315,8 @@ pub struct Pending {
     /// Its pin, by the field holding it, goes when it lands (`--outdated`): if it never does, the pin stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpin: Option<String>,
-    /// Where it goes, and each call after this one of the operation's list.
+    /// Where it goes.
     pub target: Target,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rest: Vec<Invocation>,
-    /// What each call before this one saved, for a later one that reads it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub done: Vec<Files>,
-}
-
-/// One call an adapter answered: a function of its package, and its exact input.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Invocation {
-    pub function: String,
-    #[serde(default)]
-    pub input: Map<String, Value>,
 }
 
 /// An asset's versions by number, the last number given (numbers are never given again), and the seed of a run that failed,

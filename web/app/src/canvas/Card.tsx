@@ -12,7 +12,7 @@ import { Media, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { aspectOf, faceOf, madeHere, makes, ratioOf, shownOf } from "./shown"
-import { beatLength, beatsOf, clock, noHash, piecesOf, took } from "./text"
+import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
@@ -117,8 +117,9 @@ function Approve({ view, name }: { view: ElementView; name: string }) {
 /** On a video: scrub to a point, and a new take keeps it up to there. Its words stay as they are. */
 function FromHere({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
+  const tools = useSignal(store.tools)
   const shown = shownOf(view)
-  if (!makes(view) || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
+  if (!makes(view) || !tools.get(view.asset?.tool ?? "")?.takes || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
   const at = view.scrub ?? 0
   return (
     <div className="from-here">
@@ -140,16 +141,21 @@ function FromHere({ view, name }: { view: ElementView; name: string }) {
   )
 }
 
-/** A shot's beats, each as wide as it lasts, or a cut's pieces. Read only: a beat opens the box's controls, a piece plays from there. */
+/** The rows of a group that adds up, each as wide as it lasts, or a cut's pieces. Read only: a row opens the box's controls, a piece plays from there. */
 function Bar({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
-  const beats = beatsOf(view.asset?.fields)
-  if (beats.length) {
+  const tools = useSignal(store.tools)
+  const group = view.asset && controlsOf(view.asset, tools).find((control) => control.members?.some((member) => member.total))
+  const total = group?.members?.find((member) => member.total)
+  const rows = group ? rowsIn(view.asset?.fields?.[group.field]) : []
+  if (total && rows.length) {
+    const lasts = (row: Record<string, unknown>) => Number(row[total.field]) || Number(total.default) || 1
     return (
       <div className="beats">
-        {beats.map((beat, i) => (
-          <button key={i} type="button" className="nodrag" style={{ flexGrow: beatLength(beat) }} onClick={() => store.patch(name, { face: "edit" })}>
-            {beatLength(beat)}s
+        {rows.map((row, i) => (
+          <button key={i} type="button" className="nodrag" style={{ flexGrow: lasts(row) }} onClick={() => store.patch(name, { face: "edit" })}>
+            {lasts(row)}
+            {total.unit ?? ""}
           </button>
         ))}
       </div>

@@ -184,14 +184,6 @@ pub struct Interface {
 
 /// The entrypoint a package with recipes runs them through (`cozy model quantize`).
 pub const RECIPES: &str = "quantize";
-/// A project adapter's function is named this and the function it speaks for (`App.project_adapter`): `cozy project`'s own, never offered to run by hand.
-pub const ADAPTER: &str = "project-adapter-";
-
-/// The name of the adapter that speaks for `function`.
-pub fn adapter_name(function: &str) -> String {
-    format!("{ADAPTER}{function}")
-}
-
 /// One declared recipe: the lane it writes and the model it reads.
 #[derive(Debug, Deserialize)]
 pub struct Recipe {
@@ -240,9 +232,9 @@ pub struct Callable {
     pub accelerator: Option<bool>,
     #[serde(default, deserialize_with = "or_default")]
     pub invocable: Invocable,
-    /// The path in its package of a component that draws its box.
+    /// What its box says that its types can't. None: it declares nothing, which draws it only in a package where nothing declares.
     #[serde(default, deserialize_with = "or_default")]
-    pub ui: Option<String>,
+    pub node: Option<Node>,
     /// A CPU function that loads no model and calls its package's GPU functions
     /// (`orchestrates`).
     #[serde(skip)]
@@ -251,6 +243,32 @@ pub struct Callable {
     #[serde(skip)]
     pub calls: Vec<Slot>,
 }
+
+/// `author.Node`: all a function says of its box beyond its types.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Node {
+    /// Its name in the tool list, in place of one from its package and function.
+    #[serde(default, deserialize_with = "or_default")]
+    pub label: String,
+    /// Inputs on its default face beside its first text and what's required.
+    #[serde(default, deserialize_with = "or_default")]
+    pub show: Vec<String>,
+    /// Inputs a box never draws, which a file or a run can still set.
+    #[serde(default, deserialize_with = "or_default")]
+    pub hide: Vec<String>,
+    /// Input to [`TAKE`], or to `<input>.<member>`: the platform fills it from what that input mentions.
+    #[serde(default, deserialize_with = "or_default")]
+    pub fill: BTreeMap<String, String>,
+    /// The model's own tags in a text: never mentions.
+    #[serde(default, deserialize_with = "or_default")]
+    pub reserved: Vec<String>,
+    /// The path in its package of a component that draws its box.
+    #[serde(default, deserialize_with = "or_default")]
+    pub ui: Option<String>,
+}
+
+/// What `fill` calls the take a new one keeps the start of.
+pub const TAKE: &str = "take";
 
 #[derive(Debug, Deserialize)]
 pub struct WeightsOutput {
@@ -412,21 +430,23 @@ impl Interface {
         Ok(out)
     }
 
-    /// The package's functions, GPU before CPU, each group sorted: never an internal callable, a
-    /// project adapter, or the recipes' `quantize`, which `cozy model quantize` runs.
+    /// The package's functions, GPU before CPU, each group sorted: never an internal callable or
+    /// the recipes' `quantize`, which `cozy model quantize` runs.
     pub fn public(&self) -> Vec<&str> {
-        let mut public: Vec<&Callable> =
-            self.callables.iter().filter(|c| !c.internal && !c.name.starts_with(ADAPTER) && !self.runs_recipes(c)).collect();
+        let mut public: Vec<&Callable> = self.callables.iter().filter(|c| !c.internal && !self.runs_recipes(c)).collect();
         public.sort_unstable_by_key(|c| (c.accelerator == Some(false), c.name.as_str()));
         public.into_iter().map(|c| c.name.as_str()).collect()
     }
 }
 
 impl Interface {
-    /// The project adapter that speaks for `function`.
-    pub fn adapter(&self, function: &str) -> Option<&Callable> {
-        let name = adapter_name(function);
-        self.callables.iter().find(|callable| callable.name == name)
+    /// What a publish says of a `Node` naming an input its function hasn't got.
+    pub fn node_slips(&self) -> Vec<String> {
+        let named = |callable: &Callable, node: &Node| -> Vec<String> {
+            let written = node.show.iter().chain(&node.hide).chain(node.fill.keys());
+            written.filter(|input| callable.field(input).is_none()).map(|input| format!("{}'s node names {input}, which isn't one of its inputs", callable.name)).collect()
+        };
+        self.callables.iter().filter_map(|callable| Some(named(callable, callable.node.as_ref()?))).flatten().collect()
     }
 
     /// Whether `callable` is the `quantize` that runs this package's recipes.
@@ -480,17 +500,16 @@ impl Callable {
         self.request.fields.iter().find(|f| f.name == name)
     }
 
-    /// An adapter's typed `fields`, what a box of it shows; none for one that takes them as they come.
-    pub fn typed_inputs(&self) -> Option<&Struct> {
-        match &self.field("inputs")?.ty {
-            Type::Struct(fields) => Some(fields),
-            _ => None,
-        }
-    }
-
     /// Whether `field` is the declared Assets collection.
     pub fn is_assets(&self, field: &str) -> bool {
         self.assets.as_ref().is_some_and(|a| a.parameter == field)
+    }
+}
+
+impl Struct {
+    /// Whether a list of these is filled from mentions, each by its `name`, rather than written row by row.
+    pub fn is_mention(&self) -> bool {
+        self.fields.iter().any(|field| field.name == "name" && field.ty == Type::Str)
     }
 }
 

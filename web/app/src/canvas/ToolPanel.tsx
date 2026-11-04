@@ -19,7 +19,7 @@ const GROUPS: { id: string; words: string; icon: IconName }[] = [
 ]
 
 /** What you're after. One that asks for a file and for no words changes what it's given; anything else makes something of its kind. */
-const groupOf = (tool: Tool) => tool.local ? "local" : (tool.controls.some((control) => control.type === "file" && control.required) && !tool.controls.some((control) => control.type === "text" || control.type === "beats") ? "touch" : tool.kind)
+const groupOf = (tool: Tool) => tool.local ? "local" : (tool.controls.some((control) => control.type === "file" && control.required) && !tool.controls.some((control) => control.type === "text" || control.type === "group") ? "touch" : tool.kind)
 
 /** A function and its quick form are one row: `generate` and `generate_turbo` of a package. */
 function rowsOf(tools: Tool[]): { tool: Tool; quick?: Tool }[] {

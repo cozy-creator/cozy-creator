@@ -1,21 +1,30 @@
 import type { Asset, Control, Tool } from "../types"
-import { BEAT_S } from "./text"
+import { type Row, rowsIn } from "./text"
+
+/** A row's members, from what rows hold: their words, then the number that adds up. */
+function membersOf(rows: Row[]): Control[] {
+  const held = new Map(rows.flatMap((row) => Object.entries(row)))
+  const words = [...held.keys()].filter((field) => typeof held.get(field) !== "number")
+  const numbers = [...held.keys()].filter((field) => typeof held.get(field) === "number")
+  return [
+    ...words.map((field): Control => ({ field, type: "text", label: fieldWords(field) })),
+    ...numbers.map((field, at): Control => ({ field, type: "range", label: fieldWords(field), min: 0, max: Math.max(30, ...rows.map((row) => Number(row[field]) || 0)), step: 1, total: at === 0 })),
+  ]
+}
 
 /** A box from whatever `fields` holds, for a tool the list doesn't know: what it holds is what can be edited, and text is always there to type. */
 function fromFields(fields: Record<string, unknown>): Control[] {
   const held = Object.entries(fields).flatMap(([field, value]): Control[] => {
     if (field === "description" || field === "models" || field === "lora") return []
-    if (field === "beats" && Array.isArray(value)) return [{ field, type: "beats", label: "Beats" }]
+    if (rowsIn(value).length) return [{ field, type: "group", label: fieldWords(field), min_items: 1, members: membersOf(rowsIn(value)) }]
     if (field === "aspect_ratio") return [{ field, type: "shape", label: "Shape" }]
     if (typeof value === "boolean") return [{ field, type: "toggle", label: field }]
     if (typeof value === "number") return [{ field, type: "range", label: field, min: 0, max: Math.max(10, value * 2), step: Number.isInteger(value) ? 1 : 0.1 }]
     if (typeof value === "string") return [{ field, type: "text", label: field }]
     return []
   })
-  if (!held.some((control) => control.type === "text")) return [{ field: "instructions", type: "text", label: "Instructions" }, ...held]
-  // What a box says comes first, whatever the alphabet makes of `style` and `summary`.
-  const said = (control: Control) => (control.field === "instructions" || control.field === "summary" ? 0 : 1)
-  return [...held].sort((a, b) => said(a) - said(b))
+  if (!held.some((control) => control.type === "text" || control.type === "group")) return [{ field: "instructions", type: "text", label: "Instructions" }, ...held]
+  return held
 }
 
 /** What a box asks for: its tool's controls, or what its fields hold. Nothing here knows any function. */
@@ -24,17 +33,21 @@ export function controlsOf(asset: Asset, tools: Map<string, Tool>): Control[] {
   return tool ? tool.controls : fromFields(asset.fields ?? {})
 }
 
-/** What a box shows unasked: its first text, its beats and what a render can't go without, and with no text the file it takes. The rest waits behind More. */
+/** What a box shows unasked: its tool says, its first text, what a render can't go without and what its package shows; for a box from its fields, what it says, and with no text the file it takes. The rest waits. */
 export function shownControls(controls: Control[]): Control[] {
+  if (controls.some((control) => control.face)) return controls.filter((control) => control.face)
   const first = controls.find((control) => control.type === "text") ?? controls.find((control) => control.type === "file")
-  return controls.filter((control) => control === first || control.type === "beats" || control.required)
+  return controls.filter((control) => control === first || control.type === "group" || control.required)
 }
 
-/** A new beat. A shot always has one, so one comes with its box. */
-export const newBeat = (control: Control) => ({ duration: Math.min(BEAT_S, control.max_duration ?? BEAT_S) })
+/** A new row: what its members default to. */
+export const newRow = (control: Control): Row => Object.fromEntries((control.members ?? []).flatMap((member) => (member.default === undefined ? [] : [[member.field, member.default]])))
+
+/** What a group holds once it has as many rows as it must. */
+export const fullRows = (control: Control, held: Row[]): Row[] => [...held, ...Array.from({ length: Math.max(0, (control.min_items ?? 0) - held.length) }, () => newRow(control))]
 
 /** What a tool's box holds the moment it's dropped. */
-export const startingFields = (tool: Tool) => Object.fromEntries(tool.controls.filter((control) => control.type === "beats").map((control) => [control.field, [newBeat(control)]]))
+export const startingFields = (tool: Tool) => Object.fromEntries(tool.controls.flatMap((control) => (control.type === "group" && control.min_items ? [[control.field, fullRows(control, [])]] : [])))
 
 const empty = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)
 

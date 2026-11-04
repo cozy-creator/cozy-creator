@@ -491,7 +491,6 @@ export interface Run {
   stalled?: Stalled
   calls?: Call[]
   report?: Report
-  adapter?: boolean
   request?: RunAsked
 }
 
@@ -971,7 +970,7 @@ export interface AssetDeleted {
   at?: Row
 }
 
-export type ControlType = "text" | "beats" | "shape" | "range" | "choice" | "toggle" | "file" | "timeline"
+export type ControlType = "text" | "group" | "shape" | "range" | "choice" | "toggle" | "file" | "timeline"
 
 /** One thing a box asks for. A box is built from these, and nothing about any function. */
 export interface Control {
@@ -984,9 +983,20 @@ export interface Control {
   step?: number
   accept?: string
   multiple?: boolean
-  max_duration?: number
+  /** `group`: a row's controls, and how few and how many rows. */
+  members?: Control[]
+  min_items?: number
+  max_items?: number
+  /** A group's member whose sum it shows. */
+  total?: boolean
+  /** What an empty text reads. */
+  placeholder?: string
+  /** What a number counts. */
+  unit?: string
   default?: unknown
   required?: boolean
+  /** On its box's default face. The rest folds away. */
+  face?: boolean
 }
 
 export interface Tool {
@@ -1002,6 +1012,8 @@ export interface Tool {
   controls: Control[]
   /** The path in its package of a component that draws its box. */
   ui?: string
+  /** A new take can keep the start of one of its. */
+  takes?: boolean
 }
 
 /** Where a tool's component is, for `import()`. */
