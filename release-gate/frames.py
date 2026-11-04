@@ -31,7 +31,9 @@ least consecutive SSIM; `inside_ssim` is the same three-pair window's least SSIM
 15.08 s dip is two frames inside piece 1, alike in every arm).
 coherent: gray at 192x108 over every frame: each frame's luma deviation (`contrast`: flat or grey scores near 0), the
 2nd to 98th percentile luma (`spread`), the mean change per frame (`motion`: a frozen picture scores 0) and the SSIM of
-consecutive frames, mean and least (`coherence`, `least`: noise scores near 0, as a kernel's garbage does).
+consecutive frames, mean and least (`coherence`, `least`: noise scores near 0, as a kernel's garbage does). `fine`: at
+1344x768, two frames a second, the median share of a frame's spatial power above a quarter cycle per pixel. A kernel's
+fine corruption pattern puts power there; a natural picture, fast or still, has little.
 """
 
 import json
@@ -178,13 +180,24 @@ def seams(output: str, at: list[float]) -> dict:
             "boundaries": out, "flicker": int(len(frames)), "flicker_at_s": [round(int(f) / FPS, 2) for f in frames[:8]]}
 
 
+def fine(output: str) -> float:
+    window = np.hanning(768)[:, None] * np.hanning(1344)
+    radius = np.hypot(*np.meshgrid(np.fft.rfftfreq(1344), np.fft.fftfreq(768)))
+    shares = []
+    for frame in gray(output, 1344, 768, "fps=2"):
+        power = np.abs(np.fft.rfft2((frame - frame.mean()) * window)) ** 2
+        shares.append(power[radius > 0.25].sum() / power[radius > 0.004].sum())
+    return float(np.median(shares))
+
+
 def coherent(output: str) -> dict:
     a = gray(output, 192, 108)
     pairs = [ssim(a[i - 1], a[i]) for i in range(1, len(a))]
     return {**probe(output), "contrast": round(float(a.std(axis=(1, 2)).mean()), 2),
             "spread": round(float(np.percentile(a, 98) - np.percentile(a, 2)), 1),
             "motion": round(float(np.abs(np.diff(a, axis=0)).mean()), 2),
-            "coherence": round(float(np.mean(pairs)), 3), "least": round(float(np.min(pairs)), 3)}
+            "coherence": round(float(np.mean(pairs)), 3), "least": round(float(np.min(pairs)), 3),
+            "fine": round(fine(output), 4)}
 
 
 if __name__ == "__main__":
