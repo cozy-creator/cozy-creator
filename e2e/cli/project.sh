@@ -250,6 +250,38 @@ cozy project -p "$R" reclaim --yes > "$OUT/reclaim.txt" 2>&1 || check "runs: rec
 ls "$R/files/$hash"* > /dev/null 2>&1 || check "runs: reclaim --yes took the pinned file"
 J --arg h "$hash" '.runs | length == 1 and (.[0].sha256 | ltrimstr("sha256:") | startswith($h))' "$R/project.lock" || check "runs: rows left: $(jq -c .runs "$R/project.lock")"
 J '.run_files == 0' <<< "$(status "$R")" || check "runs: status after reclaim: $(status "$R" | jq -c .run_files)"
+
+step "a project: a script named like a module Python already has runs"
+local name
+for name in copy json; do
+  cat > "$OUT/$name.py" <<'PY'
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
+# ///
+"""Named like a module Python already has."""
+
+import msgspec
+from cozy_runtime.author import App
+
+app = App()
+
+
+class Ask(msgspec.Struct):
+    text: str
+
+
+class Said(msgspec.Struct):
+    back: str
+
+
+@app.entrypoint(accelerator=False)
+def echo(payload: Ask) -> Said:
+    return Said(back=payload.text[::-1])
+PY
+  (cd "$R" && cozy --json run "$OUT/$name.py/echo" text=abc --on local) > "$OUT/named-$name.ndjson" 2> "$OUT/named-$name.err" || check "runs: $name.py: $(tail -c 300 "$OUT/named-$name.err")"
+  tail -1 "$OUT/named-$name.ndjson" | J '.run.result.back == "cba"' || check "runs: $name.py did not answer: $(tail -1 "$OUT/named-$name.ndjson" | jq -c .run.reason)"
+done
 }
 
 # Approved and pinned are one thing, a hash in project.yaml: one line changes, and everything else stands.

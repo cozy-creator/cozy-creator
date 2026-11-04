@@ -241,13 +241,12 @@ impl Host {
         None
     }
 
-    /// Whether `machine` is there to fetch `sha256` from: Calcifer knows the run on it that made these bytes, it hasn't ended, and its
-    /// Hub doesn't call it offline.
-    pub fn fetchable(&self, sha256: &str, machine: &str) -> bool {
-        let (machines, store) = (&self.api.machines, self.api.calcifer.store());
-        store.making(sha256, machine).is_ok_and(|made| made.is_some())
-            && machines.here(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
+    /// Whether `machine` is there to fetch `sha256` from: it hasn't ended, its Hub doesn't call it offline, and it hasn't evicted them.
+    pub async fn fetchable(&self, sha256: &str, machine: &str) -> bool {
+        let machines = &self.api.machines;
+        machines.here(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
             && machines.offline(machine).is_none()
+            && self.api.calcifer.still_holds(sha256, machine).await
     }
 
     /// `sha256`, which `machine` keeps, brought here now as an export brings an output: into its project's `files/`. Err: why not.

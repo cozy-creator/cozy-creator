@@ -1373,7 +1373,7 @@ enum Reach {
     There(On),
     /// The machine that keeps it is there to fetch it from.
     Fetch,
-    /// With the machine that kept it.
+    /// With the machine that kept it, or evicted by it.
     Gone,
 }
 
@@ -1643,7 +1643,7 @@ impl Walk {
                 && let Some(file) = keep["latents"]["sha256"].as_str().and_then(|sha256| lock.files.get(sha256))
                 && matches!(self.reach(file, &target.on).await, Reach::Gone)
             {
-                let said = format!("{name}: take {}'s latents went with its machine: `cozy project render {name}` renders the whole shot", keep["take"]);
+                let said = format!("{name}: take {}'s latents are gone from their machine: `cozy project render {name}` renders the whole shot", keep["take"]);
                 return Err(Error::new(Kind::NotFound, "take_latents_gone", said));
             }
             // What stays on a machine that's gone isn't read: an adapter does without it.
@@ -1740,7 +1740,7 @@ impl Walk {
         if let Some(machine) = self.host.holding(&file.sha256, file.length, on).await {
             return Reach::There(machine);
         }
-        match self.host.fetchable(&file.sha256, &file.machine) {
+        match self.host.fetchable(&file.sha256, &file.machine).await {
             true => Reach::Fetch,
             false => Reach::Gone,
         }
@@ -1851,7 +1851,7 @@ impl Walk {
                     let fetched = self.host.fetch(&digest, &file.machine).await;
                     fetched.map_err(|why| cannot(&name, format!("{field} is on {}, and can't be had: {why}", file.machine)))?;
                 }
-                Reach::Gone => return Err(cannot(&name, format!("{field} went with its machine {}", file.machine))),
+                Reach::Gone => return Err(cannot(&name, format!("{field} is gone from its machine {}", file.machine))),
             }
             let length = match on_machine {
                 true => file.length,

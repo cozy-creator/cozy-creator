@@ -176,12 +176,31 @@ impl Objects {
     }
 
     /// Removes objects no unfinished run names and nothing used for the TTL, or for `IDLE`
-    /// while the disk is low: how many, and their bytes.
+    /// while the disk is low, and held outputs unused for the TTL: how many, and their bytes.
     pub fn sweep(&self) -> io::Result<(usize, u64)> {
-        self.release(match Disk::measure(&self.engine.root)?.short() {
+        let held = self.evict_outputs(crate::reclaim::TTL, &mut || Ok(false))?;
+        let unheld = self.release(match Disk::measure(&self.engine.root)?.short() {
             Some(_) => crate::reclaim::IDLE,
             None => crate::reclaim::TTL,
-        })
+        })?;
+        Ok((held.0 + unheld.0, held.1 + unheld.1))
+    }
+
+    /// A disk still low after every cache: held outputs nothing used for `IDLE`, least recently used first, until it isn't.
+    pub fn make_room(&self) -> io::Result<(usize, u64)> {
+        let root = self.engine.root.clone();
+        self.evict_outputs(crate::reclaim::IDLE, &mut || Ok(Disk::measure(&root)?.short().is_none()))
+    }
+
+    fn evict_outputs(&self, unused: Duration, enough: &mut dyn FnMut() -> io::Result<bool>) -> io::Result<(usize, u64)> {
+        let _custody = self.guard();
+        let before = SystemTime::now().checked_sub(unused).unwrap_or(UNIX_EPOCH);
+        let since = before.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+        let removed = self.cas.evict_held(unused, &mut |sha256| self.engine.with_journal(|j| j.object_releasable(sha256, since)), enough)?;
+        for (sha256, _) in &removed {
+            self.engine.with_journal(|j| j.drop_held_memos(sha256))?;
+        }
+        Ok((removed.len(), removed.iter().map(|(_, length)| length).sum()))
     }
 
     /// `sweep` over objects unused for `unused`. One written just before a crash has no journal
