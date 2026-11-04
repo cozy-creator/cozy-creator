@@ -82,6 +82,8 @@ pub async fn card(
 pub struct Releases {
     /// The newest release that isn't yanked.
     pub newest: Option<String>,
+    /// Every release it has, yanked or not.
+    pub released: HashSet<String>,
     pub yanked: HashSet<String>,
 }
 
@@ -102,6 +104,7 @@ pub async fn releases(client: &Client, package: &str) -> Result<Releases, Error>
     let yanked = |row: &&crate::types::CatalogRelease| row.yanked == Some(true) || row.yanked_at.as_deref().is_some_and(|at| !at.is_empty());
     Ok(Releases {
         newest: card.package.latest_release,
+        released: card.releases.iter().map(|row| row.release.clone()).collect(),
         yanked: card.releases.iter().filter(yanked).map(|row| row.release.clone()).collect(),
     })
 }

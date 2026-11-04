@@ -193,8 +193,8 @@ impl Held {
 }
 
 /// Which release a run binds against and runs, once, before binding, and why, with a line when it
-/// moved off a yanked one: the one asked; else the newest its machine holds that isn't yanked; else
-/// the Hub's newest, which the machine installs. So inputs bind against what will run, the run is
+/// moved off a yanked one: the one asked; else the newest its machine holds that the Hub still has and
+/// hasn't yanked; else the Hub's newest, which the machine installs. So inputs bind against what will run, the run is
 /// pinned to it, and a release moves under a machine only by `cozy package update`. With no machine
 /// (`held`), the newest as this computer last read it.
 async fn release_of(
@@ -233,6 +233,17 @@ async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> R
         // Unknown: what it holds runs.
         Err(_) => return Ok((top, ReleaseFrom::Installed, None)),
     };
+    // A release the read doesn't name was published since it, or the Hub no longer has it: which, is read again, not on every run.
+    let unnamed = holds.iter().any(|release| !yanked.released.contains(*release));
+    let yanked = match unnamed && api.releases.read_before(hub, package, RECHECK) {
+        true => api.releases.now(api, hub, package).await.unwrap_or(yanked),
+        false => yanked,
+    };
+    // An old installation of a release the Hub no longer has can't be chosen: nothing can install or describe it.
+    let holds: Vec<&str> = holds.into_iter().filter(|release| yanked.released.contains(*release)).collect();
+    let Some(top) = newest_by(holds.iter().copied(), |release| release).map(str::to_owned) else {
+        return Ok((yanked.newest(package)?, ReleaseFrom::Latest, None));
+    };
     let shown = package.trim_start_matches("_/");
     let machine = &held.machine;
     if let Some(open) = newest_by(holds.iter().copied().filter(|release| !yanked.yanked.contains(*release)), |release| release) {
@@ -265,6 +276,8 @@ pub(crate) struct Releases(Mutex<HashMap<(String, String), (Instant, Arc<cards::
 
 /// A read this old is read again, behind the run that found it.
 const RECENT: Duration = Duration::from_secs(600);
+/// How often a release its machine holds and the read doesn't name sends a run to the Hub.
+const RECHECK: Duration = Duration::from_secs(60);
 /// How long a run waits on a package's first read: it holds up a run, so a Hub slower than this
 /// leaves the run with what its machine holds.
 const LATE: Duration = Duration::from_secs(5);
@@ -310,6 +323,12 @@ impl Releases {
                 Err(_) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("{package}'s releases: no answer in {}s", LATE.as_secs()))),
             },
         }
+    }
+
+    /// Whether `package`'s releases were last read longer ago than `age`, or never.
+    fn read_before(&self, hub: &str, package: &str, age: Duration) -> bool {
+        let kept = self.0.lock().expect("releases lock");
+        kept.get(&(canonical(hub), package.to_owned())).is_none_or(|(at, _)| at.elapsed() >= age)
     }
 
     /// Yanked, un-yanked or published here: the next run reads it, not one read later.
