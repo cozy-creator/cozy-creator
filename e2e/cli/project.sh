@@ -65,6 +65,7 @@ said_once
 film_is_its_file
 short_film_heals
 cut_versions
+by_asset
 hard_cut
 memo
 pins
@@ -93,6 +94,84 @@ J --arg i "$ID" '.projects | any(.id == $i and .missing)' "$OUT/project-ls-2.jso
 cozy --json project ls > "$OUT/project-ls-3.json" || true
 { J --arg a "$ID" '.projects | all(.id != $a)' "$OUT/project-ls-3.json" && [ -f "$OUT/garden-moved/project.yaml" ]; } || check "DELETE did not forget the project, or touched its folder"
 forget_all
+}
+
+# Several runs at once, off a terminal and on one: every line names its asset, a preview is no take, a warning says whose it is, once,
+# and what `--json` gives is as it was.
+by_asset() {
+step "a project: runs at once, each line starting with its asset"
+local T=$OUT/by-asset look name
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 2
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+look=$(prefix "$T" "$T/look.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  look:
+    video: $look
+  amy:
+    kind: image
+    render: {with: $here/project/draw.py}
+    description: A picture.
+  sophia:
+    kind: image
+    render: {with: $here/project/draw.py}
+    description: Another.
+  long:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look> and <amy>.
+    segments: 2
+    each: 3
+  short:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look> and <sophia>.
+    segments: 1
+    each: 2
+  cut:
+    kind: video
+    render: {with: cozy}
+    pieces:
+      - <long>
+      - <short>
+YAML
+render "$T" all || check "by asset: render all: $(tail -c 400 "$OUT/render.txt")"
+cp "$OUT/render.txt" "$OUT/by-asset.txt"
+for name in amy sophia long short cut; do
+  grep -qE "^$name: (take|version) [0-9]+" "$OUT/by-asset.txt" || check "by asset: no line says $name landed: $(cat "$OUT/by-asset.txt")"
+done
+says "by asset" "long: shot 1/2 : segment 1/2 ready: files/"
+says "by asset" "long: shot 1/2 : segment 2/2, denoise"
+says "by asset" "short: shot 2/2 : segment 1/1, denoise"
+# Nothing of a run's own, and every line its asset's, the project's first line and the last aside.
+! grep -qE '^run [0-9]+ · |^  on |^  inputs: |^  call |^(image|video)  ' "$OUT/by-asset.txt" || check "by asset: a run's own lines: $(cat "$OUT/by-asset.txt")"
+grep -vE '^(amy|sophia|long|short|cut): |^by-asset( on [a-z]+)?: following|^rendered ' "$OUT/by-asset.txt" > "$OUT/by-asset-other.txt" || true
+[ ! -s "$OUT/by-asset-other.txt" ] || check "by asset: a line with no asset: $(cat "$OUT/by-asset-other.txt")"
+[ "$(grep -c 'lens is dusty' "$OUT/by-asset.txt")" = 1 ] || check "by asset: a warning not said once, or not at all: $(grep 'lens is dusty' "$OUT/by-asset.txt")"
+grep -qE '^(long|short): warning: the fixture' "$OUT/by-asset.txt" || check "by asset: a warning names no asset: $(grep 'lens is dusty' "$OUT/by-asset.txt")"
+J '.board.jobs | map(select(.asset == "long")) | .[0] | .state == "done" and .noun == "take" and .number == 1 and (.path | startswith("files/"))' <<< "$(status "$T")" || check "by asset: status's board: $(status "$T" | jq -c .board)"
+# Shots are what makes a video by a package: a still and a cut count for nothing.
+J '.board.shots == 2 and ([.board.jobs[] | {(.asset): .shot}] | add) == {amy: null, sophia: null, long: 1, short: 2, cut: null}' <<< "$(status "$T")" || check "by asset: its shots: $(status "$T" | jq -c '{shots: .board.shots, jobs: [.board.jobs[] | {asset, shot}]}')"
+
+step "a project: --json is each run's own events"
+cozy --json project -p "$T" render short --on local > "$OUT/by-asset.ndjson" 2> "$OUT/by-asset-json.err" || check "by asset: --json: $(tail -c 300 "$OUT/by-asset-json.err")"
+for type in run.completed output_item.landed run.log; do
+  jq -se --arg t "$type" 'any(.type == $t)' "$OUT/by-asset.ndjson" > /dev/null || check "by asset: --json has no $type: $(cut -c1-120 "$OUT/by-asset.ndjson" | head -20)"
+done
+
+step "a project: --plain on a terminal is one line per event"
+script -qfec "stty rows 24 cols 120; '$COZY' project -p '$T' render sophia --plain --on local" "$OUT/by-asset-plain.txt" > /dev/null 2>&1 || check "by asset: --plain: $(tail -c 400 "$OUT/by-asset-plain.txt")"
+{ grep -aqE '^sophia: version [0-9]+' "$OUT/by-asset-plain.txt" && ! grep -aq $'\x1b\\[?1049h' "$OUT/by-asset-plain.txt"; } || check "by asset: --plain drew a view: $(cat -v "$OUT/by-asset-plain.txt" | tail -c 400)"
+
+step "a project: on a terminal, the live view and then a block in the scrollback"
+FORCE_HYPERLINK=1 script -qfec "stty rows 24 cols 120; '$COZY' project -p '$T' render all --on local" "$OUT/by-asset-tty.txt" > /dev/null 2>&1 || check "by asset: on a terminal: $(tail -c 400 "$OUT/by-asset-tty.txt")"
+sed -e 's/\x1b\]8;;[^\x1b]*\x1b\\//g' -e 's/\r$//' "$OUT/by-asset-tty.txt" | sed -n '/\x1b\[?1049l/,$p' > "$OUT/by-asset-block.txt"
+grep -aqE '^long +take [0-9]+ +[0-9]+s +files/[0-9a-f]{8}\.mp4$' "$OUT/by-asset-block.txt" || check "by asset: the block has no long, or no short link: $(cat -v "$OUT/by-asset-block.txt")"
+grep -aqE '^cut +(take|version) [0-9]+ +.*cut\.mp4, [0-9.]+ s' "$OUT/by-asset-block.txt" || check "by asset: the block has no cut with its length: $(cat -v "$OUT/by-asset-block.txt")"
+grep -aqE '^rendered 2 takes and 3 versions|^rendered .* in ' "$OUT/by-asset-block.txt" || check "by asset: the block has no total: $(cat -v "$OUT/by-asset-block.txt")"
+grep -aqF "$look" "$OUT/by-asset-tty.txt" && check "by asset: the input's name in the view"
+grep -aq 'running' "$OUT/by-asset-tty.txt" || check "by asset: the live view never showed a job running"
 }
 
 # Format 1, of the file or of the lock, is said and left as it is: nothing writes over it.
@@ -659,7 +738,7 @@ cozy project -p "$T" render waiting --missing --on local > "$OUT/join-second.txt
 second=$!
 heard=''
 for _ in $(seq 12); do
-  grep -q 'already going in joining, and this adds nothing to it: joining it' "$OUT/join-second.txt" && grep -q "$n" "$OUT/join-second.txt" && { heard=1; break; }
+  grep -q 'already going in joining, and this adds nothing to it: joining it' "$OUT/join-second.txt" && grep -q '^waiting: take 1 running' "$OUT/join-second.txt" && { heard=1; break; }
   sleep 0.25
 done
 [ -n "$heard" ] || check "joining: the second render said nothing within 3 s, while run $n went: $(cat "$OUT/join-second.txt")"
@@ -1134,6 +1213,7 @@ code=0; render "$T" reader || code=$?
 [ "$(made "$T" no)" = null ] || [ "$(made "$T" no)" = 0 ] || check "failures: a refusal made a version"
 says failures "reader cannot render: no failed in this render"
 stops
+failed_once
 absent_piece
 rename_waits
 [ -d "${PACKAGES:-}/minimax-h3" ] || return 0
@@ -1260,6 +1340,43 @@ says stops "rendered 0 of 8; "
 says stops "cozy project render all --missing --on local"
 failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq '.runs | length')
 [ "$failed" -lt 8 ] || check "stops: $failed of 8 runs ran: $(tail -c 400 "$OUT/render.txt")"
+}
+
+# A shot that fails on a new project, read by another: the walk doesn't send it again, one row says so, and what reads it says why. A
+# render the person asks again is a new attempt.
+failed_once() {
+step "a project: a failed take isn't sent again by the walk; asked again, it is"
+local T=$OUT/failed-once look code=0 tried
+mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 2
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+look=$(prefix "$T" "$T/look.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  look:
+    video: $look
+  broken:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look>.
+    crash: the card ran out of memory
+  reader:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look> after <broken>.
+YAML
+tried() { cozy --json run ls -p "$T" --limit 0 --state failed | jq '[.runs[] | select(.target | endswith("/crash"))] | length'; }
+render "$T" all || code=$?
+[ "$code" != 0 ] || check "failed once: render exited 0: $(tail -c 400 "$OUT/render.txt")"
+[ "$(tried)" = 1 ] || check "failed once: the walk sent it $(tried) times: $(tail -c 600 "$OUT/render.txt")"
+J '[.board.jobs[] | select(.asset == "broken")] | length == 1 and .[0].state == "failed" and .[0].number == 1' <<< "$(status "$T")" || check "failed once: its rows: $(status "$T" | jq -c '.board.jobs | map({asset, state, number})')"
+J '[.board.jobs[] | select(.asset == "reader")] | length == 1 and .[0].state == "failed"' <<< "$(status "$T")" || check "failed once: what reads it: $(status "$T" | jq -c '.board.jobs | map({asset, state})')"
+says "failed once" "reader cannot render: broken failed in this render"
+says "failed once" "rendered 0 of 2; 2 failed"
+! grep -q 'no take yet' "$OUT/render.txt" || check "failed once: it went on to send it: $(tail -c 400 "$OUT/render.txt")"
+code=0; render "$T" broken || code=$?
+{ [ "$code" != 0 ] && [ "$(tried)" = 2 ]; } || check "failed once: asked again, exit $code, $(tried) runs"
+J '[.board.jobs[] | select(.asset == "broken")] | length == 1 and .[0].number == 2' <<< "$(status "$T")" || check "failed once: asked again, its rows: $(status "$T" | jq -c '.board.jobs | map({asset, state, number})')"
 }
 
 # A piece gone from this computer, and at no machine or Hub, is left out with a warning (Paul, 11-04): the film says so, the one before stays a

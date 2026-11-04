@@ -194,6 +194,7 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; adap
 "--take" = "pr: projects: keeps: the take reaches the adapter as op.keep, one it doesn't have refused"
 "--in" = "pr: projects: keeps: where it lands, ignored with all"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"
+"--plain" = "pr: projects: by asset, one line per event on a terminal too"
 
 ["project cancel"]
 test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"

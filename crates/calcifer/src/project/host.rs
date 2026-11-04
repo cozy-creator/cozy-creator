@@ -168,7 +168,7 @@ impl Host {
     /// What a walk's listeners hear of what this does for it.
     fn tell(&self, message: String) {
         if let Some(events) = &self.events {
-            let _ = events.send(Event::Warning { message });
+            let _ = events.send(Event::Warning { message, name: None });
         }
     }
 
@@ -230,6 +230,12 @@ impl Host {
         let calcifer = &self.api.calcifer;
         let row = calcifer.store().keyed(key).map_err(|e| refused(e.into()))?;
         row.map(|row| calcifer.record(&row).map_err(refused)).transpose()
+    }
+
+    /// Run `number`, as its record says now.
+    pub fn numbered(&self, number: u64) -> Option<Run> {
+        let calcifer = &self.api.calcifer;
+        calcifer.record(&calcifer.store().run_by_number(number).ok()??).ok()
     }
 
     /// The run once it ended and each output landed here or failed to.

@@ -1552,7 +1552,7 @@ impl Pause {
 }
 
 /// A byte count for people: `1.5 MiB`.
-fn bytes(n: f64) -> String {
+pub(crate) fn bytes(n: f64) -> String {
     let (mut value, mut unit) = (n, "B");
     for next in ["KiB", "MiB", "GiB"] {
         if value < 1024.0 {
