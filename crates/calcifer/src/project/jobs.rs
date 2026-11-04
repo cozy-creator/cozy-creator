@@ -102,6 +102,10 @@ impl Jobs {
     pub fn end(&self, elapsed_ms: u64) {
         let mut held = self.held.lock().expect("jobs lock");
         held.elapsed_ms = Some(elapsed_ms);
+        // What it fetched ahead goes no further: nothing here hears of it now.
+        for (_, row) in held.ahead.iter_mut().filter(|(_, row)| row.stage.is_some()) {
+            row.stage = None;
+        }
         (held.live, held.sending, held.coming) = Default::default();
         for cut in std::mem::take(&mut held.cuts) {
             match held.ended.iter_mut().find(|ended| ended.asset == cut.asset) {

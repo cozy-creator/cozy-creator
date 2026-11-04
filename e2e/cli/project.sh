@@ -87,6 +87,7 @@ path_free
 entities
 orphans
 joining
+walking
 queueing
 every_render
 keeps
@@ -1044,6 +1045,57 @@ wait "$second" || check "joining: the second render: $(tail -c 300 "$OUT/join-se
 }
 
 # Renders queued from one shell, seen, one canceled, and the rest land. A canceled `render all` doesn't send again what it canceled.
+# The walk (cl-770): every job known when asked, each going on its own, a deleted asset's queued job saying so, and nothing of the walk left behind.
+walking() {
+step "a project: what's queued is known at once, a slow job holds up nothing, a queued job's deleted asset says so"
+local W=$OUT/walking stream=$OUT/walking-events.txt id
+mkdir -p "$W"
+cat > "$W/project.yaml" <<YAML
+version: 2
+defaults:
+  image:
+    with: $here/project/draw.py
+assets:
+  slow:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 8
+  beside:
+    description: Reads nothing, so it goes now.
+  one:
+    description: From <slow>.
+  two:
+    description: From <slow>.
+  last:
+    description: From <one> and <two>.
+  gone_soon:
+    description: Also from <slow>, and deleted while it waits.
+YAML
+id=$(cozy --json project -p "$W" status | jq -r .id)
+api -N --max-time 40 "http://$ADDR/v1/events" > "$stream" 2> /dev/null &
+local tail=$!
+cozy project -p "$W" render all --queue --on local > "$OUT/walking-queue.txt" 2>&1 || check "walking: render: $(tail -c 300 "$OUT/walking-queue.txt")"
+J '[.board.jobs[].asset] as $a | (["slow", "beside", "one", "two", "last", "gone_soon"] - $a) == []' <<< "$(status "$W")" || check "walking: not every job is on the board at once: $(status "$W" | jq -c '[.board.jobs[] | .asset]')"
+J '.board.jobs[] | select(.asset == "last") | .needs | contains(["one", "two"])' <<< "$(status "$W")" || check "walking: last doesn't say what it waits for: $(status "$W" | jq -c '.board.jobs[] | select(.asset == "last")')"
+for _ in $(seq 120); do [ "$(made "$W" beside)" = 1 ] && break; sleep 0.25; done
+{ [ "$(made "$W" beside)" = 1 ] && [ "$(made "$W" slow)" = 0 ]; } || check "walking: beside waited for slow, or slow is done already: $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
+[ -f "$W/.runs/walk.json" ] || check "walking: what the walk owes isn't in .runs/walk.json"
+J '.walk | not' "$W/project.lock" || check "walking: project.lock holds what the walk owes"
+python3 - "$W/project.yaml" <<'PY2'
+import re, sys
+text = open(sys.argv[1]).read()
+open(sys.argv[1], "w").write(re.sub(r"  gone_soon:\n    description: .*\n", "", text))
+PY2
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$W")" && break; sleep 0.5; done
+kill "$tail" 2> /dev/null
+{ [ "$(made "$W" slow)" = 1 ] && [ "$(made "$W" one)" = 1 ] && [ "$(made "$W" two)" = 1 ] && [ "$(made "$W" last)" = 1 ]; } || check "walking: made $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
+[ "$(made "$W" gone_soon)" = 0 ] || check "walking: a deleted asset's queued job was made"
+J '.board.jobs[] | select(.asset == "gone_soon") | .state == "canceled" and (.why | test("deleted"))' <<< "$(status "$W")" || check "walking: a deleted asset's job says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "gone_soon")')"
+[ ! -e "$W/.runs/walk.json" ] || check "walking: .runs/walk.json outlived the render"
+[ -z "$(find "$W/.runs" -type f 2> /dev/null)" ] || check "walking: left in .runs: $(find "$W/.runs" -type f)"
+grep -q "\"type\":\"job.updated\".*\"project\":\"$id\"\|\"project\":\"$id\".*\"type\":\"job.updated\"" "$stream" || check "walking: /v1/events told no job.updated: $(head -c 300 "$stream")"
+}
+
 queueing() {
 step "a project: three renders queued from one shell, one canceled, the rest land"
 local T=$OUT/queueing
