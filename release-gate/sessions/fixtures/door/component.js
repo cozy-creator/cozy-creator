@@ -39,7 +39,9 @@ const STEP_MS = 60000;
   await page.reload();
   const box = page.locator('.react-flow__node').filter({ has: page.locator('.nm:text-is("drawn")') });
   await box.waitFor();
-  // The pointer on it, as a person's: a hover that retries scrolls, and leaves it over something else.
+  // In view, then the pointer on it, as a person's: a hover that retries scrolls, and leaves it over something else.
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
   const name = await box.locator('.nm').boundingBox();
   await page.mouse.move(name.x + name.width / 2, name.y + name.height / 2);
   await box.locator('button[aria-label=Render]').waitFor();
