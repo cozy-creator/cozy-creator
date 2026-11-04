@@ -252,9 +252,17 @@ log "${ON:+on }${ON:-rented} $M"
 # A move within --stall minutes restarts the rental's 15-minute idle clock, which the gate's work between runs needs
 # (fetches, uploads, analysis). No move that long with a run open is a hung cell (the longest quiet in 786 real cells was
 # 7.2 min): its runs are canceled, and the gate fails and ends the rental. With none open, nothing renews.
+# beat: the gate's newest line as a commit status: off the runner, nothing else shows a gate's cells (a running job's log
+# isn't served, and its pod answers only the runner's Calcifer).
+beat() {
+  [ -n "${GITHUB_RUN_ID:-}" ] || return 0
+  gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="gate/$GITHUB_RUN_ID/$SKU" \
+    -f description="$(tail -n 1 gate.log | cut -c1-135)" > /dev/null 2>&1 || true
+}
 hold() {
   local clock at active seen= moved=$SECONDS
   while sleep 240 && kill -0 $$ 2> /dev/null; do
+    beat
     clock=$(run_clock "$M" "$CLI") || continue
     read -r at active <<< "$clock"
     [ "$at" = "$seen" ] || { seen=$at moved=$SECONDS; }

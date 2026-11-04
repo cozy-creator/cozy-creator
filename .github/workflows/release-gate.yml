@@ -46,6 +46,10 @@ on:
         description: "Container disk GB per rental (empty: each suite's selection, else gate.sh's 400)"
         type: string
         default: ''
+      cap_minutes:
+        description: "The job's hard stop in minutes, the cap no computer has to watch (empty: 300)"
+        type: string
+        default: ''
       only:
         description: "Comma-separated cells or packages (empty: by selection)"
         type: string
@@ -136,6 +140,7 @@ jobs:
     permissions:
       contents: read
       actions: read  # a dev-build cozy, a wheel artifact of this run
+      statuses: write  # gate.sh's heartbeat
     # A publishing gate waits for the SKU and suite's other publishing gate (their baseline). Every other gate rents its
     # own pod and runs on its own, so a newer dispatch never cancels another's queued gate.
     concurrency:
@@ -144,7 +149,7 @@ jobs:
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The gate fails on the CLI's
     # typed errors and exits, and on a run that stops moving (gate.sh `hold`), never on time; H3 at the product shape on a
     # cold machine is the long cell.
-    timeout-minutes: 300
+    timeout-minutes: ${{ fromJSON(inputs.cap_minutes || '300') }}
     defaults:
       run:
         shell: bash

@@ -161,7 +161,7 @@ fi
 # generate or piece calls (generate runs one call per piece).
 named() {
   [ -f "$2.number" ] || return 0
-  local k; k=$(jq --arg l "$LORA" '[.calls[]? | select(.function | test("^generate|_piece$")) | select(tostring | contains($l))] | length' "$OUT/$2.json" 2>/dev/null)
+  local k; k=$(jq --arg l "$LORA" '[.calls[]? | select(.function | test("^generate|_piece$|_segment$")) | select(tostring | contains($l))] | length' "$OUT/$2.json" 2>/dev/null)
   expect "$1" "$([ "${k:-0}" -ge "$3" ] && echo PASS || echo FAIL)" "$LORA named in ${k:-0} generate call(s), want >= $3"
 }
 named h3-lora-named h3-lora 1
