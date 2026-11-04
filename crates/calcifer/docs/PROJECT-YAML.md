@@ -299,13 +299,13 @@ Nothing is film-specific except the kinds you choose. Art, then pictures, then 3
 ```yaml
 version: 2
 assets:
-  automaton art:
+  automaton_art:
     kind: art
     description: A bronze clockwork automaton, waist up.
     render: {with: sketchlab}
   automaton:
     kind: mesh
-    sheet: <automaton art>
+    sheet: <automaton_art>
     render: {with: meshforge, polygons: 40000}
   layout:
     kind: arrange
