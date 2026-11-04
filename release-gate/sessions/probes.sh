@@ -93,8 +93,8 @@ else
   step blob run "$FIX/blob.py/blob" "mib:=$MIB" --on "$NAME" || check "the blob run did not complete: $(tail -3 "$OUT/blob.txt")"
   N=$(cozy --json run ls --on "$NAME" --limit 1 2>/dev/null | jq -r '.runs[0].number // empty')
   [ -n "$N" ] || check "no run number for the blob run"
-  LEN=$(cozy --json run show "$N" --once 2>/dev/null | jq -r '[.output[] | select(.name=="blob") | .length] | .[0] // empty')
-  [ -n "$LEN" ] || check "the blob output has no length: $(cozy --json run show "$N" --once 2>/dev/null | jq -c '.output')"
+  LEN=$(cozy --json --full run show "$N" --once 2>/dev/null | jq -r '[.output[] | select(.name=="blob") | .length] | .[0] // empty')
+  [ -n "$LEN" ] || check "the blob output has no length: $(cozy --json --full run show "$N" --once 2>/dev/null | jq -c '.output')"
   cozy --json run play "$N" --output blob --expires 1h > "$OUT/play.json" 2>&1 || check "run play: $(tail -c 300 "$OUT/play.json")"
   LINK=$(jq -r '.link // empty' "$OUT/play.json")
   [ -n "$LINK" ] && [[ $LINK == "$PAGE"* ]] || check "run play gave no github.io link: $(head -c 300 "$OUT/play.json")"

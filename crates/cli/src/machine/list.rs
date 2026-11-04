@@ -16,6 +16,18 @@ pub(crate) const HEADERS: [&str; 11] = [
     "ENDS",
 ];
 
+/// What `--json` keeps of a machine in a list (`--full`: all of it): the table's facts, by the record's names.
+pub(crate) const FIELDS: &[&str] = &[
+    "rentals", "unanswered", "signed_out", "machines.name", "machines.kind", "machines.state", "machines.hub", "machines.rental_id",
+    "machines.recorded", "machines.unverified", "machines.offline", "machines.unreachable", "machines.boot", "machines.reason",
+    "machines.running", "machines.queued", "machines.rental.sku", "machines.rental.accelerator", "machines.rental.gpus",
+    "machines.rental.usd_micros_per_hour", "machines.rental.spend_usd_micros", "machines.rental.spend_basis",
+    "machines.rental.rented_at_ms", "machines.status.version", "machines.status.phase", "machines.status.gpus.index",
+    "machines.status.gpus.name", "machines.status.gpus.memory_bytes", "machines.status.idle_deadline_ms",
+];
+/// The columns of `HEADERS` a view shows without `--full`.
+const SHOWN: [usize; 8] = [0, 1, 2, 4, 5, 6, 8, 10];
+
 pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
     if !ctx.json && ctx.term.stdout {
         let view = super::live::Machines::open(ctx).await?;
@@ -33,9 +45,15 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
         ExitCode::FAILURE
     };
     if ctx.json {
-        output::json(&list);
+        output::view(ctx, &list, FIELDS);
         return Ok(code);
     }
+    print(ctx, &list);
+    Ok(code)
+}
+
+/// The machines as a view prints them: what the rentals cost, a row each, then what to know of them.
+pub(crate) fn print(ctx: &Context, list: &MachineList) {
     let live = || {
         list.machines
             .iter()
@@ -59,11 +77,16 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
     for hub in &list.signed_out {
         println!("hub {hub}: not logged in; `{}`", ctx.config.login(hub));
     }
-    let mut table = output::Table::new(ctx, HEADERS);
-    for row in rows(ctx, &list) {
-        table = table.row(row);
+    let rows = rows(ctx, list);
+    if rows.is_empty() {
+        println!("machines: none");
+        output::next(ctx, &["cozy machine rent"]);
+    } else if ctx.full {
+        rows.into_iter().fold(output::Table::new(ctx, HEADERS), output::Table::row).print();
+    } else {
+        let table = output::Table::new(ctx, SHOWN.map(|i| HEADERS[i]));
+        rows.into_iter().map(|cells| SHOWN.map(|i| cells[i].clone())).fold(table, output::Table::row).print();
     }
-    table.print();
     if let Some(note) = super::local_note() {
         println!("{note}");
     }
@@ -78,10 +101,9 @@ pub async fn list(ctx: &Context) -> Result<ExitCode, Error> {
             println!("{}: `cozy machine end {}` ends it", m.name, m.name);
         }
     }
-    if rentals.count > 0 {
+    if rentals.count > 0 && ctx.full {
         println!("{IDLE_RULE}");
     }
-    Ok(code)
 }
 
 pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {

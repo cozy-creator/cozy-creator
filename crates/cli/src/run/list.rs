@@ -1,5 +1,5 @@
-//! `cozy run ls`: every run, newest first: a live view on a terminal, else a table or
-//! JSON.
+//! `cozy run ls`: every run, newest first: a live view on a terminal, else a short table or
+//! JSON (`--full`: every column and field).
 use std::process::ExitCode;
 
 use protocol::{
@@ -13,7 +13,14 @@ use crate::{Context, output, tui};
 
 pub(crate) const HEADERS: [&str; 7] = ["#", "TARGET", "PROJECT", "MACHINE", "STATUS", "PROGRESS", "TIME"];
 /// The newest runs a list shows unless `--limit` says otherwise.
-const SHOWN: u64 = 50;
+const SHOWN: u64 = 20;
+/// What `--json` keeps of a run in a list (`--full`: all of it): the table's facts, by the record's names.
+pub(crate) const FIELDS: &[&str] = &[
+    "older", "machine", "unreadable", "runs.id", "runs.number", "runs.kind", "runs.target", "runs.project", "runs.machine",
+    "runs.status", "runs.queue_position", "runs.waiting", "runs.progress", "runs.stalled", "runs.reason.code",
+    "runs.reason.message", "runs.created_at_ms", "runs.accepted_at_ms", "runs.started_at_ms", "runs.settled_at_ms",
+    "runs.execution_ms",
+];
 /// A target or progress is one table cell; `cozy run show` has it whole.
 const CELL: usize = 72;
 
@@ -44,25 +51,44 @@ pub async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
         return Ok(ExitCode::SUCCESS);
     }
     let list = runs(ctx, &query).await?;
-    for run in &list.unreadable {
-        output::warn(&format!("left out {run}"));
-    }
     if ctx.json {
-        output::json(&list);
+        output::view(ctx, &list, FIELDS);
         return Ok(ExitCode::SUCCESS);
     }
-    let mut table = output::Table::new(ctx, HEADERS);
-    for row in list.runs.iter().filter(|run| shown(run)).map(row) {
-        table = table.row(row);
+    for run in &list.unreadable {
+        println!("left out {run}");
     }
+    let listed: Vec<&Run> = list.runs.iter().filter(|run| shown(run)).collect();
+    if listed.is_empty() {
+        let only = query.status.is_some() || query.package.is_some() || query.machine.is_some();
+        match (only, &query.project) {
+            (true, _) => println!("runs: none match"),
+            (false, Some(_)) => {
+                println!("runs: none in this project");
+                output::next(ctx, &["cozy run ls --all"]);
+            }
+            (false, None) => println!("runs: none"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    table(ctx, &listed, query.project.is_none()).print();
     if list.older > 0 {
-        table = table.note(format!(
-            "{} older runs: cozy run ls --limit 0",
-            list.older
-        ));
+        println!("{} newest of {}: cozy run ls --limit 0 lists them all", listed.len(), listed.len() as u64 + list.older);
     }
-    table.print();
     Ok(ExitCode::SUCCESS)
+}
+
+/// The runs as a view prints them: what each is, where, how it stands and its time, then its
+/// progress or why it ended, last as it is the one that varies; with `projects`, each one's. `--full`:
+/// the live view's columns.
+pub(crate) fn table(ctx: &Context, runs: &[&Run], projects: bool) -> output::Table {
+    let rows = runs.iter().map(|run| row(run));
+    if ctx.full {
+        return rows.fold(output::Table::new(ctx, HEADERS), output::Table::row);
+    }
+    let columns: Vec<usize> = [0, 1, 2, 3, 4, 6, 5].into_iter().filter(|&i| projects || i != 2).collect();
+    let table = output::Table::new(ctx, columns.iter().map(|&i| HEADERS[i]));
+    rows.map(|cells| columns.iter().map(|&i| cells[i].clone()).collect::<Vec<_>>()).fold(table, output::Table::row)
 }
 
 /// The runs `query` asks for, page by page.

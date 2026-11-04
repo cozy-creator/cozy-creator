@@ -12,9 +12,9 @@
 . "$(dirname "$0")/lib.sh"
 recpid() { jq -r 'first(.measurements.execution.gpus[]?.pid) // empty' "$OUT/$1.json"; }
 store_bytes() { jq -r '[.measurements.memory.stats.varena[]?.stats.moved.store.bytes // 0] | add // 0' "$OUT/$1.json"; }
-show() { cozy run show "$(runno "$1")" --once --json > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
+show() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 # picture <step>: the file its run made.
-picture() { cozy run show "$(runno "$1")" --once --json | jq -r '[.output[]?.path // empty | select(test("[.](webp|png)$"))][0] // empty'; }
+picture() { cozy run show "$(runno "$1")" --once --json --full | jq -r '[.output[]?.path // empty | select(test("[.](webp|png)$"))][0] // empty'; }
 quote "$(param traffic_gb 14)" 2400
 rent
 IMG=$REF/seed.jpg

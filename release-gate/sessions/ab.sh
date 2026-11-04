@@ -68,7 +68,7 @@ echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunre
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
-    if [ -n "$N" ]; then t=$(date +%s%3N); rs=$(timeout 120 cozy run show "$N" --once --json 2>&1); rrc=$?; rms=$(( $(date +%s%3N) - t ))
+    if [ -n "$N" ]; then t=$(date +%s%3N); rs=$(timeout 120 cozy run show "$N" --once --json --full 2>&1); rrc=$?; rms=$(( $(date +%s%3N) - t ))
       rst=$(jq -r '.status // empty' <<<"$rs" 2>/dev/null | head -1); fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%T)" "$sm" "$src" "$(jq -r '.state // empty' <<<"$s" 2>/dev/null | head -1)" \
       "$N" "$rms" "$rrc" "$rst" "$(printf '%s\n%s' "$s" "$rs" | grep -ci unreachable)" >> "$OUT/probe.tsv"
@@ -113,7 +113,7 @@ for k in "${names[@]}"; do
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   cd "$OUT" || fail "no $OUT"
   N=$(runno "$k")
-  if [ -n "$N" ]; then cozy run show "$N" --once --json > "$OUT/$k.json" 2>/dev/null; fi
+  if [ -n "$N" ]; then cozy run show "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; fi
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
   MADE[$k]=$(jq -r '[.output[]?.path // empty | select(test("[.](png|webp|jpg|mp4)$"))] | sort | .[0] // empty' "$OUT/$k.json" 2>/dev/null)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"

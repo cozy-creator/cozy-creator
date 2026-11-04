@@ -227,7 +227,7 @@ fi
 warned() {
   [ -f "$2.number" ] && [ "$(run_get "$OUT" "$2" .status)" = completed ] || { [ -f "$2.number" ] && expect "$1" FAIL "$2 did not complete"; return 0; }
   local w f v; v=$(video_of "$2")
-  w=$("$CLI" --json run show "$(cat "$2.number")" --once 2>/dev/null | jq -r '.result.warnings[]?' | grep -E "$4")
+  w=$("$CLI" --json --full run show "$(cat "$2.number")" --once 2>/dev/null | jq -r '.result.warnings[]?' | grep -E "$4")
   f=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 "$v" 2>/dev/null)
   expect "$1" "$([ -n "$w" ] && [ "$f" = "$3" ] && echo PASS || echo FAIL)" "$f frames (want $3); warned: ${w:-nothing}"
   nice -n 19 ffmpeg -v error -y -i "$v" -vf "fps=2,scale=200:-2,tile=10x6" -frames:v 1 "$2-sheet.png" && log "$2: judge by eye: $PWD/$2-sheet.png"

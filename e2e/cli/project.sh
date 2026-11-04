@@ -46,7 +46,7 @@ ask() {
   printf '%s\n' "$answer"
 }
 # ended <number>: the run at its end with its outputs landed, whole.
-ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json run show "$1" 2> /dev/null; }
+ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 status() { cozy --json project -p "$1" status 2> /dev/null; }
 # row <project> <asset> <jq>: that of its row in status.
@@ -56,7 +56,7 @@ made() { jq --arg n "$2" '.assets[$n | gsub("[_-]"; " ") | ascii_downcase].versi
 # runs <project>: every version's last run its lock records.
 runs() { jq '[.assets[].versions[].run // empty] | length' "$1/project.lock"; }
 # asked <project> <asset> [version index]: what that version's last run was asked.
-asked() { cozy --json run show "$(jq -r --arg n "$2" --argjson v "${3:--1}" '.assets[$n | gsub("[_-]"; " ") | ascii_downcase].versions[$v].run' "$1/project.lock")" --once 2> /dev/null | jq -c .request; }
+asked() { cozy --json --full run show "$(jq -r --arg n "$2" --argjson v "${3:--1}" '.assets[$n | gsub("[_-]"; " ") | ascii_downcase].versions[$v].run' "$1/project.lock")" --once 2> /dev/null | jq -c .request; }
 # read_of <project> <asset>: the names what it reads go by, as status says.
 read_of() { row "$1" "$2" '[.reads[]?.name]'; }
 # file_at <project> <sha256>: where that file is.
@@ -547,7 +547,7 @@ J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: run $n given
 # What held it is gone, as a day later.
 rm -f "$HOME/.cozy/calcifer/files/$hex"
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "path-free: the held file is still held"
-input=$(cozy --json run show "$n" | jq -c .request.input)
+input=$(cozy --json --full run show "$n" | jq -c .request.input)
 J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request.input: $input"
 asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --argjson i "$input" '{target: $t, project: $p, on: "local", input: $i}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")

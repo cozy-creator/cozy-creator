@@ -7,6 +7,7 @@ use clap::ValueEnum;
 use protocol::{
     calcifer::{CalciferStatus, Holder, MachineState},
     error::{Error, Kind},
+    project::{Asset, Open, Opened, Standing, State},
 };
 use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
@@ -29,15 +30,22 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 #[derive(clap::Args, Debug)]
 pub struct Status {}
 
-/// Calcifer, its machines and the runs not yet settled. Never starts Calcifer.
+/// What `--json` keeps of the project here (`--full`: all of it).
+const PROJECT: &[&str] = &[
+    "id", "path", "busy", "absent", "missing", "stale", "warnings", "next", "assets.name", "assets.tool", "assets.standing",
+    "assets.approved", "assets.pinned", "assets.status",
+];
+
+/// This cozy, Calcifer, the project here, the runs not yet settled, the machines and what they cost:
+/// `cozy` alone too. Never starts Calcifer.
 pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
+    let exe = std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default();
     let Some(client) = Client::running(ctx).await? else {
         if ctx.json {
             output::json(&json!({ "calcifer": { "running": false } }));
         } else {
-            output::Record::new()
-                .field("calcifer", "not running")
-                .print(ctx);
+            println!("cozy {} {exe}", env!("CARGO_PKG_VERSION"));
+            println!("calcifer: not running; any other cozy command starts it");
             output::next(ctx, &["cozy doctor"]);
         }
         return Ok(ExitCode::SUCCESS);
@@ -45,65 +53,96 @@ pub async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Error> {
     let here: CalciferStatus = client.get("/v1/status").await?;
     let holder = client.holder().expect("a running client has a record");
     // Calcifer's picture: it never waits on a Hub here.
-    let mut machines = client.machines().await?.machines;
-    machines.retain(|m| m.state != MachineState::Ended);
+    let mut list = client.machines().await?;
+    list.machines.retain(|m| m.state != MachineState::Ended);
     let mut runs = vec![];
     for status in ["queued", "in_progress"] {
         runs.extend(client.runs(&[("status", status)]).await?.runs);
     }
+    runs.retain(crate::run::list::shown);
     runs.sort_by_key(|run| run.number);
+    let project = project(&client).await;
     if ctx.json {
-        output::json(&json!({
-            "calcifer": running(ctx, &holder, &here), "machines": machines, "runs": runs,
-        }));
+        let project = match &project {
+            Some(Ok(state)) => json!(state),
+            Some(Err(error)) => json!({ "error": error }),
+            None => serde_json::Value::Null,
+        };
+        let doc = json!({
+            "calcifer": running(ctx, &holder, &here), "project": project, "machines": list.machines, "rentals": list.rentals,
+            "unanswered": list.unanswered, "signed_out": list.signed_out, "runs": runs,
+        });
+        let project = PROJECT.iter().map(|path| format!("project.{path}"));
+        let mut paths: Vec<String> = ["calcifer".into(), "project.error".into()].into_iter().chain(project).collect();
+        paths.extend(crate::machine::list::FIELDS.iter().chain(crate::run::list::FIELDS).map(|path| path.to_string()));
+        output::view(ctx, &doc, &paths.iter().map(String::as_str).collect::<Vec<_>>());
         return Ok(ExitCode::SUCCESS);
     }
-    calcifer_record(ctx, &holder, &here).print(ctx);
-    if let Some(note) = crate::machine::local_note().filter(|_| !here.local_usable) {
-        println!("{note}");
-    }
-    if !machines.is_empty() {
-        println!();
-        let headers = ["MACHINE", "KIND", "STATE", "RUNNING", "QUEUED"];
-        let mut table = output::Table::new(ctx, headers);
-        for m in &machines {
-            let kind = match ctx.other_hub(&m.hub) {
-                Some(hub) => format!("{} at {hub}", word(m.kind)),
-                None => word(m.kind),
+    println!("cozy {} {exe}", env!("CARGO_PKG_VERSION"));
+    match ctx.full {
+        true => calcifer_record(ctx, &holder, &here).print(ctx),
+        false => {
+            let version = Some(&here.version).filter(|v| *v != env!("CARGO_PKG_VERSION")).map(|v| format!(" on cozy {v}"));
+            let signed = match here.signed_in {
+                true => "signed in".to_owned(),
+                false => format!("signed out: {}", ctx.config.login(ctx.hub().as_str())),
             };
-            table = table.row([
-                m.name.clone(),
-                kind,
-                m.boot.clone().unwrap_or_else(|| word(m.state)),
-                m.running.to_string(),
-                m.queued.to_string(),
-            ]);
+            println!("calcifer: up {}{}, {signed}", output::age(holder.started_at_ms), version.unwrap_or_default());
         }
-        table.print();
     }
+    let next = match &project {
+        Some(Ok(state)) => {
+            println!("project: {}: {}", state.path.display(), totals(state));
+            state.warnings.iter().for_each(|warning| println!("warning: {}", warning.message));
+            state.next.clone()
+        }
+        Some(Err(error)) => {
+            println!("project: {} ({})", error.message, error.code);
+            error.next.clone()
+        }
+        None => {
+            println!("project: none here");
+            vec!["cozy project ls".into(), "cozy project new <name>".into()]
+        }
+    };
     if !runs.is_empty() {
-        println!();
-        let mut table = output::Table::new(ctx, ["RUN", "TARGET", "MACHINE", "STATE"]);
-        for run in &runs {
-            let state = run.machine_state.as_deref().or(run.waiting.as_deref());
-            table = table.row([
-                run.number.to_string(),
-                run.target.clone(),
-                run.machine.clone().unwrap_or_default(),
-                state.unwrap_or("queued").to_owned(),
-            ]);
-        }
-        table.print();
+        crate::run::list::table(ctx, &runs.iter().collect::<Vec<_>>(), true).print();
     }
+    crate::machine::list::print(ctx, &list);
+    output::next(ctx, &next.iter().map(String::as_str).collect::<Vec<_>>());
     Ok(ExitCode::SUCCESS)
 }
 
-/// A wire enum as it is spelled on the wire.
-fn word(value: impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+/// The project holding the folder you are in, as Calcifer reads it: none outside one.
+async fn project(client: &Client) -> Option<Result<State, Error>> {
+    let path = std::env::current_dir().ok()?;
+    let opened: Result<Opened, Error> = client.post("/v1/projects", &Open { path: Some(path), create: false, name: None }, None).await;
+    match opened {
+        Ok(opened) => Some(client.get(&format!("/v1/projects/{}", opened.id)).await),
+        Err(error) if error.code == "project_not_found" => None,
+        Err(error) => Some(Err(error)),
+    }
+}
+
+/// `4 assets: 1 approved, 1 current, 1 out of date, 1 missing`, leaving out what none are.
+fn totals(state: &State) -> String {
+    let standing = |asset: &Asset| match asset.standing {
+        Standing::Making => "rendering",
+        Standing::Missing => "missing",
+        Standing::OutOfDate => "out of date",
+        Standing::Current if asset.approved.is_some() || asset.pinned => "approved",
+        Standing::Current => "current",
+    };
+    let said: Vec<String> = ["approved", "current", "out of date", "rendering", "missing"]
+        .into_iter()
+        .map(|w| (state.assets.iter().filter(|asset| standing(asset) == w).count(), w))
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, w)| format!("{n} {w}"))
+        .collect();
+    match state.assets.len() {
+        0 => "no assets in project.yaml".into(),
+        n => format!("{n} assets: {}", said.join(", ")),
+    }
 }
 
 /// Which of a machine's logs, and how much of it.
