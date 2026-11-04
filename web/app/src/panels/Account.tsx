@@ -40,12 +40,12 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
   )
 }
 
-function SignIn({ onSignedIn, keyRefused }: { onSignedIn: () => void; keyRefused: boolean }) {
+function SignIn({ onSignedIn, keyRefused, needsName }: { onSignedIn: () => void; keyRefused: boolean; needsName: boolean }) {
   const { client, queries } = useConnection()
   const send = useAsk()
   const [email, setEmail] = useState("")
   const [sent, setSent] = useState<Code | null>(null)
-  const [unnamed, setUnnamed] = useState(false)
+  const [unnamed, setUnnamed] = useState(needsName)
   const [name, setName] = useState("")
   const naming = useAsk()
 
@@ -234,7 +234,7 @@ export function Account() {
   return (
     <DrawerFrame title="Account">
       <Failure error={error} lead="The Hub didn't say who this is" />
-      {who && !signedIn && <SignIn keyRefused={Boolean(who.key_refused)} onSignedIn={changed} />}
+      {who && !signedIn && <SignIn keyRefused={Boolean(who.key_refused)} needsName={who.logged_in} onSignedIn={changed} />}
       {signedIn && (
         <>
           <KV

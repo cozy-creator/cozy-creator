@@ -148,7 +148,8 @@ export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: bo
 
   const pick = (sku: RentalSku, gpus: number) => {
     saveKey(badKey ? "" : key)
-    void quote(client, { sku: sku.name, gpus, ssh_key: key && !badKey ? key : undefined })
+    // As the CLI: one GPU, or none on the CPU product, is what naming no count asks for.
+    void quote(client, { sku: sku.name, gpus: gpus > 1 ? gpus : undefined, ssh_key: key && !badKey ? key : undefined })
   }
 
   return (
