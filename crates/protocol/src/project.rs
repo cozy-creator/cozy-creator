@@ -432,6 +432,9 @@ pub struct Renamed {
     pub from: String,
     pub to: String,
     pub versions: u32,
+    /// A render is going: it happens as that ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
 }
 
 /// `POST /v1/projects/{id}/reclaim`: lists what it would delete: orphans' versions, and any file nothing else names. With
@@ -547,8 +550,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unchanged: bool,
     },
-    /// The walk is over: nothing it was asked is left to send or follow; `error` is the first thing
-    /// that failed (`Failed` said it already, unless the walk itself stopped).
+    /// The walk is over: nothing it was asked is left to send or follow. `error` is the first thing that
+    /// failed (`Failed` said it already, unless the walk itself stopped), or when more than that was
+    /// asked, `render_incomplete`: how far it got, that failure, and the command for the rest.
     Ended {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,

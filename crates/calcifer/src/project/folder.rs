@@ -314,6 +314,9 @@ pub struct Owed {
     /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub asked: BTreeMap<String, String>,
+    /// `rename`s asked while a render went, (from, to): each done as that walk ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames: Vec<(String, String)>,
 }
 
 /// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
@@ -329,6 +332,9 @@ pub struct Ask {
     /// `render all --missing`: every asset with no state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all: bool,
+    /// Asked of `all`, with or without `--missing`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
@@ -392,7 +398,7 @@ impl Lock {
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
     pub fn owes(&self) -> bool {
-        !self.walk.asks.is_empty() || !self.pending.is_empty()
+        !self.walk.asks.is_empty() || !self.pending.is_empty() || !self.walk.renames.is_empty()
     }
 
     pub fn asset(&self, name: &str) -> Option<&Asset> {
@@ -647,6 +653,17 @@ impl Folder {
     /// Whether a file the lock names should be here and isn't, so a pull is what it needs: what stays on a machine isn't.
     pub fn missing(&self, file: &File) -> bool {
         !file.stays() && !self.path(&file.path).is_file()
+    }
+
+    /// Whether files wait to be measured with no ffprobe here to do it: a walk fetches one first.
+    pub fn wants_ffprobe(&self, lock: &Lock) -> bool {
+        lock.files.values().any(File::unmeasured) && platform::tools::ffmpeg(&self.tools, &crate::tools::path()).is_none()
+    }
+
+    /// How many frames the film at `path` holds, by its file; None with no file there, or no ffprobe to read it.
+    pub fn film_frames(&self, path: &Path) -> Option<u64> {
+        let (_, ffprobe) = platform::tools::ffmpeg(&self.tools, &crate::tools::path())?;
+        path.is_file().then(|| super::tools::frames_of(&ffprobe, path)).flatten()
     }
 
     /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in

@@ -282,6 +282,20 @@ impl Host {
         self.api.calcifer.bring(sha256, machine).await
     }
 
+    /// One file of `project` from `hub`, when it holds it. Err: why not.
+    pub(super) async fn pull_one(&self, project: &super::Project, hub: &str, file: super::folder::File) -> Result<(), String> {
+        super::remote::pull_one(&self.api, project, hub, file).await
+    }
+
+    /// Cancels run `number` on `machine` if it has not begun.
+    pub fn cancel_unstarted(&self, number: u64, machine: &str) {
+        let calcifer = &self.api.calcifer;
+        let Ok(Some(row)) = calcifer.store().run_by_number(number) else { return };
+        if row.machine.as_deref() == Some(machine) && row.started_at_ms.is_none() && row.state != crate::store::State::Settled {
+            let _ = calcifer.cancel(&row.id);
+        }
+    }
+
     /// Where a run of `renderer` goes among `on`: one is where it goes; of several, the machine
     /// with the fewest runs queued or running, one without the renderer's models counting one
     /// more, a warm one first among equals, then the first listed.

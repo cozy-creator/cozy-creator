@@ -337,6 +337,21 @@ async fn pull(project: &Project, endpoint: &Endpoint) -> Result<Transferred, Err
     Ok(Transferred { files, moved, bytes, skipped: tally.skipped(), kept_in: None, commit: None })
 }
 
+/// One file of `project` fetched from `hub`, when it holds it: what a cut needs of a piece. Err: why not.
+pub(super) async fn pull_one(api: &Api, project: &Project, hub: &str, file: folder::File) -> Result<(), String> {
+    let hub = match hub {
+        "" => api.machines.hubs.hub.clone(),
+        hub => Origin::parse(hub).map_err(|e| e.message)?,
+    };
+    let (_, endpoint) = signed(api, &hub).map_err(|e| e.message)?;
+    let _held = project.moving.lock().await;
+    let store = project.folder.dir.join(folder::FILES);
+    std::fs::create_dir_all(&store).map_err(|e| format!("{}: {e}", store.display()))?;
+    let tally = Tally::default();
+    fetch(project, &endpoint, &tally, file).await.map_err(|e| failed(e).message)?;
+    tally.skipped().pop().map_or(Ok(()), |skipped| Err(skipped.why))
+}
+
 /// What a transfer asks for, refused now when this computer is not signed in.
 fn asked(api: &Arc<Api>, id: &str, body: Result<Bytes, BytesRejection>) -> Result<(Arc<Project>, Origin, Client, Endpoint), Refusal> {
     let at: At = crate::hub::body(body)?;

@@ -320,6 +320,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
                 true => output::json(&renamed),
+                false if renamed.queued => output::say(ctx, &format!("{} becomes {} when the render going ends: its {} kept", renamed.from, renamed.to, renamed.versions)),
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
@@ -511,7 +512,9 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             }
             Event::Ended { error, rendered } => {
                 cuts.iter().for_each(|(_, line)| output::say(ctx, line));
-                rendered.iter().for_each(|rendered| output::say(ctx, &finished(rendered)));
+                // A render that fell short ends on how far it got, the error's own words.
+                let short = error.as_ref().is_some_and(|error| error.code == "render_incomplete");
+                rendered.iter().filter(|_| !short).for_each(|rendered| output::say(ctx, &finished(rendered)));
                 return match error {
                     Some(error) if !ctx.json && failed.contains(&error.message) => Ok(ExitCode::from(error.exit_code() as u8)),
                     Some(error) => Err(error),

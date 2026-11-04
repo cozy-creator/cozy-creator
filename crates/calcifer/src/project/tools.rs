@@ -79,19 +79,6 @@ pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
     said
 }
 
-/// Takes from `pieces` what isn't on this computer, and says each: the rest still make the cut.
-pub fn absent(pieces: &mut Vec<Piece>) -> Vec<String> {
-    let mut said = vec![];
-    pieces.retain(|piece| {
-        let here = piece.path.is_file();
-        if !here {
-            said.push(format!("{}: {} is not on this computer: cozy project pull: that cut is left out", piece.asset, piece.path.display()));
-        }
-        here
-    });
-    said
-}
-
 /// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
 pub fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Vec<String> {
     (pieces.iter().filter(|piece| piece.shape.is_none()))
@@ -540,6 +527,11 @@ pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, video: bool) -> Opti
         true => folder::File { width, height, fps: probe.rate, frames: probe.frames, ..Default::default() },
         false => folder::File { width, height, alpha: transparent_share(ffmpeg, path), ..Default::default() },
     })
+}
+
+/// How many frames the video at `path` holds, when ffprobe reads it.
+pub fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
+    probe(ffprobe, path, false).ok().map(|probe| probe.frames)
 }
 
 /// What the edit needs of the video at `path`; its keyframes only with `keys`.

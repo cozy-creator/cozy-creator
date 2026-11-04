@@ -1126,6 +1126,10 @@ code=0; render "$T" reader || code=$?
 { [ "$code" != 0 ] && says failures "Not this one."; } || check "failures: Refuse (exit $code): $(tail -c 400 "$OUT/render.txt")"
 [ "$(made "$T" no)" = null ] || [ "$(made "$T" no)" = 0 ] || check "failures: a refusal made a version"
 says failures "reader cannot render: no failed in this render"
+stops
+absent_piece
+film_is_its_file
+rename_waits
 [ -d "${PACKAGES:-}/minimax-h3" ] || return 0
 step "a project: H3's adapter refuses to keep another package's take"
 local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
@@ -1196,6 +1200,113 @@ render "$T" two || check "landed: render two: $(tail -c 400 "$OUT/render.txt")"
 filmed "a new take of the last piece"
 }
 
+# Eight shots a machine fails alike: the second failure stops what is sent to it, and the render ends on how far it got.
+stops() {
+step "a project: runs failing alike stop at the second, and the last line says how far it got"
+local T=$OUT/stops code=0 name failed
+mkdir -p "$T"
+printf 'version: 2\nassets:\n' > "$T/project.yaml"
+for name in a b c d e f g h; do
+  printf '  %s:\n    kind: video\n    render: {with: %s/project/shots.py}\n    crash: the machine is broken\n' "$name" "$here" >> "$T/project.yaml"
+done
+render "$T" all || code=$?
+[ "$code" != 0 ] || check "stops: render exited 0: $(tail -c 400 "$OUT/render.txt")"
+says stops "runs failed the same way, so this render sends it nothing more"
+says stops "rendered 0 of 8; "
+says stops "cozy project render all --missing --on local"
+failed=$(cozy --json run -p "$T" ls --limit 0 --state failed | jq '.runs | length')
+[ "$failed" -lt 8 ] || check "stops: $failed of 8 runs ran: $(tail -c 400 "$OUT/render.txt")"
+}
+
+# A piece gone from this computer, and at no machine or Hub: the cut fails with the command to run, and the film stays what it was.
+absent_piece() {
+step "a project: a piece that can't be had fails its cut, and the film stays"
+local T=$OUT/absent code=0 a b film
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  b: {video: $b}
+  film:
+    kind: video
+    render: {with: cozy/cut}
+    pieces: [<a>, <b>]
+YAML
+render "$T" film || check "absent: first cut: $(tail -c 400 "$OUT/render.txt")"
+film=$(sha "$T/film.mp4")
+rm -f "$T"/files/"$b"*
+sed -i 's/pieces: \[<a>, <b>\]/pieces: [<a>, <b>, <a>]/' "$T/project.yaml"
+render "$T" film || code=$?
+[ "$code" != 0 ] || check "absent: render exited 0: $(tail -c 400 "$OUT/render.txt")"
+says absent "the film that stands stays"
+says absent "next:"
+[ "$(sha "$T/film.mp4")" = "$film" ] || check "absent: the film changed: $(tail -c 400 "$OUT/render.txt")"
+}
+
+# Status and the closing line say what the film holds, not what its pieces add up to; a piece with no version yet is warned of.
+film_is_its_file() {
+step "a project: a film's length is its file's, and a piece with no version warns"
+local T=$OUT/truth a
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800
+plate "$T/short.mp4" testsrc2 440 800 1
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  later:
+    kind: video
+    render: {with: $here/project/shots.py}
+    no_run: true
+  film:
+    kind: video
+    render: {with: cozy/cut}
+    pieces: [<a>, <later>]
+YAML
+render "$T" film || check "truth: cut: $(tail -c 400 "$OUT/render.txt")"
+says truth "warning"
+says truth "skips later"
+J '.cuts[0].frames == 144' <<< "$(status "$T")" || check "truth: status of the film: $(status "$T" | jq -c .cuts)"
+cp "$T/short.mp4" "$T/film.mp4"
+J '.cuts[0].frames == 24' <<< "$(status "$T")" || check "truth: status doesn't read the file: $(status "$T" | jq -c .cuts)"
+}
+
+# A rename asked while a render goes happens as it ends.
+rename_waits() {
+step "a project: a rename during a render waits for it"
+local T=$OUT/renaming going n
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  old:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 0
+  busy:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 12
+YAML
+render "$T" old || check "rename: first render: $(tail -c 400 "$OUT/render.txt")"
+cozy project -p "$T" render busy --on local > "$OUT/rename-busy.txt" 2>&1 &
+going=$!
+n=''
+for _ in $(seq 120); do n=$(row "$T" busy .status | sed -n 's/.*making (run \([0-9]*\)).*/\1/p'); [ -n "$n" ] && break; sleep 0.25; done
+[ -n "$n" ] || check "rename: the render never showed a run: $(tail -c 300 "$OUT/rename-busy.txt")"
+sed -i 's/^  old:/  new:/' "$T/project.yaml"
+cozy project -p "$T" rename old new > "$OUT/rename.txt" 2>&1 || check "rename: refused during a render: $(tail -c 300 "$OUT/rename.txt")"
+grep -q 'when the render going ends' "$OUT/rename.txt" || check "rename: does not say it waits: $(tail -c 300 "$OUT/rename.txt")"
+wait "$going" || check "rename: the render: $(tail -c 300 "$OUT/rename-busy.txt")"
+[ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions after the render ended"
+}
+
 # Three assets failing alike, a package that isn't there, so no run is made.
 said_once() {
 step "a project: a failure several assets share is said once"
@@ -1219,7 +1330,9 @@ assets:
 YAML
 render "$T" all || code=$?
 [ "$code" != 0 ] || check "once: render exited 0"
-[ "$(grep -c 'pyproject.toml' "$OUT/render.txt")" = 1 ] || check "once: not said once: $(tail -c 400 "$OUT/render.txt")"
+[ "$(grep -v render_incomplete "$OUT/render.txt" | grep -c 'pyproject.toml')" = 1 ] || check "once: not said once: $(tail -c 400 "$OUT/render.txt")"
+says once "rendered 0 of 3; 3 failed"
+says once "cozy project render all --missing --on local"
 }
 
 # The two kinds of pieces, in frames; two cuts side by side, each its own film and timeline; an edit recut on approve with no machine;
