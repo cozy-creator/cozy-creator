@@ -18,6 +18,7 @@ use axum::{
 use protocol::error::{Error, Kind};
 use serde::Deserialize;
 use tokio::sync::Semaphore;
+use tracing::warn;
 
 use super::{folder, host::Host, media_type, tools};
 use crate::api::{Api, Refusal};
@@ -131,6 +132,8 @@ async fn make(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Resul
     .await
     .map_err(|e| Error::new(Kind::Internal, "thumb_failed", e.to_string()))?;
     drawn.map_err(|why| {
+        // Kept for a day, so this is the one place it's said.
+        warn!("thumbnail {marked_name} can't be drawn: {why}", marked_name = marked.display());
         let _ = std::fs::write(&marked, &why);
         unreadable_file(why)
     })

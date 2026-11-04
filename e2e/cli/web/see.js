@@ -17,10 +17,15 @@ const { MP4, STEP_MS, png, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
+// The last thing checked, so a refusal says when it happened.
+let during = 'the start';
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
+  during = name;
   if (!ok) failures.push(name);
 }
+// A session's media token stays out of what this prints.
+const shownUrl = (url) => url.replace(/([?&]media=)[^&]+/, '$1…');
 
 const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
@@ -127,12 +132,20 @@ function summary(frames) {
   const errors = [];
   const thumbs = [];
   const fileAnswers = [];
+  const refused = [];
+  seen.refused = refused;
   const watch = (tab) => {
     tab.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
     // A connection a restart cut isn't a fault of the page. Anything Calcifer answered is: a route it lacks shows only here.
-    tab.on('console', (m) => { if (m.type() === 'error' && !/net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
+    tab.on('console', (m) => { if (m.type() === 'error' && !/net::ERR_/.test(m.text())) errors.push(`console: ${m.text()} ${shownUrl(m.location().url)}`); });
     tab.on('response', (answer) => {
       const url = new URL(answer.url());
+      // Whatever Calcifer refused, and in its words: its console line says only the status.
+      if (answer.status() >= 400) {
+        const refusal = { status: answer.status(), url: shownUrl(url.pathname + url.search), during };
+        refused.push(refusal);
+        answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
+      }
       if (url.pathname.includes('/thumbs/')) thumbs.push({ strip: url.searchParams.get('strip'), status: answer.status() });
       if (url.pathname.includes('/files/') && answer.request().resourceType() === 'media') fileAnswers.push({ status: answer.status(), media: url.searchParams.has('media') });
     });
@@ -561,7 +574,9 @@ entities:
     if (made.path?.includes('web-see-scale-')) rmSync(made.path, { recursive: true, force: true });
   }
 
-  check('no_page_errors', errors.length === 0, errors);
+  // Each refusal's words have had their moment to arrive.
+  await new Promise((done) => setTimeout(done, 500));
+  check('no_page_errors', errors.length === 0, { errors, refused });
   rmSync(scratch, { recursive: true, force: true });
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
