@@ -68,32 +68,43 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
     for owner in owners {
         let state = owner.lock()?;
         for (address, segment) in state.segments.iter().filter(|(_, segment)| segment.backed()) {
-            let end = *address + segment.bytes as u64;
-            let mut cursor = *address;
-            let mut blocks = Vec::new();
-            for (base, block) in state.blocks.range(*address..end) {
-                if cursor < *base {
-                    blocks.push(WorkingBlock { bytes: (*base - cursor) as usize,
+            // The arena reads as the runs of chunks with pages.
+            let mut ranges: Vec<(u64, usize)> = Vec::new();
+            for chunk in segment.chunks.iter().filter(|chunk| chunk.handle.is_some()) {
+                let start = *address + chunk.offset as u64;
+                match ranges.last_mut() {
+                    Some((at, bytes)) if *at + *bytes as u64 == start => *bytes += chunk.bytes,
+                    _ => ranges.push((start, chunk.bytes)),
+                }
+            }
+            for (start, bytes) in ranges {
+                let end = start + bytes as u64;
+                let mut cursor = start;
+                let mut blocks = Vec::new();
+                for (base, block) in state.blocks.range(start..end) {
+                    if cursor < *base {
+                        blocks.push(WorkingBlock { bytes: (*base - cursor) as usize,
+                            requested: 0, allocated: false, active: false });
+                    }
+                    blocks.push(WorkingBlock {
+                        bytes: block.capacity,
+                        requested: block.requested,
+                        allocated: block.life == Life::Live,
+                        active: block.charge() != 0,
+                    });
+                    cursor = *base + block.capacity as u64;
+                }
+                // Eager classes need not divide a backing slab. This is real mapped
+                // but unassigned space, not an allocation slot or a promise of reuse.
+                if cursor < end {
+                    blocks.push(WorkingBlock { bytes: (end - cursor) as usize,
                         requested: 0, allocated: false, active: false });
                 }
-                blocks.push(WorkingBlock {
-                    bytes: block.capacity,
-                    requested: block.requested,
-                    allocated: block.life == Life::Live,
-                    active: block.charge() != 0,
+                out.push(WorkingSnapshot {
+                    segment: WorkingSegment { device: owner.ordinal, address: start,
+                        bytes, size_class: segment.size_class, pool: segment.pool }, blocks,
                 });
-                cursor = *base + block.capacity as u64;
             }
-            // Eager classes need not divide a backing slab. This is real mapped
-            // but unassigned space, not an allocation slot or a promise of reuse.
-            if cursor < end {
-                blocks.push(WorkingBlock { bytes: (end - cursor) as usize,
-                    requested: 0, allocated: false, active: false });
-            }
-            out.push(WorkingSnapshot {
-                segment: WorkingSegment { device: owner.ordinal, address: *address,
-                    bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool }, blocks,
-            });
         }
     }
     Ok(out)

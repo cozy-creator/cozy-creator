@@ -51,10 +51,11 @@ capture out; replay does not block reclaim, because pins and references protect 
 
 ## Working memory
 
-Up to 1 MiB, one-class slabs, every block 512 B aligned. Above that, runs, cut best-fit and merged
-when free; up to 64 MiB they share 64 MiB segments. A segment has one VMM handle per 16 MiB, since a
-handle comes back only whole: free pages stay mapped until something needs them, and then only those
-handles go. Own-stream reuse does no driver work.
+Up to 1 MiB, one-class slabs, every block 512 B aligned. Above that, runs in one VA arena, cut
+best-fit and merged when free. Pages back it 16 MiB at a time, since a VMM handle comes back only
+whole, at the lowest address free, so the same request lands in the same place and maps nothing.
+Free pages stay mapped until something needs them, and then only those handles go. Own-stream reuse
+does no driver work.
 
 A split (`split_select`, `split_begin`) picks the first level that fits
 `min(max(C − W, C/4), C − live − pinned)`, whatever is free right now. `C` is the card or its cap,

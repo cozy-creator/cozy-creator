@@ -510,24 +510,24 @@ def prefetch_rule():
     """Free >= bytes + the phase's remaining peak; evicts for it; unused prefetches go first."""
     key = "core/prefetch"
     token = vt.phase_enter(0, key)
-    value = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+    value = torch.empty(16 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
     torch.cuda.synchronize()
     del value
     measured = vt.phase_leave(0, token, completed=True)
-    assert measured["published"] and measured["peak_bytes"] == 8 * MIB, measured
+    assert measured["published"] and measured["peak_bytes"] == 16 * MIB, measured
     drained()
     with tempfile.TemporaryDirectory() as directory:
         writer = tensorfs.Writer(Path(directory) / "raw.cozytensors")
-        source = torch.full((2 * MIB,), 41, dtype=torch.uint8)
+        source = torch.full((8 * MIB,), 41, dtype=torch.uint8)
         writer.component("net").put("bytes", source)
         checkpoint = writer.commit()
         parts = [("net/bytes#value", 0, source.nbytes)]
         gpu = varena.Device(0)
-        idle = filled(gpu, 2 * MIB, 5)
+        idle = filled(gpu, 8 * MIB, 5)
         target = gpu.reserve(source.nbytes)
         before = vt.stats(0)
         # Nothing measured: only into room already free beside a quarter of the card, evicting nothing.
-        cap(4 * MIB, gpu)
+        cap(12 * MIB, gpu)
         assert target.prepare_prefetch(checkpoint, parts, threads=1) is None and idle.resident  # no phase
         token = vt.phase_enter(0, "core/unmeasured")
         assert target.prepare_prefetch(checkpoint, parts, threads=1) is None and idle.resident
@@ -538,8 +538,8 @@ def prefetch_rule():
         read.cancel()
         read.wait()
         del read
-        # 12 MiB of room: 2 MiB idle region, 8 MiB peak, 2 MiB read: the idle region may stay.
-        cap(13 * MIB, gpu)
+        # Room for an 8 MiB idle region, the 16 MiB peak and an 8 MiB read: the idle region may stay.
+        cap(41 * MIB, gpu)
         token = vt.phase_enter(0, key)
         read = target.prepare_prefetch(checkpoint, parts, threads=1)
         assert read is not None and idle.resident
@@ -547,16 +547,16 @@ def prefetch_rule():
         read.wait()
         assert target.resident and gpu.stats()["prefetch_unused_bytes"] == 0
         # Working demand takes the unused prefetch before the older idle region.
-        value = torch.empty(10 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
+        value = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
         assert not target.resident and idle.resident, gpu.stats()
-        assert gpu.stats()["prefetch_unused_bytes"] == 2 * MIB, gpu.stats()
+        assert gpu.stats()["prefetch_unused_bytes"] == 8 * MIB, gpu.stats()
         del value, read
         gc.collect()
         torch.cuda.synchronize()
         vt.phase_leave(0, token, completed=False)
         # A full card: an idle region gives way to the read, by the same rule.
         drained()
-        cap(2 * MIB + 8 * MIB, gpu)
+        cap(8 * MIB + 16 * MIB, gpu)
         token = vt.phase_enter(0, key)
         read = target.prepare_prefetch(checkpoint, parts, threads=1)
         assert read is not None and not idle.resident, gpu.stats()

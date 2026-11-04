@@ -270,6 +270,7 @@ fn fits(
             Some((choice.backing.max(1), sample.peak))
         })
         .collect();
+    let arena_free = state.arena.map_or(0, |base| state.releasable(base, &state.segments[&base]));
     site.choices
         .iter()
         .map(|choice| {
@@ -306,7 +307,9 @@ fn fits(
                             continue;
                         }
                         used.insert(*ptr);
-                        preserve.insert(block.segment);
+                        if !state.segments[&block.segment].arena {
+                            preserve.insert(block.segment);
+                        }
                         reused += class;
                         *count -= 1;
                     }
@@ -327,19 +330,18 @@ fn fits(
                         break;
                     };
                     run.0 -= class;
-                    preserve.insert(run.1);
                     reused += class;
                     *count -= 1;
                 }
             }
             let missing = backing(owner, &missing)?;
             let missing = if sample.is_none() { scaled(missing) } else { missing };
-            let reclaimable: usize = state
+            let reclaimable: usize = arena_free + state
                 .segments
                 .iter()
-                .filter(|(base, segment)| segment.pool.is_none() && !preserve.contains(base))
+                .filter(|(base, segment)| segment.pool.is_none() && !segment.arena && !preserve.contains(base))
                 .map(|(base, segment)| state.releasable(*base, segment))
-                .sum();
+                .sum::<usize>();
             let after_outside = headroom(
                 owner,
                 free,
@@ -679,7 +681,7 @@ pub(super) fn refresh(state: &mut State) {
     active.backing = active.backing.max(
         segments
             .into_iter()
-            .map(|segment| state.segments[&segment].bytes)
+            .map(|segment| state.segments[&segment].counted())
             .sum(),
     );
 }
