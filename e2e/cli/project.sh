@@ -1147,7 +1147,7 @@ for gone in gone_soon running_gone; do
   [ "$(made "$W" "$gone")" = 0 ] || check "walking: deleted $gone has a version"
   J --arg gone "$gone" '.board.jobs[] | select(.asset == $gone) | .state == "canceled" and (.why | test("deleted"))' <<< "$(status "$W")" || check "walking: deleted $gone's job says $(status "$W" | jq -c --arg gone "$gone" '.board.jobs[] | select(.asset == $gone)')"
 done
-J '.board.jobs[] | select(.asset == "reads_gone") | .state == "failed" and (.why | test("running_gone was deleted"))' <<< "$(status "$W")" || check "walking: what read a deleted asset says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "reads_gone")')"
+J '.board.jobs[] | select(.asset == "reads_gone") | .state == "failed" and (.error.message | test("running_gone was deleted"))' <<< "$(status "$W")" || check "walking: what read a deleted asset says $(status "$W" | jq -c '.board.jobs[] | select(.asset == "reads_gone")')"
 # Put back, it is the asset, and not the render it stopped.
 api -X PUT -d "$(jq -c '{text, at}' <<< "$back")" "http://$ADDR/v1/projects/$id/assets/running_gone" > /dev/null || check "walking: PUT didn't take back what DELETE answered"
 { grep -q '^  running_gone:' "$W/project.yaml" && J '.busy | not' <<< "$(status "$W")" && [ "$(made "$W" running_gone)" = 0 ]; } || check "walking: put back, running_gone went again: $(status "$W" | jq -c '{busy, jobs: [.board.jobs[] | select(.asset == "running_gone")]}')"

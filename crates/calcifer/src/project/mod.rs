@@ -3137,16 +3137,21 @@ impl Walk {
     async fn say_cuts(&self, doc: &Doc, stand: &[Standing]) -> Result<(), Error> {
         let lock = self.folder().lock()?;
         for i in (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)) {
-            let name = cut_name(&doc.assets[i].name);
-            let Some(file) = stand[i].files.as_ref().and_then(|files| files.get("video")).and_then(|sha256| lock.files.get(sha256)) else { continue };
-            self.film_follows(doc, stand, &lock, i).await;
-            if self.cut.lock().expect("cut lock").contains(&name) {
-                continue;
-            }
-            let row = cut_row(doc, self.folder(), &lock, stand, i);
-            self.say(Event::Cut { name: doc.assets[i].name.clone(), cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true, without: row.without });
+            self.say_cut(doc, stand, &lock, i).await;
         }
         Ok(())
+    }
+
+    /// Cut `i` stands, as it did: its film back at the root if someone moved it, and said, once a walk.
+    async fn say_cut(&self, doc: &Doc, stand: &[Standing], lock: &Lock, i: usize) {
+        let name = cut_name(&doc.assets[i].name);
+        let Some(file) = stand[i].files.as_ref().and_then(|files| files.get("video")).and_then(|sha256| lock.files.get(sha256)) else { return };
+        self.film_follows(doc, stand, lock, i).await;
+        if !self.cut.lock().expect("cut lock").insert(name.clone()) {
+            return;
+        }
+        let row = cut_row(doc, self.folder(), lock, stand, i);
+        self.say(Event::Cut { name: doc.assets[i].name.clone(), cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true, without: row.without });
     }
 
     /// A standing cut's `.otio`, written again from its pieces; one that can't be says so and the walk goes on.
@@ -3821,7 +3826,10 @@ impl Walk {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
-                let Some((files, without)) = self.cut_tool(doc, asset, standing, &ask.target, &version.inputs).await? else { return Ok(()) };
+                let Some((files, without)) = self.cut_tool(doc, asset, standing, &ask.target, &version.inputs).await? else {
+                    self.say_cut(doc, stand, &self.folder().lock()?, i).await;
+                    return Ok(());
+                };
                 version.without = without;
                 version.clips = tools::clips(&asset.inputs, &standing.reads);
                 for clip in &mut version.clips {
