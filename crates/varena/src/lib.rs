@@ -338,6 +338,9 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
 
 /// A request started or ended on `device`: an atomic store, which orders who donates first.
 pub fn request_boundary(device: i32, begin: bool) {
+    if begin && let Ok(device) = gpu(device) {
+        device.held_peak.store(0, Ordering::Release);
+    }
     #[cfg(target_os = "linux")]
     cooperative::request_boundary(device, begin);
     #[cfg(not(target_os = "linux"))]
@@ -386,6 +389,8 @@ pub struct Device {
     outside: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
+    // The most weight bytes held for use at once this request.
+    held_peak: AtomicUsize,
     // Actual successful physical releases only. An observation permits a real retry, never a grant.
     released: AtomicU64,
     clock: AtomicU64,
@@ -418,6 +423,7 @@ impl Device {
             outside: AtomicUsize::new(0),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
+            held_peak: AtomicUsize::new(0),
             released: AtomicU64::new(0),
             clock: AtomicU64::new(0),
             joins_started: AtomicU64::new(0),

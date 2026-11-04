@@ -387,7 +387,7 @@ fn fits(
 struct Menu {
     plans: Vec<Fit>,
     capacity: usize,
-    /// What no eviction can touch: live working bytes and pinned weights.
+    /// What no eviction can touch: live working bytes and weights held for use.
     live: usize,
 }
 
@@ -408,9 +408,9 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
     let working: usize = state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch)
         .map(|block| block.capacity).sum();
-    let pinned: usize = state.entries.values().filter(|entry| entry.handle.is_some() && entry.uses.pins() != 0)
-        .map(|entry| entry.bytes).sum();
-    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: working + pinned })
+    // The most any op has held this request, since this op's own weights may not be held yet.
+    let held = owner.note_held(&state);
+    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: working + held })
 }
 
 impl Menu {

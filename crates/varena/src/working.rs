@@ -467,6 +467,12 @@ impl Device {
         self.page.load(Ordering::Acquire)
     }
 
+    /// Weights held for use now, kept as this request's high-water mark, which is returned.
+    pub(super) fn note_held(&self, state: &State) -> usize {
+        let held: usize = state.entries.values().filter(|entry| entry.uses.pins() != 0).map(|entry| entry.bytes).sum();
+        self.held_peak.fetch_max(held, Ordering::AcqRel).max(held)
+    }
+
     /// Parked workspaces on this stream become ordinary free blocks, once it has passed them.
     fn release_parked(&self, state: &mut State, stream: u64) {
         let parked: Vec<_> = state.parked_workspaces.iter().filter(|(on, _)| *on == stream).copied().collect();
@@ -1133,6 +1139,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         let _context = owner.driver().enter()?;
         let result = (|| -> crate::AllocationResult<u64> {
             owner.poll(&mut state)?;
+            owner.note_held(&state);
             let ptr = match Device::take(&mut state, class, bytes, stream, None) {
                 Some(ptr) => ptr,
                 None => {
