@@ -14,6 +14,7 @@ use protocol::{
     ids::{Digest, RunId},
     interface::{self, ADAPTER, Interface, Slot, adapter_name},
     model_ref::ModelRef,
+    names::shown,
     project::Event,
     tool,
 };
@@ -143,7 +144,7 @@ impl Renderer {
     ) -> Result<Self, Error> {
         let unknown = || format!("{package}@{release} has no function {function}");
         let entry = (interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)))
-            .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()))?;
+            .ok_or_else(|| Error::new(Kind::NotFound, "callable_unknown", unknown()).next(format!("cozy package update {}", shown(package))))?;
         let read = |slots: Vec<&Value>| slots.into_iter().filter_map(|slot| Slot::read(slot).ok()).collect();
         let fields = entry["request"]["fields"].as_array();
         // A list with no room for anything is not taken.

@@ -2390,7 +2390,8 @@ impl Walk {
             let (calls, said) = match &maker {
                 Maker::Adapter(adapter) => {
                     if let Some(signature) = &adapter.signature {
-                        let unknown = (asset.own.iter()).filter(|field| asset.fields.contains_key(*field) && !signature.contains(*field));
+                        // Every asset can have a description, for what mentions it, whatever makes it.
+                        let unknown = (asset.own.iter()).filter(|field| *field != "description" && asset.fields.contains_key(*field) && !signature.contains(*field));
                         warnings.extend(unknown.map(|field| format!("{name}: {} reads no field {field}", adapter.target())));
                     }
                     let mut operation = doc.operation(i, package.named.as_deref(), &reads, lock, keep.clone(), stand);

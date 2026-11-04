@@ -1370,7 +1370,7 @@ render "$T" direct || check "tools: direct: $(tail -c 500 "$OUT/render.txt")"
 input=$(jq -c '.assets.direct.versions[-1].invocations[0]' "$T/project.lock")
 J '.function == "still" and (.input | .aspect_ratio == "16:9" and .count == 4 and (has("style") | not) and (.prompt | contains("<red_art>")))' <<< "$input" || check "tools: the call: $input"
 J '.input.pictures | length == 1 and .[0].name == "red_art" and (.[0].image | length == 71)' <<< "$input" || check "tools: <red_art> is not the picture it names, or its one place is overrun: $input"
-says tools "count"; says tools "nonsense isn't"; says tools "first 1"
+says tools "count: 99"; says tools "isn't one of flat, noise"; says tools "the first 1"
 
 step "a tool is a function: an adapter is told it, its typed bounds clamp, and only what's meant for a reader crosses a mention"
 render "$T" madeup reader alone || check "tools: told: $(tail -c 500 "$OUT/render.txt")"
@@ -1420,7 +1420,7 @@ one=$(api -X POST -H "Idempotency-Key: tool-$RANDOM$RANDOM" -d "$(jq -n --arg t 
 J '.name == "kept_video"' <<< "$one" || check "tools: POST assets: $one"
 J '.assets[] | select(.name == "kept_video") | .kind == "video"' <<< "$(status "$T")" || check "tools: its kind isn't from its output: $(row "$T" kept_video .kind)"
 before=$(runs "$T")
-render "$T" kept_video
+render "$T" kept_video || true
 says tools "needs video"
 [ "$(runs "$T")" = "$before" ] || check "tools: a run went with its file missing"
 
