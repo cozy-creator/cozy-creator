@@ -64,25 +64,26 @@ impl Machines {
             return Ok(None);
         }
         let m = self.show(name).await?;
-        let Some(status) = m.status.as_ref() else { return Ok(None) };
         let own = this_release();
-        if !newer(own, &status.version) {
+        let key = format!("bring-up-{}-{own}", m.rental_id.as_deref().unwrap_or(name));
+        // Once it has been asked, what it came to is the answer, though the machine is no longer older.
+        let fresh = self.store().keyed(&key).map_err(internal)?.is_none();
+        let running = m.status.as_ref().map_or("", |status| status.version.as_str());
+        if fresh && !newer(own, running) {
             return Ok(None);
         }
         // Its outcome's words already say the command; `next` does here.
         let refused = reason.message.split(&format!("; {name} runs cozy")).next().unwrap_or(&reason.message);
         let by_hand = |why: String| {
-            Error::new(Kind::Conflict, "machine_too_old", format!("{refused}; {name} runs cozy {}, and {why}", status.version))
+            Error::new(Kind::Conflict, "machine_too_old", format!("{refused}; {name} runs cozy {running}, and {why}"))
                 .cause(reason.code.clone())
                 .next(bring_up_command(name))
         };
-        let key = format!("bring-up-{}-{own}", m.rental_id.as_deref().unwrap_or(name));
-        let fresh = self.store().keyed(&key).map_err(internal)?.is_none();
         if fresh {
             if m.kind == MachineKind::Added {
                 return Err(by_hand("it is its owner's to update".into()));
             }
-            if status.dev {
+            if m.status.as_ref().is_some_and(|status| status.dev) {
                 return Err(by_hand("it runs a dev build, which nothing replaces unasked".into()));
             }
             let load = self.store().machine_load().map_err(internal)?;
@@ -96,7 +97,7 @@ impl Machines {
         if fresh {
             let warning = Warning {
                 code: BRINGING_UP.into(),
-                message: format!("{name} runs cozy {}, too old for this: updating it to {own}, then going on", status.version),
+                message: format!("{name} runs cozy {running}, too old for this: updating it to {own}, then going on"),
             };
             self.calcifer.warn(&run.id, &warning).map_err(|e| Refusal::from(e).0)?;
             run.warnings.push(warning);
