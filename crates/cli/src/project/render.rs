@@ -121,6 +121,11 @@ impl Rendering {
         clock(self.board.elapsed_ms.unwrap_or_else(|| (now_ms() - self.board.began_at_ms).max(0) as u64))
     }
 
+    /// `shot 1/5`, of a job that makes a shot.
+    fn shot(&self, job: &Job) -> Option<String> {
+        job.shot.map(|shot| format!("shot {shot}/{}", self.board.shots))
+    }
+
     /// Several machines: each job says which.
     fn several(&self) -> bool {
         self.board.on.len() > 1 || self.board.on.iter().any(|on| on == "any")
@@ -454,13 +459,13 @@ impl Lines {
             if entered || tenth > *shown {
                 *shown = (*shown).max(tenth);
                 let detail = job.detail.as_deref().map(|detail| format!(" {detail}")).unwrap_or_default();
-                output::say(ctx, &format!("{asset}: {stage}{detail}"));
+                output::say(ctx, &format!("{asset}: {}{stage}{detail}", of_shot(rendering, job)));
             }
         }
         if let Some(preview) = &job.preview
             && self.first(job, &preview.path)
         {
-            output::say(ctx, &format!("{asset}: {} ready: {}", first_lower(&preview.label), rendering.file(ctx, &preview.path)));
+            output::say(ctx, &format!("{asset}: {}{} ready: {}", of_shot(rendering, job), preview.label, rendering.file(ctx, &preview.path)));
         }
         if let Some(stalled) = &job.stalled
             && self.first(job, "stalled")
@@ -471,13 +476,9 @@ impl Lines {
     }
 }
 
-/// `Segment 1 of 2` in a sentence. A word of capitals stays one.
-fn first_lower(label: &str) -> String {
-    let mut chars = label.chars();
-    match (chars.next(), chars.next()) {
-        (Some(first), Some(second)) if second.is_lowercase() => first.to_lowercase().chain(label[first.len_utf8()..].chars()).collect(),
-        _ => label.to_owned(),
-    }
+/// What a line on a job's way starts with: `shot 1/5 : `, of a job that makes a shot.
+fn of_shot(rendering: &Rendering, job: &Job) -> String {
+    rendering.shot(job).map(|shot| format!("{shot} : ")).unwrap_or_default()
 }
 
 /// The live view of a render: one row per job, drawn from the board.
@@ -592,13 +593,18 @@ impl View {
                     notes.extend(stage);
                 }
             }
-            text += &notes.join(" · ");
+            // What a running shot is doing starts with which it is: `shot 1/5 : segment 2/2, denoise 14/30`.
+            let mut note = notes.join(" · ");
+            if let Some(shot) = rendering.shot(job).filter(|_| job.state == JobState::Running) {
+                note = if note.is_empty() { shot } else { format!("{shot} : {note}") };
+            }
+            text += &note;
             if let Some(preview) = &job.preview {
                 let file = short(&preview.path);
-                if !notes.is_empty() {
+                if !note.is_empty() {
                     text += " · ";
                 }
-                text += &format!("{} ready: ", first_lower(&preview.label));
+                text += &format!("{} ready: ", preview.label);
                 links.push((text.chars().count(), file.clone(), preview.path.clone()));
                 text += &file;
             }

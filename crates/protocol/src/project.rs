@@ -514,6 +514,9 @@ pub struct Board {
     /// How long it took, once its walk ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// How many shots it will make, what's queued too: what a job's `shot` counts up to. It grows only as another render joins.
+    #[serde(default)]
+    pub shots: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs: Vec<Job>,
 }
@@ -544,6 +547,9 @@ pub struct Job {
     /// Its take or version, once one is reserved for it. None for a file that comes with another's take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
+    /// Which of the render's shots it makes, 1 first, for the whole render: a `kind: video` its package makes. None for a cut or a still.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot: Option<u32>,
     /// A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
@@ -558,7 +564,7 @@ pub struct Job {
     /// How long its runs executed, once they ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub took_ms: Option<u64>,
-    /// Where it is, in words: `segment 2 of 2, denoise`.
+    /// Where it is, in words: `segment 2/2, denoise`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     /// How far through that: `14/30`, `12 GiB/52 GiB`.
@@ -584,7 +590,7 @@ pub struct Job {
     pub error: Option<Error>,
 }
 
-/// A file a run showed before it ended: its package's word for it (`Segment 1 of 2`), and its path in the project.
+/// A file a run showed before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Preview {
     pub label: String,

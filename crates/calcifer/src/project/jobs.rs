@@ -9,6 +9,8 @@ use protocol::{
 };
 use tokio::sync::watch;
 
+use super::graph::name_key;
+
 /// A version a run is making or about to: what project.lock's pending entry says of it.
 pub struct Going {
     pub asset: String,
@@ -18,6 +20,8 @@ pub struct Going {
     pub run: u64,
     /// What the calls before this one of its operation took.
     pub earlier_ms: u64,
+    /// It makes a shot.
+    pub shot: bool,
 }
 
 pub struct Jobs {
@@ -38,6 +42,8 @@ struct Held {
     coming: Vec<Job>,
     /// A cut said, until its version lands or the walk ends.
     cuts: Vec<Job>,
+    /// The shots this walk makes, by name key, each as it was first seen: its place here is its number.
+    shots: Vec<String>,
     /// The warnings its runs' logs gave, by asset.
     warned: HashSet<(String, String)>,
 }
@@ -88,23 +94,27 @@ impl Jobs {
         self.publish(&mut held);
     }
 
-    /// The board as project.lock stands: what it sends and what it still owes. A run it holds no row of is read by `run`.
-    pub fn sync(&self, on: Vec<String>, going: Vec<Going>, coming: Vec<Job>, run: impl Fn(u64) -> Option<Run>) {
+    /// The board as project.lock stands: what it sends and what it still owes, each `coming` with whether it makes a shot. A run it
+    /// holds no row of is read by `run`.
+    pub fn sync(&self, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
         let mut held = self.held.lock().expect("jobs lock");
         for machine in on {
             if !held.on.contains(&machine) {
                 held.on.push(machine);
             }
         }
-        held.coming = coming;
+        // Numbered as first seen: what is going, then what is owed in the order it goes, so a shot keeps its number while it runs and after.
+        let shots: Vec<Option<u32>> = going.iter().map(|going| going.shot.then(|| held.shot(&going.asset))).collect();
+        held.coming = coming.into_iter().map(|(job, shot)| Job { shot: shot.then(|| held.shot(&job.asset)), ..job }).collect();
         held.live.retain(|live| going.iter().any(|going| Some(going.run) == live.job.run));
-        held.sending = going.iter().filter(|going| going.run == 0).map(sending).collect();
-        for going in going.iter().filter(|going| going.run > 0) {
+        held.sending = going.iter().zip(&shots).filter(|(going, _)| going.run == 0).map(|(going, shot)| Job { shot: *shot, ..sending(going) }).collect();
+        for (going, shot) in going.iter().zip(&shots).filter(|(going, _)| going.run > 0) {
             if held.live.iter().any(|live| live.job.run == Some(going.run)) {
                 continue;
             }
             let Some(run) = run(going.run) else { continue };
-            let mut live = Live { id: run.id.clone(), job: sending(going), earlier_ms: going.earlier_ms, settled: false, landed: None };
+            let job = Job { shot: *shot, ..sending(going) };
+            let mut live = Live { id: run.id.clone(), job, earlier_ms: going.earlier_ms, settled: false, landed: None };
             live.apply(&run);
             held.live.push(live);
         }
@@ -117,7 +127,7 @@ impl Jobs {
         match event {
             Event::Landed { name, noun, number, path, execution_ms, .. } => {
                 let mut job = held.take(name, Some(*number), None).unwrap_or_default();
-                job = Job { asset: name.clone(), state: JobState::Done, noun: noun.clone(), number: Some(*number), took_ms: *execution_ms, path: Some(path.clone()), run: job.run, machine: job.machine, ..Job::default() };
+                job = Job { asset: name.clone(), state: JobState::Done, noun: noun.clone(), number: Some(*number), shot: job.shot, took_ms: *execution_ms, path: Some(path.clone()), run: job.run, machine: job.machine, ..Job::default() };
                 if let Some(at) = held.cuts.iter().position(|cut| cut.asset == *name) {
                     let cut = held.cuts.remove(at);
                     job = Job { path: cut.path, seconds: cut.seconds, why: cut.why, took_ms: cut.took_ms, ..job };
@@ -128,7 +138,7 @@ impl Jobs {
                 let canceled = run.and_then(|run| held.live.iter().find(|live| live.job.run == Some(run))).is_some_and(|live| live.settled && live.job.why.as_deref() == Some(CANCELED));
                 let job = held.take(name, None, *run).unwrap_or_default();
                 let state = if canceled { JobState::Canceled } else { JobState::Failed };
-                let job = Job { asset: name.clone(), state, noun: job.noun, number: job.number, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error.clone()), ..Job::default() };
+                let job = Job { asset: name.clone(), state, noun: job.noun, number: job.number, shot: job.shot, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error.clone()), ..Job::default() };
                 held.ended.push(job);
             }
             Event::Cut { name, cut, frames, fps, retimed, took_s, unchanged } => {
@@ -162,7 +172,7 @@ impl Jobs {
         }
         let was = held.take(&job.asset, job.number, None).unwrap_or_default();
         let noun = if job.noun.is_empty() { was.noun } else { job.noun.clone() };
-        held.ended.push(Job { noun, number: job.number.or(was.number), ..job });
+        held.ended.push(Job { noun, number: job.number.or(was.number), shot: job.shot.or(was.shot), ..job });
         self.publish(&mut held);
     }
 
@@ -199,7 +209,7 @@ impl Jobs {
                 }
                 let path = item.path.as_ref()?;
                 let path = path.strip_prefix(dir).unwrap_or(path).display().to_string();
-                let label = if item.label.is_empty() { item.name.clone() } else { item.label.clone() };
+                let label = words(if item.label.is_empty() { &item.name } else { &item.label });
                 live.landed = Some((Preview { label, path }, (live.job.stage.clone(), live.job.detail.clone())));
                 return None;
             }
@@ -224,13 +234,14 @@ impl Jobs {
         }
         let jobs: Vec<Job> = held.ended.iter().cloned().chain(going).chain(held.coming.iter().cloned()).collect();
         let stands = self.board.borrow();
-        let same = stands.seq > 0 && stands.jobs == jobs && stands.on == held.on && stands.elapsed_ms == held.elapsed_ms && stands.began_at_ms == held.began_at_ms;
+        let shots = held.shots.len() as u32;
+        let same = stands.seq > 0 && stands.jobs == jobs && stands.shots == shots && stands.on == held.on && stands.elapsed_ms == held.elapsed_ms && stands.began_at_ms == held.began_at_ms;
         drop(stands);
         if same {
             return;
         }
         held.seq = (held.seq + 1).max(crate::store::now_ms() as u64);
-        let board = Board { seq: held.seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, jobs };
+        let board = Board { seq: held.seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs };
         self.board.send_replace(board);
     }
 }
@@ -239,6 +250,16 @@ impl Jobs {
 const CANCELED: &str = "canceled";
 
 impl Held {
+    /// The number of the shot of `asset`: its place among the shots seen, a new one at the end.
+    fn shot(&mut self, asset: &str) -> u32 {
+        let key = name_key(asset);
+        let at = self.shots.iter().position(|shot| *shot == key).unwrap_or_else(|| {
+            self.shots.push(key);
+            self.shots.len() - 1
+        });
+        at as u32 + 1
+    }
+
     /// The job making `asset`'s version `number`, or run `run`, or else what the asset has coming, out of where it is.
     fn take(&mut self, asset: &str, number: Option<u32>, run: Option<u64>) -> Option<Job> {
         let fits = |job: &Job| match (run, number) {
@@ -311,16 +332,32 @@ fn sending(going: &Going) -> Job {
     }
 }
 
-/// A stage in a sentence: `Segment 2 of 2 / denoise` is `segment 2 of 2, denoise`. A word of capitals stays one.
+/// A package's words in a sentence: `Segment 2 of 2 / denoise` is `segment 2/2, denoise`. A word of capitals stays one.
 fn words(stage: &str) -> String {
-    let lower = |part: &str| {
+    let lower = |part: &str| -> String {
         let mut chars = part.chars();
         match (chars.next(), chars.next()) {
             (Some(first), Some(second)) if second.is_lowercase() => first.to_lowercase().chain(part[first.len_utf8()..].chars()).collect(),
             _ => part.to_owned(),
         }
     };
-    stage.split(" / ").map(lower).collect::<Vec<_>>().join(", ")
+    stage.split(" / ").map(|part| counted(&lower(part))).collect::<Vec<_>>().join(", ")
+}
+
+/// `segment 2 of 2` as `segment 2/2`.
+fn counted(text: &str) -> String {
+    let number = |word: &str| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit());
+    let mut said: Vec<String> = vec![];
+    let mut words = text.split(' ').peekable();
+    while let Some(word) = words.next() {
+        match said.last_mut() {
+            Some(last) if word == "of" && number(last) && words.peek().is_some_and(|next| number(next)) => {
+                *last = format!("{last}/{}", words.next().unwrap_or_default());
+            }
+            _ => said.push(word.to_owned()),
+        }
+    }
+    said.join(" ")
 }
 
 /// How far through its stage: its steps of their total, its share, its bytes, and how fast they move.

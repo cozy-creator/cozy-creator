@@ -141,8 +141,9 @@ cp "$OUT/render.txt" "$OUT/by-asset.txt"
 for name in amy sophia long short cut; do
   grep -qE "^$name: (take|version) [0-9]+" "$OUT/by-asset.txt" || check "by asset: no line says $name landed: $(cat "$OUT/by-asset.txt")"
 done
-says "by asset" "long: segment 1 of 2 ready: files/"
-says "by asset" "long: segment 2 of 2, denoise"
+says "by asset" "long: shot 1/2 : segment 1/2 ready: files/"
+says "by asset" "long: shot 1/2 : segment 2/2, denoise"
+says "by asset" "short: shot 2/2 : segment 1/1, denoise"
 # Nothing of a run's own, and every line its asset's, the project's first line and the last aside.
 ! grep -qE '^run [0-9]+ · |^  on |^  inputs: |^  call |^(image|video)  ' "$OUT/by-asset.txt" || check "by asset: a run's own lines: $(cat "$OUT/by-asset.txt")"
 grep -vE '^(amy|sophia|long|short|cut): |^by-asset( on [a-z]+)?: following|^rendered ' "$OUT/by-asset.txt" > "$OUT/by-asset-other.txt" || true
@@ -150,6 +151,8 @@ grep -vE '^(amy|sophia|long|short|cut): |^by-asset( on [a-z]+)?: following|^rend
 [ "$(grep -c 'lens is dusty' "$OUT/by-asset.txt")" = 1 ] || check "by asset: a warning not said once, or not at all: $(grep 'lens is dusty' "$OUT/by-asset.txt")"
 grep -qE '^(long|short): warning: the fixture' "$OUT/by-asset.txt" || check "by asset: a warning names no asset: $(grep 'lens is dusty' "$OUT/by-asset.txt")"
 J '.board.jobs | map(select(.asset == "long")) | .[0] | .state == "done" and .noun == "take" and .number == 1 and (.path | startswith("files/"))' <<< "$(status "$T")" || check "by asset: status's board: $(status "$T" | jq -c .board)"
+# Shots are what makes a video by a package: a still and a cut count for nothing.
+J '.board.shots == 2 and ([.board.jobs[] | {(.asset): .shot}] | add) == {amy: null, sophia: null, long: 1, short: 2, cut: null}' <<< "$(status "$T")" || check "by asset: its shots: $(status "$T" | jq -c '{shots: .board.shots, jobs: [.board.jobs[] | {asset, shot}]}')"
 
 step "a project: --json is each run's own events"
 cozy --json project -p "$T" render short --on local > "$OUT/by-asset.ndjson" 2> "$OUT/by-asset-json.err" || check "by asset: --json: $(tail -c 300 "$OUT/by-asset-json.err")"

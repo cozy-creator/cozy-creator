@@ -334,10 +334,11 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
         number: pending.version.number,
         run: pending.run,
         earlier_ms: pending.version.execution_ms,
+        shot: lock.asset(&pending.asset).is_some_and(|held| held.kind == "video"),
     });
     let on = lock.walk.asks.iter().map(|ask| &ask.target).chain(lock.pending.values().map(|pending| &pending.target));
     let on = on.flat_map(|target| target.on.iter().map(ToString::to_string)).collect();
-    let coming = owed(folder, &lock).into_iter().map(|owed| owed.job).collect();
+    let coming = owed(folder, &lock).into_iter().map(|owed| (owed.job, owed.shot)).collect();
     project.jobs.sync(on, going.collect(), coming, run);
     Ok(())
 }
@@ -1048,6 +1049,8 @@ struct Owed {
     key: Option<String>,
     /// A run is sent for it: not what comes of another's, as a tool and a written image do.
     sent: bool,
+    /// It makes a shot: a video its package makes, not a cut.
+    shot: bool,
 }
 
 /// What each render still owes, by its own text, in the order it goes, each with what it waits for.
@@ -1060,7 +1063,7 @@ fn owed(folder: &Folder, lock: &Lock) -> Vec<Owed> {
             for take in ask.takes.iter().filter(waiting) {
                 going.insert(name_key(&take.asset));
                 let job = Job { asset: take.asset.clone(), noun: "version".into(), ..Job::default() };
-                items.push(Owed { job, key: Some(take.key.clone()), sent: true });
+                items.push(Owed { job, key: Some(take.key.clone()), sent: true, shot: false });
             }
             continue;
         };
@@ -1076,20 +1079,21 @@ fn owed(folder: &Folder, lock: &Lock) -> Vec<Owed> {
                 [] => "next".to_owned(),
                 reads => format!("after {}", reads.join(", ")),
             };
+            let shot = asset.kind == "video" && doc.tool(i).is_none();
             let takes: Vec<&Take> = ask.takes.iter().filter(waiting).filter(|take| name_key(&take.asset) == key).collect();
-            items.extend(takes.iter().map(|take| Owed { job: row(why.clone()), key: Some(take.key.clone()), sent: true }));
+            items.extend(takes.iter().map(|take| Owed { job: row(why.clone()), key: Some(take.key.clone()), sent: true, shot }));
             let tried = ask.sent.contains(&key);
             let there = !takes.is_empty() || going.contains(&key);
             let sent = !there && covered[i] && stand[i].files.is_none() && doc.makes(i) && doc.tool(i).is_none() && !tried;
             let tool = !there && doc.tool(i).is_some() && doc.makes(i) && asset.pin.is_none() && !tried && (!after.is_empty() || (stand[i].files.is_none() && stand[i].inputs.is_some()));
             let writer = asset.writer.map(|writer| doc.assets[writer].name.clone()).filter(|writer| !there && asset.pin.is_none() && going.contains(&name_key(writer)));
             if sent {
-                items.push(Owed { job: row(why), key: None, sent: true });
+                items.push(Owed { job: row(why), key: None, sent: true, shot });
             } else if tool {
                 let why = if asset.frame && !after.is_empty() { format!("comes with {}", after.join(", ")) } else { why };
-                items.push(Owed { job: row(why), key: None, sent: false });
+                items.push(Owed { job: row(why), key: None, sent: false, shot: false });
             } else if let Some(writer) = writer {
-                items.push(Owed { job: row(format!("comes with {writer}")), key: None, sent: false });
+                items.push(Owed { job: row(format!("comes with {writer}")), key: None, sent: false, shot: false });
             }
             if items.last().is_some_and(|owed: &Owed| owed.job.asset == asset.name) {
                 going.insert(key);
