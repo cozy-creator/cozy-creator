@@ -141,7 +141,7 @@ impl Recovery {
     }
 
     fn next_with_cold(&mut self, device: i32, bytes: usize, physical: bool,
-                      cold: Option<working::ColdRecovery>) -> Result<bool> {
+                      cold: Option<&working::ColdRecovery>) -> Result<bool> {
         if self.terminal { return Ok(false); }
         {
             let captures = capture_counts()?;

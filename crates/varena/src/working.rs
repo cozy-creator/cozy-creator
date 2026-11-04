@@ -387,7 +387,7 @@ pub(crate) struct ColdRecovery {
     thread: std::thread::ThreadId,
 }
 impl ColdRecovery {
-    pub(crate) fn join(self) -> Result<bool> {
+    pub(crate) fn join(&self) -> Result<bool> {
         let owner = owner(self.device)?;
         let mut state = owner.lock()?;
         if self.thread != std::thread::current().id()
@@ -1522,14 +1522,25 @@ fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, boun
 
 fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
     let mut recovery = crate::Recovery::default();
+    // Inspect once, only after a real refusal has initialized/validated Working.
+    // Remember None too: a nested callback allocation cannot opt in later, while
+    // our own worker's next action cannot revoke an already-authorized episode.
+    let mut cold = None;
+    let mut cold_checked = false;
     loop {
         let mut physical = None;
         let result = alloc_local(device, bytes, stream, pool, &mut physical, bound);
         if pool.is_none() && let Err(Error::OutOfMemory { requested_bytes }) = &result
-            && recovery.next_with_cold(device, physical.unwrap_or(*requested_bytes), physical.is_some(),
-                cold_recovery(device)?)?
         {
-            continue; // All native guards are gone; retry the real allocator, never a grant.
+            if !cold_checked {
+                cold = cold_recovery(device)?;
+                cold_checked = true;
+            }
+            if recovery.next_with_cold(device, physical.unwrap_or(*requested_bytes), physical.is_some(),
+                cold.as_ref())?
+            {
+                continue; // All native guards are gone; retry the real allocator, never a grant.
+            }
         }
         if matches!(result, Err(Error::OutOfMemory { .. })) {
             owner(device)?.lock()?.stats.ooms += 1;
