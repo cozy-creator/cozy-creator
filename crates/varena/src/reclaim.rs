@@ -159,7 +159,7 @@ impl<'a> Sequence<'a> {
                 let first = if self.protect.speculative { UNPLANNED } else { PREFETCHED };
                 self.weights(want, first..=PHASE_NEXT, false, false)
             }
-            Step::PendingWorking if waiting => {
+            Step::PendingWorking if waiting && self.protect.arena.is_none() => {
                 if !working::wait_pending(self.device, want, self.protect.pool)? {
                     return Ok(false);
                 }
@@ -172,7 +172,7 @@ impl<'a> Sequence<'a> {
             }
             Step::Join if waiting => {
                 let classes = CONTENTLESS..=PREFERRED;
-                let blocks = working::unjoined(self.device)?;
+                let blocks = self.protect.arena.is_none() && working::unjoined(self.device)?;
                 if self.weights(want, classes.clone(), false, !blocks)? {
                     return Ok(true);
                 }
@@ -301,7 +301,11 @@ pub(crate) fn acquire<T>(
         };
         let want = shortfall(device, need, &failure, sequence.activity)?.max(floor);
         sequence.released = 0;
-        if !sequence.advance(want, failure.physical_bytes().is_some())? {
+        // Other processes' memory cannot lift a local cap.
+        let physical = failure.physical_bytes().is_some()
+            || matches!(failure, AllocationFailure::Other(Error::Exhausted { .. }))
+                && sequence.activity.room.over(want) == 0;
+        if !sequence.advance(want, physical)? {
             return Err(failure.into());
         }
         // Short of what the arithmetic said: the driver's free reading is only approximate.
@@ -468,7 +472,7 @@ struct Recovery {
 
 impl Recovery {
     /// Queue owner shrinks and wait for a release, for the shrink to finish, or for the last
-    /// resort bound, on a physical card as under a local cap. Skipped where owner callbacks
+    /// resort bound, on a physical card as under a local cap. No wait where owner callbacks
     /// cannot run: this thread is the dispatcher (no request) or holds the host lock.
     fn owner_caches(&mut self, device: i32, bytes: usize) -> Result<bool> {
         let limit = *self.deadline.get_or_insert_with(|| Instant::now() + RECOVERY_BUDGET);
@@ -484,7 +488,7 @@ impl Recovery {
             return Ok(crate::released_bytes(device)? > before);
         }
         working::invalidate_current_phase(device, "cache_recovery")?;
-        request.wait_allocation_release(before, limit)
+        request.wait_release(before, limit)
     }
 
     /// Only a physical refusal asks other processes: their memory cannot lift a local cap.

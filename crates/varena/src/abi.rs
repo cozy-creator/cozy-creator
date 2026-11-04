@@ -195,18 +195,6 @@ struct Entry {
     disposition: Disposition,
     failure: i32,
 }
-impl Handle {
-    fn device(&self) -> i32 {
-        match self {
-            Self::Gpu(g) => g.device(),
-            Self::Region(w) => w.gpu.device(),
-            Self::Use(u) => u._weights[0].gpu.device(),
-            Self::Allocation(a) => a.gpu.device(),
-            Self::Cache(c) => c._gpu.device(),
-            Self::Plan(p) => p.gpu.device(),
-        }
-    }
-}
 fn registry_unchecked() -> Result<std::sync::MutexGuard<'static, BTreeMap<u64, Entry>>> {
     crate::check_process()?;
     HANDLES

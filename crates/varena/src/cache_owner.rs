@@ -528,11 +528,10 @@ impl ShrinkRequest {
         Ok(job.facts.clone())
     }
 
-    /// Observe an Allocation job within its caller's existing deadline. The worker
-    /// retains the job and callback custody when this observer returns or times out.
-    /// In particular, never drain/cancel a coalesced request while its caller may
-    /// hold the GIL. Release progress permits a real allocation retry, not success.
-    pub(crate) fn wait_allocation_release(&self, since: u64, deadline: Instant) -> Result<bool> {
+    /// The allocation path's one wait: a release, the shrink finishing, or the deadline.
+    /// The worker keeps the job and callback custody when this returns. A release
+    /// permits a real allocation retry, not success.
+    pub(crate) fn wait_release(&self, since: u64, deadline: Instant) -> Result<bool> {
         self.check()?;
         if self.job.key.cause != Cause::Allocation {
             return Err(Error::Invalid("only allocation requests expose recovery progress"));
@@ -653,7 +652,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
     }
     // Concurrent/rapid local failures share one outstanding owner pass. A new actual
     // refusal after earlier physical releases asks for remaining progress, not a sum
-    // of duplicate deficits. No allocator waits for this pass or its callback thread.
+    // of duplicate deficits.
     if key.cause == Cause::Allocation {
         for pending in state
             .jobs

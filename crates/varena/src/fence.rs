@@ -41,10 +41,11 @@ impl Fences {
             sealed: VecDeque::new(),
         });
         stream.dirty = true;
-        match waits.iter_mut().find(|(held, _)| *held == id) {
-            Some(wait) => wait.1 = stream.next,
-            None => waits.push((id, stream.next)),
-        }
+        let next = stream.next;
+        // Metadata may outlive many streams: drop what is already settled.
+        waits.retain(|(held, sequence)| *held != id
+            && self.streams.get(held).is_some_and(|stream| stream.done < *sequence));
+        waits.push((id, next));
     }
 
     /// As known at the last poll. A retired stream has drained, so it completes everything.

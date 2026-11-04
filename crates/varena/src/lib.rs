@@ -102,7 +102,8 @@ impl AllocationFailure {
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_) | Self::Other(Error::OutOfMemory { .. }))
+        matches!(self, Self::DriverOutOfMemory(_)
+            | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
 

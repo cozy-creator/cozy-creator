@@ -1495,7 +1495,7 @@ fn phase_enter_inner(
     let invalid = (mode == PhaseMode::Eager && activity.graph_active())
         .then(|| "capture_or_replay_active".to_owned());
     // Packing simulates the whole pass, so only a key's first successful one pays for it.
-    let measured = key.as_ref().is_some_and(|key| state.phases.samples.get(key).is_some_and(|sample| sample.known));
+    let wanted = key.as_ref().is_some_and(|key| !state.phases.samples.get(key).is_some_and(|sample| sample.known));
     state.phases.active = Some(ActivePhase {
         token,
         key,
@@ -1507,7 +1507,7 @@ fn phase_enter_inner(
         owned_peak: 0,
         backing: 0,
         backing_peak: 0,
-        packing: (mode == PhaseMode::Eager && !measured).then(packing::Trace::default),
+        packing: (mode == PhaseMode::Eager && wanted).then(packing::Trace::default),
         invalid,
         committed_site,
     });
