@@ -34,7 +34,7 @@ export function ToolPanel({ machine, shut, setShut, place, choose }: { machine: 
     const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
-  const { data, error, isPending } = useQuery({ ...toolsQuery(client, q, machine), staleTime: 60_000 })
+  const { data, error, isPending } = useQuery({ ...toolsQuery(client, q, machine, store.projectId), staleTime: 60_000 })
   useEffect(() => {
     if (data) store.addTools(data.tools)
   }, [store, data])

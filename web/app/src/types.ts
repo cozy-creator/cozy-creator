@@ -981,6 +981,8 @@ export interface Tool {
   label: string
   kind: string
   description?: string
+  /** Local code a project's assets name. */
+  local?: boolean
   controls: Control[]
 }
 

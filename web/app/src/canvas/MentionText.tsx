@@ -219,6 +219,7 @@ export function MentionText({
         aria-multiline="true"
         aria-label={label}
         data-drop-target=""
+        data-field={place}
         data-placeholder={label}
         contentEditable="plaintext-only"
         suppressContentEditableWarning

@@ -594,6 +594,7 @@ export class CanvasStore {
     this.ids.set(to, id)
     this.aliases.set(from, to)
     this.aliases.delete(to)
+    if (this.editing.get() === from) this.editing.set(to)
     const shape = this.shapes.get(from)
     this.shapes.delete(from)
     if (shape) this.shapes.set(to, shape)

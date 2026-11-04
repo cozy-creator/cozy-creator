@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Background,
   BackgroundVariant,
@@ -50,17 +50,19 @@ function ProjectSync({ id }: { id: string }) {
   const { data: state, error: stateError } = useQuery(projectQuery(client, id))
   const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
   const asked = useRef(new Set<string>())
+  const queries = useQueryClient()
 
   useEffect(() => {
     if (state) store.applyState(state)
     // A tool an asset names that the list didn't hold, asked for by its name, once.
     for (const tool of new Set(state?.assets.flatMap((asset) => asset.tool ?? []))) {
-      // Local code, by its path, is no one's to search for.
-      if (madeHere(tool) || /^[./~\\]|^\w:[\\/]/.test(tool) || asked.current.has(tool) || store.tools.get().has(tool)) continue
+      if (madeHere(tool) || asked.current.has(tool) || store.tools.get().has(tool)) continue
       asked.current.add(tool)
-      client.tools(tool.split("/").slice(0, -1).join(" "), null).then(({ tools }) => store.addTools(tools), () => {})
+      // Local code is listed only once something names it, so the list is read again. Anything else can be searched for.
+      if (/^[./~\\]|^\w:[\\/]/.test(tool)) void queries.invalidateQueries({ queryKey: ["tools"] })
+      else client.tools(tool.split("/").slice(0, -1).join(" "), null, id).then(({ tools }) => store.addTools(tools), () => {})
     }
-  }, [store, client, state])
+  }, [store, client, id, queries, state])
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards)
   }, [store, canvas])
@@ -156,7 +158,7 @@ function Canvas({
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const machines = useMachines(store)
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machines.at(-1) ?? null), staleTime: 60_000 })
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machines.at(-1) ?? null, projectId), staleTime: 60_000 })
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.

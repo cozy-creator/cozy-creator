@@ -58,13 +58,12 @@ export class Placer {
     })
   }
 
-  /** A tool dropped at a point: an asset of it, opening on its controls. */
+  /** A tool dropped at a point: an asset of it, opening on its controls, and as wide as what it makes. Local code is named by Calcifer, from its function. */
   async addTool(tool: Tool, point: { x: number; y: number }) {
-    const width = tool.kind === "video" ? 360 : 300
-    const at = { x: Math.round(point.x - width / 2), y: Math.round(point.y - 16), w: width }
+    const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     try {
       const id = await this.project()
-      const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.label })
+      const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.local ? undefined : tool.label })
       this.store.expect(made.name, at)
       this.hooks.refresh(id)
     } catch (error) {

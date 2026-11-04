@@ -25,10 +25,10 @@ export const projectQuery = (client: Client, id: string) =>
     structuralSharing: keepAssets,
   })
 
-export const toolsQuery = (client: Client, q: string, on: string | null) =>
+export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null) =>
   queryOptions({
-    queryKey: ["tools", q, on],
-    queryFn: ({ signal }) => client.tools(q, on, signal),
+    queryKey: ["tools", q, on, project],
+    queryFn: ({ signal }) => client.tools(q, on, project, signal),
   })
 
 export const canvasQuery = (client: Client, id: string) =>

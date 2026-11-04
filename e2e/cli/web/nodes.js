@@ -1,5 +1,5 @@
 // Assets as a person works them (web-ui.md, Tools and nodes), in a real browser on a real Calcifer. The shell: a name, Render all, a menu; tools
-// on the left. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; controls from what it holds;
+// on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; controls from what it holds;
 // reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
 // Undo brings it back. Takes side by side, one dragged out, a new take from here, Render all.
@@ -99,7 +99,8 @@ function linesOf(text, name) {
 
   // A file a person wrote: every comment and `|` of it outlasts all of this.
   const head = '# Mine, and kept.\nversion: 2\n\nassets:\n  # A note on what follows.\n  kept_words:\n    # Inside it.\n    description: |\n      Written\n      by hand.\n';
-  writeFileSync(yamlAt, head);
+  // Local code is a tool once something in the project names it. A real render needs no GPU this way.
+  writeFileSync(yamlAt, local ? `${head}  named_here:\n    render: {with: ${drawer}}\n` : head);
   await box('kept_words').waitFor();
 
   // The shell: a name, Render all, and a menu holding the rest. No dock, no edges, no path, no zoom, no machine picker.
@@ -126,36 +127,51 @@ function linesOf(text, name) {
   await until('nothing found', () => page.locator('.tools .tool').count(), (n) => n === 0);
   await page.fill('.tools input', '');
 
-  // A tool dragged out of the list drops a box at that point: what it is comes from what it makes.
-  seen.tool_dragged = false;
-  if (listed.tools > 0) {
-    await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
-    const row = page.locator('.tools .tool').first();
-    const label = await row.locator('b').textContent();
-    const kind = await row.locator('.tag').textContent();
-    const stage = await page.locator('.stage').boundingBox();
+  // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
+  const dragOut = async (row, x, y) => {
     const namesBefore = (await state()).assets.map((held) => held.name);
-    await row.dragTo(page.locator('.stage'), { targetPosition: { x: 700, y: 500 } });
-    const made = await until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
-    seen.tool_dragged = made.name;
-    check('tool_named_from_its_label', made.name.toLowerCase().startsWith(label.replace(/[^\p{L}\p{N}_-]+/gu, '_').toLowerCase().slice(0, 4)), { label, name: made.name });
-    check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
-    check('tool_written_as_a_function', made.tool?.includes('/'), made.tool);
-    const home = (await rows())[made.name];
-    const place = await page.evaluate(({ x, y }) => {
-      const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-      return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
-    }, { x: 700, y: 500 });
-    check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place, stage });
-    await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
-    await until('that box gone', () => box(made.name).count(), (n) => n === 0);
-  }
+    await row.dragTo(page.locator('.stage'), { targetPosition: { x, y } });
+    return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
+  };
+  await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
+  const firstTool = page.locator('.tools .tool').first();
+  const label = await firstTool.locator('b').textContent();
+  const kind = await firstTool.locator('.tag').textContent();
+  const made = await dragOut(firstTool, 700, 500);
+  seen.tool_dragged = made.name;
+  check('tool_named_from_its_label', made.name.toLowerCase().startsWith(label.toLowerCase().slice(0, 4)), { label, name: made.name });
+  check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
+  check('tool_written_as_a_function', made.tool?.includes('/'), made.tool);
+  const home = await until('its row', async () => (await rows())[made.name], Boolean);
+  const place = await page.evaluate(({ x, y }) => {
+    const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
+  }, { x: 700, y: 500 });
+  check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
+  await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
+  await until('that box gone', () => box(made.name).count(), (n) => n === 0);
   check('list_keeps_comments', yaml().startsWith(head), yaml());
 
-  // A retry of a new asset makes no `_2`, on the wire. A tool that's no function is refused in its words.
-  const tool = local ? drawer : 'nodes-no-such-package';
-  const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
+  // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
+  const fromTheList = page.locator('.tools .tool', { hasText: '(local)' }).first();
+  const dropBox = async (name, x, y) => {
+    await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
+    const fresh = await dragOut(fromTheList, x, y);
+    await box(fresh.name).locator('.nm').dblclick();
+    await page.waitForSelector('.nm-field');
+    await page.keyboard.type(name);
+    await page.keyboard.press('Enter');
+    await until(`named ${name}`, () => of(name), Boolean);
+    return fresh;
+  };
+  let tool = 'nodes-no-such-package';
   if (local) {
+    await fromTheList.waitFor({ timeout: FIRST_RUN_MS });
+    const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
+    tool = wire.id;
+    check('local_tool_says_so', wire.label.endsWith('(local)') && wire.id.startsWith(drawer), wire);
+    // A retry of a new asset makes no `_2`, on the wire.
+    const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
     const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
     const second = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
     check('retry_makes_no_second', first.status === 201 && second.status === 201 && second.body.name === first.body.name && !yaml().includes('Twice_2'), { first, second });
@@ -168,11 +184,15 @@ function linesOf(text, name) {
   await box('source-a').waitFor();
   await box('source-b').waitFor();
   await until('both in the file', () => Promise.resolve(yaml()), (text) => text.includes('source-a') && text.includes('source-b'));
-  if (local) await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-sheet' }, body: JSON.stringify({ tool, at: { x: 500, y: 520, w: 300 }, name: 'Sheet' }) });
-  else replaceFile(yamlAt, `${yaml().trimEnd()}\n  Sheet:\n    kind: image\n    render: {with: ${tool}}\n`);
+  if (local) {
+    await dropBox('Sheet', 500, 600);
+    check('dragged_box_is_that_tool', (await of('Sheet')).tool === tool && (await of('Sheet')).kind === 'image', await of('Sheet'));
+    await api(`/v1/projects/${id}/assets/named_here`, { method: 'DELETE' });
+  } else replaceFile(yamlAt, `${yaml().trimEnd()}\n  Sheet:\n    kind: image\n    render: {with: ${tool}}\n`);
   await box('Sheet').waitFor();
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
+  await page.mouse.click(1500, 1000);
   await away();
   await page.waitForTimeout(100);
 
@@ -184,7 +204,7 @@ function linesOf(text, name) {
   await shot('box');
 
   // Typing: `<` offers names, a chip is plain text in the file, and nothing is written until it's let go.
-  const sheetText = box('Sheet').locator('.mention-text').last();
+  const sheetText = box('Sheet').locator('.mention-text[data-field=instructions]');
   const before2 = yaml();
   await sheetText.click();
   await page.keyboard.type('A sheet of ');
@@ -373,8 +393,7 @@ function linesOf(text, name) {
     await shot('versions');
 
     // Something else to go on while one fails.
-    await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-other' }, body: JSON.stringify({ tool, at: { x: 1000, y: 520, w: 300 }, name: 'Other' }) });
-    await box('Other').waitFor();
+    await dropBox('Other', 1100, 600);
     await render('Other', 1);
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
@@ -437,7 +456,7 @@ function linesOf(text, name) {
 
     // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
     await open('Other');
-    await box('Other').locator('.mention-text').last().click();
+    await box('Other').locator('.mention-text[data-field=instructions]').click();
     await page.keyboard.type('From <source-b>');
     await page.mouse.click(1500, 1000);
     await until('it reads it', () => of('Other'), (held) => held.reads?.some((read) => read.name === 'source-b'));

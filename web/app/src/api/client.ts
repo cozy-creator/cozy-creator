@@ -293,11 +293,12 @@ export class Client {
     return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at })
   }
 
-  /** What can be dropped on a canvas: what `on` has installed, then the Hub's. */
-  tools(q: string, on: string | null, signal?: AbortSignal): Promise<Tools> {
+  /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
+  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal): Promise<Tools> {
     const asked = new URLSearchParams()
     if (q) asked.set("q", q)
     if (on) asked.set("on", on)
+    if (project) asked.set("project", project)
     return this.json(`/v1/tools?${asked}`, { signal })
   }
 
