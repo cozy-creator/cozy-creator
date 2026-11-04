@@ -61,6 +61,7 @@ ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
 
 cut_of_takes
+short_film_heals
 hard_cut
 memo
 pins
@@ -1146,6 +1147,42 @@ render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.
 sed -i "s#with: .*shots.py#with: $PACKAGES/minimax-h3#" "$H/project.yaml"
 code=0; render "$H" clash --take 1 --in 5 || code=$?
 { [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
+}
+
+# A film short of its pieces, as a lock from 0.18.5 can hold one, isn't its state: any render cuts it whole, with its pieces as written.
+# Naming a cut cuts it again.
+short_film_heals() {
+step "a project: a short film in the lock repairs itself, and naming a cut cuts it"
+local T=$OUT/healing a b short version
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800; plate "$T/short.mp4" testsrc2 440 800 2
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4"); short=$(prefix "$T" "$T/short.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  b: {video: $b}
+  edit:
+    kind: video
+    render: {with: cozy/cut}
+    pieces:
+      - <a>
+      - <b>
+YAML
+render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
+J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
+short=$(jq -r --arg p "$short" '.files | keys[] | select(contains($p))' "$T/project.lock")
+jq --arg s "$short" '.assets.edit.versions[-1].files.video = $s' "$T/project.lock" > "$T/lock.tmp" && mv "$T/lock.tmp" "$T/project.lock"
+cp "$T/short.mp4" "$T/edit.mp4"
+[ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
+render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
+J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: not whole after a render: $(status "$T" | jq -c .cuts)"
+[ "$(row "$T" edit .standing)" = '"current"' ] || check "healing: not current: $(row "$T" edit .status)"
+version=$(jq '.assets.edit.versions[-1].number' "$T/project.lock")
+render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
+says healing "(unchanged)"
+[ "$(jq '.assets.edit.versions[-1].number' "$T/project.lock")" -gt "$version" ] || check "healing: naming it made no new version: $(tail -c 400 "$OUT/render.txt")"
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also

@@ -92,6 +92,20 @@ pub fn absent(pieces: &mut Vec<Piece>) -> Vec<String> {
     said
 }
 
+/// Why the film `files` holds isn't what a cut of these fields makes: its frames, measured, against what its pieces add up to, one a
+/// piece being rounding. A film short of a piece isn't that cut's state, whatever made it. None until each is measured.
+pub fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, files: &folder::Files) -> Option<String> {
+    let film = lock.files.get(files.get("video")?)?;
+    if film.frames == 0 {
+        return None;
+    }
+    let fps = Canvas::of(fields, &mut vec![]).fps;
+    let (mut pieces, _) = pieces(fields, reads, &Folder::at(Path::new("")), lock);
+    past_end(&mut pieces, fps);
+    let made = measure(&pieces, fps)?.frames;
+    (film.frames.abs_diff(made) > pieces.len() as u64).then(|| format!("its film holds {} frames, and its pieces add up to {made}", film.frames))
+}
+
 /// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
 pub fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Vec<String> {
     (pieces.iter().filter(|piece| piece.shape.is_none()))
