@@ -129,6 +129,9 @@ renews its own run capability while its runs live, cl-675). `sessions/<script>.s
 `step`, the guard at `cap` USD and the trap that ends the rental by its own id); its header lists its `params`.
 Without `rent=true` it stops after the $0 pre-flight. `model-ingest` puts a first-party model on the root (xs-104);
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
+`door` (cl-749, cl-774 Part D) proves a rental's own Calcifer and the door to it, its hostile-pod red arms first at no cost on the
+runner with a second user as an added machine; `part` is `idle`, which ends with a page held open while the pod releases itself,
+or `release`, End through the door.
 `multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
