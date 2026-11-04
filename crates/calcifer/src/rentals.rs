@@ -1824,6 +1824,7 @@ fn ms(at: &str) -> Option<i64> {
 /// A live rental of this account that this controller did not rent.
 fn other(origin: &str, rental: &types::Rental, unverified: bool) -> Machine {
     Machine {
+        ssh: None,
         name: hub_name(rental).unwrap_or_else(|| rental.rental_id.clone()),
         kind: MachineKind::Rental,
         state: match rental.state.as_str() {

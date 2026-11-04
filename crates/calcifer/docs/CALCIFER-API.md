@@ -192,7 +192,7 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   every live machine, and the live rentals of this account that another controller rented (`recorded: false`).
   `refresh` lists every Hub again first. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
   `accrued_usd_micros` on its weakest `accrued_basis` (`accrued_floor` when some Hub said nothing).
-- `GET /v1/machines/{name}[?fresh=true]`: `Machine`. `fresh` reads its Status now, or refuses
+- `GET /v1/machines/{name}[?fresh=true]`: `Machine`. A rental rented with an SSH key has `ssh {args, line}`: the command that logs in, with a known-hosts file of its own, as an argument list and as a line to paste. `fresh` reads its Status now, or refuses
   `machine_unavailable`.
 - `POST /v1/machines` (`NewMachine`):
   - `{"kind": "rent", sku, hub, gpus?, disk_gb?, ssh_key?, agreed}`, with an `Idempotency-Key`. It answers
@@ -229,7 +229,7 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   `local`, `hub`, or another Hub's URL, for a client of `hub` (default this computer's).
 - `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes}`.
   `silent`: it has reported no Status yet. `repositories` and `bytes` are its store's, shared content counted once.
-- `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`:
+- `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`, and on `local` `logs/calcifer`, Calcifer's own (`400 log_not_kept` elsewhere; the CLI reads its file, so it works with Calcifer down):
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.
   - With `Accept: text/event-stream`, each batch follows as `{"type": "lines", after, text}`, with `id:` set to

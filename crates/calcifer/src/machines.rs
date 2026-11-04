@@ -25,7 +25,11 @@ use axum::{
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use platform::{durable, paths::Home};
+use platform::{
+    durable,
+    paths::Home,
+    tail::{Log, Start},
+};
 use protocol::{
     calcifer::{
         self as wire, Ended, Event, Keepalive, LogEvent, Machine, MachineKind, MachineList,
@@ -217,7 +221,10 @@ impl Machines {
         }
         let orders = self.orders()?;
         let (hubs, unanswered, signed_out, others) = self.hubs.listing(&rows, &orders);
-        machines.extend(others);
+        machines.extend(others.into_iter().map(|mut other| {
+            other.ssh = self.ssh(&other);
+            other
+        }));
         machines.extend(orders);
         let live = machines.iter().filter(|m| m.state != MachineState::Ended);
         let rentals = wire::LiveRentals::of(live.filter_map(|m| m.rental.as_ref()));
@@ -238,7 +245,10 @@ impl Machines {
         }
         let row = match self.named_now(text).await {
             Ok(Named::Here(row)) => row,
-            Ok(Named::Other(machine)) => return Ok(*machine),
+            Ok(Named::Other(mut machine)) => {
+                machine.ssh = self.ssh(&machine);
+                return Ok(*machine);
+            }
             // To read, a name only ended machines had is the newest of them.
             Err(e) if e.code == "machine_name_ended" => match self.store().machines_named(text).map_err(internal)?.into_iter().next() {
                 Some(row) => row,
@@ -685,7 +695,32 @@ impl Machines {
             _ => None,
         };
         self.hubs.describe(&mut machine, asked.as_ref());
+        machine.ssh = self.ssh(&machine);
         Ok(machine)
+    }
+
+    /// The `ssh` that logs in to a rental rented with a key: its known-hosts file is its own, under this computer's home.
+    fn ssh(&self, machine: &Machine) -> Option<wire::Ssh> {
+        let (rental, address) = machine.rental_id.as_ref().zip(machine.rental.as_ref()?.ssh.as_deref())?;
+        let (host, port) = address.rsplit_once(':')?;
+        let known = self.hubs.home().root().join("ssh");
+        let _ = std::fs::create_dir_all(&known);
+        let args = vec![
+            "ssh".to_owned(),
+            "-p".to_owned(),
+            port.to_owned(),
+            "-o".to_owned(),
+            "StrictHostKeyChecking=accept-new".to_owned(),
+            "-o".to_owned(),
+            format!("UserKnownHostsFile={}", known.join(format!("{rental}.known_hosts")).display()),
+            format!("root@{}", host.trim_start_matches('[').trim_end_matches(']')),
+        ];
+        let word = |arg: &String| match arg.chars().any(|c| c.is_whitespace() || "'\"\\$`".contains(c)) {
+            true => format!("'{}'", arg.replace('\'', r"'\''")),
+            false => arg.clone(),
+        };
+        let line = args.iter().map(word).collect::<Vec<_>>().join(" ");
+        Some(wire::Ssh { args, line })
     }
 
     /// A run the machine holds for this controller, with this controller's record of it.
@@ -1381,6 +1416,55 @@ pub(crate) struct LogQuery {
     after: Option<String>,
 }
 
+/// Calcifer's own log, `calcifer` on `local`, as a machine's: its whole lines, or followed as it is written, across a rotation.
+async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &HeaderMap) -> Result<Response, Refusal> {
+    if !name.eq_ignore_ascii_case("local") {
+        let said = format!("{name} keeps no Calcifer log: Calcifer is this computer's");
+        return Err(Refusal(Error::new(Kind::Usage, "log_not_kept", said).next("cozy machine logs local calcifer")));
+    }
+    let home = api.machines.hubs.home();
+    let log = Log::rotated(home.calcifer(), "calcifer.log");
+    let unreadable = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Internal, "log_unreadable", format!("{}: {e}", home.calcifer_log().display())));
+    let mut since = Since(query.since_ms);
+    if !follows(headers) {
+        let read = tokio::task::spawn_blocking({
+            let (log, lines) = (log, query.lines);
+            move || log.read(Start::Last(lines))
+        });
+        let text = read.await.map_err(|e| unreadable(&e))?.map_err(|e| unreadable(&e))?;
+        return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], since.keep(&text)).into_response());
+    }
+    let start = match after(query.after, headers) {
+        Some(place) => Start::After(place.parse().map_err(|why: String| Refusal(usage(why)))?),
+        None => Start::Last(query.lines),
+    };
+    let follow = log.follow(start).map_err(|e| match e.is_unsupported() {
+        true => Refusal(Error::new(Kind::Unavailable, "log_follow_unsupported", e.to_string())),
+        false => unreadable(&e),
+    })?;
+    let (sender, batches) = tokio::sync::mpsc::channel(16);
+    tokio::task::spawn_blocking(move || follow.run(|batch| sender.blocking_send(batch).is_ok(), || !sender.is_closed()));
+    let events = futures_util::stream::unfold(batches, |mut batches| async move { batches.recv().await.map(|batch| (batch, batches)) })
+        .map(move |batch| {
+            let after = batch.after.to_string();
+            let lines = LogEvent::Lines { text: since.keep(&batch.text), after: after.clone() };
+            let data = serde_json::to_string(&lines).expect("an event serializes");
+            Ok::<_, Infallible>(sse::Event::default().id(after).data(data))
+        })
+        .take_until(api.stopped());
+    Ok(Sse::new(events).keep_alive(KeepAlive::default()).into_response())
+}
+
+/// Whether a log's reader asked to follow it.
+fn follows(headers: &HeaderMap) -> bool {
+    (headers.get(header::ACCEPT).and_then(|v| v.to_str().ok())).is_some_and(|v| v.contains("text/event-stream"))
+}
+
+/// The place a log's follower goes on from: `?after=`, else `Last-Event-ID`.
+fn after(asked: Option<String>, headers: &HeaderMap) -> Option<String> {
+    asked.or_else(|| headers.get("last-event-id").and_then(|v| v.to_str().ok()).map(str::to_owned))
+}
+
 /// A machine's log: its whole lines, or with `Accept: text/event-stream` those and then each
 /// batch as the machine appends it, as `lines` events whose id (`after`) resumes the follow.
 pub(crate) async fn logs(
@@ -1391,6 +1475,7 @@ pub(crate) async fn logs(
 ) -> Result<Response, Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     let log = match log.as_str() {
+        "calcifer" => return calcifer_log(&api, &name, query, &headers).await,
         "tensord" => MachineLog::Tensord,
         "tensorfs" => MachineLog::Tensorfs,
         "memory" => MachineLog::Memory,
@@ -1398,14 +1483,12 @@ pub(crate) async fn logs(
             return Err(Refusal(Error::new(
                 Kind::NotFound,
                 "machine_log_unknown",
-                format!("machines keep no log {other:?}: tensord, tensorfs or memory"),
+                format!("machines keep no log {other:?}: tensord, tensorfs or memory, and local calcifer"),
             )));
         }
     };
-    let follows = (headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()))
-        .is_some_and(|v| v.contains("text/event-stream"));
     let mut since = Since(query.since_ms);
-    if !follows {
+    if !follows(&headers) {
         let bytes = api
             .machines
             .logs(&name, log, query.lines)
@@ -1414,8 +1497,7 @@ pub(crate) async fn logs(
         let text = since.keep(&String::from_utf8_lossy(&bytes));
         return Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response());
     }
-    let resumed = headers.get("last-event-id").and_then(|v| v.to_str().ok());
-    let after = query.after.or_else(|| resumed.map(str::to_owned));
+    let after = after(query.after, &headers);
     let lines = api
         .machines
         .follow_logs(&name, log, query.lines, after.as_deref())

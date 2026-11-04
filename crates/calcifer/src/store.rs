@@ -1622,6 +1622,7 @@ fn machine_state(state: MachineState) -> &'static str {
 impl From<&MachineRow> for Machine {
     fn from(row: &MachineRow) -> Self {
         Machine {
+            ssh: None,
             name: row.name.clone(),
             kind: row.kind,
             state: row.state,

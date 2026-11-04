@@ -761,6 +761,9 @@ pub struct Machine {
     /// The Hub's word, for a rental.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rental: Option<Rental>,
+    /// How to log in, for a rental rented with an SSH key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<Ssh>,
     /// The machine's own latest Status, once it answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<MachineStatus>,
@@ -999,6 +1002,15 @@ pub struct Checkpoint {
 }
 
 /// A package environment the machine holds for this controller.
+/// `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ssh {
+    /// The command and its arguments, for what runs it.
+    pub args: Vec<String>,
+    /// The same as one line to paste.
+    pub line: String,
+}
+
 /// `GET /v1/machines/{name}/packages`: what a machine holds installed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachinePackages {
