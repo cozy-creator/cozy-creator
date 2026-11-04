@@ -73,7 +73,7 @@ fn elsewhere(lock: &Lock, missing: impl Fn(&File) -> bool) -> Vec<Elsewhere<'_>>
 }
 
 /// Every regular file under `dir`, in name order, as `<prefix>/<its path>`. A symlink is not its
-/// target's to give away: it stays out.
+/// target's to give away, and a `.part` is still being written: they stay out.
 fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, writer: impl Write) -> io::Result<()> {
     let mut tar = tar::Builder::new(writer);
     if let Some(manifest) = manifest {
@@ -90,7 +90,7 @@ fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, writer: impl Write
             let kind = entry.file_type()?;
             if kind.is_dir() {
                 dirs.push(entry.path());
-            } else if kind.is_file() {
+            } else if kind.is_file() && !entry.file_name().to_string_lossy().ends_with(".part") {
                 // Gone since the listing: replaced or dropped, so it is no file of this project now.
                 let file = match fs::File::open(entry.path()) {
                     Ok(file) => file,
@@ -105,7 +105,7 @@ fn write(dir: &FsPath, prefix: &str, manifest: Option<&[u8]>, writer: impl Write
                 header.set_mtime(meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |at| at.as_secs()));
                 let path = entry.path();
                 let relative = path.strip_prefix(dir).map_err(io::Error::other)?;
-                tar.append_data(&mut header, FsPath::new(prefix).join(relative), file)?;
+                tar.append_data(&mut header, FsPath::new(prefix).join(relative), io::Read::take(file, meta.len()))?;
             }
         }
     }

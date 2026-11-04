@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """What a pod's root can make the door to its Calcifer say: door.sh names this as the home's holder, and every answer tries to
 run script on the origin it is shown on, set a cookie or send the client elsewhere. Logs each request as one JSON line.
-    hostile_calcifer.py <port> <where a redirect goes> <log> <seconds to live>"""
+    hostile_calcifer.py <port> <where a redirect goes> <log> <seconds to live>
+With `none` for where, as the pre-flight has it with no door in front, nothing of it would move a browser off the page or wipe
+what the page did, so the harness can see the script run."""
 import http.server
 import json
 import sys
@@ -16,12 +18,15 @@ PLANTS = [
     ("Content-Security-Policy", "script-src * 'unsafe-inline'"),
     ("Content-Disposition", "inline"),
     ("Access-Control-Allow-Origin", "*"),
-    ("Clear-Site-Data", '"*"'),
-    ("Link", "</evil.js>; rel=preload; as=script"),
-    ("Refresh", "0; url=" + ELSEWHERE),
-    ("WWW-Authenticate", 'Basic realm="yours"'),
     ("Cozy-Said", "kept"),
 ]
+if ELSEWHERE != "none":
+    PLANTS += [
+        ("Clear-Site-Data", '"*"'),
+        ("Link", "</evil.js>; rel=preload; as=script"),
+        ("Refresh", "0; url=" + ELSEWHERE),
+        ("WWW-Authenticate", 'Basic realm="yours"'),
+    ]
 ANSWERS = {
     "/v1/door/page": (200, [("Content-Type", "text/html; charset=utf-8")], PAGE),
     "/v1/door/listed": (200, [("Content-Type", "application/json, text/html")], PAGE),
