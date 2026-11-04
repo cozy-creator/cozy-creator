@@ -363,12 +363,7 @@ pub(crate) fn project_id(dir: &FsPath) -> String {
 /// than it was, or a file comes to or goes from `files/`, as a pull's do with no write to either. Read from their stats alone, so a look at it
 /// costs nothing: every write replaces the file, so its inode tells two writes in one clock tick apart.
 pub(crate) fn revision(dir: &FsPath) -> String {
-    // A person may write over a film at the root, and status says what it holds.
-    let films: String = (std::fs::read_dir(dir).into_iter().flatten().flatten())
-        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "mp4"))
-        .map(|entry| stamp(&entry.path()))
-        .collect();
-    format!("{films}.{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
+    format!("{}.{}.{}.{}", stamp(&dir.join(folder::PROJECT)), stamp(&dir.join(folder::LOCK)), stamp(&dir.join(folder::FILES)), stamp(&dir.join(folder::MEASURED)))
 }
 
 /// What a file's stats say of it: another text whenever it's another file than it was.

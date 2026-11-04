@@ -339,7 +339,7 @@ function calciferMb() {
   }, edited);
   const [movedX, movedY] = [fromX + 30, fromY + 30];
   const shownMove = within('moved', page.evaluate(([name, x, y]) => window.placedAt(name, x, y), [edited, movedX, movedY]));
-  const move = await project('canvas', edited, String(movedX), String(movedY));
+  const move = await project('set', edited, `at=${movedX},${movedY}`);
   numbers.move_command_s = seconds(move.ms);
   numbers.move_shows_ms = (await shownMove) - move.at;
   check('a_move_shows_live', numbers.move_shows_ms <= BARS.edit_shows_ms, numbers.move_shows_ms);
@@ -368,7 +368,7 @@ function calciferMb() {
     const rect = await page.evaluate((name) => window.boxOf(name).getBoundingClientRect().toJSON(), onScreen.at(-1));
     const viewport = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toJSON());
     const [x, y] = [Math.round((rect.right + 20 - viewport.e) / viewport.a), Math.round((rect.top - viewport.f) / viewport.a)];
-    await project('add', `${TOOL}/still`, 'scale_shot', '--at', `${x},${y},200`, 'instructions=A landing at scale');
+    await project('add', `${TOOL}/still`, 'scale_shot', `at=${x},${y},200`, 'instructions=A landing at scale');
     await box('scale_shot').waitFor();
     const landing = within('its picture', page.evaluate((name) => window.pictureOf(name), 'scale_shot'), 300_000);
     const render = await project('render', 'scale_shot', '--on', 'local');

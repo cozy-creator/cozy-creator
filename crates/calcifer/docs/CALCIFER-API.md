@@ -468,16 +468,13 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy project push`, `pull` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/push` or `/pull`; exits 3 when `skipped` names a file |
 | `cozy project status` | `POST /v1/projects {path}`, `GET /v1/projects/{id}` |
 | `cozy project rename <old> <new>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/rename` |
-| `cozy project import <file\|hash> [name] [--description <words>] [--at x,y[,w]]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/imports` |
+| `cozy project import <file\|hash> [name] [--description <words>]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/imports` |
 | `cozy project upgrade [--status <file>]` | No route: the folder's files, here, in this process, for a Calcifer of this format can't read them yet |
-| `cozy project tools [words]` | `POST /v1/projects {path}` if in one, `GET /v1/tools` |
-| `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets` |
-| `cozy project set <name> field=value…` | `POST /v1/projects {path}`, `PATCH /v1/projects/{id}/assets/{name}`; `--if-match` its `If-Match`, `tool=` its `tool` |
-| `cozy project show <name>` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/assets/{name}` |
+| `cozy project add <tool\|text> [name] [field=value…]` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets`; `at=` its `at` |
+| `cozy project set <name> field=value…` | `POST /v1/projects {path}`, `PATCH /v1/projects/{id}/assets/{name}`, `tool=` its `tool`; `at=` `GET` it, then `PATCH /v1/projects/{id}/canvas` |
+| `cozy project status <name>` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/assets/{name}` |
 | `cozy project delete <name>…` | `POST /v1/projects {path}`, `DELETE /v1/projects/{id}/assets/{name}`; prints the `restore` line, its `text` and `at` as one word |
 | `cozy project restore <name> <kept>` | `POST /v1/projects {path}`, `PUT /v1/projects/{id}/assets/{name}` |
-| `cozy project canvas [name [x y [w]]]` | `POST /v1/projects {path}`, `GET` or `PATCH /v1/projects/{id}/canvas` |
-| `cozy project caption <name>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/assets/{name}/caption` |
 | `cozy project unapprove <name>` | `POST /v1/projects {path}`, `POST /v1/projects/{id}/unpin` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events` |

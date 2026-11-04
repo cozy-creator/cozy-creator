@@ -141,7 +141,7 @@ pub(super) async fn patch(
     (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
         if read.is_some_and(|read| read != was) {
-            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds").next(format!("cozy project show {name}")));
+            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds"));
         }
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
         Doc::of(folder, &edited, &lock)?;
