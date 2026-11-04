@@ -61,8 +61,8 @@ struct Held {
     warned: HashSet<(String, String)>,
     /// Each job as last told, by id.
     told: HashMap<String, Job>,
-    /// What machines are fetching ahead, and the run each is.
-    ahead: Vec<(RunId, Ahead)>,
+    /// What machines are fetching ahead, the run each is, and what it's for as the text names it.
+    ahead: Vec<(RunId, String, Ahead)>,
 }
 
 /// A job with a run.
@@ -83,7 +83,7 @@ impl Jobs {
 
     pub fn board(&self) -> Board {
         let mut board = self.board.borrow().clone();
-        board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(_, row)| row.clone()).collect();
+        board.ahead = self.held.lock().expect("jobs lock").ahead.iter().map(|(.., row)| row.clone()).collect();
         board
     }
 
@@ -103,7 +103,7 @@ impl Jobs {
         let mut held = self.held.lock().expect("jobs lock");
         held.elapsed_ms = Some(elapsed_ms);
         // What it fetched ahead goes no further: nothing here hears of it now.
-        for (_, row) in held.ahead.iter_mut().filter(|(_, row)| row.stage.is_some()) {
+        for (.., row) in held.ahead.iter_mut().filter(|(.., row)| row.stage.is_some()) {
             row.stage = None;
         }
         (held.live, held.sending, held.coming) = Default::default();
@@ -241,18 +241,18 @@ impl Jobs {
     }
 
     /// A machine began fetching ahead, as run `id`.
-    pub fn ahead(&self, id: RunId, function: String, machine: String, run: u64) {
+    pub fn ahead(&self, id: RunId, with: String, function: String, machine: String, run: u64) {
         let mut held = self.held.lock().expect("jobs lock");
         let row = Ahead { function, machine, run, stage: Some("asked".into()), ..Ahead::default() };
         crate::events::ahead_updated(&self.project, &row);
         let _ = self.events.send(Event::Ahead { ahead: row.clone() });
-        held.ahead.push((id, row));
+        held.ahead.push((id, with, row));
         self.publish(&mut held);
     }
 
     /// What that did, if `id` is one; `Some` once it ended: why it stopped short, if it did.
     fn ahead_ran(&self, held: &mut Held, id: &RunId, event: &RunEvent) -> bool {
-        let Some((_, row)) = held.ahead.iter_mut().find(|(run, _)| run == id) else { return false };
+        let Some((_, _, row)) = held.ahead.iter_mut().find(|(run, ..)| run == id) else { return false };
         let was = row.clone();
         match event {
             RunEvent::Progress { progress } => {
@@ -264,10 +264,12 @@ impl Jobs {
                 row.ready = true;
                 row.done = row.total;
             }
-            RunEvent::Failed { run, .. } | RunEvent::Canceled { run, .. } => {
+            RunEvent::Failed { run, .. } => {
                 row.stage = None;
-                row.held_back = Some(run.reason.as_ref().map_or_else(|| "canceled".to_owned(), |reason| reason.message.clone()));
+                row.held_back = Some(run.reason.as_ref().map_or_else(|| "it failed".to_owned(), |reason| reason.message.clone()));
             }
+            // Its job took over, or it was asked to stop.
+            RunEvent::Canceled { .. } => row.stage = None,
             _ => {}
         }
         if *row != was {
@@ -281,7 +283,7 @@ impl Jobs {
     /// The runs fetching ahead that nothing it names waits for now.
     pub fn ahead_going(&self) -> Vec<(String, String, RunId)> {
         let held = self.held.lock().expect("jobs lock");
-        held.ahead.iter().filter(|(_, row)| row.stage.is_some()).map(|(id, row)| (row.function.clone(), row.machine.clone(), id.clone())).collect()
+        held.ahead.iter().filter(|(.., row)| row.stage.is_some()).map(|(id, with, row)| (with.clone(), row.machine.clone(), id.clone())).collect()
     }
 
     /// What run `id` did, when it is one of this board's, under `dir`; `Some`: a warning it gave for the first time, and whose it is.
@@ -356,7 +358,7 @@ impl Jobs {
             let _ = self.events.send(Event::Job { job: job.clone(), seq });
         }
         held.told = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
-        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(_, row)| row.clone()).collect() };
+        let board = Board { seq, on: held.on.clone(), began_at_ms: held.began_at_ms, elapsed_ms: held.elapsed_ms, shots, jobs, ahead: held.ahead.iter().map(|(.., row)| row.clone()).collect() };
         // A client that keeps the board hears only when more than a job changed: its jobs it hears one by one.
         self.board.send_if_modified(|stands| {
             *stands = board;

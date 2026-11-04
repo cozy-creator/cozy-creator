@@ -2615,7 +2615,7 @@ impl Walk {
         let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None };
         let key = format!("project-ahead-{}", new_key());
         let run = self.send_run(&key, submit).await?;
-        self.project.jobs.ahead(run.id.clone(), shown, placed.to_string(), run.number);
+        self.project.jobs.ahead(run.id.clone(), with, shown, placed.to_string(), run.number);
         Ok(())
     }
 
@@ -2709,9 +2709,9 @@ impl Walk {
         learned.took(measured.width, measured.busy_s / length.unwrap_or(1.0), measured.exchange_share);
     }
 
-    /// What it fetches ahead for jobs that all ended: it needn't go on.
+    /// What it fetches ahead for jobs that all went or ended: it needn't go on.
     fn ahead_unneeded(&self) {
-        let needed: HashSet<(String, String)> = {
+        let needed: HashSet<String> = {
             let walk = self.folder().walk_now().unwrap_or_default();
             let walker = self.project.walker.lock().expect("walker lock");
             let graph = &walker.graph;
@@ -2719,16 +2719,12 @@ impl Walk {
                 .filter_map(|id| {
                     let job = &graph.jobs[id];
                     let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
-                    let doc = &walker.readings.get(&ask.digest)?.doc;
-                    Some(ask.target.on.iter().map(|on| (on.to_string(), format::plain_with(&doc.target(job.node), self.folder()))).collect::<Vec<_>>())
+                    Some(walker.readings.get(&ask.digest)?.doc.target(job.node))
                 })
-                .flatten()
                 .collect()
         };
-        for (function, machine, run) in self.project.jobs.ahead_going() {
-            let package = function.rsplit_once('/').map_or(function.as_str(), |(package, _)| package);
-            let wanted = needed.iter().any(|(on, with)| *on == machine && (with == &function || with == package || with.rsplit('/').next() == package.rsplit('/').next()));
-            if !wanted {
+        for (with, _, run) in self.project.jobs.ahead_going() {
+            if !needed.contains(&with) {
                 self.host.cancel_ahead(&run);
             }
         }
