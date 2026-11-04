@@ -184,11 +184,21 @@ def reset_peak(device: DeviceLike = 0) -> None:
     _ext._varena_working_reset_peak(_device(device))
 
 
+def unit_bytes() -> int:
+    """How large a block a whole module may be before its children bind instead."""
+    return _ext._varena_unit_bytes()
+
+
+def pool_bytes(peak: int) -> int:
+    """A pool's size for a capture from an eager pass's measured peak."""
+    return _ext._varena_pool_bytes(peak)
+
+
 def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
     """Development only: use at most this much of the card, as a smaller card would.
 
-    The core keeps it true against the driver's own charge. Independent of temporary
-    make_room limits; the smaller wins. Live owners are retained when lowering it.
+    The core keeps it true against the driver's own charge. Live owners are retained when
+    lowering it.
     Returns unused bytes reclaimed now.
     """
     _installed()
@@ -207,24 +217,6 @@ def split_select(device: DeviceLike, key: str, choices: Sequence[tuple[str, Sequ
     """Choose an opaque legal variant from a complete copied allocation menu before execution."""
     _installed()
     return _ext._varena_split_select(_device(device), key, [(name, list(sizes)) for name, sizes in choices], stream=stream)
-
-
-def commit_execution(
-    device: DeviceLike, configuration: str, site: str,
-    choices: Sequence[tuple[str, Sequence[int]]], *, stream: int,
-) -> Any:
-    """Copy one current closed producer declaration and fix its native choice before entry.
-
-    The returned owner exposes key/selection and one-use enter/begin/end/finish/abort.
-    The producer must cover every compute allocation, execute only this fixed choice,
-    and prove same-stream completion before finish(completed=True). Source preparation
-    precedes commit. An observed previous-pass key is not a current declaration.
-    """
-    _installed()
-    return _ext._VarenaExecution(
-        _device(device), configuration, site, [(name, list(sizes)) for name, sizes in choices],
-        stream=stream,
-    )
 
 
 def split_begin(device: DeviceLike, key: str, choice_id: str, *, stream: int, completion_owner: int | None = None, plan_generation: int | None = None) -> int:

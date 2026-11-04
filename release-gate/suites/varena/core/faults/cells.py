@@ -129,8 +129,8 @@ def replay(graph, stream) -> None:
 def give_back() -> int:
     """Everything idle back to the driver: the core's one sequence, as foreign pressure asks it."""
     torch.cuda.empty_cache()
-    taken = varena.make_room(DEVICE, 0)
-    varena.make_room(DEVICE, None)
+    taken = vt.set_limit(DEVICE, 1)
+    vt.set_limit(DEVICE, None)
     return taken
 
 

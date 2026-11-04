@@ -15,11 +15,9 @@ use std::sync::{Arc, Mutex};
 
 mod split;
 mod cache;
-mod execution;
 mod observer;
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
-pub use execution::Execution;
 pub use split::{
     SplitContext, SplitObservation, SplitSelection, split_begin, split_context, split_end,
     split_select,
@@ -88,7 +86,6 @@ struct ActivePhase {
     backing: usize,
     backing_peak: usize,
     invalid: Option<String>,
-    committed_site: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -362,17 +359,9 @@ impl State {
         next: Option<u64>,
         segment: u64,
     ) {
-        let undeclared = self.phases.active.as_ref().is_some_and(|phase| {
-            phase.committed_site.as_ref().is_some_and(|(key, choice)| {
-                !split::matches_active(self, key, choice, phase.token)
-            })
-        });
         let Some(active) = &mut self.phases.active else {
             return;
         };
-        if undeclared && next == Some(active.token) && after > before {
-            active.invalid.get_or_insert_with(|| "undeclared_working_allocation".into());
-        }
         active.charged = active.charged - before + after;
         active.peak = active.peak.max(active.charged);
         let was_owned = prior == Some(active.token) && before != 0;
@@ -512,6 +501,15 @@ fn size_class(bytes: usize, page: usize) -> Result<usize> {
 
 // The size class of Torch's small RNG tensors.
 const AUXILIARY_CLASS: usize = 512;
+/// How large a block a whole module may be before its children bind instead. Eviction takes whole
+/// units, and a smaller one moves fewer bytes for more calls.
+pub const UNIT_BYTES: usize = 512 << 20;
+
+/// A pool's size for a capture from an eager pass's measured peak: a capture can't grow it.
+pub fn pool_bytes(peak: usize) -> usize {
+    peak.saturating_mul(5) / 4
+}
+
 // Above this, blocks are runs that split and merge; below it, slabs of one class.
 const LARGE: usize = 1 << 20;
 // Runs share segments of this size, so their pages can be reused. Above it a block owns its pages:
@@ -1706,31 +1704,13 @@ pub(crate) fn unjoined(device: i32) -> Result<bool> {
 /// Begin one device-wide execution observation. None means the final configuration is not
 /// known yet: observe demand, but do not admit speculation from an earlier guessed key.
 pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<u64> {
-    phase_enter_inner(device, key, mode, None, None)
-}
-
-fn phase_enter_inner(
-    device: i32,
-    key: Option<String>,
-    mode: PhaseMode,
-    committed_site: Option<(String, String)>,
-    expected_plan_generation: Option<u64>,
-) -> Result<u64> {
     if key.as_ref().is_some_and(String::is_empty) {
         return Err(Error::Invalid("phase execution key must not be empty"));
     }
     let owner = initialize_owner(device)?;
-    if let Some(expected) = expected_plan_generation
-        && crate::plan::generation(device)? != expected
-    {
-        return Err(Error::Invalid("committed phase-plan inventory changed before entry"));
-    }
     let mut state = owner.lock()?;
     if state.phases.active.is_some() {
         return Err(Error::PhaseOverlap);
-    }
-    if committed_site.is_some() && state.splits.active_is_present() {
-        return Err(Error::Invalid("committed execution cannot overlap an active split"));
     }
     if !state.pressure_pending {
         state.prefetch_suppressed = false;
@@ -1756,7 +1736,6 @@ fn phase_enter_inner(
         backing: 0,
         backing_peak: 0,
         invalid,
-        committed_site,
     });
     state.refresh_phase();
     Ok(token)

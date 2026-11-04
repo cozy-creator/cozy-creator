@@ -653,13 +653,6 @@ impl PyNoCapture {
 
 /// Sets this process's room on `device` (None lifts it) and returns the pages it took back.
 #[pyfunction]
-#[pyo3(signature = (device, limit = None))]
-fn _varena_make_room(py: Python<'_>, device: i32, limit: Option<usize>) -> PyResult<usize> {
-    py.detach(|| varena::make_room(device, limit))
-        .map(|report| report.reclaimed_bytes)
-        .map_err(|e| raise(py, e))
-}
-#[pyfunction]
 fn _varena_core_identity() -> u64 {
     varena::abi::vr_v1_core_identity()
 }
@@ -695,6 +688,5 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<stage_continuation::StageJob>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
-    module.add_function(wrap_pyfunction!(_varena_make_room, module)?)?;
     Ok(())
 }

@@ -253,7 +253,7 @@ class Graphs:
             regions = list(dict.fromkeys(region for unit in units for region in unit.regions))
             with self.owner.gpu.use(regions, stream.cuda_stream) as used:
                 used.wait_ready()  # A fill still retiring would refuse the capture.
-            with vt.graph(graph.cuda, pool=self.pool, stream=stream, reserve_bytes=peak * 5 // 4):
+            with vt.graph(graph.cuda, pool=self.pool, stream=stream, reserve_bytes=vt.pool_bytes(peak)):
                 graph.outputs = candidate.original(*statics[0], **statics[1])
         except BaseException:
             self.pool = None  # Torch forgets a pool whose only capture failed.

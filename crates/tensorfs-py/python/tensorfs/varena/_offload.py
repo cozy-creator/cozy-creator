@@ -28,8 +28,6 @@ class OffloadError(RuntimeError):
     """An operation falls outside immutable inference."""
 
 
-_UNIT_BYTES = 512 << 20
-
 
 class _Owner:
     """What weights need from an adopted model: never the model itself."""
@@ -232,7 +230,7 @@ def _frontier(module, blocks, seen, descend=False):
     seen.add(id(module))
     # A container has no forward of its own to bind around.
     runs = type(module).forward is not nn.Module.forward
-    huge = any(True for _ in module.children()) and sum(p.numel() * p.dtype.itemsize for p in module.parameters()) > _UNIT_BYTES
+    huge = any(True for _ in module.children()) and sum(p.numel() * p.dtype.itemsize for p in module.parameters()) > vt.unit_bytes()
     if runs and not descend and not huge and (id(module) in blocks or not any(id(m) in blocks for m in module.modules())):
         if any(True for _ in module.parameters()):
             yield _Unit(module, True)

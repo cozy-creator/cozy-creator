@@ -377,8 +377,6 @@ pub struct Device {
     replays: AtomicUsize,
     producers: AtomicUsize,
     retirements: AtomicUsize,
-    /// `make_room`, bounding managed bytes. usize::MAX: no limit.
-    limit: AtomicUsize,
     /// `set_limit`: the card as a smaller card would be, the driver's own charge included.
     ceiling: AtomicUsize,
     /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
@@ -416,7 +414,6 @@ impl Device {
             replays: AtomicUsize::new(0),
             producers: AtomicUsize::new(0),
             retirements: AtomicUsize::new(0),
-            limit: AtomicUsize::new(usize::MAX),
             ceiling: AtomicUsize::new(usize::MAX),
             total: AtomicUsize::new(usize::MAX),
             reservation: OnceLock::new(),
@@ -509,7 +506,7 @@ impl Device {
         } else {
             ceiling.saturating_sub(self.outside.load(Ordering::Acquire).saturating_add(CAP_SLACK))
         };
-        cap.min(self.limit.load(Ordering::Acquire))
+        cap
     }
 
     fn headroom(&self) -> usize {
@@ -534,17 +531,15 @@ impl Device {
         Ok(())
     }
 
-    /// Other processes' bytes stand between us and `more`, so asking them can help. They count
-    /// against a machine's ceiling, never against a limit on this process's own bytes.
+    /// Other processes' bytes stand between us and `more`, so asking them can help.
     fn peers_can_lift(&self, more: usize) -> bool {
         let wanted = self.owned().saturating_add(more);
-        wanted <= self.limit.load(Ordering::Acquire)
-            && wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
+        wanted <= self.capacity().saturating_add(self.outside.load(Ordering::Acquire))
     }
 
-    /// A limit someone set: other processes' memory cannot lift it, unlike the card's own.
+    /// A limit someone set on the machine.
     fn capped(&self) -> bool {
-        self.ceiling.load(Ordering::Acquire) != usize::MAX || self.limit.load(Ordering::Acquire) != usize::MAX
+        self.ceiling.load(Ordering::Acquire) != usize::MAX
     }
 
     /// Physical pages for one region, inside this process's room: over the room reads as the
@@ -1506,20 +1501,8 @@ fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
     Ok(completed)
 }
 
-/// The room this process may hold on `device` (weight pages plus mapped working allocations),
-/// None for no limit, and at once its pages above it back, in reclaim order (pins are never
-/// overridden; under a capture they wait for the next fill or allocation, which the room
-/// bounds from now on). What a machine asks of an executor when another program needs the
-/// GPU (design/vram-yield.md): the one make_room for foreign pressure.
-pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
-    let state = gpu(device)?;
-    state.limit.store(limit.unwrap_or(usize::MAX), Ordering::Release);
-    reclaim_room(device, state)
-}
-
 /// Development only: use at most this much of the card, as a smaller card would. The core
 /// keeps it true against the driver's own charge, which it samples at every slow path.
-/// Independent of the temporary room requested by a peer; the smaller wins.
 pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
     let state = gpu(device)?;
     state.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);

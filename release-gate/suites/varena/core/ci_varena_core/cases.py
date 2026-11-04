@@ -43,8 +43,8 @@ def cap(managed, gpu=None):
 
 def give_back():
     """Everything idle, through the one sequence, as a foreign program's pressure would."""
-    varena.make_room(0, 0)
-    varena.make_room(0, None)
+    vt.set_limit(0, 1)
+    vt.set_limit(0, None)
 
 
 def delta(before, after):

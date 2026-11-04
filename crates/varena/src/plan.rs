@@ -70,10 +70,6 @@ impl Lease {
     }
 }
 
-pub(crate) fn generation(ordinal: i32) -> Result<u64> {
-    Ok(crate::gpu(ordinal)?.plan_generation.load(Ordering::Acquire))
-}
-
 impl Plan {
     pub fn new(ordinal: i32, definitions: Vec<(String, Vec<Arc<Region>>)>) -> Result<Arc<Self>> {
         if definitions.is_empty() {

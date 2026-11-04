@@ -299,6 +299,18 @@ fn _varena_working_initialize(py: Python<'_>, device: i32) -> PyResult<()> {
 }
 
 /// Runtime's Start: this GPU's context and this process's row, in the machine's mode.
+/// How large a block a module may be before its children bind instead: one eviction unit.
+#[pyfunction]
+fn _varena_unit_bytes() -> usize {
+    varena::working::UNIT_BYTES
+}
+
+/// A pool's size for a capture from an eager pass's measured peak.
+#[pyfunction]
+fn _varena_pool_bytes(peak: usize) -> usize {
+    varena::working::pool_bytes(peak)
+}
+
 #[pyfunction]
 fn _varena_poisoned(py: Python<'_>) -> PyResult<Option<String>> {
     py.detach(varena::working::poisoned).map_err(|e| super::raise(py, e))
@@ -647,70 +659,6 @@ fn split_observation<'py>(
     Ok(row)
 }
 
-/// Owns one complete producer-declared execution. No Python callback enters native code.
-#[pyclass(name = "_VarenaExecution", module = "tensorfs._ext", frozen)]
-struct PyExecution {
-    execution: super::Deferred<varena::working::Execution>,
-}
-
-#[pymethods]
-impl PyExecution {
-    #[new]
-    #[pyo3(signature = (device, configuration, site, choices, *, stream))]
-    fn new(
-        py: Python<'_>, device: i32, configuration: &str, site: &str,
-        choices: Vec<(String, Vec<usize>)>, stream: u64,
-    ) -> PyResult<Self> {
-        let execution = py.detach(|| {
-            check()?;
-            varena::working::Execution::commit(
-                device, configuration, site, choices, stream,
-            )
-        }).map_err(|error| split_error(py, error))?;
-        Ok(Self { execution: super::Deferred::new(execution) })
-    }
-
-    #[getter]
-    fn key(&self, py: Python<'_>) -> PyResult<String> {
-        self.execution.key().map(str::to_owned).map_err(|error| super::raise(py, error))
-    }
-
-    #[getter]
-    fn selection<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        selection(py, self.execution.selection().map_err(|error| super::raise(py, error))?)
-    }
-
-    fn enter(&self, py: Python<'_>) -> PyResult<u64> {
-        py.detach(|| { check()?; self.execution.enter() })
-            .map_err(|error| split_error(py, error))
-    }
-
-    fn begin(&self, py: Python<'_>) -> PyResult<()> {
-        py.detach(|| { check()?; self.execution.begin() })
-            .map_err(|error| split_error(py, error))
-    }
-
-    #[pyo3(signature = (*, submitted))]
-    fn end<'py>(&self, py: Python<'py>, submitted: bool) -> PyResult<Bound<'py, PyDict>> {
-        let observed = py.detach(|| self.execution.end(submitted))
-            .map_err(|error| super::raise(py, error))?;
-        split_observation(py, &observed)
-    }
-
-    #[pyo3(signature = (*, completed))]
-    fn finish<'py>(&self, py: Python<'py>, completed: bool) -> PyResult<Bound<'py, PyDict>> {
-        let observed = py.detach(|| self.execution.finish(completed))
-            .map_err(|error| super::raise(py, error))?;
-        observation(py, &observed)
-    }
-
-    fn abort<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        // Cleanup remains possible after the original allocation error was latched.
-        py.detach(|| self.execution.abort()).map_err(|error| super::raise(py, error))?
-            .as_ref().map(|observed| observation(py, observed)).transpose()
-    }
-}
-
 #[pyclass(name = "_VarenaCallbackScope", module = "tensorfs._ext", frozen)]
 struct CallbackScope {
     guard: Mutex<Option<varena::GlobalCaptureGuard>>,
@@ -848,7 +796,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
     module.add_class::<CallbackScope>()?;
-    module.add_class::<PyExecution>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
@@ -865,6 +812,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_activate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_poisoned, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_unit_bytes, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_pool_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;

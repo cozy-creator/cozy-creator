@@ -42,13 +42,6 @@ def bind_torch_allocator() -> None:
 
     _bind_allocator()
 
-def make_room(device: int, limit: int | None) -> int:
-    """Hold this process's GPU bytes on `device` (resident weight pages plus mapped working allocations) to
-    `limit`, None for no limit; returns the pages taken back now. Fills and working allocations stay
-    inside it until it changes: what the machine asks when another program needs the GPU."""
-    return _ext._varena_make_room(device, limit)
-
-
 CacheOwnerDeferredError = _ext.CacheOwnerDeferredError
 
 

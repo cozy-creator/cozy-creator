@@ -90,7 +90,7 @@ process crossing 256 MiB asks for everything. Prefetch stops until a pass bounda
 ## Caps
 
 `vt.set_limit(device, bytes)` makes the card read as a smaller one, the driver's own charge
-included; `make_room(device, limit)` holds this process's own bytes to a limit.
+included.
 
 ## One process
 
