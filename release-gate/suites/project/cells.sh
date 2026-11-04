@@ -6,7 +6,7 @@
 # - project-in: a new take that keeps take 1 up to `--in` and renders the rest from edited text: one run, the kept frames as
 #   they were, the join smooth, the record exact (xs-150).
 # - project-plate: a shot with `plate:` follows it frame by frame (guide-equal's bar).
-# - project-voice: a character with `voice:` speaks; the voice goes with the request and the video has sound.
+# - project-voice: an entity with a `voice:` link speaks; the voice goes with the request and the video has sound.
 # - project-stills: a place and its setup at the canvas aspect, at 16:9 and again at 9:16; a character's picture at 16:9.
 # - project-local: an asset `with: ./still.py`, local code made ready by Calcifer.
 FR=(nice -n 19 uv run -q --no-project --with numpy python -I "$HERE/frames.py")
@@ -215,12 +215,19 @@ defaults:
     aspect_ratio: "16:9"
   shot:
     render: {with: $H3}
-assets:
+entities:
   host:
     kind: character
-    image: hero.png
-    audio: voice.wav
     description: "$CHAR"
+    image: <host sheet>
+    voice: <host voice>
+assets:
+  host sheet:
+    kind: character
+    image: hero.png
+  host voice:
+    kind: voice
+    audio: voice.wav
   yard:
     kind: environment
     image: place.png
