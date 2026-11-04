@@ -1165,7 +1165,7 @@ assets:
   b: {video: $b}
   edit:
     kind: video
-    render: {with: cozy/cut}
+    render: {with: cozy}
     pieces:
       - <a>
       - <b>
