@@ -84,7 +84,9 @@ ended, or when Calcifer stops; a client reconnects from its last `id:`.
 unsatisfiable, and `200` with the whole file when `If-Range` names anything but its ETag), and `If-None-Match`
 naming its ETag with `304`, so a `<video>` seeks it and a browser caches it (`files.rs`, one responder for every
 route). Each answers `Content-Security-Policy: sandbox`, and `Content-Disposition: inline` for `image/`, `video/`
-and `audio/`, else `attachment`: what a run wrote never runs as script in Calcifer's origin.
+and `audio/`, else `attachment`: what a run wrote never runs as script in Calcifer's origin. What's named by its
+own hash (a project's `files/{sha256}.{ext}` and `thumbs/{sha256}`, the page's `/assets/*`) answers `Cache-Control:
+private, max-age=31536000, immutable`; everything else, `outputs/{name}` included, `no-store`.
 
 ## Resources
 

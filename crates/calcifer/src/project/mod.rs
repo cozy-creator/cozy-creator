@@ -24,7 +24,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{Path, Query, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{
         IntoResponse as _, Response,
         sse::{self, KeepAlive, Sse},
@@ -1384,7 +1384,9 @@ async fn file(
         let said = format!("{file} is no file of a project: they are named <sha256>.<ext>");
         return Err(Refusal(Error::new(Kind::Usage, "file_name", said)));
     }
-    send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)
+    let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)?;
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
+    Ok(response)
 }
 
 /// One of the project's cuts (`edit.mp4`) or its timeline (`edit.otio`), as last made: its ETag names that cut.

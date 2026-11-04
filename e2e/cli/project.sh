@@ -1464,6 +1464,8 @@ png=$(jq -r '.files | to_entries[0].value.path' "$P/project.lock")
 api -D "$OUT/asset.hdr" -o "$OUT/asset.bin" "http://$ADDR/v1/projects/$ID/$png" || true
 { head -1 "$OUT/asset.hdr" | grep -q ' 200' && cmp -s "$OUT/asset.bin" "$P/$png" && grep -qi "etag: \"$(basename "$png" .mp4)\"" "$OUT/asset.hdr"; } \
   || check "GET $png: $(tr -d '\r' < "$OUT/asset.hdr" | head -4 | paste -sd' ')"
+grep -qi '^cache-control: .*immutable' "$OUT/asset.hdr" || check "a file named by its hash is not immutable: $(tr -d '\r' < "$OUT/asset.hdr" | paste -sd' ')"
+grep -qi '^cache-control: no-store' "$OUT/head.hdr" || check "edit.mp4, named by revision, is not no-store: $(tr -d '\r' < "$OUT/head.hdr" | paste -sd' ')"
 { grep -qi '^content-security-policy: sandbox' "$OUT/head.hdr" && grep -qi '^content-disposition: inline' "$OUT/head.hdr"; } \
   || check "edit.mp4 is not sandboxed and shown in place: $(tr -d '\r' < "$OUT/head.hdr" | paste -sd' ')"
 [ "$(api -o /dev/null -w '%{http_code}' -r 0-9 -H "If-Range: $et" "$U")" = 206 ] || check "a Range under edit.mp4's own If-Range is not 206"
