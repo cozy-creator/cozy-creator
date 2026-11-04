@@ -1239,8 +1239,9 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             });
         }
     }
-    let grown = if class <= LARGE { owner.page() } else { rounded(class.max(SEGMENT), owner.page())? };
-    let attempt = |mapped: usize| reclaim::acquire(device, mapped, Wait::Yes, Protect::default(), || {
+    let exact = if class <= LARGE { owner.page() } else { class };
+    let segment = rounded(class.max(SEGMENT), owner.page())?;
+    let result = reclaim::acquire(device, exact, Wait::Yes, Protect::default(), || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -1252,6 +1253,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             let ptr = match Device::take(&mut state, class, bytes, stream, None) {
                 Some(ptr) => ptr,
                 None => {
+                    // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
+                    let mapped = if class > LARGE && owner.headroom() >= segment { segment } else { exact };
                     owner.map(&mut state, mapped, None, class)?;
                     Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
                 }
@@ -1261,11 +1264,6 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     });
-    // A whole segment doesn't fit, whatever gave way: the card may still hold just this block.
-    let result = match attempt(grown) {
-        Err(Error::OutOfMemory { .. }) if grown > class && class > LARGE => attempt(class),
-        other => other,
-    };
     if matches!(result, Err(Error::OutOfMemory { .. })) {
         owner.lock()?.stats.ooms += 1;
     }
