@@ -61,7 +61,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     request.resume();
     request.on('end', () => {
       const at = `/v1/packages/e2e/${name}`;
-      if (pathname === '/v1/packages') return json(200, { packages: [summary] });
+      if (pathname === '/v1/packages') return json(200, { packages: [summary], search: { total: 1 } });
       if (pathname === at) return json(200, { package: summary, releases: [{ release }] });
       if (pathname === `${at}/releases/${release}`) return json(200, { release: { release }, package_interface: describedInterface, summary: '' });
       if (pathname === `${at}/download`) {
@@ -78,7 +78,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
         const sent = hub.lying ? Buffer.alloc(wheel.length, 7) : wheel;
         const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? '');
         const from = range ? Number(range[1]) : 0;
-        const to = range && range[2] ? Number(range[2]) + 1 : sent.length;
+        const to = range && range[2] ? Math.min(Number(range[2]) + 1, sent.length) : sent.length;
         const headers = { 'Content-Type': 'application/octet-stream', 'Content-Length': to - from, 'Accept-Ranges': 'bytes' };
         if (range) headers['Content-Range'] = `bytes ${from}-${to - 1}/${sent.length}`;
         response.writeHead(range ? 206 : 200, headers);
@@ -307,7 +307,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     execFileSync(uvAt, ['build', '--wheel', '--no-progress', '--out-dir', dist], { ...quiet, cwd: dir });
     const wheelName = readdirSync(dist).find((file) => file.endsWith('.whl'));
     const hub = await standIn(name, '0.1.0', wheelName, readFileSync(join(dist, wheelName)), readFileSync(join(dir, 'pyproject.toml'), 'utf8'), readFileSync(join(dir, 'uv.lock'), 'utf8'), described);
-    seen.hub = hub.origin;
+    seen.hub = { origin: hub.origin, asked: hub.asked };
     await shell(process.env.HUB_RESTART.replaceAll('@HUB@', hub.origin)).catch(() => {});
     await until('Calcifer back on that Hub', () => api('/v1/status').catch(() => null), Boolean);
     // Whatever happens, Calcifer goes back as it was: the suite goes on with it.
@@ -315,8 +315,11 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     try {
       // Not installed: on the Hub's list with its `ui`, and it doesn't load.
       const released = `${package_}/one_field`;
-      const listed = await until('the release listed', async () => (await api(`/v1/tools?on=local`)).body.tools.find((tool) => tool.id === released), Boolean);
-      check('release_lists_its_ui', listed.ui === 'ui/shade.js' && !listed.local, listed);
+      const listed = await until('the release listed', async () => {
+        const { tools, note } = (await api('/v1/tools?on=local')).body;
+        return { tool: tools.find((tool) => tool.id === released), note };
+      }, (now) => now.tool);
+      check('release_lists_its_ui', listed.tool.ui === 'ui/shade.js' && !listed.tool.local, listed);
       await page.reload();
       await page.waitForSelector('.react-flow__node');
       await dropTool('from_the_hub', released);

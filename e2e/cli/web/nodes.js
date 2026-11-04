@@ -323,6 +323,15 @@ function linesOf(text, name) {
   await until('mine kept', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes(' again'));
   check('kept_mine', true);
 
+  // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after.
+  await open('Sheet');
+  await sheetText.locator('.chip').first().click();
+  await page.waitForTimeout(50);
+  await page.keyboard.type(' typed');
+  await page.mouse.click(1500, 1000);
+  await until('typed after the name', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('<source-a> typed'));
+  check('typed_after_a_name', true);
+
   // Right click: rename, delete, and what it's made with.
   await away();
   await box('source-b').locator('.nm').click({ button: 'right' });

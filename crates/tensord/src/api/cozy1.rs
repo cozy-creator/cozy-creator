@@ -844,6 +844,10 @@ impl<B: MachineBackend> Cozy<B> {
                 *from += n as u64;
                 self.sent += n as u64;
                 self.pace.written += frame.len() as u64;
+                // An output read, as one over HTTP is: someone watching a film holds the rental for as long as it moves.
+                if let Some(lifecycle) = &self.media.identity.lifecycle {
+                    lifecycle.transferred();
+                }
                 if *from == *to {
                     stream.items.pop_front();
                 }

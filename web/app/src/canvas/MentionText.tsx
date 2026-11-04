@@ -183,6 +183,8 @@ export function MentionText({
   }
 
   const keys = (event: KeyboardEvent) => {
+    // `selectionchange` comes late: a key right after End would still find the caret in a name.
+    remember()
     if (menu) {
       const move = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0
       if (move) {
