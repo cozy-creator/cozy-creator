@@ -43,7 +43,7 @@ impl Host {
     fn prepare(&self) -> crate::Result<usize> {
         let mut held = self.claim()?.ok_or(Error::Busy)?;
         let state = held.state.as_mut().expect("exclusive host preparation");
-        let driver = &self.weight.gpu.arena.driver;
+        let driver = self.weight.gpu.core.driver();
         let _context = driver.enter()?;
         state.stream = driver.create_stream()?;
         driver.prepare_host(&mut state.host, state.capacity)?;
@@ -53,7 +53,7 @@ impl Host {
     fn submit(&self, destination: crate::FillDestination) -> crate::Result<()> {
         let mut held = self.claim()?.ok_or(Error::Busy)?;
         let state = held.state.as_mut().expect("exclusive host submission");
-        let driver = &self.weight.gpu.arena.driver;
+        let driver = self.weight.gpu.core.driver();
         let _context = driver.enter()?;
         let mut recorded = false;
         for (index, bytes) in state.bytes.chunks(state.capacity).enumerate() {
@@ -88,7 +88,7 @@ impl Host {
             return Ok(false);
         };
         let state = held.state.as_mut().expect("exclusive host retirement");
-        let driver = &self.weight.gpu.arena.driver;
+        let driver = self.weight.gpu.core.driver();
         let _context = driver.enter()?;
         driver.release_host(&mut state.host)?;
         if state.reuse != 0 {
@@ -149,7 +149,6 @@ pub(super) fn acquire(
             vec![Box::new(Resource(host.clone()))],
         ))
     };
-    retirement::fill(session.observer());
     prepared?;
     let destination = session.begin()?;
     if let Err(error) = host.submit(destination) {
@@ -160,18 +159,5 @@ pub(super) fn acquire(
         }
         return Err(error.into());
     }
-    unsafe {
-        session.publish()?;
-    }
-    match unsafe { weight.region.prepare_on(consumer)? } {
-        crate::StreamPreparation::Ordered(pin) | crate::StreamPreparation::Ready(pin) => Ok(pin),
-        crate::StreamPreparation::Fill(fill) => {
-            std::mem::forget(fill);
-            Err(Failure(
-                FAULT,
-                "published host Source unexpectedly became a Fill".into(),
-                0,
-            ))
-        }
-    }
+    Ok(unsafe { session.publish_to(consumer)? })
 }

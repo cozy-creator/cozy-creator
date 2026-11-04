@@ -145,7 +145,6 @@ def joined_producer(
                 device,
                 key,
                 [(variant.identity, allocations)],
-                preferred=variant.identity,
                 stream=producer.cuda_stream,
             )
             token = phase.begin_split(
@@ -212,7 +211,7 @@ def joined_producer(
         gc.collect()
         stream.synchronize()
         producer.synchronize()
-        vt.trim(device)
+        torch.cuda.empty_cache()
         return report
     finally:
         # Retire only after both actual streams are drained and T tensor owners drop.
@@ -241,7 +240,7 @@ def joined_producer(
         owned.clear()
         held.clear()
         gc.collect()
-        vt.trim(device)
+        torch.cuda.empty_cache()
         vt.retire_stream(producer, device=on)
         accel.destroy_stream(torch, producer)
 
@@ -362,7 +361,6 @@ def cases(payload, request, vt, on, backend):
                                 device,
                                 key,
                                 [(variant.identity, variant.allocations)],
-                                preferred=variant.identity,
                                 stream=stream.cuda_stream,
                             )
                             token = phase.begin_split(
@@ -531,7 +529,7 @@ def consumer(payload: Probe, ctx: Context) -> Report:
     ready = torch.cuda.Event()
     ready.record(torch.cuda.current_stream(device))
     ready.synchronize()
-    vt.trim(device)
+    torch.cuda.empty_cache()
     before = vt.stats(device)
     domain = Domain(torch, request.memory)
     result = {"passed": False}
@@ -569,7 +567,7 @@ def consumer(payload: Probe, ctx: Context) -> Report:
         )
         try:
             domain.finish()
-            vt.trim(device)
+            torch.cuda.empty_cache()
             result["post_domain"] = vt.stats(device)
             baseline(before, result["post_domain"])
         except Exception:  # noqa: BLE001 - preserve the real fixture failure in its receipt

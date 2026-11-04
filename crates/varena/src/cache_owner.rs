@@ -1,7 +1,6 @@
 //! Nonwaiting requests to explicit cache owners. Allocators see host control only;
 //! callback/data ownership stays on a separate worker, never the donor thread.
 use crate::{Error, GlobalCaptureGuard, Result};
-use platform_signal::{Signal, wait_any};
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -31,8 +30,6 @@ pub(crate) fn in_callback(owner: &CacheOwner) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Cause {
     Allocation,
-    /// Explicit pre-body Use preparation only; allocator callers never wait on this pass.
-    Admission,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -192,7 +189,7 @@ pub struct RequestFacts {
     /// Actual global physical releases observed during this request, never owner attribution.
     pub observed_release_bytes: u64,
     pub requested_bytes: usize,
-    /// Cumulative capped native service, supplied by the donor/admission caller.
+    /// Cumulative capped native service, supplied by the donor.
     pub serviced_bytes: usize,
     /// Completed owner actions that a native service pass must observe before advancing.
     pub action_epoch: u64,
@@ -209,18 +206,15 @@ struct JobState {
     cancelled: bool,
     collect_pending: bool,
     serviced: usize,
-    admission_failure: Option<Error>,
 }
 struct Job {
     key: RequestKey,
     start_release: u64,
     state: Mutex<JobState>,
     changed: Condvar,
-    admission_wake: Option<Signal>,
 }
 impl Job {
     fn wake(&self) {
-        if let Some(signal) = &self.admission_wake { signal.set(); }
         self.changed.notify_all();
     }
     fn lock(&self) -> Result<MutexGuard<'_, JobState>> {
@@ -243,7 +237,7 @@ struct Control {
     changed: Condvar,
     clock: AtomicU64,
     requestable: AtomicUsize,
-    room: Arc<crate::Room>,
+    gpu: &'static crate::Device,
 }
 impl Control {
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
@@ -303,7 +297,7 @@ impl CacheOwner {
             return Err(Error::Invalid("cache owner device must be nonnegative"));
         }
         // Capture metadata is acquired before the dispatcher registry, never under it.
-        let room = crate::room(device)?;
+        let gpu = crate::gpu(device)?;
         let (control, registration) = {
             let mut registry = registry()?;
             if !registry.contains_key(&device) {
@@ -319,7 +313,7 @@ impl CacheOwner {
                     changed: Condvar::new(),
                     clock: AtomicU64::new(0),
                     requestable: AtomicUsize::new(0),
-                    room,
+                    gpu,
                 });
                 let (send, receive) = mpsc::channel();
                 let thread_control = Arc::clone(&control);
@@ -455,7 +449,7 @@ impl CacheOwner {
             return Err(Error::Busy);
         }
         loop {
-            if crate::is_recovery_blocked(self.control.device)? {
+            if crate::is_capturing(self.control.device)? {
                 return Err(Error::CaptureActive);
             }
             let facts = self.facts()?;
@@ -487,12 +481,6 @@ pub fn requestable(device: i32) -> Result<usize> {
     Ok(control(device)?.map_or(0, |control| control.requestable.load(Ordering::Acquire)))
 }
 
-/// Host metadata only: synchronous lifecycle operations must not await this dispatcher
-/// from one of its own callbacks. No callback/Arena/Driver owner leaves the worker.
-pub(crate) fn is_dispatcher_thread(device: i32) -> Result<bool> {
-    let Some(control) = control(device)? else { return Ok(false); };
-    Ok(control.lock()?.worker == Some(std::thread::current().id()))
-}
 
 /// A caller may observe this handle; it owns host data only and grants no capacity.
 #[derive(Clone)]
@@ -514,8 +502,7 @@ impl ShrinkRequest {
         job.facts.requested_bytes = job.wanted;
         job.facts.serviced_bytes = job.serviced;
         job.facts.observed_release_bytes = self
-            .control
-            .room
+            .control.gpu
             .released
             .load(Ordering::Acquire)
             .checked_sub(self.job.start_release)
@@ -523,18 +510,17 @@ impl ShrinkRequest {
         Ok(job.facts.clone())
     }
 
-    /// Observe an Allocation job within its caller's existing deadline. The worker
-    /// retains the job and callback custody when this observer returns or times out.
-    /// In particular, never drain/cancel a coalesced request while its caller may
-    /// hold the GIL. Release progress permits a real allocation retry, not success.
-    pub(crate) fn wait_allocation_release(&self, since: u64, deadline: Instant) -> Result<bool> {
+    /// The allocation path's one wait: a release, the shrink finishing, or the deadline.
+    /// The worker keeps the job and callback custody when this returns. A release
+    /// permits a real allocation retry, not success.
+    pub(crate) fn wait_release(&self, since: u64, deadline: Instant) -> Result<bool> {
         self.check()?;
         if self.job.key.cause != Cause::Allocation {
             return Err(Error::Invalid("only allocation requests expose recovery progress"));
         }
         let mut job = self.job.lock()?;
         loop {
-            if self.control.room.released.load(Ordering::Acquire) > since {
+            if self.control.gpu.released.load(Ordering::Acquire) > since {
                 return Ok(true);
             }
             let now = Instant::now();
@@ -577,61 +563,6 @@ impl ShrinkRequest {
         Ok(())
     }
 
-    /// Explicit pre-body callers only. No owner/native mutex is held while awaiting an action.
-    pub(crate) fn wait_admission_action(&self, observed_action: u64) -> Result<RequestFacts> {
-        self.check()?;
-        let signal = self.job.admission_wake.as_ref()
-            .ok_or(Error::Invalid("only explicit Use admission may await cache owners"))?;
-        loop {
-            signal.clear();
-            {
-                let held = self.job.lock()?;
-                if let Some(error) = &held.admission_failure { return Err(error.clone()); }
-                if held.facts.finished || held.cancelled || held.facts.action_epoch > observed_action {
-                    drop(held);
-                    return self.facts();
-                }
-            }
-            Self::wait_admission_signal(signal)?;
-        }
-    }
-
-    /// Cancel selection and prove any already-entered action has returned. Failure is uncertainty.
-    pub(crate) fn finish_admission(&self) -> Result<()> {
-        self.check()?;
-        let signal = self.job.admission_wake.as_ref()
-            .ok_or(Error::Invalid("only explicit Use admission may drain cache owners"))?;
-        self.cancel()?;
-        loop {
-            signal.clear();
-            {
-                let held = self.job.lock()?;
-                if !held.facts.running { return Ok(()); }
-                if let Some(error) = &held.admission_failure { return Err(error.clone()); }
-            }
-            Self::wait_admission_signal(signal)?;
-        }
-    }
-
-    pub(crate) fn admission_result(&self) -> Result<()> {
-        self.check()?;
-        if self.job.key.cause != Cause::Admission {
-            return Err(Error::Invalid("not an explicit Use admission request"));
-        }
-        match &self.job.lock()?.admission_failure {
-            Some(error) => Err(error.clone()),
-            None => Ok(()),
-        }
-    }
-
-    fn wait_admission_signal(signal: &Signal) -> Result<()> {
-        let events = wait_any(&[signal.waitable()])
-            .map_err(|error| Error::Unsupported(format!("Use admission wake: {error}")))?;
-        if events.iter().any(|event| event.broken) {
-            return Err(Error::Unsupported("Use admission wake closed".into()));
-        }
-        Ok(())
-    }
 }
 
 /// Queue only. Repeated observations coalesce by cause/generation, never add promised bytes.
@@ -648,7 +579,7 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
     }
     // Concurrent/rapid local failures share one outstanding owner pass. A new actual
     // refusal after earlier physical releases asks for remaining progress, not a sum
-    // of duplicate deficits. No allocator waits for this pass or its callback thread.
+    // of duplicate deficits.
     if key.cause == Cause::Allocation {
         for pending in state
             .jobs
@@ -693,9 +624,6 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
             key,
             start_release,
             changed: Condvar::new(),
-            admission_wake: if key.cause == Cause::Admission {
-                Some(Signal::new().map_err(|error| Error::Unsupported(format!("Use admission wake: {error}")))?)
-            } else { None },
             state: Mutex::new(JobState {
                 wanted: bytes,
                 owners: owners.into_iter().map(|(_, id)| id).collect(),
@@ -708,7 +636,6 @@ pub fn request_shrink(device: i32, key: RequestKey, bytes: usize) -> Result<Opti
                 cancelled: false,
                 collect_pending: key.cause == Cause::Allocation,
                 serviced: 0,
-                admission_failure: None,
             }),
         });
         state.jobs.insert(key, Arc::clone(&job));
@@ -737,12 +664,11 @@ fn failed(control: &Control, owner: &mut OwnerState, reason: String, retirement:
 
 fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
     let mut callbacks: BTreeMap<u64, Registration> = BTreeMap::new();
-    let mut arenas = Vec::new(); // GPU leases live only here, never in allocator Control.
     if let Ok(mut state) = control.lock() {
         state.worker = Some(std::thread::current().id());
     }
     loop {
-        let result = worker_tick(&control, &registrations, &mut callbacks, &mut arenas);
+        let result = worker_tick(&control, &registrations, &mut callbacks);
         if let Err(error) = result {
             // Keep callback/data ownership intact on a worker fault. No allocator handle
             // can run these destructors. Explicit close reports failure instead of hanging.
@@ -751,19 +677,10 @@ fn worker(control: Arc<Control>, registrations: mpsc::Receiver<Registration>) {
                     failed(&control, &mut owner, error.to_string(), true);
                 }
             }
-            if let Ok(state) = control.lock() {
-                for job in state.jobs.values().filter(|job| job.key.cause == Cause::Admission) {
-                    if let Ok(mut held) = job.lock() {
-                        held.admission_failure.get_or_insert_with(|| error.clone());
-                    }
-                    job.wake();
-                }
-            }
             control.changed.notify_all();
         }
         let Ok(state) = control.lock() else {
             std::mem::forget(callbacks);
-            std::mem::forget(arenas);
             std::mem::forget(registrations); // queued callback data remains owned too
             return;
         };
@@ -777,7 +694,6 @@ fn worker_tick(
     control: &Arc<Control>,
     registrations: &mpsc::Receiver<Registration>,
     callbacks: &mut BTreeMap<u64, Registration>,
-    arenas: &mut Vec<Arc<crate::arena_retirement::Observation>>,
 ) -> Result<()> {
     for registration in registrations.try_iter() {
         callbacks.insert(registration.id, registration);
@@ -796,7 +712,6 @@ fn worker_tick(
         })
         .collect::<Vec<_>>();
     for id in retiring {
-        let _observed = crate::retain_arenas(control.device, arenas)?;
         let registration = callbacks.get_mut(&id).expect("worker-owned callback");
         let scope = CallbackScope {
             control: Arc::clone(control),
@@ -829,7 +744,7 @@ fn worker_tick(
             (!held.cancelled && held.collect_pending).then_some(held.wanted)
         };
         if let Some(wanted) = collect {
-            match crate::reclaim_completed(control.device, wanted, arenas) {
+            match crate::reclaim_completed(control.device, wanted) {
                 Ok(_) => {
                     let mut held = job.lock()?;
                     held.collect_pending = false;
@@ -846,9 +761,7 @@ fn worker_tick(
         }
         let (id, wanted) = {
             let mut held = job.lock()?;
-            let observed = control
-                .room
-                .released
+            let observed = control.gpu.released
                 .load(Ordering::Acquire)
                 .checked_sub(job.start_release)
                 .unwrap_or(0);
@@ -877,7 +790,6 @@ fn worker_tick(
             held.facts.running = true;
             (id, held.wanted.saturating_sub(completed))
         };
-        let _observed = crate::retain_arenas(control.device, arenas)?;
         let Some(registration) = callbacks.get_mut(&id) else {
             // Constructor publication can race this tick's registration-channel drain.
             // Keep the accepted request until the already-transferred callback arrives.
@@ -933,7 +845,7 @@ fn worker_tick(
                 held.facts.action_epoch = held.facts.action_epoch.checked_add(1)
                     .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
-            Err(Error::CaptureActive) if capture_active && job.key.cause != Cause::Admission => {
+            Err(Error::CaptureActive) if capture_active => {
                 owner.facts.deferred += 1;
                 held.owners.push_front(id);
                 held.facts.queued = held.owners.len();
@@ -951,9 +863,6 @@ fn worker_tick(
                     .ok_or(Error::Invalid("cache action epoch overflow"))?;
             }
             Err(error) => {
-                if job.key.cause == Cause::Admission {
-                    held.admission_failure.get_or_insert_with(|| error.clone());
-                }
                 failed(control, &mut owner, error.to_string(), false);
                 held.facts.failed += 1;
                 held.waiting_service = job.key.cause != Cause::Allocation;
@@ -966,19 +875,6 @@ fn worker_tick(
         drop(owner);
         job.wake();
         control.changed.notify_all();
-    }
-    // Explicit last-owner retirement is separate from no-wait collection. There are no
-    // callbacks left to serve. Preserve leases on capture/replay refusal; release them
-    // outside every metadata lock and keep exclusion through all last Arena destructors.
-    if callbacks.is_empty() && !arenas.is_empty() {
-        match crate::enter_retirement(control.device) {
-            Ok(guard) => {
-                drop(std::mem::take(arenas));
-                drop(guard);
-            }
-            Err(error) if deferred(&error) => {}
-            Err(error) => return Err(error),
-        }
     }
     Ok(())
 }

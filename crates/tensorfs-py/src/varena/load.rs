@@ -5,7 +5,7 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 use super::continuation::Continuation;
 use super::{
-    Deferred, PyArena, PyRegion, capsule,
+    Deferred, PyDevice, PyRegion, capsule,
     refill::{self, Control, PreparedRead, Work},
 };
 use crate::store::PyCheckpoint;
@@ -46,10 +46,10 @@ impl LoadSlot {
     }
 
     #[new]
-    #[pyo3(signature = (arena, checkpoint, parts, bytes, threads = 2))]
+    #[pyo3(signature = (device, checkpoint, parts, bytes, threads = 2))]
     fn new(
         py: Python<'_>,
-        arena: PyRef<'_, PyArena>,
+        device: PyRef<'_, PyDevice>,
         checkpoint: PyRef<'_, PyCheckpoint>,
         parts: Vec<(String, usize, usize)>,
         bytes: usize,
@@ -60,13 +60,13 @@ impl LoadSlot {
                 "load slot needs nonempty stored parts and destination",
             ));
         }
-        let arena = arena.owner()?;
+        let device = device.owner()?;
         let checkpoint = checkpoint.core(py)?;
         let (region, work) = py
             .detach(|| {
-                let region = arena.reserve(bytes).map_err(refill::Failure::Native)?;
+                let region = device.reserve(bytes).map_err(refill::Failure::Native)?;
                 let work =
-                    refill::prepare_work(&region, checkpoint, parts, threads, true, false, true)?
+                    refill::prepare_work(&region, checkpoint, parts, threads, true)?
                         .ok_or(refill::Failure::Native(varena::Error::Invalid(
                         "fresh load slot was already resident",
                     )))?;
@@ -87,11 +87,11 @@ impl LoadSlot {
         })
     }
     #[staticmethod]
-    #[pyo3(signature = (arena, checkpoint, component, key, *, dtype, max_scratch_bytes, threads = 2))]
+    #[pyo3(signature = (device, checkpoint, component, key, *, dtype, max_scratch_bytes, threads = 2))]
     #[allow(clippy::too_many_arguments)]
     fn encoded(
         py: Python<'_>,
-        arena: PyRef<'_, PyArena>,
+        device: PyRef<'_, PyDevice>,
         checkpoint: PyRef<'_, PyCheckpoint>,
         component: String,
         key: String,
@@ -99,12 +99,12 @@ impl LoadSlot {
         max_scratch_bytes: usize,
         threads: usize,
     ) -> PyResult<Self> {
-        let arena = arena.owner()?;
+        let device = device.owner()?;
         let checkpoint = checkpoint.core(py)?;
         let (region, work) = py
             .detach(|| {
                 refill::prepare_encoded(
-                    &arena,
+                    device,
                     checkpoint,
                     &component,
                     &key,

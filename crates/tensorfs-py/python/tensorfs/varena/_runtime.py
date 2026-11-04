@@ -91,44 +91,12 @@ def request_cache_shrink(device: int, bytes: int) -> _ext._VarenaCacheRequest | 
     return _ext._varena_cache_request(device, bytes)
 
 
-class ArenaRetirement:
-    """Host-only retirement result. Pending never means released GPU capacity."""
+class Device:
+    """One GPU's memory authority: this process's every byte on the card, for its lifetime."""
 
-    def __init__(self, native: _ext._VarenaArenaRetirement) -> None:
-        self._native = native
-
-    def facts(self) -> dict[str, Any]:
-        return self._native.facts()
-
-    def try_complete(self) -> bool:
-        """Observe completion without GPU work; failure keeps native custody."""
-        return self._native.try_complete()
-
-
-
-class Arena:
     def __init__(self, device: int) -> None:
-        self._native = _ext._VarenaArena(device)
+        self._native = _ext._VarenaDevice(device)
         self.device = device
-
-    @property
-    def id(self) -> int:
-        """Never-reused native lifetime identity, not a device address."""
-        return self._native.id
-
-    @property
-    def closed(self) -> bool:
-        return self._native.closed
-
-    def close(self) -> ArenaRetirement:
-        """Transfer this root to native retirement; existing Region/Pin/Plan owners survive.
-
-        Returns the same native host ticket on repeated calls. A refused handoff
-        leaves this root usable/retryable. This never waits for GPU completion.
-        Final Python object disposal requests the same native custody automatically.
-        """
-        return ArenaRetirement(self._native.close())
-
 
     @property
     def granularity(self) -> int:
@@ -136,28 +104,6 @@ class Arena:
 
     def reserve(self, bytes: int) -> Region:
         return Region(self._native.reserve(bytes))
-
-    def set_streaming_limit(self, bytes: int) -> None:
-        self._native.set_streaming_limit(bytes)
-
-    def clear_streaming_limit(self) -> None:
-        """Clear the legacy idle-cache window without reclaim or changing capacity limits."""
-        self._native.clear_streaming_limit()
-
-    @property
-    def streaming_limit_bytes(self) -> int:
-        return self._native.streaming_limit_bytes
-
-    def reclaim(self, bytes: int) -> int:
-        return self._native.reclaim(bytes)
-
-    def reset_preferences(self) -> None:
-        """Begin an explicit execution phase without changing pins, mappings or VA."""
-        self._native.reset_preferences()
-
-    def reclaim_unpreferred(self, bytes: int) -> int:
-        """Reclaim only idle nonpreferred backing; every physical pin still wins."""
-        return self._native.reclaim_unpreferred(bytes)
 
     def stats(self) -> dict[str, int]:
         return self._native.stats()
@@ -175,15 +121,15 @@ def supports_phase_plans() -> bool:
 
 
 class Plan:
-    """Copied native region intent across one device's arenas; no fills, pins or prefetch promise.
+    """Copied native region intent on one device; no fills, pins or prefetch promise.
 
     Keep this owner while its phase can be used. deactivate retires active intent
     synchronously; dropping the owner then releases its reservation references safely.
     """
 
-    def __init__(self, arena: Arena, phases: Sequence[tuple[str, Sequence[Region]]]) -> None:
+    def __init__(self, device: Device, phases: Sequence[tuple[str, Sequence[Region]]]) -> None:
         self._native = _ext._VarenaPlan(
-            arena._native, [(name, [region._native for region in regions]) for name, regions in phases],
+            device._native, [(name, [region._native for region in regions]) for name, regions in phases],
         )
 
     def activate(self, phase: str) -> None:
@@ -199,14 +145,12 @@ class Plan:
 class PhaseController:
     """Internal per-submission phase decoration using native continuation ownership."""
 
-    def __init__(self, arena: Arena) -> None:
-        self._native = _ext._VarenaPhaseController(arena._native)
+    def __init__(self, device: Device) -> None:
+        self._native = _ext._VarenaPhaseController(device._native)
 
-    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *,
-             footprints: Sequence[_ext._VarenaGraphFootprint] | None = None, execution_key: str | None = None):
-        """Decorate native completion; key=None observes without changing weight preferences."""
-        return self._native.wrap(capsule, key, [region._native for region in regions],
-                                 footprints=None if footprints is None else list(footprints), execution_key=execution_key)
+    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *, execution_key: str | None = None):
+        """Decorate native completion; key=None observes without entering a phase."""
+        return self._native.wrap(capsule, key, [region._native for region in regions], execution_key=execution_key)
 
     def facts(self) -> dict[str, object]:
         return self._native.facts()
@@ -221,10 +165,6 @@ class Region:
         return self._native.resident
 
     @property
-    def preferred(self) -> bool:
-        return self._native.preferred
-
-    @property
     def allocated_bytes(self) -> int:
         return self._native.allocated_bytes
 
@@ -232,15 +172,14 @@ class Region:
     def ptr(self) -> int:
         return self._native.ptr
 
-    def set_preferred(self, preferred: bool) -> None:
-        self._native.set_preferred(preferred)
+    def prepare(self) -> Use:
+        """A fill, or the resident contents. The core makes room in its one reclaim order."""
+        return Use(self._native.prepare())
 
-    def prepare(self, *, reclaim: bool = True, evict_completed: bool = False) -> Use:
-        """A fill, or the resident contents. reclaim=False refuses (OutOfMemory) rather than
-        evict or wait; evict_completed then still evicts idle streamed regions (other
-        phases' oldest first, then the running phase's most recently used first), completed
-        ones first, then ones after their own last-consumer events; it never joins."""
-        return Use(self._native.prepare(reclaim, evict_completed))
+    def prepare_prefetch_fill(self) -> Use | None:
+        """A fill ahead of demand, under prefetch admission. None declines without I/O."""
+        native = self._native.prepare_prefetch_fill()
+        return Use(native) if native is not None else None
 
     def pin(self) -> Use | None:
         """Pin existing ready contents atomically, or return None for a residency miss.
@@ -259,12 +198,11 @@ class Region:
         *,
         threads: int = 2,
     ) -> PreparedRead | None:
-        """Opt into native no-reclaim admission for an immutable raw source.
+        """Offer an immutable raw source to native prefetch admission.
 
-        None means no fill was admitted (unknown/unqualified key, insufficient room, or
-        already resident). An admitted read retains its source and Fill but starts no IO.
-        Existing production prefetch callers remain on prepare_read until a committed
-        execution key is available. Encoded decode/scratch is outside this first slice.
+        None means no fill was admitted (phase not measured yet, no room for its bytes and the
+        phase's remaining working peak, or already resident). An admitted read retains its
+        source and Fill but starts no IO. Encoded decode/scratch is outside this path.
         """
         native = _ext._VarenaPreparedRead.prefetch(self._native, checkpoint, list(parts), threads)
         return None if native is None else PreparedRead(native)
@@ -275,8 +213,6 @@ class Region:
         parts: Sequence[tuple[str, int, int]],
         *,
         threads: int = 2,
-        reclaim: bool = True,
-        evict_completed: bool = False,
         host: Buffer | None = None,
     ) -> PreparedRead:
         """Admit a fill and warm bounded staging, without starting source I/O.
@@ -284,8 +220,6 @@ class Region:
         Each part is (component/key#role, destination byte offset, exact stored length).
         This region must be dedicated to that immutable source recipe. Native prefetch
         uses local available sources only; it never calls a Python transformer/fetcher.
-        reclaim=False refuses admission when eviction or a prior-writer join is needed;
-        with evict_completed it may still evict idle streamed regions as `prepare` does.
         host, a writable C-contiguous buffer covering every part and at most the region's
         length, receives the one store read; one copy then fills the region from it (zeroes
         past it). The read row's
@@ -298,7 +232,7 @@ class Region:
             )
         return PreparedRead(
             native(
-                self._native, checkpoint, list(parts), threads, reclaim, evict_completed, host
+                self._native, checkpoint, list(parts), threads, host
             )
         )
 
@@ -435,7 +369,7 @@ class LoadSlot:
 
     def __init__(
         self,
-        arena: Arena,
+        device: Device,
         checkpoint: _ext.Checkpoint,
         parts: Sequence[tuple[str, int, int]],
         *,
@@ -446,18 +380,18 @@ class LoadSlot:
         if native is None:
             raise RuntimeError("this TensorFS build has no native load/execution slot")
         self._native: _ext._VarenaLoadSlot = native(
-            arena._native, checkpoint, list(parts), bytes, threads
+            device._native, checkpoint, list(parts), bytes, threads
         )
         self._tensor: Tensor | None = None
         self._decoded: tuple[str, tuple[int, ...]] | None = None
         self._tensors: tuple[Tensor, ...] | None = None
         self._existing_regions = False
-        self.device = arena.device
+        self.device = device.device
 
     @classmethod
     def encoded(
         cls,
-        arena: Arena,
+        device: Device,
         checkpoint: _ext.Checkpoint,
         component: str,
         key: str,
@@ -482,14 +416,14 @@ class LoadSlot:
             raise RuntimeError("this TensorFS build has no encoded native load slot")
         result = cls.__new__(cls)
         result._native = native.encoded(
-            arena._native, checkpoint, component, key, dtype=dtype,
+            device._native, checkpoint, component, key, dtype=dtype,
             max_scratch_bytes=max_scratch_bytes, threads=threads,
         )
         result._tensor = None
         result._tensors = None
         result._existing_regions = False
         result._decoded = (dtype, tuple(checkpoint.components[component].tensors[key].shape))
-        result.device = arena.device
+        result.device = device.device
         return result
 
     @classmethod

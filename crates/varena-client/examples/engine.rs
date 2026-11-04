@@ -40,7 +40,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             scratch.free()?;
             used.done()?;
             pass.complete()?;
-            gpu.trim()?;
         }
         println!("{:?}", gpu.stats()?);
     }

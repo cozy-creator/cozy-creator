@@ -33,35 +33,7 @@ pub(super) struct Owner {
     gpu: Arc<Gpu>,
     provider: Provider,
     pub(super) owned: AtomicBool,
-    control: Arc<Control>,
-}
-#[derive(Default)]
-struct State {
-    done: bool,
-    error: Option<Error>,
-}
-struct Control {
     pid: u32,
-    state: Mutex<State>,
-}
-
-pub(crate) struct Ticket(Arc<Control>);
-impl Ticket {
-    pub(crate) fn try_complete(&self) -> crate::Result<bool> {
-        crate::check_process()?;
-        if self.0.pid != std::process::id() {
-            return Err(Error::Invalid("Source retirement inherited after fork"));
-        }
-        let state = self
-            .0
-            .state
-            .lock()
-            .map_err(|_| Error::Poisoned("Source retirement status mutex".into()))?;
-        if let Some(error) = &state.error {
-            return Err(error.clone());
-        }
-        Ok(state.done)
-    }
 }
 
 pub(super) fn validate(provider: &Provider) -> Result<()> {
@@ -78,30 +50,21 @@ impl Owner {
             gpu,
             provider,
             owned: AtomicBool::new(false),
-            control: Arc::new(Control {
-                pid: std::process::id(),
-                state: Mutex::new(State::default()),
-            }),
+            pid: std::process::id(),
         })
     }
 }
 impl Drop for Owner {
     fn drop(&mut self) {
-        if !self.owned.load(Ordering::Acquire) || self.control.pid != std::process::id() {
+        if !self.owned.load(Ordering::Acquire) || self.pid != std::process::id() {
             return;
         }
-        // Both destinations were prepared by Gpu construction. Observe the host ticket
-        // before handing actual resources to the native queue; no callback occurs here.
-        super::retirement::source(Ticket(self.control.clone()));
-        crate::retirement::defer(
-            self.gpu.device(),
-            crate::retirement::Job::Source(Retirement {
-                gpu: Some(self.gpu.clone()),
-                provider: self.provider,
-                control: self.control.clone(),
-                active: true,
-            }),
-        );
+        // The retirer started with the Gpu. No callback occurs here.
+        crate::retirement::defer(crate::retirement::Job::Source(Retirement {
+            gpu: Some(self.gpu.clone()),
+            provider: self.provider,
+            active: true,
+        }));
     }
 }
 
@@ -109,7 +72,6 @@ impl Drop for Owner {
 pub(crate) struct Retirement {
     gpu: Option<Arc<Gpu>>,
     provider: Provider,
-    control: Arc<Control>,
     active: bool,
 }
 impl Retirement {
@@ -123,7 +85,7 @@ impl Retirement {
             Err(Error::CaptureActive | Error::Busy) => return Ok(false),
             Err(error) => return Err(error),
         };
-        let context = gpu.arena.driver.enter()?;
+        let context = gpu.core.driver().enter()?;
         let status =
             unsafe { self.provider.retire.expect("validated provider")(self.provider.context) };
         if status == BUSY {
@@ -139,20 +101,8 @@ impl Retirement {
         self.active = false;
         drop(context);
         drop(self.gpu.take());
-        drop(gpu); // Any final Gpu queues its own ticket BEFORE Source reports completion.
-        self.control
-            .state
-            .lock()
-            .map_err(|_| Error::Poisoned("Source retirement status mutex".into()))?
-            .done = true;
+        drop(gpu);
         Ok(true)
-    }
-    pub(crate) fn failed(&mut self, error: &Error) {
-        self.control
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .error = Some(error.clone());
     }
 }
 fn callback_error(stage: &str, status: i32) -> Error {
@@ -228,7 +178,7 @@ pub(super) fn acquire(
     let bytes = fill.len() as u64;
     let mut job = Job::default();
     let prepared = (|| -> Result<i32> {
-        let _context = weight.gpu.arena.driver.enter()?;
+        let _context = weight.gpu.core.driver().enter()?;
         // No destination is exposed. Any failure transfers NOTHING; the persistent
         // provider retains its failed-prepare owners for its checked final retirement.
         Ok(unsafe {
@@ -279,11 +229,10 @@ pub(super) fn acquire(
     }
     let mut session =
         unsafe { fill.into_async(crate::FillOwners::new(streams, vec![Box::new(resource)])) };
-    super::retirement::fill(session.observer());
     validation?;
     let destination = session.begin()?;
     let status = {
-        let _context = weight.gpu.arena.driver.enter()?;
+        let _context = weight.gpu.core.driver().enter()?;
         unsafe {
             job.submit.expect("validated job")(
                 job.context,
@@ -307,18 +256,5 @@ pub(super) fn acquire(
         }
         return Err(callback_failure("Source submit", status, bytes));
     }
-    unsafe {
-        session.publish()?;
-    }
-    match unsafe { weight.region.prepare_on(consumer_stream)? } {
-        crate::StreamPreparation::Ordered(pin) | crate::StreamPreparation::Ready(pin) => Ok(pin),
-        crate::StreamPreparation::Fill(fill) => {
-            std::mem::forget(fill);
-            Err(Failure(
-                FAULT,
-                "published Source unexpectedly became a Fill".into(),
-                0,
-            ))
-        }
-    }
+    Ok(unsafe { session.publish_to(consumer_stream)? })
 }

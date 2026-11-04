@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use pyo3::{prelude::*, types::PyDict};
 
-use super::{Deferred, PyArena, PyRegion};
+use super::{Deferred, PyDevice, PyRegion};
 
 #[pyclass(name = "_VarenaPlan", module = "tensorfs._ext", frozen)]
 pub(super) struct PyPlan {
@@ -27,10 +27,10 @@ impl PyPlan {
     #[new]
     fn new(
         py: Python<'_>,
-        arena: PyRef<'_, PyArena>,
+        device: PyRef<'_, PyDevice>,
         phases: Vec<(String, Vec<Py<PyRegion>>)>,
     ) -> PyResult<Self> {
-        let arena = arena.owner()?;
+        let device = device.owner()?.ordinal();
         let phases = phases
             .into_iter()
             .map(|(name, regions)| {
@@ -44,7 +44,7 @@ impl PyPlan {
             })
             .collect();
         let plan = py
-            .detach(|| varena::plan::Plan::new(arena, phases))
+            .detach(|| varena::plan::Plan::new(device, phases))
             .map_err(|error| match error {
                 varena::Error::Invalid(message) => pyo3::exceptions::PyValueError::new_err(message),
                 other => super::raise(py, other),
@@ -77,8 +77,6 @@ impl PyPlan {
         let result = PyDict::new(py);
         result.set_item("device", self.plan.device())?;
         result.set_item("scope", "device")?;
-        result.set_item("inventory_generation", varena::plan::inventory_generation(self.plan.device())
-            .map_err(|error| super::raise(py, error))?)?;
         let phases = self
             .plan
             .facts()

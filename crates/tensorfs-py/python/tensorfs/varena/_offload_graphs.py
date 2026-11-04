@@ -192,7 +192,9 @@ class Graphs:
                     launched = True
                     vt.replay(graph.cuda, stream=stream)
                 self.counts["replays"] += 1
-                return tree_map(lambda v: v.clone() if isinstance(v, torch.Tensor) else v, graph.outputs)
+                result = tree_map(lambda v: v.clone() if isinstance(v, torch.Tensor) else v, graph.outputs)
+                vt.record_pool_stream(self.pool, stream)
+                return result
         except Exception as error:  # Eager serves it, and a real fault surfaces there too.
             if launched:
                 self._decline(candidate, key, f"{type(error).__name__}: {str(error)[:200]}")
@@ -223,7 +225,7 @@ class Graphs:
         reason = reason or (None if row and row["published"] else "unmeasured")
         if reason is None:
             try:
-                graph = candidate.graphs[key] = self._capture(candidate, leaves, spec, args, kwargs, units, stream, row["successful_capture_pool_bytes"])
+                graph = candidate.graphs[key] = self._capture(candidate, leaves, spec, args, kwargs, units, stream, row["peak_bytes"])
                 self.counts["captures"] += 1
                 replayed = self._replay(candidate, key, graph, leaves, spec)
                 reason = "replay refused" if replayed is None else None if _same(eager, replayed) else "replay differs from eager"
@@ -234,8 +236,8 @@ class Graphs:
         vt.phase_forget(device, name)
         return eager
 
-    def _capture(self, candidate, leaves, spec, args, kwargs, units, stream, packed):
-        """`packed` is native's own measure of this call's pool, handed back unread."""
+    def _capture(self, candidate, leaves, spec, args, kwargs, units, stream, peak):
+        """`peak` is what the eager pass held: the pool it needs, with room for packing."""
         with torch.inference_mode(False):
             inputs = [torch.empty(v.shape, dtype=v.dtype, device=v.device).copy_(v) if type(v) is torch.Tensor else None for v in leaves]
         statics = tree_unflatten([v if s is None else s for v, s in zip(leaves, inputs)], spec)
@@ -251,7 +253,7 @@ class Graphs:
             regions = list(dict.fromkeys(region for unit in units for region in unit.regions))
             with self.owner.gpu.use(regions, stream.cuda_stream) as used:
                 used.wait_ready()  # A fill still retiring would refuse the capture.
-            with vt.graph(graph.cuda, pool=self.pool, stream=stream, reserve_bytes=packed):
+            with vt.graph(graph.cuda, pool=self.pool, stream=stream, reserve_bytes=peak * 5 // 4):
                 graph.outputs = candidate.original(*statics[0], **statics[1])
         except BaseException:
             self.pool = None  # Torch forgets a pool whose only capture failed.
@@ -267,6 +269,9 @@ class Graphs:
                     raise ValueError("a graph's outputs must be its own ordinary tensors")
             elif type(value) not in _SCALARS:
                 raise ValueError("a graph's outputs must be tensors or scalars")
+        # Nothing reads the pool between replays, so the core may take its pages back when idle.
+        held = [value for value in tree_flatten(graph.outputs)[0] if isinstance(value, torch.Tensor)]
+        vt.pool_scratch(self.pool, held, self.owner.device.index)
         graph.regions = regions
         graph.configuration = _configuration(candidate.module)
         return graph

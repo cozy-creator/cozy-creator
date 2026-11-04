@@ -28,6 +28,9 @@ class OffloadError(RuntimeError):
     """An operation falls outside immutable inference."""
 
 
+_UNIT_BYTES = 512 << 20
+
+
 class _Owner:
     """What weights need from an adopted model: never the model itself."""
 
@@ -222,13 +225,16 @@ def _blocks(root):
 
 
 def _frontier(module, blocks, seen, descend=False):
-    """Outermost blocks, the block-free subtrees between them, and a composite parent's own weights."""
+    """Outermost blocks, the block-free subtrees between them, and a composite parent's own weights.
+    A unit is what eviction moves at once, so a huge one comes apart: reading a 2 GB block back
+    every step to make 200 MB of room is most of what a tight card moves."""
     if id(module) in seen:
         return
     seen.add(id(module))
     # A container has no forward of its own to bind around.
     runs = type(module).forward is not nn.Module.forward
-    if runs and not descend and (id(module) in blocks or not any(id(m) in blocks for m in module.modules())):
+    huge = any(True for _ in module.children()) and sum(p.numel() * p.dtype.itemsize for p in module.parameters()) > _UNIT_BYTES
+    if runs and not descend and not huge and (id(module) in blocks or not any(id(m) in blocks for m in module.modules())):
         if any(True for _ in module.parameters()):
             yield _Unit(module, True)
         return
@@ -304,7 +310,7 @@ class Offload:
         for root in roots:
             for unit in _frontier(root, _blocks(root), seen):
                 self._install(unit)
-        self.graphs = Graphs(self, roots) if graphs == "auto" and vt._managed_graph_refusal() is None else None
+        self.graphs = Graphs(self, roots) if graphs == "auto" else None
         for module in modules:
             module.__dict__["_apply"] = functools.partial(self._apply, module)
 

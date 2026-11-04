@@ -10,22 +10,7 @@ pub(super) fn eligible(work: &Work) -> bool {
 }
 
 fn mode(work: &Work) -> Result<Mode, Failure> {
-    let streamed = work
-        .inputs
-        .iter()
-        .filter(|input| input.fill.is_some())
-        .try_fold(false, |streamed, input| {
-            input
-                .region
-                .is_preferred()
-                .map(|preferred| streamed || !preferred)
-        })
-        .map_err(Failure::Native)?;
-    Ok(if streamed {
-        Mode::Buffered
-    } else {
-        Mode::Cache
-    })
+    Ok(if work.reread() { Mode::Buffered } else { Mode::Cache })
 }
 
 /// No raw producer ever used these still-owned Fills or ready Pins. Escaped views retain

@@ -1,19 +1,16 @@
 //! Public C ABI v1. This module adapts ownership, not allocation policy.
 #![allow(unsafe_code)]
 
-mod retirement;
 pub(crate) mod source;
 mod host_source;
 mod host_parts;
 mod tensor_export;
-mod census;
-mod use_prepare;
 #[doc(hidden)]
-pub use census::residency_snapshot;
 pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
 pub use source::{Job as SourceJob, Provider as SourceProvider};
 
-use crate::{Arena, Error, Pin, Region, cache_owner, working};
+use crate::retirement;
+use crate::{Device, Error, Pin, Region, cache_owner, working};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -93,7 +90,7 @@ fn boundary(f: impl FnOnce() -> Result<()>) -> i32 {
 /// Identity is the address of the real core registry, not a frontend-local counter.
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_core_identity() -> u64 {
-    &crate::ARENAS as *const _ as usize as u64
+    &crate::DEVICES as *const _ as usize as u64
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_abi_version() -> u32 {
@@ -108,40 +105,83 @@ pub extern "C" fn vr_v1_error_requested_bytes() -> u64 {
     LAST.with(|v| v.borrow().1)
 }
 
-struct ServiceLease;
-impl ServiceLease {
-    fn open(device: i32) -> Result<Self> {
-        crate::activate(device, true)?;
-        Ok(Self)
-    }
-    fn try_close(&self) -> Result<bool> {
-        Ok(true)
+/// A foreign finalizer's last reference, destroyed on the retirer's stack.
+pub(crate) enum Owned {
+    Weight { _weight: Arc<Weight> },
+    Tensor { _pin: Pin, _consumers: crate::tensor_consumers::Consumers, _weight: Arc<Weight> },
+}
+
+pub(crate) fn note_failure(error: &Error) {
+    if Failure::from(error.clone()).0 == FAULT {
+        ABI_FAULT.store(true, Ordering::Release);
     }
 }
 
-struct Gpu {
-    arena: Arc<Arena>,
-    service: Option<ServiceLease>,
+pub(crate) fn fault() {
+    ABI_FAULT.store(true, Ordering::Release);
 }
-impl Drop for Gpu {
-    fn drop(&mut self) {
-        if self.arena.pid == std::process::id() {
-            retirement::arena(self.arena.clone(), self.service.take().expect("live GPU service lease"));
-        }
+
+/// A finalizer's close: only this path retries temporary refusals. Callback drain is polled,
+/// never waited on, so one busy callback cannot stall other jobs.
+pub(crate) fn retire_handle(id: u64) -> crate::Result<bool> {
+    match close_handle(id, true) {
+        Ok(()) => Ok(true),
+        Err(Failure(CAPTURING | BUSY, _, _)) => Ok(false),
+        Err(error) => Err(Error::Poisoned(error.1)),
     }
+}
+
+pub(crate) fn handle_failed(id: u64, error: &Error) {
+    let Ok(mut handles) = registry_unchecked() else { return };
+    let Some(entry) = handles.get_mut(&id) else { return };
+    entry.disposition = Disposition::Quarantined;
+    entry.failure = Failure::from(error.clone()).0;
+    if let Handle::Cache(cache) = &entry.value {
+        let cache = cache.clone();
+        drop(handles);
+        retirement::abandoned(cache.storage.stats().map_or(0, |stats| stats.live_bytes as u64));
+    }
+}
+
+fn defer_handle(id: u64) -> Result<()> {
+    crate::check_process()?; // reject fork before inherited registry locks
+    retirement::prepare()?;
+    let owner = {
+        let mut handles = registry_unchecked()?;
+        let entry = handles.get_mut(&id).ok_or_else(|| invalid("invalid or closed handle"))?;
+        if entry.disposition != Disposition::Owned {
+            return Err(invalid("handle already transferred"));
+        }
+        entry.disposition = Disposition::Queued;
+        if let Handle::Cache(cache) = &entry.value { lock(&cache.owner)?.clone() } else { None }
+    };
+    // Stop new callbacks before the transfer returns. Ownership has transferred: the queued job
+    // records a failure rather than handing an unreachable owner back.
+    if let Some(owner) = owner
+        && let Err(error) = owner.defer_close()
+        && Failure::from(error).0 == FAULT
+    {
+        ABI_FAULT.store(true, Ordering::Release);
+    }
+    retirement::defer(retirement::Job::Handle(id));
+    Ok(())
+}
+
+
+struct Gpu {
+    core: &'static Device,
 }
 impl Gpu {
     fn device(&self) -> i32 {
-        self.arena.device()
+        self.core.ordinal()
     }
     fn eager(&self, stream: u64) -> Result<()> {
         if stream <= 2 {
             return Err(invalid("use an explicit CUDA stream handle, not a default-stream sentinel"));
         }
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device())?;
-        let _context = self.arena.driver.enter()?;
-        if self.arena.driver.is_capturing(size(stream)?)? {
+        crate::gate(self.device())?.not_capturing()?;
+        let _context = self.core.driver().enter()?;
+        if self.core.driver().is_capturing(size(stream)?)? {
             return Err(Error::CaptureActive.into());
         }
         Ok(())
@@ -170,18 +210,6 @@ struct Entry {
     disposition: Disposition,
     failure: i32,
 }
-impl Handle {
-    fn device(&self) -> i32 {
-        match self {
-            Self::Gpu(g) => g.device(),
-            Self::Region(w) => w.gpu.device(),
-            Self::Use(u) => u._weights[0].gpu.device(),
-            Self::Allocation(a) => a.gpu.device(),
-            Self::Cache(c) => c._gpu.device(),
-            Self::Plan(p) => p.gpu.device(),
-        }
-    }
-}
 fn registry_unchecked() -> Result<std::sync::MutexGuard<'static, BTreeMap<u64, Entry>>> {
     crate::check_process()?;
     HANDLES
@@ -190,7 +218,7 @@ fn registry_unchecked() -> Result<std::sync::MutexGuard<'static, BTreeMap<u64, E
         .map_err(|_| Failure(FAULT, "ABI registry poisoned".into(), 0))
 }
 fn insert(value: Handle) -> Result<u64> {
-    retirement::start()?;
+    retirement::prepare()?;
     let id = NEXT
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
         .map_err(|_| invalid("handle space exhausted"))?;
@@ -208,11 +236,9 @@ fn insert(value: Handle) -> Result<u64> {
 // including an operation racing a checked close from another caller.
 struct HandleLease {
     value: Handle,
-    guard: Arc<crate::GlobalCaptureGuard>,
 }
 struct Lease<T> {
     value: Arc<T>,
-    _guard: Arc<crate::GlobalCaptureGuard>,
 }
 impl<T> std::ops::Deref for Lease<T> {
     type Target = Arc<T>;
@@ -249,10 +275,8 @@ fn get_access(id: u64, access: Access) -> Result<HandleLease> {
     if !allowed {
         return Err(invalid("handle ownership has transferred"));
     }
-    let guard = Arc::new(crate::enter_retirement(entry.value.device())?);
     Ok(HandleLease {
         value: entry.value.clone(),
-        guard,
     })
 }
 fn get(id: u64, deferred: bool) -> Result<HandleLease> {
@@ -279,7 +303,6 @@ macro_rules! getter {
             match &held.value {
                 Handle::$variant(v) => Ok(Lease {
                     value: v.clone(),
-                    _guard: held.guard.clone(),
                 }),
                 _ => Err(invalid("wrong handle type")),
             }
@@ -297,7 +320,6 @@ fn cache_borrow(id: u64) -> Result<Lease<Cache>> {
     match &held.value {
         Handle::Cache(cache) => Ok(Lease {
             value: cache.clone(),
-            _guard: held.guard.clone(),
         }),
         _ => Err(invalid("wrong handle type")),
     }
@@ -372,15 +394,14 @@ pub unsafe extern "C" fn vr_v1_gpu_open(device: i32, out: *mut u64) -> i32 {
             return Err(invalid("device must be nonnegative"));
         }
         process()?;
-        retirement::start()?;
+        retirement::prepare()?;
         // Peer startup must happen before retirement exclusion; existing verified
         // services are inherited without replacing their lifecycle configuration.
-        let service = ServiceLease::open(device)?;
+        crate::activate(device, true)?;
         let _retirement = crate::enter_retirement(device)?;
         working::initialize(device)?;
         let owner = Arc::new(Gpu {
-            arena: Arena::new(device)?,
-            service: Some(service),
+            core: Device::open(device)?,
         });
         unsafe {
             out.write(insert(Handle::Gpu(owner))?);
@@ -405,7 +426,7 @@ enum Bytes {
     Host(Arc<[u8]>),
     Foreign(Arc<source::Owner>),
 }
-struct Weight {
+pub(crate) struct Weight {
     gpu: Arc<Gpu>,
     region: Arc<Region>,
     bytes: Bytes,
@@ -442,7 +463,7 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
         }
         let gpu = gpu(g)?;
         let bytes: Arc<[u8]> = unsafe { slice(bytes, len)? }.into();
-        let region = gpu.arena.reserve(len)?;
+        let region = gpu.core.reserve(len)?;
         unsafe {
             out.write(insert(Handle::Region(Arc::new(Weight {
                 gpu: gpu.clone(),
@@ -467,11 +488,9 @@ pub unsafe extern "C" fn vr_v1_region_from_host_parts(
             return Err(invalid("null host parts output"));
         }
         let parts = unsafe { slice(parts, count)? };
-        // The handle lease refuses active capture and excludes new capture through
-        // snapshot/reservation, before reading any caller payload bytes.
         let gpu = gpu(g)?;
         let (bytes, layout) = unsafe { host_parts::snapshot(parts)? };
-        let region = gpu.arena.reserve(bytes.len())?;
+        let region = gpu.core.reserve(bytes.len())?;
         let handle = insert(Handle::Region(Arc::new(Weight {
             gpu: gpu.clone(),
             region,
@@ -497,7 +516,7 @@ pub unsafe extern "C" fn vr_v1_region_from_source(g: u64, len: u64,
         let provider = unsafe { provider.read() };
         source::validate(&provider)?;
         let gpu = gpu(g)?;
-        let region = gpu.arena.reserve(size(len)?)?;
+        let region = gpu.core.reserve(size(len)?)?;
         let source = source::Owner::new(gpu.clone(), provider);
         let id = insert(Handle::Region(Arc::new(Weight {
             gpu: gpu.clone(), region, bytes: Bytes::Foreign(source.clone()),
@@ -550,69 +569,25 @@ pub unsafe extern "C" fn vr_v1_use(
         }
         gpu.eager(stream)?;
         unsafe {
-            out.write(acquire_use(&weights, stream, None)?);
+            out.write(acquire_use(&weights, stream)?);
         }
         Ok(())
     })
 }
 
 /// Explicit pre-body service; unlike ordinary Use, may await a finite cache-owner pass.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vr_v1_use_prepare(
-    g: u64, ids: *const u64, n: usize, stream: u64, out: *mut u64,
-) -> i32 {
-    boundary(|| {
-        unsafe { output(out)?; }
-        let gpu = gpu(g)?;
-        let weights = unsafe { slice(ids, n)? }.iter().map(|id| weight(*id))
-            .collect::<Result<Vec<_>>>()?;
-        if weights.is_empty() || weights.iter().any(|weight| gpu.device() != weight.gpu.device()) {
-            return Err(invalid("use requires regions on this GPU"));
-        }
-        gpu.eager(stream)?;
-        // Keep every getter's lifetime-bearing Lease through service, acquisition,
-        // publication and cleanup. Admission separately retains explicit owner Arcs.
-        let retained = weights.iter().map(|weight| Arc::clone(&weight.value)).collect::<Vec<_>>();
-        let mut admission = use_prepare::Admission::prepare(Arc::clone(&gpu.value), &retained)?;
-        let result = acquire_use(&weights, stream, Some(&mut admission));
-        admission.completed(&result);
-        unsafe { out.write(result?); }
-        Ok(())
-    })
-}
-
-fn acquire_use(weights: &[Lease<Weight>], stream: u64,
-               mut admission: Option<&mut use_prepare::Admission>) -> Result<u64> {
+fn acquire_use(weights: &[Lease<Weight>], stream: u64) -> Result<u64> {
     let mut pins = Vec::with_capacity(weights.len());
     let acquired = (|| -> Result<()> {
         for weight in weights {
-            if let Some(admission) = &mut admission { admission.begin_region(weight)?; }
-            let (pin, own_fill_generation) = match unsafe { weight.region.prepare_on(stream)? } {
-                crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => (pin, None),
-                crate::StreamPreparation::Fill(fill) => {
-                    let generation = if let Some(admission) = &admission {
-                        match admission.own_fill_generation(weight, &fill) {
-                            Ok(generation) => Some(generation),
-                            Err(error) => {
-                                // This exact Fill has not reached a Source or submitted writes.
-                                unsafe { drop(fill.abort_completed()); }
-                                return Err(error.into());
-                            }
-                        }
-                    } else { None };
-                    let pin = match &weight.bytes {
-                        Bytes::Host(bytes) => host_source::acquire(weight, bytes.clone(), fill, stream)?,
-                        Bytes::Foreign(provider) => source::acquire(weight, provider, fill, stream)?,
-                    };
-                    (pin, generation)
-                }
-            };
-            pins.push(pin);
-            if let Some(admission) = &mut admission {
-                admission.acquired(weight, pins.last().expect("just retained unpublished Pin"), own_fill_generation)?;
-            }
+            pins.push(match unsafe { weight.region.prepare_on(stream)? } {
+                crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
+                crate::StreamPreparation::Fill(fill) => match &weight.bytes {
+                    Bytes::Host(bytes) => host_source::acquire(weight, bytes.clone(), fill, stream)?,
+                    Bytes::Foreign(provider) => source::acquire(weight, provider, fill, stream)?,
+                },
+            });
         }
-        if let Some(admission) = &admission { admission.finish_acquisition()?; }
         Ok(())
     })();
     if let Err(error) = acquired {
@@ -973,7 +948,7 @@ pub unsafe extern "C" fn vr_v1_plan_new(
             definitions.push((name, uses.iter().map(|w| w.region.clone()).collect()));
             weights.extend(uses.iter().map(|w| Arc::clone(w)));
         }
-        let native = crate::plan::Plan::new(gpu.arena.clone(), definitions)?;
+        let native = crate::plan::Plan::new(gpu.device(), definitions)?;
         unsafe {
             out.write(insert(Handle::Plan(Arc::new(Plan {
                 gpu: gpu.clone(),
@@ -1119,21 +1094,6 @@ pub unsafe extern "C" fn vr_v1_stats(g: u64, out: *mut Stats, out_size: usize) -
         Ok(())
     })
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn vr_v1_trim(g: u64, out: *mut u64) -> i32 {
-    boundary(|| {
-        unsafe {
-            output(out)?;
-        }
-        let device = gpu(g)?.device();
-        let working = working::trim(device)? as u64;
-        let weights = crate::reclaim(device, usize::MAX)?.reclaimed_bytes as u64;
-        unsafe {
-            out.write(working.saturating_add(weights));
-        }
-        Ok(())
-    })
-}
 
 fn close_handle(id: u64, deferred: bool) -> Result<()> {
     let held = get(id, deferred)?;
@@ -1193,7 +1153,7 @@ fn close_handle(id: u64, deferred: bool) -> Result<()> {
 /// Transfer a handle to native retirement. Success invalidates the caller's handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn vr_v1_defer_close(id: u64) -> i32 {
-    boundary(|| retirement::defer(id))
+    boundary(|| defer_handle(id))
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vr_v1_retirement_stats(

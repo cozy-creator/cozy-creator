@@ -6,16 +6,17 @@
 #[cfg(target_os = "linux")]
 pub(crate) mod peer;
 
-use crate::{Error, GlobalCaptureGuard, Result, cuda};
+use crate::fence::Waits;
+use crate::reclaim::{self, Protect, Wait};
+use crate::{Device, Error, GlobalCaptureGuard, Result};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 mod split;
 mod cache;
 mod execution;
 mod observer;
-mod packing;
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use execution::Execution;
@@ -25,286 +26,6 @@ pub use split::{
 };
 
 pub type PoolId = (u64, u64);
-
-/// Allocation ranges retained by one actual graph definition. This owns metadata only.
-pub struct GraphFootprint {
-    id: u64,
-    device: i32,
-    pool: PoolId,
-    pid: u32,
-    begun: AtomicBool,
-    retired: AtomicBool,
-    sealed: Mutex<Option<SealedFootprint>>,
-}
-
-#[derive(Clone, Default)]
-struct Ranges(BTreeMap<u64, u64>);
-impl Ranges {
-    fn add(&mut self, mut start: u64, mut end: u64) {
-        if let Some((&left, &right)) = self.0.range(..=start).next_back()
-            && right >= start
-        {
-            start = left;
-            end = end.max(right);
-            self.0.remove(&left);
-        }
-        while let Some((&left, &right)) = self.0.range(start..).next() {
-            if left > end {
-                break;
-            }
-            end = end.max(right);
-            self.0.remove(&left);
-        }
-        self.0.insert(start, end);
-    }
-    fn extend(&mut self, other: &Self) {
-        for (&start, &end) in &other.0 {
-            self.add(start, end);
-        }
-    }
-    fn bytes(&self) -> usize {
-        self.0
-            .iter()
-            .map(|(&start, &end)| (end - start) as usize)
-            .sum()
-    }
-    fn pages(&self, page: usize) -> Self {
-        let page = page as u64;
-        let mut result = Self::default();
-        for (&start, &end) in &self.0 {
-            result.add(start / page * page, end.div_ceil(page) * page);
-        }
-        result
-    }
-}
-
-struct SealedFootprint {
-    pool_identity: Weak<()>,
-    ranges: Ranges,
-    pages: Ranges,
-    allocations: u64,
-}
-struct CaptureTrace {
-    footprint: Arc<GraphFootprint>,
-    pool_identity: Weak<()>,
-    ranges: Ranges,
-    allocations: u64,
-    invalid: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct FootprintStats {
-    pub definition: u64,
-    pub device: i32,
-    pub pool: PoolId,
-    pub sealed: bool,
-    pub retired: bool,
-    pub traced_bytes: usize,
-    pub backing_bytes: usize,
-    pub allocations: u64,
-}
-
-static NEXT_FOOTPRINT: AtomicU64 = AtomicU64::new(0);
-
-impl GraphFootprint {
-    pub fn new(device: i32, pool: PoolId) -> Result<Arc<Self>> {
-        crate::check_process()?;
-        let id = NEXT_FOOTPRINT
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| Error::Invalid("graph definition identity overflow"))?
-            + 1;
-        Ok(Arc::new(Self {
-            id,
-            device,
-            pool,
-            pid: std::process::id(),
-            begun: AtomicBool::new(false),
-            retired: AtomicBool::new(false),
-            sealed: Mutex::new(None),
-        }))
-    }
-    fn check(&self) -> Result<()> {
-        crate::check_process()?;
-        if self.pid != std::process::id() {
-            return Err(Error::Invalid("graph footprint used after fork"));
-        }
-        Ok(())
-    }
-    pub fn device(&self) -> i32 {
-        self.device
-    }
-    pub fn begin(self: &Arc<Self>, device: i32, pool: PoolId) -> Result<()> {
-        self.check()?;
-        if device != self.device || pool != self.pool {
-            return Err(Error::Invalid("graph footprint device or pool changed"));
-        }
-        let owner = owner(device)?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_not_capturing(&captures, device)?;
-        let mut state = owner.lock()?;
-        if state.trace.is_some() {
-            return Err(Error::Invalid("graph footprint recordings cannot overlap"));
-        }
-        let identity = state
-            .pools
-            .get(&pool)
-            .ok_or(Error::Invalid("prepare the graph pool before tracing"))?
-            .identity
-            .clone();
-        if self.retired.load(Ordering::Acquire) || self.begun.swap(true, Ordering::AcqRel) {
-            return Err(Error::Invalid("graph footprint is one capture definition"));
-        }
-        state.trace = Some(CaptureTrace {
-            footprint: self.clone(),
-            pool_identity: Arc::downgrade(&identity),
-            ranges: Ranges::default(),
-            allocations: 0,
-            invalid: false,
-        });
-        Ok(())
-    }
-    pub fn finish(self: &Arc<Self>, completed: bool) -> Result<()> {
-        self.check()?;
-        let owner = owner(self.device)?;
-        let captures = crate::capture_counts()?;
-        if completed {
-            crate::ensure_not_capturing(&captures, self.device)?;
-        }
-        let mut state = owner
-            .state
-            .lock()
-            .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
-        if !state
-            .trace
-            .as_ref()
-            .is_some_and(|trace| Arc::ptr_eq(&trace.footprint, self))
-        {
-            return Err(Error::Invalid("graph footprint is not recording"));
-        }
-        let trace = state.trace.take().expect("checked footprint");
-        if completed
-            && !trace.invalid
-            && state.poison.is_none()
-            && !self.retired.load(Ordering::Acquire)
-        {
-            let pages = trace.ranges.pages(owner.driver.granularity);
-            *self
-                .sealed
-                .lock()
-                .map_err(|_| Error::Poisoned("graph footprint mutex".into()))? =
-                Some(SealedFootprint {
-                    pool_identity: trace.pool_identity,
-                    ranges: trace.ranges,
-                    pages,
-                    allocations: trace.allocations,
-                });
-        } else {
-            self.retired.store(true, Ordering::Release);
-            state
-                .phases
-                .replay_samples
-                .retain(|key, _| !key.definitions.contains(&self.id));
-        }
-        Ok(())
-    }
-    /// Called by the owning graph's reset/destroy hook. Metadata only, never a CUDA call.
-    pub fn retire(&self) {
-        self.retired.store(true, Ordering::Release);
-        if let Ok(Some(owner)) = existing(self.device)
-            && let Ok(mut state) = owner.state.lock()
-        {
-            state
-                .phases
-                .replay_samples
-                .retain(|key, _| !key.definitions.contains(&self.id));
-        }
-    }
-    pub fn facts(&self) -> Result<FootprintStats> {
-        self.check()?;
-        let data = self
-            .sealed
-            .lock()
-            .map_err(|_| Error::Poisoned("graph footprint mutex".into()))?;
-        Ok(FootprintStats {
-            definition: self.id,
-            device: self.device,
-            pool: self.pool,
-            sealed: data.is_some(),
-            retired: self.retired.load(Ordering::Acquire),
-            traced_bytes: data.as_ref().map_or(0, |data| data.ranges.bytes()),
-            backing_bytes: data.as_ref().map_or(0, |data| data.pages.bytes()),
-            allocations: data.as_ref().map_or(0, |data| data.allocations),
-        })
-    }
-    fn ranges(&self, state: &State) -> Result<(Ranges, Ranges)> {
-        self.check()?;
-        if self.retired.load(Ordering::Acquire) {
-            return Err(Error::Invalid("graph definition is retired"));
-        }
-        let data = self
-            .sealed
-            .lock()
-            .map_err(|_| Error::Poisoned("graph footprint mutex".into()))?;
-        let data = data
-            .as_ref()
-            .ok_or(Error::Invalid("graph footprint is not sealed"))?;
-        let pool = state
-            .pools
-            .get(&self.pool)
-            .ok_or(Error::Invalid("graph footprint pool retired"))?;
-        if !Weak::ptr_eq(&data.pool_identity, &Arc::downgrade(&pool.identity))
-            || pool.references == 0
-        {
-            return Err(Error::Invalid("graph footprint pool incarnation changed"));
-        }
-        Ok((data.ranges.clone(), data.pages.clone()))
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ReplayKey {
-    semantic: String,
-    definitions: Vec<u64>,
-}
-
-/// An ordered source edge carries identity only; capacity is checked at actual lookahead.
-#[derive(Clone)]
-pub struct ReplayPrefetch {
-    device: i32,
-    semantic: Option<String>,
-    footprints: Vec<Arc<GraphFootprint>>,
-}
-impl ReplayPrefetch {
-    pub fn new(
-        device: i32,
-        semantic: Option<String>,
-        footprints: Vec<Arc<GraphFootprint>>,
-    ) -> Result<Self> {
-        crate::check_process()?;
-        if semantic.as_ref().is_some_and(String::is_empty) {
-            return Err(Error::Invalid("replay prefetch key must not be empty"));
-        }
-        if footprints
-            .iter()
-            .any(|footprint| footprint.device != device)
-        {
-            return Err(Error::Invalid("replay prefetch definitions cross devices"));
-        }
-        Ok(Self {
-            device,
-            semantic,
-            footprints,
-        })
-    }
-}
-
-struct ReplayTrace {
-    footprints: Vec<Arc<GraphFootprint>>,
-    bytes: usize,
-    backing: usize,
-}
 
 /// Execution classification is explicit: recording/preparation/replay are not eager samples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,19 +55,14 @@ pub struct PhaseStats {
     pub total_peak_bytes: usize,
     /// Distinct backing segments containing phase-owned live/pending blocks: admission watermark.
     pub backing_peak_bytes: usize,
-    /// Empty-pool capacity fitted to the successful eager allocation/free sequence.
-    pub capture_pool_bytes: usize,
+    /// Empty-pool capacity fitted to a key's first successful eager allocation/free sequence.
     pub successful_passes: u64,
     pub aborted_passes: u64,
-    pub aborted_peak_bytes: usize,
-    pub aborted_total_peak_bytes: usize,
-    pub aborted_backing_peak_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct PhaseObservation {
     pub split_observations: Vec<SplitObservation>,
-    pub definitions: Vec<u64>,
     pub token: u64,
     pub mode: PhaseMode,
     pub key: Option<String>,
@@ -357,8 +73,6 @@ pub struct PhaseObservation {
     pub invalidated: bool,
     pub reason: String,
     pub successful_peak_bytes: usize,
-    pub successful_backing_peak_bytes: usize,
-    pub successful_capture_pool_bytes: usize,
     pub successful_passes: u64,
 }
 
@@ -373,49 +87,8 @@ struct ActivePhase {
     owned_peak: usize,
     backing: usize,
     backing_peak: usize,
-    packing: Option<packing::Trace>,
     invalid: Option<String>,
-    replay: Option<ReplayTrace>,
     committed_site: Option<(String, String)>,
-    cold_recovery_thread: Option<std::thread::ThreadId>,
-}
-
-/// Host identity only; no allocator guard or GPU owner crosses a recovery wait.
-pub(crate) struct ColdRecovery {
-    device: i32,
-    token: u64,
-    thread: std::thread::ThreadId,
-}
-impl ColdRecovery {
-    pub(crate) fn join(&self) -> Result<bool> {
-        let owner = owner(self.device)?;
-        let mut state = owner.lock()?;
-        if self.thread != std::thread::current().id()
-            || state.phases.active.as_ref().is_none_or(|phase| {
-                phase.token != self.token || phase.cold_recovery_thread != Some(self.thread)
-            })
-        {
-            return Ok(false);
-        }
-        state.phases.invalidate("cache_recovery");
-        split::invalidate(&mut state, "cache_recovery");
-        Ok(true)
-    }
-}
-
-fn cold_recovery(device: i32) -> Result<Option<ColdRecovery>> {
-    let owner = owner(device)?;
-    // Includes explicit same-thread external-callback scopes, not just the
-    // separate cache worker. The allocating stack cannot leave its outer scope
-    // before recovery returns. Do not recheck after queueing our own callback.
-    if owner.external_callbacks.load(Ordering::Acquire) != 0 {
-        return Ok(None);
-    }
-    let state = owner.lock()?;
-    let thread = std::thread::current().id();
-    Ok(state.phases.active.as_ref()
-        .filter(|phase| phase.mode == PhaseMode::Eager && phase.cold_recovery_thread == Some(thread))
-        .map(|phase| ColdRecovery { device, token: phase.token, thread }))
 }
 
 #[derive(Default)]
@@ -423,7 +96,7 @@ struct Phases {
     next: u64,
     active: Option<ActivePhase>,
     samples: BTreeMap<String, PhaseStats>,
-    replay_samples: BTreeMap<ReplayKey, PhaseStats>,
+    replay_samples: BTreeMap<String, PhaseStats>,
 }
 
 impl Phases {
@@ -473,12 +146,14 @@ pub struct WorkingStats {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Life {
     Live,
+    // Freed on at most one stream: reusable there at once, elsewhere when `waits` complete.
     Ready,
+    // Freed on several streams, or during a capture: reusable when `waits` complete.
     Pending,
-    Deferred,
+    // Freed inside its pool's own capture: no real work exists yet.
     Captured,
-    // An unannotated native/DLPack final owner: join the context before reuse.
-    Unjoined,
+    // An unannotated native final owner: a context join started after this mark covers it.
+    Unjoined(u64),
 }
 
 struct Block {
@@ -490,13 +165,36 @@ struct Block {
     // Allocation generation, not address identity: reuse retags an old/pending block.
     phase: Option<u64>,
     streams: BTreeSet<u64>,
-    events: BTreeMap<u64, usize>,
+    waits: Waits,
+    // Listed in `State::fenced` for poll to settle.
+    fenced: bool,
+    workspace: bool,
+    // Live, but its owner declared its contents dead between uses of its pool.
+    scratch: bool,
     life: Life,
     // None means all previous work is complete. Some(stream) permits ordered reuse only there.
     reusable_on: Option<u64>,
 }
 
 impl Block {
+    fn free(segment: u64, capacity: usize) -> Self {
+        Self {
+            segment,
+            capacity,
+            requested: 0,
+            stream: 0,
+            origin_retired: false,
+            phase: None,
+            streams: BTreeSet::new(),
+            waits: Waits::new(),
+            fenced: false,
+            workspace: false,
+            scratch: false,
+            life: Life::Ready,
+            reusable_on: None,
+        }
+    }
+
     fn charge(&self) -> usize {
         if self.life != Life::Ready || self.reusable_on.is_some() {
             self.capacity
@@ -507,60 +205,71 @@ impl Block {
 
     #[inline]
     fn reusable_from(&self, origin: Option<u64>) -> bool {
-        (self.life == Life::Ready
-            || (self.life == Life::Captured && origin.is_some())
-            || (self.deferred_default() && origin == Some(0)))
+        (self.life == Life::Ready || (self.life == Life::Captured && origin.is_some()))
             && self.reusable_on == origin
-    }
-
-    fn deferred_default(&self) -> bool {
-        self.life == Life::Deferred
-            && self.reusable_on == Some(0)
-            && self.streams.len() == 1
-            && self.streams.contains(&0)
     }
 }
 
 struct Segment {
     bytes: usize,
     size_class: usize,
-    handle: u64,
+    // None: an idle pool's pages were released; the VA stays here until they map again.
+    handle: Option<u64>,
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
-    charged_blocks: usize,
     phase_blocks: usize,
 }
 
 #[derive(Default)]
 struct Pool {
-    identity: Arc<()>,
     prepared: bool,
+    // Set by preparation, spent by one capture. A capture that skipped it is a raw Torch graph.
+    armed: bool,
+    // The owner declared every allocation here dead between uses: the core may unmap it idle.
+    scratch: bool,
+    // From `pool_reserve` until the owner's last use is stamped.
+    in_use: bool,
+    unmapped: bool,
+    last_use: u64,
     references: usize,
     routing: bool,
     capture: Option<GlobalCaptureGuard>,
     streams: BTreeSet<u64>,
-    events: BTreeMap<u64, usize>,
-    // Free-block resizing transfers its event owners here; CUDA destruction waits for poll.
-    retired_events: Vec<usize>,
+    waits: Waits,
 }
 
+/// The one table of every byte on this device: weight regions, working blocks, graph pools,
+/// owner caches.
 #[derive(Default)]
-struct State {
+pub(crate) struct State {
+    pub(crate) entries: BTreeMap<u64, crate::Entry>,
+    pub(crate) phase_boundary: Option<u64>,
+    pub(crate) fills: u64,
+    pub(crate) filled_bytes: u64,
+    pub(crate) hits: u64,
+    pub(crate) evictions: u64,
+    pub(crate) reclaimed_bytes: u64,
+    pub(crate) prefetch_unused_bytes: u64,
+    pub(crate) reclaimed_by_reason: crate::ReclaimedBytes,
     segments: BTreeMap<u64, Segment>,
     blocks: BTreeMap<u64, Block>,
     // (pool, size class, originating stream). Cross-stream candidates are promoted by poll.
     free: BTreeMap<(Option<PoolId>, usize, Option<u64>), Vec<u64>>,
     addresses: BTreeMap<u64, usize>,
     pools: BTreeMap<PoolId, Pool>,
+    fenced: Vec<u64>,
     stats: WorkingStats,
     phases: Phases,
-    trace: Option<CaptureTrace>,
-    poison: Option<String>,
+    pub(crate) poison: Option<String>,
     splits: split::Splits,
     caches: BTreeMap<u64, cache::Storage>,
     next_cache: u64,
     pressure_pending: bool,
     prefetch_suppressed: bool,
+    // A cached library workspace's exact sizes, when Torch caches them per stream.
+    workspace_sizes: Vec<usize>,
+    // Freed workspaces by (stream, requested bytes), kept for that stream's next one.
+    parked_workspaces: BTreeMap<(u64, usize), u64>,
 }
 
 impl State {
@@ -617,8 +326,6 @@ impl State {
             .get_mut(&segment)
             .expect("live allocation segment");
         let held = segment.phase_blocks != 0;
-        segment.charged_blocks =
-            segment.charged_blocks - usize::from(before != 0) + usize::from(after != 0);
         segment.phase_blocks =
             segment.phase_blocks - usize::from(was_owned) + usize::from(is_owned);
         match (held, segment.phase_blocks != 0) {
@@ -633,7 +340,6 @@ impl State {
     fn refresh_phase(&mut self) {
         if let Some(token) = self.phases.active.as_ref().map(|active| active.token) {
             for segment in self.segments.values_mut() {
-                segment.charged_blocks = 0;
                 segment.phase_blocks = 0;
             }
             let (mut charged, mut owned) = (0usize, 0usize);
@@ -643,7 +349,6 @@ impl State {
                     .segments
                     .get_mut(&block.segment)
                     .expect("live allocation segment");
-                segment.charged_blocks += 1;
                 if block.phase == Some(token) {
                     owned += block.capacity;
                     segment.phase_blocks += 1;
@@ -665,31 +370,10 @@ impl State {
             split::refresh(self);
         }
     }
-
-    fn exclusive_phase_backing(&self) -> usize {
-        self.segments
-            .values()
-            .filter(|segment| {
-                segment.pool.is_none()
-                    && segment.phase_blocks != 0
-                    && segment.charged_blocks == segment.phase_blocks
-            })
-            .map(|segment| segment.bytes)
-            .sum()
-    }
 }
 
-struct Working {
-    device: i32,
-    driver: cuda::Driver,
-    page: usize,
-    room: Arc<crate::Room>,
-    external_callbacks: Arc<std::sync::atomic::AtomicUsize>,
-    state: Mutex<State>,
-    cooperation_bound: AtomicBool,
-}
-
-static DEVICES: OnceLock<Mutex<BTreeMap<i32, Arc<Working>>>> = OnceLock::new();
+// A map observed by `observe_working` cannot race a device's creation.
+static INITIALIZE: Mutex<()> = Mutex::new(());
 
 /// Bind integration registration before CUDA under the one_process/1 contract. Linux's
 /// default kernel guard is armed here; strict/non-Linux/setup-failure paths check actual PID.
@@ -701,25 +385,18 @@ pub fn bind_process() -> Result<()> {
     Ok(())
 }
 
-fn devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
+fn devices() -> Result<Vec<&'static Device>> {
     crate::check_process()?;
-    lock_devices()
+    Ok(crate::DEVICES.iter().filter_map(|slot| slot.get()).filter(|device| device.page() != 0).collect())
 }
 
-// Only after check_process, directly or through capture_counts, on this call's thread.
-fn lock_devices() -> Result<MutexGuard<'static, BTreeMap<i32, Arc<Working>>>> {
-    DEVICES
-        .get_or_init(Mutex::default)
-        .lock()
-        .map_err(|_| Error::Poisoned("working allocator registry".into()))
+pub(crate) fn existing(ordinal: i32) -> Result<Option<&'static Device>> {
+    let device = crate::gpu(ordinal)?;
+    Ok((device.page() != 0).then_some(device))
 }
 
-fn existing(device: i32) -> Result<Option<Arc<Working>>> {
-    Ok(devices()?.get(&device).cloned())
-}
-
-fn owner(device: i32) -> Result<Arc<Working>> {
-    existing(device)?.ok_or(Error::Invalid(
+fn owner(ordinal: i32) -> Result<&'static Device> {
+    existing(ordinal)?.ok_or(Error::Invalid(
         "working allocator is not initialized on this device",
     ))
 }
@@ -770,16 +447,18 @@ fn size_class(bytes: usize, page: usize) -> Result<usize> {
     })
 }
 
-impl Working {
-    fn lock(&self) -> Result<MutexGuard<'_, State>> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
-        if let Some(reason) = &state.poison {
-            return Err(Error::Poisoned(reason.clone()));
-        }
-        Ok(state)
+// The size class of Torch's small RNG tensors.
+const AUXILIARY_CLASS: usize = 512;
+
+impl Device {
+    pub(crate) fn page(&self) -> usize {
+        self.page.load(Ordering::Acquire)
+    }
+
+    fn free_block(state: &State, class: usize) -> Option<u64> {
+        state.free.get(&(None, class, None))?.iter().rev().copied().find(|ptr| {
+            state.blocks.get(ptr).is_some_and(|block| block.capacity == class && block.reusable_from(None))
+        })
     }
 
     fn callback_mutation(&self, state: &mut State) {
@@ -805,114 +484,51 @@ impl Working {
         error
     }
 
-    fn record(&self, events: &mut BTreeMap<u64, usize>, stream: u64) -> Result<()> {
-        let event = match events.get(&stream) {
-            Some(event) => *event,
-            None => {
-                let event = self.driver.create_event()?;
-                events.insert(stream, event);
-                event
-            }
-        };
-        self.driver.record(event, stream as usize)
-    }
-
-    fn record_free(&self, block: &mut Block) -> Result<()> {
-        for stream in &block.streams {
-            self.record(&mut block.events, *stream)?;
-        }
-        block.life = if block.streams.len() <= 1 {
-            Life::Ready
+    fn fail_allocation(&self, state: &mut State, failure: crate::AllocationFailure) -> crate::AllocationFailure {
+        if failure.is_oom() {
+            failure
         } else {
-            Life::Pending
-        };
-        block.reusable_on = block.streams.first().copied();
-        Ok(())
+            self.fail(state, failure.into()).into()
+        }
     }
 
-    fn completed(&self, events: &BTreeMap<u64, usize>) -> Result<bool> {
-        for event in events.values() {
-            if !self.driver.query(*event)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+    fn pool_completed(&self, pool: &Pool) -> bool {
+        self.fences().complete(&pool.waits)
     }
 
-    fn pool_completed(&self, pool: &Pool) -> Result<bool> {
-        if !self.completed(&pool.events)? {
-            return Ok(false);
-        }
-        for event in &pool.retired_events {
-            if !self.driver.query(*event)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
+    /// Settle what completed. The caller holds the gate with no capture active.
     fn poll(&self, state: &mut State) -> Result<()> {
-        self.poll_mode(state, true)
-    }
-
-    // A peer response may query submitted fences, but never join unknown consumers.
-    fn poll_mode(&self, state: &mut State, join_unknown: bool) -> Result<()> {
-        cache::poll(self, state)?;
-        // The caller holds capture exclusion. Unknown foreign consumers require a context
-        // completion proof, but their last-owner retirement itself never calls CUDA.
-        if join_unknown && state
-            .blocks
-            .values()
-            .any(|block| block.life == Life::Unjoined)
-        {
-            state.stats.context_joins += 1;
-            self.driver.synchronize()?;
-            let mut ready = Vec::new();
-            for (ptr, block) in &mut state.blocks {
-                if block.life == Life::Unjoined {
-                    block.life = Life::Ready;
-                    block.reusable_on = None;
-                    block.streams.clear();
-                    ready.push((*ptr, block.capacity));
-                }
-            }
-            for (ptr, bytes) in ready {
-                state.free.entry((None, bytes, None)).or_default().push(ptr);
-            }
-        }
-        for pool in state.pools.values_mut() {
-            let mut index = 0;
-            while index < pool.retired_events.len() {
-                let event = pool.retired_events[index];
-                if self.driver.query(event)? {
-                    self.driver.destroy_event(event)?;
-                    pool.retired_events.swap_remove(index);
-                } else {
-                    index += 1;
-                }
-            }
-        }
+        let mut fences = self.fences();
+        fences.poll(self.driver())?;
+        cache::poll(state, &fences);
         let mut ready = Vec::new();
-        for (ptr, block) in &mut state.blocks {
-            if block.life == Life::Deferred {
-                self.record_free(block)?;
-                if block.life == Life::Ready {
-                    ready.push((*ptr, block.capacity, block.reusable_on, block.segment));
+        for ptr in std::mem::take(&mut state.fenced) {
+            let Some(block) = state.blocks.get_mut(&ptr) else {
+                continue;
+            };
+            let complete = match block.life {
+                Life::Ready | Life::Pending => fences.complete(&block.waits),
+                Life::Unjoined(mark) => self.joined(mark),
+                Life::Live | Life::Captured => {
+                    block.fenced = false;
+                    continue;
                 }
-            }
-            if matches!(block.life, Life::Ready | Life::Pending)
-                && block.reusable_on.is_some()
-                && self.completed(&block.events)?
-            {
+            };
+            if complete {
+                block.fenced = false;
                 block.life = Life::Ready;
                 block.reusable_on = None;
-                ready.push((*ptr, block.capacity, None, block.segment));
+                block.waits.clear();
+                ready.push((ptr, block.capacity, block.segment));
+            } else {
+                state.fenced.push(ptr);
             }
         }
-        for (ptr, bytes, stream, segment) in ready {
+        drop(fences);
+        for (ptr, bytes, segment) in ready {
             state
                 .free
-                .entry((state.segments[&segment].pool, bytes, stream))
+                .entry((state.segments[&segment].pool, bytes, None))
                 .or_default()
                 .push(ptr);
         }
@@ -921,6 +537,28 @@ impl Working {
     }
 
     fn take(
+        state: &mut State,
+        bytes: usize,
+        requested: usize,
+        stream: u64,
+        pool: Option<PoolId>,
+    ) -> Option<u64> {
+        if let Some(ptr) = Self::take_class(state, bytes, requested, stream, pool) {
+            return Some(ptr);
+        }
+        if pool.is_some() || bytes <= 1 << 20 {
+            return None;
+        }
+        // Large sizes rarely repeat exactly. A free block up to twice the size beats releasing it
+        // and mapping new pages: each size holding its own pages cost SDXL 1 GB beside 350 MB live.
+        let larger: BTreeSet<usize> = state.free.range((None, bytes + 1, None)..=(None, bytes * 2, Some(u64::MAX)))
+            .filter(|(_, slots)| !slots.is_empty())
+            .map(|((_, class, _), _)| *class)
+            .collect();
+        larger.into_iter().find_map(|class| Self::take_class(state, class, requested, stream, None))
+    }
+
+    fn take_class(
         state: &mut State,
         bytes: usize,
         requested: usize,
@@ -947,9 +585,11 @@ impl Working {
                         (before, prior)
                     });
                     block.life = Life::Live;
+                    block.scratch = false;
                     block.stream = stream;
                     block.origin_retired = false;
                     block.requested = requested;
+                    block.waits.clear();
                     if block.streams.len() != 1 || !block.streams.contains(&stream) {
                         block.streams.clear();
                         block.streams.insert(stream);
@@ -967,16 +607,6 @@ impl Working {
     }
 
     fn activate(state: &mut State, ptr: u64, requested: usize) -> u64 {
-        packing::allocated(state, ptr);
-        if let Some(trace) = &mut state.trace {
-            let block = &state.blocks[&ptr];
-            if state.segments[&block.segment].pool == Some(trace.footprint.pool) {
-                trace.ranges.add(ptr, ptr + block.capacity as u64);
-                trace.allocations += 1;
-            } else {
-                trace.invalid = true;
-            }
-        }
         state.stats.allocated_bytes += requested;
         state.stats.allocated_peak = state.stats.allocated_peak.max(state.stats.allocated_bytes);
         state.stats.allocations += 1;
@@ -1025,85 +655,35 @@ impl Working {
         pool: Option<PoolId>,
         class: usize,
     ) -> crate::AllocationResult<u64> {
-        if self.room.over(bytes) != 0 {
-            return Err(Error::OutOfMemory {
-                requested_bytes: bytes,
-            }.into());
-        }
         let ptr = Self::address(state, bytes)?;
-        let handle = match self.driver.create(bytes) {
-            Ok(handle) => handle,
-            Err(error) => {
-                Self::return_address(state, ptr, bytes);
-                return Err(error);
-            }
-        };
-        // Track ownership before map: a partial mapping failure must retain the VA and handle.
         state.segments.insert(
             ptr,
             Segment {
                 bytes,
                 size_class: class,
-                handle,
+                handle: None,
                 pool,
-                charged_blocks: 0,
                 phase_blocks: 0,
             },
         );
-        self.room
-            .working
-            .fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
-        state.stats.mapped_bytes += bytes;
-        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
-        self.driver.map(ptr, bytes, handle)?;
-        observer::mapped(self, ptr, bytes, pool, class)?;
+        if let Err(error) = self.back(state, ptr) {
+            if state.segments[&ptr].handle.is_none() {
+                state.segments.remove(&ptr);
+                Self::return_address(state, ptr, bytes);
+            }
+            return Err(error);
+        }
         if let Some(pool) = pool {
-            state.blocks.insert(
-                ptr,
-                Block {
-                    segment: ptr,
-                    capacity: bytes,
-                    requested: 0,
-                    stream: 0,
-                    origin_retired: false,
-                    phase: None,
-                    streams: BTreeSet::new(),
-                    events: BTreeMap::new(),
-                    life: Life::Ready,
-                    reusable_on: None,
-                },
-            );
-            state
-                .free
-                .entry((Some(pool), bytes, None))
-                .or_default()
-                .push(ptr);
+            state.blocks.insert(ptr, Block::free(ptr, bytes));
+            state.free.entry((Some(pool), bytes, None)).or_default().push(ptr);
         } else {
             for offset in (0..bytes).step_by(class) {
                 if bytes - offset < class {
                     break;
                 }
                 let address = ptr + offset as u64;
-                state.blocks.insert(
-                    address,
-                    Block {
-                        segment: ptr,
-                        capacity: class,
-                        requested: 0,
-                        stream: 0,
-                        origin_retired: false,
-                        phase: None,
-                        streams: BTreeSet::new(),
-                        events: BTreeMap::new(),
-                        life: Life::Ready,
-                        reusable_on: None,
-                    },
-                );
-                state
-                    .free
-                    .entry((None, class, None))
-                    .or_default()
-                    .push(address);
+                state.blocks.insert(address, Block::free(ptr, class));
+                state.free.entry((None, class, None)).or_default().push(address);
             }
         }
         Ok(ptr)
@@ -1118,159 +698,126 @@ impl Working {
     ) -> Option<u64> {
         // Only free ranges whose ordering permits this stream can be joined. Live blocks,
         // other-stream pending frees and segment boundaries always end a candidate run.
-        let mut best: Option<(u64, usize, u64, bool)> = None;
-        let mut consider = |ptr, capacity, segment, complete| {
-            if capacity >= bytes && best.is_none_or(|(_, n, _, _)| capacity < n) {
-                best = Some((ptr, capacity, segment, complete));
+        let mut best: Option<(u64, usize, u64)> = None;
+        let mut consider = |ptr, capacity, segment| {
+            if capacity >= bytes && best.is_none_or(|(_, n, _)| capacity < n) {
+                best = Some((ptr, capacity, segment));
             }
         };
         for (base, segment) in &state.segments {
             if segment.pool != Some(pool) {
                 continue;
             }
-            let (mut start, mut length, mut complete) = (*base, 0usize, true);
+            let (mut start, mut length) = (*base, 0usize);
             for (ptr, block) in state.blocks.range(*base..*base + segment.bytes as u64) {
                 let ready = block.life == Life::Ready && block.reusable_on.is_none();
                 let ordered = block.reusable_on == Some(stream)
-                    && (matches!(block.life, Life::Ready | Life::Captured)
-                        || block.deferred_default());
+                    && matches!(block.life, Life::Ready | Life::Captured);
                 if !ready && !ordered {
-                    consider(start, length, *base, complete);
+                    consider(start, length, *base);
                     length = 0;
                     continue;
                 }
                 if length != 0 && *ptr != start + length as u64 {
-                    consider(start, length, *base, complete);
+                    consider(start, length, *base);
                     length = 0;
                 }
                 if length == 0 {
                     start = *ptr;
-                    complete = true;
                 }
                 length += block.capacity;
-                complete &= ready;
             }
-            consider(start, length, *base, complete);
+            consider(start, length, *base);
         }
-        let (ptr, capacity, segment, complete) = best?;
+        let (ptr, _, segment) = best?;
         let phase = state.phases.active.as_ref().map(|active| active.token);
-        let end = ptr + capacity as u64;
+        let end = ptr + bytes as u64;
         let parts: Vec<_> = state.blocks.range(ptr..end).map(|(p, _)| *p).collect();
-        let mut events = Vec::new();
+        let held = state.pools.get_mut(&pool).expect("owned pool");
+        let mut tail = None;
         for part in parts {
-            let block = state
-                .blocks
-                .remove(&part)
-                .expect("selected free pool block");
-            events.extend(block.events.into_values());
+            let mut block = state.blocks.remove(&part).expect("selected free pool block");
+            let stop = part + block.capacity as u64;
+            if stop > end {
+                // What this allocation does not use keeps its own state: untouched pool stays
+                // open to every stream, whatever ordering the bytes before it needed.
+                block.capacity = (stop - end) as usize;
+                tail = Some((block, stop));
+                continue;
+            }
+            // Merged blocks hand their stamps to the pool, which unmaps only after them all.
+            for (id, sequence) in block.waits {
+                match held.waits.iter_mut().find(|(known, _)| *known == id) {
+                    Some(wait) => wait.1 = wait.1.max(sequence),
+                    None => held.waits.push((id, sequence)),
+                }
+            }
         }
-        state
-            .pools
-            .get_mut(&pool)
-            .expect("owned pool")
-            .retired_events
-            .extend(events);
+        let last = tail.as_ref().map_or(end, |(_, stop)| *stop);
         state.free.retain(|(id, _, _), slots| {
             if *id == Some(pool) {
-                slots.retain(|p| *p < ptr || *p >= end);
+                slots.retain(|p| *p < ptr || *p >= last);
             }
             !slots.is_empty()
         });
-        if capacity > bytes {
-            let tail = ptr + bytes as u64;
-            let order = if complete { None } else { Some(stream) };
-            state.blocks.insert(
-                tail,
-                Block {
-                    segment,
-                    capacity: capacity - bytes,
-                    requested: 0,
-                    stream,
-                    origin_retired: false,
-                    phase: if complete { None } else { phase },
-                    streams: if complete {
-                        BTreeSet::new()
-                    } else {
-                        BTreeSet::from([stream])
-                    },
-                    events: BTreeMap::new(),
-                    life: if complete {
-                        Life::Ready
-                    } else {
-                        Life::Captured
-                    },
-                    reusable_on: order,
-                },
-            );
-            state
-                .free
-                .entry((Some(pool), capacity - bytes, order))
-                .or_default()
-                .push(tail);
+        if let Some((mut block, _)) = tail {
+            state.free.entry((Some(pool), block.capacity, block.reusable_on)).or_default().push(end);
+            block.fenced = !block.waits.is_empty();
+            if block.fenced {
+                state.fenced.push(end);
+            }
+            state.blocks.insert(end, block);
         }
-        state.blocks.insert(
-            ptr,
-            Block {
-                segment,
-                capacity: bytes,
-                requested,
-                stream,
-                origin_retired: false,
-                phase,
-                streams: BTreeSet::from([stream]),
-                events: BTreeMap::new(),
-                life: Life::Live,
-                reusable_on: None,
-            },
-        );
+        let mut block = Block::free(segment, bytes);
+        block.requested = requested;
+        block.stream = stream;
+        block.phase = phase;
+        block.streams.insert(stream);
+        block.life = Life::Live;
+        state.blocks.insert(ptr, block);
         state.refresh_phase();
         Some(ptr)
     }
 
-    // Explicit reclamation only: ordinary allocation/free/poll keep their event cache.
-    // These private handles no longer protect a physical use. Pool/replay owners,
-    // live blocks and stream-ordered pending reuse retain every event unchanged.
-    fn trim_idle_events(&self, state: &mut State) -> Result<()> {
-        for block in state.blocks.values_mut() {
-            if state.segments[&block.segment].pool.is_some()
-                || block.life != Life::Ready
-                || block.reusable_on.is_some()
-            {
-                continue;
-            }
-            let streams = block.events.keys().copied().collect::<Vec<_>>();
-            for stream in streams {
-                let event = block.events[&stream];
-                if self.driver.query(event)? {
-                    self.driver.destroy_event(event)?;
-                    // A failed/ambiguous destroy keeps the handle in poisoned custody.
-                    block.events.remove(&stream);
-                }
-            }
+    // Physical pages for a segment's kept VA.
+    fn back(&self, state: &mut State, base: u64) -> crate::AllocationResult<()> {
+        let segment = state.segments.get_mut(&base).expect("owned segment");
+        let (bytes, pool, class) = (segment.bytes, segment.pool, segment.size_class);
+        self.sample()?;
+        if self.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
+        let handle = self.driver().create(bytes)?;
+        // Track ownership before map: a partial mapping failure must retain the VA and handle.
+        segment.handle = Some(handle);
+        self.working.fetch_add(bytes, Ordering::AcqRel);
+        state.stats.mapped_bytes += bytes;
+        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+        self.driver().map(base, bytes, handle)?;
+        observer::mapped(self, base, bytes, pool, class)?;
         Ok(())
     }
 
-    fn trim(&self, state: &mut State, limit: usize, exclude: Option<PoolId>) -> Result<usize> {
-        self.poll(state)?;
-        self.trim_ready(state, limit, exclude, &BTreeSet::new())
+    // Release a segment's pages, keeping its VA and metadata. Returns the bytes released.
+    fn unback(&self, state: &mut State, base: u64) -> Result<usize> {
+        let segment = state.segments.get_mut(&base).expect("owned segment");
+        let Some(handle) = segment.handle else { return Ok(0) };
+        let bytes = segment.bytes;
+        observer::retiring(self, base, bytes, segment.pool, segment.size_class)?;
+        self.driver().unmap(base, bytes)?;
+        self.driver().release(handle)?;
+        segment.handle = None;
+        self.working.fetch_sub(bytes, Ordering::AcqRel);
+        self.released.fetch_add(bytes as u64, Ordering::AcqRel);
+        state.stats.mapped_bytes -= bytes;
+        Ok(bytes)
     }
 
-    // The split chooser has already observed completion and matched exact reusable slots
-    // under this same lock. Preserve their backing while releasing unrelated idle pages.
+    // Unmap completed free segments until `limit` bytes are gone, keeping `preserve`, the
+    // `exclude` pool, and anything over `maximum`. Only actual releases count.
     fn trim_ready(
-        &self,
-        state: &mut State,
-        limit: usize,
-        exclude: Option<PoolId>,
-        preserve: &BTreeSet<u64>,
-    ) -> Result<usize> {
-        self.trim_ready_capped(state, limit, exclude, preserve, usize::MAX, &mut 0)
-    }
-
-    fn trim_ready_capped(
         &self, state: &mut State, limit: usize, exclude: Option<PoolId>,
-        preserve: &BTreeSet<u64>, maximum: usize, completed: &mut usize,
+        preserve: &BTreeSet<u64>, maximum: usize,
     ) -> Result<usize> {
         let mut released = 0usize;
         let mut candidates = Vec::new();
@@ -1286,7 +833,7 @@ impl Working {
                 if pool.prepared
                     || pool.references != 0
                     || pool.capture.is_some()
-                    || !self.pool_completed(pool)?
+                    || !self.pool_completed(pool)
                 {
                     continue;
                 }
@@ -1304,115 +851,118 @@ impl Working {
                 break;
             }
             let segment = &state.segments[&base];
-            if segment.bytes > maximum.saturating_sub(released) { continue; }
-            observer::retiring(self, base, segment.bytes, segment.pool, segment.size_class)?;
-            self.driver.unmap(base, segment.bytes)?;
-            self.driver.release(segment.handle)?;
-            *completed += segment.bytes;
             let bytes = segment.bytes;
-            self.room
-                .working
-                .fetch_sub(bytes, std::sync::atomic::Ordering::AcqRel);
-            self.room.released.fetch_add(bytes as u64, Ordering::AcqRel);
+            if segment.handle.is_some() && bytes > maximum.saturating_sub(released) { continue; }
+            released += self.unback(state, base)?;
             let blocks: Vec<_> = state
                 .blocks
                 .range(base..base + bytes as u64)
                 .map(|(p, _)| *p)
                 .collect();
             for ptr in blocks {
-                let block = state.blocks.remove(&ptr).expect("retired block");
-                for event in block.events.values() {
-                    self.driver.destroy_event(*event)?;
-                }
+                state.blocks.remove(&ptr);
             }
             state.segments.remove(&base);
-            state.stats.mapped_bytes -= bytes;
             Self::return_address(state, base, bytes);
-            released += bytes;
         }
         state.free.retain(|_, slots| {
             slots.retain(|ptr| state.blocks.contains_key(ptr));
             !slots.is_empty()
         });
-        let mut retired = Vec::new();
-        for (id, pool) in &state.pools {
-            if !pool.prepared
-                && pool.references == 0
-                && pool.capture.is_none()
-                && !state
-                    .segments
-                    .values()
-                    .any(|segment| segment.pool == Some(*id))
-                && self.pool_completed(pool)?
-            {
-                retired.push(*id);
-            }
-        }
-        for id in retired {
-            let pool = &state.pools[&id];
-            for event in pool.events.values().chain(&pool.retired_events) {
-                self.driver.destroy_event(*event)?;
-            }
-            state.pools.remove(&id);
-        }
+        let segments = &state.segments;
+        let fences = self.fences();
+        state.pools.retain(|id, pool| {
+            pool.prepared
+                || pool.references != 0
+                || pool.capture.is_some()
+                || segments.values().any(|segment| segment.pool == Some(*id))
+                || !fences.complete(&pool.waits)
+        });
+        drop(fences);
         released += cache::trim_ready(self, state, limit.saturating_sub(released),
-            maximum.saturating_sub(released), completed, None)?;
+            maximum.saturating_sub(released), None)?;
         Ok(released)
     }
 
-    fn wait_reclaimable(
-        &self,
-        state: &mut State,
-        limit: usize,
-        exclude: Option<PoolId>,
-    ) -> Result<usize> {
-        self.poll(state)?;
-        let mut candidates = Vec::new();
-        let mut bytes = 0usize;
+    // Unmap idle pools, least recently replayed first, whole pool at a time. Their VA, blocks
+    // and graph stay; a replay maps them again. Contents were declared dead, so nothing is read.
+    fn unmap_idle_pools(&self, state: &mut State, limit: usize, keep: Option<PoolId>, maximum: usize) -> Result<usize> {
+        let mut pools: Vec<_> = state.pools.iter()
+            .filter(|(id, pool)| Some(**id) != keep && self.pool_reclaimable(state, **id, pool))
+            .map(|(id, pool)| (pool.last_use, *id))
+            .collect();
+        pools.sort_unstable();
+        let mut released = 0usize;
+        for (_, id) in pools {
+            if released >= limit {
+                break;
+            }
+            let bases: Vec<_> = state.segments.iter().filter(|(_, segment)| segment.pool == Some(id))
+                .map(|(base, segment)| (*base, segment.bytes)).collect();
+            if bases.iter().map(|(_, bytes)| bytes).sum::<usize>() > maximum.saturating_sub(released) {
+                continue;
+            }
+            for (base, _) in bases {
+                released += self.unback(state, base)?;
+            }
+            state.pools.get_mut(&id).expect("selected pool").unmapped = true;
+        }
+        Ok(released)
+    }
+
+    // Between uses, with every live allocation declared dead. Its fences are checked apart.
+    fn pool_idle(state: &State, id: PoolId, pool: &Pool) -> bool {
+        pool.scratch && !pool.in_use && !pool.unmapped && !pool.prepared && pool.capture.is_none()
+            && state.segments.iter().filter(|(_, segment)| segment.pool == Some(id))
+                .all(|(base, segment)| state.blocks.range(*base..*base + segment.bytes as u64)
+                    .all(|(_, block)| block.life != Life::Live || block.scratch))
+    }
+
+    fn pool_reclaimable(&self, state: &State, id: PoolId, pool: &Pool) -> bool {
+        if !Self::pool_idle(state, id, pool) {
+            return false;
+        }
+        let fences = self.fences();
+        fences.complete(&pool.waits)
+            && state.segments.iter().filter(|(_, segment)| segment.pool == Some(id))
+                .all(|(base, segment)| state.blocks.range(*base..*base + segment.bytes as u64)
+                    .all(|(_, block)| fences.complete(&block.waits)))
+    }
+
+    // Events whose completion would free `limit` bytes of whole segments and released pages.
+    // Each is already submitted: no live allocation, graph reference or owner action is awaited.
+    fn pending_events(&self, state: &State, limit: usize, exclude: Option<PoolId>) -> Vec<usize> {
+        let fences = self.fences();
+        let (mut events, mut bytes) = (Vec::new(), 0usize);
         for (base, segment) in &state.segments {
+            if bytes >= limit {
+                break;
+            }
             if exclude.is_some() && segment.pool == exclude {
                 continue;
             }
-            if let Some(id) = segment.pool {
-                let pool = &state.pools[&id];
-                if pool.prepared || pool.references != 0 || pool.capture.is_some() {
-                    continue;
-                }
+            let pool = segment.pool.map(|id| &state.pools[&id]);
+            let idle = segment.pool.is_some_and(|id| Self::pool_idle(state, id, &state.pools[&id]));
+            if !idle && pool.is_some_and(|pool| pool.prepared || pool.references != 0 || pool.capture.is_some()) {
+                continue;
             }
-            if state
-                .blocks
-                .range(*base..*base + segment.bytes as u64)
-                .all(|(_, block)| matches!(block.life, Life::Ready | Life::Pending))
-            {
-                candidates.push(*base);
-                bytes = bytes.saturating_add(segment.bytes);
-                if bytes >= limit {
-                    break;
-                }
+            let mut blocks = state.blocks.range(*base..*base + segment.bytes as u64);
+            if !idle && !blocks.clone().all(|(_, block)| matches!(block.life, Life::Ready | Life::Pending)) {
+                continue;
             }
-        }
-        // Every event below has already been submitted. No live allocation, graph reference,
-        // callback or future owner action is waited on. Only the allocation slow path calls this.
-        for base in candidates {
-            let segment = &state.segments[&base];
-            if let Some(id) = segment.pool {
-                let pool = &state.pools[&id];
-                for event in pool.events.values().chain(&pool.retired_events) {
-                    if !self.driver.query(*event)? {
-                        self.driver.wait_event(*event)?;
-                    }
-                }
+            let before = events.len();
+            for (_, block) in &mut blocks {
+                fences.events(&block.waits, &mut events);
             }
-            for (_, block) in state.blocks.range(base..base + segment.bytes as u64) {
-                for event in block.events.values() {
-                    if !self.driver.query(*event)? {
-                        self.driver.wait_event(*event)?;
-                    }
-                }
+            if let Some(pool) = pool {
+                fences.events(&pool.waits, &mut events);
+            }
+            if events.len() != before {
+                bytes += segment.bytes;
             }
         }
-        cache::wait_pending(self, state, limit.saturating_sub(bytes))?;
-        self.trim(state, limit, exclude)
+        cache::pending_events(state, &fences, self.page(), limit.saturating_sub(bytes), &mut events);
+        events
     }
 }
 
@@ -1421,20 +971,26 @@ pub fn initialize(device: i32) -> Result<()> {
     initialize_owner(device).map(|_| ())
 }
 
-fn initialize_owner(device: i32) -> Result<Arc<Working>> {
-    if let Some(owner) = existing(device)? {
-        return Ok(owner);
+/// One GPU's driver and working address space, once.
+pub(crate) fn open(ordinal: i32) -> Result<&'static Device> {
+    initialize_owner(ordinal)
+}
+
+fn initialize_owner(ordinal: i32) -> Result<&'static Device> {
+    let device = crate::gpu(ordinal)?;
+    if device.page() != 0 {
+        return Ok(device);
     }
-    let mut captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
-    let activity = captures.entry(device).or_default();
-    let room = Arc::clone(&activity.room);
-    let external_callbacks = Arc::clone(&activity.external_callbacks);
-    let mut devices = lock_devices()?;
-    if let Some(owner) = devices.get(&device) {
-        return Ok(Arc::clone(owner));
+    crate::gate(ordinal)?.not_capturing()?;
+    let _initializing = INITIALIZE.lock().map_err(|_| Error::Poisoned("device initialization".into()))?;
+    if device.page() != 0 {
+        return Ok(device);
     }
-    let driver = cuda::Driver::open(device)?;
+    if device.driver.get().is_none() {
+        let opened = Arc::new(crate::cuda::Driver::open(ordinal)?);
+        let _ = device.driver.set(opened);
+    }
+    let driver = device.driver();
     let page = rounded(2 << 20, driver.granularity)?;
     let (base, bytes) = {
         let _context = driver.enter()?;
@@ -1447,19 +1003,9 @@ fn initialize_owner(device: i32) -> Result<Arc<Working>> {
         )?;
         (driver.reserve(bytes)?, bytes)
     };
-    let mut state = State::default();
-    state.addresses.insert(base, bytes);
-    let owner = Arc::new(Working {
-        device,
-        driver,
-        page,
-        room,
-        external_callbacks,
-        state: Mutex::new(state),
-        cooperation_bound: AtomicBool::new(false),
-    });
-    devices.insert(device, Arc::clone(&owner));
-    Ok(owner)
+    device.lock()?.addresses.insert(base, bytes);
+    device.page.store(page, Ordering::Release);
+    Ok(device)
 }
 
 fn valid_stream(stream: u64) -> Result<()> {
@@ -1482,7 +1028,11 @@ pub fn alloc_bound(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>)
 }
 
 fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
-    let result = alloc_inner(device, bytes, stream, pool, bound);
+    // Another stream's allocation during a capture that would need the driver: no room for it now.
+    let result = alloc_inner(device, bytes, stream, pool, bound).map_err(|error| match error {
+        Error::CaptureActive => Error::OutOfMemory { requested_bytes: bytes },
+        error => error,
+    });
     if result.is_err() {
         let _ = invalidate_current_phase(device, "allocation_error");
     }
@@ -1490,41 +1040,6 @@ fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, boun
 }
 
 fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
-    let mut recovery = crate::Recovery::default();
-    let mut peers_first = true;
-    // Inspect once, only after a real refusal has initialized/validated Working.
-    // Remember None too: a nested callback allocation cannot opt in later, while
-    // our own worker's next action cannot revoke an already-authorized episode.
-    let mut cold = None;
-    let mut cold_checked = false;
-    loop {
-        let mut physical = None;
-        let result = alloc_local(device, bytes, stream, pool, &mut physical, bound, peers_first);
-        if pool.is_none() && let Err(Error::OutOfMemory { requested_bytes }) = &result
-        {
-            if let (true, Some(physical)) = (peers_first && crate::peers_idle(device), physical) {
-                peers_first = crate::ask_idle_peers(device, physical);
-                continue;
-            }
-            if !cold_checked {
-                cold = cold_recovery(device)?;
-                cold_checked = true;
-            }
-            if recovery.next_with_cold(device, physical.unwrap_or(*requested_bytes), physical.is_some(),
-                cold.as_ref())?
-            {
-                continue; // All native guards are gone; retry the real allocator, never a grant.
-            }
-        }
-        if matches!(result, Err(Error::OutOfMemory { .. })) {
-            owner(device)?.lock()?.stats.ooms += 1;
-        }
-        return result;
-    }
-}
-
-fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
-               physical: &mut Option<usize>, bound: bool, peers_first: bool) -> Result<u64> {
     valid_stream(stream)?;
     if bytes == 0 && !bound {
         crate::check_process()?;
@@ -1541,10 +1056,23 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
         return Err(Error::Invalid("activate this Varena device before Torch GPU work"));
     }
     if bytes == 0 { return Ok(0); }
-    let class = size_class(bytes, owner.page)?;
+    let class = size_class(bytes, owner.page())?;
+    let mut pool = pool;
+    let workspace;
     {
         let mut state = owner.lock()?;
         owner.callback_mutation(&mut state);
+        workspace = state.workspace_sizes.contains(&bytes);
+        if workspace {
+            // Bound into every graph on its stream, and freed by any one graph's reset: it never
+            // lives in a pool, and its address stays this stream's. An ordinary allocation of
+            // exactly this size shares that treatment, which only costs it a reserved block.
+            pool = None;
+            if let Some(ptr) = state.parked_workspaces.remove(&(stream, bytes)) {
+                state.blocks.get_mut(&ptr).expect("parked workspace").requested = bytes;
+                return Ok(Device::activate(&mut state, ptr, bytes));
+            }
+        }
         if let Some(pool) = pool {
             let session = state
                 .pools
@@ -1556,70 +1084,45 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
                 ));
             }
         }
-        if let Some(ptr) = Working::take(&mut state, class, bytes, stream, pool) {
-            return Ok(Working::activate(&mut state, ptr, bytes));
+        if let Some(ptr) = Device::take(&mut state, class, bytes, stream, pool) {
+            state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
+            return Ok(Device::activate(&mut state, ptr, bytes));
         }
         if let Some(id) = pool {
-            if let Some(ptr) = Working::fit_pool(&mut state, id, class, bytes, stream) {
-                return Ok(Working::activate(&mut state, ptr, bytes));
+            if let Some(ptr) = Device::fit_pool(&mut state, id, class, bytes, stream) {
+                return Ok(Device::activate(&mut state, ptr, bytes));
             }
+            state.stats.ooms += 1;
             return Err(Error::OutOfMemory {
                 requested_bytes: bytes,
             });
         }
     }
-    // Never hold working state while asking the weight pager to reclaim: it has its own lock.
-    let mapped = if class <= 1 << 20 { owner.page } else { class };
-    let mut retired_reclaimed = 0;
-    for attempt in 0..3 {
-        *physical = None;
-        let result = {
-            let captures = crate::capture_counts()?;
-            crate::ensure_recovery_allowed(&captures, device)?;
-            let mut state = owner.lock()?;
-            owner.callback_mutation(&mut state);
-            let _context = owner.driver.enter()?;
-            let result = (|| -> crate::AllocationResult<u64> {
-                owner.poll(&mut state)?;
-                if let Some(ptr) = Working::take(&mut state, class, bytes, stream, None) {
-                    return Ok(Working::activate(&mut state, ptr, bytes));
+    let mapped = if class <= 1 << 20 { owner.page() } else { class };
+    let result = reclaim::acquire(device, mapped, Wait::Yes, Protect::default(), || {
+        let gate = crate::gate(device)?;
+        gate.not_capturing()?;
+        let mut state = owner.lock()?;
+        owner.callback_mutation(&mut state);
+        let _context = owner.driver().enter()?;
+        let result = (|| -> crate::AllocationResult<u64> {
+            owner.poll(&mut state)?;
+            let ptr = match Device::take(&mut state, class, bytes, stream, None) {
+                Some(ptr) => ptr,
+                None => {
+                    owner.map(&mut state, mapped, None, class)?;
+                    Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
                 }
-                if attempt == 2 {
-                    owner.wait_reclaimable(&mut state, mapped, None)?;
-                } else if attempt != 0 && retired_reclaimed < mapped {
-                    owner.trim(&mut state, mapped - retired_reclaimed, None)?;
-                }
-                owner.map(&mut state, mapped, None, class)?;
-                let ptr = Working::take(&mut state, class, bytes, stream, None)
-                    .expect("new slab has a block");
-                Ok(Working::activate(&mut state, ptr, bytes))
-            })();
-            result.map_err(|failure| {
-                *physical = failure.physical_bytes();
-                owner.fail(&mut state, failure.into())
-            })
-        };
-        match result {
-            Err(Error::OutOfMemory { .. }) if attempt == 0 => {
-                // Try completed retired backing before sacrificing reusable working pages.
-                retired_reclaimed = crate::reclaim_retired(device, mapped)?;
-                *physical = None;
-            }
-            // Idle peers before this process's own weights: its caller asks, with `physical` set.
-            Err(error @ Error::OutOfMemory { .. }) if attempt == 1 && peers_first && crate::peers_idle(device) => {
-                return Err(error);
-            }
-            Err(Error::OutOfMemory { .. }) if attempt == 1 => {
-                *physical = None;
-                crate::reclaim(device, class)?;
-            }
-            Err(error @ Error::OutOfMemory { .. }) => {
-                return Err(error);
-            }
-            result => return result,
-        }
+            };
+            state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
+            Ok(Device::activate(&mut state, ptr, bytes))
+        })();
+        result.map_err(|failure| owner.fail_allocation(&mut state, failure))
+    });
+    if matches!(result, Err(Error::OutOfMemory { .. })) {
+        owner.lock()?.stats.ooms += 1;
     }
-    unreachable!("finite allocation attempts")
+    result
 }
 
 pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
@@ -1630,76 +1133,75 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
     result
 }
 
+/// Metadata only: no driver call, no gate. A stamp covers everything the stream has been given.
 fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if ptr == 0 {
         crate::check_process()?;
         return Ok(());
     }
     valid_stream(stream)?;
-    // capture_counts checks process identity before either inherited registry mutex is touched.
-    let captures = crate::capture_counts()?;
-    let owner = lock_devices()?.get(&device).cloned().ok_or(Error::Invalid(
-        "working allocator is not initialized on this device",
-    ))?;
-    let capturing = crate::ensure_not_capturing(&captures, device).is_err();
+    let owner = owner(device)?;
     let mut state = owner.lock()?;
+    // Under the state lock, so a capture entered after this read has not begun on any stream.
+    let capturing = owner.captures.load(Ordering::Acquire) != 0;
     owner.callback_mutation(&mut state);
     let measured = state.phases.active.is_some();
-    let transition = (|| {
-        let State {
-            blocks,
-            segments,
-            pools,
-            ..
-        } = &mut *state;
-        let block = blocks
-            .get_mut(&ptr)
-            .ok_or(Error::Invalid("unknown working allocation"))?;
-        if block.life != Life::Live {
-            return Err(Error::Invalid("working allocation already freed"));
-        }
-        let pool = segments[&block.segment].pool;
-        let in_pool_capture = pool.is_some_and(|id| pools[&id].routing);
-        // The original stream is already tracked unless explicitly retired. Torch supplies
-        // that original handle again on free; never reintroduce it after retirement.
-        if stream != block.stream {
-            block.streams.insert(stream);
-        }
-        let requested = block.requested;
-        block.requested = 0;
-        if in_pool_capture {
-            block.life = Life::Captured;
-            block.reusable_on = if block.streams.len() == 1 {
-                block.streams.first().copied()
-            } else {
-                None
-            };
-        } else if block.streams.len() == 1 && block.streams.contains(&0) {
-            // The legacy default stream cannot be destroyed. poll seals its deferred frees.
-            block.life = Life::Deferred;
-            block.reusable_on = Some(0);
-        } else if capturing {
-            block.life = Life::Deferred;
-            block.reusable_on = None;
+    let State {
+        blocks,
+        segments,
+        pools,
+        fenced,
+        ..
+    } = &mut *state;
+    let block = blocks
+        .get_mut(&ptr)
+        .ok_or(Error::Invalid("unknown working allocation"))?;
+    if block.life != Life::Live {
+        return Err(Error::Invalid("working allocation already freed"));
+    }
+    if block.workspace && !block.origin_retired {
+        let key = (block.stream, block.requested);
+        state.stats.allocated_bytes -= key.1;
+        state.stats.frees += 1;
+        state.blocks.get_mut(&ptr).expect("checked block").requested = 0;
+        state.parked_workspaces.insert(key, ptr);
+        return Ok(());
+    }
+    let pool = segments[&block.segment].pool;
+    // The original stream is already tracked unless explicitly retired. Torch supplies
+    // that original handle again on free; never reintroduce it after retirement.
+    if stream != block.stream {
+        block.streams.insert(stream);
+    }
+    let requested = block.requested;
+    block.requested = 0;
+    if pool.is_some_and(|id| pools[&id].routing) {
+        block.life = Life::Captured;
+        block.reusable_on = if block.streams.len() == 1 {
+            block.streams.first().copied()
         } else {
-            let _context = owner.driver.enter()?;
-            owner.record_free(block)?;
+            None
+        };
+    } else {
+        block.waits.clear();
+        let mut fences = owner.fences();
+        for consumer in &block.streams {
+            fences.stamp(*consumer, &mut block.waits);
         }
-        let reusable = block.life == Life::Ready
-            || (block.life == Life::Captured && block.reusable_on.is_some())
-            || block.deferred_default();
-        Ok((
-            requested,
-            pool,
-            block.capacity,
-            block.reusable_on,
-            reusable,
-            measured.then(|| (block.charge(), block.phase, block.segment)),
-        ))
-    })();
-    let (requested, pool, class, reusable_on, reusable, observed) =
-        transition.map_err(|error| owner.fail(&mut state, error))?;
-    packing::freed(&mut state, ptr, false);
+        drop(fences);
+        let single = block.waits.len() <= 1 && !capturing;
+        block.life = if single || block.waits.is_empty() { Life::Ready } else { Life::Pending };
+        block.reusable_on = if capturing { None } else { block.streams.first().copied() };
+        if !block.fenced && !block.waits.is_empty() {
+            block.fenced = true;
+            fenced.push(ptr);
+        }
+    }
+    let reusable = block.life == Life::Ready
+        || (block.life == Life::Captured && block.reusable_on.is_some());
+    let class = block.capacity;
+    let reusable_on = block.reusable_on;
+    let observed = measured.then(|| (block.charge(), block.phase, block.segment));
     if reusable {
         state
             .free
@@ -1771,11 +1273,15 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     block.life = if completed {
         Life::Ready
     } else {
-        Life::Unjoined
+        Life::Unjoined(owner.unjoined_mark())
     };
     block.reusable_on = None;
     block.streams.clear();
-    packing::freed(&mut state, ptr, completed);
+    block.waits.clear();
+    if !completed && !block.fenced {
+        block.fenced = true;
+        state.fenced.push(ptr);
+    }
     if completed {
         state
             .free
@@ -1828,7 +1334,7 @@ fn record_stream_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
 pub fn record_stream_any(ptr: u64, stream: u64) -> Result<()> {
     let result = record_stream_any_inner(ptr, stream);
     if result.is_err()
-        && let Ok(owners) = devices().map(|devices| devices.values().cloned().collect::<Vec<_>>())
+        && let Ok(owners) = devices()
     {
         for owner in owners {
             if let Ok(mut state) = owner.state.lock() {
@@ -1848,8 +1354,7 @@ fn record_stream_any_inner(ptr: u64, stream: u64) -> Result<()> {
         return Ok(());
     }
     valid_stream(stream)?;
-    let candidates: Vec<_> = devices()?.values().cloned().collect();
-    for owner in candidates {
+    for owner in devices()? {
         let mut state = owner.lock()?;
         if let Some((base, block)) = state.blocks.range_mut(..=ptr).next_back()
             && ptr - *base < block.capacity as u64
@@ -1897,156 +1402,156 @@ pub fn retire_stream(device: i32, stream: u64) -> Result<()> {
         }
         return Ok(());
     };
-    crate::consumer_streams::retire(device, stream, || retire_stream_inner(&owner, device, stream))
+    crate::consumer_streams::retire(device, stream, || retire_stream_inner(owner, device, stream))
 }
 
-fn retire_stream_inner(owner: &Working, device: i32, stream: u64) -> Result<()> {
-    let captures = crate::capture_counts()?;
-    crate::ensure_not_capturing(&captures, device)?;
+fn retire_stream_inner(owner: &Device, device: i32, stream: u64) -> Result<()> {
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
     let mut state = owner.lock()?;
-    let _context = owner.driver.enter()?;
-    if owner.driver.is_capturing(stream as usize)? {
+    let _context = owner.driver().enter()?;
+    if owner.driver().is_capturing(stream as usize)? {
         return Err(Error::CaptureActive);
     }
-    if !owner.driver.query_stream(stream as usize)? {
+    if !owner.driver().query_stream(stream as usize)? {
         return Err(Error::Busy);
     }
-    let result = (|| {
-        for block in state.blocks.values_mut() {
-            let origin = block.stream == stream && !block.origin_retired;
-            if !origin
-                && !block.streams.contains(&stream)
-                && !block.events.contains_key(&stream)
-                && block.reusable_on != Some(stream)
-            {
-                continue;
-            }
-            if origin {
-                block.origin_retired = true;
-            }
-            block.streams.remove(&stream);
-            if let Some(event) = block.events.remove(&stream) {
-                owner.driver.destroy_event(event)?;
-            }
-            if matches!(block.life, Life::Live | Life::Captured | Life::Unjoined) {
-                // Retiring one known stream cannot prove completion of unknown DLPack users.
-                continue;
-            }
-            if block.life == Life::Deferred {
-                owner.record_free(block)?;
-            }
-            if owner.completed(&block.events)? {
-                block.life = Life::Ready;
-                block.reusable_on = None;
-            } else {
-                block.life = if block.streams.len() == 1 {
-                    Life::Ready
-                } else {
-                    Life::Pending
-                };
-                block.reusable_on = Some(block.streams.first().copied().unwrap_or(block.stream));
-            }
-        }
-        for pool in state.pools.values_mut() {
-            pool.streams.remove(&stream);
-            if let Some(event) = pool.events.remove(&stream) {
-                owner.driver.destroy_event(event)?;
-            }
-        }
-        state.free.clear();
-        let ready: Vec<_> = state
-            .blocks
-            .iter()
-            .filter(|(_, block)| block.life == Life::Ready)
-            .map(|(ptr, block)| (*ptr, block.capacity, block.reusable_on, block.segment))
-            .collect();
-        for (ptr, bytes, stream, segment) in ready {
-            let pool = state.segments[&segment].pool;
-            state
-                .free
-                .entry((pool, bytes, stream))
-                .or_default()
-                .push(ptr);
-        }
-        state.refresh_phase();
-        Ok(())
-    })();
-    result.map_err(|error| owner.fail(&mut state, error))
-}
-
-pub fn trim(device: i32) -> Result<usize> {
-    let Some(owner) = existing(device)? else {
-        return Ok(0);
-    };
-    let captures = crate::capture_counts()?;
-    if crate::ensure_recovery_allowed(&captures, device).is_err() {
-        return Ok(0);
+    let parked: Vec<_> = state.parked_workspaces.keys().filter(|key| key.0 == stream).copied().collect();
+    for key in parked {
+        let ptr = state.parked_workspaces.remove(&key).expect("listed workspace");
+        let block = state.blocks.get_mut(&ptr).expect("parked workspace");
+        block.workspace = false;
+        block.life = Life::Ready;
+        block.waits.clear();
+        block.reusable_on = None;
     }
-    let mut state = owner.lock()?;
-    let _context = owner.driver.enter()?;
-    let result = (|| {
-        let released = owner.trim(&mut state, usize::MAX, None)?;
-        owner.trim_idle_events(&mut state)?;
-        Ok(released) // Only actual released GPU bytes, never event-metadata credit.
-    })();
-    result.map_err(|error| owner.fail(&mut state, error))
+    let mut fences = owner.fences();
+    fences.retire(stream);
+    for block in state.blocks.values_mut() {
+        let origin = block.stream == stream && !block.origin_retired;
+        if !origin && !block.streams.contains(&stream) && block.reusable_on != Some(stream) {
+            continue;
+        }
+        if origin {
+            block.origin_retired = true;
+        }
+        block.streams.remove(&stream);
+        if matches!(block.life, Life::Live | Life::Captured | Life::Unjoined(_)) {
+            // Retiring one known stream cannot prove completion of unknown DLPack users.
+            continue;
+        }
+        if fences.complete(&block.waits) {
+            block.life = Life::Ready;
+            block.reusable_on = None;
+            block.waits.clear();
+        } else {
+            block.life = if block.streams.len() == 1 {
+                Life::Ready
+            } else {
+                Life::Pending
+            };
+            block.reusable_on = Some(block.streams.first().copied().unwrap_or(block.stream));
+        }
+    }
+    drop(fences);
+    for pool in state.pools.values_mut() {
+        pool.streams.remove(&stream);
+    }
+    state.free.clear();
+    let ready: Vec<_> = state
+        .blocks
+        .iter()
+        .filter(|(_, block)| block.life == Life::Ready)
+        .map(|(ptr, block)| (*ptr, block.capacity, block.reusable_on, block.segment))
+        .collect();
+    for (ptr, bytes, stream, segment) in ready {
+        let pool = state.segments[&segment].pool;
+        state
+            .free
+            .entry((pool, bytes, stream))
+            .or_default()
+            .push(ptr);
+    }
+    state.refresh_phase();
+    Ok(())
 }
 
-/// A cache-owner action has returned. Reclaim only known completed native backing;
-/// no callback, future owner action or unknown-consumer context join is awaited here.
-pub(crate) fn reclaim_completed(device: i32, wanted: usize) -> Result<usize> {
-    let Some(owner) = existing(device)? else { return Ok(0); };
-    let captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
-    let mut state = owner.lock()?;
-    let _context = owner.driver.enter()?;
-    let result = (|| {
-        owner.poll_mode(&mut state, false)?;
-        owner.trim_ready(&mut state, wanted, None, &BTreeSet::new())
-    })();
-    result.map_err(|error| owner.fail(&mut state, error))
-}
-
+/// `torch.cuda.empty_cache`: the caller's request to the core, for completed free pages only.
 pub fn trim_all() -> Result<usize> {
-    let devices: Vec<_> = devices()?.keys().copied().collect();
-    devices.into_iter().try_fold(0usize, |total, device| {
-        Ok(total.saturating_add(trim(device)?))
+    devices()?.into_iter().try_fold(0usize, |total, owner| {
+        if crate::is_capturing(owner.ordinal)? {
+            return Ok(total);
+        }
+        Ok(total.saturating_add(release_completed(owner.ordinal, usize::MAX, usize::MAX, None)?))
     })
 }
 
-/// Weight fills call this while holding capture exclusion, before asking the driver for pages.
-pub(crate) fn reclaim_for_weights(device: i32, bytes: usize) -> Result<usize> {
+/// The first step of the reclaim order: completed free pages, with no waiting.
+pub(crate) fn release_completed(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
     let Some(owner) = existing(device)? else {
         return Ok(0);
     };
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
     let mut state = owner.lock()?;
-    let _context = owner.driver.enter()?;
-    let reclaimed = (|| {
-        let completed = owner.trim(&mut state, bytes, None)?;
-        if completed >= bytes {
-            return Ok(completed);
+    let _context = owner.driver().enter()?;
+    let result = owner.poll(&mut state)
+        .and_then(|()| owner.trim_ready(&mut state, want, keep, &BTreeSet::new(), maximum));
+    result.map_err(|error| owner.fail(&mut state, error))
+}
+
+/// Idle pools' pages: nothing to read back and no wait, the cheapest memory after free pages.
+pub(crate) fn release_idle_pools(device: i32, want: usize, maximum: usize, keep: Option<PoolId>) -> Result<usize> {
+    let Some(owner) = existing(device)? else {
+        return Ok(0);
+    };
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver().enter()?;
+    let result = owner.poll(&mut state)
+        .and_then(|()| owner.unmap_idle_pools(&mut state, want, keep, maximum));
+    result.map_err(|error| owner.fail(&mut state, error))
+}
+
+/// Wait outside every lock for submitted work on memory already freed. False: nothing pending.
+pub(crate) fn wait_pending(device: i32, want: usize, keep: Option<PoolId>) -> Result<bool> {
+    let Some(owner) = existing(device)? else {
+        return Ok(false);
+    };
+    let (events, hold) = {
+        let gate = crate::gate(device)?;
+        gate.not_capturing()?;
+        let mut state = owner.lock()?;
+        let _context = owner.driver().enter()?;
+        let polled = owner.poll(&mut state);
+        polled.map_err(|error| owner.fail(&mut state, error))?;
+        let events = owner.pending_events(&state, want, keep);
+        if events.is_empty() {
+            return Ok(false);
         }
-        let pending = owner.wait_reclaimable(&mut state, bytes - completed, None)?;
-        Ok(completed.saturating_add(pending))
-    })();
-    reclaimed.map_err(|error| owner.fail(&mut state, error))
+        (events, gate.hold()?)
+    };
+    reclaim::wait_outside(owner, &events, false)?;
+    drop(hold);
+    Ok(true)
+}
+
+/// Whether a context join would release anything here.
+pub(crate) fn unjoined(device: i32) -> Result<bool> {
+    let Some(owner) = existing(device)? else {
+        return Ok(false);
+    };
+    let state = owner.lock()?;
+    Ok(state.fenced.iter().filter_map(|ptr| state.blocks.get(ptr)).any(|block| {
+        matches!(block.life, Life::Unjoined(mark) if !owner.joined(mark))
+    }))
 }
 
 /// Begin one device-wide execution observation. None means the final configuration is not
 /// known yet: observe demand, but do not admit speculation from an earlier guessed key.
 pub fn phase_enter(device: i32, key: Option<String>, mode: PhaseMode) -> Result<u64> {
-    phase_enter_inner(device, key, mode, None, None, false)
-}
-
-/// Private automatic first-observation entry. Only this token's calling thread
-/// may await cache progress after an actual non-pool Working refusal. Entry itself
-/// requests no reclamation. Any joined recovery keeps this sample unpublished.
-#[doc(hidden)]
-pub fn phase_enter_cold(device: i32, key: String) -> Result<u64> {
-    if crate::cache_owner::is_dispatcher_thread(device)? {
-        return Err(Error::Invalid("cache callbacks cannot enter cold recovery"));
-    }
-    phase_enter_inner(device, Some(key), PhaseMode::Eager, None, None, true)
+    phase_enter_inner(device, key, mode, None, None)
 }
 
 fn phase_enter_inner(
@@ -2055,13 +1560,11 @@ fn phase_enter_inner(
     mode: PhaseMode,
     committed_site: Option<(String, String)>,
     expected_plan_generation: Option<u64>,
-    cold_recovery: bool,
 ) -> Result<u64> {
     if key.as_ref().is_some_and(String::is_empty) {
         return Err(Error::Invalid("phase execution key must not be empty"));
     }
     let owner = initialize_owner(device)?;
-    let captures = crate::capture_counts()?;
     if let Some(expected) = expected_plan_generation
         && crate::plan::generation(device)? != expected
     {
@@ -2070,14 +1573,6 @@ fn phase_enter_inner(
     let mut state = owner.lock()?;
     if state.phases.active.is_some() {
         return Err(Error::PhaseOverlap);
-    }
-    if cold_recovery {
-        crate::ensure_recovery_allowed(&captures, device)?;
-        if key.as_ref().and_then(|key| state.phases.samples.get(key))
-            .is_some_and(|sample| sample.known)
-        {
-            return Err(Error::Invalid("cold recovery requires an unknown execution sample"));
-        }
     }
     if committed_site.is_some() && state.splits.active_is_present() {
         return Err(Error::Invalid("committed execution cannot overlap an active split"));
@@ -2092,73 +1587,35 @@ fn phase_enter_inner(
         .ok_or(Error::Invalid("phase token overflow"))?;
     state.phases.next = token;
     let charged = state.charged();
-    let activity_epoch = captures
-        .get(&device)
-        .map_or(0, |activity| activity.activity_epoch);
-    let invalid = (mode == PhaseMode::Eager
-        && crate::ensure_recovery_allowed(&captures, device).is_err())
-    .then(|| "capture_or_replay_active".to_owned());
+    let invalid = (mode == PhaseMode::Eager && owner.graph_active())
+        .then(|| "capture_or_replay_active".to_owned());
     state.phases.active = Some(ActivePhase {
         token,
         key,
         mode,
-        activity_epoch,
+        activity_epoch: owner.epoch(),
         charged,
         peak: charged,
         owned_charged: 0,
         owned_peak: 0,
         backing: 0,
         backing_peak: 0,
-        packing: (mode == PhaseMode::Eager).then(packing::Trace::default),
         invalid,
-        replay: None,
         committed_site,
-        cold_recovery_thread: cold_recovery.then(|| std::thread::current().id()),
     });
     state.refresh_phase();
     Ok(token)
 }
 
-/// One native continuation owns this observation until checked terminal completion.
-/// Definition metadata adds no physical pin; current graph/output/event owners remain authoritative.
-pub fn phase_enter_replay(
-    device: i32,
-    key: Option<String>,
-    footprints: Vec<Arc<GraphFootprint>>,
-) -> Result<u64> {
-    let token = phase_enter(device, key, PhaseMode::Replay)?;
-    let owner = owner(device)?;
-    let mut state = owner.lock()?;
-    let mut ranges = Ranges::default();
-    let mut pages = Ranges::default();
-    let mut invalid = footprints.is_empty();
-    for footprint in &footprints {
-        if footprint.device != device {
-            invalid = true;
-            break;
-        }
-        match footprint.ranges(&state) {
-            Ok((used, mapped)) => {
-                ranges.extend(&used);
-                pages.extend(&mapped);
-            }
-            Err(_) => {
-                invalid = true;
-                break;
-            }
-        }
+fn invalidate_eager_phase(device: i32, reason: &str) -> Result<()> {
+    let Some(owner) = existing(device)? else {
+        return Ok(());
+    };
+    let eager = owner.lock()?.phases.active.as_ref().is_some_and(|active| active.mode == PhaseMode::Eager);
+    if eager {
+        invalidate_current_phase(device, reason)?;
     }
-    let active = state.phases.active.as_mut().expect("entered replay phase");
-    if invalid {
-        active.invalid = Some("graph_footprint_unqualified".into());
-    } else {
-        active.replay = Some(ReplayTrace {
-            footprints,
-            bytes: ranges.bytes(),
-            backing: pages.bytes(),
-        });
-    }
-    Ok(token)
+    Ok(())
 }
 
 /// Mark a caught retry/failed dispatch without replacing its caller's original exception.
@@ -2192,9 +1649,6 @@ pub(crate) fn invalidate_current_phase(device: i32, reason: &str) -> Result<()> 
         .map_err(|_| Error::Poisoned("working allocator mutex".into()))?;
     state.phases.invalidate(reason);
     split::invalidate(&mut state, reason);
-    if let Some(trace) = &mut state.trace {
-        trace.invalid = true;
-    }
     Ok(())
 }
 
@@ -2211,7 +1665,6 @@ pub fn phase_leave(
         return Err(Error::Invalid("phase execution key must not be empty"));
     }
     let owner = owner(device)?;
-    let captures = crate::capture_counts()?;
     let mut state = owner
         .state
         .lock()
@@ -2231,30 +1684,10 @@ pub fn phase_leave(
             .invalid
             .get_or_insert_with(|| "allocator_poisoned".to_owned());
     }
-    if active.mode == PhaseMode::Eager
-        && active.activity_epoch
-            != captures
-                .get(&device)
-                .map_or(0, |activity| activity.activity_epoch)
-    {
+    if active.mode == PhaseMode::Eager && active.activity_epoch != owner.epoch() {
         active
             .invalid
             .get_or_insert_with(|| "capture_or_replay_attempt".to_owned());
-    }
-    if let Some(trace) = &active.replay {
-        if trace
-            .footprints
-            .iter()
-            .any(|footprint| footprint.ranges(&state).is_err())
-        {
-            active
-                .invalid
-                .get_or_insert_with(|| "graph_definition_retired".to_owned());
-        }
-        // Trace pages stay backed for the full stage. Any separately allocated native working
-        // storage is disjoint eager backing; its observed peak therefore coexists with this set.
-        active.owned_peak += trace.bytes;
-        active.backing_peak += trace.backing;
     }
     if split::open_for(&state, active.token) {
         active
@@ -2276,8 +1709,9 @@ pub fn phase_leave(
     } else {
         key.or_else(|| active.key.clone())
     };
+    let qualified = matches!(active.mode, PhaseMode::Eager | PhaseMode::Replay);
     let reason = active.invalid.clone().unwrap_or_else(|| {
-        if active.mode != PhaseMode::Eager && active.replay.is_none() {
+        if !qualified {
             format!("{}_unqualified", active.mode.name())
         } else if !completed {
             "aborted".to_owned()
@@ -2287,82 +1721,36 @@ pub fn phase_leave(
             String::new()
         }
     });
-    let published = reason.is_empty() && active.invalid.is_none();
-    let capture_pool_bytes = if published {
-        let measured = active.packing.as_ref()
-            .map(|trace| trace.capacity(active.owned_peak, owner.page))
-            .transpose();
-        match measured {
-            Ok(bytes) => bytes.unwrap_or(0),
-            Err(error) => {
-                split::phase_finished(&mut state, active.token, false, "capture_packing_invalid");
-                return Err(error);
-            }
-        }
-    } else {
-        0
-    };
+    let published = reason.is_empty();
     let split_observations = split::phase_finished(
         &mut state,
         active.token,
         completed && active.mode == PhaseMode::Eager && active.invalid.is_none(),
         &reason,
     );
-    let definitions: Vec<_> = active.replay.as_ref().map_or_else(Vec::new, |trace| {
-        trace
-            .footprints
-            .iter()
-            .map(|footprint| footprint.id)
-            .collect()
-    });
     let mut sample = PhaseStats::default();
-    let record = if let Some(key) = &observed {
-        if active.mode == PhaseMode::Eager {
-            Some(state.phases.samples.entry(key.clone()).or_default())
-        } else if active.mode == PhaseMode::Replay
-            && !definitions.is_empty()
-            && active.replay.as_ref().is_some_and(|trace| {
-                trace
-                    .footprints
-                    .iter()
-                    .all(|f| !f.retired.load(Ordering::Acquire))
-            })
-        {
-            Some(
-                state
-                    .phases
-                    .replay_samples
-                    .entry(ReplayKey {
-                        semantic: key.clone(),
-                        definitions: definitions.clone(),
-                    })
-                    .or_default(),
-            )
+    let record = observed.as_ref().filter(|_| qualified).map(|key| {
+        let samples = if active.mode == PhaseMode::Replay {
+            &mut state.phases.replay_samples
         } else {
-            None
-        }
-    } else {
-        None
-    };
+            &mut state.phases.samples
+        };
+        samples.entry(key.clone()).or_default()
+    });
     if let Some(record) = record {
         if published {
             record.known = true;
             record.peak_bytes = active.owned_peak;
             record.total_peak_bytes = active.peak;
             record.backing_peak_bytes = active.backing_peak;
-            record.capture_pool_bytes = capture_pool_bytes;
             record.successful_passes += 1;
         } else {
             record.aborted_passes += 1;
-            record.aborted_peak_bytes = active.owned_peak;
-            record.aborted_total_peak_bytes = active.peak;
-            record.aborted_backing_peak_bytes = active.backing_peak;
         }
         sample = record.clone();
     }
     Ok(PhaseObservation {
         split_observations,
-        definitions,
         token,
         mode: active.mode,
         key: observed,
@@ -2373,8 +1761,6 @@ pub fn phase_leave(
         invalidated: active.invalid.is_some(),
         reason,
         successful_peak_bytes: sample.peak_bytes,
-        successful_backing_peak_bytes: sample.backing_peak_bytes,
-        successful_capture_pool_bytes: sample.capture_pool_bytes,
         successful_passes: sample.successful_passes,
     })
 }
@@ -2403,147 +1789,42 @@ pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
     }
     let split_removed = split::forget(&mut state, key)?;
     let removed = state.phases.samples.remove(key).is_some();
-    let previous = state.phases.replay_samples.len();
-    state
-        .phases
-        .replay_samples
-        .retain(|record, _| record.semantic != key);
-    Ok(removed || split_removed || previous != state.phases.replay_samples.len())
+    let replayed = state.phases.replay_samples.remove(key).is_some();
+    Ok(removed || replayed || split_removed)
 }
 
-/// Caller holds the capture registry and region state. Hold working metadata through physical
-/// admission too, so another same-process working transition cannot spend this observation.
-/// The closure performs only native no-reclaim page admission; never source IO or callbacks.
-pub(crate) fn admit_prefetch<T>(
-    device: i32,
-    activity_epoch: u64,
-    bytes: usize,
-    admit: impl FnOnce() -> Result<T>,
-) -> Result<Option<T>> {
+/// What the rest of this phase still needs of working memory, per its last pass, and the
+/// completed free pages already mapped for it. None declines: unknown phase, or pressure.
+pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize)>> {
     let Some(owner) = existing(device)? else {
         return Ok(None);
     };
     let mut state = owner.lock()?;
     state.stats.prefetch_attempts += 1;
-    let gap = state.phases.active.as_ref().and_then(|active| {
-        if active.mode != PhaseMode::Eager
-            || active.invalid.is_some()
-            || active.activity_epoch != activity_epoch
-        {
+    let answer = (|| {
+        if state.prefetch_suppressed {
             return None;
         }
-        let sample = state.phases.samples.get(active.key.as_ref()?)?;
-        if !sample.known {
-            return None;
-        }
-        // Reserve measured physical backing, not just the sum of small block classes.
-        // A currently shared outside slab cannot cover the remaining phase allocation need.
-        // Graph-private cache is never general eager capacity.
-        Some(
-            sample.backing_peak_bytes.saturating_sub(
-                state
-                    .exclusive_phase_backing()
-                    .saturating_add(state.reusable_eager_pages()),
-            ),
-        )
-    });
-    admit_with_gap(&owner, &mut state, bytes, gap, admit)
-}
-
-/// An adjacent source may use only the predecessor definition's current, qualified replay
-/// sample. Neither a same-name recapture nor an unrelated active phase authorizes this edge.
-pub(crate) fn admit_replay_prefetch<T>(
-    device: i32,
-    capability: &ReplayPrefetch,
-    bytes: usize,
-    admit: impl FnOnce() -> Result<T>,
-) -> Result<Option<T>> {
-    let Some(owner) = existing(device)? else {
-        return Ok(None);
-    };
-    let mut state = owner.lock()?;
-    state.stats.prefetch_attempts += 1;
-    let gap = (|| {
-        if capability.device != device || owner.external_callbacks.load(Ordering::Acquire) != 0 {
-            return None;
-        }
-        let key = capability.semantic.as_ref()?;
-        let active = state.phases.active.as_ref()?;
-        if active.mode != PhaseMode::Replay
-            || active.invalid.is_some()
-            || active.key.as_ref() != Some(key)
-        {
-            return None;
-        }
-        let trace = active.replay.as_ref()?;
-        let expected: Vec<_> = capability.footprints.iter().map(|f| f.id).collect();
-        let actual: Vec<_> = trace.footprints.iter().map(|f| f.id).collect();
-        if expected.is_empty()
-            || expected != actual
-            || capability
-                .footprints
-                .iter()
-                .any(|footprint| footprint.ranges(&state).is_err())
-        {
-            return None;
-        }
-        let sample = state.phases.replay_samples.get(&ReplayKey {
-            semantic: key.clone(),
-            definitions: expected,
-        })?;
-        if !sample.known {
-            return None;
-        }
-        // Actual trace pages are already backed by their graph owners. Exclusive current
-        // eager backing and completed whole eager segments cover additional measured demand.
-        let covered = trace
-            .backing
-            .saturating_add(state.exclusive_phase_backing())
-            .saturating_add(state.reusable_eager_pages());
-        Some(sample.backing_peak_bytes.saturating_sub(covered))
+        let active = state.phases.active.as_ref().filter(|active| active.invalid.is_none())?;
+        let samples = match active.mode {
+            PhaseMode::Eager => &state.phases.samples,
+            PhaseMode::Replay => &state.phases.replay_samples,
+            _ => return None,
+        };
+        let sample = samples.get(active.key.as_ref()?).filter(|sample| sample.known)?;
+        Some((sample.backing_peak_bytes.saturating_sub(active.backing), state.reusable_eager_pages()))
     })();
-    admit_with_gap(&owner, &mut state, bytes, gap, admit)
+    if answer.is_none() {
+        state.stats.prefetch_declines += 1;
+    }
+    Ok(answer)
 }
 
-fn admit_with_gap<T>(
-    owner: &Working,
-    state: &mut State,
-    bytes: usize,
-    gap: Option<usize>,
-    admit: impl FnOnce() -> Result<T>,
-) -> Result<Option<T>> {
-    if state.prefetch_suppressed {
-        state.stats.prefetch_declines += 1;
-        return Ok(None);
+pub(crate) fn prefetch_admitted(device: i32) -> Result<()> {
+    if let Some(owner) = existing(device)? {
+        owner.lock()?.stats.prefetch_admissions += 1;
     }
-    let Some(gap) = gap else {
-        state.stats.prefetch_declines += 1;
-        return Ok(None);
-    };
-    let Some(needed) = bytes.checked_add(gap) else {
-        state.stats.prefetch_declines += 1;
-        return Ok(None);
-    };
-    let _context = owner.driver.enter()?;
-    let (free, _) = owner.driver.memory_info()?;
-    if needed > free || owner.room.over(needed) != 0 {
-        state.stats.prefetch_declines += 1;
-        return Ok(None);
-    }
-    match admit() {
-        Ok(prepared) => {
-            state.stats.prefetch_admissions += 1;
-            Ok(Some(prepared))
-        }
-        Err(Error::OutOfMemory { .. } | Error::Busy | Error::CaptureActive) => {
-            state.stats.prefetch_declines += 1;
-            Ok(None)
-        }
-        Err(error) => {
-            state.phases.invalidate("prefetch_fault");
-            Err(error)
-        }
-    }
+    Ok(())
 }
 
 pub fn stats(device: i32) -> Result<WorkingStats> {
@@ -2571,34 +1852,26 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .map(|b| b.capacity)
         .sum();
     stats.reclaimable_bytes = state.reusable_eager_pages();
-    stats.unassigned_bytes =
-        stats.mapped_bytes - stats.allocated_capacity - stats.pending_bytes - stats.free_bytes;
+    let unmapped: usize = state.segments.values().filter(|s| s.handle.is_none()).map(|s| s.bytes).sum();
+    stats.unassigned_bytes = (stats.mapped_bytes + unmapped)
+        .saturating_sub(stats.allocated_capacity + stats.pending_bytes + stats.free_bytes);
     stats.pools_bytes = state
         .segments
         .values()
-        .filter(|s| s.pool.is_some())
+        .filter(|s| s.pool.is_some() && s.handle.is_some())
         .map(|s| s.bytes)
         .sum();
     stats.pools = state.pools.len();
-    cache::working_stats(&state, owner.page, &mut stats);
-    stats.event_handles = state
-        .blocks
-        .values()
-        .map(|block| block.events.len())
-        .sum::<usize>()
-        + state
-            .pools
-            .values()
-            .map(|pool| pool.events.len() + pool.retired_events.len())
-            .sum::<usize>()
-        + state.caches.values().map(|cache| cache.events.len()).sum::<usize>();
+    cache::working_stats(&state, owner.page(), &mut stats);
+    stats.event_handles = owner.fences().handles();
+    stats.context_joins = owner.driver().context_joins();
     (
         stats.driver_memory_calls,
         stats.event_queries,
         stats.event_records,
         stats.event_waits,
-    ) = owner.driver.calls();
-    stats.driver_physical_ooms = owner.driver.physical_ooms();
+    ) = owner.driver().calls();
+    stats.driver_physical_ooms = owner.driver().physical_ooms();
     Ok(stats)
 }
 
@@ -2620,78 +1893,133 @@ pub fn pool_cancel_preparation(device: i32, pool: PoolId) -> Result<()> {
     let mut state = owner.lock()?;
     if let Some(pool) = state.pools.get_mut(&pool) {
         pool.prepared = false;
+        pool.armed = false;
+        pool.in_use = false;
     }
     Ok(())
 }
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
-    invalidate_current_phase(device, "capture_preparation")?;
-    initialize(device)?;
-    let owner = owner(device)?;
-    let wanted = rounded(bytes, owner.page)?;
-    let mut recovery = crate::Recovery::default();
-    loop {
-        let mut physical = None;
-        let result = pool_reserve_local(device, pool, wanted, &mut physical);
-        if let Err(Error::OutOfMemory { requested_bytes }) = &result
-            && recovery.next(device, physical.unwrap_or(*requested_bytes), physical.is_some())? {
-            continue;
+    invalidate_eager_phase(device, "capture_preparation")?;
+    let owner = initialize_owner(device)?;
+    let wanted = rounded(bytes, owner.page())?;
+    let keep = Protect { pool: Some(pool), ..Default::default() };
+    {
+        let mut state = owner.lock()?;
+        let session = state.pools.entry(pool).or_default();
+        session.in_use = true;
+        session.last_use = owner.next_use();
+        if session.references == 0 {
+            session.prepared = true;
         }
-        return result;
     }
+    let need = wanted + owner.lock()?.segments.values().filter(|s| s.pool == Some(pool) && s.handle.is_none())
+        .map(|s| s.bytes).sum::<usize>();
+    reclaim::acquire(device, need, Wait::Yes, keep, || {
+        let gate = crate::gate(device)?;
+        gate.not_capturing()?;
+        let mut state = owner.lock()?;
+        let _context = owner.driver().enter()?;
+        let result = (|| -> crate::AllocationResult<usize> {
+            let have = pool_back(owner, &mut state, pool)?;
+            if have < wanted {
+                owner.map(&mut state, wanted - have, Some(pool), 0)?;
+            }
+            Ok(have.max(wanted))
+        })();
+        result.map_err(|failure| owner.fail_allocation(&mut state, failure))
+    })
 }
 
-fn pool_reserve_local(device: i32, pool: PoolId, wanted: usize,
-                      physical: &mut Option<usize>) -> Result<usize> {
+/// The next capture on this pool is this module's own. Torch's lazily created RNG tensors,
+/// on another stream, need a free small block: a capture never maps.
+pub fn pool_arm(device: i32, id: PoolId) -> Result<()> {
     let owner = owner(device)?;
-    for attempt in 0..3 {
-        *physical = None;
-        let result = {
-            let captures = crate::capture_counts()?;
-            crate::ensure_recovery_allowed(&captures, device)?;
-            let mut state = owner.lock()?;
-            let session = state.pools.entry(pool).or_default();
-            if session.references == 0 {
-                session.prepared = true;
-            }
-            let have: usize = state
-                .segments
-                .values()
-                .filter(|segment| segment.pool == Some(pool))
-                .map(|segment| segment.bytes)
-                .sum();
-            if have >= wanted {
-                return Ok(have);
-            }
-            let _context = owner.driver.enter()?;
-            let result = (|| -> crate::AllocationResult<usize> {
-                if attempt == 2 {
-                    owner.wait_reclaimable(&mut state, wanted - have, Some(pool))?;
-                } else {
-                    owner.trim(&mut state, wanted - have, Some(pool))?;
-                }
-                owner.map(&mut state, wanted - have, Some(pool), 0)?;
-                Ok(wanted)
-            })();
-            result.map_err(|failure| {
-                *physical = failure.physical_bytes();
-                owner.fail(&mut state, failure.into())
-            })
-        };
-        match result {
-            Err(Error::OutOfMemory { .. }) if attempt == 0 => {
-                crate::reclaim(device, wanted)?;
-            }
-            Err(Error::OutOfMemory { .. }) if attempt == 1 => continue,
-            other => return other,
+    reclaim::acquire(device, owner.page(), Wait::Yes, Protect { pool: Some(id), ..Default::default() }, || {
+        let gate = crate::gate(device)?;
+        gate.not_capturing()?;
+        let mut state = owner.lock()?;
+        let _context = owner.driver().enter()?;
+        state.pools.entry(id).or_default().armed = true;
+        if Device::free_block(&state, AUXILIARY_CLASS).is_none() {
+            let mapped = owner.map(&mut state, owner.page(), None, AUXILIARY_CLASS);
+            mapped.map_err(|failure| owner.fail_allocation(&mut state, failure))?;
+        }
+        Ok(())
+    })
+}
+
+// Pages for every segment of this pool that has none. Returns the pool's total bytes.
+fn pool_back(owner: &Device, state: &mut State, id: PoolId) -> crate::AllocationResult<usize> {
+    let bases: Vec<_> = state.segments.iter().filter(|(_, segment)| segment.pool == Some(id))
+        .map(|(base, segment)| (*base, segment.bytes, segment.handle.is_none())).collect();
+    for (base, _, unmapped) in &bases {
+        if *unmapped {
+            owner.back(state, *base)?;
         }
     }
-    unreachable!("finite pool reserve attempts")
+    state.pools.get_mut(&id).expect("reserved pool").unmapped = false;
+    Ok(bases.iter().map(|(_, bytes, _)| bytes).sum())
+}
+
+/// The owner declares the allocations it holds here dead between uses of this pool: nothing
+/// reads them outside `pool_reserve` .. `pool_record_stream(end)`. The core may then release
+/// the pool's pages when idle, keeping its VA, blocks and graph. Any other live allocation
+/// here could be an escaped alias a kernel would still touch: that refuses.
+pub fn pool_scratch(device: i32, id: PoolId, held: &[u64]) -> Result<()> {
+    let owner = owner(device)?;
+    let mut state = owner.lock()?;
+    let bases: Vec<_> = state.segments.iter().filter(|(_, segment)| segment.pool == Some(id))
+        .map(|(base, segment)| (*base, segment.bytes)).collect();
+    for ptr in held {
+        // A held tensor outside this pool does not depend on its pages.
+        if bases.iter().any(|(base, bytes)| *ptr >= *base && *ptr < *base + *bytes as u64) {
+            let block = state.blocks.get_mut(ptr).filter(|block| block.life == Life::Live)
+                .ok_or(Error::Invalid("a declared allocation is not live in this graph pool"))?;
+            block.scratch = true;
+        }
+    }
+    for (base, bytes) in bases {
+        if state.blocks.range(base..base + bytes as u64).any(|(_, block)| block.life == Life::Live && !block.scratch) {
+            return Err(Error::Invalid("a live allocation outside its owner's declaration holds this graph pool"));
+        }
+    }
+    let pool = state.pools.get_mut(&id).ok_or(Error::Invalid("unknown graph pool"))?;
+    if pool.references == 0 || pool.capture.is_some() {
+        return Err(Error::Invalid("only a captured graph pool's owner can declare it scratch"));
+    }
+    pool.scratch = true;
+    Ok(())
+}
+
+/// Torch's cached library workspace sizes on this device. Never initializes CUDA.
+pub fn library_workspaces(device: i32, sizes: Vec<usize>) -> Result<()> {
+    owner(device)?.lock()?.workspace_sizes = sizes;
+    Ok(())
 }
 
 /// Register routing only. Repeated begin calls add streams to the same capture session.
+/// A fresh capture must be prepared: a raw Torch graph supplies none of the lifetime signals
+/// this needs, and would otherwise hold capture exclusion forever.
 pub fn pool_begin(device: i32, pool: PoolId, stream: u64) -> Result<()> {
     valid_stream(stream)?;
     let owner = owner(device)?;
+    {
+        let mut state = owner.lock()?;
+        if let Some(session) = state.pools.get_mut(&pool) {
+            if session.capture.is_some() {
+                if !session.routing {
+                    return Err(Error::Invalid("previous CUDA capture has not completed"));
+                }
+                session.streams.insert(stream);
+                return Ok(());
+            }
+        }
+        if !state.pools.get(&pool).is_some_and(|session| session.armed) {
+            return Err(Error::Invalid(
+                "raw torch.cuda.graph is unsupported under Varena: capture with tensorfs.varena.torch.graph",
+            ));
+        }
+    }
     let guard = crate::enter_capture(device)?;
     let mut state = owner.lock()?;
     if state
@@ -2700,24 +2028,22 @@ pub fn pool_begin(device: i32, pool: PoolId, stream: u64) -> Result<()> {
         .any(|(id, session)| *id != pool && session.capture.is_some())
     {
         return Err(Error::Invalid(
-            "P0 capture sessions on one device must be sequential",
+            "capture sessions on one device must be sequential",
         ));
     }
     let pool = state.pools.entry(pool).or_default();
-    if pool.capture.is_some() {
-        if !pool.routing {
-            return Err(Error::Invalid("previous CUDA capture has not completed"));
-        }
-    } else {
-        pool.references = pool
-            .references
-            .checked_add(1)
-            .ok_or(Error::Invalid("graph reference overflow"))?;
-        pool.capture = Some(guard);
-        pool.prepared = false;
-        pool.routing = true;
-        pool.streams.clear();
+    if pool.unmapped {
+        return Err(Error::Invalid("map this graph pool before capture"));
     }
+    pool.references = pool
+        .references
+        .checked_add(1)
+        .ok_or(Error::Invalid("graph reference overflow"))?;
+    pool.capture = Some(guard);
+    pool.armed = false;
+    pool.prepared = false;
+    pool.routing = true;
+    pool.streams.clear();
     pool.streams.insert(stream);
     Ok(())
 }
@@ -2740,7 +2066,7 @@ pub fn pool_end(device: i32, id: PoolId) -> Result<()> {
 /// The graph owner calls this only after cudaStreamEndCapture, including failed captures.
 pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
     let owner = owner(device)?;
-    let _captures = crate::capture_counts()?;
+    let _gate = crate::gate(device)?;
     let mut state = owner.lock()?;
     let pool = state
         .pools
@@ -2752,23 +2078,26 @@ pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
     if pool.capture.is_none() {
         return Err(Error::Invalid("graph capture is already complete"));
     }
-    // Auxiliary streams (Torch RNG setup, for example) execute eagerly during capture.
-    // Their frees are metadata-only until now, so fence them before permitting pool retirement.
     let completion = (|| {
-        let _context = owner.driver.enter()?;
+        let _context = owner.driver().enter()?;
         for stream in &pool.streams {
-            if owner.driver.is_capturing(*stream as usize)? {
+            if owner.driver().is_capturing(*stream as usize)? {
                 return Err(Error::CaptureActive);
             }
-        }
-        for stream in &pool.streams {
-            owner.record(&mut pool.events, *stream)?;
         }
         Ok(())
     })();
     if let Err(error) = completion {
         return Err(owner.fail(&mut state, error));
     }
+    // Auxiliary streams (Torch RNG setup, for example) execute eagerly during capture.
+    // Their frees were metadata-only until now: stamp them before permitting pool retirement.
+    let mut fences = owner.fences();
+    for stream in &pool.streams {
+        fences.stamp(*stream, &mut pool.waits);
+    }
+    drop(fences);
+    pool.in_use = false;
     let guard = pool
         .capture
         .take()
@@ -2804,10 +2133,13 @@ pub fn pool_capture_complete(device: i32, id: PoolId) -> Result<()> {
 /// Hold backing across a replay call whose end hooks may reset the original graph owner.
 pub fn pool_retain(device: i32, id: PoolId) -> Result<()> {
     let owner = owner(device)?;
-    let captures = crate::capture_counts()?;
-    crate::ensure_not_capturing(&captures, device)?;
+    if owner.captures.load(Ordering::Acquire) != 0 {
+        return Err(Error::CaptureActive);
+    }
     let mut state = owner.lock()?;
-    state.phases.invalidate("graph_replay");
+    if state.phases.active.as_ref().is_some_and(|active| active.mode == PhaseMode::Eager) {
+        state.phases.invalidate("graph_replay");
+    }
     let pool = state
         .pools
         .get_mut(&id)
@@ -2815,6 +2147,10 @@ pub fn pool_retain(device: i32, id: PoolId) -> Result<()> {
     if pool.references == 0 {
         return Err(Error::Invalid("graph pool has no owner"));
     }
+    if pool.unmapped {
+        return Err(Error::Invalid("map this graph pool before replay"));
+    }
+    pool.last_use = owner.next_use();
     pool.references = pool
         .references
         .checked_add(1)
@@ -2822,13 +2158,15 @@ pub fn pool_retain(device: i32, id: PoolId) -> Result<()> {
     Ok(())
 }
 
-pub fn pool_record_stream(device: i32, id: PoolId, stream: u64) -> Result<()> {
+/// A replay or consumer was submitted on this stream. `end`: the owner's last for now.
+/// Metadata only: no driver call.
+pub fn pool_record_stream(device: i32, id: PoolId, stream: u64, end: bool) -> Result<()> {
     valid_stream(stream)?;
     let owner = owner(device)?;
-    let captures = crate::capture_counts()?;
-    crate::ensure_not_capturing(&captures, device)?;
+    if owner.captures.load(Ordering::Acquire) != 0 {
+        return Err(Error::CaptureActive);
+    }
     let mut state = owner.lock()?;
-    let _context = owner.driver.enter()?;
     let pool = state
         .pools
         .get_mut(&id)
@@ -2836,14 +2174,11 @@ pub fn pool_record_stream(device: i32, id: PoolId, stream: u64) -> Result<()> {
     if pool.references == 0 {
         return Err(Error::Invalid("graph pool has no owner"));
     }
-    let result = owner.record(&mut pool.events, stream);
-    result.map_err(|error| {
-        // A replay may already be running. Even event-allocation OOM cannot release backing
-        // without a completion fence; retain the arena until its process is retired.
-        let reason = format!("graph completion fence failed: {error}");
-        state.poison = Some(reason.clone());
-        Error::Poisoned(reason)
-    })
+    owner.fences().stamp(stream, &mut pool.waits);
+    if end {
+        pool.in_use = false;
+    }
+    Ok(())
 }
 
 /// Release one graph reference. Physical reclamation is deferred to trim/pressure.

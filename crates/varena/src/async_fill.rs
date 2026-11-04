@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Duration;
 
 use crate::{
-    Contents, Error, Fill, Pin, Preparation, ProducerGuard, Region, Result, capture_counts,
-    ensure_not_capturing, enter_producer, enter_retirement,
+    Contents, Error, Fill, Pin, Preparation, ProducerGuard, Region, Result, gate,
+    enter_producer, enter_retirement,
 };
 
 /// Outcome of checked native fill-resource retirement. Neither variant grants capacity.
@@ -146,7 +146,7 @@ pub(crate) fn wait_use_ready(pins: &[Pin]) -> Result<()> {
     fn submission(pin: &Pin) -> Result<(u64, Option<Arc<Control>>)> {
         crate::check_process()?;
         let region = pin.region();
-        if region.arena.pid != std::process::id() {
+        if region.pid != std::process::id() {
             return Err(Error::Invalid("capture readiness inherited after fork"));
         }
         let generation = region.uses.generation.load(Ordering::Acquire);
@@ -189,7 +189,7 @@ pub(crate) fn wait_use_ready(pins: &[Pin]) -> Result<()> {
             return Ok(false);
         }
         for (pin, (generation, original)) in pins.iter().zip(&snapshots) {
-            let _state = pin.region().arena.lock()?;
+            let _state = pin.region().gpu.lock()?;
             let (current_generation, current) = submission(pin)?;
             let same = match (original, current.as_ref()) {
                 (Some(original), Some(current)) => Arc::ptr_eq(original, current),
@@ -263,7 +263,7 @@ impl Fill {
     #[allow(unsafe_code)]
     pub unsafe fn into_async(self, owners: FillOwners) -> FillSession {
         let control = Arc::new(Control {
-            pid: self.region().arena.pid,
+            pid: self.region().pid,
             generation: self.region().uses.generation.load(Ordering::Acquire),
             observed: Mutex::new(Observed {
                 facts: FillFacts {
@@ -306,14 +306,6 @@ impl Fill {
 }
 
 impl FillSession {
-    // ABI observers need failure visibility even when a Prepared/Writing owner cannot
-    // return a submitted ticket. This clone contains no GPU ownership or cancellation.
-    pub(crate) fn observer(&self) -> FillTicket {
-        FillTicket {
-            control: self.control.clone(),
-        }
-    }
-
     pub fn facts(&self) -> Result<FillFacts> {
         self.control.facts()
     }
@@ -359,7 +351,7 @@ impl FillSession {
         let region = payload.region();
         let guard = enter_producer(region.device())?;
         let result = (|| {
-            let _arena = region.arena.lock()?;
+            let _arena = region.gpu.lock()?;
             if region.uses.state() != Contents::Loading
                 || region.uses.generation.load(Ordering::Acquire) != self.control.generation
             {
@@ -367,16 +359,16 @@ impl FillSession {
                     "asynchronous fill generation changed before begin",
                 ));
             }
-            let _context = region.arena.driver.enter()?;
+            let _context = region.gpu.driver().enter()?;
             for &stream in &owners.streams {
-                region.arena.driver.validate_stream(stream as usize)?;
-                if region.arena.driver.is_capturing(stream as usize)? {
+                region.gpu.driver().validate_stream(stream as usize)?;
+                if region.gpu.driver().is_capturing(stream as usize)? {
                     return Err(Error::CaptureActive);
                 }
             }
             // A failed pre-write attempt keeps every already-created event for eventual cleanup.
             while payload.events.len() < owners.streams.len() {
-                payload.events.push(region.arena.driver.create_event()?);
+                payload.events.push(region.gpu.driver().create_event()?);
                 payload.checked.push(false);
             }
             Ok(())
@@ -404,17 +396,27 @@ impl FillSession {
     /// further write. Every actual GPU writer is one of the fixed, retained producer streams.
     #[allow(unsafe_code)]
     pub unsafe fn publish(&mut self) -> Result<FillTicket> {
-        self.seal(true, None)
+        self.seal(true, None, None).map(|(ticket, _)| ticket)
+    }
+
+    /// As `publish`, with the consumer's pin taken and ordered under the same lock, so nothing
+    /// can evict the region between the two.
+    ///
+    /// # Safety
+    /// As `publish`; the stream is live in this primary context.
+    #[allow(unsafe_code)]
+    pub unsafe fn publish_to(&mut self, consumer_stream: u64) -> Result<Pin> {
+        self.seal(true, None, Some(consumer_stream)).map(|(_, pin)| pin.expect("published pin"))
     }
 
     /// # Safety
     /// No further host submission may occur. Partial writes used only the fixed producer set.
     #[allow(unsafe_code)]
     pub unsafe fn abort(&mut self, cause: Error) -> Result<FillTicket> {
-        self.seal(false, Some(cause))
+        self.seal(false, Some(cause), None).map(|(ticket, _)| ticket)
     }
 
-    fn seal(&mut self, publish: bool, cause: Option<Error>) -> Result<FillTicket> {
+    fn seal(&mut self, publish: bool, cause: Option<Error>, consumer: Option<u64>) -> Result<(FillTicket, Option<Pin>)> {
         self.control.check()?;
         let payload = self
             .payload
@@ -428,14 +430,14 @@ impl FillSession {
         }
         let region = payload.region();
         let result = (|| {
-            let captures = capture_counts()?;
-            ensure_not_capturing(&captures, region.device())?;
-            let _arena = region.arena.lock()?;
-            let _context = region.arena.driver.enter()?;
+            let gate = gate(region.device())?;
+            gate.not_capturing()?;
+            let mut state = region.gpu.lock()?;
+            let _context = region.gpu.driver().enter()?;
             let owners = payload.owners.as_ref().expect("session owners");
             // A refusal before recording leaves a reachable Writing session for retry/abort.
             for &stream in &owners.streams {
-                if region.arena.driver.is_capturing(stream as usize)? {
+                if region.gpu.driver().is_capturing(stream as usize)? {
                     return Err(Error::CaptureActive);
                 }
             }
@@ -445,7 +447,7 @@ impl FillSession {
             observed.facts.failure = cause.clone();
             payload.sealed = true;
             for (&stream, &event) in owners.streams.iter().zip(&payload.events) {
-                region.arena.driver.record(event, stream as usize)?;
+                region.gpu.driver().record(event, stream as usize)?;
                 observed.facts.recorded_count += 1;
             }
             if region.uses.generation.load(Ordering::Acquire) != self.control.generation
@@ -454,28 +456,37 @@ impl FillSession {
                 return Err(Error::Invalid("asynchronous fill generation changed"));
             }
             payload.publish = publish;
-            if publish {
-                *region
-                    .uses
-                    .submission
-                    .lock()
-                    .map_err(|_| Error::Poisoned("fill submission mutex".into()))? =
-                    Some(Arc::clone(&self.control));
-                region.uses.set(Contents::Published);
-                observed.facts.published = true;
-                observed.facts.state = FillState::Published;
+            if !publish {
+                return Ok(None);
             }
-            // Keep the arena lock through publication, but no resource destruction here.
-            Ok(())
+            *region
+                .uses
+                .submission
+                .lock()
+                .map_err(|_| Error::Poisoned("fill submission mutex".into()))? =
+                Some(Arc::clone(&self.control));
+            region.uses.set(Contents::Published);
+            observed.facts.published = true;
+            observed.facts.state = FillState::Published;
+            drop(observed);
+            let Some(consumer) = consumer else { return Ok(None) };
+            order(&region, &self.control, consumer)?;
+            let mut pin = region.pin_locked(&mut state)?;
+            pin.submission = Some(Arc::clone(&self.control));
+            // Keep the table lock through publication, but no resource destruction here.
+            Ok(Some(pin))
         })();
-        if let Err(error) = result {
-            if payload.sealed {
-                payload.quarantine(error.clone());
-            } else {
-                self.control.lock()?.facts.failure = Some(error.clone());
+        let pin = match result {
+            Ok(pin) => pin,
+            Err(error) => {
+                if payload.sealed {
+                    payload.quarantine(error.clone());
+                } else {
+                    self.control.lock()?.facts.failure = Some(error.clone());
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         let payload = self.payload.take().expect("submitted payload");
         if let Err(error) = self
             .sender
@@ -487,11 +498,10 @@ impl FillSession {
             let error = Error::Poisoned("fill completion worker stopped".into());
             payload.quarantine(error.clone());
             self.payload = Some(payload); // publication did not release custody
+            std::mem::forget(pin);
             return Err(error);
         }
-        Ok(FillTicket {
-            control: Arc::clone(&self.control),
-        })
+        Ok((FillTicket { control: Arc::clone(&self.control) }, pin))
     }
 }
 
@@ -567,6 +577,7 @@ impl Payload {
         };
         self.region()
             .poison(format!("asynchronous fill {phase}: {error}"));
+        crate::abi::fault();
         if self.control.check().is_ok() {
             // A worker panic may poison the observer while a waiter is asleep.
             // Publish/wake under the recovered guard, leaving poison intact so
@@ -589,12 +600,12 @@ impl Payload {
         self.control.check()?;
         let region = self.region(); // lease is acquired before capture exclusion and outlives it
         if !self.completed {
-            let captures = capture_counts()?;
-            if ensure_not_capturing(&captures, region.device()).is_err() {
+            let gate = gate(region.device())?;
+            if gate.not_capturing().is_err() {
                 return Ok(false);
             }
-            let mut arena = region.arena.lock()?;
-            let _context = region.arena.driver.enter()?;
+            let mut arena = region.gpu.lock()?;
+            let _context = region.gpu.driver().enter()?;
             let mut observed = self.control.lock()?;
             if self.writing {
                 if !self.sealed || observed.facts.recorded_count != self.events.len() {
@@ -603,7 +614,7 @@ impl Payload {
                     ));
                 }
                 for (index, &event) in self.events.iter().enumerate() {
-                    if !self.checked[index] && region.arena.driver.query(event)? {
+                    if !self.checked[index] && region.gpu.driver().query(event)? {
                         self.checked[index] = true;
                         observed.facts.completed_count += 1;
                     }
@@ -643,9 +654,9 @@ impl Payload {
             Err(Error::CaptureActive) => return Ok(false),
             Err(error) => return Err(error),
         };
-        let _context = region.arena.driver.enter()?;
+        let _context = region.gpu.driver().enter()?;
         while let Some(event) = self.events.last().copied() {
-            region.arena.driver.destroy_event(event)?;
+            region.gpu.driver().destroy_event(event)?;
             self.events.pop();
         }
         let resources = &mut self.owners.as_mut().expect("retirement owners").resources;
@@ -724,7 +735,7 @@ fn worker(device: i32) -> Result<mpsc::Sender<Payload>> {
         return Err(Error::Invalid("fill worker inherited after fork"));
     }
     // Both event polling and final-resource custody exist before any destination is exposed.
-    crate::retirement::prepare(device)?;
+    crate::retirement::prepare()?;
     let mut slot = WORKER
         .get_or_init(Mutex::default)
         .lock()
@@ -768,13 +779,8 @@ fn run_worker(receiver: mpsc::Receiver<Payload>) {
                 Ok(Ok(false)) => index += 1,
                 Ok(Ok(true)) => {
                     let payload = pending.swap_remove(index);
-                    let device = payload.region().device();
-                    // The shared queue owns every checked final resource. Handoff failure
-                    // records retirement_failure and retains the exact job in quarantine.
-                    crate::retirement::defer(
-                        device,
-                        crate::retirement::Job::FillResources(payload),
-                    );
+                    // The retirer owns every checked final resource.
+                    crate::retirement::defer(crate::retirement::Job::Fill(payload));
                 }
                 failure => {
                     let error = match failure {
@@ -803,14 +809,14 @@ impl Region {
     /// before success; every additional consumer stream must call Pin::order_on first.
     #[allow(unsafe_code)]
     pub unsafe fn prepare_on(self: &Arc<Self>, consumer_stream: u64) -> Result<StreamPreparation> {
-        if self.arena.pid != std::process::id() {
-            return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
+        if self.pid != std::process::id() {
+            return Err(Error::Invalid("CUDA regions cannot be used after fork"));
         }
         {
-            let captures = capture_counts()?;
-            let mut state = self.arena.lock()?;
+            let gate = gate(self.device())?;
+            let mut state = self.gpu.lock()?;
             if self.uses.state() == Contents::Published {
-                ensure_not_capturing(&captures, self.device())?;
+                gate.not_capturing()?;
                 let control = self
                     .uses
                     .submission
@@ -819,6 +825,7 @@ impl Region {
                     .clone()
                     .ok_or(Error::Poisoned("published fill has no ticket".into()))?;
                 order(self, &control, consumer_stream)?;
+                state.used(self.id, self.gpu.next_use());
                 let mut pin = self.pin_locked(&mut state)?;
                 pin.submission = Some(control);
                 return Ok(StreamPreparation::Ordered(pin));
@@ -836,14 +843,14 @@ impl Pin {
     #[allow(unsafe_code)]
     pub unsafe fn order_on(&self, consumer_stream: u64) -> Result<()> {
         let region = self.region();
-        if region.arena.pid != std::process::id() {
-            return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
+        if region.pid != std::process::id() {
+            return Err(Error::Invalid("CUDA regions cannot be used after fork"));
         }
-        let captures = capture_counts()?;
-        let _state = region.arena.lock()?;
+        let gate = gate(region.device())?;
+        let _state = region.gpu.lock()?;
         if let Some(control) = &self.submission {
             if !control.lock()?.facts.completed {
-                ensure_not_capturing(&captures, region.device())?;
+                gate.not_capturing()?;
             }
             order(region, control, consumer_stream)
         } else {
@@ -871,9 +878,9 @@ fn order(region: &Region, control: &Control, stream: u64) -> Result<()> {
     if observed.facts.completed {
         return Ok(());
     }
-    let _context = region.arena.driver.enter()?;
-    region.arena.driver.validate_stream(stream as usize)?;
-    if region.arena.driver.is_capturing(stream as usize)? {
+    let _context = region.gpu.driver().enter()?;
+    region.gpu.driver().validate_stream(stream as usize)?;
+    if region.gpu.driver().is_capturing(stream as usize)? {
         return Err(Error::CaptureActive);
     }
     if observed.facts.recorded_count != observed.events.len() {
@@ -882,7 +889,7 @@ fn order(region: &Region, control: &Control, stream: u64) -> Result<()> {
         ));
     }
     for &event in &observed.events {
-        region.arena.driver.order_event(stream as usize, event)?;
+        region.gpu.driver().order_event(stream as usize, event)?;
     }
     Ok(())
 }

@@ -174,10 +174,10 @@ def settle(vt, device):
     done = torch.cuda.Event()
     done.record(stream)
     done.synchronize()
-    vt.trim(device)
+    torch.cuda.empty_cache()
     done.record(stream)
     done.synchronize()
-    vt.trim(device)
+    torch.cuda.empty_cache()
 
 
 @app.entrypoint(accelerator=True)

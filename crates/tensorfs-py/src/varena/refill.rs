@@ -256,10 +256,7 @@ impl StageSource {
 
     /// At the predecessor's actual graph-running point, admit one complete raw source group.
     /// Identity and measured demand are native decisions; no caller byte window is accepted.
-    pub(super) fn prepare_speculative(
-        &self,
-        capability: &varena::working::ReplayPrefetch,
-    ) -> Result<Option<Work>, Failure> {
+    pub(super) fn prepare_speculative(&self) -> Result<Option<Work>, Failure> {
         let producer = match varena::enter_producer(self.device()) {
             Ok(producer) => producer,
             Err(varena::Error::CaptureActive) => return Ok(None),
@@ -270,7 +267,7 @@ impl StageSource {
             .iter()
             .map(|(region, _)| region.clone())
             .collect();
-        let Some(prepared) = varena::Region::prepare_replay_prefetch(&regions, capability)
+        let Some(prepared) = varena::Region::prepare_prefetch(&regions)
             .map_err(Failure::Native)?
         else {
             return Ok(None);
@@ -547,25 +544,9 @@ impl Shared {
                 && work.host.is_none()
                 && (work.decode.is_none() || work.event_ordered))
                 .then_some(&issued as io::Issued<'_>);
-            // Non-preferred weights are the streaming window. Populate the OS page cache
-            // on their misses so later passes do not repeatedly bypass it with O_DIRECT.
-            // A mixed placement read uses buffered I/O as one existing engine operation.
-            let mode = if work
-                .inputs
-                .iter()
-                .filter(|input| input.fill.is_some())
-                .try_fold(false, |streamed, input| {
-                    input
-                        .region
-                        .is_preferred()
-                        .map(|preferred| streamed || !preferred)
-                })
-                .map_err(Failure::Native)?
-            {
-                Mode::Buffered
-            } else {
-                Mode::Cache
-            };
+            // Bytes read twice will be read again: populate the OS page cache on their misses
+            // rather than repeatedly bypassing it with O_DIRECT.
+            let mode = if work.reread() { Mode::Buffered } else { Mode::Cache };
             // SAFETY: Work owns the checkpoint/source/items, the host page and the Fill's
             // physical pin. The engine validates all spans, initializes padding and joins
             // submitted work.
@@ -970,7 +951,7 @@ fn prepare_items(
 }
 
 pub(super) fn prepare_encoded(
-    arena: &Arc<varena::Arena>,
+    device: &'static varena::Device,
     checkpoint: tensorfs::Checkpoint,
     component: &str,
     key: &str,
@@ -1016,7 +997,7 @@ pub(super) fn prepare_encoded(
         })
         .collect();
     let private = tensorfs::raw::decode_device_scratch_bytes(
-        arena.device(),
+        device.ordinal(),
         encoding,
         &dtype,
         &shape,
@@ -1052,8 +1033,8 @@ pub(super) fn prepare_encoded(
     let items = prepare_items(&checkpoint, named, packed)?;
     let encoding = encoding.clone();
     let parts = parts.iter().cloned().zip(offsets).collect();
-    let region = arena.reserve(bytes).map_err(Failure::Native)?;
-    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true, false, true)?
+    let region = device.reserve(bytes).map_err(Failure::Native)?;
+    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true)?
         .ok_or_else(|| invalid("fresh encoded load slot was already resident"))?;
     // Final zero initialization has already completed. This fresh scratch has no
     // pending GPU work if allocation fails; later submission keeps it inside Work.
@@ -1077,20 +1058,11 @@ pub(super) fn prepare_work(
     checkpoint: tensorfs::Checkpoint,
     parts: Vec<(String, usize, usize)>,
     threads: usize,
-    reclaim: bool,
-    evict_completed: bool,
     initialize: bool,
 ) -> Result<Option<Work>, Failure> {
     let items = prepare_items(&checkpoint, parts, region.len())?;
     let producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
-    let preparation = if reclaim {
-        region.prepare()
-    } else if evict_completed {
-        region.prepare_evicting_completed()
-    } else {
-        region.prepare_without_reclaim()
-    }
-    .map_err(Failure::Native)?;
+    let preparation = region.prepare().map_err(Failure::Native)?;
     let fill = match preparation {
         varena::Preparation::Resident(pin) => {
             drop(pin);
@@ -1183,8 +1155,10 @@ fn prepare_raw_prefetch(
         Err(varena::Error::CaptureActive) => return Ok(None),
         Err(error) => return Err(Failure::Native(error)),
     };
-    let prepared = region.prepare_prefetch().map_err(Failure::Native)?;
-    let Some(varena::Preparation::Fill(fill)) = prepared else { return Ok(None) };
+    let prepared = varena::Region::prepare_prefetch(std::slice::from_ref(region)).map_err(Failure::Native)?;
+    let Some(varena::Preparation::Fill(fill)) = prepared.and_then(|mut prepared| prepared.pop()) else {
+        return Ok(None);
+    };
     // Admission has released every allocator lock. Reuse source/producer ownership directly;
     // never call prepare_work recursively beneath an already admitted Fill.
     prepare_fill(region, checkpoint, items, threads, fill, producer, false).map(Some)
@@ -1379,6 +1353,10 @@ impl PreparedRead {
 }
 
 impl Work {
+    fn reread(&self) -> bool {
+        self.inputs.iter().any(|input| input.fill.is_some() && input.region.refilled())
+    }
+
     pub(super) fn missing_bytes(&self) -> u64 {
         self.inputs
             .iter()
@@ -1963,7 +1941,7 @@ impl PreparedRead {
     }
 
     #[new]
-    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, evict_completed = false, host = None))]
+    #[pyo3(signature = (region, checkpoint, parts, threads = 2, host = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1971,8 +1949,6 @@ impl PreparedRead {
         checkpoint: PyRef<'_, PyCheckpoint>,
         parts: Vec<(String, usize, usize)>,
         threads: usize,
-        reclaim: bool,
-        evict_completed: bool,
         host: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let region = region.region.clone();
@@ -1991,15 +1967,7 @@ impl PreparedRead {
         let checkpoint = checkpoint.core(py)?;
         let prepared = py
             .detach(|| {
-                prepare_work(
-                    &region,
-                    checkpoint,
-                    parts,
-                    threads,
-                    reclaim,
-                    evict_completed,
-                    false,
-                )
+                prepare_work(&region, checkpoint, parts, threads, false)
             })
             .map_err(|e| e.raise(py))?
             .map(|mut work| {

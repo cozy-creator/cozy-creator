@@ -58,7 +58,7 @@ fn execution_key(
     key
 }
 
-fn inactive(owner: &Working) -> Result<()> {
+fn inactive(owner: &Device) -> Result<()> {
     let state = owner.lock()?;
     if state.phases.active.is_some() || state.splits.active_is_present() {
         return Err(Error::Invalid(
@@ -160,7 +160,6 @@ impl Execution {
                 PhaseMode::Eager,
                 Some((self.site.clone(), self.selected.choice_id.clone())),
                 Some(self.selected.plan_generation),
-                false,
             )?;
             Ok(Active {
                 phase,

@@ -7,10 +7,6 @@ publish = false
 # Build these genuine native fixtures in the extension's dependency cohort. Building
 # varena as a separate primary crate can select a different private Rust linkage mode.
 [[bin]]
-name = "varena-async-fill"
-path = "../../../../crates/varena/examples/async_fill.rs"
-
-[[bin]]
 name = "varena-raw-source"
 path = "../../../../crates/tensorfs/examples/raw_source.rs"
 

@@ -1,7 +1,7 @@
 """Whole-process Torch working allocator. Install before CUDA initialization in the executor child.
 
-Use this module's graph/replay owners, or explicitly complete capture and record every replay
-and output consumer stream. Raw Torch graph calls alone do not supply these lifetime signals.
+Capture with this module's graph/replay owners. A raw torch.cuda.graph supplies none of the
+lifetime signals the allocator needs, so its capture is refused.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import sys
 import threading
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, cast
@@ -31,6 +30,8 @@ PoolId: TypeAlias = tuple[int, int]
 _lock = threading.Lock()
 _owner = 0
 _library: ctypes.CDLL | None = None
+_workspaces_known: set[int] = set()
+_primed: set[tuple[int, int]] = set()
 _CAPTURE_CAPACITY_PREFIX = "[tensorfs.varena.capture_capacity.v1] "
 
 
@@ -129,6 +130,8 @@ def _bind_allocator() -> None:
                 ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(_Failure)
             ]
             native.varena_torch_workspace_cache_enabled.restype = ctypes.c_int32
+            native.varena_torch_storage_owners.argtypes = [ctypes.c_void_p]
+            native.varena_torch_storage_owners.restype = ctypes.c_uint64
             bindings = _ext._varena_working_bindings()
             if native.varena_torch_bind(bindings) != 0:
                 raise RuntimeError("Varena Torch shim refused its native function table")
@@ -154,16 +157,19 @@ def _workspace_cache_enabled() -> bool:
     return bool(enabled.value)
 
 
-def _managed_graph_refusal() -> str | None:
-    """Shared managed-graph eligibility; low-level graph owners keep their contract."""
-    return "cached_library_workspace" if _workspace_cache_enabled() else None
-
-
 def initialize(device: _ExplicitDevice = 0) -> None:
     """Activate the verified native service and Working custody outside capture."""
     index = _activation_device(device)
     _installed()
     _ext._varena_working_initialize(index)
+    if index not in _workspaces_known:
+        _workspaces_known.add(index)
+        if _workspace_cache_enabled():
+            import torch
+
+            with torch.cuda.device(index):
+                sizes = [torch.backends.cuda.cublas_workspace_size(), torch.backends.cuda.cublaslt_workspace_size()]
+            _ext._varena_working_library_workspaces(index, sizes)
 
 
 def stats(device: DeviceLike = 0) -> dict[str, int]:
@@ -177,18 +183,12 @@ def reset_peak(device: DeviceLike = 0) -> None:
     _ext._varena_working_reset_peak(_device(device))
 
 
-def trim(device: DeviceLike = 0) -> int:
-    """Return completed unused pages; pending work and graph owners remain retained."""
-    _installed()
-    return _ext._varena_working_trim(_device(device))
-
-
 def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
-    """Bound resident weights plus mapped Torch/native working memory.
+    """Development only: use at most this much of the card, as a smaller card would.
 
-    This static ceiling is independent of temporary make_room limits; the smaller wins.
-    Contexts and allocations owned by other CUDA libraries are outside this managed total.
-    Live owners are retained when lowering the limit. Returns unused bytes reclaimed now.
+    The core keeps it true against the driver's own charge. Independent of temporary
+    make_room limits; the smaller wins. Live owners are retained when lowering it.
+    Returns unused bytes reclaimed now.
     """
     _installed()
     return _ext._varena_working_set_limit(_device(device), bytes)
@@ -285,7 +285,10 @@ def phase_forget(device: DeviceLike, key: str) -> bool:
 
 
 def prepare_pool(pool: PoolId, bytes: int, device: DeviceLike = 0) -> int:
-    """Map at least this capacity before capture; the previous pool survives failure."""
+    """Begin using this pool: its pages mapped, at least this capacity, at the same addresses
+    after any idle release. bytes=0 before a replay and before writing its inputs. A scratch
+    pool's contents are undefined between uses: copy every input in again, no check can catch an
+    owner that skips it. The previous pool survives failure. record_pool_stream ends the use."""
     initialize(device)
     return _ext._varena_working_pool_reserve(_device(device), cast(PoolId, tuple(pool)), bytes)
 
@@ -294,6 +297,37 @@ def cancel_preparation(pool: PoolId, device: DeviceLike = 0) -> None:
     """Return an unused reservation to reclaimability without releasing a graph owner."""
     _installed()
     _ext._varena_working_pool_cancel_preparation(_device(device), cast(PoolId, tuple(pool)))
+
+
+def pool_scratch(pool: PoolId, held: Sequence[Any] = (), device: DeviceLike = 0) -> None:
+    """The owner declares the tensors it holds in this pool dead between uses: nothing reads
+    them outside prepare_pool(pool, 0) .. record_pool_stream(pool, stream). The core may then
+    release the idle pool's pages, keeping its VA and graph. A tensor sharing a held one's
+    storage could still reach them, so it refuses this, as does any other live allocation.
+    """
+    _installed()
+    native = cast(ctypes.CDLL, _library)
+    storages: dict[int, tuple[Any, int]] = {}
+    for tensor in held:
+        storage = tensor.untyped_storage()
+        storages[storage._cdata] = (storage, storages.get(storage._cdata, (storage, 0))[1] + 1)
+    for cdata, (storage, tensors) in storages.items():
+        if native.varena_torch_storage_owners(cdata) > tensors + 1:  # its Python wrapper owns one
+            raise RuntimeError("a tensor sharing this graph's memory has escaped its owner")
+    _ext._varena_working_pool_scratch(_device(device), cast(PoolId, tuple(pool)), [storage.data_ptr() for storage, _ in storages.values()])
+
+
+def _prime_library(device: int, stream: Stream) -> None:
+    """Torch's cached workspaces for this stream, made before capture: one a capture would
+    have to map refuses that capture. Their kernels stay real work, outside any graph."""
+    import torch
+    import torch.nn.functional as functional
+
+    with torch.cuda.device(device), torch.cuda.stream(stream):
+        value = torch.ones((2, 2), dtype=torch.float32, device=device)
+        torch.mm(value, value)
+        functional.linear(value, value, value[0])
+    _primed.add((device, stream.cuda_stream))
 
 
 def capture_complete(pool: PoolId, *, stream: Stream, device: DeviceLike = None) -> None:
@@ -309,10 +343,10 @@ def capture_complete(pool: PoolId, *, stream: Stream, device: DeviceLike = None)
 
 
 def record_pool_stream(pool: PoolId, stream: Stream, device: DeviceLike = None) -> None:
-    """Record after replay or output use has been submitted on this stream."""
+    """After a replay's output use has been submitted on this stream: this use is over."""
     _installed()
     index = _device(stream.device if device is None else device)
-    _ext._varena_working_pool_record_stream(index, cast(PoolId, tuple(pool)), stream.cuda_stream)
+    _ext._varena_working_pool_record_stream(index, cast(PoolId, tuple(pool)), stream.cuda_stream, True)
 
 
 def retire_stream(stream: Stream, device: DeviceLike = None) -> None:
@@ -320,6 +354,7 @@ def retire_stream(stream: Stream, device: DeviceLike = None) -> None:
     _installed()
     index = _device(stream.device if device is None else device)
     _ext._varena_working_retire_stream(index, stream.cuda_stream)
+    _primed.discard((index, stream.cuda_stream))
 
 
 @contextmanager
@@ -337,14 +372,8 @@ def external_callback(device: DeviceLike) -> Iterator[None]:
         scope.close()
 
 
-def capture_footprint(device: DeviceLike, pool: PoolId) -> _ext._VarenaGraphFootprint:
-    """Create inert graph-definition metadata; pass it to graph(..., footprint=...)."""
-    _installed()
-    return _ext._VarenaGraphFootprint(_device(device), pool)
-
-
 @contextmanager
-def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None, footprint: _ext._VarenaGraphFootprint | None = None) -> Iterator[Any]:
+def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None) -> Iterator[Any]:
     """Prepare and finish capture, joining only its explicit stream and the caller.
 
     Other producer streams must already be joined by the caller. Native capture
@@ -359,7 +388,10 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
     stream = torch.cuda.Stream(device=device) if stream is None else stream
     pool = cast(PoolId, torch.cuda.graph_pool_handle()) if pool is None else pool
     try:
+        if _workspace_cache_enabled() and (device, stream.cuda_stream) not in _primed:
+            _prime_library(device, stream)
         prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
+        _ext._varena_working_pool_arm(device, cast(PoolId, tuple(pool)))
         # Include caller preparation, but never drain unrelated device streams.
         # Native allocations during capture use this already prepared pool only.
         if stream != caller:
@@ -370,45 +402,34 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
         raise
     started = False
     error = None
-    tracing = False
-    try:
-        with torch.cuda.device(device), torch.cuda.stream(stream):
-            try:
-                if footprint is not None:
-                    # Binding is to this capture cycle, not merely the shared pool. The callback
-                    # references only metadata and makes no CUDA call on reset or finalization.
-                    footprint._begin(device, pool)
-                    tracing = True
-                    cuda_graph.register_destroy_callback(footprint.retire)
-                cuda_graph.capture_begin(pool=pool)
-                started = True
-                yield cuda_graph
-            except BaseException as caught:
-                error = caught
-            finally:
-                # A capture-start Python hook may throw after CUDA capture already began.
-                with torch.cuda.stream(stream):
-                    ending = started or torch.cuda.is_current_stream_capturing()
-                    if ending:
-                        try:
-                            cuda_graph.capture_end()
-                        except BaseException as caught:
-                            if error is None:
-                                error = caught
-                    if torch.cuda.is_current_stream_capturing():
-                        raise RuntimeError("CUDA capture did not end; Varena capture exclusion is retained") from error
-                    routed = cast(ctypes.CDLL, _library).varena_torch_abort_routing(device, *pool)
-                    if routed < 0:
-                        raise RuntimeError("failed to end Varena capture routing") from error
-                    if ending or routed:
-                        capture_complete(pool, stream=stream, device=device)
-                        if error is not None:
-                            cuda_graph.reset()
-                    elif error is not None:
-                        cancel_preparation(pool, device)
-    finally:
-        if tracing and footprint is not None:
-            footprint._finish(error is None and sys.exc_info()[0] is None)
+    with torch.cuda.device(device), torch.cuda.stream(stream):
+        try:
+            cuda_graph.capture_begin(pool=pool)
+            started = True
+            yield cuda_graph
+        except BaseException as caught:
+            error = caught
+        finally:
+            # A capture-start Python hook may throw after CUDA capture already began.
+            with torch.cuda.stream(stream):
+                ending = started or torch.cuda.is_current_stream_capturing()
+                if ending:
+                    try:
+                        cuda_graph.capture_end()
+                    except BaseException as caught:
+                        if error is None:
+                            error = caught
+                if torch.cuda.is_current_stream_capturing():
+                    raise RuntimeError("CUDA capture did not end; Varena capture exclusion is retained") from error
+                routed = cast(ctypes.CDLL, _library).varena_torch_abort_routing(device, *pool)
+                if routed < 0:
+                    raise RuntimeError("failed to end Varena capture routing") from error
+                if ending or routed:
+                    capture_complete(pool, stream=stream, device=device)
+                    if error is not None:
+                        cuda_graph.reset()
+                elif error is not None:
+                    cancel_preparation(pool, device)
     if error is not None:
         # This private c10::Error escapes cuDNN's engine-fallback catches. Publish OOM only
         # after actual capture completion and graph reset; cleanup failures take precedence.
@@ -435,7 +456,8 @@ def replay_scope(device: int) -> Iterator[None]:
 
 
 def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
-    """Replay an owned graph and retain its pool through completion on the selected stream."""
+    """Replay an owned graph and retain its pool through completion on the selected stream.
+    A scratch pool's contents are undefined between replays: copy every input in first."""
     _installed()
     import torch
 
@@ -445,6 +467,7 @@ def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
     stream = torch.cuda.current_stream(device) if stream is None else stream
     if _device(stream.device) != device:
         raise ValueError("replay stream belongs to a different device")
+    prepare_pool(pool, 0, device)
     _ext._varena_working_pool_retain(device, pool)
     try:
         with torch.cuda.device(device), torch.cuda.stream(stream):
@@ -452,7 +475,7 @@ def replay(cuda_graph: Any, *, stream: Stream | None = None) -> None:
                 cuda_graph.replay()
             finally:
                 # End hooks may raise or reset the graph after launch. Our reference survives both.
-                record_pool_stream(pool, stream, device)
+                _ext._varena_working_pool_record_stream(device, pool, stream.cuda_stream, False)
     finally:
         _ext._varena_working_pool_release(device, pool)
 

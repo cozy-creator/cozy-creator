@@ -53,12 +53,11 @@ impl Drop for TensorExport {
             let region = match unsafe { self.consumers.release(pin) } {
                 Ok(region) => region,
                 Err((pin, error)) => {
-                    retirement::tensor_quarantine(
-                        pin,
-                        self.consumers.clone(),
-                        self.weight.take().expect("tensor Source/service custody"),
-                        error,
-                    );
+                    retirement::quarantine(retirement::Job::Owner(super::Owned::Tensor {
+                        _pin: pin,
+                        _consumers: self.consumers.clone(),
+                        _weight: self.weight.take().expect("tensor Source/service custody"),
+                    }), &error);
                     return;
                 }
             };
@@ -67,7 +66,7 @@ impl Drop for TensorExport {
             drop(region);
         }
         if let Some(weight) = self.weight.take() {
-            retirement::tensor_weight(weight);
+            retirement::defer(retirement::Job::Owner(super::Owned::Weight { _weight: weight }));
         }
     }
 }
@@ -100,7 +99,7 @@ pub fn gpu_event_counts(id: u64) -> crate::Result<(u64, u64, u64)> {
             _ => return Err(Error::Invalid("expected a public Gpu handle")),
         }
     };
-    let (_, queries, records, waits) = gpu.arena.driver.calls();
+    let (_, queries, records, waits) = gpu.core.driver().calls();
     Ok((queries, records, waits))
 }
 
@@ -118,10 +117,10 @@ pub fn export_use(id: u64, index: usize, stream: u64) -> crate::Result<TensorExp
     {
         // Ready Pins have no producer event to order, so order_on alone cannot
         // establish that an override stream belongs to this primary context.
-        let _context = weight.gpu.arena.driver.enter()?;
+        let _context = weight.gpu.core.driver().enter()?;
         let stream =
             usize::try_from(stream).map_err(|_| Error::Invalid("CUDA stream handle overflow"))?;
-        weight.gpu.arena.driver.validate_stream(stream)?;
+        weight.gpu.core.driver().validate_stream(stream)?;
     }
     let pin = {
         let pins = used

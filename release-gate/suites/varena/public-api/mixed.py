@@ -99,7 +99,6 @@ def main() -> None:
         from streams import owned_stream
 
         with owned_stream(torch, vt) as stream, torch.cuda.stream(stream), api.open() as gpu:
-            gpu.trim()
             before = gpu.stats()
             allocation = C.c_uint64()
             c.mixed_c_alloc.argtypes = [C.c_uint64, C.c_uint64, C.c_uint64, C.POINTER(C.c_uint64)]
@@ -118,7 +117,6 @@ def main() -> None:
             assert c.mixed_c_free(allocation.value) == 0
             del value
             stream.synchronize()
-            gpu.trim()
             final = gpu.stats()
             assert final["working_live"] == before["working_live"], (before, final)
             assert final["working_mapped"] <= before["working_mapped"], (before, final)

@@ -1,7 +1,6 @@
 //! Process-local weight residency bindings. CUDA ownership remains in the Rust core.
 mod working;
 mod tensor_export;
-mod census;
 mod cache;
 mod cache_owner;
 mod plan;
@@ -186,215 +185,47 @@ fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     result.unwrap_or_else(|_| PyRuntimeError::new_err(message))
 }
 
-#[pyclass(name = "_VarenaArena", module = "tensorfs._ext", frozen)]
-struct PyArena {
-    root: Mutex<ArenaRoot>,
+#[pyclass(name = "_VarenaDevice", module = "tensorfs._ext", frozen)]
+struct PyDevice {
+    device: &'static varena::Device,
     pid: u32,
-    id: u64,
 }
 
-enum ArenaRoot {
-    Live(Arc<varena::Arena>),
-    Transferring,
-    Closed(Arc<varena::ArenaRetirement>),
-}
-
-impl PyArena {
-    fn check(&self) -> PyResult<()> {
+impl PyDevice {
+    fn owner(&self) -> PyResult<&'static varena::Device> {
         if self.pid != std::process::id() {
-            return Err(PyRuntimeError::new_err(
-                "CUDA arenas cannot be used after fork",
-            ));
+            return Err(PyRuntimeError::new_err("a CUDA device cannot be used after fork"));
         }
-        Ok(())
+        Ok(self.device)
     }
-
-    // Genuine operation leases are acquired before all native exclusion/state guards.
-    // Closing the Python root never revokes an operation that already owns its Arc.
-    fn owner(&self) -> PyResult<Arc<varena::Arena>> {
-        self.check()?;
-        let root = self
-            .root
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("Python arena root mutex poisoned"))?;
-        match &*root {
-            ArenaRoot::Live(arena) => Ok(arena.clone()),
-            ArenaRoot::Transferring => Err(PyRuntimeError::new_err(
-                "arena retirement handoff is in progress",
-            )),
-            ArenaRoot::Closed(_) => Err(PyRuntimeError::new_err("arena is closed")),
-        }
-    }
-}
-
-impl Drop for PyArena {
-    fn drop(&mut self) {
-        let root = std::mem::replace(
-            self.root.get_mut().unwrap_or_else(|e| e.into_inner()),
-            ArenaRoot::Transferring,
-        );
-        if let ArenaRoot::Live(arena) = root {
-            if self.pid != std::process::id() {
-                std::mem::forget(arena); // Never touch inherited native queue/metadata locks.
-            } else {
-                match arena.defer_retirement() {
-                    Ok(ticket) => drop(ticket), // Native job/quarantine retains actual custody.
-                    Err((arena, _)) => std::mem::forget(arena), // PID rejection precedes locks.
-                }
-            }
-        }
-    }
-}
-
-#[pyclass(name = "_VarenaArenaRetirement", module = "tensorfs._ext", frozen)]
-struct PyArenaRetirement {
-    ticket: Arc<varena::ArenaRetirement>,
 }
 
 #[pymethods]
-impl PyArenaRetirement {
-    fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let facts = py
-            .detach(|| self.ticket.facts())
-            .map_err(|error| raise(py, error))?;
-        let out = PyDict::new(py);
-        out.set_item("arena_id", facts.arena_id)?;
-        out.set_item("device", facts.device)?;
-        out.set_item("state", format!("{:?}", facts.state))?;
-        out.set_item("observers_detached", facts.observers_detached)?;
-        out.set_item("remaining_physical_bytes", facts.remaining_physical_bytes)?;
-        out.set_item("failure", facts.failure)?;
-        Ok(out)
-    }
-    fn try_complete(&self, py: Python<'_>) -> PyResult<bool> {
-        py.detach(|| self.ticket.try_complete())
-            .map_err(|error| raise(py, error))
-    }
-}
-#[pymethods]
-impl PyArena {
+impl PyDevice {
     #[new]
     fn new(py: Python<'_>, device: i32) -> PyResult<Self> {
-        let arena = py
-            .detach(|| varena::Arena::new(device))
+        let device = py
+            .detach(|| varena::Device::open(device))
             .map_err(|e| raise(py, e))?;
-        Ok(Self {
-            id: arena.id(),
-            pid: std::process::id(),
-            root: Mutex::new(ArenaRoot::Live(arena)),
-        })
+        Ok(Self { device, pid: std::process::id() })
     }
     #[getter]
     fn granularity(&self) -> PyResult<usize> {
         Ok(self.owner()?.granularity())
     }
-    #[getter]
-    fn id(&self) -> u64 {
-        self.id
-    }
-    #[getter]
-    fn closed(&self) -> PyResult<bool> {
-        self.check()?;
-        Ok(!matches!(
-            &*self
-                .root
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("Python arena root mutex poisoned"))?,
-            ArenaRoot::Live(_)
-        ))
-    }
-    fn close(&self, py: Python<'_>) -> PyResult<PyArenaRetirement> {
-        self.check()?;
-        let arena = {
-            let mut root = self
-                .root
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("Python arena root mutex poisoned"))?;
-            match &*root {
-                ArenaRoot::Closed(ticket) => {
-                    return Ok(PyArenaRetirement {
-                        ticket: ticket.clone(),
-                    });
-                }
-                ArenaRoot::Transferring => {
-                    return Err(PyRuntimeError::new_err(
-                        "arena retirement handoff is in progress",
-                    ));
-                }
-                ArenaRoot::Live(_) => {}
-            }
-            let ArenaRoot::Live(arena) = std::mem::replace(&mut *root, ArenaRoot::Transferring)
-            else {
-                unreachable!()
-            };
-            arena
-        };
-        match py.detach(|| arena.request_retirement()) {
-            Ok(ticket) => {
-                let ticket = Arc::new(ticket);
-                *self.root.lock().unwrap_or_else(|e| e.into_inner()) =
-                    ArenaRoot::Closed(ticket.clone());
-                Ok(PyArenaRetirement { ticket })
-            }
-            Err((arena, error)) => {
-                *self.root.lock().unwrap_or_else(|e| e.into_inner()) = ArenaRoot::Live(arena);
-                Err(raise(py, error))
-            }
-        }
-    }
     fn reserve(&self, py: Python<'_>, bytes: usize) -> PyResult<PyRegion> {
-        let arena = self.owner()?;
+        let device = self.owner()?;
         Ok(PyRegion {
             region: Deferred::new(
-                py.detach(|| arena.reserve(bytes))
+                py.detach(|| device.reserve(bytes))
                     .map_err(|e| raise(py, e))?,
             ),
         })
     }
-    fn set_streaming_limit(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
-        let arena = self.owner()?;
-        py.detach(|| arena.set_streaming_limit(bytes))
-            .map_err(|e| raise(py, e))
-    }
-
-    fn clear_streaming_limit(&self, py: Python<'_>) -> PyResult<()> {
-        let arena = self.owner()?;
-        py.detach(|| arena.clear_streaming_limit())
-            .map_err(|e| raise(py, e))
-    }
-
-    #[getter]
-    fn streaming_limit_bytes(&self, py: Python<'_>) -> PyResult<usize> {
-        let arena = self.owner()?;
-        py.detach(|| arena.streaming_limit())
-            .map_err(|e| raise(py, e))
-    }
-    fn reclaim(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
-        let arena = self.owner()?;
-        py.detach(|| arena.reclaim(bytes))
-            .map(|r| r.reclaimed_bytes)
-            .map_err(|e| raise(py, e))
-    }
-    fn reset_preferences(&self, py: Python<'_>) -> PyResult<()> {
-        let arena = self.owner()?;
-        py.detach(|| arena.reset_preferences())
-            .map_err(|e| raise(py, e))
-    }
-    fn reclaim_unpreferred(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
-        let arena = self.owner()?;
-        py.detach(|| arena.reclaim_unpreferred(bytes))
-            .map(|r| r.reclaimed_bytes)
-            .map_err(|e| raise(py, e))
-    }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let arena = self.owner()?;
-        let stats = py.detach(|| arena.stats()).map_err(|e| raise(py, e))?;
+        let device = self.owner()?;
+        let stats = py.detach(|| device.stats()).map_err(|e| raise(py, e))?;
         let output = PyDict::new(py);
-        output.set_item(
-            "streaming_limit_bytes",
-            py.detach(|| arena.streaming_limit())
-                .map_err(|e| raise(py, e))?,
-        )?;
         for (name, value) in [
             ("reserved_bytes", stats.reserved_bytes as u64),
             ("resident_bytes", stats.resident_bytes as u64),
@@ -404,12 +235,12 @@ impl PyArena {
                 "reclaimable_bytes",
                 stats.resident_bytes.saturating_sub(stats.pinned_bytes) as u64,
             ),
-            ("preferred_bytes", stats.preferred_bytes as u64),
             ("regions", stats.regions as u64),
             ("fills", stats.fills),
             ("hits", stats.hits),
             ("evictions", stats.evictions),
             ("reclaimed_bytes", stats.reclaimed_bytes),
+            ("prefetch_unused_bytes", stats.prefetch_unused_bytes),
             ("context_joins", stats.context_joins),
             ("driver_physical_ooms", stats.driver_physical_ooms),
             ("event_waits", stats.event_waits),
@@ -418,12 +249,6 @@ impl PyArena {
         }
         let reasons = PyDict::new(py);
         for (name, value) in [
-            ("requested", stats.reclaimed_by_reason.requested),
-            ("streaming_limit", stats.reclaimed_by_reason.streaming_limit),
-            (
-                "weight_allocation",
-                stats.reclaimed_by_reason.weight_allocation,
-            ),
             ("allocator", stats.reclaimed_by_reason.allocator),
             ("room", stats.reclaimed_by_reason.room),
         ] {
@@ -432,56 +257,6 @@ impl PyArena {
         output.set_item("reclaimed_by_reason", reasons)?;
         output.set_item("poisoned", stats.poisoned)?;
         Ok(output)
-    }
-    fn enter_capture(&self, py: Python<'_>) -> PyResult<PyCapture> {
-        let arena = self.owner()?;
-        Ok(PyCapture {
-            guard: Mutex::new(Some(
-                py.detach(|| arena.enter_capture())
-                    .map_err(|e| raise(py, e))?,
-            )),
-            pid: std::process::id(),
-        })
-    }
-}
-
-#[pyclass(name = "_VarenaCapture", module = "tensorfs._ext", frozen)]
-struct PyCapture {
-    guard: Mutex<Option<varena::CaptureGuard>>,
-    pid: u32,
-}
-#[pymethods]
-impl PyCapture {
-    fn close(&self, py: Python<'_>) -> PyResult<()> {
-        if self.pid != std::process::id() {
-            return Err(PyRuntimeError::new_err(
-                "CUDA capture guard cannot be used after fork",
-            ));
-        }
-        py.detach(|| {
-            self.guard
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("capture guard poisoned"))?
-                .take();
-            Ok(())
-        })
-    }
-}
-impl Drop for PyCapture {
-    fn drop(&mut self) {
-        if self.pid != std::process::id() {
-            std::mem::forget(std::mem::replace(&mut self.guard, Mutex::new(None)));
-            return;
-        }
-        if let Some(guard) = self
-            .guard
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            // Release the capture count immediately; only the final arena owner is deferred.
-            crate::cleanup::defer(guard.into_arena());
-        }
     }
 }
 
@@ -500,16 +275,24 @@ impl Drop for PyRegion {
         }
     }
 }
+impl PyRegion {
+    fn use_of(&self, preparation: varena::Preparation) -> PyUse {
+        let needs_fill = matches!(preparation, varena::Preparation::Fill(_));
+        let consumers = Consumers::new(self.region.device());
+        PyUse {
+            preparation: Mutex::new(Some(UsePreparation::new(preparation, consumers.clone()))),
+            needs_fill,
+            device: self.region.device(),
+            pid: std::process::id(),
+            consumers,
+        }
+    }
+}
 #[pymethods]
 impl PyRegion {
     #[getter]
     fn resident(&self, py: Python<'_>) -> PyResult<bool> {
         py.detach(|| self.region.is_resident())
-            .map_err(|e| raise(py, e))
-    }
-    #[getter]
-    fn preferred(&self, py: Python<'_>) -> PyResult<bool> {
-        py.detach(|| self.region.is_preferred())
             .map_err(|e| raise(py, e))
     }
     #[getter]
@@ -520,35 +303,17 @@ impl PyRegion {
     fn ptr(&self) -> u64 {
         self.region.ptr()
     }
-    fn set_preferred(&self, py: Python<'_>, preferred: bool) -> PyResult<()> {
-        py.detach(|| self.region.set_preferred(preferred))
-            .map_err(|e| raise(py, e))
+    /// A fill, or the resident contents. The core makes room in its one reclaim order.
+    fn prepare(&self, py: Python<'_>) -> PyResult<PyUse> {
+        let preparation = py.detach(|| self.region.prepare()).map_err(|e| raise(py, e))?;
+        Ok(self.use_of(preparation))
     }
-    /// A fill (or the resident contents): `reclaim` may evict anything Varena would; without it,
-    /// `evict_completed` may evict only idle streamed regions whose consumers completed, and
-    /// neither refuses rather than wait.
-    #[pyo3(signature = (reclaim = true, evict_completed = false))]
-    fn prepare(&self, py: Python<'_>, reclaim: bool, evict_completed: bool) -> PyResult<PyUse> {
-        let preparation = py
-            .detach(|| {
-                if reclaim {
-                    self.region.prepare()
-                } else if evict_completed {
-                    self.region.prepare_evicting_completed()
-                } else {
-                    self.region.prepare_without_reclaim()
-                }
-            })
+    /// A fill ahead of demand, under prefetch admission. None declines with no IO or waiting.
+    fn prepare_prefetch_fill(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
+        let prepared = py
+            .detach(|| varena::Region::prepare_prefetch(std::slice::from_ref(&*self.region)))
             .map_err(|e| raise(py, e))?;
-        let needs_fill = matches!(preparation, varena::Preparation::Fill(_));
-        let consumers = Consumers::new(self.region.device());
-        Ok(PyUse {
-            preparation: Mutex::new(Some(UsePreparation::new(preparation, consumers.clone()))),
-            needs_fill,
-            device: self.region.device(),
-            pid: std::process::id(),
-            consumers,
-        })
+        Ok(prepared.and_then(|mut prepared| prepared.pop()).map(|preparation| self.use_of(preparation)))
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py
@@ -699,7 +464,8 @@ impl Drop for PyUse {
             match preparation {
                 UsePreparation::Resident(owner) => drop(owner),
                 UsePreparation::Fill { fill, exported } => {
-                    release_region(fill.into_unpinned_region());
+                    // Its declared streams carry its copy: their fences free it, with no join.
+                    self.consumers.release(fill.abandon());
                     drop(exported);
                 }
             }
@@ -904,7 +670,6 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<cache::PyCache>()?;
     working::install(module)?;
     tensor_export::install(module)?;
-    census::install(module)?;
     let poisoned = module.py().get_type::<VarenaPoisonedError>();
     poisoned.setattr("__module__", "tensorfs._ext")?;
     poisoned.setattr("sticky", true)?;
@@ -912,12 +677,10 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let overlap = module.py().get_type::<PhaseOverlapError>();
     overlap.setattr("__module__", "tensorfs._ext")?;
     module.add("PhaseOverlapError", overlap)?;
-    module.add_class::<PyArena>()?;
-    module.add_class::<PyArenaRetirement>()?;
+    module.add_class::<PyDevice>()?;
     module.add_class::<plan::PyPlan>()?;
     module.add_class::<PyRegion>()?;
     module.add_class::<PyUse>()?;
-    module.add_class::<PyCapture>()?;
     module.add_class::<PyAllocatorCapture>()?;
     module.add_class::<PyNoCapture>()?;
     #[cfg(feature = "store")]

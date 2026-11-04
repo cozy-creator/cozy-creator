@@ -12,10 +12,10 @@ use pyo3::{
 };
 
 use super::continuation::{self, Continuation, Progress, Status};
-use super::{Deferred, PyArena, PyRegion};
+use super::{Deferred, PyDevice, PyRegion};
 
 struct Policy {
-    arena: Arc<varena::Arena>,
+    device: &'static varena::Device,
     active: Mutex<Option<String>>,
     transitions: AtomicU64,
     definitions: Mutex<BTreeMap<String, Vec<u64>>>,
@@ -24,12 +24,12 @@ struct Policy {
     observations: Mutex<BTreeMap<u64, varena::working::PhaseObservation>>,
 }
 impl Policy {
-    fn enter(&self, key: &str, regions: &[Arc<varena::Region>]) -> Result<(), varena::Error> {
+    fn enter(&self, key: &str) -> Result<(), varena::Error> {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if active.as_deref() == Some(key) {
             return Ok(());
         }
-        self.arena.enter_phase(regions)?;
+        self.device.enter_phase()?;
         *active = Some(key.to_owned());
         self.transitions.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -76,8 +76,6 @@ struct Phase {
     policy: Arc<Policy>,
     key: Option<String>,
     execution_key: Option<String>,
-    observe_replay: bool,
-    footprints: Vec<Arc<varena::working::GraphFootprint>>,
     observer_id: u64,
     observation: Arc<Mutex<Option<u64>>>,
     regions: Vec<Arc<varena::Region>>,
@@ -119,13 +117,13 @@ impl Phase {
         }
         let entered = (|| {
             if let Some(key) = &self.key {
-                self.policy.enter(key, &self.regions)?;
+                self.policy.enter(key)?;
             }
-            if self.observe_replay {
-                let token = varena::working::phase_enter_replay(
-                    self.policy.arena.device(),
+            if self.execution_key.is_some() {
+                let token = varena::working::phase_enter(
+                    self.policy.device.ordinal(),
                     self.execution_key.clone(),
-                    self.footprints.clone(),
+                    varena::working::PhaseMode::Replay,
                 )?;
                 *self.observation.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
                 self.policy
@@ -174,7 +172,7 @@ impl Phase {
         let mut pending = self.observation.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(token) = *pending {
             let row =
-                varena::working::phase_leave(self.policy.arena.device(), token, completed, None)?;
+                varena::working::phase_leave(self.policy.device.ordinal(), token, completed, None)?;
             *pending = None;
             self.policy
                 .active_observations
@@ -242,7 +240,6 @@ struct Retire(
         Vec<Arc<varena::Region>>,
         Arc<Py<PyAny>>,
         Arc<Mutex<Option<u64>>>,
-        Vec<Arc<varena::working::GraphFootprint>>,
     )>,
 );
 impl Drop for Retire {
@@ -253,7 +250,7 @@ impl Drop for Retire {
                 return;
             }
             if let Some(token) = owners.4.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                let _ = varena::working::phase_leave(owners.1.arena.device(), token, false, None);
+                let _ = varena::working::phase_leave(owners.1.device.ordinal(), token, false, None);
                 owners.1.active_observations.fetch_sub(1, Ordering::AcqRel);
             }
         }
@@ -267,7 +264,6 @@ impl Drop for Phase {
             self.regions.clone(),
             self.module.clone(),
             self.observation.clone(),
-            self.footprints.clone(),
         );
         if self.pid != std::process::id() {
             std::mem::forget(owners);
@@ -359,10 +355,10 @@ unsafe extern "C" fn wait(context: *mut c_void, output: *mut Progress) -> Status
 #[pymethods]
 impl PhaseController {
     #[new]
-    fn new(arena: PyRef<'_, PyArena>) -> PyResult<Self> {
+    fn new(device: PyRef<'_, PyDevice>) -> PyResult<Self> {
         Ok(Self {
             policy: Deferred::new(Arc::new(Policy {
-                arena: arena.owner()?,
+                device: device.owner()?,
                 active: Mutex::new(None),
                 transitions: AtomicU64::new(0),
                 definitions: Mutex::new(BTreeMap::new()),
@@ -373,14 +369,13 @@ impl PhaseController {
             pid: std::process::id(),
         })
     }
-    #[pyo3(signature = (capsule, key, regions, *, footprints = None, execution_key = None))]
+    #[pyo3(signature = (capsule, key, regions, *, execution_key = None))]
     fn wrap(
         &self,
         py: Python<'_>,
         capsule: &Bound<'_, PyAny>,
         key: Option<String>,
         regions: Vec<Py<PyRegion>>,
-        footprints: Option<Vec<Py<super::working::PyGraphFootprint>>>,
         execution_key: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         if self.pid != std::process::id()
@@ -396,13 +391,8 @@ impl PhaseController {
             .into_iter()
             .map(|region| region.borrow(py).region.clone())
             .collect();
-        if regions
-            .iter()
-            .any(|region| !self.policy.arena.owns_region(region))
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "phase regions belong to another arena",
-            ));
+        if regions.iter().any(|region| region.device() != self.policy.device.ordinal()) {
+            return Err(pyo3::exceptions::PyValueError::new_err("phase regions cross devices"));
         }
         let mut ids: Vec<_> = regions.iter().map(|region| region.ptr()).collect();
         ids.sort_unstable();
@@ -423,22 +413,8 @@ impl PhaseController {
                 definitions.insert(key.clone(), ids);
             }
         }
-        let observe_replay = footprints.is_some();
-        let footprints: Vec<_> = footprints
-            .unwrap_or_default()
-            .into_iter()
-            .map(|value| value.borrow(py).footprint.clone())
-            .collect();
-        if footprints
-            .iter()
-            .any(|footprint| footprint.device() != self.policy.arena.device())
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "graph footprints cross devices",
-            ));
-        }
         let module = Arc::new(py.import("tensorfs._ext")?.into_any().unbind());
-        let inner = Arc::new(Continuation::import(capsule, self.policy.arena.device())?);
+        let inner = Arc::new(Continuation::import(capsule, self.policy.device.ordinal())?);
         let (status, progress) = py.detach(|| inner.observe(false));
         if status.kind != continuation::OK || progress.phase != 0 || progress.done != 0 {
             inner.abandon();
@@ -446,11 +422,9 @@ impl PhaseController {
                 "phase needs an armed continuation",
             ));
         }
-        // Validation here does not change preferences. The arena validates ownership again
-        // atomically at actual phase entry, not from borrowed Python pointers.
         if regions
             .iter()
-            .any(|region| region.device() != self.policy.arena.device())
+            .any(|region| region.device() != self.policy.device.ordinal())
         {
             inner.abandon();
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -462,8 +436,6 @@ impl PhaseController {
             policy: self.policy.clone(),
             key,
             execution_key,
-            observe_replay,
-            footprints,
             observer_id: self.policy.next_observer.fetch_add(1, Ordering::Relaxed),
             observation: Arc::new(Mutex::new(None)),
             regions,
@@ -479,7 +451,7 @@ impl PhaseController {
             version: 1,
             size: std::mem::size_of::<Api>() as u32,
             flags: if reusable { 7 | 16 } else { 7 },
-            device: self.policy.arena.device(),
+            device: self.policy.device.ordinal(),
             reserved: 0,
             pid: u64::from(self.pid),
             context: Arc::as_ptr(&owner) as *mut c_void,

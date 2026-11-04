@@ -1,6 +1,7 @@
 // Torch's pool filter and exception ABI stay here; allocation policy stays in Rust.
 #include <ATen/cuda/CUDAContextLight.h>
 #include <c10/core/Allocator.h>
+#include <c10/core/StorageImpl.h>
 #include <c10/util/Exception.h>
 #include <c10/util/ApproximateClock.h>
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h>
@@ -126,16 +127,8 @@ VR_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
                 break;
             }
         }
-        // Torch lazily creates RNG seed/offset tensors on an auxiliary default stream.
-        // The capture owner may use prepared capacity there too; never open eager recovery.
-        if (!selected) {
-            for (auto& route : routes) {
-                if (route.device == device && route.thread == std::this_thread::get_id()) {
-                    TORCH_CHECK(!selected, "varena: ambiguous capture owner routing");
-                    selected = &route;
-                }
-            }
-        }
+        // Another stream's allocation during capture runs eagerly: what it writes would not
+        // be replayed, so it never lands in a pool. It takes a free eager block or fails capture.
         if (selected) {
             pool = selected->pool;
             routed = true;
@@ -210,6 +203,11 @@ VR_EXPORT void varena_torch_end_pool(int device, Pool pool) {
     Failure error{};
     core.pool_end(device, pool.first, pool.second, &error);
     check(error);
+}
+
+// A storage's owners, for a graph owner to prove none escaped before it declares a pool idle.
+VR_EXPORT uint64_t varena_torch_storage_owners(void* storage) noexcept {
+    return c10::raw::intrusive_ptr::use_count(static_cast<c10::StorageImpl*>(storage));
 }
 
 // Owner calls only after confirming CUDA stream capture ended. Graph reset owns reference release.

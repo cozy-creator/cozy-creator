@@ -1,119 +1,127 @@
-//! Owned per-device final resources. No event poller or allocator metadata owns these jobs.
-//! Arena resources and checked Fill resources share this queue; producer event polling stays separate.
-use crate::{Error, Result};
-use std::collections::BTreeMap;
+//! One retirer for the process. An owner that may not be destroyed on an arbitrary stack (GIL
+//! held, capture active, a finalizer) comes here and polls until its work is done. A failed job
+//! stays here forever: nothing unproven is ever destroyed.
+use crate::abi;
+use crate::{Error, Pin, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 pub(crate) enum Job {
-    Arena(crate::arena_retirement::Payload),
-    FillResources(crate::async_fill::Payload),
-    Source(crate::abi::source::Retirement),
-    UnprovenPin { _pin: crate::Pin, failure: Error },
+    Fill(crate::async_fill::Payload),
+    Source(abi::source::Retirement),
+    Pin { _pin: Pin, failure: Error },
+    Handle(u64),
+    Owner(#[allow(dead_code)] abi::Owned),
 }
 
 impl Job {
     fn poll(&mut self) -> Result<bool> {
         match self {
-            Self::Arena(job) => job.poll(),
-            Self::FillResources(job) => job.retire(),
+            Self::Fill(job) => job.retire(),
             Self::Source(job) => job.poll(),
-            Self::UnprovenPin { failure, .. } => Err(failure.clone()),
+            Self::Pin { failure, .. } => Err(failure.clone()),
+            Self::Handle(id) => abi::retire_handle(*id),
+            Self::Owner(_) => Ok(true),
         }
     }
     fn failed(&mut self, error: &Error) {
+        abi::note_failure(error);
         match self {
-            Self::Arena(job) => job.failed(error),
-            Self::FillResources(job) => job.retirement_failed(error),
-            Self::Source(job) => job.failed(error),
-            Self::UnprovenPin { failure, .. } => *failure = error.clone(),
+            Self::Fill(job) => job.retirement_failed(error),
+            Self::Pin { failure, .. } => *failure = error.clone(),
+            Self::Handle(id) => abi::handle_failed(*id, error),
+            _ => {}
         }
     }
 }
 
-struct Endpoint {
+#[repr(C)]
+#[derive(Default)]
+pub struct Stats {
+    pub queued: u64,
+    pub retired: u64,
+    pub quarantined: u64,
+    pub abandoned_cache_bytes: u64,
+}
+
+struct Retirer {
     sender: mpsc::Sender<Job>,
-    // A disconnected worker never authorizes GPU destruction on a caller's stack.
-    // These exact owned resources remain reachable here until process retirement.
     quarantine: Mutex<Vec<Job>>,
+    queued: AtomicU64,
+    retired: AtomicU64,
+    abandoned: AtomicU64,
 }
 
-static QUEUES: OnceLock<Mutex<BTreeMap<i32, Arc<Endpoint>>>> = OnceLock::new();
-static ORPHANS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
+static RETIRER: OnceLock<std::result::Result<Arc<Retirer>, String>> = OnceLock::new();
 
-fn endpoint(device: i32) -> Result<Arc<Endpoint>> {
+fn retirer() -> Result<&'static Arc<Retirer>> {
     crate::check_process()?;
-    let mut queues = QUEUES
-        .get_or_init(Mutex::default)
-        .lock()
-        .map_err(|_| Error::Poisoned("retirement queue registry mutex".into()))?;
-    if let Some(queue) = queues.get(&device) {
-        return Ok(queue.clone());
-    }
-    let (sender, receiver) = mpsc::channel();
-    let queue = Arc::new(Endpoint {
-        sender,
-        quarantine: Mutex::new(Vec::new()),
+    let started = RETIRER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        let retirer = Arc::new(Retirer {
+            sender,
+            quarantine: Mutex::default(),
+            queued: AtomicU64::new(0),
+            retired: AtomicU64::new(0),
+            abandoned: AtomicU64::new(0),
+        });
+        let worker = retirer.clone();
+        std::thread::Builder::new()
+            .name("varena-retire".into())
+            .spawn(move || run(worker, receiver))
+            .map_err(|error| error.to_string())?;
+        Ok(retirer)
     });
-    let worker = queue.clone();
-    std::thread::Builder::new()
-        .name(format!("varena-retire-{device}"))
-        .spawn(move || run(worker, receiver))
-        .map_err(|error| {
-            Error::Unsupported(format!("retirement worker could not start: {error}"))
-        })?;
-    queues.insert(device, queue.clone());
-    Ok(queue)
+    started.as_ref().map_err(|error| Error::Unsupported(format!("retirer could not start: {error}")))
 }
 
-/// Prepare before native GPU construction, so even final Drop has an owned destination.
-pub(crate) fn prepare(device: i32) -> Result<()> {
-    endpoint(device).map(|_| ())
+/// Start before any GPU owner exists, so even a final Drop has a destination.
+pub(crate) fn prepare() -> Result<()> {
+    retirer().map(|_| ())
 }
 
-pub(crate) fn enqueue(device: i32, job: Job) -> std::result::Result<(), (Error, Job)> {
-    let queue = match endpoint(device) {
-        Ok(queue) => queue,
-        Err(error) => return Err((error, job)),
+/// Destructor handoff: never drops a GPU owner on the caller's stack, on any path.
+pub(crate) fn defer(job: Job) {
+    let Some(Ok(retirer)) = RETIRER.get() else {
+        std::mem::forget(job); // No retirer ever started: an inherited owner after fork.
+        return;
     };
-    queue
-        .sender
-        .send(job)
-        .map_err(|error| (Error::Poisoned("retirement worker stopped".into()), error.0))
-}
-
-/// Destructor handoff. The queue was prepared before GPU creation; every error retains
-/// its exact job, reports failure, and never recursively drops GPU owners under a lock.
-pub(crate) fn defer(device: i32, job: Job) {
-    if let Err((error, job)) = enqueue(device, job) {
-        quarantine(device, job, &error);
+    retirer.queued.fetch_add(1, Ordering::Relaxed);
+    if let Err(error) = retirer.sender.send(job) {
+        quarantine(error.0, &Error::Poisoned("retirer stopped".into()));
     }
 }
 
-/// Custody-only failure path, shared by queue failures and destructor adapters.
-/// Caller has checked process identity; this never admits GPU work or starts a worker.
-pub(crate) fn quarantine(device: i32, mut job: Job, error: &Error) {
+pub(crate) fn quarantine(mut job: Job, error: &Error) {
     job.failed(error);
-    let queues = QUEUES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(queue) = queues.get(&device) {
-        queue
-            .quarantine
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(job);
-    } else {
-        ORPHANS
-            .get_or_init(Mutex::default)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(job);
+    match RETIRER.get() {
+        Some(Ok(retirer)) => retirer.quarantine.lock().unwrap_or_else(|e| e.into_inner()).push(job),
+        _ => std::mem::forget(job),
     }
 }
 
-fn run(queue: Arc<Endpoint>, receiver: mpsc::Receiver<Job>) {
+pub(crate) fn abandoned(bytes: u64) {
+    if let Some(Ok(retirer)) = RETIRER.get() {
+        retirer.abandoned.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn stats() -> Result<Stats> {
+    crate::check_process()?;
+    let Some(Ok(retirer)) = RETIRER.get() else {
+        return Ok(Stats::default());
+    };
+    let quarantined = retirer.quarantine.lock().unwrap_or_else(|e| e.into_inner()).len() as u64;
+    Ok(Stats {
+        queued: retirer.queued.load(Ordering::Relaxed),
+        retired: retirer.retired.load(Ordering::Relaxed),
+        quarantined,
+        abandoned_cache_bytes: retirer.abandoned.load(Ordering::Relaxed),
+    })
+}
+
+fn run(retirer: Arc<Retirer>, receiver: mpsc::Receiver<Job>) {
     let mut pending = Vec::new();
     loop {
         if pending.is_empty() {
@@ -127,27 +135,22 @@ fn run(queue: Arc<Endpoint>, receiver: mpsc::Receiver<Job>) {
         pending.extend(receiver.try_iter());
         let mut index = 0;
         while index < pending.len() {
-            // Keep owned resources outside the unwind scope. A callback/resource error
-            // quarantines only that job; this worker continues servicing other owners.
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pending[index].poll()));
+            // Owners stay outside the unwind scope: a panic quarantines only this job.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pending[index].poll()));
             match result {
                 Ok(Ok(false)) => index += 1,
                 Ok(Ok(true)) => {
                     drop(pending.swap_remove(index));
+                    retirer.queued.fetch_sub(1, Ordering::Relaxed);
+                    retirer.retired.fetch_add(1, Ordering::Relaxed);
                 }
                 failure => {
                     let error = match failure {
                         Ok(Err(error)) => error,
-                        _ => Error::Poisoned("native retirement job panicked".into()),
+                        _ => Error::Poisoned("retirement job panicked".into()),
                     };
-                    let mut job = pending.swap_remove(index);
-                    job.failed(&error);
-                    queue
-                        .quarantine
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push(job);
+                    retirer.queued.fetch_sub(1, Ordering::Relaxed);
+                    quarantine(pending.swap_remove(index), &error);
                 }
             }
         }

@@ -12,7 +12,7 @@ The draft in design Appendix A was not a previously shipped ABI.
 
 | Concept | Implemented interface | Current boundary |
 | --- | --- | --- |
-| GPU | open/close, stats, trim; each open owns an Arena/client lease, sharing the process allocator/service | Linux shared-library packaging; primary CUDA context only |
+| GPU | open/close, stats; each open owns a client lease, sharing the process allocator/service | Linux shared-library packaging; primary CUDA context only |
 | weight Region | copied immutable host bytes or C Source callback, stable VA, retained Uses | Full-region fills; current core joins completion before publishing; no asynchronous fill claim |
 | working allocation | alloc, pointer, record_stream, free | Eager inference; allocation stream retained; side streams must be recorded |
 | rebuildable Cache | reserve, exact page commit/release, poll/info, asynchronous owner shrink, close | Owner selects disposable pages; live KV is never reclaimed merely because it is a Cache |
@@ -68,7 +68,7 @@ Region first does not invalidate the Use. Plans retain Sources as well as reserv
 Sources may be called again after eviction. C callbacks must initialize every logical
 byte, retain staging through completion even on failure, and never unwind or recursively
 use their own Region. The ABI takes Source ownership only after construction succeeds.
-Final Arena resources are handed to the native per-device retirement queue; the ABI
+Final resources are handed to the native retirer; the ABI
 worker polls a host ticket and never synchronizes the CUDA context. Genuine owners
 stay retained; unknown completion is quarantined. Public asynchronous Source
 adoption remains separate from the implemented native fill/Source mechanisms. Checked closes retain the same handle
@@ -209,7 +209,7 @@ allocator-triggered recovery.
 The GPU owner additionally runs `public-api/mixed.py --gpu` in **both load orders**
 with a matching installed Torch shim. It passes a Python-created GPU handle to C,
 observes C allocations through native/Torch accounting, executes Torch arithmetic,
-allocates through safe Rust, then checks quiescent accounting after all frees and trim.
+allocates through safe Rust, then checks quiescent accounting after all frees.
 Run it through the coordinator's ordinary Cozy release-gate lane. Do not use the host
 proof as permission to use a machine or rent a GPU.
 

@@ -176,7 +176,6 @@ for _name, _args in {
     "phase_leave": [_u, C.c_int32],
     "plan_close": [_u],
     "stats": [_u, C.POINTER(_Stats), C.c_size_t],
-    "trim": [_u, _h],
 }.items():
     _declare(_name, _args)
 
@@ -341,10 +340,6 @@ class Gpu(_Owned):
         value = _Stats()
         _call("stats", self._handle, C.byref(value), C.sizeof(value))
         return _fields(value)
-
-    def trim(self) -> int:
-        return _new("trim", self._handle)
-
 
 def open(device: int = 0) -> Gpu:
     return Gpu(device)

@@ -76,8 +76,6 @@ int main(int argc, char **argv) {
         VR(vr_v1_free(scratch));
         VR(vr_v1_done(used));
         VR(vr_v1_phase_leave(plan, 1));
-        uint64_t released;
-        VR(vr_v1_trim(gpu, &released)); /* second pass refills the same Region VA */
     }
     VR(vr_v1_plan_close(plan));
     VR(vr_v1_region_close(region));

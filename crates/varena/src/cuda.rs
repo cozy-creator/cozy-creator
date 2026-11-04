@@ -57,7 +57,6 @@ type Map = unsafe extern "system" fn(Pointer, usize, usize, Handle, u64) -> Stat
 type SetAccess = unsafe extern "system" fn(Pointer, usize, *const Access, usize) -> Status;
 type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
 type Release = unsafe extern "system" fn(Handle) -> Status;
-type CopyHost = unsafe extern "system" fn(Pointer, *const c_void, usize) -> Status;
 type CopyHostAsync = unsafe extern "system" fn(Pointer, *const c_void, usize, Object) -> Status;
 type StreamCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
@@ -75,6 +74,7 @@ pub(crate) struct Counters {
     pub(crate) event_queries: AtomicU64,
     pub(crate) event_records: AtomicU64,
     pub(crate) event_waits: AtomicU64,
+    pub(crate) context_joins: AtomicU64,
 }
 
 /// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
@@ -105,7 +105,6 @@ pub(crate) struct Driver {
     set_access: SetAccess,
     unmap: Unmap,
     release: Release,
-    copy_host: CopyHost,
     copy_host_async: CopyHostAsync,
     host_granularity: Granularity,
     stream_create: StreamCreate,
@@ -182,7 +181,6 @@ impl Driver {
             set_access: symbol!("cuMemSetAccess", SetAccess),
             unmap: symbol!("cuMemUnmap", Unmap),
             release: symbol!("cuMemRelease", Release),
-            copy_host: symbol!("cuMemcpyHtoD_v2", CopyHost),
             copy_host_async: symbol!("cuMemcpyHtoDAsync_v2", CopyHostAsync),
             host_granularity: granularity,
             stream_create: symbol!("cuStreamCreate", StreamCreate),
@@ -247,6 +245,7 @@ impl Driver {
     }
 
     pub(crate) fn synchronize(&self) -> Result<()> {
+        self.counters.context_joins.fetch_add(1, Ordering::Relaxed);
         // SAFETY: every caller enters this driver's primary context first.
         status("cuCtxSynchronize", unsafe { (self.synchronize)() })
     }
@@ -483,11 +482,8 @@ impl Driver {
         status("cuMemcpyHtoDAsync_v2", unsafe { (self.copy_host_async)(dst, host as *const c_void, bytes, stream as Object) })
     }
 
-    pub(crate) fn copy_from_host(&self, ptr: u64, bytes: &[u8]) -> Result<()> {
-        // SAFETY: Fill owns the exclusive mapped destination; slice lives through synchronous copy.
-        status("cuMemcpyHtoD", unsafe {
-            (self.copy_host)(ptr, bytes.as_ptr().cast(), bytes.len())
-        })
+    pub(crate) fn context_joins(&self) -> u64 {
+        self.counters.context_joins.load(Ordering::Relaxed)
     }
 
     pub(crate) fn physical_ooms(&self) -> u64 {

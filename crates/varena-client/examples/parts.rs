@@ -41,8 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             scratch.free()?;
             used.done()?;
-            gpu.trim()?;
-            assert_eq!(gpu.stats()?.weights_resident, 0);
         }
         println!(
             "{{\"packed_host_refill\":true,\"stable_address\":true,\"empty_aggregate_refusals\":3,\"valid_after_refusals\":true,\"bytes\":{}}}",

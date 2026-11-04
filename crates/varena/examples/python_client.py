@@ -20,7 +20,6 @@ def main() -> None:
                     gpu.alloc(4096, stream.handle),
                 ):
                     assert stream.read(used.ptr(), 64) == bytes(range(64))
-                gpu.trim()
         print(json.dumps({"python_region_refill": "pass", "stats": gpu.stats()}))
 
 

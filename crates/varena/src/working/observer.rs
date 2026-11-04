@@ -1,5 +1,6 @@
 //! Physical Working backing observation. No allocation or reclamation decisions live here.
-use super::{Life, PoolId, Working, devices};
+use super::{INITIALIZE, Life, PoolId, devices};
+use crate::Device;
 use crate::{Error, Result};
 use std::sync::{Arc, OnceLock};
 
@@ -39,15 +40,16 @@ static OBSERVER: OnceLock<Arc<dyn WorkingObserver>> = OnceLock::new();
 /// Install one process-lifetime observer with an atomic existing/future handoff.
 /// The registry prevents new devices; all existing state locks prevent maps/frees.
 pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
+    let _initializing = INITIALIZE.lock().map_err(|_| Error::Poisoned("working initialization".into()))?;
     let owners = devices()?;
     if OBSERVER.get().is_some() {
         return Err(Error::Invalid("working observer already installed"));
     }
-    let states = owners.values().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
+    let states = owners.iter().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
     let mut segments = Vec::new();
-    for ((device, _), state) in owners.iter().zip(&states) {
-        segments.extend(state.segments.iter().map(|(address, segment)| WorkingSegment {
-            device: *device, address: *address, bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool,
+    for (owner, state) in owners.iter().zip(&states) {
+        segments.extend(state.segments.iter().filter(|(_, segment)| segment.handle.is_some()).map(|(address, segment)| WorkingSegment {
+            device: owner.ordinal, address: *address, bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool,
         }));
     }
     observer.initialize(&segments)?;
@@ -57,11 +59,11 @@ pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
 /// A coherent per-device inventory of actual backing and live/pending block state.
 /// This visits existing devices only and performs no CUDA initialization or collection.
 pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
-    let owners = devices()?.values().cloned().collect::<Vec<_>>();
+    let owners = devices()?;
     let mut out = Vec::new();
     for owner in owners {
         let state = owner.lock()?;
-        for (address, segment) in &state.segments {
+        for (address, segment) in state.segments.iter().filter(|(_, segment)| segment.handle.is_some()) {
             let end = *address + segment.bytes as u64;
             let mut cursor = *address;
             let mut blocks = Vec::new();
@@ -85,7 +87,7 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
                     requested: 0, allocated: false, active: false });
             }
             out.push(WorkingSnapshot {
-                segment: WorkingSegment { device: owner.device, address: *address,
+                segment: WorkingSegment { device: owner.ordinal, address: *address,
                     bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool }, blocks,
             });
         }
@@ -93,17 +95,17 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
     Ok(out)
 }
 
-pub(super) fn mapped(owner: &Working, address: u64, bytes: usize, pool: Option<PoolId>, size_class: usize) -> Result<()> {
+pub(super) fn mapped(owner: &Device, address: u64, bytes: usize, pool: Option<PoolId>, size_class: usize) -> Result<()> {
     if let Some(observer) = OBSERVER.get() {
-        observer.mapped(WorkingSegment { device: owner.device, address, bytes, size_class, pool })
+        observer.mapped(WorkingSegment { device: owner.ordinal, address, bytes, size_class, pool })
             .map_err(|error| Error::Poisoned(format!("working map observer: {error}")))?;
     }
     Ok(())
 }
 
-pub(super) fn retiring(owner: &Working, address: u64, bytes: usize, pool: Option<PoolId>, size_class: usize) -> Result<()> {
+pub(super) fn retiring(owner: &Device, address: u64, bytes: usize, pool: Option<PoolId>, size_class: usize) -> Result<()> {
     if let Some(observer) = OBSERVER.get() {
-        observer.retiring(WorkingSegment { device: owner.device, address, bytes, size_class, pool })
+        observer.retiring(WorkingSegment { device: owner.ordinal, address, bytes, size_class, pool })
             .map_err(|error| Error::Poisoned(format!("working retirement observer: {error}")))?;
     }
     Ok(())

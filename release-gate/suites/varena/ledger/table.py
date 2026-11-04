@@ -47,4 +47,5 @@ def kill_on_ask():
         time.sleep(0.001)
 
 
-{"kill-on-ask": kill_on_ask}.get(sys.argv[1] if len(sys.argv) > 1 else "", show)()
+if __name__ == "__main__":
+    {"kill-on-ask": kill_on_ask}.get(sys.argv[1] if len(sys.argv) > 1 else "", show)()

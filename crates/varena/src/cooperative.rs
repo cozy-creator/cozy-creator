@@ -1,7 +1,7 @@
 //! This process's part in sharing a GPU: a row in its ledger, one donor thread, and the sample of
 //! foreign pressure. All of it is advisory: a table that cannot open or a peer that dies costs
 //! donations, never an allocation.
-use crate::{Error, Result, arena_retirement::Observation, cache_owner, capture_counts, cuda, working};
+use crate::{Device, Error, Result, cache_owner, cuda, working};
 use nvml_wrapper::{Nvml, enums::device::UsedGpuMemory};
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -97,8 +97,7 @@ pub(crate) fn request_boundary(device: i32, begin: bool) {
 struct Native {
     device: i32,
     shared: bool,
-    room: Arc<crate::Room>,
-    retained: Vec<Arc<Observation>>,
+    gpu: &'static Device,
     idle: u64,
     asked: bool,
     nvml: Option<Nvml>,
@@ -112,8 +111,7 @@ impl Native {
         Ok(Self {
             device,
             shared,
-            room: crate::room(device)?,
-            retained: Vec::new(),
+            gpu: crate::gpu(device)?,
             idle: 0,
             asked: false,
             nvml: if host_pids { Nvml::init().ok() } else { None },
@@ -124,13 +122,11 @@ impl Native {
 
     fn count_idle(&mut self) -> Result<u64> {
         let mut idle = working::peer::idle_bytes(self.device)?;
-        for arena in crate::retain_arenas(self.device, &mut self.retained)?.arenas {
-            for entry in arena.lock()?.entries.values() {
-                let in_use = entry.uses.pins() != 0 || entry.uses.state() == crate::Contents::Loading
-                    || entry.uses.unjoined.load(Ordering::Acquire);
-                if entry.handle.is_some() && !in_use {
-                    idle += entry.bytes as u64;
-                }
+        for entry in self.gpu.lock()?.entries.values() {
+            let in_use = entry.uses.pins() != 0 || entry.uses.state() == crate::Contents::Loading
+                || !self.gpu.joined(entry.uses.unjoined.load(Ordering::Acquire));
+            if entry.handle.is_some() && !in_use {
+                idle += entry.bytes as u64;
             }
         }
         Ok(idle)
@@ -168,7 +164,7 @@ impl Native {
 
 impl Donor for Native {
     fn holdings(&mut self) -> (u64, u64) {
-        let held = self.room.pages.load(Ordering::Acquire) + self.room.working.load(Ordering::Acquire);
+        let held = self.gpu.owned();
         // A momentary refusal keeps the last count: zero would read as nothing left to ask for.
         self.idle = self.count_idle().unwrap_or(self.idle);
         (held as u64, self.idle)
@@ -176,15 +172,15 @@ impl Donor for Native {
 
     fn trim(&mut self, bytes: u64) -> u64 {
         let wanted = bytes as usize;
-        let released = || self.room.released.load(Ordering::Acquire);
+        let released = || self.gpu.released.load(Ordering::Acquire);
         let since = released();
         // A capture or a replay refuses this: the asker comes back while idle memory remains.
-        let _ = crate::reclaim_completed(self.device, wanted, &mut self.retained);
+        let _ = crate::reclaim_completed(self.device, wanted);
         if released() - since < bytes && cache_owner::requestable(self.device).is_ok_and(|owners| owners != 0) {
             // Only its owners can shrink a cache. Their worker runs them, so a GIL never blocks this thread.
             let key = cache_owner::next_generation().map(|generation| cache_owner::RequestKey { cause: cache_owner::Cause::Allocation, generation });
             if let Ok(Ok(Some(request))) = key.map(|key| cache_owner::request_shrink(self.device, key, wanted)) {
-                let _ = request.wait_allocation_release(since, Instant::now() + OWNER_WAIT);
+                let _ = request.wait_release(since, Instant::now() + OWNER_WAIT);
             }
         }
         released() - since
@@ -199,8 +195,8 @@ impl Donor for Native {
         if !self.shared || idle == 0 {
             return;
         }
-        let sample = capture_counts().and_then(|captures| {
-            crate::ensure_recovery_allowed(&captures, self.device)?;
+        let sample = crate::gate(self.device).and_then(|gate| {
+            gate.not_capturing()?;
             working::peer::memory_info(self.device)
         });
         let Ok((free, total)) = sample else { return };

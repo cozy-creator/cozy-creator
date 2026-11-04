@@ -311,10 +311,9 @@ fn run() -> Result<()> {
     output.free()?;
     cuda.sync(consumer)?;
     cuda.sync(control)?;
-    gpu.trim()?;
     let stats = gpu.stats()?;
     require(
-        stats.weights_resident == 0 && stats.working_live == 0 && stats.working_mapped == 0,
+        stats.working_live == 0,
         "physical baseline differs",
     )?;
     drop((output, consumer_view, control_view, gpu));
