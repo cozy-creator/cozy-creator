@@ -3774,11 +3774,15 @@ impl Walk {
                 return Ok(None);
             }
             self.missed.lock().expect("missed lock").names.insert(name.clone());
-            // Made again with what it asked, its seed too.
-            if let Some(seed) = pending.version.seed {
-                let tried = Tried { inputs: pending.version.inputs.clone(), seed };
-                folder.update_lock(|lock| lock.asset_mut(&name, &pending.kind).tried = Some(tried.clone()))?;
-            }
+            // Made again with what it asked, its seed too; and its number stays taken, so the next try is the next.
+            let tried = pending.version.seed.map(|seed| Tried { inputs: pending.version.inputs.clone(), seed });
+            folder.update_lock(|lock| {
+                let held = lock.asset_mut(&name, &pending.kind);
+                held.numbered = held.numbered.max(pending.version.number);
+                if tried.is_some() {
+                    held.tried.clone_from(&tried);
+                }
+            })?;
             if let (Some(machine), Some(reason), RunStatus::Failed) = (&run.machine, &run.reason, run.status) {
                 self.fault(machine, &reason.code, &reason.message)?;
             }

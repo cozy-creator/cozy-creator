@@ -434,7 +434,7 @@ pub struct Owed {
     /// `rename`s asked while a render went, (from, to): each done as that walk ends.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub renames: Vec<(String, String)>,
-    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project, and one that never lands is free again.
+    /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project. One that failed stays taken in project.lock.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub numbered: BTreeMap<String, u32>,
     /// This walk's runs not over: what they land is their version's. With the version listed whose file is on its way, which a restart follows.
