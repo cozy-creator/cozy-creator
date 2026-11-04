@@ -181,6 +181,10 @@ test = "pr: run play, its link serves the output, then expires"
 test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal"
 "--no-open" = "pr: web-serves"
 
+["project open"]
+test = "pr: a project's session (e2e/cli/project.sh): the link names the project. Opening a browser: manual, a person on a desktop"
+"--no-open" = "pr: a project's session: the link names the project"
+
 ["project new"]
 test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
 

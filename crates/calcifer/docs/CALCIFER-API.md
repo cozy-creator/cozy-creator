@@ -116,8 +116,9 @@ media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none';
   without asking the Hub (`GET /v1/account` does).
 
 ### Session
-A browser signs in with a single-use code, which `cozy web` gives it through a 0600 file so that it's in no process's
-arguments. `~/.cozy/calcifer/sessions.json` (0600) holds sessions' digests; 30 days unused ends one.
+A browser signs in with a single-use code. `cozy web` and `cozy project open` write it into a 0600 redirect file
+(`~/.cozy/calcifer/open.html`) and open that, so it's in no process's arguments, or with `--no-open` print the link. The
+fragment may add `&to=<route>`, as `cozy project open`'s does (`#code=<code>&to=/projects/<id>`). `~/.cozy/calcifer/sessions.json` (0600) holds sessions' digests; 30 days unused ends one.
 - `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
   `{code, url, expires_ms}`, 32 random bytes in hex, good for 60 s. `url` is `http://<Host>/#code=<code>`.
 - `POST /v1/session` `{code}`, needing no credential: `{token, media}`, new for each code. `400 session_code_invalid`

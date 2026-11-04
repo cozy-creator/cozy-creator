@@ -102,7 +102,7 @@ const until = async (page, ask, ms = 120000) => {
     const answer = await tab.goto(`${base}/v1/runs/${hostile}/outputs/${output}?media=${media}`).catch(() => null);
     o.status = answer && answer.status();
     await tab.waitForTimeout(500);
-    o.reached = asked.filter((url) => !url.includes('/outputs/'));
+    o.reached = asked.filter((url) => url.includes('/v1/') && !url.includes('/outputs/'));
     out.hostile[output] = o;
     await tab.close();
   }

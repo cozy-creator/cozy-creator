@@ -20,6 +20,7 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
+  cozy project open garden                     in your browser
   cd garden && cozy project import ./kyogre.png   prints what to paste into project.yaml
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
@@ -71,6 +72,15 @@ enum Verb {
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
+    /// Open the project in your browser.
+    #[command(after_help = "Examples:\n  cozy project open\n  cozy project open ../garden\n  cozy project open --no-open   prints a link instead: over SSH, say")]
+    Open {
+        /// The project's folder, if not the one you are in.
+        path: Option<PathBuf>,
+        /// Print a link instead of opening it. It works once, for 60 s.
+        #[arg(long)]
+        no_open: bool,
+    },
     Import(ImportFile),
     Render(Render),
     /// Pin a take or version: its hash goes on the asset's line in project.yaml.
@@ -203,6 +213,10 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if listed.older > 0 {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
+        }
+        Verb::Open { path, no_open } => {
+            let opened = open(ctx, path.as_ref().or(args.path.as_ref()), false).await?;
+            return crate::web::open(ctx, Some(format!("/projects/{}", opened.id)), no_open).await;
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,

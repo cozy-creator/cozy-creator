@@ -1478,58 +1478,25 @@ hostile_outputs
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/projects")" = 401 ] || check "a request with no bearer was not refused 401"
 [ "$(api -o "$OUT/calcifer-status.json" -w '%{http_code}' "http://$ADDR/v1/status")" = 200 ] || check "GET /v1/status: $(cat "$OUT/calcifer-status.json")"
 J '(.version | length > 0) and (.os | length > 0) and (.local_usable | type == "boolean") and (.signed_in | type == "boolean")' "$OUT/calcifer-status.json" || check "GET /v1/status: $(cat "$OUT/calcifer-status.json")"
-[ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/status")" = 401 ] || check "GET /v1/status answered with no credential"
-page_surface
-session_surface "$ID"
-# As through an SSH -L to another port: any port on a loopback name, and an Origin that matches it.
-[ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61999' "http://$ADDR/v1/projects")" = 200 ] || check "a forwarded port's Host and Origin were refused"
-[ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61998' "http://$ADDR/v1/projects")" = 403 ] || check "an Origin on another port than Host was not refused 403"
+session_surface "$P" "$ID"
 yaml_routes "$P" "$ID"
 }
 
-# The page needs no credential and keeps the guard: its CSP, its hashed assets immutable, a rebinding Host refused.
-page_surface() {
-step "a project: Calcifer serves the page"
-local B=http://$ADDR script
-[ "$(curl -sS -D "$OUT/page.hdr" -o "$OUT/page.html" -w '%{http_code}' "$B/")" = 200 ] || check "GET /: $(head -c 300 "$OUT/page.html")"
-{ grep -qi "^content-security-policy: default-src 'none'; script-src 'self';" "$OUT/page.hdr" && grep -qi '^referrer-policy: no-referrer' "$OUT/page.hdr" && grep -qi '^cache-control: no-store' "$OUT/page.hdr"; } \
-  || check "GET /: its headers: $(tr -d '\r' < "$OUT/page.hdr" | paste -sd' ')"
-script=$(grep -oE 'assets/[^"]+\.js' "$OUT/page.html" | head -1)
-[ -n "$script" ] || check "GET /: names no script: $(head -c 300 "$OUT/page.html")"
-[ "$(curl -sS -D "$OUT/page-asset.hdr" -o /dev/null -w '%{http_code}' "$B/$script")" = 200 ] || check "GET /$script is not 200"
-{ grep -qi '^content-type: text/javascript' "$OUT/page-asset.hdr" && grep -qi '^cache-control: .*immutable' "$OUT/page-asset.hdr"; } || check "GET /$script: its headers: $(tr -d '\r' < "$OUT/page-asset.hdr" | paste -sd' ')"
-[ "$(curl -sS -o /dev/null -w '%{http_code}' "$B/assets/nothing.js")" = 404 ] || check "an asset that isn't there is not 404"
-[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: rebind.example:${ADDR##*:}" "$B/")" = 403 ] || check "a rebinding Host reached the page"
-}
-
-# A browser session by hand: a code once, its token and media secret and what each opens, its end, and a code's 60 s.
+# What web-serves (e2e/cli/web.sh) leaves to a project: project open's link, a video's Range on ?media=, and what sessions.json keeps.
 session_surface() {
-step "a project: a browser session's code, token and media secret"
-local ID=$1 B=http://$ADDR code token media sessions=$HOME/.cozy/calcifer/sessions.json U
+step "a project: its link, and a session's file"
+local P=$1 ID=$2 B=http://$ADDR code token media sessions=$HOME/.cozy/calcifer/sessions.json U
 U=$B/v1/projects/$ID/cuts/edit.mp4
-as() { local who=$1; shift; curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $who" "$@"; }
-anon() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
-[ "$(api -o "$OUT/code.json" -w '%{http_code}' -X POST "$B/v1/session-codes")" = 200 ] || check "session: no code: $(cat "$OUT/code.json")"
-code=$(jq -r .code "$OUT/code.json")
-J --arg url "$B/#code=$code" '.url == $url' "$OUT/code.json" || check "session: the code's url: $(jq -c .url "$OUT/code.json")"
-[ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: a code was not traded: $(cat "$OUT/session.json")"
+cozy --json project -p "$P" open --no-open > "$OUT/project-open.json" || check "session: project open --no-open failed"
+J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: project open's link: $(cat "$OUT/project-open.json")"
+code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
+[ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
 token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")
-[ "$(curl -sS -o "$OUT/session-again.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 400 ] && J '.error.code == "session_code_invalid"' "$OUT/session-again.json" \
-  || check "session: a code worked twice: $(cat "$OUT/session-again.json")"
-[ "$(as "$token" "$B/v1/projects")" = 200 ] || check "session: its token does not read"
-[ "$(as "$token" -X POST "$B/v1/session-codes")" = 403 ] || check "session: a session minted a code"
-[ "$(anon -r 0-0 "$U?media=$media")" = 206 ] && [ "$(anon -I "$U?media=$media")" = 200 ] || check "session: ?media= does not read a file"
-[ "$(anon "$B/v1/machines?media=$media")" = 401 ] || check "session: ?media= read GET /v1/machines"
-[ "$(anon -X POST -d '{}' "$B/v1/projects/$ID/runs?media=$media")" = 401 ] || check "session: ?media= reached a POST"
-[ "$(anon "$U?media=$token")" = 401 ] && [ "$(as "$media" "$B/v1/projects")" = 401 ] || check "session: its two secrets are interchangeable"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -r 0-0 "$U?media=$media")" = 206 ] || check "session: ?media= does not seek a cut"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$U?media=$token")" = 401 ] || check "session: its token works as its media secret"
 [ "$(stat -c %a "$sessions")" = 600 ] || check "session: sessions.json is $(stat -c %a "$sessions")"
 ! grep -qE "$token|$media" "$sessions" || check "session: sessions.json holds a secret, not its digest"
-[ "$(as "$token" -X DELETE "$B/v1/session")" = 204 ] || check "session: DELETE did not answer 204"
-[ "$(as "$token" "$B/v1/projects")" = 401 ] && [ "$(anon "$U?media=$media")" = 401 ] || check "session: an ended session still opens something"
-[ -n "${ALONE:-}" ] && return 0
-code=$(api -X POST "$B/v1/session-codes" | jq -r .code)
-sleep 61
-[ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 400 ] || check "session: a code outlived its 60 s"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -X DELETE "$B/v1/session")" = 204 ] || check "session: DELETE did not answer 204"
 }
 
 # What a run wrote can't be script in Calcifer's origin: sandboxed, and a page is a download. The browser opens them too.
@@ -1672,7 +1639,7 @@ python3 -m http.server "$port" --bind 127.0.0.1 --directory "$here/project" > "$
 for _ in $(seq 50); do curl -fsS -o /dev/null "http://localhost:$port/cross-site.html" && break; sleep 0.1; done
 # The re-cut the page follows: the edit a second shorter.
 sed 's/      - <a>/      - {video: <a>, start: 0, end: 120}/' "$P/project.yaml" > "$OUT/recut.yaml"
-code_got=$(api -X POST "http://$ADDR/v1/session-codes" | jq -r .code)
+code_got=$(cozy --json web --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\)$/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
 pid=$(jq -r .pid "$lock")
