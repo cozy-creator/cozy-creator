@@ -157,6 +157,8 @@ jobs:
             /opt/python/cp311-cp311/bin/python backend/stage_cli.py --release \
               --target x86_64-unknown-linux-gnu --target-dir ../../target/manylinux2_28 \
               -i /opt/python/cp311-cp311/bin/python
+      - if: always() && contains(inputs.build, 'tensorfs')
+        run: sudo chown -R "$(id -u):$(id -g)" target crates/tensorfs-py
       - name: Verify and tag the complete Linux wheel
         if: contains(inputs.build, 'tensorfs')
         run: uv run --no-project --with auditwheel --with patchelf python crates/tensorfs-py/backend/portable_wheels.py crates/tensorfs-py/dist --platform manylinux_2_28_x86_64
@@ -197,13 +199,12 @@ jobs:
           assert encoded.parts["weight"].nbytes == 256
           assert measured == {"amax": 0.0, "max_abs_error": 0.0, "sse": 0.0, "energy": 0.0, "saturated": 0}
           assert tensorfs.ConversionControl().progress() == (0, 0, 0)
-          assert varena.supports_load_execution()
+          from tensorfs.varena import _runtime
+          assert _runtime.supports_load_execution()
           assert hasattr(tensorfs._ext._VarenaLoadSlot, "encoded")
           assert hasattr(tensorfs._ext._VarenaRegion, "pin")
           print("TensorFS full-package import and native capabilities:", tensorfs.__version__)
           PY
-      - if: always() && contains(inputs.build, 'tensorfs')
-        run: sudo chown -R "$(id -u):$(id -g)" target crates/tensorfs-py
       - if: contains(inputs.build, 'tensorfs')
         uses: actions/upload-artifact@v4
         with:
