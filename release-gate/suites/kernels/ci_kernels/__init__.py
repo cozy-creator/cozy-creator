@@ -148,7 +148,7 @@ def declared(row: arch.Row, sm: int) -> dict:
             continue  # only its own kernel launches it, and this row runs none
         if name == svdq_linear.KERNELS.name and not row.fp4:
             continue
-        if name == "cozy-sol-fa4-merge" and route != "fa4_block_sparse":
+        if name == "cozy-sol-fa4-merge" and route != attention_sol.FA4:
             continue
         names.append(f"triton:{name}")
     # A format's kernels exist where its row has it; FP8 GEMMs only where the wheel carries them.
@@ -264,16 +264,20 @@ def _outliers(ready, candidate, target, generator) -> str:
 _BIG = (1, 392_000, 56, 128)
 
 
-def _not_fit(name: str, index: int, work: Callable[[str, int], dict]) -> dict:
-    """A card that can't hold the call hasn't exercised it: said, and no failure (the card's real
+def _not_fit(name: str, index: int, work: Callable[..., dict]) -> dict:
+    """H3's largest, else the least past 2^31 elements with Q, K and V one tensor, on a card that
+    can't hold that. A card that can't hold either hasn't exercised it: said, and no failure (its real
     runs cut attention to fit, so no kernel call is this big there)."""
-    try:
-        return work(name, index)
-    except torch.OutOfMemoryError as exc:
-        return {"passed": True, "detail": f"not run: does not fit this card ({str(exc)[:80]})"}
+    for shape, shared in ((_BIG, False), ((1, 300_000, 56, 128), True)):
+        try:
+            return work(name, index, shape, shared)
+        except torch.OutOfMemoryError as exc:
+            torch.cuda.empty_cache()
+            why = str(exc)[:80]
+    return {"passed": True, "detail": f"not run: does not fit this card ({why})"}
 
 
-def _big(name: str, index: int) -> dict:
+def _big(name: str, index: int, shape: tuple[int, ...], shared: bool) -> dict:
     """One call past the int32 element limit: its heads hold one head's values, so a wild offset
     shows as heads that differ, and sampled rows of the last head against exact attention in
     float64, which costs no N^2."""
@@ -284,7 +288,7 @@ def _big(name: str, index: int) -> dict:
     free, _ = torch.cuda.mem_get_info(index)
     if free < 24 << 30:
         return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold 2^31 elements of Q, K, V and out"}
-    tokens, heads, dim = _BIG[1:]
+    tokens, heads, dim = shape[1:]
     g = torch.Generator(device=target).manual_seed(9)
     if candidate.sparse:
         block, blocks = 64, -(-tokens // 64)
@@ -299,7 +303,11 @@ def _big(name: str, index: int) -> dict:
         del centers, values, home, goes
     else:
         one = [torch.randn(tokens, 1, dim, generator=g, device=target, dtype=torch.float32) for _ in range(3)]
-    q, k, v = (x.to(torch.bfloat16)[None].expand(1, tokens, heads, dim).contiguous() for x in one)
+    if shared:
+        one = [one[0]] * 3
+        q = k = v = one[0].to(torch.bfloat16)[None].expand(1, tokens, heads, dim).contiguous()
+    else:
+        q, k, v = (x.to(torch.bfloat16)[None].expand(1, tokens, heads, dim).contiguous() for x in one)
     if candidate.sparse:
         if candidate.name == "sol-attn":
             row = attention.device_row(device)
@@ -331,12 +339,15 @@ def _big(name: str, index: int) -> dict:
 
 
 def _sol_built(q) -> None:
+    """Sol's object for this length, on a card whose route has one, and upstream's preprocess, on
+    every route (FA4's too): until they land a sparse step serves its dense reference."""
     card, store, index = attention_sol._capability(q.device), kernel_cache.configured(), q.device.index or 0
-    if card is None or store is None:
+    if store is None:
         return
-    found = attention_sol._job_for(q.shape[1], card)
-    kernel_ready.wait(f"{attention_sol.KERNEL} {found.key.digest[:16]}",
-                      partial(attention_sol._open, store, found, card))  # fmt: skip
+    if card is not None:
+        found = attention_sol._job_for(q.shape[1], card)
+        kernel_ready.wait(f"{attention_sol.KERNEL} {found.key.digest[:16]}",
+                          partial(attention_sol._open, store, found, card))  # fmt: skip
     kernel_ready.wait(f"{attention_sol.KERNEL} preprocess cuda:{index}",
                       partial(attention_sol._warm, index))  # fmt: skip
 
