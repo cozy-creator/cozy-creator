@@ -24,7 +24,6 @@ pub struct Execution {
     site: String,
     key: String,
     choices: Vec<(String, Vec<usize>)>,
-    preferred: String,
     selected: SplitSelection,
     progress: Mutex<Progress>,
 }
@@ -38,7 +37,6 @@ fn execution_key(
     configuration: &str,
     site: &str,
     choices: &[(String, Vec<usize>)],
-    preferred: &str,
     selected: &SplitSelection,
 ) -> String {
     // Length-prefixing is unambiguous. Configuration is the consumer's current immutable
@@ -46,7 +44,7 @@ fn execution_key(
     // entry/begin, but its address-derived name is not compute demand. The fixed choice
     // already records its effect on the operation's allocation geometry.
     let mut key = String::from("varena.closed-eager/1:");
-    for value in [configuration, site, preferred, &selected.choice_id] {
+    for value in [configuration, site, &selected.choice_id] {
         field(&mut key, value);
     }
     field(&mut key, &choices.len().to_string());
@@ -76,7 +74,6 @@ impl Execution {
         configuration: &str,
         site: &str,
         choices: Vec<(String, Vec<usize>)>,
-        preferred: &str,
         stream: u64,
     ) -> Result<Self> {
         if configuration.is_empty() || site.is_empty() {
@@ -87,15 +84,14 @@ impl Execution {
         let _exclusion = crate::enter_producer(device)?;
         let owner = initialize_owner(device)?;
         inactive(&owner)?;
-        let selected = split_select(device, site, choices.clone(), preferred, stream)?;
+        let selected = split_select(device, site, choices.clone(), stream)?;
         inactive(&owner)?;
         Ok(Self {
             device,
             pid: std::process::id(),
             site: site.to_owned(),
-            key: execution_key(configuration, site, &choices, preferred, &selected),
+            key: execution_key(configuration, site, &choices, &selected),
             choices,
-            preferred: preferred.to_owned(),
             selected,
             progress: Mutex::new(Progress::Committed),
         })
@@ -153,7 +149,7 @@ impl Execution {
             let exclusion = crate::enter_producer(self.device)?;
             let owner = owner(self.device)?;
             inactive(&owner)?;
-            split::validate_committed(&owner, &self.site, self.choices.clone(), &self.preferred)?;
+            split::validate_committed(&owner, &self.site, self.choices.clone())?;
             let lease = crate::plan::Lease::acquire(self.device)?;
             if lease.validate()? != self.selected.plan_generation {
                 return Err(Error::Invalid("committed phase-plan generation changed"));

@@ -283,22 +283,28 @@ impl Plan {
             .iter()
             .position(|phase| phase.name == name)
             .ok_or(Error::Invalid("unknown phase in plan"))?;
-        let mut registry = registry()?;
-        let entry = registry.entry(self.device).or_default();
-        if let Some(prior) = &entry.active {
-            if prior.id != self.id {
-                return Err(Error::Invalid("another phase plan is active on this GPU"));
+        {
+            let mut registry = registry()?;
+            let entry = registry.entry(self.device).or_default();
+            if let Some(prior) = &entry.active {
+                if prior.id != self.id {
+                    return Err(Error::Invalid("another phase plan is active on this GPU"));
+                }
+                if prior.phase == phase {
+                    return Ok(());
+                }
             }
-            if prior.phase == phase {
-                return Ok(());
-            }
+            entry.advance(false)?;
+            entry.active = Some(Active {
+                id: self.id,
+                plan: Arc::downgrade(self),
+                phase,
+            });
         }
-        entry.advance(false)?;
-        entry.active = Some(Active {
-            id: self.id,
-            plan: Arc::downgrade(self),
-            phase,
-        });
+        // A new plan or phase is the boundary: the core owns this, not its callers.
+        for arena in &lease.arenas {
+            arena.phase_boundary()?;
+        }
         Ok(())
     }
 
