@@ -1008,6 +1008,110 @@ pub struct Checkpoint {
 }
 
 /// A package environment the machine holds for this controller.
+/// `GET /v1/machines/{name}/packages`: what a machine holds installed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachinePackages {
+    pub machine: String,
+    pub packages: Vec<HeldPackage>,
+}
+
+/// One package a machine holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldPackage {
+    pub machine: String,
+    pub package: String,
+    pub release: String,
+    /// The cozy-runtime in its environment.
+    pub runtime: String,
+    pub level: String,
+    pub hub: String,
+    /// `local`, `hub`, or another Hub's URL.
+    pub source: String,
+    /// Why the environment does not run the machine's own Runtime; empty when it does.
+    pub warning: String,
+}
+
+/// `GET /v1/machines/{name}/models`: the models a machine holds. Its store's total counts shared content once.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachineModels {
+    pub machine: String,
+    pub models: Vec<HeldModel>,
+    /// It has reported no Status yet, so nothing is known of what it holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub silent: bool,
+    /// The repositories in its store, and their bytes.
+    #[serde(default)]
+    pub repositories: u64,
+    #[serde(default)]
+    pub bytes: u64,
+}
+
+/// One checkpoint a machine holds, and its repository's bytes there.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldModel {
+    pub machine: String,
+    pub model: String,
+    pub release: String,
+    pub lane: String,
+    /// Its header's precision lane (`int8`, …).
+    pub precision: String,
+    pub checkpoint: String,
+    pub bytes: u64,
+    /// The repository's bytes other held models share.
+    pub shared_bytes: u64,
+}
+
+/// Where an installation came from, for a client of `hub`: `local` code, the Hub, or another Hub by its URL.
+pub fn package_source(installed_from: &str, hub: &str) -> String {
+    let other = |origin: &str| crate::config::Origin::parse(origin).is_ok_and(|origin| origin.to_string() != hub);
+    match installed_from {
+        "" => "local".into(),
+        other_hub if other(other_hub) => other_hub.into(),
+        _ => "hub".into(),
+    }
+}
+
+impl Machine {
+    /// The packages it holds, read by a client of `hub`.
+    pub fn packages(&self, hub: &str) -> MachinePackages {
+        let held = |env: &Environment| HeldPackage {
+            machine: self.name.clone(),
+            package: env.package.clone(),
+            release: env.release.clone(),
+            runtime: env.runtime.clone(),
+            level: env.level.clone(),
+            hub: env.hub.clone(),
+            source: package_source(&env.hub, hub),
+            warning: env.warning.clone(),
+        };
+        MachinePackages { machine: self.name.clone(), packages: self.status.iter().flat_map(|s| &s.environments).map(held).collect() }
+    }
+
+    /// The models it holds.
+    pub fn models(&self) -> MachineModels {
+        let mut held = MachineModels { machine: self.name.clone(), silent: self.status.is_none(), ..Default::default() };
+        let Some(status) = &self.status else { return held };
+        (held.repositories, held.bytes) = (status.models.len() as u64, status.models_bytes);
+        for model in &status.models {
+            let row = |release: &str, lane: &str, precision: &str, checkpoint: &str| HeldModel {
+                machine: self.name.clone(),
+                model: model.repository.clone(),
+                release: release.into(),
+                lane: lane.into(),
+                precision: precision.into(),
+                checkpoint: checkpoint.into(),
+                bytes: model.total_bytes,
+                shared_bytes: model.total_bytes.saturating_sub(model.unique_bytes),
+            };
+            if model.checkpoints.is_empty() {
+                held.models.push(row("", "", "", ""));
+            }
+            held.models.extend(model.checkpoints.iter().map(|c| row(&c.release, &c.lane, &c.precision, &c.manifest)));
+        }
+        held
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
     pub installation: String,

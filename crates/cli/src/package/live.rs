@@ -5,7 +5,7 @@ use protocol::{
     error::Error,
 };
 
-use super::machine::{HEADERS, named, rows};
+use super::machine::{HEADERS, cells, named, rows};
 use crate::{Context, machine::live::Machines};
 
 /// The packages of every ready machine, or of the one `--on` names, kept as they change.
@@ -46,6 +46,6 @@ impl Packages {
             None => matches!(m.state, MachineState::Ready | MachineState::Stopped),
         };
         let machines = self.machines.list().machines.iter().filter(shown);
-        rows(ctx, machines).iter().map(|row| row.cells()).collect()
+        rows(ctx, machines).iter().map(cells).collect()
     }
 }

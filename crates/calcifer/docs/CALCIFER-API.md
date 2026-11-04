@@ -209,6 +209,10 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   - It answers `Updating {machine, run?, target, warnings}`: `202` with the run, which is followed like any
     other; `200` with no run when the machine already runs the target.
   - The run fails `update_unapplied` unless the machine then runs what it asked for.
+- `GET /v1/machines/{name}/packages[?fresh=true&hub=]`: `MachinePackages {machine, packages: [{machine, package, release, runtime, level, hub, source, warning}]}`. `source` is
+  `local`, `hub`, or another Hub's URL, for a client of `hub` (default this computer's).
+- `GET /v1/machines/{name}/models[?fresh=true]`: `MachineModels {machine, models: [{machine, model, release, lane, precision, checkpoint, bytes, shared_bytes}], silent?, repositories, bytes}`.
+  `silent`: it has reported no Status yet. `repositories` and `bytes` are its store's, shared content counted once.
 - `GET /v1/machines/{name}/logs/{tensord|tensorfs|memory}?lines=N&since_ms=T`:
   - The newest `N` whole lines (`0`: all), as `text/plain`. `since_ms` drops the lines before the first one
     stamped at or after `T`.
@@ -429,7 +433,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy org claim` | `POST /v1/orgs/{org}/claim` |
 | `cozy org edit` | `PATCH /v1/orgs/{org}` |
 | `cozy model ls [query]` | `GET /v1/models` |
-| `cozy model ls --on` | `GET /v1/machines` |
+| `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
 | `cozy model info` | `GET /v1/models/{org}/{name}` |
 | `cozy model family` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
@@ -438,7 +442,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy model upload` | `POST /v1/model-uploads` (`/v1/model-upload-quotes` first for `new`); `GET /v1/runs/{id}/events` unless it answers `recorded` |
 | `cozy model quantize` | `POST /v1/model-quantizations` (`/v1/model-quantization-quotes` first for `new`), again while `preparing`; `GET /v1/runs/{id}/events` |
 | `cozy package ls [query]` | `GET /v1/packages` |
-| `cozy package ls --on` | `GET /v1/machines`, `GET /v1/machines/{name}?fresh=true` |
+| `cozy package ls --on` | `GET /v1/machines/{name}`, `GET /v1/machines/{name}/packages?fresh=true`; `--on all`: `GET /v1/machines` |
 | `cozy package info` | `GET /v1/packages/{org}/{name}` |
 | `cozy package install`, `update` | `POST /v1/package-installs` (`/v1/package-install-quotes` first for `new`); `GET /v1/runs/{id}/events` |
 | `cozy package remove` | `POST /v1/package-removals`; `GET /v1/runs/{id}/events` for each |

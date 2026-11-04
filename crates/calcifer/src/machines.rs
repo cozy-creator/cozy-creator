@@ -1227,6 +1227,8 @@ fn lifecycle(event: &Event) -> bool {
 pub(crate) struct Fresh {
     #[serde(default)]
     fresh: bool,
+    /// The Hub whose client reads it.
+    hub: Option<String>,
 }
 
 /// The machine; `?fresh=true` answers a Status it read now, or refuses.
@@ -1235,12 +1237,38 @@ pub(crate) async fn show(
     UrlPath(name): UrlPath<String>,
     query: Result<Query<Fresh>, QueryRejection>,
 ) -> Result<Json<Machine>, Refusal> {
+    Ok(Json(asked(&api, &name, query).await?.0))
+}
+
+/// The machine `GET /v1/machines/{name}` answers.
+async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryRejection>) -> Result<(Machine, Option<String>), Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     let machine = match query.fresh {
-        true => fresh(&api.machines, &name).await,
-        false => api.machines.show(&name).await,
+        true => fresh(&api.machines, name).await,
+        false => api.machines.show(name).await,
     };
-    Ok(Json(machine.map_err(Refusal)?))
+    Ok((machine.map_err(Refusal)?, query.hub))
+}
+
+/// `GET /v1/machines/{name}/packages`: what it holds installed, each with where it came from for a client of `?hub=`, else this
+/// computer's Hub.
+pub(crate) async fn packages(
+    State(api): State<Arc<Api>>,
+    UrlPath(name): UrlPath<String>,
+    query: Result<Query<Fresh>, QueryRejection>,
+) -> Result<Json<wire::MachinePackages>, Refusal> {
+    let (machine, hub) = asked(&api, &name, query).await?;
+    let hub = crate::hub::origin(&api, hub.as_deref())?;
+    Ok(Json(machine.packages(&hub.to_string())))
+}
+
+/// `GET /v1/machines/{name}/models`: the models it holds.
+pub(crate) async fn models(
+    State(api): State<Arc<Api>>,
+    UrlPath(name): UrlPath<String>,
+    query: Result<Query<Fresh>, QueryRejection>,
+) -> Result<Json<wire::MachineModels>, Refusal> {
+    Ok(Json(asked(&api, &name, query).await?.0.models()))
 }
 
 /// One of Calcifer's machines with the Status frame it answered now, recorded as its latest:

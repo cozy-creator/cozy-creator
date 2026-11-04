@@ -4,7 +4,7 @@
 use std::process::ExitCode;
 
 use protocol::{
-    calcifer::{Environment, Machine, MachineState, On, Run, Status, Submitted},
+    calcifer::{HeldPackage, Machine, MachinePackages, MachineState, On, Run, Status, Submitted, package_source},
     error::{Error, Kind},
     hub::{AfterRun, PackageInstall, PackageRemoval, PackageRemovals},
 };
@@ -91,17 +91,13 @@ pub async fn install(ctx: &Context, package: String, release: Option<String>, on
     Ok(ExitCode::SUCCESS)
 }
 
-/// The machines this command reads: `on` alone, read from the machine now (so a run that just
-/// settled shows), or every ready one as Calcifer last saw it. A booting `on` is waited for, as a
-/// run sent to it waits.
-async fn machines(ctx: &Context, on: Option<&On>) -> Result<Vec<Machine>, Error> {
+/// What this command reads: `on` alone, read from the machine now (so a run that just settled shows), or every ready one as
+/// Calcifer last saw it. A booting `on` is waited for, as a run sent to it waits.
+async fn held(ctx: &Context, on: Option<&On>) -> Result<Vec<HeldPackage>, Error> {
     let calcifer = ctx.calcifer().await?;
     let Some(on) = on else {
         let all = calcifer.machines().await?.machines;
-        return Ok(all
-            .into_iter()
-            .filter(|m| matches!(m.state, MachineState::Ready | MachineState::Stopped))
-            .collect());
+        return Ok(rows(ctx, all.iter().filter(|m| matches!(m.state, MachineState::Ready | MachineState::Stopped))));
     };
     let mut machine: Machine = calcifer
         .get(&route(&named(on)?.to_ascii_lowercase())?)
@@ -117,9 +113,9 @@ async fn machines(ctx: &Context, on: Option<&On>) -> Result<Vec<Machine>, Error>
             }
         };
     }
-    let path = route(&machine.name.to_ascii_lowercase())?;
-    let machine: Machine = calcifer.get_query(&path, &[("fresh", "true")]).await?;
-    Ok(vec![machine])
+    let path = format!("{}/packages", route(&machine.name.to_ascii_lowercase())?);
+    let held: MachinePackages = calcifer.get_query(&path, &[("fresh", "true"), ("hub", ctx.hub().as_str())]).await?;
+    Ok(held.packages)
 }
 
 /// The machine `--on` names, whose packages can be read.
@@ -134,69 +130,15 @@ pub(crate) fn named(on: &On) -> Result<&str, Error> {
     }
 }
 
-/// A machine's installations.
-fn environments(machine: &Machine) -> Vec<&Environment> {
-    machine.status.iter().flat_map(|s| &s.environments).collect()
-}
-
-/// Where an installation came from: `local` code, the Hub, or another Hub by its URL.
-fn source(ctx: &Context, hub: &str) -> String {
-    match (hub.is_empty(), ctx.other_hub(hub)) {
-        (true, _) => "local".into(),
-        (_, Some(other)) => other.into(),
-        _ => "hub".into(),
-    }
-}
-
 pub(crate) const HEADERS: [&str; 6] = ["MACHINE", "PACKAGE", "RELEASE", "RUNTIME", "LEVEL", "SOURCE"];
 
 /// Each package `machines` hold.
-pub(crate) fn rows<'a>(ctx: &Context, machines: impl IntoIterator<Item = &'a Machine>) -> Vec<Held<'a>> {
-    let mut rows = vec![];
-    for machine in machines {
-        for env in environments(machine) {
-            rows.push(Held {
-                machine: &machine.name,
-                package: &env.package,
-                release: &env.release,
-                runtime: &env.runtime,
-                level: &env.level,
-                hub: &env.hub,
-                source: source(ctx, &env.hub),
-                warning: &env.warning,
-            });
-        }
-    }
-    rows
+pub(crate) fn rows<'a>(ctx: &Context, machines: impl IntoIterator<Item = &'a Machine>) -> Vec<HeldPackage> {
+    machines.into_iter().flat_map(|machine| machine.packages(ctx.hub().as_str()).packages).collect()
 }
 
-#[derive(Serialize)]
-pub(crate) struct Held<'a> {
-    machine: &'a str,
-    package: &'a str,
-    release: &'a str,
-    /// The cozy-runtime in its environment.
-    runtime: &'a str,
-    level: &'a str,
-    hub: &'a str,
-    /// `local`, `hub`, or another Hub's URL.
-    source: String,
-    /// Why the environment does not run the machine's own Runtime; empty when it does.
-    warning: &'a str,
-}
-
-impl Held<'_> {
-    pub(crate) fn cells(&self) -> Vec<String> {
-        let (machine, package, release) = (self.machine, self.package, self.release);
-        vec![
-            machine.into(),
-            package.into(),
-            release.into(),
-            self.runtime.into(),
-            self.level.into(),
-            self.source.clone(),
-        ]
-    }
+pub(crate) fn cells(row: &HeldPackage) -> Vec<String> {
+    vec![row.machine.clone(), row.package.clone(), row.release.clone(), row.runtime.clone(), row.level.clone(), row.source.clone()]
 }
 
 pub async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Result<ExitCode, Error> {
@@ -205,8 +147,7 @@ pub async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Result<Exi
         crate::tui::show(ctx, crate::tui::Screen::Packages(view)).await?;
         return Ok(ExitCode::SUCCESS);
     }
-    let machines = machines(ctx, on.as_ref()).await?;
-    let mut rows = rows(ctx, &machines);
+    let mut rows = held(ctx, on.as_ref()).await?;
     rows.retain(|row| output::names(&row.package, words));
     if ctx.json {
         output::json(&serde_json::json!({ "packages": rows }));
@@ -222,7 +163,7 @@ pub async fn list(ctx: &Context, on: Option<On>, words: &[String]) -> Result<Exi
     }
     let mut table = Table::new(ctx, HEADERS);
     for row in &rows {
-        table = table.row(row.cells());
+        table = table.row(cells(row));
     }
     for row in rows.iter().filter(|row| !row.warning.is_empty()) {
         table = table.note(format!("{}@{}: {}", row.package, row.release, row.warning));
@@ -279,7 +220,7 @@ pub async fn remove(ctx: &Context, names: &[String], on: On) -> Result<ExitCode,
     } else {
         let mut table = Table::new(ctx, ["PACKAGE", "RELEASE", "SOURCE"]);
         for row in &removed {
-            table = table.row([row.package.clone(), row.release.clone(), source(ctx, &row.hub)]);
+            table = table.row([row.package.clone(), row.release.clone(), package_source(&row.hub, ctx.hub().as_str())]);
         }
         table = table.note(format!("{} reclaimed on {machine}", output::bytes(reclaimed)));
         if retained {
