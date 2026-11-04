@@ -7,7 +7,7 @@ name = "ci-lora-overlay-refill"
 version = "0.1.0"
 description = "A LoRA armed in the DiT's own forward stays applied through paging and base/LoRA alternation"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.33.2,<0.36", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14,<2.15"]
+dependencies = ["cozy-runtime>=0.33.2", "diffusers>=0.41,<0.42", "msgspec>=0.19", "torch>=2.14"]
 
 [project.entry-points."cozy.application"]
 default = "ci_lora_overlay_refill:app"

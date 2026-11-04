@@ -32,7 +32,7 @@ for part in native gpu driver derived; do proof "stock-memory-$part" "$STOCK_DIR
 controller() {
   local name=$1 code=0; shift
   [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* ]] || return 0
-  python3 -I "$@" > "$name.out" 2>&1 || code=$?
+  nice -n 19 uv run -q --no-project --with pillow python -I "$@" > "$name.out" 2>&1 || code=$?
   expect "$name" "$([ "$code" = 0 ] && echo PASS || echo FAIL)" "exit $code: $(tail -n 1 "$name.out" | cut -c1-200)"
 }
 # Each makes a private model, deleted after.

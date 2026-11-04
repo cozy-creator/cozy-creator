@@ -1125,7 +1125,7 @@ def runtime_resume(payload: Request, ctx: Context, tel: Telemetry) -> Report:
                     convert(resumed, "a", bound)
                 except tensorfs.InvalidError as error:
                     assert (
-                        "writer quantization source or resolved recipe changed"
+                        "selected by another conversion"
                         in str(error)
                     )
                 else:

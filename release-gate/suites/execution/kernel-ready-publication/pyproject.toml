@@ -7,7 +7,7 @@ name = "ci-kernel-ready-publication"
 version = "0.1.0"
 description = "Kernel readiness publication under concurrent openers, on CPU"
 requires-python = ">=3.12"
-dependencies = ["cozy-runtime>=0.34,<0.35", "msgspec>=0.19", "torch>=2.14,<2.15"]
+dependencies = ["cozy-runtime>=0.34", "msgspec>=0.19", "torch>=2.14"]
 
 [project.entry-points."cozy.application"]
 default = "ci_kernel_ready_publication:app"
