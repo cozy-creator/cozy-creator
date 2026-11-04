@@ -54,6 +54,15 @@ impl Package {
         reads.then(|| self.function(&name)).and_then(Result::ok)
     }
 
+    /// The tags its adapters declare as their own (`App.project_adapter(reserved=)`): in a text they are text.
+    pub fn reserved(&self) -> Vec<String> {
+        let adapters = interface::entrypoints(&self.document).filter(|entry| interface::name(entry).is_some_and(|name| name.starts_with(ADAPTER)));
+        let mut tags: Vec<String> = adapters.flat_map(|entry| entry["reserved"].as_array().into_iter().flatten()).filter_map(|tag| Some(tag.as_str()?.to_owned())).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        tags
+    }
+
     /// `function` of it.
     pub fn function(&self, function: &str) -> Result<Renderer, Error> {
         Renderer::read(&self.name, function, self.release.clone(), &self.document, self.local.clone())

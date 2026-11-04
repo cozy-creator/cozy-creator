@@ -61,7 +61,7 @@ def shoot(payload: Request, out: Outputs) -> Take:
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
-@app.project_adapter("video")
+@app.project_adapter("video", reserved=["d"])
 def adapt(op: Operation) -> list[Invocation]:
     """Its own words, nothing the format names. A field says what to do: answer no run, refuse, or call another of its functions."""
     if op.fields.get("refuse"):

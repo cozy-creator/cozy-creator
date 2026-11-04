@@ -147,12 +147,15 @@ At render, a typed adapter warns of an unknown field an asset writes itself. **A
 
 `<name>` in any text makes that asset an input.
 
-**Names** of assets, entities and sub-entities hold only letters, digits, `_`, `-` and `.`, such as `kyogre_sheet` or `coast.1`. Anything else is refused when the file is read, in one line with the fix, and nothing renders: `` `kyogre sheet`: names can't hold spaces or commas; use `kyogre_sheet` ``. `rename` takes the same rule. Names match in any case, with `_` and `-` alike. A `<…>` holding a space or comma isn't a mention: it stays plain text, with a warning.
+**Names** of assets, entities and sub-entities hold only letters, digits, `_`, `-` and `.`, such as `kyogre_sheet` or `coast.1`. Anything else is refused when the file is read, in one line with the fix, and nothing renders: `` `kyogre sheet`: names can't hold spaces or commas; use `kyogre_sheet` ``. `rename` takes the same rule. Names match in any case, with `_` and `-` alike.
 
 - **In a shot's `summary`:** reaches every segment.
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
 - **Explicit:** `<coast>` always means what is named `coast`, and `<coast.2>` always means `coast.2`. Nothing resolves to "the newest".
 - **Of an entity:** see below.
+- **A package's own tags:** an adapter can declare them, `@app.project_adapter("video", reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that package makes, each stays text, exactly as written, with no warning, and reaches the adapter unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
+- **What can't be a name** is text, with no warning, as `<Picture 1>` and `</d>` are.
+- **A name that names nothing** warns, and stays text: `<kyogee>: did you mean <kyogre>?` when it is within two edits of a real name and at least four letters long, else that it is nothing in the project. Until a package is read, at its first render, its assets' are held back, because they may be its tags.
 - **A cycle:** a mention that closes one, A mentioning B and B mentioning A, stays plain text, with a warning, and both still render. An entity's links count: `kyogre_sheet` mentioning `<kyogre>`, which links to it, is a cycle, and so is a sub-entity's asset mentioning its parent.
 
 ## Entities

@@ -459,7 +459,7 @@ render "$E" meeting || check "entities: render meeting: $(tail -c 400 "$OUT/rend
 J '.assets.meeting.versions[0].reads | map({(.name): (.files | keys)}) | add == {"hero": ["image", "voice"], "hero.primordial": ["image", "voice"], "hero.pose": ["image"]}' "$E/project.lock" || check "entities: meeting reads $(jq -c '.assets.meeting.versions[0].reads' "$E/project.lock")"
 J '.assets.meeting.versions[0].reads | map(select(.name == "hero")) | .[0].files.image != null' "$E/project.lock" || check "entities: <hero> has no picture"
 
-step "a project: a name can't hold spaces or commas, and <a b> is no mention"
+step "a project: a name can't hold spaces or commas"
 local N=$OUT/names
 mkdir -p "$N"
 printf 'version: 2\nassets:\n  kyogre sheet:\n    kind: image\n' > "$N/project.yaml"
@@ -469,7 +469,7 @@ printf 'version: 2\nentities:\n  a,b:\n    kind: image\n' > "$N/project.yaml"
 code=0; cozy project -p "$N" status > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "use \`a_b\`" "$OUT/name.txt"; } || check "names: a comma in a name: exit $code: $(tail -c 300 "$OUT/name.txt")"
 printf 'version: 2\nassets:\n  a:\n    kind: image\n    description: Prose <a b> here.\n' > "$N/project.yaml"
-J '.warnings | any(contains("<a b> is no mention"))' <<< "$(status "$N")" || check "names: <a b> was not said: $(status "$N" | jq -c .warnings)"
+J '.warnings | any(contains("<a b>")) | not' <<< "$(status "$N")" || check "names: <a b> is just text, and was said: $(status "$N" | jq -c .warnings)"
 code=0; cozy project -p "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q "names can't hold" "$OUT/name.txt"; } || check "names: rename took a space: exit $code: $(tail -c 300 "$OUT/name.txt")"
 
@@ -481,6 +481,34 @@ cozy project -p "$E" approve hero.badge "$red" > "$OUT/approve.txt" 2>&1 || chec
 grep -q "^    badge: $red\$" "$E/project.yaml" || check "entities: approve did not rewrite the link: $(grep -n badge "$E/project.yaml")"
 cozy project -p "$E" approve hero.primordial.mark "$red" > "$OUT/approve.txt" 2>&1 || check "entities: approve hero.primordial.mark: $(tail -c 300 "$OUT/approve.txt")"
 grep -q "^      mark: $red\$" "$E/project.yaml" || check "entities: approve did not rewrite the sub-entity's link: $(grep -n mark "$E/project.yaml")"
+
+step "a project: a package's own tags are text, and a name that names nothing is said"
+local D=$OUT/dialogue look
+mkdir -p "$D"; plate "$D/look.mp4" testsrc2 440 800
+printf 'version: 2\nassets: {}\n' > "$D/project.yaml"
+look=$(prefix "$D" "$D/look.mp4")
+cat > "$D/project.yaml" <<YAML
+version: 2
+assets:
+  look:
+    video: $look
+  kyogre:
+    video: $look
+  talk:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: <look> says <d><English>Hello</d> to <kyogee>, <Picture 1> and <a b> too.
+YAML
+render "$D" talk || check "text: render talk: $(tail -c 300 "$OUT/render.txt")"
+says text "<kyogee>: did you mean <kyogre>?"
+says text "talk mentions <English>, which is nothing in the project"
+J '.warnings | any(contains("<kyogee>: did you mean <kyogre>?")) and any(contains("<English>"))' <<< "$(status "$D")" || check "text: a name that names nothing was not said: $(status "$D" | jq -c .warnings)"
+J '[.warnings[] | select(contains("<d>") or contains("</d>") or contains("<a b>") or contains("Picture"))] == []' <<< "$(status "$D")" || check "text: a tag was warned of: $(status "$D" | jq -c .warnings)"
+J '[.assets.talk.versions[0].reads[].name] == ["look"]' "$D/project.lock" || check "text: talk reads $(jq -c '.assets.talk.versions[0].reads' "$D/project.lock")"
+grep -qF '<d><English>Hello</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
+sed -i "/^  look:\$/i\\  d:\\n    video: $look" "$D/project.yaml"
+J '.warnings | any(contains("d is also a tag of"))' <<< "$(status "$D")" || check "text: a name that is its package's tag was not said: $(status "$D" | jq -c .warnings)"
+[ "$(row "$D" talk .status)" = '"current"' ] || check "text: a thing named as a tag was read: $(row "$D" talk .status)"
 
 step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle

@@ -402,7 +402,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let lock = folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
-    warnings.extend(unadapted(&api, &doc).await);
+    warnings.extend(unadapted(&api, &doc, folder).await);
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
         let made = standing.version().and_then(|number| held?.version(number));
@@ -449,10 +449,10 @@ fn entity_row(doc: &Doc, i: usize) -> protocol::project::Entity {
 
 /// Each asset whose published package, as this computer knows it or can ask at once, has no adapter for its kind. Local code is
 /// described only on a machine, so a render says it.
-async fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<String> {
+async fn unadapted(api: &Arc<Api>, doc: &Doc, folder: &Folder) -> Vec<String> {
     let host = Host::new(api);
     let (mut said, mut known) = (vec![], HashMap::new());
-    for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none() && doc.assets[i].pin.is_none()) {
+    for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()) {
         let with = doc.target(i);
         if protocol::target::written_as_path(&with) || with.ends_with(".py") {
             continue;
@@ -461,13 +461,23 @@ async fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<String> {
             let asked = tokio::time::timeout(std::time::Duration::from_secs(3), host.published("", &with, None)).await;
             known.insert(with.clone(), asked.ok().and_then(Result::ok));
         }
-        if let Some(package) = &known[&with]
-            && package.adapter(&doc.assets[i].kind).is_none()
-        {
+        let Some(package) = &known[&with] else { continue };
+        said.extend(read_tags(doc, folder, i, package));
+        if doc.assets[i].pin.is_none() && package.adapter(&doc.assets[i].kind).is_none() {
             said.push(no_adapter(&doc.assets[i].name, &package.name, &doc.assets[i].kind));
         }
     }
     said
+}
+
+/// Keeps `package`'s tags in project.lock for what reads the file, and answers what asset `i` couldn't be told until now.
+fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) -> Vec<String> {
+    let (key, tags) = (format::plain_with(&doc.target(i)), package.reserved());
+    let same = folder.lock().is_ok_and(|lock| lock.reserved.get(&key) == Some(&tags));
+    if !same && let Err(error) = folder.update_lock(|lock| drop(lock.reserved.insert(key.clone(), tags.clone()))) {
+        warn!("{}: {error}", key);
+    }
+    doc.said_once_read(i, &tags)
 }
 
 /// The line that says an asset can't be made by what names it.
@@ -1432,6 +1442,9 @@ impl Walk {
             let package = self.host.package(&target.hub, &doc.target(i), &self.folder().dir, &target.on).await?;
             if let Some(moved) = &package.moved {
                 self.say(Event::Warning { message: moved.clone() });
+            }
+            for message in read_tags(doc, self.folder(), i, &package) {
+                self.say(Event::Warning { message });
             }
             let Some(adapter) = package.adapter(&asset.kind) else {
                 self.say(Event::Warning { message: no_adapter(&name, &package.name, &asset.kind) });

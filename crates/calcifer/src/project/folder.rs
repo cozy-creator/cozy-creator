@@ -269,6 +269,9 @@ pub struct Lock {
     /// What `cozy run`s left here: they belong to no asset, and no memo holds them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<RunFile>,
+    /// Each package's own tags, by the name its memo knows it by, as last read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reserved: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
 }
@@ -284,7 +287,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], walk: Owed::default() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default() }
     }
 }
 

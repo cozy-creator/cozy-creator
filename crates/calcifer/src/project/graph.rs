@@ -55,14 +55,20 @@ pub fn mentions_in(value: &Value) -> Vec<String> {
     }
 }
 
-/// Every `<…>` under `value` that holds no name, so stays plain text.
-pub fn no_mentions_in(value: &Value) -> Vec<String> {
-    match value {
-        Value::String(text) => bracketed(text).into_iter().filter(|text| !is_name(text)).map(str::to_owned).collect(),
-        Value::Array(items) => items.iter().flat_map(no_mentions_in).collect(),
-        Value::Object(fields) => fields.values().flat_map(no_mentions_in).collect(),
-        _ => vec![],
+/// How many single-character edits turn `a` into `b`.
+pub fn edits(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, y) in b.iter().enumerate() {
+            let cost = if x == y { diagonal } else { diagonal.min(row[j]).min(row[j + 1]) + 1 };
+            diagonal = row[j + 1];
+            row[j + 1] = cost;
+        }
     }
+    row[b.len()]
 }
 
 pub struct Graph {

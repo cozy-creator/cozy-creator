@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{self, Files, Folder, Keeps, Lock},
-    graph::{Graph, as_name, is_name, mentions, mentions_in, name_key, no_mentions_in},
+    graph::{Graph, as_name, edits, is_name, mentions, mentions_in, name_key},
 };
 
 /// The name `cozy project render all` means.
@@ -194,6 +194,10 @@ pub struct Doc {
     pub order: Vec<usize>,
     pub warnings: Vec<String>,
     index: HashMap<String, usize>,
+    /// Each package's own tags, as project.lock last read them. A package not here hasn't been read yet.
+    reserved: BTreeMap<String, Vec<String>>,
+    /// Mentions naming nothing in assets whose package hasn't been read: its tags may be among them, so they aren't said yet.
+    unread: Vec<(usize, String)>,
     /// How many the file declares, in order, and those after them are images only a beat names.
     declared: usize,
 }
@@ -309,7 +313,7 @@ impl Doc {
                 }
             }
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
             doc.declare(text, &name, written, &defaults, folder, &lock);
@@ -603,6 +607,7 @@ impl Doc {
         let n = self.assets.len();
         let (mut upstream, mut fixed, mut said) = (vec![vec![]; n], vec![vec![]; n], vec![]);
         let mut reads = vec![vec![]; n];
+        let mut unread = vec![];
         // A link of an entity says what the asset says of itself, else what the entity says.
         for i in 0..n {
             let target = self.assets[i].links.as_ref().and_then(|links| self.find(links.roles.get("")?));
@@ -616,11 +621,6 @@ impl Doc {
                 upstream[i].push(writer);
                 fixed[i].push(writer);
                 continue;
-            }
-            if asset.links.as_ref().is_none_or(|links| !links.roles.contains_key("")) {
-                for text in no_mentions_in(&Value::Object(asset.fields.clone())) {
-                    said.push(format!("{}: <{text}> is no mention, since names can't hold spaces or commas: it stays plain text; write <{}> if it means one", asset.name, as_name(&text)));
-                }
             }
             if let Some(links) = &asset.links {
                 for (field, target) in &links.own {
@@ -638,10 +638,29 @@ impl Doc {
                 }
                 continue;
             }
+            let tags = self.tags(i);
+            for tag in tags.into_iter().flatten().filter(|tag| self.find(tag).is_some()) {
+                let line = format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this, so rename it", self.target(i));
+                if !said.contains(&line) {
+                    said.push(line);
+                }
+            }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
+                // A tag of its package, as written, stays text, whatever the project names.
+                if tags.is_some_and(|tags| tags.contains(&mention)) {
+                    continue;
+                }
                 let Some(j) = self.find(&mention) else {
-                    said.push(format!("{} mentions <{mention}>, which is nothing in the project: it reaches its function as written", asset.name));
+                    match tags {
+                        Some(_) => {
+                            let line = self.names_nothing(&asset.name, &mention);
+                            if !said.contains(&line) {
+                                said.push(line);
+                            }
+                        }
+                        None => unread.push((i, mention)),
+                    }
                     continue;
                 };
                 let key = name_key(&self.assets[j].name);
@@ -670,6 +689,7 @@ impl Doc {
         }
         self.order = graph.order;
         self.upstream = graph.upstream;
+        self.unread = unread;
         self.warnings.extend(said);
     }
 
@@ -683,6 +703,36 @@ impl Doc {
         let root = links.parent.as_deref().and_then(|parent| self.find(parent)).and_then(|root| self.assets[root].links.as_ref()).unwrap_or(links);
         let subs = root.subs.iter().filter_map(|sub| self.assets[self.find(sub)?].links.as_ref());
         root.own.values().chain(subs.flat_map(|sub| sub.own.values())).any(|target| self.find(target) == Some(i))
+    }
+
+    /// The tags of the package that makes asset `i`, once it has been read.
+    fn tags(&self, i: usize) -> Option<&Vec<String>> {
+        self.reserved.get(&plain_with(&self.target(i)))
+    }
+
+    /// What is said of a mention that names nothing and is no tag.
+    fn names_nothing(&self, name: &str, mention: &str) -> String {
+        match self.near(mention) {
+            Some(close) => format!("<{mention}>: did you mean <{close}>?"),
+            None => format!("{name} mentions <{mention}>, which is nothing in the project: it reaches its function as written"),
+        }
+    }
+
+    /// What is said of asset `i`'s mentions naming nothing, now its package's `tags` are read.
+    pub fn said_once_read(&self, i: usize, tags: &[String]) -> Vec<String> {
+        let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !tags.contains(mention));
+        let mut said: Vec<String> = mine.map(|(_, mention)| self.names_nothing(&self.assets[i].name, mention)).collect();
+        said.dedup();
+        said
+    }
+
+    /// The name `mention`, which names nothing, is likely a typo of: within two edits, and neither of them short.
+    fn near(&self, mention: &str) -> Option<&str> {
+        const SHORTEST: usize = 4;
+        let key = name_key(mention);
+        let names = self.assets.iter().map(|asset| (name_key(&asset.name), asset.name.as_str()));
+        let close = names.filter(|(other, _)| key.chars().count() >= SHORTEST && other.chars().count() >= SHORTEST).map(|(other, name)| (edits(&key, &other), name));
+        close.filter(|(apart, _)| *apart <= 2).min_by_key(|(apart, _)| *apart).map(|(_, name)| name)
     }
 
     /// The asset named `name`: what can hold versions, as an entity can't.
@@ -944,7 +994,7 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) ->
 
 /// `with` as the key holds it: no release, no root namespace, and local code by its directory's name, so moving from a checkout to
 /// the published package puts nothing out of date.
-fn plain_with(with: &str) -> String {
+pub fn plain_with(with: &str) -> String {
     let with = with.trim();
     if protocol::target::written_as_path(with) || with.ends_with(".py") {
         let name = with.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(with);
