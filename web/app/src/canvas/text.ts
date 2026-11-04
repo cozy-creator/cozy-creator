@@ -1,15 +1,9 @@
 // What the page reads of an asset's words. `text` is whatever a person or a pod wrote, so each read takes only the shape it wants and
 // nothing here is more than text.
 
-export interface Write {
-  image: string
-  at?: number
-}
-
 export interface Beat {
   duration?: number
   description: string
-  writes: Write[]
 }
 
 const string = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null)
@@ -23,12 +17,8 @@ export function beatsOf(text?: Record<string, unknown>): Beat[] {
   if (!Array.isArray(beats)) return []
   return beats.flatMap((beat): Beat[] => {
     if (typeof beat !== "object" || beat === null) return []
-    const { duration, description, writes } = beat as Record<string, unknown>
-    const written = (Array.isArray(writes) ? writes : []).flatMap((write): Write[] => {
-      const image = string((write as Record<string, unknown> | null)?.image)
-      return image ? [{ image, at: number((write as Record<string, unknown>).at) }] : []
-    })
-    return [{ duration: number(duration), description: string(description) ?? "", writes: written }]
+    const { duration, description } = beat as Record<string, unknown>
+    return [{ duration: number(duration), description: string(description) ?? "" }]
   })
 }
 

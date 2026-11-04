@@ -1,7 +1,7 @@
 // The same rule as `as_name` and `name_key` (`crates/calcifer/src/project/graph.rs`), so a name shows as it will be while it's typed.
 // Calcifer picks the name in the end, and the element shows what it got.
 
-/** What can't be in a name becomes `_`. A `.` means a sub-entity or a numbered write, so it can't be typed here. */
+/** What can't be in a name becomes `_`. A `.` means a sub-entity, so it can't be typed here. */
 export function asName(text: string): string {
   return text
     .split(/[^\p{Alphabetic}\p{N}_-]+/u)

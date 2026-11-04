@@ -1,9 +1,9 @@
 import type { Entity, ProjectState, Row } from "../types"
 
 // What the canvas draws of what reads what, from the state alone. An edge goes from what's read to what reads it, so a project reads
-// left to right. Solid is a mention, dotted an entity's link, dashed a shot's write.
+// left to right. Solid is a mention, dotted an entity's link.
 
-export type EdgeKind = "mention" | "link" | "write"
+export type EdgeKind = "mention" | "link"
 
 export interface EdgeSpec {
   id: string
@@ -22,8 +22,6 @@ export interface EdgeSpec {
 
 export const subSource = (sub: string) => `from:${sub}`
 export const subTarget = (sub: string) => `to:${sub}`
-export const BELOW = "below"
-export const ABOVE = "above"
 
 function subsOf(entities: Entity[]): Map<string, string> {
   const owner = new Map<string, string>()
@@ -72,9 +70,6 @@ export function edgesOf(state: ProjectState): EdgeSpec[] {
     for (const read of asset.reads ?? []) {
       const from = anchor(read.name)
       if (from) add({ kind: "mention", source: from.element, sourceHandle: from.sub && subSource(from.sub), target: asset.name, reader: asset.name, read: read.name, at: [...(read.at ?? [])] })
-    }
-    if (asset.written_by && anchor(asset.written_by)) {
-      add({ kind: "write", source: asset.written_by, sourceHandle: BELOW, target: asset.name, targetHandle: ABOVE, reader: asset.written_by, read: asset.name, at: [] })
     }
   }
   const links = (entity: Entity, element: string, sub?: string) => {
@@ -125,8 +120,8 @@ const GAP_Y = 32
 const overlaps = (a: Box, b: Box) => a.x < b.x + b.w + GAP_X / 2 && b.x < a.x + a.w + GAP_X / 2 && a.y < b.y + b.h + GAP_Y && b.y < a.y + a.h + GAP_Y
 
 /**
- * A home for each name with none, once: right of what it reads, else by graph depth, each below what's already there. What a shot
- * writes goes under the shot. `boxes` is what's already placed, and grows.
+ * A home for each name with none, once: right of what it reads, else by graph depth, each below what's already there. `boxes` is
+ * what's already placed, and grows.
  */
 export function homesFor(names: string[], edges: EdgeSpec[], boxes: Map<string, Box>, size: (name: string) => { w: number; h: number }): Map<string, Row> {
   const depth = depths(names, edges)
@@ -140,19 +135,13 @@ export function homesFor(names: string[], edges: EdgeSpec[], boxes: Map<string, 
     const { w, h } = size(name)
     const into = edges.filter((edge) => edge.target === name)
     const reads = into.flatMap((edge) => boxes.get(edge.source) ?? [])
-    const writer = into.find((edge) => edge.kind === "write")
     const box: Box = { x: left + (depth.get(name) ?? 0) * (widest + GAP_X), y: top, w, h }
-    if (writer && boxes.get(writer.source)) {
-      const by = boxes.get(writer.source)!
-      box.x = by.x
-      box.y = by.y + by.h + GAP_Y * 2
-    } else if (reads.length) {
+    if (reads.length) {
       box.x = Math.max(...reads.map((read) => read.x + read.w)) + GAP_X
       box.y = reads[0].y
     }
     for (let bump = placed.find((other) => overlaps(box, other)); bump; bump = placed.find((other) => overlaps(box, other))) {
-      if (writer) box.x = bump.x + bump.w + GAP_X / 2
-      else box.y = bump.y + bump.h + GAP_Y
+      box.y = bump.y + bump.h + GAP_Y
     }
     placed.push(box)
     boxes.set(name, box)

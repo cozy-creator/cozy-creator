@@ -47,12 +47,6 @@ function AssetWords({ text }: { text: Record<string, unknown> }) {
             <p>
               <Words text={beat.description} />
             </p>
-            {beat.writes.map((write) => (
-              <p key={write.image} className="writes">
-                writes <code>{write.image}</code>
-                {write.at === undefined ? "" : ` at ${write.at} s`}
-              </p>
-            ))}
           </section>
         )
       })}

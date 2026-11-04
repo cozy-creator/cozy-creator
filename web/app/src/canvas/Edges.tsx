@@ -4,7 +4,7 @@ import { useSignal } from "../ui/signal"
 import type { CanvasStore, GraphEdge } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import type { EdgeSpec } from "./graph"
-import { beatsOf, noHash, placeName, textAt } from "./text"
+import { noHash, placeName, textAt } from "./text"
 
 const Line = memo(function Line({ id, kind, path }: { id: string; kind: string; path: string }) {
   const store = useCanvasStore()
@@ -38,12 +38,6 @@ const clipped = (text: string) => (text.length > 160 ? `${text.slice(0, 160).tri
 function said(store: CanvasStore, edge: EdgeSpec): { where: string; words?: string } {
   if (edge.kind === "link") return { where: `${edge.reader}'s ${edge.at[0]}`, words: `<${edge.read}>` }
   const text = store.get(edge.reader)?.asset?.fields
-  if (edge.kind === "write") {
-    const beats = beatsOf(text)
-    const beat = beats.findIndex((held) => held.writes.some((write) => write.image === edge.read))
-    const at = beats[beat]?.writes.find((write) => write.image === edge.read)?.at
-    return { where: `${edge.reader}${beat >= 0 ? `'s beat ${beat + 1}` : ""}`, words: `writes ${edge.read}${at === undefined ? "" : ` at ${at} s`}` }
-  }
   const [first, ...rest] = edge.at
   if (!first) return { where: `${edge.reader} reads ${edge.read}` }
   const words = textAt(text, first)

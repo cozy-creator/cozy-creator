@@ -1,7 +1,7 @@
 import { Position } from "@xyflow/react"
 import type { MainFile } from "../types"
 import type { ElementView } from "./CanvasStore"
-import { ABOVE, BELOW, subSource, subTarget } from "./graph"
+import { subSource, subTarget } from "./graph"
 import { beatsOf, piecesOf } from "./text"
 
 /** The file a card shows, and where it came from. */
@@ -85,7 +85,5 @@ export function anchorsFor(view: ElementView, width: number): Anchor[] {
   return [
     side("target", middle),
     side("source", middle),
-    { id: BELOW, type: "source", position: Position.Bottom, x: Math.round(width / 2), y: HEAD + media - 1, width: 1, height: 1 },
-    { id: ABOVE, type: "target", position: Position.Top, x: Math.round(width / 2), y: 0, width: 1, height: 1 },
   ]
 }

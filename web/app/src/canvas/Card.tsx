@@ -14,7 +14,6 @@ function kindOf(view: ElementView): string {
   if (view.placing || view.landed) return "file"
   const asset = view.asset
   if (!asset) return ""
-  if (asset.written_by) return "written"
   if (asset.tool === "cozy") return asset.kind === "video" ? "cut" : "frame"
   if (asset.field && !asset.tool) return "file"
   return asset.kind === "video" ? "shot" : asset.kind
@@ -63,7 +62,7 @@ function PinIcon() {
 function Pin({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const asset = view.asset
-  if (!asset || asset.written_by || (asset.pinned && !asset.tool && !asset.prefixes?.length)) return null
+  if (!asset || (asset.pinned && !asset.tool && !asset.prefixes?.length)) return null
   const shown = shownOf(view)
   const lit = Boolean(asset.pinned) && (asset.approved === undefined ? view.viewed === undefined : shown?.number === asset.approved)
   if (!lit && shown?.number === undefined) return null
@@ -87,7 +86,6 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   const shown = shownOf(view)
   const versions = asset.prefixes ?? []
   if (!asset.tool && !versions.length) return null
-  if (asset.written_by) return null
   return (
     <div className="takes nodrag nopan nowheel">
       {versions.map((version) => (
@@ -186,8 +184,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (stage) return <div className="status mak">{stage}</div>
   const asset = view.asset
   if (!asset) return null
-  // What a shot writes comes with its take: there's nothing to ask of it alone.
-  const makes = asset.tool && !asset.written_by
+  const makes = asset.tool
   if (asset.standing === "making") {
     const run = view.run
     const stalled = run?.stalled
@@ -248,7 +245,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       </div>
     )
   }
-  if (asset.written_by || asset.status.includes("inputs changed")) return <div className="status">{noHash(asset.status)}</div>
+  if (asset.status.includes("inputs changed")) return <div className="status">{noHash(asset.status)}</div>
   return null
 }
 

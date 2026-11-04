@@ -6,7 +6,6 @@ import { signal } from "../ui/signal"
 import { type Box, type EdgeKind, type EdgeSpec, edgesOf, homesFor, warningsOf } from "./graph"
 import { asName, freeName } from "./names"
 import { anchorsFor, heightFor, widthFor } from "./shown"
-import { beatsOf } from "./text"
 
 export type ElementData = { name: string }
 export type ElementNode = Node<ElementData, "element" | "entity">
@@ -444,14 +443,13 @@ export class CanvasStore {
 
   isLit = (id: string) => this.lit.has(id)
 
-  /** Opens the words that made an edge. A shot's write is said on the beat that says it. */
+  /** Opens the words that made an edge. */
   openEdge(id: string) {
     const spec = this.edges.get(id)
     if (!spec) return
     this.tip.set(null)
-    const beat = spec.kind === "write" ? beatsOf(this.get(spec.reader)?.asset?.fields).findIndex((held) => held.writes.some((write) => write.image === spec.read)) : -1
     // A link is on its entity's card, whichever of its rows says it.
-    this.open.set({ name: spec.kind === "link" ? spec.target : spec.reader, at: beat >= 0 ? `beats.${beat}` : spec.at[0] })
+    this.open.set({ name: spec.kind === "link" ? spec.target : spec.reader, at: spec.at[0] })
   }
 
   /** What's selected now. It lights its edges; the rest dim by one attribute on the stage, so only these edges hear. */

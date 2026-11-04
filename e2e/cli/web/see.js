@@ -195,7 +195,7 @@ function summary(frames) {
   }
   const prefix = imported.hero_art.replace('sha256:', '').slice(0, 12);
 
-  // An edit in an editor: a shot with beats and writes, a cut, a frame, an entity with a sub-entity, what can't be made, and a warning.
+  // An edit in an editor: a shot with beats, a cut, a frame, an entity with a sub-entity, what can't be made, and a warning.
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   const draw = join(__dirname, '..', 'project', 'draw.py');
   replaceFile(yamlAt, `${readFileSync(yamlAt, 'utf8').trimEnd()}
@@ -208,15 +208,9 @@ function summary(frames) {
       - duration: 4
         description: |
           <hero.older> waits on the shore.
-        writes:
-          - image: still.1
-            at: 2
       - duration: 3
         description: |
-          It goes on from <still.1>.
-        writes:
-          - image: still.2
-            at: 1
+          It goes on.
   picture:
     kind: image
     video: <clip>
@@ -249,7 +243,7 @@ entities:
       deeper:
         description: Sub-entities go one level.
 `);
-  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'still.1', 'still.2', 'hero', ...(local ? ['card'] : [])];
+  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', ...(local ? ['card'] : [])];
 
   // Every name is placed once and its row written, with no reload.
   const cards = async () => (await api(`/v1/projects/${id}/canvas`)).cards;
@@ -257,8 +251,6 @@ entities:
   check('each_placed_and_written', true);
   const left = (read, reader) => rows[reader].x > rows[read].x;
   check('reads_left_to_right', left('hero_art', 'hero') && left('hero', 'shot') && left('clip', 'shot') && left('clip', 'picture') && left('clip', 'edit') && left('older_art', 'hero'), rows);
-  const stillUnder = rows['still.1'].y > rows.shot.y && rows['still.2'].y > rows.shot.y;
-  check('writes_go_under_the_shot', stillUnder, { shot: rows.shot, one: rows['still.1'], two: rows['still.2'] });
   await page.click('.top button:has-text("Fit")');
   await page.waitForTimeout(400);
   await until('every element on screen', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
@@ -268,15 +260,14 @@ entities:
   const read = await state();
   const of = (name) => read.assets.find((held) => held.name === name);
   const shotReads = Object.fromEntries((of('shot').reads ?? []).map((held) => [held.name, held.at]));
-  check('wire_reads', shotReads.hero?.includes('summary') && shotReads.clip?.includes('summary') && shotReads['hero.older']?.includes('beats.0.description') && !shotReads['still.1'], of('shot').reads);
-  check('wire_written_by', of('still.1').written_by === 'shot' && of('still.2').written_by === 'shot', [of('still.1').written_by, of('still.2').written_by]);
-  check('wire_fields', of('shot').fields?.summary?.includes('looks hard') && of('shot').fields?.beats?.[0]?.writes?.[0]?.image === 'still.1', of('shot').fields);
+  check('wire_reads', shotReads.hero?.includes('summary') && shotReads.clip?.includes('summary') && shotReads['hero.older']?.includes('beats.0.description'), of('shot').reads);
+  check('wire_fields', of('shot').fields?.summary?.includes('looks hard') && of('shot').fields?.beats?.[1]?.description?.includes('goes on'), of('shot').fields);
   check('wire_fields_no_platform_field', !('render' in (of('shot').fields ?? {})) && !('with' in (of('shot').fields ?? {})), of('shot').fields);
   check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
   check('wire_entity', read.entities?.[0]?.links?.image === 'hero_art' && read.entities?.[0]?.subs?.[0]?.links?.image === 'older_art', read.entities);
 
   // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'cut', 'still.1': 'written', hero: 'character' };
+  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'cut', hero: 'character' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   check('entity_sub_row', (await element(page, 'hero').locator('.sub-name').textContent()) === 'hero.older');
   check('entity_slots', (await element(page, 'hero').locator('.slot').count()) === 2);
@@ -285,7 +276,6 @@ entities:
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
   check('wire_warning_of_a_sub_entity', read.warnings?.some((said) => said.name === 'hero.older'), read.warnings);
   check('warned_mark_of_a_sub_entity', (await element(page, 'hero').locator('.warned').count()) === 1);
-  check('nothing_to_ask_of_a_write', (await element(page, 'still.2').locator('.status .act').count()) === 0, await element(page, 'still.2').locator('.status').textContent());
   check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
@@ -295,7 +285,7 @@ entities:
   check('sound_plays', (await element(page, 'sea_sound').locator('.play').count()) === 1);
   await thumbUp('clip');
 
-  // Edges from reads: solid, dotted, dashed. A shot reading its own write isn't drawn.
+  // Edges from reads: solid, dotted.
   const want = {
     'mention:hero/>shot/': 'none',
     'mention:hero/from:hero.older>shot/': 'none',
@@ -304,13 +294,10 @@ entities:
     'mention:clip/>edit/': 'none',
     'link:hero_art/>hero/': 'dotted',
     'link:older_art/>hero/to:hero.older': 'dotted',
-    'write:shot/below>still.1/above': 'dashed',
-    'write:shot/below>still.2/above': 'dashed',
   };
   const drawn = await until('its edges', () => edgeIds(page), (ids) => Object.keys(want).every((edge) => ids.includes(edge)));
-  check('own_write_not_drawn', !drawn.some((edge) => edge.startsWith('mention:still.1')), drawn);
   const dashes = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ge')].map((edge) => [edge.dataset.edge, getComputedStyle(edge.querySelector('.ge-line')).strokeDasharray])));
-  const look = (dash) => (dash === 'none' ? 'none' : parseFloat(dash) < 3 ? 'dotted' : 'dashed');
+  const look = (dash) => (dash === 'none' ? 'none' : 'dotted');
   check('edge_looks', Object.entries(want).every(([edge, style]) => look(dashes[edge]) === style), dashes);
   check('edge_width_ignores_zoom', await page.evaluate(() => [...document.querySelectorAll('.ge-line')].every((line) => getComputedStyle(line).vectorEffect === 'non-scaling-stroke')));
 

@@ -98,7 +98,6 @@ export interface Asset {
   absent?: boolean
   machine?: string
   reads?: Read[]
-  written_by?: string
   /** Its inputs, flat, by each control's `field`. A person wrote them, so nothing here is more than text. */
   fields?: Record<string, unknown>
   /** What `PATCH`'s `If-Match` names. */
