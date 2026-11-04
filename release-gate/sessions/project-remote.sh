@@ -10,12 +10,11 @@
 #     had not, and a pull killed mid-way goes on inside the file and comes out its sha256.
 #   A file not at the Hub (cl-730): a pull gets everything else, names it in a warning and exits 3, and so does a push from
 #     that copy.
-# Its commit is deleted after; the Hub's GC takes its bytes.
+# Its commits are deleted after; the Hub's GC takes their bytes.
 . "$(dirname "$0")/lib.sh"
 command -v ffmpeg > /dev/null || sudo apt-get install -y -qq ffmpeg > /dev/null 2>&1 || fail "no ffmpeg"
 MODEL=$(cozy --json whoami | jq -r .account)/project-assets
-COMMIT='' PARTIAL=''
-tidy() { local c; for c in $COMMIT $PARTIAL; do cozy model delete "$MODEL@$c" -y >> "$OUT/delete.txt" 2>&1 || say "could not delete $MODEL@$c"; done; }
+tidy() { local c; for c in $(jq -r '.commit // empty' "$OUT"/push-*.json 2> /dev/null | sort -u); do cozy model delete "$MODEL@$c" -y >> "$OUT/delete.txt" 2>&1 || say "could not delete $MODEL@$c"; done; }
 trap 'tidy; finish' EXIT
 J() { jq -e "$@" > /dev/null; }
 sha() { sha256sum "$1" | cut -c1-64; }
@@ -29,8 +28,9 @@ plate() {
   ffmpeg -v error -y -f lavfi -i "$2=size=1344x768:rate=24:duration=6" -f lavfi -i "sine=frequency=$3:sample_rate=32000:duration=6" \
     -c:v libx264 -preset veryfast -b:v 900k -g 24 -keyint_min 24 -sc_threshold 0 -pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -ar 32000 -shortest -metadata comment="$RANDOM$RANDOM" "$1"
 }
-plate "$P/plates/a.mp4" testsrc2 440 || fail "plate"
-plate "$P/plates/b.mp4" testsrc 550 || fail "plate"
+# A tone of this run's, so its cuts are new: a cut keeps no comment, and the Hub keeps what earlier runs sent.
+plate "$P/plates/a.mp4" testsrc2 "$((200 + RANDOM % 2000))" || fail "plate"
+plate "$P/plates/b.mp4" testsrc "$((200 + RANDOM % 2000))" || fail "plate"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=832x480" -frames:v 1 -metadata comment="$RANDOM$RANDOM" "$F/coast.png" || fail "image"
 # hash_of <file>: the file imported, and the prefix that names it.
 hash_of() { cozy --json project -p "$P" import "$1" | jq -r .prefix | sed 's/.*/"&"/'; }
@@ -151,7 +151,8 @@ awk -v s="$LOW" 'BEGIN { exit !(s >= 0.99) }' || fail "per-frame SSIM $LOW is un
 rm -f "$OUT/edges-second.mp4"
 second --json project -p "$C" push > "$OUT/push-second.json" 2> "$OUT/push-second.err" || fail "push from the second computer: $(tail -3 "$OUT/push-second.err")"
 # Its own cut's bytes are all that is new.
-J '.files == 16 and .moved == 1' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
+SIZE=$(sudo stat -c %s "$C/edit.mp4")
+J --argjson n "$SIZE" '.files == 16 and .moved == 1 and .bytes == $n' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
 cozy --json project -p "$P" push > "$OUT/push-edges.json" 2> "$OUT/push-edges.err" || fail "push the first computer's cut: $(tail -3 "$OUT/push-edges.err")"
 
 say "a file over the Hub's limit goes as parts, a new file beside it, and its push killed mid-way"
@@ -166,7 +167,7 @@ kill -0 "$PUSH" 2> /dev/null && { kill -9 "$(pid_of "$HOME")"; wait "$PUSH"; cod
 KEPT=$(jq -c --arg s "sha256:$HUGE_SHA" '.files[$s].parts | map(.length)' "$P/project.lock"); say "project.lock lists the parts: $KEPT"
 J --arg s "sha256:$HUGE_SHA" '(.files[$s].parts | length == 6) and ([.files[$s].parts[].length] | add == 5368709121) and (.files[$s].parts[5].length == 1)' "$P/project.lock" || fail "project.lock does not list six parts: $KEPT"
 code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
-PARTIAL=$(jq -r '.commit // empty' "$OUT/push-huge.json"); say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"
+say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"
 [ "$code" = 0 ] || fail "a push of a file over the limit exited $code: $(tail -3 "$OUT/push-huge.err")"
 J '.files == 18 and (.skipped // [] | length == 0) and .commit != null' "$OUT/push-huge.json" || fail "the push did not send everything"
 cozy --json project -p "$P" push > "$OUT/push-huge-2.json" 2> "$OUT/push-huge-2.err"; code=$?
