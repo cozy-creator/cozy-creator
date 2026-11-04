@@ -918,13 +918,21 @@ assets:
     pieces:
       - {video: <a>, start: 0, end: 48}
       - {video: <b>, start: 24, end: 48}
+  whole:
+    render: {with: cozy}
+    kind: edit
+    aspect_ratio: "16:9"
+    pieces:
+      - <a>
+      - <b>
 YAML
 render "$W" all || check "rounded: render all: $(tail -c 300 "$OUT/render.txt")"
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$1"; }
 [ "$(size "$W/edit.mp4")" = 1344,768 ] || check "rounded: edit.mp4 is $(size "$W/edit.mp4"), not its takes' 1344,768"
 md5s() { ffmpeg -v error -i "$1" -map 0:v -f framemd5 - | grep -v '^#' | awk '{print $NF}'; }
 [ "$( (md5s "$W/a.mp4" | sed -n 1,48p; md5s "$W/b.mp4" | sed -n 25,48p) | md5sum)" = "$(md5s "$W/edit.mp4" | md5sum)" ] || check "rounded: edit.mp4's frames are not its takes'"
-! ls -1 "$CACHE" | grep -q "^$(sha "$W/a.mp4" | cut -c1-16)-" || check "rounded: an edge of a was encoded"
+[ "$( (md5s "$W/a.mp4"; md5s "$W/b.mp4") | md5sum)" = "$(md5s "$W/whole.mp4" | md5sum)" ] || check "rounded: whole.mp4's frames are not its whole takes'"
+! ls -1 "$CACHE" | grep -qE "^($(sha "$W/a.mp4" | cut -c1-16)|$(sha "$W/b.mp4" | cut -c1-16))-" || check "rounded: an edge of a whole take was encoded"
 sed -i "s/^    video: $B\$/    video: $R/" "$W/project.yaml"
 render "$W" all || check "rounded: with an 854x480 plate: $(tail -c 300 "$OUT/render.txt")"
 [ "$(size "$W/edit.mp4")" = 1344,768 ] || check "rounded: a plate of another size: edit.mp4 is $(size "$W/edit.mp4"), not 1344,768"

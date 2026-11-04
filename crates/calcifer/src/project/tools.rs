@@ -259,7 +259,7 @@ pub fn cut(
     if fast {
         let mut list = String::new();
         for (k, ((piece, probe), &(start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
-            for (n, (from, to, copy)) in spans(start, end, &probe.keys).into_iter().enumerate() {
+            for (n, (from, to, copy)) in spans(start, end, probe.frames, &probe.keys).into_iter().enumerate() {
                 let count = (to - from).to_string();
                 // An edge piece is the same file for the same take, frames and encoding, whatever cuts it.
                 let encoding = format!("libx264 veryfast {} {} {}", bit_rate(probe.video_bit_rate).join(" "), probe.pix_fmt, probe.rate_text);
@@ -470,10 +470,11 @@ fn prune(cache: &Path) {
     }
 }
 
-/// A piece's frames from `start` to `end` (exclusive): copied between its first and last keyframe
-/// inside them, encoded before and after.
-fn spans(start: u64, end: u64, keys: &[u64]) -> Vec<(u64, u64, bool)> {
-    let inside: Vec<u64> = keys.iter().copied().filter(|&key| key >= start && key <= end).collect();
+/// A piece's frames from `start` to `end` (exclusive) of a take of `frames`: copied between its first
+/// and last keyframe inside them, the take's end counting as one, encoded before and after.
+fn spans(start: u64, end: u64, frames: u64, keys: &[u64]) -> Vec<(u64, u64, bool)> {
+    let ended = (end >= frames).then_some(end);
+    let inside: Vec<u64> = keys.iter().copied().filter(|&key| key >= start && key <= end).chain(ended).collect();
     match (inside.first(), inside.last()) {
         (Some(&first), Some(&last)) if last > first => {
             let mut spans = vec![];
