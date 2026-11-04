@@ -136,6 +136,7 @@ impl Projects {
     /// The project in `dir` (canonical), opened once; its walk goes on when project.lock owes one.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
         let folder = Folder::open(dir, api.machines.hubs.home())?;
+        crate::events::project_opened(dir);
         let id = project_id(dir);
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
             .or_insert_with(|| {
@@ -155,6 +156,16 @@ impl Projects {
             walk(api, &project);
         }
         Ok(id)
+    }
+
+    /// Finds edits made outside Calcifer to the projects open here.
+    pub(crate) fn look(&self) {
+        let open = self.open.lock().expect("projects lock");
+        let dirs: Vec<PathBuf> = open.values().map(|project| project.folder.dir.clone()).collect();
+        drop(open);
+        for dir in dirs {
+            crate::events::project_changed(&dir);
+        }
     }
 }
 
@@ -237,8 +248,24 @@ pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) 
 }
 
 /// One folder's id, the same for as long as it is there.
-fn project_id(dir: &FsPath) -> String {
+pub(crate) fn project_id(dir: &FsPath) -> String {
     format!("project-{}", &hex::encode(Sha256::digest(dir.to_string_lossy().as_bytes()))[..16])
+}
+
+/// What `project.changed` says of the project in `dir`: another text whenever project.yaml or project.lock is another file
+/// than it was. Read from their stats alone, so a look at it costs nothing: every write replaces the file, so its inode tells
+/// two writes in one clock tick apart.
+pub(crate) fn revision(dir: &FsPath) -> String {
+    let stamp = |name: &str| {
+        let Ok(meta) = std::fs::metadata(dir.join(name)) else { return "none".to_owned() };
+        let modified = meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok());
+        #[cfg(unix)]
+        let file = std::os::unix::fs::MetadataExt::ino(&meta);
+        #[cfg(not(unix))]
+        let file = 0;
+        format!("{file}-{}-{}", modified.map_or(0, |since| since.as_nanos()), meta.len())
+    };
+    format!("{}.{}", stamp(folder::PROJECT), stamp(folder::LOCK))
 }
 
 /// Walks again each project an earlier Calcifer was walking.
@@ -325,7 +352,9 @@ async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) 
             std::fs::create_dir_all(&open.path).map_err(io)?;
             platform::durable::replace(&project, format::starter().as_bytes(), 0o644)
                 .map_err(|e| io(std::io::Error::other(e)))?;
-            std::fs::canonicalize(&open.path).map_err(io)?
+            let dir = std::fs::canonicalize(&open.path).map_err(io)?;
+            crate::events::project_changed(&dir);
+            dir
         }
         false => holding(&open.path).map_err(Refusal)?,
     };

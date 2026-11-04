@@ -24,6 +24,15 @@ pub struct Opened {
     pub path: PathBuf,
 }
 
+/// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Card {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub w: Option<f64>,
+}
+
 /// `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Asked {

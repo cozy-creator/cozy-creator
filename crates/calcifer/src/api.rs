@@ -135,6 +135,7 @@ impl Api {
 
 pub fn router(api: Arc<Api>) -> Router {
     Router::new()
+        .route("/v1/events", get(crate::events::stream))
         .route("/v1/runs", post(crate::runs::submit).get(list))
         .route("/v1/runs/events", get(runs_events))
         .route("/v1/runs/{id}", get(show))

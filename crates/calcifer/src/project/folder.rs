@@ -828,7 +828,9 @@ impl Folder {
                 false => String::new(),
             };
             if now == before {
-                return durable::replace(path, after.as_bytes(), 0o644).map_err(io);
+                durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
+                crate::events::project_changed(&self.dir);
+                return Ok(());
             }
         }
     }

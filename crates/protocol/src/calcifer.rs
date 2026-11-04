@@ -12,7 +12,7 @@
 //! a landed item as `output_item.landed`, the whole item. The terminal events `run.completed`,
 //! `run.failed` and `run.canceled` end the run; its stream ends after the terminal once each of
 //! its outputs has landed or carries an `export_error`, but for what stays on its machine.
-use std::{fmt, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, fmt, net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -664,6 +664,32 @@ pub struct RunList {
 pub enum RunsEvent {
     #[serde(rename = "run.updated")]
     Updated { run: Run },
+}
+
+/// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
+/// answers it. No backlog: a client subscribes, then reads what it holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum StreamEvent {
+    /// First on every stream.
+    #[serde(rename = "hello")]
+    Hello { version: String },
+    #[serde(rename = "run.updated")]
+    RunUpdated { run: Box<Run> },
+    #[serde(rename = "machine.updated")]
+    MachineUpdated { machine: Box<Machine> },
+    /// It left the list.
+    #[serde(rename = "machine.removed")]
+    MachineRemoved { name: String },
+    /// `rev` is opaque, and changes whenever project.yaml or project.lock does.
+    #[serde(rename = "project.changed")]
+    ProjectChanged { id: String, rev: String },
+    /// The rows of a project's canvas that changed; none is a row gone.
+    #[serde(rename = "canvas")]
+    Canvas { id: String, etag: String, cards: BTreeMap<String, Option<crate::project::Card>> },
+    /// This stream fell behind: read again what you hold.
+    #[serde(rename = "resync")]
+    Resync,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -92,6 +92,16 @@ and `audio/`, else `attachment`: what a run wrote never runs as script in Calcif
 
 ## Resources
 
+### The event stream
+`GET /v1/events`: what a client keeps on screen, on one stream, each thing whole. There is no backlog: subscribe, then read what you hold. It ends only when Calcifer stops, and a type a client doesn't know is for it to skip.
+
+- `hello {version}`, first.
+- `run.updated {run}`: a run's change, as `GET /v1/runs/{id}` answers it.
+- `machine.updated {machine}`: a machine as `GET /v1/machines` lists it, each time it changes. `machine.removed {name}`: it left the list.
+- `project.changed {id, rev}`: `rev` is opaque, and changes whenever `project.yaml` or `project.lock` does, as a landing's does. While a stream is open, the projects open here are looked at about once a second for edits from outside.
+- `canvas {id, etag, cards: {name: {x, y, w?} | null}}`: the rows of a project's canvas that changed.
+- `resync`: this stream fell behind and goes on: read again what you hold.
+
 ### Session
 - `POST /v1/session` (the bearer in `Authorization`): `204` and the `cozy_session` cookie.
 - `DELETE /v1/session`: `204`, the cookie cleared.
