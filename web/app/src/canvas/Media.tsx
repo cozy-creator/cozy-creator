@@ -7,6 +7,40 @@ import type { ElementView } from "./CanvasStore"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 
+/**
+ * At most two thumbnails asked at once. Calcifer makes few at a time, and `<img>`s waiting on it would fill the browser's six
+ * connections to it, stalling every other call. An element scrolled away gives up its place.
+ */
+function line(limit: number) {
+  let running = 0
+  const waiting: (() => void)[] = []
+  const next = () => {
+    while (running < limit && waiting.length) {
+      running += 1
+      waiting.shift()!()
+    }
+  }
+  return (start: () => void): (() => void) => {
+    let state: "waiting" | "running" | "done" = "waiting"
+    const go = () => {
+      state = "running"
+      start()
+    }
+    waiting.push(go)
+    next()
+    return () => {
+      if (state === "waiting") waiting.splice(waiting.indexOf(go), 1)
+      if (state === "running") {
+        running -= 1
+        next()
+      }
+      state = "done"
+    }
+  }
+}
+
+const thumbLine = line(2)
+
 /** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache. */
 function thumbWidth(cardWidth: number): number {
   const wanted = cardWidth * Math.min(2, window.devicePixelRatio || 1)
@@ -19,14 +53,18 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
   const [src, setSrc] = useState<string>()
   const [failed, setFailed] = useState(false)
   const projectId = store.projectId
+  const leaveLine = useRef(() => {})
   useEffect(() => {
     if (!projectId) return
     let live = true
-    void client.transport.src(client.thumb(projectId, sha256, thumbWidth(cardWidth))).then((url) => {
-      if (live) setSrc(url)
+    leaveLine.current = thumbLine(() => {
+      void client.transport.src(client.thumb(projectId, sha256, thumbWidth(cardWidth))).then((url) => {
+        if (live) setSrc(url)
+      })
     })
     return () => {
       live = false
+      leaveLine.current()
     }
   }, [client, projectId, sha256, cardWidth])
   if (failed) return <span className="media-note">No preview</span>
@@ -36,8 +74,12 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
       src={src}
       alt=""
       draggable={false}
-      onError={() => setFailed(true)}
+      onError={() => {
+        leaveLine.current()
+        setFailed(true)
+      }}
       onLoad={(event) => {
+        leaveLine.current()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) store.patch(name, { aspect: naturalWidth / naturalHeight })
         store.showThumb(name)

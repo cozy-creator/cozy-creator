@@ -1,11 +1,12 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
-import type { Client } from "../api/client"
+import { ApiError, type Client } from "../api/client"
 import { say } from "../ui/notes"
 import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
 import { stemName } from "./names"
 
-const READ_BYTES = 2 * 1024 * 1024
+// Small enough that hashing a chunk fits between frames, on a page that may be panning.
+const READ_BYTES = 512 * 1024
 const PART_BYTES = 8 * 1024 * 1024
 const GAP = 32
 
@@ -98,25 +99,36 @@ export class Placer {
 
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }) {
     try {
-      const digest = await this.inLine(() => this.moveBytes(key, file, signal))
+      const digest = await this.inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
-      this.stage(key, "adding", 1)
-      const at = this.store.position(key) ?? dropped
-      const name = this.store.get(key)!.name
-      this.store.beginAdding()
       try {
-        const id = await this.project()
-        const answer = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: digest, name, at })
-        this.store.land(key, answer, at)
-        if (answer.note) say(answer.note)
-        this.hooks.refresh(id)
-      } finally {
-        this.store.endAdding()
+        await this.ask(key, digest, dropped)
+      } catch (error) {
+        // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
+        if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
+        await this.inLine(() => this.send(key, file, digest, signal))
+        await this.ask(key, digest, dropped)
       }
     } catch (error) {
       if (signal.aborted) return
       say(file.name, error)
       this.store.cancel(key)
+    }
+  }
+
+  private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }) {
+    this.stage(key, "adding", 1)
+    const at = this.store.position(key) ?? dropped
+    const name = this.store.get(key)!.name
+    this.store.beginAdding()
+    try {
+      const id = await this.project()
+      const answer = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: digest, name, at })
+      this.store.land(key, answer, at)
+      if (answer.note) say(answer.note)
+      this.hooks.refresh(id)
+    } finally {
+      this.store.endAdding()
     }
   }
 
@@ -131,7 +143,7 @@ export class Placer {
     this.store.patchPlacing(key, { stage, done, attempt: undefined })
   }
 
-  private async moveBytes(key: string, file: File, signal: AbortSignal): Promise<string> {
+  private async hashAndSend(key: string, file: File, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted()
     this.stage(key, "reading", 0)
     let shown = 0
@@ -140,16 +152,23 @@ export class Placer {
       shown = done
       this.stage(key, "reading", done)
     })
+    // A file the project has needs no bytes: its import moved them out of what's held, so `held` wouldn't know.
+    if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.send(key, file, digest, signal)
+    return digest
+  }
+
+  private async send(key: string, file: File, digest: string, signal: AbortSignal) {
+    signal.throwIfAborted()
     this.stage(key, "sending", 0)
     const tried = (attempt: number) => this.store.patchPlacing(key, { attempt: attempt || undefined })
     if (file.size === 0) {
       await this.client.put(digest, file, 0, 0, signal, tried)
-      return digest
+      return
     }
     // Sent whole and still not whole means what it held expired under it, so ask again; a third time isn't chance.
     for (let pass = 0; pass < 3; pass++) {
       const held = await this.client.held(digest, signal, tried)
-      if (held === true) return digest
+      if (held === true) return
       const missing = gaps(held, file.size)
       let sent = file.size - missing.reduce((sum, [from, to]) => sum + to - from, 0)
       this.stage(key, "sending", sent / file.size)
@@ -159,7 +178,7 @@ export class Placer {
           const whole = await this.client.put(digest, file.slice(at, end), at, file.size, signal, tried)
           sent += end - at
           this.stage(key, "sending", sent / file.size)
-          if (whole) return digest
+          if (whole) return
         }
       }
     }

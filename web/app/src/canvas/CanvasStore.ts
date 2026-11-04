@@ -318,6 +318,14 @@ export class CanvasStore {
 
   // An import
 
+  /** This project has that file, as far as the page has read. */
+  holdsFile(sha256: string): boolean {
+    for (const view of this.views.values()) if (view.landed?.sha256 === sha256) return true
+    return Boolean(
+      this.state?.assets.some((asset) => asset.sha256 === sha256 || Object.values(asset.files ?? {}).some((file) => file.sha256 === sha256)),
+    )
+  }
+
   addPlacing(key: string, name: string, placing: Placing, at: Row, opts: { naming: boolean; preview?: string }) {
     this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview })
     this.flow?.addNodes(this.node(key, at))
