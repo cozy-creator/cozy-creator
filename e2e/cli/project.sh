@@ -1041,6 +1041,32 @@ still "$U/kyogre.png" red
 cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-first.txt" 2>&1 || check "import: a file: $(tail -c 300 "$OUT/import-first.txt")"
 cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-again.txt" 2>&1 || check "import: again: $(tail -c 300 "$OUT/import-again.txt")"
 grep -q '^already imported ' "$OUT/import-again.txt" || check "import: a second import does not say so: $(cat "$OUT/import-again.txt")"
+
+step "a project: import --remove-background"
+local clear runs_before line cleaned original
+ffmpeg -v error -y -f lavfi -i "color=c=black@0.0:size=64x64,format=rgba" -frames:v 1 "$U/clear.png"
+runs_before=$(jq '.runs // [] | length' "$U/project.lock")
+cozy project -p "$U" import "$U/clear.png" --remove-background > "$OUT/import-clear.txt" 2> "$OUT/import-clear.err" || check "import: already transparent: $(tail -c 300 "$OUT/import-clear.err")"
+grep -q 'already transparent' "$OUT/import-clear.err" || check "import: already transparent is not said: $(cat "$OUT/import-clear.err")"
+[ "$(wc -l < "$OUT/import-clear.txt")" = 1 ] && grep -q "^image: $(sha "$U/clear.png" | cut -c1-12)\$" "$OUT/import-clear.txt" || check "import: already transparent printed: $(cat "$OUT/import-clear.txt")"
+cozy project -p "$U" import "$U/kyogre.png" --remove-background --on no_such_machine > "$OUT/import-none.txt" 2> "$OUT/import-none.err" || check "import: no machine: $(tail -c 300 "$OUT/import-none.err")"
+grep -q 'the plain copy is kept' "$OUT/import-none.err" || check "import: no machine is not said: $(cat "$OUT/import-none.err")"
+grep -q "^image: $(sha "$U/kyogre.png" | cut -c1-12)\$" "$OUT/import-none.txt" || check "import: no machine printed: $(cat "$OUT/import-none.txt")"
+[ "$(jq '.runs // [] | length' "$U/project.lock")" = "$runs_before" ] || check "import: a run with no machine, or of a transparent file"
+if [ -n "${MODEL:-}" ]; then
+  original=$(sha "$U/kyogre.png")
+  cozy project -p "$U" import "$U/kyogre.png" --remove-background > "$OUT/import-clean.txt" 2> "$OUT/import-clean.err" || check "import: remove the background: $(tail -c 300 "$OUT/import-clean.err")"
+  [ "$(wc -l < "$OUT/import-clean.txt")" = 1 ] || check "import: more than one line: $(cat "$OUT/import-clean.txt")"
+  line=$(cat "$OUT/import-clean.txt"); cleaned=${line#image: }
+  { [ "${#cleaned}" = 12 ] && [ "$cleaned" != "${original:0:12}" ] && ls "$U/files/$cleaned"* > /dev/null 2>&1; } || check "import: the cleaned file: $line"
+  J --arg o "sha256:$original" '.cleaned[$o] != null' "$U/project.lock" || check "import: the lock records no original: $(jq -c .cleaned "$U/project.lock")"
+  runs_before=$(jq '.runs | length' "$U/project.lock")
+  cozy project -p "$U" import "$U/kyogre.png" --remove-background > "$OUT/import-clean2.txt" 2> "$OUT/import-clean2.err" || check "import: again: $(tail -c 300 "$OUT/import-clean2.err")"
+  { grep -q 'already imported' "$OUT/import-clean2.err" && [ "$(cat "$OUT/import-clean2.txt")" = "$line" ] && [ "$(jq '.runs | length' "$U/project.lock")" = "$runs_before" ]; } || check "import: a second clean ran, or said $(cat "$OUT/import-clean2.txt")"
+  printf 'version: 2\nassets:\n  art:\n    %s\n' "$line" > "$U/project.yaml"
+  cozy --json project -p "$U" reclaim --yes > "$OUT/import-reclaim.json" 2>&1 || check "import: reclaim: $(tail -c 300 "$OUT/import-reclaim.json")"
+  ls "$U/files/$original"* > /dev/null 2>&1 || check "import: reclaim took the original of a pinned cleaned file"
+fi
 }
 
 # Range, HEAD, ETag and 416 on a cut and an asset; Calcifer's Host, Origin and bearer rules.

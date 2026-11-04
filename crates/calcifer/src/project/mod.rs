@@ -33,7 +33,7 @@ use axum::{
 };
 use futures_util::{Stream, StreamExt as _, stream::FuturesUnordered};
 use protocol::{
-    calcifer::{FileTerm, Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    calcifer::{FileTerm, Kind as RunKind, On, Run, RunRequest, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
@@ -159,6 +159,9 @@ impl Projects {
         Ok(id)
     }
 }
+
+/// A picture at least this share transparent has its background gone already.
+const OPAQUE_BELOW: f64 = 0.05;
 
 /// The words a run hears outside a project, as `git` says it of a repository.
 pub(crate) fn not_in_one() -> Error {
@@ -634,6 +637,10 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
 fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
     let mut kept: BTreeSet<String> = lock.named(|key| doc.holds(key).is_some()).into_iter().map(str::to_owned).collect();
     kept.extend(doc.assets.iter().filter_map(|asset| Some(asset.pin.as_ref()?.1.clone())));
+    // An original stays with what was cleaned from it.
+    let originals = lock.cleaned.iter().filter(|(_, run)| lock.runs.iter().any(|row| row.run == **run && kept.contains(&row.sha256)));
+    let originals: Vec<String> = originals.map(|(original, _)| original.clone()).collect();
+    kept.extend(originals);
     kept
 }
 
@@ -877,6 +884,45 @@ fn keeps_of(doc: &Doc, lock: &Lock, stand: &[Standing], i: usize, take: Option<u
     }
 }
 
+/// An imported picture's background removed by a run of the project, unless it has none to remove or that was done. A run that can't
+/// start is said, and the plain copy stands. The one place Calcifer names this package.
+async fn remove_background(api: &Arc<Api>, folder: &Folder, plain: Imported, field: &str, on: Option<On>) -> Result<Imported, Error> {
+    let said = |note: String| Imported { note: Some(note), ..plain.clone() };
+    if field != "image" {
+        return Ok(said("--remove-background takes a picture: this is kept as it is".into()));
+    }
+    let mut lock = folder.lock()?;
+    folder.measure(&mut lock)?;
+    let done = lock.cleaned.get(&plain.sha256).copied();
+    if let Some(row) = done.and_then(|run| lock.runs.iter().find(|row| row.run == run)) {
+        let prefix = folder::prefix_of(&row.sha256);
+        return Ok(Imported { line: format!("image: {}", format::yaml_scalar(prefix)), already: true, ..plain });
+    }
+    // Still going: the same run, to follow.
+    let going = done.and_then(|run| api.calcifer.store().run_by_number(run).ok().flatten()).filter(|row| row.state != crate::store::State::Settled);
+    if let Some(row) = going {
+        let run = api.calcifer.record(&row).map_err(|e| Error::new(Kind::Internal, "run_unreadable", e.to_string()))?;
+        return Ok(Imported { run: Some(Box::new(run)), ..plain });
+    }
+    let alpha = lock.files.get(&plain.sha256).map_or(0.0, |file| file.alpha);
+    if alpha >= OPAQUE_BELOW {
+        return Ok(said(format!("already transparent ({:.0}% of it), so it is kept as it is", alpha * 100.0)));
+    }
+    let image = FileTerm { name: Some("image".into()), file: folder.path(&plain.path).to_string_lossy().into_owned() };
+    let ask = RunRequest { target: "birefnet/remove_background".into(), on, files: vec![image], project: Some(folder.dir.clone()), ..Default::default() };
+    match crate::runs::request(api, &new_key(), ask).await {
+        Ok(submitted) => {
+            let (original, run) = (plain.sha256.clone(), submitted.run.number);
+            folder.update_lock(|lock| drop(lock.cleaned.insert(original.clone(), run)))?;
+            Ok(Imported { run: Some(Box::new(submitted.run)), ..plain })
+        }
+        Err(error) => {
+            let fix = if error.code == "local_unavailable" { "rent one with `cozy machine rent`, or add `--on <machine>`".to_owned() } else { error.remedy.clone().unwrap_or_default() };
+            Ok(said(format!("{}: {fix}; the plain copy is kept", error.message).replace(": ; ", "; ")))
+        }
+    }
+}
+
 /// Keeps the file at `source` as a file of the project, in project.lock, and answers the line to paste.
 async fn import(
     State(api): State<Arc<Api>>,
@@ -892,7 +938,11 @@ async fn import(
     })?;
     let prefix = folder::prefix_of(&file.sha256).to_owned();
     let line = format!("{field}: {}", format::yaml_scalar(&prefix));
-    Ok(Json(Imported { path: file.path, sha256: file.sha256, prefix, line, already }))
+    let plain = Imported { path: file.path.clone(), sha256: file.sha256.clone(), prefix, line, already, run: None, note: None };
+    if !asked.remove_background {
+        return Ok(Json(plain));
+    }
+    Ok(Json(remove_background(&api, folder, plain, field, asked.on).await.map_err(Refusal)?))
 }
 
 /// `name` pinned to a file in project.yaml: one line, in the field of its kind, written over what the file holds this moment. An

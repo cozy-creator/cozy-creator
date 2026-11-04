@@ -117,6 +117,12 @@ pub struct File {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub source: String,
+    /// Also runs `birefnet/remove_background` on it, as a run of the project.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove_background: bool,
+    /// The machine that run goes to; absent: this computer if it can run models, else a machine you have up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<crate::calcifer::On>,
 }
 
 /// What an import kept, its hash prefix, and the line to paste into project.yaml.
@@ -130,6 +136,12 @@ pub struct Imported {
     /// Its bytes were in `files/` already, so nothing was copied.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
+    /// The run removing its background, to follow: its output is the file to name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Box<crate::calcifer::Run>>,
+    /// Why its background wasn't removed: `line` is then the plain copy's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A version's number and the hash prefix project.yaml can name its file by.

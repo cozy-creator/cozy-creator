@@ -198,7 +198,8 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
 | `unpin <name>` | Removes that line |
 | `status` | Each asset's state and why, which version a pin is, whether its text changed since, orphans, and how many files `cozy run` left here |
-| `import <file>` | Copies a file or URL into `files/` and prints the line to paste |
+| `import <file>` | Copies a file or URL into `files/` and prints the line to paste. No machine needed |
+| `import <file> --remove-background [--on <machine>]` | Also runs `birefnet/remove_background` on it, and prints one line, the cleaned file's |
 | `rename <old> <new>` | Renames an asset and keeps its versions |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names, a run's among them |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. A file over 5 GiB goes as parts, which `project.lock` lists. Commit `project.yaml` and `project.lock`, not `files/` |
@@ -214,6 +215,15 @@ An asset has one main file, from its one `render` or its one pin; any other file
 - **Other fields while pinned:** `render` and the text stay in the file and are ignored for that asset. Delete the line and they apply again.
 - **A pin freezes files, not text:** editing an approved character's `description` doesn't re-render it, but shots that read it go out of date, because H3 receives those words.
 - **Pinning a written world state:** it's read and no longer written, which can put the shot that wrote it out of date.
+
+## Import and the background
+
+`cozy project import ./kyogre.png --remove-background` keeps the original in `files/`, runs `birefnet/remove_background` on it as a normal run of the project, and prints one line: `image: <the cleaned hash>`.
+
+- **Where:** `--on <machine>` if you name one, else this computer if it can run models, else a machine you have up. With none, or a run that can't start, it says what to do, and the plain copy is kept and its line printed, so nothing is lost.
+- **Already transparent,** at 5% or more: kept as it is, with no run, and it says so.
+- **The same file again:** `already imported`, the same line, with no run.
+- **`project.lock`** records each original under `cleaned`, with the run whose row in `runs` is the cleaned file. `reclaim` doesn't list an original while its cleaned file is named, and takes both once nothing names it.
 
 ## Orphans
 

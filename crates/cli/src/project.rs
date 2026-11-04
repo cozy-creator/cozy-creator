@@ -125,6 +125,13 @@ A URL is downloaded here, up to 64 MiB, from a public address.")]
 struct ImportFile {
     /// A path, or an http(s) URL.
     source: String,
+    /// Also remove a picture's background, by a run of `birefnet/remove_background`, and print the line for that file. The original
+    /// is kept. Without this, import is a plain copy and needs no machine.
+    #[arg(long)]
+    remove_background: bool,
+    /// The machine that run goes to (default: this computer if it can run models, else a machine you have up).
+    #[arg(long = "on", value_name = "MACHINE", requires = "remove_background")]
+    on: Option<String>,
 }
 
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
@@ -357,15 +364,35 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         true => args.source,
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
-    let imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &Import { source }, None).await?;
+    let (remove_background, on) = (args.remove_background, args.on.map(On::from));
+    let imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &Import { source, remove_background, on }, None).await?;
     if ctx.json {
         output::json(&imported);
         return Ok(ExitCode::SUCCESS);
     }
     let verb = if imported.already { "already imported" } else { "imported" };
-    anstream::println!("{verb} {}", imported.prefix);
+    if !remove_background {
+        anstream::println!("{verb} {}", imported.prefix);
+        anstream::println!("{}", imported.line);
+        return Ok(ExitCode::SUCCESS);
+    }
+    // One line on stdout, the one to paste; the rest goes where a run's progress goes.
+    anstream::eprintln!("{verb} {}", imported.prefix);
+    if let Some(note) = &imported.note {
+        output::warn(note);
+    }
+    let Some(run) = imported.run else {
+        anstream::println!("{}", imported.line);
+        return Ok(ExitCode::SUCCESS);
+    };
+    let run = crate::run::follow(ctx, *run).await?;
+    if run.status == protocol::calcifer::Status::Completed {
+        crate::run::paste(ctx, &run);
+        return Ok(ExitCode::SUCCESS);
+    }
+    output::warn(&format!("run {} hasn't removed its background: the plain copy is kept", run.number));
     anstream::println!("{}", imported.line);
-    Ok(ExitCode::SUCCESS)
+    Ok(crate::run::exit_code(&run))
 }
 
 async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {

@@ -252,7 +252,7 @@ fn holding(path: &Path) -> Option<PathBuf> {
 }
 
 /// One line per file a run left in its project, to paste into project.yaml: `image: 65b436d4f9a3`.
-fn paste(ctx: &Context, run: &Run) {
+pub(crate) fn paste(ctx: &Context, run: &Run) {
     if ctx.json || run.project.is_none() {
         return;
     }

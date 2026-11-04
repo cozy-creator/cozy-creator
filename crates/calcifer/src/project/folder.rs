@@ -269,6 +269,9 @@ pub struct Lock {
     /// What `cozy run`s left here: they belong to no asset, and no memo holds them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<RunFile>,
+    /// An import's original, by sha256, to the run that removed its background: that run's row in `runs` is the cleaned file.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cleaned: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
 }
@@ -284,7 +287,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], walk: Owed::default() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], cleaned: BTreeMap::new(), walk: Owed::default() }
     }
 }
 
@@ -629,6 +632,8 @@ impl Folder {
             self.update_lock(|lock| {
                 lock.files.retain(|sha256, _| named.contains(sha256));
                 lock.runs.retain(|row| named.contains(&row.sha256));
+                let runs: BTreeSet<u64> = lock.runs.iter().map(|row| row.run).collect();
+                lock.cleaned.retain(|_, run| runs.contains(run));
             })?;
             let _ = std::fs::remove_dir_all(self.dir.join(RUNS));
         }

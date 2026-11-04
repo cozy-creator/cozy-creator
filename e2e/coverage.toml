@@ -196,6 +196,8 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; adap
 
 ["project import"]
 test = "pr: projects: a path and a URL as real files, a type refused, what it says when it copies nothing"
+"--remove-background" = "pr: a project's imports: already transparent, no machine; model: a real run"
+"--on" = "pr: a project's imports: no such machine"
 
 ["project approve"]
 test = "pr: projects: one line of project.yaml, comments surviving, an edit just before it surviving"
