@@ -1238,7 +1238,7 @@ assets:
   b: {video: $b}
   film:
     kind: video
-    render: {with: cozy/cut}
+    render: {with: cozy}
     pieces: [<a>, <b>]
 YAML
 render "$T" film || check "absent: first cut: $(tail -c 400 "$OUT/render.txt")"
@@ -1271,7 +1271,7 @@ assets:
     no_run: true
   film:
     kind: video
-    render: {with: cozy/cut}
+    render: {with: cozy}
     pieces: [<a>, <later>]
 YAML
 render "$T" film || check "truth: cut: $(tail -c 400 "$OUT/render.txt")"
@@ -1298,7 +1298,7 @@ assets:
   b: {video: $b}
   edit:
     kind: video
-    render: {with: cozy/cut}
+    render: {with: cozy}
     pieces:
       - <a>
       - <b>

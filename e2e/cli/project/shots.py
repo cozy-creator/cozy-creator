@@ -130,17 +130,17 @@ class Text(msgspec.Struct, kw_only=True):
 
 
 @app.entrypoint()
-def crash(payload: Text, out: Outputs) -> Saved:
-    raise RuntimeError(payload.prompt)
-
-
-@app.entrypoint()
 def noise(payload: Text, out: Outputs) -> BareTake:
     return BareTake(out.save_bytes(os.urandom(4096), media_type="video/mp4"))
 
 
 class Saved(msgspec.Struct):
     given: File
+
+
+@app.entrypoint()
+def crash(payload: Text, out: Outputs) -> Saved:
+    raise RuntimeError(payload.prompt)
 
 
 @app.entrypoint()
