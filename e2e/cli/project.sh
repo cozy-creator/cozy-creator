@@ -78,6 +78,8 @@ cuts "$P" "$ID"
 imports
 [ -n "${ALONE:-}" ] || failures
 http_surface "$P" "$ID"
+event_stream
+live_views
 [ -n "${ALONE:-}" ] || browser_session "$P" "$ID"
 
 step "a project: the index, a moved folder missing, DELETE forgets"
@@ -1551,6 +1553,88 @@ cmp -s "$P/project.yaml" "$OUT/yaml-mine.yaml" || check "the saved file isn't th
 next=$(grep -i '^etag:' "$OUT/yaml-put.hdr" | cut -d' ' -f2 | tr -d '\r')
 [ "$next" = "\"$(sha "$P/project.yaml")\"" ] || check "the save's ETag isn't its digest: $next"
 cp "$OUT/yaml-kept.yaml" "$P/project.yaml"
+}
+
+# sse <file>: what a stream wrote, one JSON object a line.
+sse() { sed -n 's/^data: //p' "$1"; }
+# revs <file> <id>: each `rev` the stream told of that project.
+revs() { sse "$1" | jq -r --arg i "$2" 'select(.type == "project.changed" and .id == $i) | .rev'; }
+# soon <command…>: it comes true within 20 s.
+soon() { for _ in $(seq 100); do "$@" && return 0; sleep 0.2; done; return 1; }
+told() { sse "$1" | jq -e "select($2)" > /dev/null; }
+told_more() { [ "$(revs "$1" "$2" | wc -l)" -gt "$3" ]; }
+
+# `GET /v1/events`, read as the page reads it: the first event, an edit from outside, a landing that writes only the lock, the local
+# machine, a comment when nothing happens, and the routes it replaced gone.
+event_stream() {
+step "a project: GET /v1/events"
+local R=$OUT/stream log=$OUT/events.sse stream id n seen yaml real
+cozy project new "$R" > /dev/null || check "stream: project new"
+real=$(cd "$R" && pwd -P)
+id=$(status "$R" | jq -r .id)
+curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
+soon told "$log" '.type == "hello"' || check "stream: no hello: $(head -c 300 "$log"; cat "$OUT/events.err")"
+sse "$log" | head -1 | J --arg v "$(cozy --json status | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | head -1)"
+
+seen=$(revs "$log" "$id" | wc -l)
+printf '\n# an edit from outside\n' >> "$R/project.yaml"
+soon told_more "$log" "$id" "$seen" || check "stream: an edit from outside told nothing: $(sse "$log" | cut -c1-200 | tail -5)"
+
+seen=$(revs "$log" "$id" | wc -l) yaml=$(sha "$R/project.yaml")
+(cd "$R" && cozy run "$here/project/draw.py" prompt=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
+n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number')
+[ "$(sha "$R/project.yaml")" = "$yaml" ] || check "stream: a landing wrote project.yaml, and this was to prove the lock alone reaches the stream"
+soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
+soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project == \"$real\"" \
+  || check "stream: no run.updated says run $n completed in $real: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project]' | tail -5)"
+soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
+[ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"
+
+soon grep -q '^:' "$log" || check "stream: no comment after 20 s"
+kill -0 "$stream" 2> /dev/null || check "stream: it ended: $(cat "$OUT/events.err")"
+kill "$stream" 2> /dev/null || true
+for route in runs machines; do
+  [ "$(api -o /dev/null -w '%{http_code}' "http://$ADDR/v1/$route/events")" = 404 ] || check "stream: /v1/$route/events still answers"
+done
+}
+
+# running <screen>: what the local machine's row of `cozy machine ls` says under RUNNING.
+running() { awk '!at { at = index($0, "RUNNING") } at && $1 == "local" { print substr($0, at, 7) + 0; exit }' "$1"; }
+screen_says() { grep -qE "$2" "$1" 2> /dev/null; }
+running_above() { [ "$(running "$1")" -gt "$2" ] 2> /dev/null; }
+running_back() { [ "$(running "$1")" -le "$2" ] 2> /dev/null; }
+
+# `cozy run ls` and `cozy machine ls` on a terminal: a change reaches them, and (when Calcifer here is this suite's) across a restart.
+live_views() {
+step "a project: the live views follow the stream"
+local R=$OUT/live term n before code follower
+cozy project new "$R" > /dev/null || check "live: project new"
+python3 "$here/project/terminal.py" "$OUT/runs.screen" "$COZY" run ls --all > /dev/null & term=$!
+soon screen_says "$OUT/runs.screen" 'TARGET' || check "live: cozy run ls drew nothing"
+(cd "$R" && cozy run "$here/project/draw.py" prompt=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
+n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number')
+soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
+
+if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
+  step "a project: a live view across a Calcifer restart, the branch resync takes"
+  systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
+  (cd "$R" && cozy run "$here/project/draw.py" prompt=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
+  n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number')
+  soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
+  ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
+fi
+code=0; kill "$term" 2> /dev/null; wait "$term" || code=$?
+[ "$code" = 0 ] || check "live: cozy run ls exited $code on q"
+
+python3 "$here/project/terminal.py" "$OUT/machines.screen" "$COZY" machine ls > /dev/null & term=$!
+soon screen_says "$OUT/machines.screen" '^ *local ' || check "live: cozy machine ls shows no local: $(head -5 "$OUT/machines.screen")"
+before=$(running "$OUT/machines.screen")
+(cd "$here" && cozy run -p "$R" ./weightless/wait seconds:=8 --on local > "$OUT/live-wait.txt" 2>&1) & follower=$!
+soon running_above "$OUT/machines.screen" "$before" || check "live: cozy machine ls never showed the run on local: $(head -5 "$OUT/machines.screen")"
+wait "$follower" || check "live: the run on local failed: $(tail -c 300 "$OUT/live-wait.txt")"
+soon running_back "$OUT/machines.screen" "$before" || check "live: cozy machine ls still shows the ended run: $(head -5 "$OUT/machines.screen")"
+code=0; kill "$term" 2> /dev/null; wait "$term" || code=$?
+[ "$code" = 0 ] || check "live: cozy machine ls exited $code on q"
 }
 
 # The browser session (project/browser.js) on the runner's Google Chrome, with playwright-core to drive it.

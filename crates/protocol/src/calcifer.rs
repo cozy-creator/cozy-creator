@@ -680,15 +680,6 @@ pub struct RunList {
     pub unreadable: Vec<String>,
 }
 
-/// `GET /v1/runs/events`: every run's changes, each run whole as `GET /v1/runs/{id}` answers it. No
-/// backlog: a client subscribes, then lists. A stream that falls behind ends; its client lists again.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum RunsEvent {
-    #[serde(rename = "run.updated")]
-    Updated { run: Run },
-}
-
 /// `GET /v1/events`: what a client keeps on screen, on one stream, each thing whole as its route
 /// answers it. No backlog: a client subscribes, then reads what it holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1213,17 +1204,6 @@ pub fn weakest(held: &str, next: &str, settled: &str) -> String {
         _ => 3,
     };
     if rank(next) > rank(held) { next } else { held }.to_owned()
-}
-
-/// `GET /v1/machines/events`: a machine as `GET /v1/machines` lists it, each time its row changes,
-/// and the name of one that left the list. No backlog: a client subscribes, then lists.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum MachinesEvent {
-    #[serde(rename = "machine.updated")]
-    Updated { machine: Box<Machine> },
-    #[serde(rename = "machine.removed")]
-    Removed { name: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

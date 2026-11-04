@@ -1,6 +1,6 @@
 //! `cozy run ls` as a live view (`crate::tui`), fed by Calcifer's events.
 use protocol::{
-    calcifer::{Run, RunsEvent},
+    calcifer::{Run, StreamEvent},
     error::Error,
 };
 
@@ -12,14 +12,14 @@ pub(crate) struct Runs {
     query: list::Query,
     limit: u64,
     runs: Vec<Run>,
-    watch: Watch<RunsEvent>,
+    watch: Watch<StreamEvent>,
 }
 
 impl Runs {
     /// Subscribes, then lists: a run that changes in between is in the stream. Changes match
     /// `--on` by the machine's name, which an alias or rental id resolved to.
     pub(crate) async fn open(ctx: &Context, query: list::Query, limit: u64) -> Result<Self, Error> {
-        let watch = ctx.calcifer().await?.watch("/v1/runs/events").await?.quiet();
+        let watch = ctx.calcifer().await?.changes().await?.quiet();
         let list = list::runs(ctx, &query).await?;
         Ok(Self {
             query: list::Query {
@@ -34,12 +34,13 @@ impl Runs {
 
     pub(crate) async fn changed(&mut self, ctx: &Context) -> Result<(), Error> {
         loop {
-            match self.watch.next().await {
-                Some(RunsEvent::Updated { run }) => {
-                    if self.apply(run) {
+            match self.watch.change().await {
+                Some(StreamEvent::RunUpdated { run }) => {
+                    if self.apply(*run) {
                         return Ok(());
                     }
                 }
+                Some(_) => {}
                 // A stream that ended (Calcifer restarted, or this view fell behind) may have
                 // missed a change: subscribe and list again.
                 None => {

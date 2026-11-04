@@ -157,7 +157,6 @@ a spec.
 - `GET /v1/runs/{id}/events` (`Last-Event-ID` or `?starting_after=`): `run.*`, `output_item.*`, `run.log`,
   `run.call`, and the live `run.progress` and `run.waiting`. It ends after the terminal event once every output
   has landed here or failed to.
-- `GET /v1/runs/events`: every run's change as `run.updated`, each run whole. No backlog: subscribe, then list.
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
 - `GET /v1/runs/{id}/play?output=&expires=` (`expires`: `90s`, `30m`, `24h`, `7d`, default `1h`): `Play {address, fingerprint, token, url, expires_s}`: how a browser plays that output straight from its machine, and `url`, the hosted player's link. `400 play_expires_invalid`, `400 play_output_invalid`.
 - `GET /v1/runs/{id}/outputs/{name}`: an output's bytes. An item with `stays`, untyped bytes of a run that made something else, stays on its machine: no `path`, nothing waits for it, and this answers `409 output_on_its_machine`.
@@ -176,8 +175,6 @@ A machine is this computer's (`local`, started when used), a rental, or another 
   every live machine, and the live rentals of this account that another controller rented (`recorded: false`).
   `refresh` lists every Hub again first. `rentals` sums the live rentals: count, `usd_micros_per_hour`, and
   `accrued_usd_micros` on its weakest `accrued_basis` (`accrued_floor` when some Hub said nothing).
-- `GET /v1/machines/events`: `machine.updated {machine}` each time a machine changes, and `machine.removed
-  {name}`. There is no backlog: subscribe, then list.
 - `GET /v1/machines/{name}[?fresh=true]`: `Machine`. `fresh` reads its Status now, or refuses
   `machine_unavailable`.
 - `POST /v1/machines` (`NewMachine`):
@@ -423,7 +420,7 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
 | `cozy run <target> [inputs] [flags]` | `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events` |
 | `cozy run <target> --describe`, `cozy run <package>` | `GET /v1/targets` |
-| `cozy run ls` | `GET /v1/runs`; live: `GET /v1/runs/events` |
+| `cozy run ls` | `GET /v1/runs`; live: `GET /v1/events`, then `GET /v1/runs` |
 | `cozy run show <run>` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events` |
 | `cozy run cancel <run>` | `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel` |
 | `cozy run play <run>` | `GET /v1/runs/{id}/play` |
@@ -453,13 +450,13 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 | `cozy package lock` | `POST /v1/package-locks`, `GET /v1/package-locks/{id}/events`, `GET /v1/package-locks/{id}` |
 | `cozy package publish` | `POST /v1/package-publications`, `GET /v1/package-publications/{id}/events`, `GET /v1/package-publications/{id}` |
 <!-- each PR adds its verbs' rows -->
-| `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/machines/events`, then `GET /v1/machines` |
+| `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |
 | `machine ls --history [--since D]` | `GET /v1/rentals?since_ms=` |
 | `machine show <name>` | `GET /v1/machines/{name}`; live on a terminal, as `ls` |
 | `machine logs <name> [log] [--since D] [-f]` | `GET /v1/machines/{name}/logs/{log}?lines=&since_ms=` (SSE with `-f`). `logs local calcifer` reads Calcifer's log file, so it works while Calcifer is down |
 | `machine rent` | `GET /v1/rental-skus` |
-| `machine rent <sku>` | `POST /v1/rental-quotes`, `POST /v1/machines` (rent), then `GET /v1/machines/events` until ready or ended |
-| `machine end <name> [--force]` | `DELETE /v1/machines/{name}`, then `GET /v1/machines/events` until ended |
+| `machine rent <sku>` | `POST /v1/rental-quotes`, `POST /v1/machines` (rent), then `GET /v1/events` until ready or ended |
+| `machine end <name> [--force]` | `DELETE /v1/machines/{name}`, then `GET /v1/events` until ended |
 | `machine keepalive <name>` | `POST /v1/machines/{name}/keepalive` |
 | `machine update <name> [--runtime\|--tensorfs\|--tensord V\|PATH]` | `POST /v1/machines/{name}/update`, then the run's events. A project directory is built here first |
 | `machine add <name> <address>` | `POST /v1/machines` (add) |
