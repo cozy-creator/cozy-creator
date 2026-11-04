@@ -856,28 +856,28 @@ fn held_noun(lock: &Lock, name: &str) -> &'static str {
 }
 
 /// A set of files as the API lists them.
-fn listed(folder: &Folder, lock: &Lock, files: &Files) -> BTreeMap<String, Listing> {
+fn listed(lock: &Lock, files: &Files) -> BTreeMap<String, Listing> {
     (files.iter())
         .filter_map(|(name, sha256)| {
             let file = lock.files.get(sha256)?;
-            let (absent, machine) = whereabouts(folder, file);
+            let (absent, machine) = whereabouts(file);
             Some((name.clone(), Listing { path: file.path.clone(), sha256: sha256.clone(), absent, machine }))
         })
         .collect()
 }
 
 /// Whether a file isn't on this computer, and the machine that keeps it if one does.
-fn whereabouts(folder: &Folder, file: &folder::File) -> (bool, Option<String>) {
-    let absent = !folder.path(&file.path).is_file();
+fn whereabouts(file: &folder::File) -> (bool, Option<String>) {
+    let absent = !file.here;
     (absent, (absent && file.stays()).then(|| file.machine.clone()))
 }
 
 /// The file people mean by `files`, as a version lists it.
-fn main_file(folder: &Folder, lock: &Lock, files: &Files) -> Option<MainFile> {
+fn main_file(lock: &Lock, files: &Files) -> Option<MainFile> {
     let sha256 = folder::main_of(files)?;
     let file = lock.files.get(sha256)?;
     let output = files.iter().find(|(_, held)| *held == sha256)?.0.clone();
-    let (absent, machine) = whereabouts(folder, file);
+    let (absent, machine) = whereabouts(file);
     let measured = |number: u64| (number > 0).then_some(number);
     Some(MainFile {
         output,
@@ -948,7 +948,7 @@ fn row(reading: &Reading, i: usize) -> Row {
     let made = standing.version().and_then(|number| held?.version(number));
     let main = folder::main_of(&files).and_then(|sha256| lock.files.get(sha256));
     let measured = |number: fn(&folder::File) -> u64| main.map(number).filter(|&number| number > 0);
-    let (absent, machine) = main.map_or((false, None), |file| whereabouts(folder, file));
+    let (absent, machine) = main.map_or((false, None), whereabouts);
     let failure = held.and_then(|held| held.failed.as_ref()).filter(|failed| making.is_empty() && failed.inputs == standing.inputs).map(|failed| failed.error.clone());
     let changed = match &standing.state {
         Stand::Pinned { changed, .. } => changed.clone(),
@@ -977,7 +977,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                     kept: version.kept,
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
                     run: version.run,
-                    main: main_file(folder, lock, &version.files),
+                    main: main_file(lock, &version.files),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
                     timeline: (!version.clips.is_empty()).then(|| {
@@ -986,7 +986,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                             let why = || version.without.iter().find(|left| name_key(&left.piece) == name_key(name)).map_or_else(|| "no longer in the project".to_owned(), |left| left.why.clone());
                             cut.and_then(|clip| Some(Files::from([("file".to_owned(), clip.sha256.clone()?)]))).ok_or_else(why)
                         };
-                        tools::timeline_now(version.clips.clone(), version.fps, files, folder, lock)
+                        tools::timeline_now(version.clips.clone(), version.fps, files, lock)
                     }),
                 })
             })
@@ -996,7 +996,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         pinned: asset.pin.is_some(),
         inputs: standing.inputs.clone(),
         path: main_path(lock, &files),
-        files: listed(folder, lock, &files),
+        files: listed(lock, &files),
         sha256: main.map(|file| file.sha256.clone()),
         field: main.map(|file| file.field().to_owned()),
         width: measured(|file| file.width),
@@ -1019,7 +1019,7 @@ fn row(reading: &Reading, i: usize) -> Row {
                 let why = || if doc.find(name).is_some() { "no version yet" } else { "no longer in the project" }.to_owned();
                 read.map(|read| read.files.clone()).ok_or_else(why)
             };
-            tools::timeline_now(tools::clips(&asset.inputs, &standing.reads), Canvas::of(&asset.inputs, &mut vec![]).fps, files, folder, lock)
+            tools::timeline_now(tools::clips(&asset.inputs, &standing.reads), Canvas::of(&asset.inputs, &mut vec![]).fps, files, lock)
         }),
         rendering: None,
     }
@@ -1713,7 +1713,7 @@ async fn approve(
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
-    let files = listed(folder, &lock, &files);
+    let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings }))
 }
@@ -3254,7 +3254,7 @@ impl Walk {
         let lock = self.folder().lock()?;
         let path = main_path(&lock, &version.files).unwrap_or_default();
         let execution_ms = (version.execution_ms > 0).then_some(version.execution_ms);
-        self.say(Event::Landed { name: name.into(), noun: noun.into(), number, files: listed(self.folder(), &lock, &version.files), path, execution_ms });
+        self.say(Event::Landed { name: name.into(), noun: noun.into(), number, files: listed(&lock, &version.files), path, execution_ms });
         if let Some(kept) = version.kept {
             self.say(Event::Said { message: kept.said(name, number), name: Some(name.to_owned()) });
             self.project.jobs.why(name, number, format!("keeps take {} to {:.2} s", kept.take, kept.until_s));

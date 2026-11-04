@@ -366,7 +366,7 @@ fn clip_in_the_file(clip: &Clip) -> Option<Value> {
 }
 
 /// `clips` and what each reads, at `fps`: `files` answers a name's files, or why it has none.
-pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<folder::Files, String>, folder: &Folder, lock: &Lock) -> TimelineNow {
+pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<folder::Files, String>, lock: &Lock) -> TimelineNow {
     let now = |clip: Clip| {
         let name = mentions_in(&json!(clip.clip)).into_iter().next().unwrap_or_else(|| clip.clip.clone());
         let file = files(&name).and_then(|files| folder::main_of(&files).and_then(|sha256| lock.files.get(sha256)).cloned().ok_or_else(|| "no version yet".to_owned()));
@@ -379,7 +379,7 @@ pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<f
                 row.width = (file.width > 0).then_some(file.width);
                 row.height = (file.height > 0).then_some(file.height);
                 row.field = Some(file.field().to_owned());
-                row.missing = (!folder.path(&file.path).is_file()).then(|| "not on this computer".to_owned());
+                row.missing = (!file.here).then(|| "not on this computer".to_owned());
                 row.path = Some(file.path);
                 row.clip.sha256 = Some(file.sha256);
             }

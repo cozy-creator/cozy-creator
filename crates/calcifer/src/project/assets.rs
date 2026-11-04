@@ -84,7 +84,6 @@ pub(super) async fn create(
 /// `GET /v1/projects/{id}/assets/{name}`: the asset and each of its versions.
 pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetVersions>, Refusal> {
     let project = api.projects.get(&api, &id)?;
-    let folder = &project.folder;
     let model = model::of(&api, &project).await.map_err(Refusal)?;
     let (doc, lock) = (&model.doc, &model.lock);
     let i = find(doc, &name).map_err(Refusal)?;
@@ -93,7 +92,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let versions = (lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions))
         .map(|version| VersionRow {
             number: version.number,
-            files: listed(folder, lock, &version.files),
+            files: listed(lock, &version.files),
             made_by: version.tool.clone().or_else(|| asset.tool.clone()),
             seed: version.seed,
             runs: version.run.into_iter().collect(),

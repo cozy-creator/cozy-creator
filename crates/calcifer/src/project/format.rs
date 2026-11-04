@@ -340,7 +340,7 @@ impl Doc {
             None | Some(Value::Null) => {}
             Some(value) => match file_named(&text_of(Some(value)), lock) {
                 Ok(sha256) => {
-                    if !lock.files.get(&sha256).is_some_and(|file| folder.path(&file.path).is_file()) {
+                    if !lock.files.get(&sha256).is_some_and(|file| file.here) {
                         self.warn(name, format!("{name}'s approved: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
                     }
                     pin = Some(sha256);

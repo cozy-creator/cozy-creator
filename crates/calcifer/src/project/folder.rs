@@ -107,6 +107,9 @@ pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
 /// from a file here (`Folder::fill`): where it stays, and its parts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct File {
+    /// It was in `files/` when this was read, listed once for all of them: a stat each is seconds, on Windows, across a project's thousands.
+    #[serde(skip)]
+    pub here: bool,
     #[serde(skip)]
     pub path: String,
     #[serde(skip)]
@@ -611,6 +614,7 @@ impl Folder {
                 let file = lock.files.entry(format!("sha256:{hex}")).or_default();
                 file.path = format!("{FILES}/{name}");
                 file.sha256 = format!("sha256:{hex}");
+                file.here = true;
             }
         }
         let measured: BTreeMap<String, Measured> = std::fs::read(self.dir.join(MEASURED)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
@@ -824,7 +828,7 @@ impl Folder {
 
     /// Whether a file the lock names should be here and isn't, so a pull is what it needs: what stays on a machine isn't.
     pub fn missing(&self, file: &File) -> bool {
-        !file.stays() && !self.path(&file.path).is_file()
+        !file.stays() && !file.here
     }
 
     /// Whether files wait to be measured with no ffprobe here to do it: a walk fetches one first.
