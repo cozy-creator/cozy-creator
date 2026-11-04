@@ -185,13 +185,16 @@ const constants = (folder) => {
 
   // Reload restores everything: names, positions, viewport, thumbnails.
   const namesBefore = await names(page);
+  // Not one per name: the file's entity, coast, is an element with no picture.
+  const thumbnailsUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0).length);
+  const thumbnailsBefore = await thumbnailsUp();
   const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform])));
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));
   const viewportBefore = await viewportNow();
   await page.reload();
   await until('names back', () => names(page), (now) => JSON.stringify(now) === JSON.stringify(namesBefore));
-  await until('thumbnails back', () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0).length), (n) => n === namesBefore.length);
+  await until('thumbnails back', thumbnailsUp, (n) => n === thumbnailsBefore);
   check('reload_positions', JSON.stringify(await places()) === JSON.stringify(placesBefore), { before: placesBefore, after: await places() });
   check('reload_viewport', (await viewportNow()) === viewportBefore, { before: viewportBefore, after: await viewportNow() });
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-reloaded.png` : undefined });
