@@ -109,7 +109,7 @@ YAML
   else
     expect project-split "$(jq -r 'if (.runs | length) == 1 and .files.latents != null and .writes["wall.1"].image != null then "PASS" else "FAIL" end' <<< "$v")" \
       "runs $(jq -c .runs <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v"), wall.1 $(jq -r '.writes["wall.1"].image // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
-    expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
+    expect project-split-text "$(jq -r 'if ([.warnings[]?.message | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
     # The gate's hero is a character whose sheet its package made, with a background: H3's adapter says it goes into the shot
     # (se-104). A warning, no failed run. An imported picture is left alone, since it may be opaque on purpose.
     expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
