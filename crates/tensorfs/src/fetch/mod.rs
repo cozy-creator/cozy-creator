@@ -79,12 +79,37 @@ pub trait ObjectStore: Send + Sync + 'static {
     /// Claims `object`'s download among everything sharing this store, until the claim drops. None:
     /// another holds it now.
     fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>>;
+    /// [`admit`](Self::admit) for a fetch, which may be cut at any moment: a store that can keeps its
+    /// bytes for the next fetch of `object`, and hands over what an earlier one left ([`Admission::held`]).
+    fn resume(&self, object: &ObjectRef) -> Result<Box<dyn Admission>> {
+        self.admit(object)
+    }
 }
 
 /// One object on its way into a store.
 pub trait Admission: Send {
     fn write(&mut self, bytes: &[u8]) -> Result<()>;
     fn commit(self: Box<Self>) -> Result<()>;
+    /// Whether what it holds outlives it, and ranges can be kept ([`range`](Self::range)).
+    fn keeps(&self) -> bool {
+        false
+    }
+    /// What an earlier fetch left: bytes in order, which the next `write` follows, and bytes in
+    /// ranges ahead of them. `commit` judges all of them.
+    fn held(&self) -> (u64, u64) {
+        (0, 0)
+    }
+    /// The file for the range of the object starting at byte `at`, to append to, and its length.
+    fn range(&mut self, _at: u64) -> Result<Option<(File, u64)>> {
+        Ok(None)
+    }
+    /// The range at byte `at`, which is finished and reaches back to the bytes in order, joins
+    /// them. The bytes in order now.
+    fn take(&mut self, _at: u64) -> Result<u64> {
+        refuse(Code::IO_FAILED, "this store keeps no ranges")
+    }
+    /// Ends it, nothing kept.
+    fn discard(self: Box<Self>) {}
 }
 
 /// Where an object came from.
@@ -104,11 +129,14 @@ pub struct Landed {
 }
 
 impl Landed {
-    fn add(&mut self, tier: Tier, bytes: u64) {
+    /// An object of `bytes`, `kept` of which an earlier fetch had left here: they did not come again.
+    fn add(&mut self, tier: Tier, bytes: u64, kept: u64) {
+        let kept = kept.min(bytes);
+        self.local += kept;
         match tier {
-            Tier::Local => self.local += bytes,
-            Tier::Volume => self.volume += bytes,
-            Tier::Origin => self.origin += bytes,
+            Tier::Local => self.local += bytes - kept,
+            Tier::Volume => self.volume += bytes - kept,
+            Tier::Origin => self.origin += bytes - kept,
         }
     }
 
@@ -299,7 +327,7 @@ impl Fetcher {
             }
             match self.shared.store.has(object) {
                 true => {
-                    landed.add(Tier::Local, object.length);
+                    landed.add(Tier::Local, object.length, 0);
                     if let Some(progress) = want.progress {
                         progress.landed(object);
                     }
@@ -321,8 +349,9 @@ impl Fetcher {
             .map(|(object, waiter)| {
                 let landed = &landed;
                 async move {
+                    let task = waiter.task();
                     let tier = waiter.wait().await?;
-                    landed.lock().unwrap().add(tier, object.length);
+                    landed.lock().unwrap().add(tier, object.length, task.kept());
                     if let Some(progress) = want.progress {
                         progress.landed(object);
                     }
