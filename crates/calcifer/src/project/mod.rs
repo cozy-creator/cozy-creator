@@ -1250,12 +1250,13 @@ impl Walk {
             }
             let renderers = calls.iter().map(|call| package.function(&call.function)).collect::<Result<Vec<_>, _>>()?;
             // A function with no seed has one result per inputs.
-            let options = asset.body.get("options").and_then(Value::as_object);
-            let fixed = options.is_some_and(|options| options.contains_key("seed")) || asset.fields.contains_key("seed");
+            // An adapter that names a seed has fixed it.
+            let fixed = calls.iter().any(|call| call.input.contains_key("seed"));
             let seeded = !fixed && renderers.iter().any(|renderer| renderer.accepts.contains("seed"));
             if !seeded && (holds.is_some() || going) {
                 let stands = holds.map_or_else(|| "one is being made".to_owned(), |number| format!("{noun} {number} stands"));
-                self.say(Event::Said { message: format!("{name}: {} takes no seed, so it has one result per inputs: {stands}", package.name) });
+                let why = if fixed { "fixes its seed" } else { "takes no seed" };
+                self.say(Event::Said { message: format!("{name}: {} {why}, so it has one result per inputs: {stands}", package.name) });
                 return self.folder().update_lock(settle);
             }
             if !asset.writes.is_empty() && !renderers.iter().any(|renderer| renderer.accepts.contains("writes")) {
@@ -1343,7 +1344,7 @@ impl Walk {
 
     /// Sends `call` to its function of `package` on one of the pending's machines, as an ordinary run under `key`, recorded as pending
     /// (with `settle`: what it settles of the walk) in one write before it is sent. The seed, and on the first call the asset's
-    /// `models` and `lora`, as `cozy run --input` takes them, and on any call its `options` the function takes, go on top.
+    /// `models` and `lora`, as `cozy run --input` takes them, go on top. Its `options` are the adapter's, not added here.
     async fn submit(&self, key: &str, call: Invocation, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut Lock)) -> Result<(), Error> {
         let renderer = package.function(&call.function)?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
@@ -1355,12 +1356,6 @@ impl Walk {
         if let Some(seed) = pending.version.seed.filter(|_| renderer.accepts.contains("seed")) {
             payload.insert("seed".into(), json!(seed));
         }
-        let empty = Map::new();
-        let options = asset.body.get("options").and_then(Value::as_object).unwrap_or(&empty);
-        let options: Map<String, Value> = (options.iter()).filter(|(key, _)| first || renderer.accepts.contains(*key)).map(|(key, value)| (key.clone(), value.clone())).collect();
-        // A person's options stand over what the project sends, and that is said.
-        let over: Vec<String> = options.keys().filter(|key| payload.contains_key(*key)).cloned().collect();
-        payload.extend(options);
         for field in ["models", "lora"] {
             if let Some(value) = asset.body.get(field).filter(|value| first && !value.is_null()) {
                 payload.insert(field.into(), value.clone());
@@ -1382,10 +1377,6 @@ impl Walk {
         warnings.extend(choices.replaced.iter().map(|replaced| Warning {
             code: "model_slot_replaced".into(),
             message: format!("{name}'s render: {replaced}"),
-        }));
-        warnings.extend((!over.is_empty()).then(|| Warning {
-            code: "render_options_over".into(),
-            message: format!("{name}'s options set {} over what the project sends", over.join(", ")),
         }));
         let models = choices::wire(&choices.into_choices()).map_err(named)?;
         let payload = Value::Object(payload);

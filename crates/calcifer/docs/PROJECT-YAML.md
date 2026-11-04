@@ -39,7 +39,8 @@ defaults:
     with: qwen-image-2
   shot:
     with: minimax-h3
-    turbo: true                # a model's own setting goes under its kind
+    options:                   # a model's own settings: any field its adapter reads
+      turbo: true
   edit:
     with: cozy
 
@@ -102,7 +103,9 @@ Every other field, such as `summary`, `beats`, `description`, `instructions`, `c
 
 ## Defaults
 
-`defaults.all` is only for what every kind shares, such as `style`. A model's own settings go under its kind, such as `defaults.shot.turbo`.
+`defaults.all` is only for what every kind shares, such as `style`.
+
+**`options`** holds a model's own settings, such as turbo, context frames or a default sound prompt, and isn't part of this standard: it's an unstructured map, any field to any value, on `defaults.<kind>` and on an asset, the asset's values over the defaults' key by key. It goes only to the adapter, as `op.options`, which turns it into that package's calls; another model has other fields. Cozy adds nothing from it to a call. It counts in the memo, and an asset naming its own `with:` takes none from defaults.
 
 `defaults` holds settings, not what's in the picture or sound, beyond the project-wide `style`. `soundscape` and `music` go on each shot.
 
@@ -127,8 +130,8 @@ The fields of each first-party kind, beyond what the platform reads:
 
 | Kind | Fields |
 |---|---|
-| `shot` | `summary`, `beats` (each `description`, `duration`, `writes`), `style`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `turbo` |
-| `character`, `prop`, `environment`, `scene`, `image` | `description`, `instructions`, `style`, `aspect_ratio`, `turbo` |
+| `shot` | `summary`, `beats` (each `description`, `duration`, `writes`), `style`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`) |
+| `character`, `prop`, `environment`, `scene`, `image` | `description`, `instructions`, `style`, `aspect_ratio` |
 | `setup` | Those of a picture, plus `camera`, `from_frame` |
 | `upscale` | `video`, `resolution`, `style` |
 | `clean` | `image` |
@@ -224,13 +227,13 @@ def adapt(op: Operation) -> list[Invocation]: ...
 ```
 
 For each asset that needs a run, Calcifer:
-1. Finds the package and builds an `Operation`: `{version, asset, kind, fields, reads, writes, keep}`.
+1. Finds the package and builds an `Operation`: `{version, asset, kind, fields, options, reads, writes, keep}`.
 2. Stops there if the memo already has a result.
 3. Installs the package on the render machine and runs its adapter as a small CPU run. Adapters are pure, so they only take text, names and hashes.
-4. Runs the invocations it returns, in order, adding the seed, on the first its `models` and `lora`, and its `options` on any that takes them. An empty list means no run: the asset's files are what it reads. In `input`, a string that is exactly `$0.video` means that field of invocation 0's result. A failed one stops the list and makes no version, and the next render tries again with the same seed.
+4. Runs the invocations it returns, in order, adding the seed, and on the first its `models` and `lora`. An empty list means no run: the asset's files are what it reads. In `input`, a string that is exactly `$0.video` means that field of invocation 0's result. A failed one stops the list and makes no version, and the next render tries again with the same seed.
 5. Records all the resulting files as one new version, by output name, later over earlier.
 
-The adapter holds all model-specific words and picks the function, such as `generate_turbo` from a `turbo: true` field. So a long shot is one operation: H3 splits it into segments itself.
+The adapter holds all model-specific words and picks the function, such as `generate_turbo` from `options: {turbo: true}`. So a long shot is one operation: H3 splits it into segments itself.
 
 ## Building something other than film
 

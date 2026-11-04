@@ -149,6 +149,17 @@ def adapt_two(op: Operation) -> list[Invocation]:
     return [Invocation(function="first_call", input={"prompt": op.asset}), Invocation(function="second_call", input={"of": "$0.first"})]
 
 
+@app.entrypoint()
+def echo(payload: Text, out: Outputs) -> Saved:
+    return Saved(out.save_bytes(payload.prompt.encode(), media_type="application/json"))
+
+
+@app.project_adapter("told")
+def adapt_told(op: Operation) -> list[Invocation]:
+    """`options` is its own map: what it does with them is its business."""
+    return [Invocation(function="echo", input={"prompt": json.dumps(op.options, sort_keys=True)})]
+
+
 class Wait(msgspec.Struct, kw_only=True):
     seconds: float = 20
     prompt: str = ""

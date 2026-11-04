@@ -314,15 +314,21 @@ impl Doc {
             kind => kind,
         };
         // An asset naming its own function takes nothing from defaults, so a clean doesn't re-run over a style edit.
-        let mut merged = Map::new();
+        let (mut merged, mut options) = (Map::new(), Map::new());
         if !body.contains_key("with") {
             for section in ["all", kind.as_str()] {
                 if let Some(section) = defaults.get(section).and_then(Value::as_object) {
+                    options.extend(section.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
                     merged.extend(section.clone());
                 }
             }
         }
+        // `options` is the adapter's own map: the asset's values over its defaults', key by key.
+        options.extend(body.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
         merged.extend(body);
+        if !options.is_empty() {
+            merged.insert("options".into(), Value::Object(options));
+        }
         let (mut pin, mut also) = (None, Files::new());
         for field in PINS {
             let Some(value) = merged.get(field) else { continue };
@@ -642,7 +648,8 @@ impl Doc {
             })
             .collect();
         let writes: Vec<Value> = asset.writes.iter().map(Write::record).collect();
-        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "fields": asset.fields, "reads": reads, "writes": writes, "keep": keep})
+        let options = asset.body.get("options").cloned().unwrap_or_else(|| json!({}));
+        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "fields": asset.fields, "options": options, "reads": reads, "writes": writes, "keep": keep})
     }
 
     /// `--take`, `--in`: what its adapter is told of the take a new one keeps, its files as records; None if it holds no video.

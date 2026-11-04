@@ -564,6 +564,12 @@ printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
 version: 2
+defaults:
+  told:
+    with: $here/project/shots.py
+    options:
+      a: 1
+      b: from defaults
 assets:
   look:
     video: $look
@@ -581,6 +587,16 @@ assets:
     with: $here/project/shots.py
     kind: two calls
     summary: One then the other.
+  told:
+    kind: told
+    options:
+      b: its own
+      c: 3
+  told alone:
+    with: $here/project/shots.py
+    kind: told
+    options:
+      c: 3
 YAML
 render "$T" same || check "adapters: no run: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.same.versions[0] | (.runs // [] | length == 0) and .files.video != null' "$T/project.lock" || check "adapters: None is not what it reads, with no run: $(jq -c '.assets.same.versions' "$T/project.lock")"
@@ -590,6 +606,11 @@ says adapters "has nothing to make"
 [ "$(made "$T" same)" = 1 ] || check "adapters: a second version of what is its reads"
 render "$T" checked || check "adapters: typed: $(tail -c 400 "$OUT/render.txt")"
 says adapters "reads no field no_such_field"
+step "a project: options go to the adapter, the asset's over its defaults', and one naming its own with takes none"
+render "$T" told "told alone" || check "adapters: options: $(tail -c 400 "$OUT/render.txt")"
+heard() { cat "$T/$(jq -r --arg s "$1" '.files[.assets[$s].versions[-1].files.given].path' "$T/project.lock")"; }
+[ "$(heard told | jq -c .)" = '{"a":1,"b":"its own","c":3}' ] || check "adapters: told's options: $(heard told)"
+[ "$(heard 'told alone' | jq -c .)" = '{"c":3}' ] || check "adapters: told alone took options from defaults: $(heard 'told alone')"
 render "$T" both || check "adapters: two calls: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.both.versions | length == 1 and (.[0] | (.runs | length == 2) and (.invocations | length == 2) and .files.first != null and .files.second != null)' "$T/project.lock" || check "adapters: two calls are not one version: $(jq -c '.assets.both.versions' "$T/project.lock")"
 [ "$(cat "$T/$(jq -r '.files[.assets.both.versions[0].files.second].path' "$T/project.lock")")" = "$(jq -r '.assets.both.versions[0].files.first' "$T/project.lock")" ] || check "adapters: the second call was not given the first's output"
