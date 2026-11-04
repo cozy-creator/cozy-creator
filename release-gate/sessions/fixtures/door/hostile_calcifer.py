@@ -35,6 +35,7 @@ ANSWERS = {
     "/v1/door/video": (200, [("Content-Type", "video/mp4")], PAGE),
     "/v1/door/svg": (200, [("Content-Type", "image/svg+xml")], DRAWING),
     "/v1/door/none": (200, [], PAGE),
+    "/v1/door/module": (200, [("Content-Type", "text/javascript")], SCRIPT),
     "/v1/door/redirect": (302, [("Location", ELSEWHERE)], b""),
 }
 

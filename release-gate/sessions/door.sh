@@ -140,6 +140,27 @@ door_runs() {
   answers "a play link's cap on a write there" 403 capability_scope -k -H "Authorization: Cozy-Cap $cap" -X POST -d '{}' "https://$API/v1/calcifer/v1/projects"
 }
 
+# A package's component, looking at the machine's Calcifer through the door: the page asks this computer's, never the machine, so local code
+# there draws nothing here, and the box is the declared one.
+door_component() {
+  mark "a package's component through the door, $X"
+  local a=$P/boxed id link boxed
+  boxed=$(cd "$FIX/../../../../e2e/cli/project/boxed" && pwd) || { check "no fixture package"; return; }
+  pod "cozy project new $a > /dev/null" || check "project new"
+  tar -C "$boxed" -cf - . | pod_in "mkdir -p $a/boxed && tar -xf - -C $a/boxed" || check "the fixture package"
+  T=1200 pod "cd $a && cozy --json run ./boxed/plain prompt=primed --on local" > /dev/null || check "a run of the fixture there: $(tail -c 300 "$OUT/pod.err")"
+  id=$(pod "cozy --json project -p $a status" | jq -r '.id // empty')
+  [ -n "$id" ] || { check "the project has no id: $(tail -c 300 "$OUT/pod.err")"; return; }
+  answers "a box of it through the door" 201 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-component-$RANDOM" -d '{"tool":"./boxed/one_field","name":"shaded","at":{"x":0,"y":0,"w":300}}' "$D/v1/projects/$id/assets"
+  link=$(cozy web --no-open 2>&1 | grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' | head -1)
+  [ -n "$link" ] || { check "cozy web --no-open printed no link"; return; }
+  CHROME=$(command -v google-chrome) PLAYWRIGHT=$PW/node_modules/playwright-core timeout 300 node "$FIX/component.js" "$link" "$X" "$id" > "$OUT/component.json" 2> "$OUT/component.err" \
+    || check "the component's browser: $(tail -c 500 "$OUT/component.err")"
+  J '.declared == 1 and .drawn == 0' "$OUT/component.json" || check "a machine's component drew here: $(jq -c . "$OUT/component.json")"
+  J '(.tool_ui | length > 0) and (.tool_ui | all(startswith("/v1/tools/")))' "$OUT/component.json" || check "the page asked the machine for a component, or nobody: $(jq -c .tool_ui "$OUT/component.json")"
+  J '.violations == []' "$OUT/component.json" || check "the page broke its CSP: $(jq -c .violations "$OUT/component.json")"
+}
+
 # The stand-in names itself the home's holder, as a pod's root can; a read through the door then gets its worst.
 door_hostile() {
   mark "a hostile holder, in curl and in a real Chrome, $X"
@@ -157,7 +178,7 @@ door_hostile() {
   pod "printf '%s' '$named' > $HOLDER.new && mv $HOLDER.new $HOLDER" || check "naming the stand-in"
   # A body makes the door read the record again, and it keeps what it read.
   answers "the door reads the new holder" 200 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -d '{}' "$D/v1/door/arm"
-  for name in page listed two json video svg none redirect; do
+  for name in page listed two json video svg none module redirect; do
     api -D "$OUT/door-$name.hdr" -o "$OUT/door-$name.body" "$D/v1/door/$name" || check "door $name"
     tr -d '\r' < "$OUT/door-$name.hdr" | tr A-Z a-z > "$OUT/door-$name.low"
     for gone in set-cookie location refresh clear-site-data access-control link www-authenticate; do
@@ -167,13 +188,15 @@ door_hostile() {
     grep -q '^x-content-type-options: nosniff' "$OUT/door-$name.low" || check "$name: no nosniff"
     grep -q '^cozy-said: kept' "$OUT/door-$name.low" || check "$name: Cozy-* did not pass"
   done
-  for name in page listed two svg none redirect; do
+  for name in page listed two svg none module redirect; do
     grep -q '^content-disposition: attachment$' "$OUT/door-$name.low" || check "$name: no attachment: $(paste -sd' ' "$OUT/door-$name.low")"
   done
   for name in json video; do
     grep -q '^content-disposition' "$OUT/door-$name.low" && check "$name: shown in place, yet it says $(grep '^content-disposition' "$OUT/door-$name.low")"
   done
-  grep -q '^content-type: text/html$' "$OUT/door-page.low" || check "page's type: $(grep '^content-type' "$OUT/door-page.low")"
+  for name in page module svg; do
+    grep -q '^content-type: application/octet-stream$' "$OUT/door-$name.low" || check "$name's type was not made octets: $(grep '^content-type' "$OUT/door-$name.low")"
+  done
   grep -q '^content-type: application/octet-stream$' "$OUT/door-listed.low" || check "a listed type was not made octets: $(grep '^content-type' "$OUT/door-listed.low")"
   grep -q '^content-type: application/octet-stream$' "$OUT/door-two.low" || check "two types were not made octets: $(grep '^content-type' "$OUT/door-two.low")"
   head -1 "$OUT/door-redirect.low" | grep -q ' 302' || check "the redirect's status: $(head -1 "$OUT/door-redirect.low")"
@@ -203,6 +226,8 @@ door_hostile() {
   for name in page listed two json video svg none redirect; do
     J --arg n "$name" '.door[$n] | .cookies == [] and .requests == [] and .ran != "yes"' "$OUT/browser.json" || check "$name ran or stuck: $(jq -c --arg n "$name" '.door[$n]' "$OUT/browser.json")"
   done
+  J '.module | .control == "loaded" and .control_ran == "control"' "$OUT/browser.json" || check "the control module did not run, so this check sees nothing: $(jq -c .module "$OUT/browser.json")"
+  J '.module | .door != "loaded" and .door_ran == null' "$OUT/browser.json" || check "a module from a pod ran on this origin: $(jq -c .module "$OUT/browser.json")"
   J '.door.page.downloaded == true' "$OUT/browser.json" || check "the HTML page wasn't a download: $(jq -c .door.page "$OUT/browser.json")"
   J '.door.redirect.navigated_to | contains("/redirected") | not' "$OUT/browser.json" || check "the browser went where the machine said"
   kill "$canary" 2> /dev/null
@@ -346,6 +371,7 @@ if [ "$REHEARSE" = true ]; then
   door_stream
   door_keys
   door_runs
+  door_component
   door_hostile
   door_archive
   door_upload

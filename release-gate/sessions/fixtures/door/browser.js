@@ -36,8 +36,26 @@ const PATHS = ['page', 'listed', 'two', 'json', 'video', 'svg', 'none', 'redirec
     await context.close();
     return seen;
   };
+  // The door's own origin allows its own script: a module a pod answered would run as you, if the door let its type through. The control is
+  // a module on this origin that the page's CSP lets run, so the harness can see one that ran.
+  const imported = async () => {
+    const context = await browser.newContext({ extraHTTPHeaders: { Authorization: `Bearer ${bearer}` } });
+    context.setDefaultTimeout(STEP_MS);
+    const page = await context.newPage();
+    await page.route('**/control-module.js', (route) => route.fulfill({ contentType: 'text/javascript', body: "document.documentElement.setAttribute('data-ran','control');" }));
+    await page.goto(`${new URL(door).origin}/`, { timeout: STEP_MS, waitUntil: 'load' });
+    const load = (path) => page.evaluate((at) => import(at).then(() => 'loaded', (error) => String(error)), path);
+    const ran = () => page.evaluate(() => document.documentElement.getAttribute('data-ran'));
+    const seen = { control: await load('/control-module.js'), control_ran: await ran() };
+    await page.evaluate(() => document.documentElement.removeAttribute('data-ran'));
+    seen.door = await load(`${new URL(door).pathname}/v1/door/module`);
+    seen.door_ran = await ran();
+    await context.close();
+    return seen;
+  };
   out.control = await open(control, {});
   for (const name of PATHS) out.door[name] = await open(`${door}/v1/door/${name}`, { Authorization: `Bearer ${bearer}` });
+  out.module = await imported();
   await browser.close();
   console.log(JSON.stringify(out));
 })().catch((error) => { console.error(error); process.exit(1); });

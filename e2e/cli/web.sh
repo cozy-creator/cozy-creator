@@ -3,7 +3,8 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), and an Edit rendered (web/timeline.js).
+# models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js), and
+# a package's own UI (web/package_ui.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -64,6 +65,10 @@ step "web-timeline: real clips and a still in an Edit, trims and a reorder, rend
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
 local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
 PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
+step "web-package-ui: a package's component drawn, its field saved and read back; what can't draw falls back; a release held to its hash"
+local on_hub=''
+[ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" 'COZY_HUB_URL=@HUB@ ')
+HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
