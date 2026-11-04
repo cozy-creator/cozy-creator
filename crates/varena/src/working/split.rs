@@ -313,14 +313,15 @@ fn fits(
                 }
             }
             // What's left of the shared sizes can be cut from free runs.
-            let mut runs: Vec<(usize, u64)> = state.free.range((None, LARGE + 1, None)..=(None, SEGMENT, Some(u64::MAX)))
+            let mut runs: Vec<(usize, u64)> = state.free.range((None, LARGE + 1, None)..)
+                .take_while(|((pool, ..), _)| pool.is_none())
                 .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
                 .flat_map(|((_, capacity, origin), slots)| slots.iter().filter_map(|ptr| {
                     let block = state.blocks.get(ptr).filter(|block| block.capacity == *capacity && block.reusable_from(*origin))?;
                     (!used.contains(ptr)).then_some((*capacity, block.segment))
                 }))
                 .collect();
-            for (&class, count) in missing.iter_mut().rev().filter(|(class, _)| (LARGE + 1..=SEGMENT).contains(*class)) {
+            for (&class, count) in missing.iter_mut().rev().take_while(|(class, _)| **class > LARGE) {
                 while *count != 0 {
                     let Some(run) = runs.iter_mut().filter(|run| run.0 >= class).min_by_key(|run| run.0) else {
                         break;
@@ -336,17 +337,8 @@ fn fits(
             let reclaimable: usize = state
                 .segments
                 .iter()
-                .filter(|(base, segment)| {
-                    segment.pool.is_none()
-                        && !preserve.contains(base)
-                        && state
-                            .blocks
-                            .range(**base..**base + segment.bytes as u64)
-                            .all(|(_, block)| {
-                                block.life == Life::Ready && block.reusable_on.is_none()
-                            })
-                })
-                .map(|(_, segment)| segment.bytes)
+                .filter(|(base, segment)| segment.pool.is_none() && !preserve.contains(base))
+                .map(|(base, segment)| state.releasable(*base, segment))
                 .sum();
             let after_outside = headroom(
                 owner,

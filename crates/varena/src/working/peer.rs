@@ -33,10 +33,11 @@ pub(crate) fn idle_bytes(device: i32) -> Result<u64> {
             let pool = &state.pools[&id];
             pool.prepared || (pool.references != 0 && !Device::pool_idle(&state, id, pool)) || pool.capture.is_some()
         });
-        let live = || state.blocks.range(*base..*base + segment.bytes as u64)
-            .any(|(_, block)| matches!(block.life, Life::Live | Life::Captured | Life::Unjoined(_)) && !block.scratch);
-        if !held && !live() {
-            idle += segment.bytes as u64;
+        let live = |chunk: &Chunk| state.touching(*base + chunk.offset as u64, *base + (chunk.offset + chunk.bytes) as u64)
+            .any(|block| matches!(block.life, Life::Live | Life::Captured | Life::Unjoined(_)) && !block.scratch);
+        if !held {
+            idle += segment.chunks.iter().filter(|chunk| chunk.handle.is_some() && !live(chunk))
+                .map(|chunk| chunk.bytes as u64).sum::<u64>();
         }
     }
     Ok(idle)

@@ -48,7 +48,7 @@ pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
     let states = owners.iter().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
     let mut segments = Vec::new();
     for (owner, state) in owners.iter().zip(&states) {
-        segments.extend(state.segments.iter().filter(|(_, segment)| segment.handle.is_some()).map(|(address, segment)| WorkingSegment {
+        segments.extend(state.segments.iter().filter(|(_, segment)| segment.backed()).map(|(address, segment)| WorkingSegment {
             device: owner.ordinal, address: *address, bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool,
         }));
     }
@@ -63,7 +63,7 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
     let mut out = Vec::new();
     for owner in owners {
         let state = owner.lock()?;
-        for (address, segment) in state.segments.iter().filter(|(_, segment)| segment.handle.is_some()) {
+        for (address, segment) in state.segments.iter().filter(|(_, segment)| segment.backed()) {
             let end = *address + segment.bytes as u64;
             let mut cursor = *address;
             let mut blocks = Vec::new();

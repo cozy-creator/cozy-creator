@@ -179,6 +179,24 @@ struct Block {
     reusable_on: Option<u64>,
 }
 
+impl Segment {
+    fn new(bytes: usize, size_class: usize, pool: Option<PoolId>) -> Self {
+        let chunk = if pool.is_none() && bytes > SEGMENT { SEGMENT } else { bytes };
+        let chunks = (0..bytes).step_by(chunk)
+            .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
+            .collect();
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0 }
+    }
+
+    fn backed(&self) -> bool {
+        self.chunks.iter().any(|chunk| chunk.handle.is_some())
+    }
+
+    fn unbacked(&self) -> usize {
+        self.chunks.iter().filter(|chunk| chunk.handle.is_none()).map(|chunk| chunk.bytes).sum()
+    }
+}
+
 impl Pool {
     /// A graph here may have bound a stream's cached workspace.
     fn names_stream(&self, stream: u64) -> bool {
@@ -220,11 +238,19 @@ impl Block {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Chunk {
+    offset: usize,
+    bytes: usize,
+    // None: its pages went back. The VA stays until the segment goes, or an idle pool maps again.
+    handle: Option<u64>,
+}
+
 struct Segment {
     bytes: usize,
     size_class: usize,
-    // None: an idle pool's pages were released; the VA stays here until they map again.
-    handle: Option<u64>,
+    // One handle's pages come back only whole, so a segment above SEGMENT has one per SEGMENT.
+    chunks: Vec<Chunk>,
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
     phase_blocks: usize,
@@ -337,18 +363,50 @@ impl State {
         self.blocks.values().map(Block::charge).sum()
     }
 
-    fn reusable_eager_pages(&self) -> usize {
-        self.segments
-            .iter()
-            .filter(|(base, segment)| {
-                segment.pool.is_none()
-                    && self
-                        .blocks
-                        .range(**base..**base + segment.bytes as u64)
-                        .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none())
-            })
-            .map(|(_, segment)| segment.bytes)
+    /// The blocks on any part of `[start, end)`, the one starting before it included.
+    fn touching(&self, start: u64, end: u64) -> impl Iterator<Item = &Block> {
+        self.blocks.range(..end).rev()
+            .take_while(move |(ptr, block)| **ptr + block.capacity as u64 > start)
+            .map(|(_, block)| block)
+    }
+
+    /// Whether this handle's pages could go back now: only completed free blocks on them.
+    fn chunk_free(&self, base: u64, chunk: &Chunk) -> bool {
+        let start = base + chunk.offset as u64;
+        self.touching(start, start + chunk.bytes as u64)
+            .all(|block| block.life == Life::Ready && block.reusable_on.is_none())
+    }
+
+    /// What of this segment could go back now.
+    fn releasable(&self, base: u64, segment: &Segment) -> usize {
+        segment.chunks.iter()
+            .filter(|chunk| chunk.handle.is_some() && self.chunk_free(base, chunk))
+            .map(|chunk| chunk.bytes)
             .sum()
+    }
+
+    fn reusable_eager_pages(&self) -> usize {
+        self.segments.iter()
+            .filter(|(_, segment)| segment.pool.is_none())
+            .map(|(base, segment)| self.releasable(*base, segment))
+            .sum()
+    }
+
+    /// A completed free block across `at` becomes two, so a handle's pages can leave alone.
+    fn carve(&mut self, at: u64) {
+        let Some((&ptr, block)) = self.blocks.range(..at).next_back() else { return };
+        let (capacity, end) = (block.capacity, ptr + block.capacity as u64);
+        if end <= at {
+            return;
+        }
+        let mut tail = block.clone();
+        tail.capacity = (end - at) as usize;
+        tail.fenced = false;
+        self.unlist((None, capacity, None), ptr);
+        self.blocks.get_mut(&ptr).expect("carved block").capacity = (at - ptr) as usize;
+        self.free.entry((None, (at - ptr) as usize, None)).or_default().push(ptr);
+        self.free.entry((None, tail.capacity, None)).or_default().push(at);
+        self.blocks.insert(at, tail);
     }
 
     fn phase_changed(
@@ -512,8 +570,7 @@ pub fn pool_bytes(peak: usize) -> usize {
 
 // Above this, blocks are runs that split and merge; below it, slabs of one class.
 const LARGE: usize = 1 << 20;
-// Runs share segments of this size, so their pages can be reused. Above it a block owns its pages:
-// one handle's pages come back only whole, and a small block left in a large one would hold them all.
+// Smaller runs share segments of this size. A larger segment has one handle per this many bytes.
 const SEGMENT: usize = 64 << 20;
 
 impl Device {
@@ -644,23 +701,17 @@ impl Device {
         if pool.is_some() || bytes <= LARGE {
             return None;
         }
-        if bytes < SEGMENT {
-            Self::split_run(state, bytes, stream)?;
-            return Self::take_class(state, bytes, requested, stream, None);
-        }
-        // Above a segment a block owns its pages, so freeing it returns them all. A free block up
-        // to twice the size beats releasing it and mapping new pages.
-        let larger: BTreeSet<usize> = state.free.range((None, bytes + 1, None)..=(None, bytes * 2, Some(u64::MAX)))
-            .filter(|(_, slots)| !slots.is_empty())
-            .map(|((_, class, _), _)| *class)
-            .collect();
-        larger.into_iter().find_map(|class| Self::take_class(state, class, requested, stream, None))
+        Self::split_run(state, bytes, stream, false)?;
+        Self::take_class(state, bytes, requested, stream, None)
     }
 
     /// Best fit: cut the smallest free run this stream may use down to `bytes`. The rest stays
-    /// free with the same ordering. Each size holding its own pages cost SDXL 560 MB beside 327 live.
-    fn split_run(state: &mut State, bytes: usize, stream: u64) -> Option<()> {
-        let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..=(None, SEGMENT, Some(u64::MAX)))
+    /// free with the same ordering. A block holds only the handles it touches, so with room to spare
+    /// the shared sizes keep to their own segments, and a large block's pages stay mapped until
+    /// something needs them. Each size holding its own pages cost H3 2.5 times the driver calls.
+    fn split_run(state: &mut State, bytes: usize, stream: u64, any: bool) -> Option<()> {
+        let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..)
+            .take_while(|((pool, class, _), _)| pool.is_none() && (any || bytes >= SEGMENT || *class <= SEGMENT))
             .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
             .find_map(|((_, class, origin), slots)| {
                 slots.iter().rev()
@@ -806,16 +857,14 @@ impl Device {
         let ptr = Self::address(state, bytes)?;
         state.segments.insert(
             ptr,
-            Segment {
-                bytes,
-                size_class: class,
-                handle: None,
-                pool,
-                phase_blocks: 0,
-            },
+            Segment::new(bytes, class, pool),
         );
         if let Err(error) = self.back(state, ptr) {
-            if state.segments[&ptr].handle.is_none() {
+            // Short of pages midway: what did map is unused. A failed map itself stays owned.
+            if error.is_oom() {
+                self.unback(state, ptr)?;
+            }
+            if !state.segments[&ptr].backed() {
                 state.segments.remove(&ptr);
                 Self::return_address(state, ptr, bytes);
             }
@@ -933,35 +982,76 @@ impl Device {
     // Physical pages for a segment's kept VA.
     fn back(&self, state: &mut State, base: u64) -> crate::AllocationResult<()> {
         let segment = state.segments.get_mut(&base).expect("owned segment");
-        let (bytes, pool, class) = (segment.bytes, segment.pool, segment.size_class);
+        let (pool, class) = (segment.pool, segment.size_class);
         self.sample()?;
-        if self.over(bytes) != 0 {
-            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        let missing = segment.unbacked();
+        if self.over(missing) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: missing }.into());
         }
-        let handle = self.driver().create(bytes)?;
-        // Track ownership before map: a partial mapping failure must retain the VA and handle.
-        segment.handle = Some(handle);
-        self.working.fetch_add(bytes, Ordering::AcqRel);
-        state.stats.mapped_bytes += bytes;
-        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
-        self.driver().map(base, bytes, handle)?;
-        observer::mapped(self, base, bytes, pool, class)?;
+        for chunk in segment.chunks.iter_mut().filter(|chunk| chunk.handle.is_none()) {
+            let handle = self.driver().create(chunk.bytes)?;
+            // Track ownership before map: a partial mapping failure must retain the VA and handle.
+            chunk.handle = Some(handle);
+            self.working.fetch_add(chunk.bytes, Ordering::AcqRel);
+            state.stats.mapped_bytes += chunk.bytes;
+            state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+            let at = base + chunk.offset as u64;
+            self.driver().map(at, chunk.bytes, handle)?;
+            observer::mapped(self, at, chunk.bytes, pool, class)?;
+        }
         Ok(())
     }
 
-    // Release a segment's pages, keeping its VA and metadata. Returns the bytes released.
     fn unback(&self, state: &mut State, base: u64) -> Result<usize> {
+        let mut released = 0;
+        for index in 0..state.segments[&base].chunks.len() {
+            released += self.unback_chunk(state, base, index)?;
+        }
+        Ok(released)
+    }
+
+    fn unback_chunk(&self, state: &mut State, base: u64, index: usize) -> Result<usize> {
         let segment = state.segments.get_mut(&base).expect("owned segment");
-        let Some(handle) = segment.handle else { return Ok(0) };
-        let bytes = segment.bytes;
-        observer::retiring(self, base, bytes, segment.pool, segment.size_class)?;
-        self.driver().unmap(base, bytes)?;
+        let chunk = segment.chunks[index];
+        let Some(handle) = chunk.handle else { return Ok(0) };
+        let at = base + chunk.offset as u64;
+        observer::retiring(self, at, chunk.bytes, segment.pool, segment.size_class)?;
+        self.driver().unmap(at, chunk.bytes)?;
         self.driver().release(handle)?;
-        segment.handle = None;
-        self.working.fetch_sub(bytes, Ordering::AcqRel);
-        self.released.fetch_add(bytes as u64, Ordering::AcqRel);
-        state.stats.mapped_bytes -= bytes;
-        Ok(bytes)
+        segment.chunks[index].handle = None;
+        self.working.fetch_sub(chunk.bytes, Ordering::AcqRel);
+        self.released.fetch_add(chunk.bytes as u64, Ordering::AcqRel);
+        state.stats.mapped_bytes -= chunk.bytes;
+        Ok(chunk.bytes)
+    }
+
+    /// This large segment's handles with only completed free blocks on them go back, last first
+    /// so what stays is one run, and no more of them than asked: free pages stay until needed.
+    fn trim_chunks(&self, state: &mut State, base: u64, limit: usize, maximum: usize) -> Result<usize> {
+        let mut released = 0;
+        for index in (0..state.segments[&base].chunks.len()).rev() {
+            let chunk = state.segments[&base].chunks[index];
+            if released >= limit {
+                break;
+            }
+            if chunk.handle.is_none() || chunk.bytes > maximum.saturating_sub(released) || !state.chunk_free(base, &chunk) {
+                continue;
+            }
+            let (start, end) = (base + chunk.offset as u64, base + (chunk.offset + chunk.bytes) as u64);
+            state.carve(start);
+            state.carve(end);
+            let pieces: Vec<_> = state.blocks.range(start..end).map(|(ptr, _)| *ptr).collect();
+            for ptr in pieces {
+                let piece = state.blocks.remove(&ptr).expect("carved piece");
+                state.unlist((None, piece.capacity, None), ptr);
+            }
+            released += self.unback_chunk(state, base, index)?;
+        }
+        if !state.segments[&base].backed() {
+            let segment = state.segments.remove(&base).expect("owned segment");
+            Self::return_address(state, base, segment.bytes);
+        }
+        Ok(released)
     }
 
     // Unmap completed free segments until `limit` bytes are gone, keeping `preserve`, the
@@ -972,11 +1062,16 @@ impl Device {
     ) -> Result<usize> {
         let mut released = 0usize;
         let mut candidates = Vec::new();
+        let mut large = Vec::new();
         for (base, segment) in &state.segments {
             if preserve.contains(base) {
                 continue;
             }
             if exclude.is_some() && segment.pool == exclude {
+                continue;
+            }
+            if segment.chunks.len() > 1 {
+                large.push(*base);
                 continue;
             }
             if let Some(id) = segment.pool {
@@ -1003,7 +1098,7 @@ impl Device {
             }
             let segment = &state.segments[&base];
             let bytes = segment.bytes;
-            if segment.handle.is_some() && bytes > maximum.saturating_sub(released) { continue; }
+            if segment.backed() && bytes > maximum.saturating_sub(released) { continue; }
             released += self.unback(state, base)?;
             let blocks: Vec<_> = state
                 .blocks
@@ -1015,6 +1110,12 @@ impl Device {
             }
             state.segments.remove(&base);
             Self::return_address(state, base, bytes);
+        }
+        for base in large {
+            if released >= limit {
+                break;
+            }
+            released += self.trim_chunks(state, base, limit - released, maximum.saturating_sub(released))?;
         }
         state.free.retain(|_, slots| {
             slots.retain(|ptr| state.blocks.contains_key(ptr));
@@ -1098,7 +1199,7 @@ impl Device {
                 continue;
             }
             let mut blocks = state.blocks.range(*base..*base + segment.bytes as u64);
-            if !idle && !blocks.clone().all(|(_, block)| matches!(block.life, Life::Ready | Life::Pending)) {
+            if !idle && segment.chunks.len() == 1 && !blocks.clone().all(|(_, block)| matches!(block.life, Life::Ready | Life::Pending)) {
                 continue;
             }
             let before = events.len();
@@ -2004,13 +2105,13 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .map(|b| b.capacity)
         .sum();
     stats.reclaimable_bytes = state.reusable_eager_pages();
-    let unmapped: usize = state.segments.values().filter(|s| s.handle.is_none()).map(|s| s.bytes).sum();
+    let unmapped: usize = state.segments.values().map(Segment::unbacked).sum();
     stats.unassigned_bytes = (stats.mapped_bytes + unmapped)
         .saturating_sub(stats.allocated_capacity + stats.pending_bytes + stats.free_bytes);
     stats.pools_bytes = state
         .segments
         .values()
-        .filter(|s| s.pool.is_some() && s.handle.is_some())
+        .filter(|s| s.pool.is_some() && s.backed())
         .map(|s| s.bytes)
         .sum();
     stats.pools = state.pools.len();
@@ -2071,8 +2172,8 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             session.prepared = true;
         }
     }
-    let need = wanted + owner.lock()?.segments.values().filter(|s| s.pool == Some(pool) && s.handle.is_none())
-        .map(|s| s.bytes).sum::<usize>();
+    let need = wanted + owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
+        .map(Segment::unbacked).sum::<usize>();
     reclaim::acquire(device, need, Wait::Yes, keep, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
@@ -2110,7 +2211,7 @@ pub fn pool_arm(device: i32, id: PoolId) -> Result<()> {
 // Pages for every segment of this pool that has none. Returns the pool's total bytes.
 fn pool_back(owner: &Device, state: &mut State, id: PoolId) -> crate::AllocationResult<usize> {
     let bases: Vec<_> = state.segments.iter().filter(|(_, segment)| segment.pool == Some(id))
-        .map(|(base, segment)| (*base, segment.bytes, segment.handle.is_none())).collect();
+        .map(|(base, segment)| (*base, segment.bytes, !segment.backed())).collect();
     for (base, _, unmapped) in &bases {
         if *unmapped {
             owner.back(state, *base)?;
