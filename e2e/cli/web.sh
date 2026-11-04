@@ -31,7 +31,7 @@ redeem() { answers "$1" "$2" "$3" -X POST -H 'Content-Type: application/json' -d
 web_serves() {
 step "web-serves: sign in, the page under its CSP, an event, and what is refused"
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/web-project pic=$OUT/web-picture.png pw=$OUT/playwright
-local addr token base chrome id link code=0 wait expires
+local addr token base chrome id
 chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web-serves: no Google Chrome on this runner (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web-serves: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
@@ -41,7 +41,13 @@ id=$(cozy --json project -p "$P" status 2> /dev/null | jq -r '.id // empty')
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$addr
 # One red pixel.
 base64 -d > "$pic" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
+web_signed_in
+curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "$base/v1/projects/$id" || true
+}
 
+# web_serves's own, on its project, which it forgets whatever happens here.
+web_signed_in() {
+local link code=0 wait expires
 cozy web --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy web --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return; }
 link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
 [ -n "$link" ] || { check "web-serves: cozy web --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return; }
@@ -114,8 +120,6 @@ wait=$(( expires / 1000 - $(date +%s) + 1 ))
 [ "$wait" -le 61 ] && [ -n "$fresh" ] || check "web-serves: a fresh code '$fresh' expires in $wait s, not 60 s"
 [ "$wait" -le 0 ] || sleep "$wait"
 redeem "an expired code" 400 session_code_invalid "$fresh"
-
-curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "$base/v1/projects/$id" || true
 }
 
 # Alone: this computer's cozy, as it is, in the default home.

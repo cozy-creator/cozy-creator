@@ -58,7 +58,7 @@ let mine = false;
   out.document = { status: doc.status(), csp: h['content-security-policy'] || null, referrer_policy: h['referrer-policy'] || null, set_cookie: h['set-cookie'] || null };
   const deadline = Date.now() + STEP_MS;
   while (!out.session && Date.now() < deadline) await sleep(100);
-  if (!out.session) throw new Error('the page did not redeem its code on POST /v1/session');
+  if (!out.session || out.session.status !== 200) throw new Error('the page did not redeem its code on POST /v1/session');
   await until('cleared fragment', () => !location.hash.includes('code='));
   await until('rendered page', () => document.getElementById('root') && document.getElementById('root').childNodes.length > 0);
   out.text = await page.evaluate(() => document.body.innerText.slice(0, 200));
