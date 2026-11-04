@@ -45,9 +45,14 @@ pub(crate) enum BroughtUp {
     Done,
 }
 
+/// The release this cozy is, or a dev build was built from: what a machine can fetch.
+pub(crate) fn this_release() -> &'static str {
+    env!("CARGO_PKG_VERSION").split('+').next().unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
 /// The command that moves `name` to this cozy.
-fn bring_up_command(name: &str) -> String {
-    format!("cozy machine update {name} --tensord {}", env!("CARGO_PKG_VERSION"))
+pub(crate) fn bring_up_command(name: &str) -> String {
+    format!("cozy machine update {name} --tensord {}", this_release())
 }
 
 impl Machines {
@@ -60,12 +65,14 @@ impl Machines {
         }
         let m = self.show(name).await?;
         let Some(status) = m.status.as_ref() else { return Ok(None) };
-        let own = env!("CARGO_PKG_VERSION");
+        let own = this_release();
         if !newer(own, &status.version) {
             return Ok(None);
         }
+        // Its outcome's words already say the command; `next` does here.
+        let refused = reason.message.split(&format!("; {name} runs cozy")).next().unwrap_or(&reason.message);
         let by_hand = |why: String| {
-            Error::new(Kind::Conflict, "machine_too_old", format!("{}; {name} runs cozy {}, and {why}", reason.message, status.version))
+            Error::new(Kind::Conflict, "machine_too_old", format!("{refused}; {name} runs cozy {}, and {why}", status.version))
                 .cause(reason.code.clone())
                 .next(bring_up_command(name))
         };
@@ -89,7 +96,7 @@ impl Machines {
         if fresh {
             let warning = Warning {
                 code: BRINGING_UP.into(),
-                message: format!("{name} runs cozy {}, too old for this ({}): updating it to {own}, then going on", status.version, reason.message),
+                message: format!("{name} runs cozy {}, too old for this: updating it to {own}, then going on", status.version),
             };
             self.calcifer.warn(&run.id, &warning).map_err(|e| Refusal::from(e).0)?;
             run.warnings.push(warning);
@@ -268,7 +275,7 @@ impl Machines {
             reason.message = reason.message.replace("<machine>", name);
             if for_its_age(reason)
                 && let Ok(m) = self.show(name).await
-                && let Some(status) = m.status.as_ref().filter(|status| newer(env!("CARGO_PKG_VERSION"), &status.version))
+                && let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version))
             {
                 reason.message += &format!("; {name} runs cozy {}: `{}` brings it up", status.version, bring_up_command(name));
             }
@@ -311,7 +318,7 @@ impl Machines {
 /// local code's does, so a refusal stops short of the run and the machine can be brought up. The run or update going, if any.
 pub(crate) async fn release_first(api: &Arc<crate::api::Api>, key: &str, name: &str, hub: &str, package: &str, release: &str) -> Result<Option<Run>, Error> {
     let Ok(m) = api.machines.show(name).await else { return Ok(None) };
-    let Some(status) = m.status.as_ref().filter(|status| newer(env!("CARGO_PKG_VERSION"), &status.version)) else { return Ok(None) };
+    let Some(status) = m.status.as_ref().filter(|status| newer(this_release(), &status.version)) else { return Ok(None) };
     if status.environments.iter().any(|env| env.package == package && env.release == release) {
         return Ok(None);
     }
