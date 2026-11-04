@@ -110,12 +110,12 @@ for k in "${names[@]}"; do
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
   [ -z "$tree" ] || target=./$target
-  step "$k" run "$target" "${args[@]}" --on "$NAME" --out "$OUT/out/$k"; code=$?
+  step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   cd "$OUT" || fail "no $OUT"
   N=$(runno "$k")
   if [ -n "$N" ]; then cozy run show "$N" --once --json > "$OUT/$k.json" 2>/dev/null; fi
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
-  MADE[$k]=$(find "$OUT/out/$k" -type f \( -name '*.png' -o -name '*.webp' -o -name '*.jpg' -o -name '*.mp4' \) 2>/dev/null | sort | head -1)
+  MADE[$k]=$(jq -r '[.output[]?.path // empty | select(test("[.](png|webp|jpg|mp4)$"))] | sort | .[0] // empty' "$OUT/$k.json" 2>/dev/null)
   say "$k run ${N:-none} ${st:-none} (exit $code): $(summary "$k")"
   want=$(jq -r '.expect // "completed"' <<<"$c")
   if [ "$st" != completed ]; then

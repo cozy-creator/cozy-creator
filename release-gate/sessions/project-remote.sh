@@ -53,7 +53,7 @@ YAML
   b:
     video: $(hash_of "$P/plates/b.mp4")
   edit:
-    with: cozy
+    render: {with: cozy}
     kind: edit
     pieces:
       - {video: <a>, start: 0, end: 120}

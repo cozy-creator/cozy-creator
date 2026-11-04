@@ -50,11 +50,11 @@ defaults:
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
   shot:
-    with: $H3
+    render: {with: $H3}
   upscale:
-    with: $H3
+    render: {with: $H3}
   edit:
-    with: cozy
+    render: {with: cozy}
 assets:
   hero:
     kind: character
@@ -69,7 +69,8 @@ assets:
     description: a stepladder against the wall, and fresh paint
   mural:
     kind: shot
-    options: {seed: $((R + 300))}
+    render:
+      seed: $((R + 300))
     summary: |
       <hero> paints a sign on the long wall of <yard>.
     beats:
@@ -128,7 +129,7 @@ defaults:
   all:
     aspect_ratio: "16:9"
   shot:
-    with: $H3
+    render: {with: $H3}
 assets:
   yard:
     kind: environment
@@ -136,7 +137,8 @@ assets:
     description: "$SCENE"
   look:
     kind: shot
-    options: {seed: $((R + 305))}
+    render:
+      seed: $((R + 305))
     summary: |
       A slow look around <yard>.
     soundscape: A quiet street, distant traffic and birds.
@@ -176,7 +178,7 @@ defaults:
   all:
     aspect_ratio: "16:9"
   shot:
-    with: $H3
+    render: {with: $H3}
 assets:
   pattern:
     kind: environment
@@ -186,7 +188,8 @@ assets:
     video: plate.mp4
   follow:
     kind: shot
-    options: {seed: $((R + 301))}
+    render:
+      seed: $((R + 301))
     summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."
     beats:
       - duration: 5
@@ -211,7 +214,7 @@ defaults:
   all:
     aspect_ratio: "16:9"
   shot:
-    with: $H3
+    render: {with: $H3}
 assets:
   host:
     kind: character
@@ -224,7 +227,8 @@ assets:
     description: "$SCENE"
   hello:
     kind: shot
-    options: {seed: $((R + 302))}
+    render:
+      seed: $((R + 302))
     summary: <host> stands in <yard>, looks into the camera and says "Welcome to the yard."
     beats:
       - duration: 5
@@ -251,20 +255,22 @@ defaults:
   all:
     aspect_ratio: "16:9"
   character:
-    with: $STILL
+    render: {with: $STILL}
   environment:
-    with: $STILL
+    render: {with: $STILL}
   setup:
-    with: $STILL
+    render: {with: $STILL}
 assets:
   cook:
     kind: character
     description: "$CHAR"
-    options: {seed: $((R + 303))}
+    render:
+      seed: $((R + 303))
   kitchen:
     kind: environment
     description: "$SCENE"
-    options: {seed: $((R + 304))}
+    render:
+      seed: $((R + 304))
   kitchen door:
     kind: setup
     camera: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"
@@ -286,7 +292,7 @@ if want project-local; then
 version: 2
 assets:
   lot:
-    with: ./still.py
+    render: {with: ./still.py}
     kind: environment
     aspect_ratio: "16:9"
     description: "$SCENE"

@@ -36,7 +36,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* || $O
     and (.eager // "" | endswith("and no call keeps the program")))'
   # Cancel once the loop is past its first steps.
   run_submit "$OUT" loop-cancel run "$LQ" prompt="$OBJECT, a canceled loop" megapixels:=1.0 seed:=$((R + 324)) \
-    --lane int8 --gpus=1 --on "$M" --out "$OUT/out/loop-cancel" > /dev/null
+    --lane int8 --gpus=1 --on "$M" > /dev/null
   n=$(cat loop-cancel.number)
   while run_show "$OUT" loop-cancel "$n"; [ "$(run_get "$OUT" loop-cancel .status)" != completed ] \
     && [ "$(run_get "$OUT" loop-cancel '.progress.completed // 0')" -lt 3 ] && kill -0 "$(cat loop-cancel.pid)" 2> /dev/null; do

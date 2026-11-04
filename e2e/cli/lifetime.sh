@@ -11,7 +11,7 @@ J() { jq -e "$@" > /dev/null; }
 launch() {
   local name=$1 entry=$2
   shift 2
-  (cd "$here" && cozy --json run "./weightless/$entry" "$@" --on local > "$OUT/$name.ndjson" 2>&1) &
+  (cd "$here" && cozy --json run -p "$RUN_PROJECT" "./weightless/$entry" "$@" --on local > "$OUT/$name.ndjson" 2>&1) &
   begun=$! n=''
   for _ in $(seq 180); do grep -qE '"stage": *"(waiting silently|executor [0-9]+ forked [0-9]+)"' "$OUT/$name.ndjson" && break; sleep 1; done
   grep -qE '"stage": *"(waiting silently|executor [0-9]+ forked [0-9]+)"' "$OUT/$name.ndjson" || { check "$name: its executor never began"; return 1; }

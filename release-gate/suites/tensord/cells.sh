@@ -4,13 +4,13 @@ T=$OUT/tensord; mkdir -p "$T"
 # --only names none of this suite: nothing here runs, only --cells (a suite's rows are not cells, so cell() can't skip them).
 [ -z "$ONLY" ] || [[ $ONLY == *,tensord* ]] || return 0
 # Local code's environment stays whole through reclaim's passes, 10 minutes apart: its own wheels were deleted while it ran (cl-724: 26176, 26187).
-links_resolve() { nice -n 19 "$CLI" run "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
+links_resolve() { nice -n 19 "$CLI" run -p "$RUN_PROJECT" "$HERE/suites/tensord/links_resolve.py" --on "$M" --json 2>/dev/null | tail -1 | jq -r '.. | .report? // empty' | tail -1; }
 LINKS_AT=$(date +%s); LINKS_FIRST=$(links_resolve)
 # submit <target> [inputs]: a run on $M (e2e/run.sh's run_submit), followed in the background; prints its number. Its
-# files are $T/run-*.{ndjson,json,...} and its outputs $T/out/run-*, named in $T/<number>.name.
+# files are $T/run-*.{ndjson,json,...}, named in $T/<number>.name.
 submit() {
   local nm n; nm=$(basename "$(mktemp -u "$T/run-XXXXXX")")
-  n=$(run_submit "$T" "$nm" run "$@" --on "$M" --out "$T/out/$nm") && [ -n "$n" ] && echo "$nm" > "$T/$n.name" && echo "$n"
+  n=$(run_submit "$T" "$nm" run "$@" --on "$M") && [ -n "$n" ] && echo "$nm" > "$T/$n.name" && echo "$n"
 }
 nm() { cat "$T/$1.name" 2>/dev/null; }
 # get <run> <field>: the run's record, now (status, machine_state, reason, attempt, executor, gpus, window, ms, stage, output,
@@ -158,7 +158,7 @@ fi
 
 # Output delivery: an output's landing against this computer's own download speed (5.9 MB took 4 min on 10-23).
 link=$(curl -sfL -o /dev/null -w '%{speed_download}' "https://github.com/cozy-creator/cozy-creator/releases/latest/download/cozy-x86_64-unknown-linux-gnu.tar.gz")
-"$CLI" --json run "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
+"$CLI" --json run -p "$RUN_PROJECT" "sdxl/generate@$NEW" --on "$M" prompt="$SCENE, a large render" megapixels:=2 seed:=$((R + 43)) 2>/dev/null \
   | while IFS= read -r l; do jq -c --arg t "$(date +%s.%N)" '. + {at_here: ($t | tonumber)}' <<< "$l" 2>/dev/null; done > "$T/delivery.ndjson"
 end=$(date +%s.%N)
 read -r done_ bytes <<< "$(jq -r 'select(.type == "output_item.done") | "\(.at_here) \(.item.length)"' "$T/delivery.ndjson" | tail -1)"

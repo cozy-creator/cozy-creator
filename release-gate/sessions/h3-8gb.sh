@@ -35,7 +35,7 @@ jq -e '.status.gpus | length == 1 and .[0].memory_bytes < 9e9' "$OUT/show.json" 
 step model model download minimaxai/minimax-h3@1.0.0-rc.5 --lane int8 --on "$NAME" || fail "model download"
 step lora model download alibaba-pai/minimax-h3-turbo-lora@1.0.1 --on "$NAME" || fail "LoRA download"
 say "pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: .status.tensorfs, gpu: .status.gpus[0].name}')"
-step h3 run "$T" --input "$OUT/request.json" --lane int8 --gpus=1 --on "$NAME" --out "$OUT/media"
+step h3 run "$T" --input "$OUT/request.json" --lane int8 --gpus=1 --on "$NAME"
 N=$(runno h3); [ -n "$N" ] || fail "the run named no number"
 cozy run show "$N" --once --json > "$OUT/h3.json" 2>&1
 say "$(jq -r '([.calls[] | select(.function | endswith("_piece")) | .measurements] | last) as $m |

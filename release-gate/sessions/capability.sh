@@ -57,7 +57,7 @@ cat "$OUT/cell.txt" >> "$R"
 tiny "$OUT/c.safetensors"
 step upload-c model upload "$OUT/c.safetensors" "$MC" --lane f32 --source-format as-is || fail "upload from the runner"
 CC=$(made upload-c)
-cozy --json run "$CELL/probe.py" "model.weights=$MC@$CC" "ref=$MC@$CC" "hub=${COZY_HUB_URL:-https://tensorhub.com}" \
+cozy --json run -p "$RUN_PROJECT" "$CELL/probe.py" "model.weights=$MC@$CC" "ref=$MC@$CC" "hub=${COZY_HUB_URL:-https://tensorhub.com}" \
   "seconds=$PROBE_S" --on "$NAME" > "$OUT/probe.ndjson" 2> "$OUT/probe.err" & PP=$!
 until grep -q '"machine_state":"running"' "$OUT/probe.ndjson" 2>/dev/null; do
   kill -0 $PP 2>/dev/null || fail "the probe ended before it ran: $(tail -c 300 "$OUT/probe.ndjson")"; sleep 2

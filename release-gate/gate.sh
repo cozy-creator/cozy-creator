@@ -121,6 +121,7 @@ end_it() {
 trap end_it EXIT
 trap 'exit 143' TERM INT
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
+run_project "$PWD/project" || { log "cozy project new failed"; exit 1; }
 # cell <name> <target> [args...]: one run on $M (e2e/run.sh's run_cell): its record <name>.json, its outputs <name>/.
 # --only names cells or packages.
 # A cell another suite already ran, or one known-failing.json parks on this SKU ("cells"; sku "*" is every SKU), does

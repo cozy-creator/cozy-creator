@@ -12,7 +12,7 @@ PACKAGES=${PACKAGES:-${PACKAGES_MASTER:-}}
 # Preserve the service's actual readiness error when candidate installation exits early.
 trap 'mps_exit=$?; if [ "$mps_exit" != 0 ]; then cozy machine logs local tensord --lines 0 --json > "$OUT/machine-failure.ndjson" 2>&1 || true; fi' EXIT
 
-step install; install_cozy
+step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
 step "the local machine"; machine_ready
 sysctl -n machdep.cpu.brand_string hw.memsize | tee "$OUT/apple-hardware.txt"
 sw_vers -productVersion | tee "$OUT/macos-version.txt"

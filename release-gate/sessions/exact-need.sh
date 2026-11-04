@@ -13,6 +13,8 @@
 recpid() { jq -r 'first(.measurements.execution.gpus[]?.pid) // empty' "$OUT/$1.json"; }
 store_bytes() { jq -r '[.measurements.memory.stats.varena[]?.stats.moved.store.bytes // 0] | add // 0' "$OUT/$1.json"; }
 show() { cozy run show "$(runno "$1")" --once --json > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
+# picture <step>: the file its run made.
+picture() { cozy run show "$(runno "$1")" --once --json | jq -r '[.output[]?.path // empty | select(test("[.](webp|png)$"))][0] // empty'; }
 quote "$(param traffic_gb 14)" 2400
 rent
 IMG=$REF/seed.jpg
@@ -21,14 +23,14 @@ IMG=$REF/seed.jpg
 phase() {
   local p=$1 base
   step "$p-b1" run birefnet/remove_background --on "$NAME" --file image="$IMG" || fail "$p birefnet 1"
-  step "$p-s1" run sdxl/generate --on "$NAME" prompt="a lighthouse in fog, photo, $p" seed:=$RANDOM --out "$OUT/$p-s1" || fail "$p sdxl 1"
-  local warm; warm=$(ls "$OUT/$p-s1"/*.webp "$OUT/$p-s1"/*.png 2>/dev/null | head -1)
+  step "$p-s1" run sdxl/generate --on "$NAME" prompt="a lighthouse in fog, photo, $p" seed:=$RANDOM || fail "$p sdxl 1"
+  local warm; warm=$(picture "$p-s1")
   step "$p-b2" run birefnet/remove_background --on "$NAME" --file image="$warm" || fail "$p birefnet 2"
   for s in b1 s1 b2; do [ "$(show "$p-$s")" = completed ] || fail "$p-$s did not complete"; done
   # The decision point's window is the memory log past this line count (the pod's clock, not the runner's).
   base=$(cozy machine logs "$NAME" memory -n 100000 2>/dev/null | wc -l)
-  step "$p-s2" run sdxl/generate --on "$NAME" prompt="a desert road at noon, photo, $p" seed:=$RANDOM --out "$OUT/$p-s2" || fail "$p sdxl 2"
-  local fresh; fresh=$(ls "$OUT/$p-s2"/*.webp "$OUT/$p-s2"/*.png 2>/dev/null | head -1)
+  step "$p-s2" run sdxl/generate --on "$NAME" prompt="a desert road at noon, photo, $p" seed:=$RANDOM || fail "$p sdxl 2"
+  local fresh; fresh=$(picture "$p-s2")
   step "$p-b3" run birefnet/remove_background --on "$NAME" --file image="$fresh" || fail "$p birefnet 3"
   for s in s2 b3; do [ "$(show "$p-$s")" = completed ] || fail "$p-$s did not complete"; done
   cozy machine logs "$NAME" memory -n 100000 > "$OUT/$p-memory.log" 2>&1

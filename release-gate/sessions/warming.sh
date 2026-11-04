@@ -292,7 +292,7 @@ podpy host > "$OUT/host.json"; say "host $(cat "$OUT/host.json")"
 runrec() {
   local label=$1; shift; local t0 n
   t0=$(date +%s.%N)
-  cozy run "$@" --on "$NAME" --json 2> "$OUT/$label.err" < /dev/null |
+  cozy run -p "$RUN_PROJECT" "$@" --on "$NAME" --json 2> "$OUT/$label.err" < /dev/null |
     python3 -u -c 'import sys,time; t0=float(sys.argv[1]); [print(f"{time.time()-t0:.3f} {l}", end="", flush=True) for l in sys.stdin]' "$t0" > "$OUT/$label.ndjson"
   n=$(grep -o '"number":[0-9]*' "$OUT/$label.ndjson" | head -1 | cut -d: -f2)
   [ -n "$n" ] || { say "$label: no run: $(tail -c 300 "$OUT/$label.err")"; return 1; }

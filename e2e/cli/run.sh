@@ -18,7 +18,7 @@ parse "$@"
 . "$(dirname "$0")/project.sh"
 
 start() {
-step install; install_cozy
+step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
 user_services
 step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }

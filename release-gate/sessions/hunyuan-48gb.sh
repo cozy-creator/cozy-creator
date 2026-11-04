@@ -39,7 +39,7 @@ say "pod $(cozy machine show "$NAME" --json | jq -c '{rt: .status.runtime, tfs: 
 S=$RANDOM$RANDOM
 for i in $(seq 0 "$RUNS"); do
   n=$([ "$i" = 0 ] && echo warm || echo "run$i")
-  step "$n" run "$T" prompt="${PROMPTS[$i]}" prompt_upsampling:=false aspect_ratio=3:4 seed:=$((S + i)) --on "$NAME" --out "$OUT/$n"
+  step "$n" run "$T" prompt="${PROMPTS[$i]}" prompt_upsampling:=false aspect_ratio=3:4 seed:=$((S + i)) --on "$NAME"
   N=$(runno "$n"); [ -n "$N" ] || fail "$n named no run"
   cozy run show "$N" --once --json > "$OUT/$n.json" 2>&1
   say "$n $(jq -r '(.measurements.attribution.steps["generating image"].series // [] | map(.[1] / 1000)) as $s |
