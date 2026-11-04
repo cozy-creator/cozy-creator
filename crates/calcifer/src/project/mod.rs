@@ -768,18 +768,20 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
-    if let Some(key) = headers.get("idempotency-key").and_then(|key| key.to_str().ok()) {
-        let digest = hex::encode(Sha256::digest(&body));
+    let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
+    if let Some((key, digest)) = &idempotency {
+        // Kept in the lock too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
+        let kept = project.folder.lock().map_err(Refusal)?.walk.asked.get(key).cloned();
         let mut keys = project.keys.lock().expect("keys lock");
-        match keys.get(key) {
-            Some(seen) if *seen == digest => {
-                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0, queued: vec![] })));
+        match keys.get(key).or(kept.as_ref()) {
+            Some(seen) if seen == digest => {
+                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0, skipped: vec![], queued: vec![] })));
             }
             Some(_) => {
                 let said = format!("Idempotency-Key {key} asked another render already");
                 return Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", said)));
             }
-            None => drop(keys.insert(key.to_owned(), digest)),
+            None => drop(keys.insert(key.clone(), digest.clone())),
         }
     }
     let doc = Doc::load(&project.folder).map_err(Refusal)?;
@@ -790,7 +792,11 @@ async fn runs(
     let say = |message: String| drop(project.events.send(Event::Warning { message }));
     let said = |message: String| drop(project.events.send(Event::Said { message }));
     let n = asked.n.max(1);
-    let new = asked.new || n > 1;
+    // Every render makes new versions, unless it asks only for what has no state.
+    let missing = asked.missing;
+    if missing && n > 1 {
+        say("-n makes new versions, and --missing only what has no state: it is ignored".into());
+    }
     let keeping = asked.take.is_some() || asked.in_s.is_some();
     if keeping && (all || asked.names.len() != 1) {
         say(format!("--take and --in keep the start of one asset: with {} they are ignored", if all { "all" } else { "several names" }));
@@ -800,16 +806,24 @@ async fn runs(
     }
     let mut named = vec![];
     let mut first = None;
+    // Pinned, and not named: what `all` or an entity's name covers leaves it be. Naming one is what re-renders it.
+    let mut skipped = vec![];
+    let mut covering = |i: usize, named: &mut Vec<usize>| match doc.assets[i].pin.is_some() {
+        true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
+        true => {}
+        false => named.push(i),
+    };
     if all {
-        named.extend((0..doc.assets.len()).filter(|&i| new && doc.makes(i) && doc.tool(i).is_none()));
+        if !missing {
+            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && doc.tool(i).is_none()) {
+                covering(i, &mut named);
+            }
+        }
     } else {
         for name in &asked.names {
-            match doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
-                Some(i) => {
-                    named.extend(doc.linked(i));
-                    continue;
-                }
-                None => {}
+            if let Some(i) = doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
+                doc.linked(i).into_iter().for_each(|j| covering(j, &mut named));
+                continue;
             }
             match find(&doc, name) {
                 Ok(i) => named.push(i),
@@ -850,16 +864,20 @@ async fn runs(
             say(format!("{name} has no take to keep the start of: --take and --in are ignored"));
         }
         let noun = noun(&doc, &lock, i);
-        if !new && keeps.is_none() && stand[i].files.is_some() {
+        if missing && keeps.is_none() && (lock.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name)) || lock.walk.takes.iter().any(|take| name_key(&take.asset) == name_key(&name))) {
+            said(format!("{name} is being made"));
+            continue;
+        }
+        if missing && keeps.is_none() && stand[i].files.is_some() {
             said(match &stand[i].state {
                 Stand::Pinned { changed, .. } if !changed.is_empty() => format!("{name} is pinned, though {} changed: unpin to make it again", changed.join(", ")),
-                Stand::Pinned { .. } => format!("{name} is pinned: --new makes another {noun} to look at"),
-                Stand::Current(version) => format!("{name} is current, {noun} {version}; --new makes another"),
-                _ => format!("{name} has its state; --new makes another {noun}"),
+                Stand::Pinned { .. } => format!("{name} is pinned: without --missing, naming it makes another {noun} to look at"),
+                Stand::Current(version) => format!("{name} is current, {noun} {version}; without --missing it makes another"),
+                _ => format!("{name} has its state; without --missing it makes another {noun}"),
             });
             continue;
         }
-        let makes_new = new || keeps.is_some();
+        let makes_new = !missing || keeps.is_some();
         let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, keeps };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
@@ -867,7 +885,7 @@ async fn runs(
         return Err(Refusal(error));
     }
     let joined = *project.walking.lock().expect("walking lock");
-    let added = takes.len() as u32 + u32::from(all && !lock.walk.all);
+    let added = takes.len() as u32 + u32::from(all && missing && !lock.walk.all);
     // A take goes where its own ask said. What the walk owes beyond them stays where the ask that began it said.
     if let Some(going) = lock.walk.target.as_ref().filter(|going| joined && going.on != target.on) {
         let on: Vec<String> = going.on.iter().map(On::to_string).collect();
@@ -876,8 +894,9 @@ async fn runs(
     let before = queue(&doc, &stand, &lock);
     (project.folder.update_lock(|lock| {
         lock.walk.target.get_or_insert_with(|| target.clone());
-        lock.walk.all |= all;
+        lock.walk.all |= all && missing;
         lock.walk.takes.extend(takes.iter().cloned());
+        lock.walk.asked.extend(idempotency.iter().cloned());
     }))
     .map_err(Refusal)?;
     let after = queue(&doc, &stand, &project.folder.lock().map_err(Refusal)?);
@@ -886,7 +905,7 @@ async fn runs(
         .map(|(at, (item, _))| QueuedNow { name: item.name.clone(), ahead: after[..at].iter().map(|(ahead, _)| ahead.name.clone()).collect() })
         .collect();
     walk(&api, &project);
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, queued })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, skipped, queued })))
 }
 
 /// What the project has to do, in the order it goes: what is running, then each queued take and what the walk owes, each with its

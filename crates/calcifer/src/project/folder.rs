@@ -306,6 +306,9 @@ pub struct Owed {
     /// New versions of named assets, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<Take>,
+    /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asked: BTreeMap<String, String>,
 }
 
 fn is_zero<T: Default + PartialEq>(n: &T) -> bool {
@@ -318,7 +321,7 @@ fn is_zero_f(n: &f64) -> bool {
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        !self.all && self.target.is_none() && self.sent.is_empty() && self.takes.is_empty()
+        !self.all && self.target.is_none() && self.sent.is_empty() && self.takes.is_empty() && self.asked.is_empty()
     }
 }
 
@@ -339,7 +342,7 @@ pub struct Take {
     /// Pinned when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// A new seed even with a state (`--new`, `-n`): no such take is a run a state already answers.
+    /// A new seed even with a state, as every render but `--missing` asks: no such take is a run a state already answers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub new: bool,
     /// It keeps the start of an earlier take (`--take`, `--in`).

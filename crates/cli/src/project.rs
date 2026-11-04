@@ -22,7 +22,7 @@ const EXAMPLES: &str = "Examples:
   cozy project new garden
   cd garden && cozy project import ./kyogre.png   prints what to paste into project.yaml
   cozy project render all --on kiyui
-  cozy project render fight --new -n 3 --on kiyui    three more takes of fight
+  cozy project render fight -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2                 writes its hash into fight's lines in project.yaml: fight is a constant now
   cozy project unpin fight                     removes that line
   cozy project rename theo mara                after renaming it in project.yaml
@@ -33,19 +33,18 @@ const EXAMPLES: &str = "Examples:
 project.yaml's comments and the README explain the rest.";
 
 const RENDER_EXAMPLES: &str = "Examples:
-  cozy project render all --on kiyui               everything with no state; the cuts follow, free
+  cozy project render all --on kiyui               a new version of everything not pinned, each reading the new ones before it
   cozy project render all --on kiyui,jitae         spread over two machines
-  cozy project render fight --on kiyui             fight and what it reads, if it has no state
-  cozy project render fight --new --on kiyui       a new take of fight, whatever stands
-  cozy project render fight --new -n 3 --on kiyui  three new takes of fight
-  cozy project render fight --new --approve --on kiyui
-  cozy project render all --new --on kiyui         every asset with an operation again
+  cozy project render all --missing --on kiyui     only what has no state: continues a render that half failed
+  cozy project render fight --on kiyui             a new take of fight, and of what it reads only if that has no state
+  cozy project render fight -n 3 --on kiyui        three new takes of fight; pinned, its pin stays
+  cozy project render fight --approve --on kiyui   a new take, pinned as it lands
   cozy project render fight --in 15 --on kiyui     a new take: the take in use up to about 15 s, the rest new
   cozy project render fight --take 2 --in 15 --on kiyui   the same, keeping take 2
   cozy project render fight --take 2 --on kiyui    a new take: take 2, continued from its end
 
 An asset's state is the hash in its image:, video: or audio: (`approve` writes that line, `unpin` removes it), else its newest
-version with these inputs, else none. Reverting a text returns the old output with no run.
+version with these inputs, else none. Reverting a text returns the old output with no run. Every render makes new versions, except of what is pinned and not named.
 
 Ctrl-C stops following, never the runs.";
 
@@ -154,12 +153,12 @@ struct Render {
     /// Ask and return at once: what it queued and what's ahead of each is printed, and `status` shows how it goes.
     #[arg(long)]
     queue: bool,
-    /// How many new takes or versions of each asset named: over 1 draws new seeds as --new does.
+    /// How many new takes or versions of each asset named.
     #[arg(short = 'n', value_name = "N", default_value_t = 1)]
     n: u32,
-    /// A new seed even with a state. A pinned asset's new one is to look at: its state doesn't move.
+    /// Only what has no state, rather than a new version.
     #[arg(long)]
-    new: bool,
+    missing: bool,
     /// Pin the new take or version when it lands (only with -n 1).
     #[arg(long)]
     approve: bool,
@@ -434,13 +433,18 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         on,
         hub: ctx.hub().to_string(),
         approve: args.approve,
-        new: args.new,
+        missing: args.missing,
         take: args.take,
         in_s: args.in_s,
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
     let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
     let status = format!("cozy project -p {} status", opened.path.display());
+    match asked.skipped.as_slice() {
+        [] => {}
+        [one] => output::say(ctx, &format!("{one} is pinned: skipped. Name it to make a new version, or unpin it")),
+        many => output::say(ctx, &format!("{} are pinned: skipped. Name them to make new versions, or unpin them", many.join(", "))),
+    }
     let Some(events) = events.as_mut() else {
         if ctx.json {
             output::json(&asked);

@@ -132,15 +132,15 @@ say "edit.mp4 cut again on one CPU of the runner's $(nproc)"
 sudo kill "$(pid_of "$H")"; for _ in $(seq 1 50); do sudo kill -0 "$(pid_of "$H")" 2> /dev/null || break; sleep 0.1; done
 sudo -u "$U" -H taskset -c 0 "/opt/$U/cozy" --json whoami < /dev/null > "$OUT/whoami-one-cpu.json" 2>&1 || fail "no Calcifer on one CPU"
 say "its Calcifer may use CPUs $(sudo taskset -pc "$(pid_of "$H")" | sed 's/.*: //')"
-second project -p "$C" render all --on local > "$OUT/recut.txt" 2>&1 || fail "cut again: $(tail -5 "$OUT/recut.txt")"
+second project -p "$C" render all --missing --on local > "$OUT/recut.txt" 2>&1 || fail "cut again: $(tail -5 "$OUT/recut.txt")"
 AGAIN=$(sudo sha256sum "$C/edit.mp4" | cut -c1-64); say "edit.mp4 with no encode: $AGAIN, the first computer's $CUT"
 [ "$AGAIN" = "$CUT" ] || fail "an edit with no encode is another file on the second computer"
 
 say "an edit that encodes its edges: the same film, not the same bytes"
 edges='s/{video: <a>, start: 0, end: 120}/{video: <a>, start: 7, end: 131}/; s/{video: <b>, start: 24, end: 120}/{video: <b>, start: 13, end: 140}/'
 sed -i "$edges" "$P/project.yaml"; sudo sed -i "$edges" "$C/project.yaml"
-step render-edges project -p "$P" render all --on local || fail "render edges: $(tail -5 "$OUT/render-edges.txt")"
-second project -p "$C" render all --on local > "$OUT/recut-edges.txt" 2>&1 || fail "cut edges: $(tail -5 "$OUT/recut-edges.txt")"
+step render-edges project -p "$P" render all --missing --on local || fail "render edges: $(tail -5 "$OUT/render-edges.txt")"
+second project -p "$C" render all --missing --on local > "$OUT/recut-edges.txt" 2>&1 || fail "cut edges: $(tail -5 "$OUT/recut-edges.txt")"
 sudo cp "$C/edit.mp4" "$OUT/edges-second.mp4" && sudo chown "$(id -u)" "$OUT/edges-second.mp4"
 shape() { ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames:format=duration -of csv=p=0 "$1" | paste -sd' '; }
 [ "$(shape "$P/edit.mp4")" = "$(shape "$OUT/edges-second.mp4")" ] || fail "frames and duration: $(shape "$P/edit.mp4") and $(shape "$OUT/edges-second.mp4")"

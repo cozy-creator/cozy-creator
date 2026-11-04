@@ -68,6 +68,7 @@ entities
 orphans
 joining
 queueing
+every_render
 keeps
 written
 adapters
@@ -135,8 +136,8 @@ J '.assets.poster.versions[0].reads[0].name == "card"' "$T/project.lock" || chec
 first=$(runs "$T")
 
 step "a project: nothing to do, and what changes no key"
-render "$T" all || check "memo: render all again: $(tail -c 300 "$OUT/render.txt")"
-[ "$(runs "$T")" = "$first" ] || check "memo: a second render all ran something"
+render "$T" all --missing || check "memo: render all again: $(tail -c 300 "$OUT/render.txt")"
+[ "$(runs "$T")" = "$first" ] || check "memo: a second render all --missing ran something"
 was=$(row "$T" card .inputs)
 { printf '# a note\n'; cat "$T/project.yaml"; } > "$T/y" && mv "$T/y" "$T/project.yaml"
 sed -i 's/description: A test card\./description: "  A test card.  "/' "$T/project.yaml"
@@ -149,13 +150,13 @@ local old_file; old_file=$(row "$T" card .path)
 sed -i 's/description: A test card\./description: Another card./' "$T/project.yaml"
 [ "$(row "$T" card .status)" = '"out of date: description changed"' ] || check "memo: a text edit: card is $(row "$T" card .status)"
 [ "$(row "$T" poster .status)" = '"waits for what it reads"' ] || check "memo: poster reads card, which has no state: $(row "$T" poster .status)"
-render "$T" poster || check "memo: render poster: $(tail -c 300 "$OUT/render.txt")"
+render "$T" poster --missing || check "memo: render poster: $(tail -c 300 "$OUT/render.txt")"
 [ "$(jq -c '[.assets.card, .assets.poster | .versions | length]' "$T/project.lock")" = "[2,2]" ] || check "memo: rendering a reader did not make what it reads first: $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
 first=$(runs "$T")
 sed -i 's/description: Another card\./description: A test card./' "$T/project.yaml"
 J '[.assets[] | select(.name == "card" or .name == "poster") | .status] == ["current", "current"]' <<< "$(status "$T")" || check "memo: reverted, not current: $(status "$T" | jq -c '[.assets[] | {name, status}]')"
 [ "$(row "$T" card .path)" = "$old_file" ] || check "memo: reverted, card reads $(row "$T" card .path), not $old_file"
-render "$T" all || check "memo: render all, reverted"
+render "$T" all --missing || check "memo: render all, reverted"
 [ "$(runs "$T")" = "$first" ] || check "memo: reverting ran something"
 
 step "a project: defaults and options are inputs; a release in with is not"
@@ -180,19 +181,19 @@ sed -i 's#with: other#with: birefnet, steps: 2#' "$T/project.yaml"
 [ "$(status "$T" | jq -c '[.warnings[]? | select(test("no section"))]')" = "[]" ] || check "memo: a format 2 file warned of a section"
 sed -i '/^  keyed:$/,$d' "$T/project.yaml"
 
-step "a project: --new and -n"
+step "a project: each render a new version, and -n"
 first=$(made "$T" card)
-render "$T" card --new || check "memo: --new: $(tail -c 300 "$OUT/render.txt")"
-[ "$(made "$T" card)" = "$((first + 1))" ] || check "memo: --new made $(made "$T" card) of card, from $first"
+render "$T" card || check "memo: render card: $(tail -c 300 "$OUT/render.txt")"
+[ "$(made "$T" card)" = "$((first + 1))" ] || check "memo: a render made $(made "$T" card) of card, from $first"
 render "$T" card -n 2 || check "memo: -n 2: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" card)" = "$((first + 3))" ] || check "memo: -n 2 made $(made "$T" card) of card, from $((first + 1))"
-J '[.assets.card.versions[-3:][].seed] | unique | length == 3' "$T/project.lock" || check "memo: --new and -n did not draw new seeds"
+J '[.assets.card.versions[-3:][].seed] | unique | length == 3' "$T/project.lock" || check "memo: a render and -n did not draw new seeds"
 J '[.assets.card.versions[].number] == [range(1; (.assets.card.versions | length) + 1)]' "$T/project.lock" || check "memo: card's numbers are not in order"
 render "$T" copied || check "memo: copied over a new card"
 first=$(made "$T" copied)
-render "$T" copied --new || check "memo: --new on a function with no seed: $(tail -c 300 "$OUT/render.txt")"
+render "$T" copied || check "memo: a render of a function with no seed: $(tail -c 300 "$OUT/render.txt")"
 says memo "takes no seed"
-[ "$(made "$T" copied)" = "$first" ] || check "memo: --new on a function with no seed made a version"
+[ "$(made "$T" copied)" = "$first" ] || check "memo: a render of a function with no seed made a version"
 code=0; cozy project -p "$T" render card -n 2 --approve --on local > "$OUT/render.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && says memo --approve; } || check "memo: -n 2 --approve was not refused (exit $code)"
 }
@@ -295,13 +296,13 @@ J '.assets[] | select(.name == "card") | .approved == 1 and .pinned and .status 
 step "a project: a pin stops a run, and status says what changed"
 sed -i 's/description: A test card\./description: Another card./' "$T/project.yaml"
 version=$(made "$T" card)
-render "$T" card || check "pins: render a pinned card: $(tail -c 300 "$OUT/render.txt")"
+render "$T" card --missing || check "pins: render a pinned card: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" card)" = "$version" ] || check "pins: a text edit re-rendered a pinned card"
 changed=$(row "$T" card .status)
 [ "$changed" = '"pinned: version 1; its inputs changed: description"' ] || check "pins: status of an edited pin is $changed"
-render "$T" card --new || check "pins: --new on a pinned card: $(tail -c 300 "$OUT/render.txt")"
-[ "$(made "$T" card)" = "$((version + 1))" ] || check "pins: --new did not make a take to look at"
-[ "$(row "$T" card .approved)" = 1 ] || check "pins: --new moved the pin"
+render "$T" card || check "pins: naming a pinned card: $(tail -c 300 "$OUT/render.txt")"
+[ "$(made "$T" card)" = "$((version + 1))" ] || check "pins: naming it did not make a take to look at"
+[ "$(row "$T" card .approved)" = 1 ] || check "pins: naming it moved the pin"
 sed -i 's/description: Another card\./description: A test card./' "$T/project.yaml"
 [ "$(row "$T" poster .inputs)" = "$(row "$T" poster .inputs)" ] || true
 
@@ -311,7 +312,7 @@ diff "$before" "$T/project.yaml" > "$OUT/unpin.diff" || check "pins: unpin did n
 J '.assets[] | select(.name == "card") | (.pinned | not) and .approved == null' <<< "$(status "$T")" || check "pins: unpinned, status is $(row "$T" card .)"
 
 step "a project: a pin over an input keeps it, and a line of its own"
-render "$T" copied --new > /dev/null 2>&1 || true
+render "$T" copied > /dev/null 2>&1 || true
 cozy project -p "$T" approve copied 1 > "$OUT/approve.txt" 2>&1 || check "pins: approve copied 1: $(tail -c 300 "$OUT/approve.txt")"
 grep -Eq '^    image: [0-9a-f"]+  # was <card>$' "$T/project.yaml" || check "pins: a pin over <card> is not one line keeping it: $(grep -n 'image:' "$T/project.yaml")"
 cozy project -p "$T" unpin copied > "$OUT/unpin.txt" 2>&1 || check "pins: unpin copied: $(tail -c 300 "$OUT/unpin.txt")"
@@ -326,10 +327,10 @@ local copies; copies=$(made "$T" copied)
 cozy project -p "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
 render "$T" copied || check "pins: render copied: $(tail -c 300 "$OUT/render.txt")"
 cozy project -p "$T" approve card 2 > /dev/null 2>&1 || check "pins: approve card 2"
-render "$T" copied || check "pins: render copied on 2: $(tail -c 300 "$OUT/render.txt")"
+render "$T" copied --missing || check "pins: render copied on 2: $(tail -c 300 "$OUT/render.txt")"
 copies=$(made "$T" copied)
 cozy project -p "$T" approve card 1 > /dev/null 2>&1 || check "pins: approve card 1 again"
-render "$T" copied || check "pins: render copied on 1 again: $(tail -c 300 "$OUT/render.txt")"
+render "$T" copied --missing || check "pins: render copied on 1 again: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$T" copied)" = "$copies" ] || check "pins: re-approving art ran what reads it: $(made "$T" copied), not $copies"
 
 step "a project: a hash of a file, a constant, a hash of nothing"
@@ -379,7 +380,7 @@ step "a project: an asset with no package, no kind, or no adapter says so, and t
 J '.warnings | any(contains("no_package has no `render.with`, and no `defaults.image.with`"))' <<< "$(status "$C")" || check "pins: an asset with nothing to make is not said: $(status "$C" | jq -c .warnings)"
 J '.assets[] | select(.name == "no_kind") | .kind == "image"' <<< "$(status "$C")" || check "pins: an asset with no kind is not an image: $(row "$C" 'no_kind' .)"
 sed -i 's/It renders without that\./Rendered again./' "$C/project.yaml"
-render "$C" all || check "pins: render all with what can't be made: $(tail -c 400 "$OUT/render.txt")"
+render "$C" all --missing || check "pins: render all with what can't be made: $(tail -c 400 "$OUT/render.txt")"
 says pins "no_adapter: "
 says pins "has no adapter for kind audio: it can't be made"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
@@ -576,7 +577,7 @@ cozy project -p "$T" rename old new > "$OUT/rename.txt" 2>&1 || check "orphans: 
 case "$(row "$T" reader .status)" in *'out of date'*) ;; *) check "orphans: renaming did not put its reader's text out of date: $(row "$T" reader .status)" ;; esac
 
 step "a project: reclaim lists, and --yes deletes what nothing else names"
-render "$T" all || check "orphans: render all renamed"
+render "$T" all --missing || check "orphans: render all renamed"
 shared=$(jq -r '.assets.new.versions[0].files.image' "$T/project.lock")
 # Another asset's version names the same file: it stays. The rest of the orphan goes.
 cat >> "$T/project.yaml" <<YAML
@@ -589,7 +590,7 @@ cat >> "$T/project.yaml" <<YAML
     kind: image
     description: Stays.
 YAML
-render "$T" all || check "orphans: render all with doomed"
+render "$T" all --missing || check "orphans: render all with doomed"
 gone_file=$(jq -r '.assets.doomed.versions[0].files.image' "$T/project.lock")
 jq --arg s "$gone_file" '.assets.kept.versions[0].writes = {"a frame": {"image": $s}}' "$T/project.lock" > "$T/l" && mv "$T/l" "$T/project.lock"
 sed -i '/^  doomed:$/,/^    description: Going\.$/d' "$T/project.yaml"
@@ -645,7 +646,7 @@ first=$!
 n=''
 for _ in $(seq 240); do n=$(row "$T" waiting .status | sed -n 's/.*making (run \([0-9]*\)).*/\1/p'); [ -n "$n" ] && break; sleep 0.25; done
 [ -n "$n" ] || check "joining: the first render never showed a run: $(tail -c 300 "$OUT/join-first.txt")"
-cozy project -p "$T" render waiting --on local > "$OUT/join-second.txt" 2>&1 &
+cozy project -p "$T" render waiting --missing --on local > "$OUT/join-second.txt" 2>&1 &
 second=$!
 heard=''
 for _ in $(seq 12); do
@@ -717,6 +718,39 @@ J '(.busy | not) and (.queue // [] | length == 0)' <<< "$(status "$A")" || check
 { [ "$(made "$A" long)" = 0 ] && [ "$(made "$A" after)" = 0 ]; } || check "queue: cancel all made $(jq -c '.assets | map_values(.versions | length)' "$A/project.lock")"
 }
 
+# Every render makes a new version, but of what is pinned and not named. Only approve or unpin moves a pin.
+every_render() {
+step "a project: render all twice, a pinned asset named, and --missing"
+local T=$OUT/every-render pin line
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+defaults:
+  image:
+    with: $here/project/draw.py
+assets:
+  fixed:
+    description: Pinned.
+  card:
+    description: A card.
+  poster:
+    description: <card> as a poster.
+YAML
+render "$T" fixed || check "every render: fixed: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$T" approve fixed 1 > "$OUT/approve.txt" 2>&1 || check "every render: approve: $(tail -c 300 "$OUT/approve.txt")"
+line=$(grep -n '^    image: ' "$T/project.yaml")
+render "$T" all || check "every render: render all: $(tail -c 300 "$OUT/render.txt")"
+says every-render "fixed is pinned: skipped. Name it to make a new version, or unpin it"
+render "$T" all || check "every render: render all again: $(tail -c 300 "$OUT/render.txt")"
+{ [ "$(made "$T" card)" = 2 ] && [ "$(made "$T" poster)" = 2 ] && [ "$(made "$T" fixed)" = 1 ]; } || check "every render: two passes made $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
+J --arg c "$(jq -r '.assets.card.versions[-1].files.image' "$T/project.lock")" '.assets.poster.versions[-1].reads[] | select(.name == "card") | .files.image == $c' "$T/project.lock" || check "every render: the poster did not read the newest card"
+J '[.assets.card.versions[].seed] | unique | length == 2' "$T/project.lock" || check "every render: a pass did not draw a new seed"
+render "$T" fixed || check "every render: naming the pinned: $(tail -c 300 "$OUT/render.txt")"
+{ [ "$(made "$T" fixed)" = 2 ] && [ "$(grep -n '^    image: ' "$T/project.yaml")" = "$line" ] && [ "$(row "$T" fixed .approved)" = 1 ]; } || check "every render: naming the pinned moved its pin: $(grep -n 'image:' "$T/project.yaml"), $(row "$T" fixed .approved)"
+render "$T" all --missing || check "every render: --missing: $(tail -c 300 "$OUT/render.txt")"
+{ [ "$(made "$T" card)" = 2 ] && [ "$(made "$T" poster)" = 2 ] && [ "$(made "$T" fixed)" = 2 ]; } || check "every render: --missing made $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
+}
+
 # --take and --in: another draw of the same inputs, the take resolved here, the rest the adapter's.
 keeps() {
 step "a project: --take and --in reach the adapter as op.keep"
@@ -745,7 +779,7 @@ J '.assets.clash.versions[-1] | .kept == {"take": 1, "until_s": 3.04} and (.seed
 says keeps "take 2 is take 1 to 3.04 s"
 render "$T" clash --in 2 || check "keeps: --in 2: $(tail -c 300 "$OUT/render.txt")"
 J '.assets.clash.versions[-1].kept.take == 2' "$T/project.lock" || check "keeps: --in alone keeps the take in use: $(jq -c '.assets.clash.versions[-1].kept' "$T/project.lock")"
-render "$T" all --in 2 || check "keeps: all --in: $(tail -c 300 "$OUT/render.txt")"
+render "$T" all --missing --in 2 || check "keeps: all --in: $(tail -c 300 "$OUT/render.txt")"
 says keeps "--take and --in keep the start of one asset"
 }
 
@@ -912,7 +946,7 @@ YAML
 render "$T" same || check "adapters: no run: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.same.versions[0] | (.runs // [] | length == 0) and .files.video != null' "$T/project.lock" || check "adapters: None is not what it reads, with no run: $(jq -c '.assets.same.versions' "$T/project.lock")"
 [ "$(jq -r .assets.same.versions[0].files.video "$T/project.lock")" = "$(row "$T" look '.files.video.sha256' | tr -d '"')" ] || check "adapters: None's files are not what it reads"
-render "$T" same --new || check "adapters: no run, --new"
+render "$T" same || check "adapters: no run, again"
 says adapters "has nothing to make"
 [ "$(made "$T" same)" = 1 ] || check "adapters: a second version of what is its reads"
 render "$T" checked || check "adapters: typed: $(tail -c 400 "$OUT/render.txt")"
@@ -1030,25 +1064,25 @@ J '[.cuts[].frames] == [330, 384] and ([.cuts[].cut] == ["edit.mp4", "trailer.mp
 
 step "a project: same takes, not cut again; the key follows the pieces"
 local first made_at; first=$(sha "$T/edit.mp4"); made_at=$(stat -c %Y%N "$T/edit.mp4" 2>/dev/null || stat -c %Y "$T/edit.mp4")
-render "$T" all || check "cuts: render all again: $(tail -c 300 "$OUT/render.txt")"
+render "$T" all --missing || check "cuts: render all again: $(tail -c 300 "$OUT/render.txt")"
 says cuts "(unchanged)"
 [ "$(stat -c %Y%N "$T/edit.mp4" 2>/dev/null || stat -c %Y "$T/edit.mp4")" = "$made_at" ] || check "cuts: same takes, cut again"
 J '.assets.edit.versions | length == 1' "$T/project.lock" || check "cuts: a cut kept its old version"
 cp "$T/edit.otio" "$OUT/edit.otio.was"; rm -f "$T/edit.otio"
-render "$T" all || check "cuts: with its .otio deleted: $(tail -c 300 "$OUT/render.txt")"
+render "$T" all --missing || check "cuts: with its .otio deleted: $(tail -c 300 "$OUT/render.txt")"
 cmp -s "$T/edit.otio" "$OUT/edit.otio.was" || check "cuts: a deleted .otio did not come back the same"
 [ "$(stat -c %Y%N "$T/edit.mp4" 2>/dev/null || stat -c %Y "$T/edit.mp4")" = "$made_at" ] || check "cuts: a deleted .otio cut again"
 
 step "a project: a take at 25 fps, retimed; a take that isn't a piece any more"
 sed -i "s/^    video: $B\$/    video: $R/" "$T/project.yaml"
-render "$T" all || check "cuts: with r: $(tail -c 300 "$OUT/render.txt")"
+render "$T" all --missing || check "cuts: with r: $(tail -c 300 "$OUT/render.txt")"
 n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 "$T/edit.mp4" 2>/dev/null) || n=
 [ "$n" = "24/1,330" ] || check "cuts: the retimed edit.mp4 is $n, not 330 frames at 24/1"
 says cuts "it retimes b (25 fps) to 24 fps"
 "${FR[@]}" "$T/edit.mp4" 24 "$T/plates/a.mp4:7:151" "$T/plates/r.mp4:13:140" "$T/plates/a.mp4:48:96" "$T/plates/r.mp4:150:161" > "$OUT/frames-2.txt" 2>&1 || true
 tail -1 "$OUT/frames-2.txt" | grep -q 'frames PASS' || check "cuts: the retimed cut's frames are not their sources': $(grep FAIL "$OUT/frames-2.txt" | head -3 | paste -sd' ')"
 sed -i "s/^    video: $R\$/    video: $B/" "$T/project.yaml"
-render "$T" all || check "cuts: b back: $(tail -c 300 "$OUT/render.txt")"
+render "$T" all --missing || check "cuts: b back: $(tail -c 300 "$OUT/render.txt")"
 [ "$(sha "$T/edit.mp4")" = "$first" ] || check "cuts: the first edit again is another file"
 
 step "a project: approve recuts here, and a tool reads a newest out of date, and says so"
@@ -1075,12 +1109,12 @@ YAML
 render "$S" all || check "recut: render all: $(tail -c 300 "$OUT/render.txt")"
 [ -s "$S/edit.mp4" ] || check "recut: no edit.mp4"
 sed -i 's/summary: One\./summary: Two./; s/^    pieces:$/    fps: 30\n&/' "$S/project.yaml"
-render "$S" look || check "recut: render look"
+render "$S" look --missing || check "recut: render look"
 says recut "which is out of date"
 cozy project -p "$S" approve shot 1 > "$OUT/approve.txt" 2>&1 || check "recut: approve: $(tail -c 300 "$OUT/approve.txt")"
 [ -s "$S/edit.mp4" ] || check "recut: approve lost edit.mp4"
 rm "$S/edit.mp4"
-render "$S" look || check "recut: render look again"
+render "$S" look --missing || check "recut: render look again"
 [ -s "$S/edit.mp4" ] || check "recut: a current cut's film was not put back at the root"
 
 step "a project: takes at a model's rounded size join unencoded, and a plate of another size fills it"
@@ -1119,7 +1153,7 @@ md5s() { ffmpeg -v error -i "$1" -map 0:v -f framemd5 - | grep -v '^#' | awk '{p
 [ "$( (md5s "$W/a.mp4"; md5s "$W/b.mp4") | md5sum)" = "$(md5s "$W/whole.mp4" | md5sum)" ] || check "rounded: whole.mp4's frames are not its whole takes'"
 ! ls -1 "$CACHE" | grep -qE "^($(sha "$W/a.mp4" | cut -c1-16)|$(sha "$W/b.mp4" | cut -c1-16))-" || check "rounded: an edge of a whole take was encoded"
 sed -i "s/^    video: $B\$/    video: $R/" "$W/project.yaml"
-render "$W" all || check "rounded: with an 854x480 plate: $(tail -c 300 "$OUT/render.txt")"
+render "$W" all --missing || check "rounded: with an 854x480 plate: $(tail -c 300 "$OUT/render.txt")"
 [ "$(size "$W/edit.mp4")" = 1344,768 ] || check "rounded: a plate of another size: edit.mp4 is $(size "$W/edit.mp4"), not 1344,768"
 
 # For the HTTP surface: a cut in the first project of the suite.

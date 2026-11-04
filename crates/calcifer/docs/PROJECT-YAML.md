@@ -178,13 +178,13 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 ## How rendering decides
 
 **An asset's state** is the first of these that applies:
-1. A hash in the field of its type: a constant. Nothing is made for it, but `--new` on one with an operation makes takes to look at, its state unmoved.
+1. A hash in the field of its type: a constant. Nothing is made for it, but naming one with an operation makes a version to look at, its state unmoved.
 2. Its newest version whose inputs match now.
 3. Nothing: it's missing or out of date.
 
-**`cozy project render <names|all>`: an asset with no state runs its operation, along with what it reads. Nothing else runs.**
+**`cozy project render` makes new versions, except of what is pinned.** A pinned asset is only made when it is named, and that makes a version to look at: only `approve`, `--approve` or `unpin` moves a pin. `--missing` makes only what has no state.
 
-**The memo:** inputs are the package, models, LoRAs, options, kind, every field, and the name, fields and file hashes of everything it reads. Inputs plus the seed never run twice. So putting old text back returns the old take with no run.
+**The memo:** inputs are the package, models, LoRAs, options, kind, every field, and the name, fields and file hashes of everything it reads. Inputs plus the seed never run twice: a seed fixed in `render`, or a function with no seed, has one result per inputs, and says so with no run. Putting old text back returns the old take as its state, with no run.
 
 **Not inputs:** package, adapter and cozy updates, and the machine or card. An update never re-renders anything. "Deterministic" is the memo's promise, not a fact about bytes: the same seed on another card can differ, which doesn't matter, because a hit reuses the stored file.
 
@@ -194,8 +194,10 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 
 | Command | Does |
 |---|---|
-| `render <names\|all> [--on <machine>]` | Makes what has no state |
-| `render <name> --new`, `-n 4` | Draws new seeds and makes more versions |
+| `render all [--on <machine>]` | A new version, with a new seed, of every asset with an operation, each reading the new ones before it. Pinned assets are skipped, and said |
+| `render <name>`, `-n 4` | A new version of it, or four, and of what it reads only if that has no state. Naming a pinned asset makes a version to look at, and the pin stays |
+| `render <entity>` | Its linked assets, skipping pinned ones, as an entity's name doesn't name them |
+| `render <names\|all> --missing` | Only what has no state: continues a render that half failed without paying twice |
 | `render <names\|all> --queue` | Asks and returns at once, printing what it queued and what's ahead of each |
 | `cancel <names\|all>` | Drops their queued work and cancels their runs; `all` is everything the walk owes |
 | `render clash --take 2 --in 15` | Keeps take 2 up to 15 s and regenerates the rest |
@@ -211,7 +213,7 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 
 ## Queueing
 
-A project has one walker, and each render adds to it: a second one joins the first, and `--queue` adds without following. Without `--queue` a render follows until it ends, and its exit code says how it went; Ctrl-C only stops following, and the work stays queued. `status` shows what is running and what is queued, and queued work outlives a Calcifer restart until `cancel` drops it.
+A project has one walker, and each render adds to it: a second `render all` is a second pass of new versions, joining the first, and `--queue` adds without following. Without `--queue` a render follows until it ends, and its exit code says how it went; Ctrl-C only stops following, and the work stays queued. `status` shows what is running and what is queued, and queued work outlives a Calcifer restart until `cancel` drops it.
 
 - **Text:** the walker reads `project.yaml` again each time round, so a take waiting on something unsettled uses the text as it is when it's sent. One sent at once to its machine has its text fixed then.
 - **A save that can't be read** stops the walker, and running runs go on: the queue stays, and any render takes it up again. `status` says so.

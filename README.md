@@ -84,7 +84,7 @@ A project is a folder: `project.yaml`, which says what should exist; `project.lo
 ```sh
 cozy project new garden && cd garden       # a short film that renders as it stands
 cozy project render all --on <machine>
-cozy project render clash --new -n 3 --on <machine>
+cozy project render clash -n 3 --on <machine>
 cozy project approve clash 2               # pins take 2, one line in project.yaml
 cozy project status
 ```

@@ -35,6 +35,9 @@ pub struct Asked {
     /// What it added to the walk; 0 with `joined` is no new work.
     #[serde(default)]
     pub added: u32,
+    /// Pinned assets it was asked of by no name of their own: left as they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<String>,
     /// What it added, each with what is ahead of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<QueuedNow>,
@@ -345,9 +348,9 @@ pub struct Runs {
     /// The new version is approved when it lands; only with `n` 1.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// Draw a new seed even with a state.
+    /// Make only what has no state, rather than a new version.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub new: bool,
+    pub missing: bool,
     /// One asset's new take keeps the start of this take, not the one in use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub take: Option<u32>,

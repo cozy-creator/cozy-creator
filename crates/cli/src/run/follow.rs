@@ -345,7 +345,7 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
             record = record.field("full log", format!("cozy machine logs {machine} -n 0"));
         }
     }
-    for item in &run.output {
+    for item in for_people(run) {
         let shown = match (&item.path, &item.export_error) {
             _ if let Some(reference) = &item.checkpoint => checkpoint(reference),
             (Some(path), _) => output::link(ctx, path),
@@ -427,6 +427,18 @@ pub(super) fn status(run: &Run) -> String {
         status.push_str(" ⚠");
     }
     status
+}
+
+/// Whether a person has no use for it: untyped bytes, such as a model's latents.
+fn unopenable(item: &OutputItem) -> bool {
+    item.media_type.split(';').next().unwrap_or_default().trim().eq_ignore_ascii_case("application/octet-stream")
+}
+
+/// The outputs a person is told of: not what they couldn't open, unless nothing else came, so a package whose real output is untyped
+/// isn't left with nothing. `--json` lists them all.
+pub(crate) fn for_people(run: &Run) -> Vec<&OutputItem> {
+    let opens: Vec<&OutputItem> = run.output.iter().filter(|item| !unopenable(item)).collect();
+    if opens.is_empty() { run.output.iter().collect() } else { opens }
 }
 
 fn item_name(item: &OutputItem) -> String {
@@ -519,6 +531,7 @@ impl View {
             Event::Progress { progress } => self.progress(progress),
             // Each output is named once, when its file first lands; a person's terminal shows
             // where to look, the log off a terminal each revision after.
+            Event::OutputLanded { item, .. } if unopenable(item) => {}
             Event::OutputLanded { item, .. } => {
                 match (item.path.as_ref(), self.named.insert(item.id.clone())) {
                     (Some(path), true) => {

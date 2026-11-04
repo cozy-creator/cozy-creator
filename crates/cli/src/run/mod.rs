@@ -256,7 +256,7 @@ pub(crate) fn paste(ctx: &Context, run: &Run) {
     if ctx.json || run.project.is_none() {
         return;
     }
-    for output in &run.output {
+    for output in follow::for_people(run) {
         let Some(sha256) = output.path.as_ref().and(output.sha256.as_ref()) else { continue };
         let field = match output.media_type.split('/').next() {
             Some(kind @ ("image" | "video" | "audio")) => kind,
