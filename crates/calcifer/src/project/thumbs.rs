@@ -212,7 +212,9 @@ fn poster(ffmpeg: &FsPath, source: &str, seconds: f64, scale: &str, out: &FsPath
     run(ffmpeg, &opening, &after, out)
 }
 
-/// `frames` evenly through the video, side by side.
+/// `frames` evenly through the video, side by side: a seek to each, which leaves a long take cheap. A seek past its last frame gives
+/// nothing, and ffmpeg then writes nothing and says nothing: a clip of few frames, or a length that outruns the video. So those are
+/// decoded once, whatever they hold, and a length that outran it leaves the rest of the row black.
 fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, frames: u32, scale: &str, out: &FsPath) -> Result<(), String> {
     let seconds = match drawing.seconds > 0.0 {
         true => drawing.seconds,
@@ -224,7 +226,11 @@ fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, fra
     let joined: String = (0..frames).map(|n| format!("[s{n}]")).collect();
     let graph = format!("{scaled}{joined}hstack=inputs={frames}[out]");
     let graph = if frames == 1 { format!("[0:v:0]{scale},setsar=1[out]") } else { graph };
-    run(ffmpeg, &inputs, &strs(&["-filter_complex", &graph, "-map", "[out]", "-q:v", "3"]), out)
+    let after = |graph: &str| strs(&["-filter_complex", graph, "-map", "[out]", "-q:v", "3"]);
+    run(ffmpeg, &inputs, &after(&graph), out).or_else(|_| {
+        let rate = if seconds > 0.0 { f64::from(frames) / seconds } else { f64::from(frames) };
+        run(ffmpeg, &input(source), &after(&format!("[0:v:0]fps={rate:.6},{scale},setsar=1,tile={frames}x1[out]")), out)
+    })
 }
 
 /// What hasn't been used in a while goes, what ffmpeg couldn't read sooner, and any part a stop left behind.

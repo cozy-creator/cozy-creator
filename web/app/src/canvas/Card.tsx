@@ -185,6 +185,8 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (stage) return <div className="status mak">{stage}</div>
   const asset = view.asset
   if (!asset) return null
+  // What a shot writes comes with its take: there's nothing to ask of it alone.
+  const makes = asset.with && !asset.written_by
   if (asset.standing === "making") {
     const run = view.run
     const stalled = run?.stalled
@@ -216,7 +218,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     const reason = noHash(asset.failure.message).replace(`${asset.name}: `, "")
     return (
       <div className="status bad">
-        {reason} {asset.with && <Act label="Try again" onClick={() => void store.newTake(name)} />}
+        {reason} {makes && <Act label="Try again" onClick={() => void store.newTake(name)} />}
       </div>
     )
   }
@@ -234,14 +236,14 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   if (asset.standing === "out_of_date") {
     return (
       <div className="status ood">
-        {noHash(asset.status)} {asset.with && <Act label={`New ${asset.noun}`} onClick={() => void store.newTake(name)} />}
+        {noHash(asset.status)} {makes && <Act label={`New ${asset.noun}`} onClick={() => void store.newTake(name)} />}
       </div>
     )
   }
   if (asset.standing === "missing") {
     return (
       <div className="status">
-        {noHash(asset.status)} {asset.with && <Act label={`New ${asset.noun}`} onClick={() => void store.newTake(name)} />}
+        {noHash(asset.status)} {makes && <Act label={`New ${asset.noun}`} onClick={() => void store.newTake(name)} />}
       </div>
     )
   }

@@ -4,6 +4,8 @@ import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "re
 import { TRIES } from "../api/client"
 import { projectQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
+import { warningsOf } from "../canvas/graph"
+import { noHash } from "../canvas/text"
 import { RunsLink } from "../panels/runs/RunsLink"
 import { Notes } from "../ui/NoteList"
 import { useSignal } from "../ui/signal"
@@ -46,7 +48,7 @@ function ProjectName({ id }: { id: string | null }) {
   const making = assets.filter((asset) => asset.standing === "making").length
   const late = assets.filter((asset) => asset.standing === "out_of_date").length
   const failed = assets.filter((asset) => asset.failure && asset.standing !== "making").length
-  const saidOfFile = (data?.warnings ?? []).filter((warning) => !warning.name)
+  const saidOfFile = data ? warningsOf(data).ofProject : []
   return (
     <>
       <Link className="proj" to={to("projects")} title="Projects">
@@ -57,7 +59,7 @@ function ProjectName({ id }: { id: string | null }) {
       {late > 0 && <span className="sum ood">{late} out of date</span>}
       {failed > 0 && <span className="sum bad">{failed} failed</span>}
       {saidOfFile.length > 0 && (
-        <span className="sum ood" title={saidOfFile.map((warning) => warning.message).join("\n")}>
+        <span className="sum ood" title={noHash(saidOfFile.join("\n"))}>
           {saidOfFile.length} {saidOfFile.length === 1 ? "warning" : "warnings"}
         </span>
       )}

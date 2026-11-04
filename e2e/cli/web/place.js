@@ -185,16 +185,19 @@ const constants = (folder) => {
 
   // Reload restores everything: names, positions, viewport, thumbnails.
   const namesBefore = await names(page);
-  // Not one per name: the file's entity, coast, is an element with no picture.
-  const thumbnailsUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0).length);
-  const thumbnailsBefore = await thumbnailsUp();
+  // By name, each element with a file has its picture back, whatever was up before. The file's entity, coast, is an element with none.
+  const withFiles = Object.keys(constants(folder)).sort();
+  const picturesUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => [...node.querySelectorAll('.media img')].some((img) => img.naturalWidth > 0)).map((node) => node.querySelector('.nm')?.textContent).sort());
+  check('elements_are_its_files_and_its_entity', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
+  // Its text was written with no version line, so that's the one thing said of the file, and the top bar says it.
+  check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 2'), await page.getAttribute('.top .sum.ood', 'title'));
   const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform])));
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));
   const viewportBefore = await viewportNow();
   await page.reload();
   await until('names back', () => names(page), (now) => JSON.stringify(now) === JSON.stringify(namesBefore));
-  await until('thumbnails back', thumbnailsUp, (n) => n === thumbnailsBefore);
+  await until('thumbnails back', picturesUp, (now) => JSON.stringify(now) === JSON.stringify(withFiles));
   check('reload_positions', JSON.stringify(await places()) === JSON.stringify(placesBefore), { before: placesBefore, after: await places() });
   check('reload_viewport', (await viewportNow()) === viewportBefore, { before: viewportBefore, after: await viewportNow() });
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-reloaded.png` : undefined });

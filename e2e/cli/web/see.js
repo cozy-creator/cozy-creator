@@ -231,6 +231,8 @@ entities:
       description: |
         The same hero, older.
       image: <older_art>
+      deeper:
+        description: Sub-entities go one level.
 `);
   const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'still.1', 'still.2', 'hero', ...(local ? ['card'] : [])];
 
@@ -266,6 +268,9 @@ entities:
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   check('beat_bar', (await element(page, 'shot').locator('.beats button').allTextContents()).join() === '4s,3s');
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
+  check('wire_warning_of_a_sub_entity', read.warnings?.some((said) => said.name === 'hero.older'), read.warnings);
+  check('warned_mark_of_a_sub_entity', (await element(page, 'hero').locator('.warned').count()) === 1);
+  check('nothing_to_ask_of_a_write', (await element(page, 'still.2').locator('.status .act').count()) === 0, await element(page, 'still.2').locator('.status').textContent());
   check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
@@ -325,6 +330,10 @@ entities:
   await page.mouse.move(media.x + media.width * 0.6, media.y + media.height * 0.6);
   await until('a strip of 8 asked', () => Promise.resolve(thumbs), (all) => all.some((thumb) => thumb.strip === '8' && thumb.status === 200));
   await until('the strip up', () => clip.locator('img.strip').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n === 1);
+  // Eight frames of a clip of ten, all there: the last seek of a short clip lands past its last frame.
+  const strip = await clip.locator('img.strip').evaluate((image) => ({ width: image.naturalWidth, height: image.naturalHeight, moved: image.style.transform }));
+  check('strip_is_8_frames', strip.width === 8 * 160 && strip.height === 90, strip);
+  check('scrub_moves_the_strip', strip.moved === 'translateX(-50%)', strip);
   check('timecode', /^\d+:\d\d$/.test(await clip.locator('.tc').textContent()), await clip.locator('.tc').textContent());
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
   await page.mouse.move(5, 300);

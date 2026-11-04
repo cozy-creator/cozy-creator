@@ -89,7 +89,8 @@ export function Thumb({
       leaveLine.current()
     }
   }, [client, projectId, sha256, width, strip])
-  if (failed) return <span className="media-note">No preview</span>
+  // A strip that can't be made leaves the poster under it as it was.
+  if (failed) return strip ? null : <span className="media-note">No preview</span>
   if (!src) return null
   return (
     <img

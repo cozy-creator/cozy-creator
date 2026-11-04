@@ -3,7 +3,7 @@ import type { Client } from "../api/client"
 import type { Asset, Entity, Imported, ProjectState, Row, Run, Standing } from "../types"
 import { say } from "../ui/notes"
 import { signal } from "../ui/signal"
-import { type Box, type EdgeKind, type EdgeSpec, edgesOf, homesFor } from "./graph"
+import { type Box, type EdgeKind, type EdgeSpec, edgesOf, homesFor, warningsOf } from "./graph"
 import { asName, freeName } from "./names"
 import { anchorsFor, heightFor, widthFor } from "./shown"
 import { beatsOf } from "./text"
@@ -253,8 +253,7 @@ export class CanvasStore {
     const becoming = new Set(this.renames.values())
     const fresh: Element[] = []
     const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
-    const warnings = new Map<string, string[]>()
-    for (const warning of state.warnings ?? []) if (warning.name) warnings.set(warning.name, [...(warnings.get(warning.name) ?? []), warning.message])
+    const warnings = warningsOf(state).byElement
     this.owners.clear()
     const said = (view: ElementView, name: string) => {
       const now = warnings.get(name)

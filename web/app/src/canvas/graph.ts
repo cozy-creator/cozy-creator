@@ -45,6 +45,19 @@ function anchors(state: ProjectState) {
   }
 }
 
+/** What reading the project said, by the card that shows it: a sub-entity's or a link's on its entity. What's of no card is the project's. */
+export function warningsOf(state: ProjectState): { byElement: Map<string, string[]>; ofProject: string[] } {
+  const anchor = anchors(state)
+  const byElement = new Map<string, string[]>()
+  const ofProject: string[] = []
+  for (const { name, message } of state.warnings ?? []) {
+    const element = name ? anchor(name)?.element : undefined
+    if (element) byElement.set(element, [...(byElement.get(element) ?? []), message])
+    else ofProject.push(message)
+  }
+  return { byElement, ofProject }
+}
+
 export function edgesOf(state: ProjectState): EdgeSpec[] {
   const anchor = anchors(state)
   const edges = new Map<string, EdgeSpec>()
