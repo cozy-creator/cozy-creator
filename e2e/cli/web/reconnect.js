@@ -67,7 +67,8 @@ const row = (folder, name) => {
   await drop(first, [{ name: 'Here.png', type: 'image/png', bytes: png(90) }], 600, 300);
   await first.waitForSelector('.nm-field');
   await first.keyboard.press('Enter');
-  await until('the element landed', () => first.locator('.card .status').count(), (n) => n === 0);
+  seen.project = { id, folder };
+  await until('the element landed', () => first.locator('.nm:text-is("here")').count().then(async (n) => n === 1 && (await first.locator('.card .status.mak').count()) === 0), Boolean);
 
   // Two tabs, one stream: a move in one reaches the other by it.
   const streamsAlone = streams;
@@ -91,7 +92,7 @@ const row = (folder, name) => {
   if (process.env.RESTART) {
     // kill -9: reconnecting, with its attempt; then back with no reload and the session intact.
     const held = await third.evaluate(() => localStorage.getItem('cozy.session'));
-    const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: '/bin/bash' }, (error) => (error ? fail(error) : done())));
+    const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
     const said = await until('it said reconnecting', () => third.locator('.pill.warn').allTextContents(), (lines) => lines.some((line) => /Reconnecting, attempt \d+/.test(line)));
     await restarted;
     await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('Reconnecting')));

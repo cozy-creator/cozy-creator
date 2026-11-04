@@ -18,8 +18,9 @@ use crate::{
 
 include!(concat!(env!("OUT_DIR"), "/page_files.rs"));
 
-/// This origin's, and what's in memory. Script in this origin is code execution as you, so nothing else runs here.
-const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/// This origin's, and what's in memory. Script in this origin is code execution as you, so nothing else runs here. Uploads hash in
+/// WebAssembly, which `'wasm-unsafe-eval'` allows without allowing `eval`.
+const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 pub fn routes() -> Router<Arc<Api>> {
     Router::new().route("/", get(index)).route("/assets/{file}", get(asset))

@@ -8,8 +8,8 @@ offers is one or more of the calls below. Written by hand and changed in the sam
 ## Clients and discovery
 
 Calcifer listens on `127.0.0.1` only: on `calcifer.port` from `~/.cozy/config.toml` and no other if it's set, else
-on 7317 or the next free port, so a page's origin outlives a restart. It publishes a lock record at `~/.cozy/calcifer/calcifer.lock` (owner-only): `{address, token, pid, version,
-started_at_ms}`. A client reads the record for the address and the bearer. The CLI starts Calcifer when none
+on 7317 or the next free port, so a page's origin outlives a restart. It holds `~/.cozy/calcifer/calcifer.lock` and publishes a lock record beside it at `calcifer.lock.holder` (owner-only): `{address, token,
+pid, version, started_at_ms}`. A client reads the record for the address and the bearer. The CLI starts Calcifer when none
 answers, and restarts it when it runs another cozy than the installed one.
 
 Calcifer and the CLI are one binary, but a running Calcifer can be older than a freshly updated CLI. The CLI
@@ -107,7 +107,7 @@ two routes need no credential; the guard's first three checks still apply.
 - `GET /`: its `index.html`.
 - `GET /assets/{file}`: a file named by its hash, `immutable`; `404 asset_not_found` for any other.
 
-Each answers `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:;
+Each answers `Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:;
 media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` and
 `Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
 

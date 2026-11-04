@@ -178,7 +178,7 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
 [web]
-test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal"
+test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
 "--no-open" = "pr: web-serves"
 
 ["project open"]

@@ -1,9 +1,10 @@
 # e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy web
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
-# call with no holder or session.
-# Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing and
-# forgets the project it made.
+# call with no holder or session. Then the page as a person uses it: Place (web/place.js), and one stream across tabs and a
+# `kill -9` of Calcifer (web/reconnect.js).
+# Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
+# projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 
@@ -43,14 +44,47 @@ addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$ad
 base64 -d > "$pic" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 web_signed_in
 curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "$base/v1/projects/$id" || true
+step "web-place: dropped and chosen files on the canvas, a rename, a move, a reload"
+web_proof place "$chrome" "$pw" ''
+step "web-reconnect: one stream across tabs, and kill -9 of Calcifer with no reload"
+local restart=''
+[ -n "${WEB_ALONE:-}" ] || restart=$(web_restart "$lock")
+web_proof reconnect "$chrome" "$pw" "$restart"
+}
+
+# A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept.
+web_restart() {
+  local kill="kill -9 \$(jq -r .pid < '$1')"
+  [ "${RUNNER_OS:-}" != Windows ] || kill="taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"
+  echo "$kill; sleep 1; '$COZY' status > /dev/null 2>&1"
+}
+
+# A fresh sign-in link in $link, or a failed check.
+web_link() {
+  cozy web --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy web --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
+  link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
+  [ -n "$link" ] || { check "web-serves: cozy web --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
+}
+
+# web_proof <place|reconnect> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
+# name, which it forgets, folder and all, whatever happened.
+web_proof() {
+  local name=$1 chrome=$2 pw=$3 restart=$4 json=$OUT/web-$1.json link code=0 id folder lock addr token
+  web_link || return
+  RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$name.err" || code=$?
+  [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
+  lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  addr=$(jq -r .address "$lock" 2> /dev/null) token=$(jq -r .token "$lock" 2> /dev/null)
+  id=$(jq -r '.seen.project.id // empty' "$json" 2> /dev/null) folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
+  [ -z "$id" ] || curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "http://$addr/v1/projects/$id" || true
+  case $folder in */.cozy/projects/web-*) rm -rf "$folder" ;; esac
 }
 
 # web_serves's own, on its project, which it forgets whatever happens here.
 web_signed_in() {
 local link code=0 wait expires
-cozy web --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy web --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return; }
-link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
-[ -n "$link" ] || { check "web-serves: cozy web --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return; }
+web_link || return
 
 CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
   node "$(web_path "$here/web/serves.js")" "$link" "$id" "$(web_path "$P")" "$(web_path "$pic")" > "$OUT/web.json" 2> "$OUT/web.err" || code=$?
@@ -61,9 +95,10 @@ local session media
 session=$(jq -r .session.token "$OUT/web.json") media=$(jq -r .session.media "$OUT/web.json")
 
 J '.document.status == 200 and .document.referrer_policy == "no-referrer"' "$OUT/web.json" || check "web-serves: GET /: $(jq -c .document "$OUT/web.json")"
-for directive in "default-src 'none'" "script-src 'self'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
+for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
   J --arg d "$directive" '.document.csp // "" | contains($d)' "$OUT/web.json" || check "web-serves: the page's CSP has no $directive: $(jq -c .document.csp "$OUT/web.json")"
 done
+J ".document.csp // \"\" | contains(\"'unsafe-eval'\") | not" "$OUT/web.json" || check "web-serves: the page's CSP allows eval: $(jq -c .document.csp "$OUT/web.json")"
 J '(.violations | length) == 0 and (.page_errors | length) == 0' "$OUT/web.json" || check "web-serves: the page broke under its CSP: $(jq -c '{violations, page_errors}' "$OUT/web.json")"
 [ "$(jq '.console_errors | length' "$OUT/web.json")" = 0 ] || echo "the page's console errors: $(jq -c .console_errors "$OUT/web.json")"
 J '[.document.set_cookie, .session.set_cookie] == [null, null] and (.cookies | length) == 0' "$OUT/web.json" || check "web-serves: a cookie was set: $(jq -c '{document, session, cookies}' "$OUT/web.json")"
@@ -127,6 +162,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   . "$here/../lib.sh"
   parse "$@"
   hub_checked() { :; }
+  WEB_ALONE=1
   web_serves
   finish web-serves
 fi

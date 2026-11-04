@@ -3,10 +3,10 @@
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
 //   node place.js <sign-in link from `cozy web --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
-// terminal sees the same project. Prints what it saw as JSON and exits 1 if anything failed.
+// terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { readFileSync, readdirSync } = require('fs');
+const { readFileSync, readdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { STEP_MS, drop, png, until, wav } = require('./page');
 
@@ -77,7 +77,9 @@ const constants = (folder) => {
   }, id);
   const folder = state.path;
   seen.project = { id, folder };
-  const comments = yaml(folder).split('\n').filter((line) => line.trim().startsWith('#'));
+  // A file a person wrote: every comment and `|` of it must outlast the page.
+  const written = '# Mine, and kept.\nentities:\n  coast:\n    kind: environment\n    # Kept too.\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
+  writeFileSync(join(folder, 'project.yaml'), written);
 
   // A PNG, an MP4 and a WAV dropped together: each there at once under its stem, nothing focused.
   const pngBytes = png(60);
@@ -94,8 +96,12 @@ const constants = (folder) => {
   const three = constants(folder);
   check('constants_by_kind', three.kyogre_art_1?.field === 'image' && three.clash_take?.field === 'video' && three.sea_sound?.field === 'audio', three);
   check('rows_written', ['kyogre_art_1', 'clash_take', 'sea_sound'].every((name) => rows(folder)[name]), rows(folder));
-  check('comments_kept', comments.every((line) => yaml(folder).includes(line)));
-  await until('thumbnails up', () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0 && !img.src.startsWith('blob:')).length), (n) => n === 3);
+  // Calcifer may fetch its ffmpeg for the first of these.
+  const thumbs = await until('thumbnails up', () => page.evaluate(() => ({
+    up: [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0 && !img.src.startsWith('blob:')).length,
+    none: [...document.querySelectorAll('.media-note')].map((note) => note.textContent),
+  })), (now) => now.up === 3 || now.none.includes('No preview'), 5 * STEP_MS);
+  check('thumbnails', thumbs.up === 3, thumbs);
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-dropped.png` : undefined });
 
   // One chosen from the selector, in the top bar's button: its field is focused with the stem selected; a name shows as it will be.
@@ -190,13 +196,19 @@ const constants = (folder) => {
   check('reload_viewport', (await viewportNow()) === viewportBefore, { before: viewportBefore, after: await viewportNow() });
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-reloaded.png` : undefined });
 
+  check('comments_and_text_kept', yaml(folder).startsWith(written), yaml(folder));
+
   // The terminal sees the same project.
   if (process.env.COZY) {
-    const status = execFileSync(process.env.COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });
-    check('cli_sees_it', ['kyogre_art_1', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => status.includes(name)), status);
+    const status = JSON.parse(execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+    const held = status.assets.map((asset) => asset.name);
+    check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_1_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
   }
 
+  // Everything above hashed in WebAssembly under the page's own CSP, with no violation; `eval` stays refused beside it.
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
+  // In a timer, as the page's own code runs: an evaluation itself is let past the CSP.
+  check('eval_refused', await page.evaluate(() => new Promise((done) => setTimeout(() => { try { new Function('return 1')(); done(false); } catch { done(true); } }))));
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();

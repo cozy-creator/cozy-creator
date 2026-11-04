@@ -1,9 +1,8 @@
-import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
+import { createSHA256 } from "hash-wasm"
 import type { Client } from "./client"
 
 // Small enough that hashing a chunk fits between frames, on a page that may be panning.
-const READ_BYTES = 512 * 1024
+const READ_BYTES = 2 * 1024 * 1024
 const PART_BYTES = 8 * 1024 * 1024
 
 /** Lets the page paint and take input. A message, not a timer: a hidden tab throttles timers to a crawl. */
@@ -19,14 +18,14 @@ function yieldToPage(): Promise<void> {
 }
 
 export async function hashFile(file: File, signal: AbortSignal, onDone: (done: number) => void): Promise<string> {
-  const digest = sha256.create()
+  const digest = await createSHA256()
   for (let at = 0; at < file.size; at += READ_BYTES) {
     signal.throwIfAborted()
     digest.update(new Uint8Array(await file.slice(at, at + READ_BYTES).arrayBuffer()))
     onDone(Math.min(1, (at + READ_BYTES) / file.size))
     await yieldToPage()
   }
-  return `sha256:${bytesToHex(digest.digest())}`
+  return `sha256:${digest.digest("hex")}`
 }
 
 /** What `held` lacks of `size` bytes, as half-open ranges. */
