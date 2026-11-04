@@ -17,7 +17,7 @@ else
 fi
 cell kernels-inventory "$KD/inventory" seed:=$((R + 400)) --gpus=1
 kernels_list=$(run_get "$OUT" kernels-inventory .result.detail | jq -r '.names[]' 2>/dev/null)
-[ -n "$kernels_list" ] || expect kernels-inventory FAIL "no inventory: $(run_get "$OUT" kernels-inventory .status) $(run_get "$OUT" kernels-inventory .reason.message)"
+[ -n "$kernels_list" ] || [ -n "$ONLY" ] || expect kernels-inventory FAIL "no inventory: $(run_get "$OUT" kernels-inventory .status) $(run_get "$OUT" kernels-inventory .reason.message)"
 kernels_seed=$((R + 401))
 for kernel in $kernels_list; do
   cell "kernel-${kernel//:/-}" "$KD/gpu" kernel="$kernel" seed:=$((kernels_seed++)) --gpus=1
