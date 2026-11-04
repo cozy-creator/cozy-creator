@@ -209,10 +209,19 @@ impl Jobs {
 
     /// Job `id` of `asset` ended with no version: done, if nothing else was said of it.
     pub fn ended_if_open(&self, id: &str, asset: &str) {
-        let open = self.held.lock().expect("jobs lock").coming.iter().any(|job| job.id == id);
-        if open {
-            self.ended(Job { id: id.to_owned(), asset: asset.to_owned(), state: JobState::Done, noun: "version".into(), why: Some("nothing to do".into()), ..Job::default() });
+        let mut held = self.held.lock().expect("jobs lock");
+        if !held.coming.iter().any(|job| job.id == id) {
+            return;
         }
+        // A cut said what it made, or that it holds what stood: that is what it ended on.
+        if let Some(at) = held.cuts.iter().position(|cut| cut.asset == asset) {
+            let cut = held.cuts.remove(at);
+            held.take(asset, None, None);
+            held.ended.push(Job { id: id.to_owned(), ..cut });
+            return self.publish(&mut held);
+        }
+        drop(held);
+        self.ended(Job { id: id.to_owned(), asset: asset.to_owned(), state: JobState::Done, noun: "version".into(), why: Some("nothing to do".into()), ..Job::default() });
     }
 
     /// Says what came of a version already landed.
