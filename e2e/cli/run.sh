@@ -197,7 +197,8 @@ update() { step update; update_to_newest; }
 logs() { step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true; }
 remove() { logs; step "remove cozy"; remove_cozy; }
 
-# Local code of one name at two paths, each saying which it is, run in turn: each runs its own, not the first's install (cl-733).
+# Local code of one name at two paths, each saying which it is, run in turn: each runs its own, not the first's install (cl-733: a
+# folder; cl-763: a script).
 one_name_two_paths() {
 step "one name at two paths"
 local words at turn=0
@@ -230,6 +231,17 @@ for at in 1 2 1; do
   fi
 done
 cozy --json package remove local/one-name --on local > /dev/null || check "package remove local/one-name failed"
+for at in 1 2; do
+  mkdir -p "$OUT/paths/$at/scripts"
+  sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/scripts/one_script.py"
+done
+for at in 1 2 1; do
+  turn=$((turn + 1))
+  if cell "script-$turn" "$OUT/paths/$at/scripts/one_script.py" "text=turn $turn $RANDOM"; then
+    grep -q "\"words\": *$at\b" "$OUT/script-$turn.ndjson" || check "one script name at two paths: path $at ran another's code"
+  fi
+done
+cozy --json package remove local/one-script --on local > /dev/null || check "package remove local/one-script failed"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
