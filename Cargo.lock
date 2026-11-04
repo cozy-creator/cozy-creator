@@ -2653,6 +2653,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "saphyr",
+ "saphyr-parser",
  "serde",
  "serde_ignored",
  "serde_json",

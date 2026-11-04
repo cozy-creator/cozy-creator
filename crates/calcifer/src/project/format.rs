@@ -267,7 +267,7 @@ impl Doc {
 
     /// The project `text` says. Only a file of no format, or an older one, is refused.
     pub fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
-        let value = protocol::yaml::to_json(text).map_err(|why| {
+        let value = protocol::yaml::to_json_keeping(text, names_a_file).map_err(|why| {
             let (line, written) = at_line(text, &why);
             let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
             match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
@@ -377,11 +377,7 @@ impl Doc {
         let body = unfolded(name, body, &mut self.warnings);
         let own: BTreeSet<String> = body.keys().cloned().collect();
         // An asset's kind is its file's type: what it writes, else the field holding its hash, else `image`.
-        let hash = |field: &&str| match body.get(*field) {
-            Some(Value::Number(_)) => true,
-            Some(Value::String(text)) => mentions(text).is_empty(),
-            _ => false,
-        };
+        let hash = |field: &&str| body.get(*field).and_then(Value::as_str).is_some_and(|text| mentions(text).is_empty());
         let held = PINS.iter().copied().find(hash);
         let written_kind = text_of(body.get("kind"));
         let kind = if PINS.contains(&written_kind.as_str()) { written_kind.clone() } else { held.unwrap_or("image").to_owned() };
@@ -408,7 +404,6 @@ impl Doc {
             let written = match value {
                 Value::String(text) if !mentions(text).is_empty() => continue,
                 Value::String(text) => text.clone(),
-                Value::Number(number) => number.to_string(),
                 Value::Array(_) if mentions_in(value).is_empty() => {
                     self.warnings.push(format!("{name}'s {field}: a list pins nothing: an asset has one main file, so make an asset for each; it is ignored"));
                     merged.remove(field);
@@ -505,13 +500,12 @@ impl Doc {
                 (_, Value::String(said)) if matches!(mentions(said).as_slice(), [one] if said.trim() == format!("<{one}>")) => {
                     links.insert(field.clone(), mentions(said)[0].to_owned());
                 }
-                (_, Value::String(_) | Value::Number(_)) if value.as_str().is_none_or(|said| !said.is_empty() && said.bytes().all(|byte| byte.is_ascii_hexdigit())) => {
-                    let written = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
-                    match file_named(&written, lock) {
+                (_, Value::String(written)) if !written.is_empty() && written.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+                    match file_named(written, lock) {
                         Ok(sha256) => {
                             let role = lock.files.get(&sha256).map_or("image", folder::File::field);
                             let full = format!("{name}.{field}");
-                            let constant = Value::Object(Map::from_iter([(role.to_owned(), Value::String(written))]));
+                            let constant = Value::Object(Map::from_iter([(role.to_owned(), Value::String(written.clone()))]));
                             if let Some(i) = self.declare(text, &full, &constant, defaults, folder, lock) {
                                 self.assets[i].line = Some((name.to_owned(), field.clone()));
                                 links.insert(field.clone(), full);
@@ -1113,6 +1107,17 @@ fn quoted(text: &str) -> String {
     match text.bytes().any(|byte| byte.is_ascii_whitespace() || b"'\"$&;|<>()*?#`".contains(&byte)) {
         true => format!("'{}'", text.replace('\'', r"'\''")),
         false => text.to_owned(),
+    }
+}
+
+/// Whether a scalar at this path names a file, so that a number's shape is a hash's prefix by its text: an entity's fields, and an
+/// asset's `image`, `video` or `audio`, wherever in it. `12345678e012` isn't 1.2345678e19, and `012345678901` isn't 12345678901,
+/// which is another file's prefix.
+fn names_a_file(path: &[&str]) -> bool {
+    match path {
+        ["entities", ..] => true,
+        ["assets", .., field] => PINS.contains(field),
+        _ => false,
     }
 }
 
