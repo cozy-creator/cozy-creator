@@ -252,6 +252,12 @@ impl Fit {
     fn fits(&self) -> bool {
         self.missing <= self.after_idle
     }
+    /// What this level is compared at: its measure, or an estimate that errs toward fitting
+    /// (first uses ran 10-15% over theirs).
+    fn want(&self) -> usize {
+        if self.basis == "measured" { self.full } else { self.full.saturating_mul(5) / 4 }
+    }
+
     fn preserves_phase(&self) -> bool {
         self.phase_available
             .is_some_and(|available| self.missing <= available)
@@ -435,18 +441,18 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
 
 impl Menu {
     /// The level this operation should run at, whatever is free right now: the largest under
-    /// what the card leaves beside the phase's weights, or a fifth of it on a card that streams
+    /// what the card leaves beside the phase's weights, or a third of it on a card that streams
     /// them anyway. Weights make room for it, but what's live can't: the op gets no more than the
     /// rest of the card. Following free memory instead runs at the finest level whenever weights
     /// fill the card, and makes millions of allocations.
     fn target(&self) -> usize {
         let cap = self.budget();
-        self.plans.iter().position(|plan| plan.full <= cap).unwrap_or(self.plans.len() - 1)
+        self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1)
     }
 
     fn budget(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        self.capacity.saturating_sub(weights).max(self.capacity / 5)
+        self.capacity.saturating_sub(weights).max(self.capacity / 3)
             .min(self.capacity.saturating_sub(self.live))
     }
 
