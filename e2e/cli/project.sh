@@ -1021,7 +1021,7 @@ YAML
 render "$T" all --missing || check "orphans: render all with doomed"
 gone_file=$(jq -r '.assets.doomed.versions[0].files.image' "$T/project.lock")
 jq --arg s "$gone_file" '.assets.kept.versions[0].files.frame = $s' "$T/project.lock" > "$T/l" && mv "$T/l" "$T/project.lock"
-sed -i '/^  doomed:$/,/^    description: Going\.$/d' "$T/project.yaml"
+sed -i '/^  doomed:$/,/^    instructions: Going\.$/d' "$T/project.yaml"
 cat >> "$T/project.yaml" <<YAML
   second:
     tool: $here/project/draw.py/draw
@@ -1029,7 +1029,7 @@ cat >> "$T/project.yaml" <<YAML
 YAML
 render "$T" second || check "orphans: render second"
 local second_file; second_file=$(jq -r '.assets.second.versions[0].files.image' "$T/project.lock")
-sed -i '/^  second:$/,/^    description: Second\.$/d' "$T/project.yaml"
+sed -i '/^  second:$/,/^    instructions: Second\.$/d' "$T/project.yaml"
 cozy --json project -p "$T" reclaim > "$OUT/reclaim.json" 2>&1 || check "orphans: reclaim: $(tail -c 300 "$OUT/reclaim.json")"
 J '[.orphans[].name] == ["doomed", "second"] and (.deleted | not)' "$OUT/reclaim.json" || check "orphans: reclaim lists $(jq -c . "$OUT/reclaim.json")"
 { [ "$(made "$T" second)" = 1 ] && [ -f "$T/files/${second_file#sha256:}.png" ]; } || check "orphans: a listing deleted something"
@@ -1265,7 +1265,7 @@ YAML
 cozy project -p "$W" render all --on local > "$OUT/queue-edit.txt" 2>&1 &
 going=$!
 for _ in $(seq 120); do [ "$(status "$W" | jq '[.queue[]? | select(.name == "gate" and .run != null)] | length')" = 1 ] && break; sleep 0.25; done
-sed -i 's/description: Old words\./description: New words./' "$W/project.yaml"
+sed -i 's/instructions: Old words\./instructions: New words./' "$W/project.yaml"
 wait "$going" || check "edit: the render: $(tail -c 400 "$OUT/queue-edit.txt")"
 ! grep -q 'cannot render' "$OUT/queue-edit.txt" || check "edit: a pass said it couldn't: $(grep 'cannot render' "$OUT/queue-edit.txt")"
 { [ "$(made "$W" words)" = 1 ] && [ "$(made "$W" reader)" = 1 ]; } || check "edit: the pass made $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
@@ -1667,7 +1667,7 @@ step "a project: with no clip to use, there is no film, or the one that stands s
 says unreadable "hopeless.mp4 isn't cut, and no version is made: none of its clips can be used"
 [ ! -e "$U/hopeless.mp4" ] || check "unreadable: a film was made of nothing"
 [ "$(made "$U" hopeless)" = 0 ] || check "unreadable: nothing cut made a version: $(made "$U" hopeless)"
-sed -i 's/      - <good>/      - <bad>/; /^      - <pic>$/d' "$U/project.yaml"
+sed -i 's/- <good>/- <bad>/; /^ *- <pic>$/d' "$U/project.yaml"
 code=0; render "$U" film || code=$?
 [ "$code" = 0 ] || check "unreadable: no clip to use exited $code: $(tail -c 400 "$OUT/render.txt")"
 says unreadable "film.mp4 isn't cut, and no version is made: none of its clips can be used: the film that stands stays"
@@ -1992,7 +1992,7 @@ assets:
 YAML
 render "$T" edit || check "edits: first cut: $(tail -c 400 "$OUT/render.txt")"
 one=$(sha "$T/edit.mp4"); first_timeline=$(sha "$T/edit.otio")
-sed -i 's/^      - <a>$/      - <a>\n      - <b>/' "$T/project.yaml"
+sed -i 's/^          - <a>$/          - <a>\n          - <b>/' "$T/project.yaml"
 render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
 two=$(sha "$T/edit.mp4")
 [ "$one" != "$two" ] || check "edits: the second cut is the first"
@@ -2126,7 +2126,7 @@ says cuts "trailer: "
 tail -1 "$OUT/frames-1.txt" | grep -q 'frames PASS' || check "cuts: not every frame its source frame: $(grep -E 'FAIL|md5-equal' "$OUT/frames-1.txt" | head -3 | paste -sd' ')"
 "${OT[@]}" "$T/edit.otio" 24 "a:7:151:files/$SA.mp4" "b:13:140:files/$SB.mp4" "a:48:96:files/$SA.mp4" "b:150:161:files/$SB.mp4" > "$OUT/otio-1.txt" 2>&1 || true
 tail -1 "$OUT/otio-1.txt" | grep -q 'otio PASS' || check "cuts: edit.otio is not the edit: $(grep FAIL "$OUT/otio-1.txt" | head -3 | paste -sd' ')"
-J --arg a "sha256:$SA" '.files[$a] | .width == 854 and .height == 480 and .fps == 24 and .frames == 192' "$T/project.lock" || check "cuts: project.lock does not hold a's measures: $(jq -c --arg a "sha256:$SA" '.files[$a]' "$T/project.lock")"
+J --arg a "sha256:$SA" '.[$a] | .width == 854 and .height == 480 and .fps == 24 and .frames == 192' "$T/.measured.json" || check "cuts: a's measures aren't kept: $(jq -c --arg a "sha256:$SA" '.[$a]' "$T/.measured.json")"
 J '[.cuts[].frames] == [330, 384] and ([.cuts[].cut] == ["edit.mp4", "trailer.mp4"])' <<< "$(status "$T")" || check "cuts: status: $(status "$T" | jq -c .cuts)"
 
 step "a project: same takes, not cut again; the key follows the pieces"
@@ -2141,14 +2141,14 @@ cmp -s "$T/edit.otio" "$OUT/edit.otio.was" || check "cuts: a deleted .otio did n
 [ "$(stat -c %Y%N "$T/edit.mp4" 2>/dev/null || stat -c %Y "$T/edit.mp4")" = "$made_at" ] || check "cuts: a deleted .otio cut again"
 
 step "a project: a take at 25 fps, retimed; a take that isn't a piece any more"
-sed -i "s/^    video: $B\$/    video: $R/" "$T/project.yaml"
+sed -i "s/^    approved: $B\$/    approved: $R/" "$T/project.yaml"
 render "$T" all --missing || check "cuts: with r: $(tail -c 300 "$OUT/render.txt")"
 n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 "$T/edit.mp4" 2>/dev/null) || n=
 [ "$n" = "24/1,330" ] || check "cuts: the retimed edit.mp4 is $n, not 330 frames at 24/1"
 says cuts "it retimes b (25 fps) to 24 fps"
 "${FR[@]}" "$T/edit.mp4" 24 "$T/plates/a.mp4:7:151" "$T/plates/r.mp4:13:140" "$T/plates/a.mp4:48:96" "$T/plates/r.mp4:150:161" > "$OUT/frames-2.txt" 2>&1 || true
 tail -1 "$OUT/frames-2.txt" | grep -q 'frames PASS' || check "cuts: the retimed cut's frames are not their sources': $(grep FAIL "$OUT/frames-2.txt" | head -3 | paste -sd' ')"
-sed -i "s/^    video: $R\$/    video: $B/" "$T/project.yaml"
+sed -i "s/^    approved: $R\$/    approved: $B/" "$T/project.yaml"
 render "$T" all --missing || check "cuts: b back: $(tail -c 300 "$OUT/render.txt")"
 [ "$(sha "$T/edit.mp4")" = "$first" ] || check "cuts: the first edit again is another file"
 
@@ -2222,7 +2222,7 @@ md5s() { ffmpeg -v error -i "$1" -map 0:v -f framemd5 - | grep -v '^#' | awk '{p
 [ "$( (md5s "$W/a.mp4" | sed -n 1,48p; md5s "$W/b.mp4" | sed -n 25,48p) | md5sum)" = "$(md5s "$W/edit.mp4" | md5sum)" ] || check "rounded: edit.mp4's frames are not its takes'"
 [ "$( (md5s "$W/a.mp4"; md5s "$W/b.mp4") | md5sum)" = "$(md5s "$W/whole.mp4" | md5sum)" ] || check "rounded: whole.mp4's frames are not its whole takes'"
 ! ls -1 "$CACHE" | grep -qE "^($(sha "$W/a.mp4" | cut -c1-16)|$(sha "$W/b.mp4" | cut -c1-16))-" || check "rounded: an edge of a whole take was encoded"
-sed -i "s/^    video: $B\$/    video: $R/" "$W/project.yaml"
+sed -i "s/^    approved: $B\$/    approved: $R/" "$W/project.yaml"
 render "$W" all --missing || check "rounded: with an 854x480 plate: $(tail -c 300 "$OUT/render.txt")"
 [ "$(size "$W/edit.mp4")" = 1344,768 ] || check "rounded: a plate of another size: edit.mp4 is $(size "$W/edit.mp4"), not 1344,768"
 
@@ -2506,7 +2506,7 @@ et=$(grep -i '^etag:' "$OUT/head.hdr" | cut -d' ' -f2 | tr -d '\r')
   || check "HEAD edit.mp4: $(tr -d '\r' < "$OUT/head.hdr" | paste -sd' ')"
 [ "$(api -o /dev/null -w '%{http_code}' -H "If-None-Match: $et" "$U")" = 304 ] || check "If-None-Match $et on edit.mp4 is not 304"
 [ "$(api -o /dev/null -w '%{http_code}' -r "$((len + 10))-" "$U")" = 416 ] || check "a Range past edit.mp4's end is not 416"
-png=files/$(ls "$P/files" | grep -E '^[0-9a-f]{64}' | head -1)
+png=files/$(ls "$P/files" | grep -E '^[0-9a-f]{64}\.(png|mp4)$' | head -1)
 api -D "$OUT/asset.hdr" -o "$OUT/asset.bin" "http://$ADDR/v1/projects/$ID/$png" || true
 { head -1 "$OUT/asset.hdr" | grep -q ' 200' && cmp -s "$OUT/asset.bin" "$P/$png" && grep -qi "etag: \"$(basename "${png%.*}")\"" "$OUT/asset.hdr"; } \
   || check "GET $png: $(tr -d '\r' < "$OUT/asset.hdr" | head -4 | paste -sd' ')"

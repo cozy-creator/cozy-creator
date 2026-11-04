@@ -261,7 +261,7 @@ import json
 path = '$a/project.lock'
 lock = json.load(open(path))
 digest = 'sha256:' + 'ab' * 32
-lock['files'][digest] = {'path': 'files/' + 'ab' * 32, 'sha256': digest, 'machine': 'another-pod', 'length': 7}
+lock['files'][digest] = {'machine': 'another-pod', 'length': 7}
 json.dump(lock, open(path, 'w'))
 PY" || check "a file another machine keeps, in the lock"
   rm -rf "$OUT/archive"; mkdir -p "$OUT/archive"
