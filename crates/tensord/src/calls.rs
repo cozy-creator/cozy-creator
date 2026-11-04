@@ -42,8 +42,8 @@ struct Parent {
     /// `(module, export)` of each invocable it may call: the App it belongs to (empty: its own
     /// package's; else a callee's in its environment) and the entrypoint registered for it.
     callables: Callables,
-    /// It is itself memoized: each call it makes must be too, or replaying its result would
-    /// skip that call's effects.
+    /// It is itself memoized: a call it makes that is not means a replay of its result would skip
+    /// that call's effects, so its result is not kept (`Engine::unmemoize`).
     pure: bool,
     /// The callables declared `memoize=True` (with or without an operation identity).
     pure_callables: std::collections::HashSet<(String, String)>,
@@ -237,6 +237,14 @@ impl Calls {
         }
     }
 
+    /// A disk still low after every cache (`objects::Objects::make_room`).
+    pub fn make_room(&self) -> io::Result<(usize, u64)> {
+        match self.runs.upgrade() {
+            Some(runs) => runs.objects.make_room(),
+            None => Ok((0, 0)),
+        }
+    }
+
     /// Every unfinished child of `parent` is canceled with it.
     pub(crate) fn stop_children(&self, parent: &str) {
         let Some(service) = self.service.upgrade() else {
@@ -291,13 +299,14 @@ impl Calls {
         let (application, entrypoint) = parent.callable(&call.module, &call.export)?;
         let callable = (call.module.clone(), call.export.clone());
         if parent.pure && !parent.pure_callables.contains(&callable) {
-            return Err((
-                "child_impure",
-                format!(
-                    "a memoized function cannot call {}.{}, which is not memoized",
-                    call.module, call.export
-                ),
-            ));
+            let why = format!("it called {}.{}, which is not memoized", call.module, call.export);
+            let news = service.engine.unmemoize(&parent.id, &why).map_err(|e| ("child_call_refused", e.to_string()))?;
+            if news {
+                let warning = format!("a memoized function's result isn't kept for later calls: {why}");
+                if let Err(error) = service.engine.append_warning(&parent.id, &warning) {
+                    tracing::warn!("run {}: {warning} ({error})", parent.id);
+                }
+            }
         }
         let runs = self
             .runs

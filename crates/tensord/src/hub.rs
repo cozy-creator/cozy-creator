@@ -457,9 +457,9 @@ impl Capability {
     fn why(&self) -> String {
         let held = self.token.borrow();
         match (&held.refused, held.expires_unix_ms) {
-            (Some(refused), _) => format!("the Hub refused the run's capability: {refused}"),
-            (None, 0) => "the run's capability was never redeemed".into(),
-            (None, at) => format!("the run's capability token expired at {}, and no run of its signer here renews it", utc(at)),
+            (Some(refused), _) => format!("the Hub refused the run's capability: {refused}: `cozy login <email>` on the computer that sent it, then run it again"),
+            (None, 0) => "the run's capability was never redeemed: `cozy login <email>` on the computer that sent it, then run it again".into(),
+            (None, at) => format!("the run's capability token expired at {}, and no run of its signer here renews it: run it again", utc(at)),
         }
     }
 

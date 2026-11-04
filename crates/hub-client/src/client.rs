@@ -586,16 +586,25 @@ impl Client {
             }
         }
         match response.status().is_client_error() || response.status().is_server_error() {
-            true => Err(Error::refused(response).await),
+            true => {
+                let (status, path) = (response.status(), response.url().path().to_owned());
+                let error = Error::refused(response).await;
+                if status.is_server_error() {
+                    tracing::warn!(%status, path, "the Hub failed: {error}");
+                }
+                Err(error)
+            }
             false => Ok(response),
         }
     }
 
     async fn execute(&self, request: Request) -> Result<Response, Error> {
-        self.http
-            .execute(request)
-            .await
-            .map_err(|e| Error::unanswered(&e))
+        let (method, path) = (request.method().clone(), request.url().path().to_owned());
+        self.http.execute(request).await.map_err(|e| {
+            let error = Error::unanswered(&e);
+            tracing::warn!(%method, path, "the Hub did not answer: {error}");
+            error
+        })
     }
 
     /// `request` with the credential's headers, and the user's Bearer among them.

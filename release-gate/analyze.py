@@ -18,9 +18,10 @@ from runs import STEP_EXTRA_MS, STEP_RATIO, Run, slow_steps  # noqa: E402
 from tensorfs import check as tensorfs  # noqa: E402  (release-gate/suites/tensorfs, never the tensorfs library)
 from varena import check as varena  # noqa: E402
 from cli import check as cli  # noqa: E402
+from kernels import check as kernels  # noqa: E402
 # A suite's check runs when gate.sh ran the suite (--suite: the names in <gate dir>/suites).
 SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.path.join(out, 'suites')) else []
-SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
+SUITE_CHECKS = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
 CHECKS = [quality.check, lm.check, swap.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
 SLACK = {'execution_ms': 0.25, 'step1_ms': 0.5, 'steady_ms': 0.10, 'vram_mb': 0.10}
@@ -212,6 +213,15 @@ for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]
     if vals:
         notes.append(f'host {leg}: median {sorted(vals)[len(vals) // 2] / 1000:.1f} s, max {max(vals) / 1000:.1f} s over {len(vals)} executors')
+# A GPU fault, or a kernel self-check that crashed its process, fails the gate even when every cell passed: a group walked
+# into a faulting kernel on corteo with only the machine's record saying so. The machine's own log and record, kept by end_it.
+LOG = os.path.join(out, 'machine-tensord.log')
+for line in (l for l in open(LOG, errors='replace') if re.search(r'GPU \d+ (reported Xid|was lost).*: failing', l)) if os.path.exists(LOG) else ():
+    fails.append(f'gpu fault: {line.strip()[:200]}')
+END = os.path.join(out, 'machine-end.json')
+for kernel in (json.load(open(END)).get('status', {}).get('kernels', []) if os.path.getsize(END) else []) if os.path.exists(END) else []:
+    if not kernel.get('ok'):
+        fails.append(f"kernel probe crashed: {kernel.get('kernel')} sm{kernel.get('sm')} driver {kernel.get('driver')}: {kernel.get('detail', '')[:160]}")
 gate = {'out': out, 'sku': sku, 'summary': summary, 'runs': runs, 'baseline': base}
 # CLI-behaviour checks a cells/*.sh recorded with gate.sh's `expect` (expect.tsv: check, PASS|FAIL, what happened).
 EXPECT = os.path.join(out, 'expect.tsv')

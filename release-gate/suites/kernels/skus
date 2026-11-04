@@ -1,0 +1,5 @@
+# One card per kernel family (cozy-runtime arch.py), the cheapest that stocks it; `pick.sh` names today's cheapest of each.
+rtx-5090 100          # sm120, mma.sync with FP4: Sage3, Kitchen's FP4 Sol, nvfp4 GEMMs
+h100-sxm5-80gb 100    # sm90, wgmma: FA3, Sage2's fixed-kmean, Sol
+rtx-4090 100          # sm89, mma.sync with FP8 and INT4
+rtx-3060 100          # sm86, mma.sync, INT4 without FP8

@@ -121,6 +121,9 @@ pub type Files = BTreeMap<String, String>;
 /// One result of an operation: its number, its files, the key it was made under, and what made it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Version {
+    /// A cut's: the pieces it was cut without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<Without>,
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -191,6 +194,23 @@ impl Version {
 /// The file people mean by a set of files.
 pub fn main_of(files: &Files) -> Option<&String> {
     ["video", "image", "audio"].iter().find_map(|name| files.get(*name)).or_else(|| files.values().next())
+}
+
+/// A piece a cut was made without, and why.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Without {
+    pub piece: String,
+    pub why: String,
+    /// Its file wasn't on this computer: once it is, that version isn't its cut's state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+}
+
+impl Without {
+    /// As a film says it: `segment_3: no version yet`.
+    pub fn said(&self) -> String {
+        format!("{}: {}", self.piece, self.why)
+    }
 }
 
 /// A run making a version, recorded before it is sent (under its idempotency key) and followed
@@ -314,6 +334,9 @@ pub struct Owed {
     /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub asked: BTreeMap<String, String>,
+    /// `rename`s asked while a render went, (from, to): each done as that walk ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renames: Vec<(String, String)>,
 }
 
 /// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
@@ -329,6 +352,9 @@ pub struct Ask {
     /// `render all --missing`: every asset with no state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all: bool,
+    /// Asked of `all`, with or without `--missing`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
@@ -347,7 +373,7 @@ fn is_zero_f(n: &f64) -> bool {
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        self.asks.is_empty() && self.asked.is_empty()
+        self.asks.is_empty() && self.asked.is_empty() && self.renames.is_empty()
     }
 }
 
@@ -392,7 +418,7 @@ impl Lock {
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
     pub fn owes(&self) -> bool {
-        !self.walk.asks.is_empty() || !self.pending.is_empty()
+        !self.walk.asks.is_empty() || !self.pending.is_empty() || !self.walk.renames.is_empty()
     }
 
     pub fn asset(&self, name: &str) -> Option<&Asset> {
@@ -523,8 +549,9 @@ impl Folder {
             if !at.is_file() {
                 let dir = self.dir.join(FILES);
                 std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
-                if std::fs::hard_link(dest, &at).is_err() {
-                    self.store(&path, |part| std::fs::copy(dest, part).map(drop))?;
+                match std::fs::hard_link(dest, &at) {
+                    Ok(()) => sealed(&at),
+                    Err(_) => drop(self.store(&path, |part| std::fs::copy(dest, part).map(drop))?),
                 }
             }
             self.tabled(path.clone(), digest)?;
@@ -636,6 +663,7 @@ impl Folder {
         let part = dir.join(format!(".{}.part", at.file_name().expect("a name").to_string_lossy()));
         let _ = std::fs::remove_file(&part);
         write(&part).and_then(|()| std::fs::rename(&part, &at)).map_err(|e| io_at(&at, e))?;
+        sealed(&at);
         Ok(true)
     }
 
@@ -649,8 +677,19 @@ impl Folder {
         !file.stays() && !self.path(&file.path).is_file()
     }
 
+    /// Whether files wait to be measured with no ffprobe here to do it: a walk fetches one first.
+    pub fn wants_ffprobe(&self, lock: &Lock) -> bool {
+        lock.files.values().any(File::unmeasured) && platform::tools::ffmpeg(&self.tools, &crate::tools::path()).is_none()
+    }
+
+    /// How many frames the film at `path` holds, by its file; None with no file there, or no ffprobe to read it.
+    pub fn film_frames(&self, path: &Path) -> Option<u64> {
+        let (_, ffprobe) = platform::tools::ffmpeg(&self.tools, &crate::tools::path())?;
+        path.is_file().then(|| super::tools::frames_of(&ffprobe, path)).flatten()
+    }
+
     /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in
-    /// project.lock. With no ffprobe here yet (the walk fetches one first), they wait for the next read.
+    /// project.lock. With no ffprobe here yet they wait for the next read, or a cut, which fetches one first.
     pub fn measure(&self, lock: &mut Lock) -> Result<(), Error> {
         if !lock.files.values().any(File::unmeasured) {
             return Ok(());
@@ -856,6 +895,15 @@ fn walked(dir: &Path) -> (u64, u64) {
 
 fn read(path: &Path) -> Result<String, Error> {
     std::fs::read_to_string(path).map_err(|e| io_at(path, e))
+}
+
+/// A file in `files/` is named for its bytes: read-only, so that writing to it fails rather than make its name a lie.
+pub(super) fn sealed(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut permissions = meta.permissions();
+        permissions.set_readonly(true);
+        let _ = std::fs::set_permissions(path, permissions);
+    }
 }
 
 pub fn hash(path: &Path) -> Result<String, Error> {

@@ -219,7 +219,9 @@ fn stage(
     // An instruction this machine cannot carry out fails; ignored, it would succeed unapplied.
     if let Some(name) = cohort.unknown.keys().next() {
         let version = env!("CARGO_PKG_VERSION");
-        return Err(Error::validation("update_field_unknown", format!("cozy {version} cannot carry out an update's {name:?}")));
+        return Err(Error::validation("update_field_unknown", format!(
+            "cozy {version} cannot carry out an update's {name:?}: move this machine's cozy first (`cozy machine update <machine>`), then ask again"
+        )));
     }
     // The file an input binds to `member`, staged as `file` and held to its digest.
     let held = |member: &str, file: &str| -> Result<Option<Choice>, Error> {
@@ -263,14 +265,13 @@ fn stage(
             return Err(Error::validation("toolchain_unknown", format!("the toolchain is installed, not {other:?}")));
         }
     };
-    // Refused before anything drains: a limit stands a card in for a smaller one, never a larger.
+    // A limit stands a card in for a smaller one, never a larger: above a card, that card is as it was.
     let limit = cohort.gpu_memory_limit;
-    if let Some(gpu) = gpus.iter().find(|g| limit.is_some_and(|l| l > g.memory_bytes)) {
-        let gib = |n: u64| format!("{:.1} GiB", n as f64 / (1u64 << 30) as f64);
-        return Err(Error::validation("gpu_memory_limit_above_card", format!(
-            "a {} limit exceeds GPU {}'s {}; it only lowers a card", gib(limit.unwrap_or(0)), gpu.device_index, gib(gpu.memory_bytes)
-        )));
-    }
+    let gib = |n: u64| format!("{:.1} GiB", n as f64 / (1u64 << 30) as f64);
+    let notes: Vec<String> = gpus.iter().filter(|g| limit.is_some_and(|l| l > g.memory_bytes)).map(|gpu| {
+        format!("a {} limit is above GPU {}'s {}: that card keeps all of it", gib(limit.unwrap_or(0)), gpu.device_index, gib(gpu.memory_bytes))
+    }).collect();
+    notes.iter().for_each(|note| tracing::warn!("{note}"));
     let request = Request {
         operation: id.into(),
         pin: None,
@@ -281,6 +282,7 @@ fn stage(
         mode: cohort.mode,
         binary,
         toolchain,
+        notes,
     };
     updates
         .request(request, ready, |code| std::process::exit(code))

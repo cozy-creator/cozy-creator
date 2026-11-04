@@ -15,7 +15,7 @@ use protocol::{
 };
 
 use crate::{Context, output};
-pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, watched};
+pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, stalled_words, watched};
 
 mod follow;
 pub(crate) mod list;
@@ -87,7 +87,7 @@ struct RunArgs {
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
     /// Keep the function ready instead of running it.
-    #[arg(long, value_enum, value_name = "LEVEL")]
+    #[arg(long, value_enum, ignore_case = true, value_name = "LEVEL")]
     warm: Option<Warm>,
     /// Print the function's request contract instead of running it.
     #[arg(long)]
@@ -320,7 +320,7 @@ async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Res
     };
     let Some(callable) = interface.callables.iter().find(|c| &c.name == function) else {
         let said = format!("{} has no function {function:?} this cozy reads", target.package);
-        return Err(Error::new(Kind::Unavailable, "callable_unreadable", said).remedy("update cozy"));
+        return Err(Error::new(Kind::Unavailable, "callable_unreadable", said).next("cozy update"));
     };
     if ctx.json {
         let mut request = protocol::interface::request(&target.interface, function);
@@ -357,7 +357,7 @@ async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Resul
 
 fn parsed(target: &Target) -> Result<Interface, Error> {
     Interface::parse(&target.interface).map_err(|why| {
-        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}"))
+        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}")).next("cozy update")
     })
 }
 

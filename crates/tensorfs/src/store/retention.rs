@@ -291,6 +291,10 @@ impl Store {
             self.sweep_writers(TTL)?;
             self.collect_locked(u64::MAX, TTL)?;
         }
+        // What a cut fetch kept can be asked for again, so it goes before any model.
+        if short()? > 0 {
+            self.drop_partials()?;
+        }
         loop {
             let need = short()?;
             if need == 0 || self.collect_locked(need, Duration::ZERO)?.uses.is_empty() {

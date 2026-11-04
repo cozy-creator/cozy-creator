@@ -55,7 +55,7 @@ pub struct PackageSdk {
 impl PackageSdk {
     /// Executors use the selected Runtime/TensorFS pair (an update's, else the image's), so they
     /// speak this machine's protocol; without a complete pair, each release's locked SDK.
-    pub fn selected(wheels: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
+    pub fn selected(wheels: &Path, staged: &Path, uv: crate::machine::uv::Uv, torch: layer::Torch) -> Self {
         // An activation replaces sdk/current, not the immutable candidate directory. Freeze
         // that selection once: both cache identity and the installer's actual wheel inputs
         // must name the same build even when filenames/version labels repeat.
@@ -77,7 +77,7 @@ impl PackageSdk {
             uv,
             python: "3.12".into(),
             runtime_build: match complete {
-                true => fs::read_to_string(wheels.join(crate::machine::update::RUNTIME_BUILD)).unwrap_or_default(),
+                true => crate::machine::update::development_runtime(&wheels, staged),
                 false => String::new(),
             },
             find_links: complete.then_some(wheels),
@@ -124,7 +124,7 @@ pub struct Request {
 impl Request {
     /// The run's Hub, for `what`: refused when the run carries no Hub access.
     fn hub(&self, what: &str) -> Result<&hub::Source, Failure> {
-        let absent = || ("hub_access_absent", format!("{what} needs the run's Hub access, and this run carries none"));
+        let absent = || ("hub_access_absent", format!("{what} needs the run's Hub access, and this run carries none: `cozy login <email>` on the computer that sent it, then run it again"));
         self.source.as_ref().ok_or_else(absent)
     }
 
@@ -230,34 +230,29 @@ fn canceled() -> Failure {
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
 /// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
 pub const UNREACHABLE: &str = "hub_unreachable";
-/// The wait before an unanswered lookup is asked again: doubling from the first to the most.
-const FIRST_WAIT: Duration = Duration::from_secs(1);
-const MOST_WAIT: Duration = Duration::from_secs(30);
+/// How many times an unanswered lookup is asked before its run says it had no answer.
+const ATTEMPTS: u32 = 5;
+/// The wait before it is asked again, doubling: about a minute and a quarter over all of them.
+const FIRST_WAIT: Duration = Duration::from_secs(5);
 /// How often a wait looks at its run's cancel.
 const TICK: Duration = Duration::from_millis(100);
 
-/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), for as long as
-/// its run lives: its cancel ends the wait, and the run shows what it waits for. Nothing has
-/// executed, so asking again re-executes nothing, and what an earlier ask resolved is held. A
-/// hint (no run to stop) is asked once.
-fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
+/// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), up to [`ATTEMPTS`]
+/// times: its cancel ends the wait, and the run shows each attempt and why. Nothing has executed, so
+/// asking again re-executes nothing, and what an earlier ask resolved is held. A hint (no run to
+/// stop) is asked once.
+pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
     let Some(stop) = &job.stop else { return prepare() };
-    let (mut wait, mut waited) = (FIRST_WAIT, false);
-    loop {
+    let mut wait = FIRST_WAIT;
+    for attempt in 1..ATTEMPTS {
         let why = match prepare() {
             Err((UNREACHABLE, why)) => why,
-            answered => {
-                if waited {
-                    job.waiting(None);
-                }
-                return answered;
-            }
+            answered => return answered,
         };
-        let said = format!("unreachable, retrying: {why}");
+        let said = format!("unreachable, retrying in {} s (attempt {}/{ATTEMPTS}): {why}", wait.as_secs(), attempt + 1);
         tracing::warn!(run = %job.caller, retry_in_s = wait.as_secs(), "{said}");
         job.stage(said.clone());
         job.waiting(Some(said));
-        waited = true;
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if stop.is_cancelled() {
@@ -266,8 +261,14 @@ fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> R
             }
             std::thread::sleep(TICK);
         }
-        wait = (wait * 2).min(MOST_WAIT);
+        // Asked again: what it does now is what it shows.
+        job.waiting(None);
+        wait *= 2;
     }
+    prepare().map_err(|(code, why)| match code {
+        UNREACHABLE => (code, format!("no answer after {ATTEMPTS} attempts: {why}. Nothing else is wrong with this run: send it again once that answers")),
+        _ => (code, why),
+    })
 }
 
 /// What one environment generation is built from: the release's card (its exact pyproject and
@@ -433,7 +434,11 @@ impl Publisher {
             }),
             ..Default::default()
         };
-        patiently(&job, || self.work(service, actor, request, &job))
+        // A disk that can't hold it says what fills it and what would.
+        patiently(&job, || self.work(service, actor, request, &job)).map_err(|(code, why)| match code {
+            "machine_disk_full" if !why.contains("--disk-gb") => (code, format!("{why}{}", crate::reclaim::advice(self.store.root(), 0))),
+            _ => (code, why),
+        })
     }
 
     /// A slot's model made from its provider source (TensorFS `source_model`), kept as the
@@ -477,7 +482,7 @@ impl Publisher {
     /// A slot's model this machine's store holds, by its header or its tree.
     fn held_grant(&self, installation: &Installation, path: &str, reference: &domain::Ref) -> Result<ModelGrant, Failure> {
         let named = format!("sha256:{}", sha256::hex(&reference.digest));
-        let absent = |_| ("checkpoint_absent", format!("{path} names checkpoint {named}, which this machine does not hold"));
+        let absent = |_| ("checkpoint_absent", format!("{path} names checkpoint {named}, which this machine does not hold: run what made it on this machine, or name a model of the Hub's"));
         let checkpoint = storage::checkpoint(&self.store, &named).map_err(absent)?;
         Ok(ModelGrant {
             package: installation.package.clone(),
@@ -1002,8 +1007,10 @@ impl Publisher {
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,
         // and with them what only they held.
+        let unsettled = service.engine.with_journal(|j| j.unsettled_generations()).map_err(io_failure)?;
         let earlier = |i: &Installation| {
             i.package == installed.package && i.release == installed.release && i.hub == installed.hub && i.alias != installed.alias
+                && !unsettled.contains(&i.generation)
         };
         match service.uninstall(actor, earlier) {
             Ok((gone, bytes, _)) if !gone.is_empty() => tracing::info!(
@@ -1080,7 +1087,7 @@ impl Publisher {
         // (th-245 did, and every callee became `local/<name>`: run 5234).
         let org = package.split_once('/').map_or("", |(org, _)| org);
         let hub_packages: BTreeMap<String, String> = files.iter().map(|file| (file.distribution(), format!("{org}/{}", file.distribution()))).collect();
-        let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages, true)?;
+        let described = environment::describe_environment(&platform::paths::venv_python(&env), &locked.distribution, &hub_packages, true, job.stop.as_ref())?;
         let record = built.record((identity, identity), (&locked.distribution, release), &env, &card.interface, &self.sdk.runtime_build, described)?;
         environment::publish(&dir, &record)
     }
@@ -1131,7 +1138,7 @@ impl Publisher {
             .map_err(|e| match stop.is_cancelled() {
                 true => canceled(),
                 // Named by its file: a plan's URL is presigned, its query a credential.
-                false => ("package_file_download_failed", format!("{}: {}", file.name, e.to_string().replace(&file.url, &file.name))),
+                false => (refused("package_file_download_failed", e.clone()).0, format!("{}: {}", file.name, e.to_string().replace(&file.url, &file.name))),
             })?;
         let path = wheels.join(&file.name);
         fs::hard_link(&blob, &path)
@@ -1495,6 +1502,8 @@ fn refused(code: &'static str, refusal: tensorfs::err::Refusal) -> Failure {
         tensorfs::err::Code::CAPACITY_EXHAUSTED => ("machine_disk_full", refusal.to_string()),
         // The run's capability was refused (expired); without one a private object is absent.
         tensorfs::err::Code::CREDENTIAL_REQUIRED => ("hub_credential_refused", refusal.detail),
+        // A provider's own answer to a token it wants, or one it refused.
+        tensorfs::err::Code::PERMISSION_DENIED => (code, format!("{refusal}: a gated or private source reads with your token there, HF_TOKEN or CIVITAI_TOKEN (or `huggingface_token`, `civitai_token` in cozy's config) on the computer that sent it")),
         _ if tensorfs::Failure::from(refusal.clone()).kind == tensorfs::Kind::Network => (UNREACHABLE, refusal.to_string()),
         _ => (code, refusal.to_string()),
     }
@@ -1513,8 +1522,8 @@ fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure
 /// (`tensorfs.view`, cl-683).
 const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), ("tensorfs", "TensorFS", "0.17.13")];
 
-/// A LoRA'd call runs only where the installation's environment opens adapter views; without
-/// LoRAs, any pair runs as before.
+/// A LoRA'd call runs only where the installation's environment opens adapter views. An environment
+/// built now takes a pair that does (`pair`), so this is one built earlier, or on a development Runtime.
 fn opens_views(service: &Service, installation: &Installation, choice: &domain::ModelChoice) -> Result<(), Failure> {
     if choice.adapters.is_empty() {
         return Ok(());
@@ -1529,8 +1538,9 @@ fn opens_views(service: &Service, installation: &Installation, choice: &domain::
         return Ok(());
     }
     let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
+    // An environment already built stays: the machine moves, and the run asks again.
     Err(("model_adapter_refused", format!(
-        "LoRAs need Runtime {} and TensorFS {} or newer, and {} runs on {}: update this machine (`cozy machine update`)",
+        "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} runs on {3}: `cozy machine update <machine>` moves it to the current release; then run it again",
         VIEWS[0].2, VIEWS[1].2, installation.package, runs.join(" / "))))
 }
 
@@ -1569,7 +1579,7 @@ fn apply_adapters(
             let tree = (!adapter.manifest.is_empty())
                 .then(|| ObjectRef { sha256: adapter.manifest.trim_start_matches("sha256:").into(), length: 0 });
             let source = source.ok_or_else(|| ("hub_access_absent",
-                format!("an adapter of {} names a Hub model, and this run carries no Hub access", grant.slot)))?;
+                format!("an adapter of {} names a Hub model, and this run carries no Hub access: `cozy login <email>` on the computer that sent it, then run it again", grant.slot)))?;
             let named = resolve(source, Named {
                 repository: adapter.model.clone(),
                 release: adapter.release.clone(),
@@ -1689,7 +1699,7 @@ fn hub_card(catalog: &Catalog, package: &str, release: &str, python: &str) -> Re
     let (org, name) = package.split_once('/').unwrap_or_default();
     let read = format!("the install plan of {package}@{release} at {}", catalog.origin());
     let plan = catalog.install_plan(org, name, release, None).map_err(|e| absent(e, "release_absent", &read, || {
-        format!("{package} has no release {release} at {}", catalog.origin())
+        format!("{package} has no release {release} at {}: `cozy package info {package}` lists its releases", catalog.origin())
     }))?;
     if plan.release != release {
         return Err(("catalog_read_failed", format!("{package}@{release} named another release")));
@@ -1733,11 +1743,11 @@ fn newest_release(catalog: &Catalog, org: &str, name: &str) -> Result<String, Fa
     let card = catalog
         .package(org, name)
         .map_err(|e| absent(e, "package_absent", &format!("the releases of {org}/{name} at {}", catalog.origin()),
-            || format!("{org}/{name} is not published at {}", catalog.origin())))?;
+            || format!("{org}/{name} is not published at {}, or is private: `cozy package ls {name}` lists what you can see", catalog.origin())))?;
     let open = card.releases.iter().filter(|row| row.yanked != Some(true) && row.yanked_at.as_deref().is_none_or(str::is_empty));
     tensorfs::format::newest_by(open, |row| row.release.as_str())
         .map(|row| row.release.clone())
-        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked")))
+        .ok_or(("release_absent", format!("{org}/{name} has no release that is not yanked: `cozy package info {org}/{name}` lists them")))
 }
 
 /// A wheel the run's Hub hosts, downloaded by its digest (`fetch_hub`) and installed from disk.
@@ -1772,7 +1782,10 @@ impl HubFile {
 /// fails on its measured stillness, `ledger`'s stop ends it, and what landed stays for the
 /// next ask. Answers the blob's path.
 pub(crate) fn io_failure(error: io::Error) -> Failure {
-    ("release_root_preparation_failed", error.to_string())
+    match error.kind() {
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => ("machine_disk_full", error.to_string()),
+        _ => ("release_root_preparation_failed", error.to_string()),
+    }
 }
 
 /// A slot's declared default as a choice (its `default`: `[org/]model@release`, or a local
@@ -1807,7 +1820,8 @@ fn local_aliases(installation: &Installation, request: &Request) -> io::Result<b
 
 /// A slot with neither a choice nor a declared default.
 pub(crate) fn choice_absent(path: &str, package: &str) -> Failure {
-    ("model_choice_absent", format!("the run names no model for {path}, and {package} declares no default for it"))
+    let parameter = path.rsplit('.').next().unwrap_or(path);
+    ("model_choice_absent", format!("the run names no model for {path}, and {package} declares no default for it: add `model.{parameter}=<org/model>` to `cozy run`"))
 }
 
 fn model_slots(interface: &Value, entrypoint: &str) -> Option<Vec<Value>> {

@@ -51,6 +51,11 @@ defaults:
     with: $H3
     style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
+entities:
+  hero:
+    kind: character
+    description: "$CHAR"
+    image: <hero_sheet>
 assets:
   mural:
     kind: video
@@ -68,10 +73,13 @@ assets:
       - duration: 4
         description: |
           <hero> steps back from <wall.1>, where the orange letters read OPEN, and says "Done."
-  hero:
+  hero_art:
     kind: image
     image: hero.png
-    description: "$CHAR"
+  hero_sheet:
+    render: {with: ./still.py}
+    keep: true
+    description: From <hero_art>.
   yard:
     kind: image
     image: place.png
@@ -86,12 +94,14 @@ assets:
   edit:
     kind: video
     render: {with: cozy}
+    aspect_ratio: "16:9"
     resolution: 1080p
     pieces:
       - <mural_upscale>
 YAML
 )
   imported "$P" hero.png place.png
+  cp "$HERE/suites/project/still.py" "$P/still.py"
   render project-split "$P" mural || expect project-split FAIL "render mural: $(tail -c 300 project-split.log)"
   v=$(approved "$P" mural)
   f=$(made "$P" mural)
@@ -100,7 +110,8 @@ YAML
     expect project-split "$(jq -r 'if (.runs | length) == 1 and .files.latents != null and .writes["wall.1"].image != null then "PASS" else "FAIL" end' <<< "$v")" \
       "runs $(jq -c .runs <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v"), wall.1 $(jq -r '.writes["wall.1"].image // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
     expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
-    # The gate's hero picture has a background: H3's adapter says it goes into the shot (se-104). A warning, no failed run.
+    # The gate's hero is a character whose sheet its package made, with a background: H3's adapter says it goes into the shot
+    # (se-104). A warning, no failed run. An imported picture is left alone, since it may be opaque on purpose.
     expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
   fi
   if want project-upscale && [ -n "$f" ]; then

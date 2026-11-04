@@ -12,7 +12,7 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 
 | Suite | Proves | Rentals (`skus`) | Cost · time | Pick it for |
 |---|---|---|---|---|
-| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6 · ~75 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
+| `runtime` | every first-party package's default call (H3 15 s with a described reference, SeedVR2, SDXL, Klein, Qwen, Anima, BiRefNet, the Qwen3.5 describer, Fibo, HiDream, MOSS, Qwen-Image and its one-release swap), then SDXL in a second executor, SDXL cold then two warm calls after each of three restarts and a loop step no capture records (cr-227), six SDXL child calls each with its own LoRA stack (cl-687) and an SDXL int8 quantize (a weights output), and Regenerate-2K over the whole 15 s shot at 1440p, the largest one forward takes (cr-259): kernels, times, VRAM, quality, LM coverage | rtx-4090, rtx-5090 | ~$6.5 · ~95 min, in parallel | a Runtime, TensorFS, varena or TensorD change; any rewrite |
 | `packages` | the packages `--pins` (or `--only`) names, plus the SDXL smoke | rtx-4090, rtx-5090 | ~$1–3 · 15–30 min | a package bump |
 | `varena` | the memory manager: cold load, co-residency, reload, 8/6/3 GiB caps, a real 8 GB card, host RAM, no backing left without a page (below); with it, run the `vram-yield` session: a game started next to cozy has its memory within 2 s, idle and mid-call, and the call completes (Sessions) | its `skus`; the session one rtx-3070 | session ~$0.5 · ~45 min | a varena, memory, TensorD or Runtime memory change |
 | `tensord` | the machine agent through `cozy`: a package generation installed, updated and rolled back, the Runtime back and forward; a run queued, canceled queued and running, its outputs landed whole; models stacked until the describer must fit (idle executors end); a new executor after a restart; a restart mid-run never re-executes; a `--warm gpu` member kept and its executor reused; two runs at once on two GPUs; output landing against this computer's download speed; distinct LoRA'd calls add nothing to the disk (cl-683) | rtx-5060-ti ×2 | ~$0.60 · ~60 min | a TensorD or cozy change |
@@ -23,7 +23,8 @@ same SKU and suites; any FAIL blocks the promotion. Design: tracker `design/ci-v
 | `project` | `cozy project render` on fixture projects (the walk in this computer's Calcifer): a shot whose later beat reads a world state an earlier beat writes, in one calls (`continue_from`), its upscale from latents and the 1080p edit, a new take keeping a take's start (`--take`, `--in`), a plate, a voice, stills at 16:9 and 9:16, a node rendered with local code (`with: ./still.py/draw`), and refusals before any run | rtx-4090 | ~$0.7 · ~30 min | a project, Calcifer or shot-function change |
 | `consumer` | a real 12 GB card under its own memory pressure: SDXL 1024 int8 cold, then four warm calls, all complete (cozy-runtime #1956) | rtx-3060 | ~$0.1 · ~15 min | a Runtime, varena or TensorD change |
 | `families` | the packages that send attention masks (qwen-image-2 at its prefill, ideogram-4 on every call) on the families whose kernels serve none: each completes, a refused call runs on SDPA and the record counts it (runs 26242-26244) | h100-sxm5-80gb, b200 | ~$5–8 · 30–40 min | a Runtime change to attention, kernels or selection |
-| `multi-gpu` | H3 over two GPUs: a 15 s Turbo call and a 30-step call, two ranks on two GPUs, a 768p video with audio | the cheapest listed 2-GPU card (`skus`, `gpus=2`) | every RC |
+| `multi-gpu` | H3 over two GPUs, 5 s Turbo, new prompt and seed: two ranks on two GPUs, a 768p video with audio, frames judged numerically (`frames.py coherent`). A group opens more kernels than one GPU does, so each family that takes its own group path gets a pod | one card per family, each its cheapest with two GPUs: sm120, sm90, older mma.sync (`skus`; today's cheapest: `suites/multi-gpu/pick.sh`, `-f skus=<card> -f gpus=2`). No sm100 card lists two | ~$2 · 3 pods, 2 to 25 min of render a family, the longest when its card downloads H3's weights cold (0.39.6: 2× H100 2 min, 2× RTX 3090 10 min, 2× RTX 5090 25 min), plus up to 20 min to get a pod. A dispatch's `cap_minutes` under 60 can cancel it before the verdict, which runs the fault and probe checks | every release |
+| `kernels` | every kernel the Runtime ships, once, on each family it claims, through its real launch path, against a slow reference (`suites/kernels/README.md`); a new kernel with no exerciser fails | one card per family (`suites/kernels/pick.sh`) | ~$1.2 + ~$2 for B200 · ~10 min a card | **every promotion** (Paul 11-04) |
 | `cli` | (building) | | | a CLI change |
 
 A rewrite picks every suite. Suites stack on one rental per SKU (`--suite runtime,packages` runs each cell once,
@@ -31,6 +32,12 @@ against `gate-<SKU>-runtime-packages.json`). A suite is `suites/<name>/`: `cells
 `pkg`, `product`, `expect`, `log`, `$CLI`, `$M`, `$R`, `$REF`, the scenario, and e2e/run.sh's `run_*`, the one
 way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (fails, notes)`, listed in analyze.py;
 `gate['runs']` holds each completed cell as `runs.py`'s summary of its record), and `skus` (`<sku> [disk GB] [gpus]` per line, the workflow's rentals). The verdict's `SUITES` line names what ran.
+
+## Before renting
+
+`release-gate/interfaces.sh --runtime <wheel file|version> <packages checkout>` reads each package's interface back through the
+reader an executor starts on, as TensorD writes it: no GPU, no pod, seconds. Describing alone misses what only that reader
+refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything else.
 
 ## What a gate does
 
@@ -43,7 +50,8 @@ way a suite runs `cozy` and reads a run), optional `check.py` (`check(gate) -> (
    on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in 786 real cells was
    7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.
 4. Ends the rental and checks that it is gone.
-5. Runs `analyze.py`. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
+5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
+   cells did. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
    driver's: TensorD reads each GPU's bytes in use (NVML) every 100 ms over a call into the record's `memory.driver`,
    and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.
@@ -157,6 +165,8 @@ pod's executor processes and GPU bytes after each cell, set side by side in `sum
 `hub-outage` (cl-708, one `cpu` pod with SSH) breaks the pod's resolver before a deviceless root's first child call
 resolves its model (`fixtures/hub-outage`): the call waits and its run says it retries until the resolver is mended, a
 later call of the same model asks the Hub nothing, and a model the Hub has not is refused at once. The run completes.
+`runtime-floor` (run 28075, one cheap GPU pod) puts a machine on an older numbered prerelease pair: a package whose floor
+that pair misses takes its own Runtime in its own environment, and the machine's pair stays.
 
 ## More cells and checks
 
@@ -176,7 +186,9 @@ later call of the same model asks the Hub nothing, and a model the Hub has not i
   - `probe` (on the rental): the machine's disk, written and read cold (the varena method); an executor never dials
     (cr-012), so there is no network ceiling, and downloads are held against the last pass.
   - `model download` of a large many-object model cold (Hub and datacenter-cache times are separate baselines), again
-    (nothing from the Hub), and cut part-way then resumed (only the rest comes).
+    (nothing from the Hub), and cut part-way then resumed (only the rest comes): once by a cancel, once by killing
+    TensorD over SSH, as a crash ends it (`kill`, a rental's only). Unfinished chunks count: at least 80% of the bytes
+    that had arrived must be held.
   - `model upload` of new random weights from the gate's host to a throwaway `<account>/ci-tfs-<R>` (the time
     includes staging from the host: run it from a runner), the same folder as a second commit in another lane (dedup:
     the same objects, a tenth of the time), and new weights cut part-way then resumed. The model is deleted after.

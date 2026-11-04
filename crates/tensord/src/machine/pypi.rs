@@ -91,9 +91,11 @@ pub fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, 
             Ok::<_, Refusal>((status, text))
         })
     };
-    let (status, listed) = read(protocol::prerelease::releases(distribution)).map_err(io::Error::other)?;
+    // Nothing yet says what is published: `NotConnected`, asking again may be answered.
+    let unread = |why: String| io::Error::new(io::ErrorKind::NotConnected, why);
+    let (status, listed) = read(protocol::prerelease::releases(distribution)).map_err(|e| unread(e.to_string()))?;
     if !status.is_success() {
-        return Err(io::Error::other(format!("GitHub answered HTTP {status}")));
+        return Err(unread(format!("GitHub answered HTTP {status}")));
     }
     let releases: Vec<Release> = serde_json::from_str(&listed).map_err(io::Error::other)?;
     let mut versions: Vec<&str> = (releases.iter().filter(|release| !release.draft))
@@ -104,7 +106,7 @@ pub fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, 
     while let Some(version) = tensorfs::format::newest_by(versions.iter().copied(), |version| version) {
         versions.retain(|other| *other != version);
         let base = protocol::prerelease::base(distribution, version);
-        let (status, sums) = read(format!("{base}/SHA256SUMS")).map_err(io::Error::other)?;
+        let (status, sums) = read(format!("{base}/SHA256SUMS")).map_err(|e| unread(e.to_string()))?;
         if !status.is_success() {
             continue;
         }
@@ -127,7 +129,11 @@ pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine:
             code: "wheel_digest_mismatch",
             message: format!("{file} from {url}: {}", e.detail),
         }),
-        _ => io::Error::other(format!("{file} from {url}: {e}")),
+        _ => {
+            let network = tensorfs::Failure::from(e.clone()).kind == tensorfs::Kind::Network;
+            let kind = if network { io::ErrorKind::NotConnected } else { io::ErrorKind::Other };
+            io::Error::new(kind, format!("{file} from {url}: {e}"))
+        }
     };
     let blob = object_at(machine, url, sha256, None, bundle, stop).map_err(failed)?;
     land(&blob, dir, file)

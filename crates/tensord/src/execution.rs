@@ -309,6 +309,17 @@ impl Engine {
     /// The machine's warning for a run (its precision, its SDK), on its root run's log as its
     /// package's lines are: a call's leads with its function, since only the root's log
     /// reaches its follower and `run show`.
+    /// `id`'s success is held for no later call, nor is that of any memoized run that called it:
+    /// whether that is news for `id`.
+    pub(crate) fn unmemoize(&self, id: &str, why: &str) -> io::Result<bool> {
+        let mut journal = self.journal.lock().unwrap();
+        let (first, mut parent) = journal.unmemoize(id, why)?;
+        while !parent.is_empty() {
+            parent = journal.unmemoize(&parent, why)?.1;
+        }
+        Ok(first)
+    }
+
     pub fn append_warning(&self, id: &str, text: &str) -> io::Result<u64> {
         let record = self.get(id)?;
         match record.invocation.root.as_str() {
@@ -1221,6 +1232,19 @@ impl Engine {
     }
 
     /// A held result file. Custody hashed it once as it took it (`custody`); a read serves it.
+    /// Whether nothing reads a run's result copies any more: its outputs are held and its outcome kept for its client
+    /// (`commit_public_terminal`), or, for a call, its parent ended, having read them.
+    pub fn result_copies_spent(&self, id: &str) -> io::Result<bool> {
+        let record = self.get(id)?;
+        if !record.state.terminal() {
+            return Ok(false);
+        }
+        match record.invocation.parent.as_str() {
+            "" => Ok(self.public_terminal(id)?.is_some()),
+            parent => Ok(self.get(parent).map_or_else(|e| e.kind() == io::ErrorKind::NotFound, |parent| parent.state.terminal())),
+        }
+    }
+
     pub fn open_result(&self, id: &str, index: usize) -> io::Result<File> {
         let record = self.get(id)?;
         let artifact = record

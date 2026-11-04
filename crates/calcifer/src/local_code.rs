@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::api::Api;
+use crate::{api::Api, update::BroughtUp};
 
 /// The uv index name a project's sources use for its own account's packages.
 pub const INDEX: &str = "tensorhub";
@@ -567,8 +567,9 @@ fn callees(project: &Path) -> Result<BTreeMap<String, String>, Error> {
 
 /// A script as the one-file package it is (xs-099): its PEP 723 block is its pyproject.toml
 /// (`dependencies` and `requires-python` are [project]'s, [tool] is [tool]), named for the file,
-/// whose module it is, with its `app`. The project is written under `~/.cozy/scripts`, one per
-/// script path, and from there it is read as any package directory is.
+/// its module `cozy_script_<name>`, so `copy.py` isn't Python's `copy`, with its `app`. The project is
+/// written under `~/.cozy/scripts`, one per script path, and from there it is read as any package
+/// directory is.
 fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
     let raw = fs::read(path).map_err(|e| refuse("script_unreadable", e))?;
     let mut block = pep723(&String::from_utf8_lossy(&raw))?;
@@ -586,12 +587,10 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
             }
         })
         .collect();
-    let mut module: String = (stem.chars())
+    let module: String = (stem.chars())
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    if !module.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-        module.insert(0, '_');
-    }
+    let module = format!("cozy_script_{module}");
     let at = hex::encode(Sha256::digest(path.to_string_lossy().as_bytes()));
     let root = home
         .root()
@@ -874,32 +873,68 @@ pub async fn prepare(
         install,
     };
     let key = format!("{key}/install");
-    if let Some(run) = sent(api, &key)? {
-        if !matches!(run.status, Status::Completed | Status::Failed | Status::Canceled) {
-            return Ok(prepared(None, None, None, Some(run)));
-        }
-        let installed = installed(run)?;
-        if let Some(runtime) = &runtime {
-            keep(&home, &code, runtime, &installed.interface);
-        }
-        return Ok(prepared(Some(installed.interface), installed.installation, installed.machine, None));
-    }
-    if let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code, runtime)) {
+    if sent(api, &key)?.is_none()
+        && let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code, runtime))
+    {
         return Ok(prepared(Some(interface), None, None, None));
     }
-    let install = SubmitRun { agreed, ..install_run(&home, origin.as_str(), on.clone(), &code) };
-    let run = api.calcifer.submit(&key, install).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
-    Ok(prepared(None, None, None, Some(run)))
+    let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
+    match install_through(api, &key, submit).await? {
+        Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
+        Install::Ended(run) => {
+            let installed = installed(run)?;
+            if let Some(runtime) = &runtime {
+                keep(&home, &code, runtime, &installed.interface);
+            }
+            Ok(prepared(Some(installed.interface), installed.installation, installed.machine, None))
+        }
+    }
+}
+
+/// How far an install has got.
+pub(crate) enum Install {
+    /// It, or the update its machine needs first, is going: follow it, then ask again.
+    Going(Run),
+    Ended(Run),
+}
+
+/// The install `submit` makes, under `key`, as far as it has got. One its machine was too old for brings the machine up and goes again, once.
+pub(crate) async fn install_through(api: &Arc<Api>, key: &str, submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
+    let again = format!("{key}/again");
+    let second = sent(api, &again)?;
+    let first_of_two = second.is_none();
+    let Some(run) = second.or(sent(api, key)?) else {
+        let run = api.calcifer.submit(key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
+        return Ok(Install::Going(run));
+    };
+    if !matches!(run.status, Status::Completed | Status::Failed | Status::Canceled) {
+        return Ok(Install::Going(run));
+    }
+    if let (true, Status::Failed, Some(reason), Some(machine)) = (first_of_two, run.status, &run.reason, &run.machine)
+        && let Some(up) = api.machines.brought_up(machine, reason).await?
+    {
+        return Ok(Install::Going(match up {
+            BroughtUp::Going(update) => *update,
+            BroughtUp::Done => api.calcifer.submit(&again, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run,
+        }));
+    }
+    Ok(Install::Ended(run))
 }
 
 /// `prepare`, waiting out the install it needs: what Calcifer's own callers (a project's render
-/// blocks) use.
-pub async fn ready(api: &Arc<Api>, path: &Path, on: &On, hub: &str, key: &str) -> Result<Prepared, Error> {
+/// blocks) use. What it says while it does (a machine brought up) goes to `say`.
+pub async fn ready(api: &Arc<Api>, path: &Path, on: &On, hub: &str, key: &str, say: &(dyn Fn(String) + Sync)) -> Result<Prepared, Error> {
     loop {
         let prepared = prepare(api, path, on, hub, false, key, None).await?;
         let Some(run) = &prepared.install else { return Ok(prepared) };
+        said_on(run).for_each(say);
         crate::project::host::Host::new(api).wait(&run.id).await?;
     }
+}
+
+/// What a run a caller waits on tells whoever waits: that its machine is being brought up.
+pub(crate) fn said_on(run: &Run) -> impl Iterator<Item = String> + '_ {
+    (run.warnings.iter()).filter(|warning| warning.code == crate::update::BRINGING_UP).map(|warning| warning.message.clone())
 }
 
 /// The run sent under `key`, if one was.

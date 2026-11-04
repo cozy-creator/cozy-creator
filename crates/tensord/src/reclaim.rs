@@ -2,14 +2,16 @@
 //! last use. A disk is low when no more than its reserve is free (`Disk`). The TensorFS store
 //! evicts on its own: orphans, then idle model lanes, least recently used first.
 //! On a low disk a sweep drops, least recently used first until it is not low: uv cache
-//! entries no environment links, collected result copies, settled logs, memoized stages,
-//! update downloads, unused generations (then the uv entries only they linked), and compiled
-//! kernels last, only when they alone lift it. Garbage goes every sweep once idle: a generation
+//! entries no environment links, settled logs, memoized stages, update downloads, unused
+//! generations (then the uv entries only they linked), compiled kernels, only when they alone
+//! lift it, and last a run's held outputs (`Objects::make_room`). Garbage goes every sweep once
+//! idle: a run's result copies once nothing reads them, a generation
 //! whose build failed, an editable environment no generation names, a Runtime pair neither
 //! selected nor kept to roll back to, an unbound environment on a PyTorch base no longer active,
 //! then that base once no environment links it. Only bytes an unlink frees on the measured filesystem count:
 //! single-link files this process does not hold open, on that filesystem. Optional cache
-//! writes are skipped on a low disk. Never evicted: uncollected results (durable outputs),
+//! writes are skipped on a low disk. Never evicted: result copies a client hasn't read (durable
+//! outputs), an output a run is using or was read within `IDLE`, the same TTL for the rest,
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
 //! links, a kernel namespace a live executor or kernel boot holds. Each sweep logs what it
 //! freed and its bytes; what fills the disk by kind is measured with each sweep and whenever
@@ -602,11 +604,14 @@ pub fn sweep(caches: &Caches) -> io::Result<Swept> {
     uv(&mut swept)?;
     let mut entries = vec![];
     let mut add = |kind, path: PathBuf, used, guard| entries.push(Entry { kind, path, used, hold: None, guard });
-    // Result copies the client collected; uncollected ones are durable outputs.
+    // Result copies, once what they were kept for has them; until then they are durable outputs.
     for entry in fs::read_dir(root.join("results"))?.flatten() {
         let id = entry.file_name().to_string_lossy().into_owned();
-        if engine.get(&id).is_ok_and(|record| record.collected) {
-            add(Kind::Result, entry.path(), modified(&entry.path()), None);
+        if engine.result_copies_spent(&id).unwrap_or(false) {
+            let bytes = releasable(&entry.path(), filesystem, &open).unwrap_or(0);
+            if remove(&entry.path()) {
+                swept.add(Kind::Result, 1, bytes);
+            }
         }
     }
     // Logs no unfinished run names (machine logs, rotated copies): diagnostics.
@@ -804,6 +809,7 @@ pub struct Usage {
     pub models: u64,
     pub environments: u64,
     pub runtime: u64,
+    pub runs: u64,
 }
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
@@ -815,8 +821,8 @@ pub fn usage() -> Option<Usage> {
 
 /// Measures what fills the disk: the TensorFS store at `store`; the package environments under
 /// `engine` (generations, editable ones: their own files, `own`) and the entries this machine
-/// added to `uv_cache` that no environment hard-links; the rest of `engine` (the Runtime pair,
-/// kernels, the toolchain, Pythons) but its runs' files (other).
+/// added to `uv_cache` that no environment hard-links; its runs' files (inputs and outputs); the rest of
+/// `engine` (the Runtime pair, kernels, the toolchain, Pythons).
 pub fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>) {
     let generations = engine.join("generations");
     let editable = engine.join("editable");
@@ -828,7 +834,7 @@ pub fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>) {
     environments += envs.map(|env| own(&env.path())).sum::<u64>();
     let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
     environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
-    let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip) };
+    let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip), runs: du(&engine.join("execution"), &[]) };
     *USAGE.lock().unwrap() = Some(usage);
 }
 
@@ -869,5 +875,9 @@ pub fn advice(path: &Path, missing: u64) -> String {
         format!("models {}, package environments {}, Runtime {}; ", size(u.models), size(u.environments), size(u.runtime))
     });
     let gb = (disk.capacity.saturating_sub(disk.available) + missing + disk.reserve()).div_ceil(10_000_000_000) * 10;
-    format!(" (the disk holds {held}{} of {} free; --disk-gb {gb} would hold this call)", size(disk.available), size(disk.capacity))
+    format!(
+        " (the disk holds {held}{} of {} free: `cozy package ls --on <machine>` and `cozy package remove <package> --on <machine>` free some; \
+         `cozy machine rent <sku> --disk-gb {gb}` holds this call)",
+        size(disk.available), size(disk.capacity)
+    )
 }

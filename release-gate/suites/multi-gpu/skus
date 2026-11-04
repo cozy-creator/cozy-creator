@@ -1,2 +1,5 @@
-# The release agent passes the cheapest listed 2-GPU card: -f suites=multi-gpu -f skus=<card> -f gpus=2. This is the fallback.
-rtx-pro-6000 200 2
+# One card per kernel family's own group path (cozy-runtime arch.py, attention.py): `pick.sh` names today's cheapest of each
+# with two GPUs listed, for -f skus=<card> -f gpus=2 when one of these is out of stock.
+rtx-5090 150 2        # sm120, mma.sync with FP4: Sage3 and Kitchen's FP4 Sol
+h100-sxm5-80gb 150 2  # sm90, wgmma: Sage2's fixed-kmean Sol
+rtx-3090 150 2        # sm86, older mma.sync with INT4: Kitchen's INT4 Sol

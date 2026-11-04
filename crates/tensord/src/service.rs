@@ -443,6 +443,12 @@ impl Service {
                 disk: &disk,
             })?;
             swept.add(crate::reclaim::Kind::Object, objects.0, objects.1);
+            if let Some(calls) = self.calls().filter(|_| all) {
+                if disk()?.short().is_some() {
+                    let (count, bytes) = calls.make_room()?;
+                    swept.add(crate::reclaim::Kind::Object, count, bytes);
+                }
+            }
             Ok(swept)
         };
         match sweep() {

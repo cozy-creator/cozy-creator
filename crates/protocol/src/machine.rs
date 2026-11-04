@@ -925,8 +925,9 @@ pub struct Disk {
     pub free_bytes: u64,
     /// What fills it, as the machine's last sweep measured (0 before one, or from an older
     /// machine): its TensorFS store; its package environments with what they added to uv's
-    /// cache; its Runtime pair, kernels and toolchain. The rest is other.
+    /// cache; its Runtime pair, kernels and toolchain; its runs' files, inputs and outputs. The rest is other.
     pub models_bytes: u64,
     pub environments_bytes: u64,
     pub runtime_bytes: u64,
+    pub runs_bytes: u64,
 }

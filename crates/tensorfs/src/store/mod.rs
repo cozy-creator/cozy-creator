@@ -16,6 +16,8 @@
 //!   whatever newly references an object makes it young first: `put` and `reuse` touch it.
 //! - Processes share a store with no leases, markers or boot-time rehash: a torn write never has
 //!   a name, and an open descriptor outlives an unlink.
+//! - A fetch's bytes keep their place in `tmp/` when it is cut or killed ([`Store::resume`]): the
+//!   next fetch of the object takes them up, and the object's digest judges them with the rest.
 
 mod checkpoint;
 mod folder;
@@ -30,7 +32,7 @@ pub(crate) use records::is_name;
 pub use retention::TTL;
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -335,7 +337,47 @@ impl Store {
             hash: Sha256::new(),
             length: 0,
             over: false,
+            keeps: false,
+            ranged: false,
+            ahead: 0,
         })
+    }
+
+    /// [`Store::admit`] for a fetch, which can be cut at any moment, a kill included. Its bytes stay
+    /// in `tmp/partial-<sha256>` until it finishes, beside any ranges read ahead of them
+    /// (`tmp/partial-<sha256>.<first byte>`, each as long as it got), and the next fetch of `object`
+    /// takes them up. They are hashed again from the disk, and nothing but the digest of the whole
+    /// object lets them in: wrong bytes cost a fetch of the object, never a wrong object. One that
+    /// another fetch holds is left to it, and this is a plain admission.
+    pub(crate) fn resume(&self, object: &ObjectRef) -> Result<Admission> {
+        self.path(object)?;
+        let temp = self.root.join("tmp").join(format!("partial-{}", object.sha256));
+        let Some((file, found)) = partial(&temp) else {
+            return self.admit(Some(object));
+        };
+        let held = file.metadata().map_or(0, |metadata| metadata.len());
+        if !self.maintain(object.length.saturating_sub(held))? {
+            return Err(Error::Full { op: "admit", path: self.root.clone() });
+        }
+        let mut admission = Admission {
+            store: self.clone(),
+            expect: Some(object.clone()),
+            temp,
+            file: Some(file),
+            hash: Sha256::new(),
+            length: 0,
+            over: false,
+            keeps: true,
+            ranged: false,
+            ahead: 0,
+        };
+        if found {
+            if let Err(error) = admission.take_up() {
+                tracing::warn!("tensorfs: {} could not be taken up, so it starts over: {error}", admission.temp.display());
+                admission.start_over()?;
+            }
+        }
+        Ok(admission)
     }
 
     /// Admits everything `src` yields. With `expect`, an object already here is reused without
@@ -564,7 +606,34 @@ impl Store {
     }
 }
 
-/// Bytes on their way into the store. Dropped unfinished, it leaves nothing behind.
+/// `tmp/partial-<sha256>` for one fetch to write, locked until it closes, and whether it was there
+/// already. None: another fetch has it, or it can't be had. It may have been finished or swept
+/// between the open and the lock, so what is locked must still be what the name names.
+fn partial(path: &Path) -> Option<(File, bool)> {
+    loop {
+        let open = |new| OpenOptions::new().read(true).write(true).create_new(new).open(path);
+        let (file, found) = match open(true) {
+            Ok(file) => (file, false),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => match open(false) {
+                Ok(file) => (file, true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(_) => return None,
+            },
+            Err(_) => return None,
+        };
+        if !matches!(platform::lock::try_claim(&file), Ok(true)) {
+            return None;
+        }
+        match (FileId::of(&file), FileId::at(path)) {
+            (Ok(held), Ok(named)) if held == named => return Some((file, found)),
+            (Ok(_), Ok(_)) | (_, Err(_)) => continue,
+            (Err(_), _) => return None,
+        }
+    }
+}
+
+/// Bytes on their way into the store. Dropped unfinished, it leaves nothing behind, unless it is a
+/// fetch's ([`Store::resume`]), whose bytes stay for the next.
 pub struct Admission {
     store: Store,
     expect: Option<ObjectRef>,
@@ -573,11 +642,108 @@ pub struct Admission {
     hash: Sha256,
     length: u64,
     over: bool,
+    /// A fetch's: its bytes outlive it.
+    keeps: bool,
+    /// It has ranges beside it.
+    ranged: bool,
+    /// Bytes an earlier fetch left in ranges past those in order.
+    ahead: u64,
 }
 
 impl Admission {
-    /// Hashes, checks, flushes and names the bytes written.
+    /// Hashes the bytes an earlier fetch left, as if they had just been written, then takes what
+    /// follows them from their ranges.
+    fn take_up(&mut self) -> Result<()> {
+        let expect = self.expect.clone().expect("a fetch names its object");
+        let file = self.file.as_mut().expect("an admission has its file until it finishes");
+        let mut buffer = vec![0; 1 << 20];
+        loop {
+            let n = match file.read(&mut buffer) {
+                Ok(n) => n,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(fail("read", &self.temp)(error)),
+            };
+            if n == 0 {
+                break;
+            }
+            self.hash.update(&buffer[..n]);
+            self.length += n as u64;
+        }
+        if self.length > expect.length {
+            return Err(invalid(&self.temp, "longer than its object"));
+        }
+        while self.take_next()? {}
+        for (path, at) in self.ranges()? {
+            if at < self.length {
+                let _ = fs::remove_file(path);
+                continue;
+            }
+            self.ahead += fs::metadata(&path).map_err(fail("stat", &path))?.len();
+            self.ranged = true;
+        }
+        Ok(())
+    }
+
+    /// Nothing held any more.
+    fn start_over(&mut self) -> Result<()> {
+        let file = self.file.as_mut().expect("an admission has its file until it finishes");
+        file.set_len(0).map_err(fail("truncate", &self.temp))?;
+        file.seek(SeekFrom::Start(0)).map_err(fail("seek", &self.temp))?;
+        (self.hash, self.length, self.over, self.ahead) = (Sha256::new(), 0, false, 0);
+        for (path, _) in self.ranges()? {
+            let _ = fs::remove_file(path);
+        }
+        Ok(())
+    }
+
+    /// The range that starts at the first byte it lacks joins the bytes in order. False: none does.
+    fn take_next(&mut self) -> Result<bool> {
+        let path = self.range_path(self.length);
+        let mut range = match File::open(&path) {
+            Ok(range) => range,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(fail("open", &path)(error)),
+        };
+        let mut buffer = vec![0; 1 << 20];
+        loop {
+            let n = match range.read(&mut buffer) {
+                Ok(n) => n,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(fail("read", &path)(error)),
+            };
+            if n == 0 {
+                break;
+            }
+            if let Err(error) = self.write_all(&buffer[..n]) {
+                return Err(self.refusal(error));
+            }
+        }
+        drop(range);
+        fs::remove_file(&path).map_err(fail("remove", &path))?;
+        Ok(true)
+    }
+
+    /// Where the range starting at byte `at` is kept.
+    fn range_path(&self, at: u64) -> PathBuf {
+        let mut name = self.temp.clone().into_os_string();
+        name.push(format!(".{at}"));
+        name.into()
+    }
+
+    /// Every range beside it, by name and first byte.
+    fn ranges(&self) -> Result<Vec<(PathBuf, u64)>> {
+        let name = self.temp.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let (dir, prefix) = (self.store.root.join("tmp"), format!("{name}."));
+        let ranges = retention::list(&dir)?.into_iter().filter_map(|path| {
+            let at = path.file_name()?.to_str()?.strip_prefix(&prefix)?.parse().ok()?;
+            Some((path, at))
+        });
+        Ok(ranges.collect())
+    }
+
+    /// Hashes, checks, flushes and names the bytes written. Whatever the end, they stay nowhere else.
     pub fn finish(mut self) -> Result<ObjectRef> {
+        self.keeps = false;
         let got = ObjectRef {
             length: self.length,
             sha256: hex(&std::mem::take(&mut self.hash).finish()),
@@ -649,7 +815,15 @@ impl Write for Admission {
 impl Drop for Admission {
     fn drop(&mut self) {
         self.file.take();
+        if self.keeps && (self.length > 0 || self.ranged) {
+            return;
+        }
         let _ = fs::remove_file(&self.temp);
+        if self.ranged {
+            for (path, _) in self.ranges().unwrap_or_default() {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
 }
 
@@ -673,6 +847,11 @@ impl fetch::ObjectStore for Store {
 
     fn admit(&self, object: &ObjectRef) -> crate::err::Result<Box<dyn fetch::Admission>> {
         let admission = Store::admit(self, Some(object)).map_err(Error::refusal)?;
+        Ok(Box::new(admission))
+    }
+
+    fn resume(&self, object: &ObjectRef) -> crate::err::Result<Box<dyn fetch::Admission>> {
+        let admission = Store::resume(self, object).map_err(Error::refusal)?;
         Ok(Box::new(admission))
     }
 
@@ -704,6 +883,35 @@ impl fetch::Admission for Admission {
 
     fn commit(self: Box<Self>) -> crate::err::Result<()> {
         self.finish().map(drop).map_err(Error::refusal)
+    }
+
+    fn keeps(&self) -> bool {
+        self.keeps
+    }
+
+    fn held(&self) -> (u64, u64) {
+        (self.length, self.ahead)
+    }
+
+    fn range(&mut self, at: u64) -> crate::err::Result<Option<(File, u64)>> {
+        if !self.keeps {
+            return Ok(None);
+        }
+        self.ranged = true;
+        let path = self.range_path(at);
+        let file = OpenOptions::new().create(true).append(true).open(&path).map_err(|error| fail("open", &path)(error).refusal())?;
+        let held = file.metadata().map_err(|error| fail("stat", &path)(error).refusal())?.len();
+        let _ = file.set_modified(SystemTime::now());
+        Ok(Some((file, held)))
+    }
+
+    fn take(&mut self) -> crate::err::Result<u64> {
+        self.take_next().map_err(Error::refusal)?;
+        Ok(self.length)
+    }
+
+    fn discard(mut self: Box<Self>) {
+        self.keeps = false;
     }
 }
 

@@ -28,10 +28,12 @@ fn storage(error: impl std::fmt::Display) -> io::Error {
 }
 
 /// Retain one byte string as a one-file tree named by `owner`, bound to `actor` so a reader
-/// with that actor's capability can fetch it. Idempotent per owner.
+/// with that actor's capability can fetch it, and to `run`, so nothing evicts it while that goes on.
+/// Idempotent per owner.
 pub fn retain(
     engine: &Engine,
     actor: &str,
+    run: &str,
     owner: &str,
     source: &mut File,
     object: &ObjectRef,
@@ -57,7 +59,7 @@ pub fn retain(
     };
     engine.bind_native_output(actor, owner, &crate::archive::encode_native_byte_retention_request(&native))?;
     // The signer's own, so a later run of it may name these bytes by their hash, with nothing written.
-    engine.with_journal(|j| j.bind_object(actor, object))?;
+    engine.with_journal(|j| j.adopt_object(actor, run, object))?;
     Ok(native)
 }
 
@@ -312,6 +314,7 @@ fn commit(
         let source = retain(
             engine,
             &context.actor,
+            id,
             &owner,
             &mut File::open(path)?,
             &object,

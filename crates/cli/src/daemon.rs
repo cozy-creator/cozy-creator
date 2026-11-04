@@ -110,7 +110,7 @@ fn word(value: impl serde::Serialize) -> String {
 pub struct LogQuery {
     /// The machine's own log, the TensorFS transport or memory log it keeps, or (on `local`)
     /// Calcifer's, this computer's controller.
-    #[arg(value_enum, default_value_t = LogName::Tensord)]
+    #[arg(value_enum, ignore_case = true, default_value_t = LogName::Tensord)]
     log: LogName,
     /// Keep printing as it grows.
     #[arg(short, long)]
@@ -156,7 +156,7 @@ pub(crate) async fn machine_log(
     q: &LogQuery,
 ) -> Result<ExitCode, Error> {
     if let LogName::Calcifer = q.log {
-        if name != "local" {
+        if !name.eq_ignore_ascii_case("local") {
             return Err(Error::new(
                 Kind::Usage,
                 "log_not_kept",

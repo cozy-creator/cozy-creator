@@ -141,7 +141,10 @@ pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submi
         return Ok(Submitted { run, replay: true, notes: vec![], preparing: false });
     }
     match prepare(api, key, &ask).await? {
-        Prepared::Install(run) => Ok(Submitted { run, replay: false, notes: vec![], preparing: true }),
+        Prepared::Install(run) => {
+            let notes = crate::local_code::said_on(&run).map(|message| Note { level: NoteLevel::Warning, message }).collect();
+            Ok(Submitted { run, replay: false, notes, preparing: true })
+        }
         Prepared::Run { submit, notes } => {
             let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
             Ok(Submitted { notes, ..submitted })
@@ -169,11 +172,20 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
     // function lists its functions on an OS that runs no models here.
     if local(api, ask).is_some() {
         protocol::calcifer::local_usable(&on.to_string())?;
+        // Refused before that install, not after it.
+        if outside_a_project(ask) {
+            return Err(crate::project::not_in_one());
+        }
     }
     let hub = hub(api, &ask.hub);
     let cwd = ask.cwd.as_deref();
     let agreed = ask.agreed.clone();
     let resolved = target::resolve(api, &hub, &ask.target, cwd, &on, ask.warm.is_some(), key, agreed).await?;
+    if let (Resolved::Release { package, card, .. }, On::Machine(machine), false) = (&resolved, &on, key == "quote")
+        && let Some(going) = crate::update::release_first(api, key, machine, &hub, package, &card.release).await?
+    {
+        return Ok(Prepared::Install(going));
+    }
     let (package, function, code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -265,6 +277,11 @@ struct Code<'a> {
     on: On,
 }
 
+/// Whether `ask` is a person's run with no project to belong to.
+fn outside_a_project(ask: &RunRequest) -> bool {
+    ask.warm.is_none() && !ask.recipes && ask.project.as_deref().and_then(crate::project::holding_folder).is_none()
+}
+
 /// Binds the ask's terms to `callable` of `code` (a warm run, its model choices only) into the
 /// submission, and what binding said.
 async fn call(
@@ -285,7 +302,7 @@ async fn call(
     let mut notes = vec![];
     // A person's run belongs to a project, as a commit to a repository. Keeping a function warm and `cozy model quantize` are no one's run.
     let project = ask.project.as_deref().and_then(crate::project::holding_folder);
-    if project.is_none() && ask.warm.is_none() && !ask.recipes {
+    if outside_a_project(ask) {
         return Err(crate::project::not_in_one());
     }
     // `--file image=65b436d4f9a3` names a file of the project's by its hash.

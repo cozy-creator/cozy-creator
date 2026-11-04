@@ -248,12 +248,11 @@ async fn add(
 async fn ssh(ctx: &Context, name: &str, command: &[String]) -> Result<ExitCode, Error> {
     let m = machine(ctx, name).await?;
     let Some((rental, address)) = m.rental_id.as_ref().zip(m.rental.as_ref().and_then(|r| r.ssh.as_deref())) else {
-        let why = match m.rental {
-            Some(_) => format!("{} was rented without an SSH key", m.name),
-            None => format!("{} is not a rental: SSH there as its owner does", m.name),
-        };
-        return Err(Error::new(Kind::Usage, "machine_ssh_none", why)
-            .remedy("rent with `--ssh` to log in: cozy machine rent <sku> --ssh"));
+        return Err(match &m.rental {
+            Some(rental) => Error::new(Kind::Usage, "machine_ssh_none", format!("{} was rented without an SSH key, and a rental can't take one later", m.name))
+                .next(format!("cozy machine rent {} --ssh", rental.sku)),
+            None => Error::new(Kind::Usage, "machine_ssh_none", format!("{} is not a rental: SSH there as its owner does", m.name)),
+        });
     };
     let (host, port) = address.rsplit_once(':').ok_or_else(|| {
         Error::new(Kind::Internal, "machine_ssh_address", format!("{address:?} is not host:port"))

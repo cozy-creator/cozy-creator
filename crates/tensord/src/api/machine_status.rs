@@ -294,5 +294,6 @@ fn disk(path: &std::path::Path) -> Option<v1::Disk> {
         models_bytes: usage.models,
         environments_bytes: usage.environments,
         runtime_bytes: usage.runtime,
+        runs_bytes: usage.runs,
     })
 }

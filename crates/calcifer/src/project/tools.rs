@@ -79,19 +79,128 @@ pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
     said
 }
 
-/// Takes from `pieces` what a cut cannot read here, and says each: the rest still make the cut.
-pub fn unreadable(pieces: &mut Vec<Piece>) -> Vec<String> {
-    let mut said = vec![];
-    pieces.retain(|piece| {
-        let why = match (piece.path.is_file(), piece.shape.is_some()) {
-            (false, _) => "is not on this computer: cozy project pull",
-            (true, false) => "holds no video ffprobe reads",
-            (true, true) => return true,
+/// Why the film `files` holds isn't what a cut of these fields makes: its frames, measured, against what its pieces add up to, one a
+/// piece being rounding. A film short of a piece isn't that cut's state, whatever made it. None until each is measured.
+pub fn film_off(fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock, version: &folder::Version) -> Option<String> {
+    let film = lock.files.get(version.files.get("video")?)?;
+    if film.frames == 0 {
+        return None;
+    }
+    let fps = Canvas::of(fields, &mut vec![]).fps;
+    let (mut pieces, _) = pieces(fields, reads, &Folder::at(Path::new("")), lock);
+    // What it says it went without isn't why it's short.
+    pieces.retain(|piece| !version.without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
+    past_end(&mut pieces, fps);
+    let made = measure(&pieces, fps)?.frames;
+    (film.frames.abs_diff(made) > pieces.len() as u64).then(|| format!("its film holds {} frames, and its pieces add up to {made}", film.frames))
+}
+
+/// ffprobe's answer when the file at `path` isn't a video it reads.
+pub fn unread(ffprobe: &Path, path: &Path) -> Option<String> {
+    probe(ffprobe, path, false).err().map(|error| error.message)
+}
+
+/// A clip a cut goes without: why, in the words its closing line and `status` use, and what was said of it, for its warning.
+pub struct LeftOut {
+    pub asset: String,
+    pub why: String,
+    pub answer: String,
+}
+
+impl LeftOut {
+    fn new(piece: &Piece, why: &str, answer: String) -> Self {
+        Self { asset: piece.asset.clone(), why: why.to_owned(), answer }
+    }
+}
+
+const FFPROBE_CANT: &str = "ffprobe can't read it";
+
+/// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
+pub fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Result<Vec<LeftOut>, Error> {
+    let mut left = vec![];
+    for piece in pieces.iter().filter(|piece| piece.shape.is_none()) {
+        left.push(match probe(ffprobe, &piece.path, false) {
+            Ok(_) => LeftOut::new(piece, "it's no video", format!("{} is no video a cut takes: those are mp4, mov, m4v, webm and mkv", piece.path.display())),
+            Err(error) if error.code == TOOL_WONT_START => return Err(error),
+            Err(error) => LeftOut::new(piece, FFPROBE_CANT, error.message),
+        });
+    }
+    Ok(left)
+}
+
+/// What is wrong with `piece` alone, found by decoding and encoding it as a whole encode does with nothing written, so a full disk is
+/// no clip's doing. None: nothing. Err: the tool itself won't start.
+fn fails_alone(ffmpeg: &Path, ffprobe: &Path, piece: &Piece, canvas: &Canvas) -> Result<Option<LeftOut>, Error> {
+    let probed = match probe(ffprobe, &piece.path, false) {
+        Ok(probed) => probed,
+        Err(error) if error.code == TOOL_WONT_START => return Err(error),
+        Err(error) => return Ok(Some(LeftOut::new(piece, FFPROBE_CANT, error.message))),
+    };
+    let fps = canvas.fps;
+    let (start, end) = piece.frames(fps).unwrap_or((0, probed.frames));
+    let (width, height) = canvas.edit_size(probed.size);
+    let native = piece.shape.is_some_and(|shape| !retimed(&shape, fps));
+    let video = whole_filter(native, fps, (start, end), (width, height));
+    let sound = sound_filter((start, end), fps);
+    let done = std::process::Command::new(ffmpeg)
+        .args(["-y", "-v", "error", "-i"])
+        .arg(&piece.path)
+        .args(["-map", "0:v:0", "-map", "0:a:0?", "-vf", &video, "-af", &sound])
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-f", "null", "-"])
+        .output()
+        .map_err(|e| wont_start("ffmpeg", &e))?;
+    let said = String::from_utf8_lossy(&done.stderr);
+    Ok((!done.status.success()).then(|| LeftOut::new(piece, "ffmpeg can't cut it", format!("ffmpeg: {}", said.trim().lines().last().unwrap_or("it failed")))))
+}
+
+/// `pieces` cut, less each clip that can't be (Paul, 2026-11-04: "why would it ever fail the cut?"): when a cut fails, each clip is tried
+/// alone, and those that fail are left out and the rest cut again. If every clip passes alone, a whole encode takes the fast join's place.
+/// If that fails too it is no clip's doing (a full disk, say), and that is the Err. The cut is None once no clip is left.
+pub fn cut_around(
+    ffmpeg: &Path,
+    ffprobe: &Path,
+    folder: &Folder,
+    mut pieces: Vec<Piece>,
+    canvas: &Canvas,
+    name: &str,
+    cache: &Path,
+) -> Result<(Option<(Cutted, PathBuf)>, Vec<LeftOut>), Error> {
+    let (mut left, mut fast) = (vec![], true);
+    while !pieces.is_empty() {
+        let error = match cut(ffmpeg, ffprobe, folder, &pieces, canvas, name, cache, fast) {
+            Ok(made) => return Ok((Some(made), left)),
+            Err(error) if error.code == TOOL_WONT_START => return Err(error),
+            Err(error) => error,
         };
-        said.push(format!("{}: {} {why}: that cut is left out", piece.asset, piece.path.display()));
-        false
-    });
-    said
+        let mut failing = vec![];
+        for piece in &pieces {
+            failing.extend(fails_alone(ffmpeg, ffprobe, piece, canvas)?);
+        }
+        if failing.is_empty() {
+            if !fast {
+                return Err(error);
+            }
+            fast = false;
+        }
+        pieces.retain(|piece| !failing.iter().any(|out: &LeftOut| out.asset == piece.asset));
+        left.extend(failing);
+    }
+    Ok((None, left))
+}
+
+/// A piece's frames as a whole encode takes them: retimed unless it runs at the cut's rate, then cut by frame and filling the canvas.
+fn whole_filter(native: bool, fps: f64, (start, end): (u64, u64), (width, height): (u64, u64)) -> String {
+    // A take at another rate is retimed first (each frame its source's nearest in time), then cut by frame like any other.
+    let retime = if native { String::new() } else { format!("fps={fps},") };
+    format!(
+        "{retime}trim=start_frame={start}:end_frame={end},setpts=PTS-STARTPTS,\
+         scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+    )
+}
+
+/// A piece's sound at its frames' times.
+fn sound_filter((start, end): (u64, u64), fps: f64) -> String {
+    format!("atrim=start={}:end={},asetpts=PTS-STARTPTS", start as f64 / fps, end as f64 / fps)
 }
 
 /// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.
@@ -229,7 +338,8 @@ pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, l
 /// project's. Nothing is encoded above or below its sources: an edge piece at its own take's video
 /// bitrate, a whole encode and the sound at the highest of the takes cut in (bitrate, sample rate,
 /// channels).
-pub fn cut(
+#[allow(clippy::too_many_arguments)]
+fn cut(
     ffmpeg: &Path,
     ffprobe: &Path,
     folder: &Folder,
@@ -237,6 +347,7 @@ pub fn cut(
     canvas: &Canvas,
     name: &str,
     cache: &Path,
+    fast: bool,
 ) -> Result<(Cutted, PathBuf), Error> {
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
@@ -254,8 +365,9 @@ pub fn cut(
     let video = work.path().join("video.mp4");
     let highest = probes.iter().filter_map(|probe| probe.video_bit_rate).max();
     let os = |args: &[&str]| args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-    let fast = (pieces.iter().zip(&probes))
-        .all(|(piece, p)| p.video == probes[0].video && p.video.starts_with("h264 ") && p.size == (width, height) && native(piece));
+    let fast = fast
+        && (pieces.iter().zip(&probes))
+            .all(|(piece, p)| p.video == probes[0].video && p.video.starts_with("h264 ") && p.size == (width, height) && native(piece));
     if fast {
         let mut list = String::new();
         for (k, ((piece, probe), &(start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
@@ -321,14 +433,7 @@ pub fn cut(
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
         for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
             inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
-            // A take at another rate is retimed first (each frame its source's nearest in time), then
-            // cut by frame like any other.
-            let retime = if native(piece) { String::new() } else { format!("fps={rate},") };
-            let _ = write!(
-                filter,
-                "[{k}:v]{retime}trim=start_frame={start}:end_frame={end},setpts=PTS-STARTPTS,\
-                 scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1[v{k}];"
-            );
+            let _ = write!(filter, "[{k}:v]{}[v{k}];", whole_filter(native(piece), fps, (*start, *end), (width, height)));
             let _ = write!(joined, "[v{k}]");
         }
         let _ = write!(filter, "{joined}concat=n={}:v=1:a=0[v]", pieces.len());
@@ -346,8 +451,7 @@ pub fn cut(
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
         for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
             inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
-            let (start, end) = (*start as f64 / fps, *end as f64 / fps);
-            let _ = write!(filter, "[{k}:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{k}];");
+            let _ = write!(filter, "[{k}:a]{}[a{k}];", sound_filter((*start, *end), fps));
             let _ = write!(joined, "[a{k}]");
         }
         let _ = write!(filter, "{joined}concat=n={}:v=0:a=1[a]", pieces.len());
@@ -534,6 +638,11 @@ pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, video: bool) -> Opti
     })
 }
 
+/// How many frames the video at `path` holds, when ffprobe reads it.
+pub fn frames_of(ffprobe: &Path, path: &Path) -> Option<u64> {
+    probe(ffprobe, path, false).ok().map(|probe| probe.frames)
+}
+
 /// What the edit needs of the video at `path`; its keyframes only with `keys`.
 fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
     let read = |args: &[&str]| -> Result<Vec<u8>, Error> {
@@ -542,7 +651,7 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
             .args(args)
             .arg(path)
             .output()
-            .map_err(|e| failed(format!("ffprobe did not start: {e}")))?;
+            .map_err(|e| wont_start("ffprobe", &e))?;
         Ok(done.stdout)
     };
     let read_json: Value = serde_json::from_slice(&read(&[
@@ -604,7 +713,7 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
         .args(["-y", "-v", "error"])
         .args(args)
         .output()
-        .map_err(|e| failed(format!("ffmpeg did not start: {e}")))?;
+        .map_err(|e| wont_start("ffmpeg", &e))?;
     match done.status.success() {
         true => Ok(()),
         false => {
@@ -615,6 +724,13 @@ fn run(ffmpeg: &Path, args: &[&std::ffi::OsStr]) -> Result<(), Error> {
 
 fn failed(message: String) -> Error {
     Error::new(Kind::Unavailable, "edit_failed", message)
+}
+
+const TOOL_WONT_START: &str = "edit_tool_wont_start";
+
+/// No clip's doing: every cut here would meet it.
+fn wont_start(tool: &str, error: &std::io::Error) -> Error {
+    Error::new(Kind::Unavailable, TOOL_WONT_START, format!("{tool} did not start: {error}")).next("cozy doctor")
 }
 
 /// Each file `value`, a request by its digests, names: its field, path and digest.
@@ -684,10 +800,36 @@ pub fn frame(ffmpeg: &Path, video: &Path, at: Option<f64>, dir: &Path) -> Result
 
 /// `from`, a file of the project's, as `to` at its root: a hard link, else a copy; a reader never meets half a file.
 pub fn publish(from: &Path, to: &Path) -> std::io::Result<()> {
-    let part = to.with_file_name(format!(".{}.link", to.file_name().expect("a name").to_string_lossy()));
+    let part = to.with_file_name(format!(".{}.part", to.file_name().expect("a name").to_string_lossy()));
     let _ = std::fs::remove_file(&part);
-    if std::fs::hard_link(from, &part).is_err() {
-        std::fs::copy(from, &part)?;
-    }
+    // A real file of its own, whatever a person does to it; `copy` clones where the filesystem can.
+    std::fs::copy(from, &part)?;
+    writable(&part)?;
     std::fs::rename(&part, to)
+}
+
+#[cfg(unix)]
+fn writable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+fn writable(path: &Path) -> std::io::Result<()> {
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(path, permissions)
+}
+
+/// Whether the film at `path` still shares its bytes with `files/`, as one a cozy before this published does: writing to it would write there.
+#[cfg(unix)]
+pub fn shares_bytes(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
+}
+
+#[cfg(not(unix))]
+pub fn shares_bytes(_: &Path) -> bool {
+    false
 }

@@ -4,6 +4,7 @@
 //! no kind's meaning and no field's shape, but for the reserved package `cozy`, which it runs itself. Every other field passes through to the adapter and counts in the
 //! key. Nothing refuses a project but a file of no format: what one line gets wrong is said, and that line does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
 
 use protocol::error::{Error, Kind};
 use serde_json::{Map, Value, json};
@@ -200,6 +201,8 @@ pub struct Doc {
     unread: Vec<(usize, String)>,
     /// How many the file declares, in order, and those after them are images only a beat names.
     declared: usize,
+    /// The project's folder, which says what is on this computer.
+    dir: PathBuf,
 }
 
 /// Why an asset has the state it has, or none.
@@ -265,8 +268,12 @@ impl Doc {
     /// The project `text` says. Only a file of no format, or an older one, is refused.
     pub fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
         let value = protocol::yaml::to_json(text).map_err(|why| {
-            invalid("project_yaml", format!("{}: {why}", folder::PROJECT))
-                .remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`")
+            let (line, written) = at_line(text, &why);
+            let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
+            match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
+                true => refused.remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`"),
+                false => refused,
+            }
         })?;
         let top = match value {
             Value::Object(top) => top,
@@ -313,7 +320,7 @@ impl Doc {
                 }
             }
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], declared: 0 };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], declared: 0, dir: folder.dir.clone() };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
             doc.declare(text, &name, written, &defaults, folder, &lock);
@@ -647,14 +654,14 @@ impl Doc {
             }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
-                // A tag of its package, as written, stays text, whatever the project names.
-                if tags.is_some_and(|tags| tags.contains(&mention)) {
+                // A tag of its package, in any case, stays text as written, whatever the project names.
+                if tags.is_some_and(|tags| is_tag(tags, &mention)) {
                     continue;
                 }
                 let Some(j) = self.find(&mention) else {
                     match tags {
-                        Some(_) => {
-                            let line = self.names_nothing(&asset.name, &mention);
+                        Some(tags) => {
+                            let line = self.names_nothing(&asset.name, &mention, tags);
                             if !said.contains(&line) {
                                 said.push(line);
                             }
@@ -710,9 +717,9 @@ impl Doc {
         self.reserved.get(&plain_with(&self.target(i)))
     }
 
-    /// What is said of a mention that names nothing and is no tag.
-    fn names_nothing(&self, name: &str, mention: &str) -> String {
-        match self.near(mention) {
+    /// What is said of a mention that names nothing and is no tag of `tags`.
+    fn names_nothing(&self, name: &str, mention: &str, tags: &[String]) -> String {
+        match self.near(mention, tags) {
             Some(close) => format!("<{mention}>: did you mean <{close}>?"),
             None => format!("{name} mentions <{mention}>, which is nothing in the project: it reaches its function as written"),
         }
@@ -720,17 +727,17 @@ impl Doc {
 
     /// What is said of asset `i`'s mentions naming nothing, now its package's `tags` are read.
     pub fn said_once_read(&self, i: usize, tags: &[String]) -> Vec<String> {
-        let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !tags.contains(mention));
-        let mut said: Vec<String> = mine.map(|(_, mention)| self.names_nothing(&self.assets[i].name, mention)).collect();
+        let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !is_tag(tags, mention));
+        let mut said: Vec<String> = mine.map(|(_, mention)| self.names_nothing(&self.assets[i].name, mention, tags)).collect();
         said.dedup();
         said
     }
 
-    /// The name `mention`, which names nothing, is likely a typo of: within two edits, and neither of them short.
-    fn near(&self, mention: &str) -> Option<&str> {
+    /// The name `mention`, which names nothing, is likely a typo of: within two edits, neither of them short, and no tag of `tags`.
+    fn near(&self, mention: &str, tags: &[String]) -> Option<&str> {
         const SHORTEST: usize = 4;
         let key = name_key(mention);
-        let names = self.assets.iter().map(|asset| (name_key(&asset.name), asset.name.as_str()));
+        let names = self.assets.iter().filter(|asset| !is_tag(tags, &asset.name)).map(|asset| (name_key(&asset.name), asset.name.as_str()));
         let close = names.filter(|(other, _)| key.chars().count() >= SHORTEST && other.chars().count() >= SHORTEST).map(|(other, name)| (edits(&key, &other), name));
         close.filter(|(apart, _)| *apart <= 2).min_by_key(|(apart, _)| *apart).map(|(_, name)| name)
     }
@@ -849,7 +856,25 @@ impl Doc {
             };
         }
         let Some(now) = &inputs else { return stand(State::Waits, None) };
-        match (versions.iter().rev().find(|version| version.inputs == *now), versions.last()) {
+        // A film short of its pieces, or that went without one now here, isn't its state, though the memo would say so: it cuts again.
+        let off = |version: &folder::Version| -> Option<String> {
+            if self.tool(i) != Some(Tool::Cut) {
+                return None;
+            }
+            let here = |piece: &str| {
+                let read = reads.iter().find(|read| name_key(&read.name) == name_key(piece));
+                read.and_then(|read| lock.files.get(folder::main_of(&read.files)?)).is_some_and(|file| self.dir.join(&file.path).is_file())
+            };
+            match version.without.iter().find(|left| left.absent && here(&left.piece)) {
+                Some(left) => Some(format!("{} is here now", left.piece)),
+                None => super::tools::film_off(&asset.fields, &reads, lock, version),
+            }
+        };
+        let holding = || versions.iter().rev().filter(|version| version.inputs == *now);
+        if let Some(why) = holding().next().filter(|_| holding().all(|version| off(version).is_some())).and_then(off) {
+            return stand(State::Stale(why), None);
+        }
+        match (holding().find(|version| off(version).is_none()), versions.last()) {
             (Some(version), _) => stand(State::Current(version.number), Some(version.files.clone())),
             (None, None) => stand(State::Missing, None),
             (None, Some(last)) => {
@@ -935,7 +960,11 @@ impl Doc {
             .map(|read| {
                 let of = &self.assets[read.asset];
                 let files: Map<String, Value> = read.files.iter().map(|(name, sha256)| (name.clone(), file(sha256))).collect();
-                let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
+                // What an entity shows was made by what made the asset it links.
+                let links = of.links.as_ref();
+                let shows = links.and_then(|links| links.roles.get("image").or(links.roles.get("")).or(links.roles.values().next()));
+                let shown = shows.and_then(|asset| self.holds(asset)).unwrap_or(read.asset);
+                let made = stand[shown].version().or(read.newest).and_then(|number| lock.asset(&self.assets[shown].name)?.version(number));
                 let made_by = made.and_then(|made| made.made_by.as_ref()).map_or("", |by| by.with.as_str());
                 let record = json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by});
                 record
@@ -1370,4 +1399,16 @@ fn insert_line(lines: &[&str], after: usize, line: &str) -> String {
 
 fn invalid(code: &str, message: String) -> Error {
     Error::new(Kind::Validation, code, message)
+}
+
+/// Whether `name` is one of a package's `tags`, in any case.
+fn is_tag(tags: &[String], name: &str) -> bool {
+    tags.iter().any(|tag| name_key(tag) == name_key(name))
+}
+
+/// The line a YAML error names (`… line 4 column 4 …`) as it is written: said after the error, and alone.
+fn at_line<'a>(text: &'a str, why: &str) -> (String, &'a str) {
+    let number = why.split("line ").nth(1).and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse::<usize>().ok());
+    let Some(written) = number.and_then(|number| text.lines().nth(number.saturating_sub(1))) else { return (String::new(), "") };
+    (format!(": `{}`", written.trim()), written)
 }

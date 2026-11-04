@@ -5,15 +5,17 @@
 """The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
 video is its plate, `given` the request it got, and `written` a picture per write; the field `bare` calls a function that takes no
 writes, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
-going. An `image` types its operation's fields. An `audio` says its `options`."""
+going, `segments` makes a long shot's way, segment by segment, each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read, and `crash` a run that fails saying it. An `image`
+types its operation's fields. An `audio` says its `options`."""
 
 import hashlib
 import json
 import os
+import struct
 import time
 
 import msgspec
-from cozy_runtime.author import App, File, ImageFrame, Invocation, Operation, Outputs, Refuse
+from cozy_runtime.author import App, File, ImageFrame, Invocation, Operation, Outputs, Refuse, Telemetry
 
 app = App()
 
@@ -61,11 +63,13 @@ def shoot(payload: Request, out: Outputs) -> Take:
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
-@app.project_adapter("video", reserved=["d"])
+@app.project_adapter("video", reserved=["d", "english"])
 def adapt(op: Operation) -> list[Invocation]:
     """Its own words, nothing the format names. A field says what to do: answer no run, refuse, or call another of its functions."""
     if op.fields.get("refuse"):
         raise Refuse(str(op.fields["refuse"]))
+    if op.fields.get("crash"):
+        return [Invocation(function="crash", input={"prompt": str(op.fields["crash"])})]
     if "seconds" in op.fields:
         return [Invocation(function="slow", input={"seconds": op.fields.get("seconds", 20)})]
     if op.fields.get("two_calls"):
@@ -73,8 +77,14 @@ def adapt(op: Operation) -> list[Invocation]:
     plate = next((read for read in op.reads if "video" in read.files), None)
     if plate is None or op.fields.get("no_run"):
         return []
+    if "segments" in op.fields:
+        return [Invocation(function="scenes", input={"plate": plate.files["video"].sha256, "segments": op.fields["segments"], "seconds": op.fields.get("each", 2)})]
     if op.fields.get("bare"):
         return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
+    if op.fields.get("fresh"):
+        return [Invocation(function="fresh", input={"plate": plate.files["video"].sha256})]
+    if op.fields.get("noise"):
+        return [Invocation(function="noise", input={"prompt": op.asset})]
     said = [f"{read.name}={read.kind}{'+latents' if 'latents' in read.files else ''}" for read in op.reads]
     told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
     request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}, "writes": [{"name": write.name, "at_s": write.at_s} for write in op.writes]}
@@ -92,9 +102,42 @@ class BareTake(msgspec.Struct):
     video: File
 
 
+class Fresh(msgspec.Struct, kw_only=True):
+    plate: File
+    seed: int | None = None
+
+
+class Scenes(msgspec.Struct, kw_only=True):
+    plate: File
+    segments: int
+    seconds: float
+    seed: int | None = None
+
+
+@app.entrypoint()
+def scenes(payload: Scenes, out: Outputs, tel: Telemetry) -> BareTake:
+    """A long shot's way: its segments in turn, each in counted steps and shown as it ends, and a warning any shot gives alike."""
+    tel.log("the fixture's lens is dusty", level="warn")
+    (count, steps, video) = (payload.segments, 5, None)
+    for index in range(count):
+        with tel.scope(f"Segment {index + 1} of {count}", overall_range=(index / count, (index + 1) / count)):
+            step = tel.step_callback(steps, stage="denoise")
+            for at in range(steps):
+                time.sleep(payload.seconds / steps)
+                step(at)
+        video = out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4")
+        out.publish("video", video, label="Video" if index + 1 == count else f"Segment {index + 1} of {count}")
+    return BareTake(video)
+
+
 @app.entrypoint()
 def bare(payload: Bare, out: Outputs) -> BareTake:
     return BareTake(out.save_bytes(payload.plate.read_bytes(), media_type="video/mp4"))
+
+
+@app.entrypoint()
+def fresh(payload: Fresh, out: Outputs) -> BareTake:
+    return BareTake(out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4"))
 
 
 
@@ -113,6 +156,16 @@ class Text(msgspec.Struct, kw_only=True):
 
 class Saved(msgspec.Struct):
     given: File
+
+
+@app.entrypoint()
+def noise(payload: Text, out: Outputs) -> BareTake:
+    return BareTake(out.save_bytes(os.urandom(4096), media_type="video/mp4"))
+
+
+@app.entrypoint()
+def crash(payload: Text, out: Outputs) -> Saved:
+    raise RuntimeError(payload.prompt)
 
 
 @app.entrypoint()

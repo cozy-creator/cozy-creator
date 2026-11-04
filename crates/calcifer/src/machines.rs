@@ -308,6 +308,7 @@ impl Machines {
                 "machine_unreachable",
                 format!("{address}: {e}"),
             )
+            .remedy("on that computer, `cozy machine show local` says the address it listens on")
         };
         let leaf: [u8; 32] =
             Sha256::digest(link::presented_leaf(address).await.map_err(unreachable)?).into();
@@ -631,8 +632,9 @@ impl Machines {
             Ok(None) => Err(Error::new(
                 Kind::Unavailable,
                 "machine_booting",
-                format!("{} has no address yet", row.name),
-            )),
+                format!("{} has no address yet: it is still starting", row.name),
+            )
+            .next(format!("cozy machine show {}", row.name))),
             Err(e) => Err(Error::new(Kind::Unavailable, "machine_unreachable", e)),
         }
     }
@@ -1251,7 +1253,7 @@ pub(crate) async fn fresh(machines: &Arc<Machines>, text: &str) -> Result<Machin
     };
     let unavailable = |why: String| {
         let message = format!("{} cannot answer now: {why}", row.name);
-        Error::new(Kind::Unavailable, "machine_unavailable", message)
+        Error::new(Kind::Unavailable, "machine_unavailable", message).next("cozy machine ls")
     };
     if row.state == MachineState::Ended {
         return Err(unavailable("it has ended".into()));
@@ -1654,6 +1656,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         disk_models_bytes: frame.disk.as_ref().map_or(0, |d| d.models_bytes),
         disk_environments_bytes: frame.disk.as_ref().map_or(0, |d| d.environments_bytes),
         disk_runtime_bytes: frame.disk.as_ref().map_or(0, |d| d.runtime_bytes),
+        disk_runs_bytes: frame.disk.as_ref().map_or(0, |d| d.runs_bytes),
         runs: vec![],
         models: frame
             .models
@@ -1790,37 +1793,51 @@ fn log_refusal(name: &str, log: MachineLog, e: LinkError) -> Error {
 /// A machine's refusal, as the API answers it.
 fn refusal(name: &str, e: LinkError) -> Error {
     match e {
-        LinkError::Refused { code, message } => Error::new(
-            Kind::Conflict,
-            "machine_refused",
-            format!("{name}: {message}"),
-        )
-        .cause(code),
+        LinkError::Refused { code, message, remedy, next } => {
+            let named = |text: String| text.replace("<machine>", name);
+            let mut error = Error::new(Kind::Conflict, "machine_refused", format!("{name}: {}", named(message))).cause(code);
+            error.remedy = remedy.map(named);
+            error.next = next.into_iter().map(named).collect();
+            match error.next.is_empty() {
+                true => error.next(format!("cozy machine show {name}")),
+                false => error,
+            }
+        }
         LinkError::Unauthorized(message) => Error::new(
             Kind::Credential,
             "machine_unauthorized",
             format!("{name}: {message}"),
-        ),
+        )
+        .remedy("on that computer: cozy machine authorize <the `controller key` here>")
+        .next("cozy machine show local"),
         LinkError::Released(message) => Error::new(
             Kind::Unavailable,
             "machine_released",
             format!("{name}: {message}"),
-        ),
+        )
+        .next("cozy machine ls"),
         LinkError::NoRun | LinkError::NotFound => Error::new(
             Kind::NotFound,
             "not_found",
             format!("{name} has no such thing"),
-        ),
+        )
+        .remedy(format!("if it runs an older cozy than this one: {}", crate::update::bring_up_command(name)))
+        .next(format!("cozy machine show {name}")),
         LinkError::Unreachable(message) => Error::new(
             Kind::Unavailable,
             "machine_unreachable",
             format!("{name}: {message}"),
-        ),
+        )
+        .next(format!("cozy machine show {name}")),
+        LinkError::Broken { code, message } => Error::new(Kind::Unavailable, "machine_failed", format!("{name}: {message}"))
+            .cause(code)
+            .next(format!("cozy machine logs {name}")),
         LinkError::Unanswered(message) => Error::new(
             Kind::Unavailable,
             "machine_unanswered",
             format!("{name} has not answered: {message}"),
-        ),
+        )
+        .next(format!("cozy machine show {name}")),
     }
 }
 
@@ -1843,6 +1860,7 @@ fn local_refusal() -> Error {
         "machine_local",
         "`local` is this computer's machine: it starts when used and stops after 15 minutes idle",
     )
+    .next("cozy machine show local")
 }
 
 /// A machine `Machines::named` found: this controller's, or another controller's live rental of
