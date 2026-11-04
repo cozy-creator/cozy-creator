@@ -26,6 +26,8 @@ pub struct Node {
     pub shot: bool,
     /// What it makes is a video.
     pub video: bool,
+    /// How much it makes, as what it takes goes by it: a shot's seconds; one of anything else.
+    pub length: f64,
 }
 
 /// What the walker reads of one frozen render, and what stands now.
@@ -344,6 +346,11 @@ impl Graph {
             return Turn::Stands;
         }
         Turn::Go
+    }
+
+    /// Back to waiting for its turn: a machine isn't free for it yet.
+    pub fn put_back(&mut self, id: usize) {
+        self.ready.insert((self.jobs[id].rank, id));
     }
 
     /// The jobs ready for their turn, smallest rank first, at most `room`. Each stays the caller's until `going`, `end` or it waits again.

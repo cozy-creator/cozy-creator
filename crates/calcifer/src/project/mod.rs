@@ -19,6 +19,7 @@ mod thumbs;
 mod caption;
 mod direct;
 mod tools;
+mod sim;
 mod walker;
 
 use std::{
@@ -457,6 +458,8 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
             run: pending.run,
             earlier_ms: pending.version.execution_ms,
             shot: job.is_some_and(|job| job.shot),
+            ends_at_ms: walker.placed.get(id).map(|placed| at_ms(placed.end_s)),
+            gpus: walker.placed.get(id).map(|placed| placed.width).filter(|width| *width > 0),
         }
     });
     let going = going.collect();
@@ -472,7 +475,18 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
                 [a, b, c, more @ ..] => format!("after {a}, {b}, {c} and {} more", more.len()),
                 waits => format!("after {}", waits.join(", ")),
             };
-            let row = Job { id: job.key.clone(), asset: job.asset.clone(), noun: noun(Some(job)).into(), needs: waits.iter().map(|name| (*name).to_owned()).collect(), why: Some(why), ..Job::default() };
+            let placed = walker.placed.get(&job.key);
+            let row = Job {
+                id: job.key.clone(),
+                asset: job.asset.clone(),
+                noun: noun(Some(job)).into(),
+                needs: waits.iter().map(|name| (*name).to_owned()).collect(),
+                why: Some(why),
+                gpus: placed.map(|placed| placed.width).filter(|width| *width > 0),
+                starts_at_ms: placed.map(|placed| at_ms(placed.start_s)),
+                ends_at_ms: placed.map(|placed| at_ms(placed.end_s)),
+                ..Job::default()
+            };
             (row, job.shot)
         })
         .collect();
@@ -481,6 +495,11 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     let on = on.flat_map(|target| target.on.iter().map(ToString::to_string)).collect();
     project.jobs.sync(on, going, coming, run);
     Ok(())
+}
+
+/// `seconds` from now, to the nearest 10 s: a guess, and one that doesn't tell a client anything new every time it is worked out again.
+fn at_ms(seconds: f64) -> i64 {
+    (now_ms() + (seconds * 1000.0) as i64) / 10_000 * 10_000
 }
 
 /// What a project's walker needn't read again.
@@ -499,6 +518,14 @@ struct Walker {
     names: Option<(String, HashSet<String>)>,
     /// What machines were asked to fetch ahead: machine, function and its model choices.
     asked_ahead: HashSet<(String, String, String)>,
+    /// What each `with` calls, as its package said: its function and the widths it runs at.
+    facts: HashMap<String, (String, Vec<u32>)>,
+    /// What runs here took, by machine and function.
+    learned: HashMap<(String, String), sim::Learned>,
+    /// Where the last plan put each job, by its key.
+    placed: HashMap<String, sim::Placed>,
+    /// When each job went, and how wide: what is left of it.
+    sent_at: HashMap<String, (Instant, String, u32)>,
 }
 
 /// One text a render was asked with, read once, and what stands by it: each asset worked out when asked of, and again once what it reads moved.
@@ -563,6 +590,8 @@ fn node_of(doc: &Doc, i: usize) -> Node {
     let asset = &doc.assets[i];
     let said = serde_json::to_string(&(&asset.fields, &asset.body)).unwrap_or_default();
     let video = asset.kind == "video";
+    let beats = asset.fields.get("beats").and_then(Value::as_array);
+    let length = beats.map_or(0.0, |beats| beats.iter().map(|beat| beat["duration"].as_f64().unwrap_or(0.0)).sum::<f64>());
     Node {
         name: asset.name.clone(),
         spec: hex::encode(Sha256::digest(said)),
@@ -572,6 +601,7 @@ fn node_of(doc: &Doc, i: usize) -> Node {
         pinned: asset.pin.is_some(),
         shot: video && doc.tool(i).is_none(),
         video,
+        length: if length > 0.0 { length } else { 1.0 },
     }
 }
 
@@ -2189,6 +2219,8 @@ enum Act {
     Deleted { id: usize, ask: String, key: String, asset: String },
     Kept { id: usize, ask: String, key: String, asset: String, said: String },
     Send { id: usize, key: String, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, next: Next },
+    /// Its machines are all busy: it waits here for one.
+    Held { id: usize },
     Tool { id: usize, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, i: usize },
 }
 
@@ -2489,7 +2521,7 @@ impl Walk {
         let mut wanted = vec![];
         for id in graph.open_jobs() {
             let job = &graph.jobs[id];
-            if job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
+            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
                 continue;
             }
             let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
@@ -2543,6 +2575,95 @@ impl Walk {
         let run = self.send_run(&key, submit).await?;
         self.project.jobs.ahead(run.id.clone(), shown, placed.to_string(), run.number);
         Ok(())
+    }
+
+    /// Works out what's owed on the machines' GPUs: each job's width, and when each should end.
+    fn plan_now(&self) {
+        let Ok(walk) = self.folder().walk_now() else { return };
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        let Walker { graph, readings, facts, learned, placed, sent_at, .. } = &mut *walker;
+        let open = graph.open_jobs();
+        let at: HashMap<usize, usize> = open.iter().enumerate().map(|(place, &id)| (id, place)).collect();
+        let mut machines: Vec<On> = vec![];
+        let mut works = vec![];
+        for &id in &open {
+            let job = &graph.jobs[id];
+            let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask);
+            let reading = ask.and_then(|ask| readings.get(&ask.digest));
+            let on = ask.map(|ask| ask.target.on.as_slice()).unwrap_or_default();
+            let with = reading.filter(|_| job.node != usize::MAX).map(|reading| reading.doc.target(job.node)).unwrap_or_default();
+            let length = reading.filter(|_| job.node != usize::MAX).map_or(1.0, |reading| reading.nodes[job.node].length);
+            let fact = facts.get(&with);
+            let widths = match job.kind {
+                JobKind::Free { .. } => vec![],
+                _ => fact.map_or_else(|| vec![1], |(_, widths)| widths.clone()),
+            };
+            let mut places = vec![];
+            for machine in on {
+                let place = machines.iter().position(|known| known == machine).unwrap_or_else(|| {
+                    machines.push(machine.clone());
+                    machines.len() - 1
+                });
+                places.push(place);
+            }
+            let known = fact.and_then(|(function, _)| {
+                let name = on.first()?.to_string();
+                learned.get(&(name, function.clone()))
+            });
+            let (one_gpu_s, scaling) = known.map_or((None, sim::Scaling::PRIOR), |known| (known.one_gpu_s().map(|unit| unit * length), known.scaling()));
+            let running = sent_at.get(&job.key).filter(|_| job.state == walker::State::Going).map(|(sent, machine, width)| {
+                let place = machines.iter().position(|known| known.to_string() == *machine).unwrap_or_default();
+                let whole = one_gpu_s.unwrap_or(60.0) * scaling.at(*width);
+                (place, *width, (whole - sent.elapsed().as_secs_f64()).max(1.0))
+            });
+            let needs = job.needs.iter().filter_map(|need| at.get(need).copied()).filter(|&need| need < works.len()).collect();
+            works.push(sim::Work { needs, one_gpu_s, widths, scaling, machines: places, running });
+        }
+        if machines.is_empty() {
+            return;
+        }
+        let gpus: Vec<u32> = machines.iter().map(|on| self.host.gpus(on)).collect();
+        let plan = sim::plan(&works, &gpus);
+        *placed = open.iter().zip(&plan.placed).map(|(&id, place)| (graph.jobs[id].key.clone(), *place)).collect();
+    }
+
+    /// What `with` calls is known now: how wide this job should go, as the plan stands with that in it. 0: as wide as the machine goes, there being no choice.
+    fn width_now(&self, key: &str, with: &str, function: &str, widths: Vec<u32>, machine: &On) -> u32 {
+        let name = machine.to_string();
+        let many = widths.len() > 1;
+        {
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            walker.facts.insert(with.to_owned(), (function.to_owned(), widths));
+            if !walker.learned.contains_key(&(name.clone(), function.to_owned())) {
+                let mut learned = sim::Learned::default();
+                if let Some(measured) = self.host.last_measured(function, &name) {
+                    learned.took(measured.width, measured.busy_s, measured.exchange_share);
+                }
+                walker.learned.insert((name.clone(), function.to_owned()), learned);
+            }
+        }
+        self.plan_now();
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        let width = walker.placed.get(key).map_or(0, |place| place.width);
+        walker.sent_at.insert(key.to_owned(), (Instant::now(), name, width.max(1)));
+        if many { width } else { 0 }
+    }
+
+    /// A job's run landed: what it took goes in with the rest.
+    fn learn(&self, job: &str, run: u64) {
+        let Some(measured) = self.host.measured(run) else { return };
+        let walk = self.folder().walk_now().unwrap_or_default();
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        let Some((_, machine, _)) = walker.sent_at.get(job).cloned() else { return };
+        let Some((length, with)) = walker.graph.job(job).and_then(|job| {
+            let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
+            let reading = walker.readings.get(&ask.digest)?;
+            Some((reading.nodes.get(job.node)?.length, reading.doc.target(job.node)))
+        }) else { return };
+        let Some(function) = walker.facts.get(&with).map(|(function, _)| function.clone()) else { return };
+        let length = Some(length);
+        let learned = walker.learned.entry((machine, function)).or_default();
+        learned.took(measured.width, measured.busy_s / length.unwrap_or(1.0), measured.exchange_share);
     }
 
     /// What it fetches ahead for jobs that all ended: it needn't go on.
@@ -2645,6 +2766,7 @@ impl Walk {
         if room == 0 {
             return Ok(false);
         }
+        self.plan_now();
         let held = self.folder().lock()?;
         if self.folder().wants_ffprobe(&held) && !self.measuring.swap(true, Ordering::Relaxed) {
             self.holding.store(true, Ordering::Relaxed);
@@ -2660,7 +2782,7 @@ impl Walk {
         let mut acts = vec![];
         {
             let mut walker = self.project.walker.lock().expect("walker lock");
-            let Walker { graph, readings, names, .. } = &mut *walker;
+            let Walker { graph, readings, names, placed, .. } = &mut *walker;
             let names = self.names_now(names);
             for id in graph.take_ready(room) {
                 let (key, ask_id, node, kind, asset) = {
@@ -2689,6 +2811,11 @@ impl Walk {
                 let gone = |name: &str| names.as_ref().is_some_and(|names| !names.contains(&name_key(name)));
                 if gone(&asset) {
                     acts.push(Act::Deleted { id, ask: ask_id, key, asset });
+                    continue;
+                }
+                // With several machines it stays here until one is free for it, so nothing commits early to the wrong queue.
+                if ask.target.on.len() > 1 && !matches!(kind, JobKind::Free { .. }) && placed.get(&key).is_some_and(|place| place.start_s > 1.0) {
+                    acts.push(Act::Held { id });
                     continue;
                 }
                 let turn = graph.turn(id, &mut Now { reading, lock: &lock, ask: &ask });
@@ -2812,6 +2939,7 @@ impl Walk {
                 }
                 end(id, End::Failed);
             }
+            Act::Held { id } => self.project.walker.lock().expect("walker lock").graph.put_back(id),
             Act::Send { id, key, ask, doc, stand, lock, next } => {
                 let (name, kind, inputs) = (doc.assets[next.i].name.clone(), doc.assets[next.i].kind.clone(), stand[next.i].inputs.clone());
                 work.push(async move {
@@ -2877,6 +3005,9 @@ impl Walk {
             Done::Landed { job, landed } => {
                 let failed = landed.landed.as_ref().is_ok_and(Result::is_err);
                 let asset = landed.name.clone();
+                if let (false, Some(run)) = (failed, landed.run) {
+                    self.learn(&job, run);
+                }
                 self.landed(landed, followed, first)?;
                 // Its next call, if its operation has one, goes on under its own key.
                 let goes_on = self.folder().walk_now()?.pending.iter().any(|(sent, pending)| pending.job_of(sent) == job);
@@ -3168,7 +3299,7 @@ impl Walk {
             let mut calls = calls.into_iter();
             let first = calls.next().expect("at least one");
             let seed = version.seed;
-            let pending = Pending { job: key.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
+            let pending = Pending { job: key.clone(), gpus: 0, ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
             let settling = |lock: &mut Lock| {
                 settle(lock);
                 if let Some(seed) = seed {
@@ -3344,6 +3475,12 @@ impl Walk {
             }
         }
         let placed = holder.unwrap_or_else(|| self.host.place(&on, &renderer));
+        if first {
+            let with = asset.body.get("with").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let function = format!("{}/{}", renderer.package, renderer.function);
+            let job = pending.job_of(key).to_owned();
+            pending.gpus = self.width_now(&job, &with, &function, package.widths(&renderer.function), &placed);
+        }
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
@@ -3366,6 +3503,7 @@ impl Walk {
             payload: Some(v1::Json::parse(payload.to_string()).expect("a payload is JSON")),
             inputs,
             models,
+            gpus: pending.gpus,
             ..Default::default()
         };
         let submit = SubmitRun {

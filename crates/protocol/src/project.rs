@@ -890,6 +890,14 @@ pub struct Job {
     /// The assets it waits for, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs: Vec<String>,
+    /// How many GPUs it is planned on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<u32>,
+    /// When it should start and end, as the walker works it out from what has run here: to the nearest 10 s, as a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at_ms: Option<i64>,
     /// A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,

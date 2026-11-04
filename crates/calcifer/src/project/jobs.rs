@@ -28,6 +28,9 @@ pub struct Going {
     pub earlier_ms: u64,
     /// It makes a shot.
     pub shot: bool,
+    /// When it should end, and how many GPUs it is on.
+    pub ends_at_ms: Option<i64>,
+    pub gpus: Option<u32>,
 }
 
 pub struct Jobs {
@@ -126,7 +129,8 @@ impl Jobs {
         held.live.retain(|live| going.iter().any(|going| Some(going.run) == live.job.run));
         held.sending = going.iter().zip(&shots).filter(|(going, _)| going.run == 0).map(|(going, shot)| Job { shot: *shot, ..sending(going) }).collect();
         for (going, shot) in going.iter().zip(&shots).filter(|(going, _)| going.run > 0) {
-            if held.live.iter().any(|live| live.job.run == Some(going.run)) {
+            if let Some(live) = held.live.iter_mut().find(|live| live.job.run == Some(going.run)) {
+                (live.job.ends_at_ms, live.job.gpus) = (going.ends_at_ms, going.gpus);
                 continue;
             }
             let Some(run) = run(going.run) else { continue };
@@ -428,6 +432,8 @@ impl Live {
 fn sending(going: &Going) -> Job {
     Job {
         id: going.job.clone(),
+        ends_at_ms: going.ends_at_ms,
+        gpus: going.gpus,
         asset: going.asset.clone(),
         noun: going.noun.clone(),
         number: Some(going.number),

@@ -625,6 +625,16 @@ impl View {
                 notes.push(reason.trim_start_matches("failed: ").to_owned());
             }
             notes.extend(job.why.clone());
+            // What the walker works out, for what hasn't ended.
+            if let (Some(gpus), JobState::Waiting | JobState::Running) = (job.gpus.filter(|gpus| *gpus > 1), job.state) {
+                notes.push(format!("{gpus} GPUs"));
+            }
+            if let (Some(ends), JobState::Waiting | JobState::Running) = (job.ends_at_ms, job.state) {
+                let left = (ends - now_ms()).max(0) as u64;
+                if left >= 10_000 {
+                    notes.push(format!("about {}", clock(left)));
+                }
+            }
             if let Some(seconds) = job.seconds {
                 notes.push(format!("{seconds:.1} s"));
             }

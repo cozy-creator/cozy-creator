@@ -86,6 +86,32 @@ impl Package {
         self.function(first).ok()
     }
 
+    /// The widths `function` runs at, smallest first: what it loads declares, one for all; for one that loads nothing itself, the first function
+    /// it can call. Empty: it needs no GPU.
+    pub fn widths(&self, function: &str) -> Vec<u32> {
+        let document = &self.document;
+        let Some(entry) = interface::entrypoints(document).find(|entry| interface::name(entry) == Some(function)) else { return vec![] };
+        let entry = match interface::orchestrates(document, entry) {
+            true => interface::entrypoints(document).find(|other| interface::internal(other) && !interface::cpu(other) && !interface::models(other).is_empty()).unwrap_or(entry),
+            false => entry,
+        };
+        if interface::cpu(entry) {
+            return vec![];
+        }
+        let mut common: BTreeSet<u32> = (1..=64).collect();
+        for model in interface::models(entry).iter().filter(|model| model["weights"] != true) {
+            let mut declared = BTreeSet::from([1u32]);
+            for degree in model.pointer("/sequence_parallel/degrees").and_then(Value::as_array).into_iter().flatten() {
+                declared.extend(degree.as_u64().map(|degree| degree as u32));
+            }
+            common = common.intersection(&declared).copied().collect();
+        }
+        if common.len() == 64 {
+            return vec![1];
+        }
+        common.into_iter().collect()
+    }
+
     /// What its named function makes: `image`, `video` or `audio`. None: it names none, or its output says no media.
     pub fn named_kind(&self) -> Option<String> {
         let interface = self.interface();
@@ -186,6 +212,34 @@ impl Renderer {
     }
 }
 
+/// What a run measured.
+#[derive(Clone, Copy, Debug)]
+pub struct Measured {
+    pub busy_s: f64,
+    pub width: u32,
+    pub exchange_share: f64,
+}
+
+impl Measured {
+    /// From what its executors recorded: a stage is time it worked; a `host ·` row inside one is where that went, and one in `parallel` is exchange. A wait counts nowhere.
+    fn of(run: &Run) -> Option<Self> {
+        let (mut busy, mut exchange, mut width) = (0.0, 0.0, 0u32);
+        let calls = run.calls.iter().filter_map(|call| call.measurements.as_ref());
+        for measured in run.measurements.iter().chain(calls) {
+            for (name, stage) in measured.pointer("/attribution/stages").and_then(Value::as_object).into_iter().flatten() {
+                let ms = stage["total_ms"].as_f64().unwrap_or(0.0);
+                match name.strip_prefix("host · ") {
+                    Some(code) if code.contains(".parallel.") => exchange += ms,
+                    Some(_) => {}
+                    None => busy += ms,
+                }
+            }
+            width = width.max(measured.pointer("/execution/degree").and_then(Value::as_u64).unwrap_or(0) as u32);
+        }
+        (busy > 0.0).then(|| Self { busy_s: busy / 1000.0, width: width.max(1), exchange_share: exchange / busy })
+    }
+}
+
 pub struct Host {
     api: Arc<Api>,
     /// Read once a walk, by Hub, `with` and machine.
@@ -273,6 +327,27 @@ impl Host {
         let found = Package { name: package, release: card.release.clone(), local: None, moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })
+    }
+
+    /// How many GPUs a machine has, as it last said.
+    pub fn gpus(&self, on: &On) -> u32 {
+        let On::Machine(name) = on else { return 1 };
+        self.api.machines.frame(name).map_or(1, |frame| (frame.gpus.len() as u32).max(1))
+    }
+
+    /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.
+    pub fn measured(&self, number: u64) -> Option<Measured> {
+        let store = self.api.calcifer.store();
+        let row = store.run_by_number(number).ok()??;
+        Measured::of(&store.detail(&row).ok()?)
+    }
+
+    /// What the newest finished run of `target` on `machine` measured.
+    pub fn last_measured(&self, target: &str, machine: &str) -> Option<Measured> {
+        let store = self.api.calcifer.store();
+        let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 5 };
+        let (rows, ..) = store.runs(&filter).ok()?;
+        rows.iter().find_map(|row| Measured::of(&store.detail(row).ok()?))
     }
 
     /// Stops a run fetching ahead, however far it got. Nothing depends on it.
