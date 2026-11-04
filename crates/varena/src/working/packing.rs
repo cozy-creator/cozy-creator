@@ -90,7 +90,7 @@ impl Trace {
             Segment {
                 bytes: capacity,
                 size_class: 0,
-                handle: 0,
+                handle: None,
                 pool: Some(pool),
                 charged_blocks: 0,
                 phase_blocks: 0,

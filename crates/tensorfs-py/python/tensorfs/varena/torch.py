@@ -291,9 +291,22 @@ def phase_forget(device: DeviceLike, key: str) -> bool:
 
 
 def prepare_pool(pool: PoolId, bytes: int, device: DeviceLike = 0) -> int:
-    """Map at least this capacity before capture; the previous pool survives failure."""
+    """Map at least this capacity before capture; the previous pool survives failure.
+
+    This also maps a pool `_unmap_pool` released, at the same addresses; `bytes=0` does only that.
+    """
     initialize(device)
     return _ext._varena_working_pool_reserve(_device(device), cast(PoolId, tuple(pool)), bytes)
+
+
+def _unmap_pool(pool: PoolId, device: DeviceLike = 0) -> int:
+    """Declare an idle pool's contents dead and release its pages; its graph and VA stay.
+
+    Returns the bytes released, 0 while its capture or a recorded use is pending. Nothing may read
+    the pool until `prepare_pool(pool, 0)` maps it again and the next replay writes it.
+    """
+    _installed()
+    return _ext._varena_working_pool_unmap(_device(device), cast(PoolId, tuple(pool)))
 
 
 def cancel_preparation(pool: PoolId, device: DeviceLike = 0) -> None:

@@ -406,6 +406,15 @@ fn _varena_working_pool_reserve(
 }
 
 #[pyfunction]
+fn _varena_working_pool_unmap(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<usize> {
+    py.detach(|| {
+        check()?;
+        varena::working::pool_unmap(device, pool)
+    })
+    .map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_working_pool_record_stream(
     py: Python<'_>,
     device: i32,
@@ -890,6 +899,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_reset_peak, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_pool_reserve, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_working_pool_unmap, module)?)?;
     module.add_function(wrap_pyfunction!(
         _varena_working_pool_record_stream,
         module

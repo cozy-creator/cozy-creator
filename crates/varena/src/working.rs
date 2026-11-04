@@ -524,7 +524,8 @@ impl Block {
 struct Segment {
     bytes: usize,
     size_class: usize,
-    handle: u64,
+    // None: the VA stays reserved here with no physical pages (`pool_unmap`).
+    handle: Option<u64>,
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
     charged_blocks: usize,
@@ -535,6 +536,8 @@ struct Segment {
 struct Pool {
     identity: Arc<()>,
     prepared: bool,
+    // Owner-declared dead contents with released pages; `pool_reserve` maps them again.
+    unmapped: bool,
     references: usize,
     routing: bool,
     capture: Option<GlobalCaptureGuard>,
@@ -1054,38 +1057,25 @@ impl Working {
         pool: Option<PoolId>,
         class: usize,
     ) -> crate::AllocationResult<u64> {
-        if self.room.over(bytes) != 0 {
-            return Err(Error::OutOfMemory {
-                requested_bytes: bytes,
-            }.into());
-        }
         let ptr = Self::address(state, bytes)?;
-        let handle = match self.driver.create(bytes) {
-            Ok(handle) => handle,
-            Err(error) => {
-                Self::return_address(state, ptr, bytes);
-                return Err(error);
-            }
-        };
-        // Track ownership before map: a partial mapping failure must retain the VA and handle.
         state.segments.insert(
             ptr,
             Segment {
                 bytes,
                 size_class: class,
-                handle,
+                handle: None,
                 pool,
                 charged_blocks: 0,
                 phase_blocks: 0,
             },
         );
-        self.room
-            .working
-            .fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
-        state.stats.mapped_bytes += bytes;
-        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
-        self.driver.map(ptr, bytes, handle)?;
-        observer::mapped(self, ptr, bytes, pool, class)?;
+        if let Err(error) = self.back(state, ptr) {
+            if state.segments[&ptr].handle.is_none() {
+                state.segments.remove(&ptr);
+                Self::return_address(state, ptr, bytes);
+            }
+            return Err(error);
+        }
         if let Some(pool) = pool {
             state.blocks.insert(
                 ptr,
@@ -1280,6 +1270,39 @@ impl Working {
         Ok(())
     }
 
+    // Physical pages for a segment's kept VA.
+    fn back(&self, state: &mut State, base: u64) -> crate::AllocationResult<()> {
+        let segment = state.segments.get_mut(&base).expect("owned segment");
+        let (bytes, pool, class) = (segment.bytes, segment.pool, segment.size_class);
+        if self.room.over(bytes) != 0 {
+            return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
+        }
+        let handle = self.driver.create(bytes)?;
+        // Track ownership before map: a partial mapping failure must retain the VA and handle.
+        segment.handle = Some(handle);
+        self.room.working.fetch_add(bytes, Ordering::AcqRel);
+        state.stats.mapped_bytes += bytes;
+        state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+        self.driver.map(base, bytes, handle)?;
+        observer::mapped(self, base, bytes, pool, class)?;
+        Ok(())
+    }
+
+    // Release a segment's pages, keeping its VA and metadata. Returns the bytes released.
+    fn unback(&self, state: &mut State, base: u64) -> Result<usize> {
+        let segment = state.segments.get_mut(&base).expect("owned segment");
+        let Some(handle) = segment.handle else { return Ok(0) };
+        let bytes = segment.bytes;
+        observer::retiring(self, base, bytes, segment.pool, segment.size_class)?;
+        self.driver.unmap(base, bytes)?;
+        self.driver.release(handle)?;
+        segment.handle = None;
+        self.room.working.fetch_sub(bytes, Ordering::AcqRel);
+        self.room.released.fetch_add(bytes as u64, Ordering::AcqRel);
+        state.stats.mapped_bytes -= bytes;
+        Ok(bytes)
+    }
+
     fn trim(&self, state: &mut State, limit: usize, exclude: Option<PoolId>) -> Result<usize> {
         self.poll(state)?;
         self.trim_ready(state, limit, exclude, &BTreeSet::new())
@@ -1333,16 +1356,10 @@ impl Working {
                 break;
             }
             let segment = &state.segments[&base];
-            if segment.bytes > maximum.saturating_sub(released) { continue; }
-            observer::retiring(self, base, segment.bytes, segment.pool, segment.size_class)?;
-            self.driver.unmap(base, segment.bytes)?;
-            self.driver.release(segment.handle)?;
-            *completed += segment.bytes;
             let bytes = segment.bytes;
-            self.room
-                .working
-                .fetch_sub(bytes, std::sync::atomic::Ordering::AcqRel);
-            self.room.released.fetch_add(bytes as u64, Ordering::AcqRel);
+            if segment.handle.is_some() && bytes > maximum.saturating_sub(released) { continue; }
+            let unbacked = self.unback(state, base)?;
+            *completed += unbacked;
             let blocks: Vec<_> = state
                 .blocks
                 .range(base..base + bytes as u64)
@@ -1355,9 +1372,8 @@ impl Working {
                 }
             }
             state.segments.remove(&base);
-            state.stats.mapped_bytes -= bytes;
             Self::return_address(state, base, bytes);
-            released += bytes;
+            released += unbacked;
         }
         state.free.retain(|_, slots| {
             slots.retain(|ptr| state.blocks.contains_key(ptr));
@@ -2593,12 +2609,13 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         .map(|b| b.capacity)
         .sum();
     stats.reclaimable_bytes = state.reusable_eager_pages();
-    stats.unassigned_bytes =
-        stats.mapped_bytes - stats.allocated_capacity - stats.pending_bytes - stats.free_bytes;
+    let unmapped: usize = state.segments.values().filter(|s| s.handle.is_none()).map(|s| s.bytes).sum();
+    stats.unassigned_bytes = stats.mapped_bytes + unmapped
+        - stats.allocated_capacity - stats.pending_bytes - stats.free_bytes;
     stats.pools_bytes = state
         .segments
         .values()
-        .filter(|s| s.pool.is_some())
+        .filter(|s| s.pool.is_some() && s.handle.is_some())
         .map(|s| s.bytes)
         .sum();
     stats.pools = state.pools.len();
@@ -2675,24 +2692,33 @@ fn pool_reserve_local(device: i32, pool: PoolId, wanted: usize,
             if session.references == 0 {
                 session.prepared = true;
             }
-            let have: usize = state
-                .segments
-                .values()
-                .filter(|segment| segment.pool == Some(pool))
-                .map(|segment| segment.bytes)
-                .sum();
-            if have >= wanted {
+            let (mut have, mut unmapped) = (0, Vec::new());
+            for (base, segment) in state.segments.iter().filter(|(_, s)| s.pool == Some(pool)) {
+                have += segment.bytes;
+                if segment.handle.is_none() {
+                    unmapped.push((*base, segment.bytes));
+                }
+            }
+            if have >= wanted && unmapped.is_empty() {
                 return Ok(have);
             }
             let _context = owner.driver.enter()?;
             let result = (|| -> crate::AllocationResult<usize> {
+                let grow = wanted.saturating_sub(have);
+                let need = grow + unmapped.iter().map(|(_, bytes)| bytes).sum::<usize>();
                 if attempt == 2 {
-                    owner.wait_reclaimable(&mut state, wanted - have, Some(pool))?;
+                    owner.wait_reclaimable(&mut state, need, Some(pool))?;
                 } else {
-                    owner.trim(&mut state, wanted - have, Some(pool))?;
+                    owner.trim(&mut state, need, Some(pool))?;
                 }
-                owner.map(&mut state, wanted - have, Some(pool), 0)?;
-                Ok(wanted)
+                for (base, _) in &unmapped {
+                    owner.back(&mut state, *base)?;
+                }
+                state.pools.get_mut(&pool).expect("reserved pool").unmapped = false;
+                if grow != 0 {
+                    owner.map(&mut state, grow, Some(pool), 0)?;
+                }
+                Ok(have + grow)
             })();
             result.map_err(|failure| {
                 *physical = failure.physical_bytes();
@@ -2708,6 +2734,46 @@ fn pool_reserve_local(device: i32, pool: PoolId, wanted: usize,
         }
     }
     unreachable!("finite pool reserve attempts")
+}
+
+/// The graph owner declares this idle pool's contents dead until its next replay writes them:
+/// release its pages, keeping its VA, blocks and graph. `pool_reserve` maps them again; a
+/// replay before that refuses. Returns 0 while a capture, replay or recorded use is pending.
+pub fn pool_unmap(device: i32, id: PoolId) -> Result<usize> {
+    let owner = owner(device)?;
+    let captures = crate::capture_counts()?;
+    if crate::ensure_recovery_allowed(&captures, device).is_err() {
+        return Ok(0);
+    }
+    let mut state = owner.lock()?;
+    let _context = owner.driver.enter()?;
+    let result = (|| {
+        owner.poll(&mut state)?;
+        let pool = state.pools.get(&id).ok_or(Error::Invalid("unknown graph pool"))?;
+        if pool.prepared || pool.capture.is_some() || !owner.pool_completed(pool)? {
+            return Ok(0);
+        }
+        let bases: Vec<_> = state
+            .segments
+            .iter()
+            .filter(|(_, segment)| segment.pool == Some(id))
+            .map(|(base, segment)| (*base, segment.bytes))
+            .collect();
+        for (base, bytes) in &bases {
+            for (_, block) in state.blocks.range(*base..*base + *bytes as u64) {
+                if !owner.completed(&block.events)? {
+                    return Ok(0);
+                }
+            }
+        }
+        state.pools.get_mut(&id).expect("checked pool").unmapped = !bases.is_empty();
+        let mut released = 0;
+        for (base, _) in bases {
+            released += owner.unback(&mut state, base)?;
+        }
+        Ok(released)
+    })();
+    result.map_err(|error| owner.fail(&mut state, error))
 }
 
 /// Register routing only. Repeated begin calls add streams to the same capture session.
@@ -2726,6 +2792,9 @@ pub fn pool_begin(device: i32, pool: PoolId, stream: u64) -> Result<()> {
         ));
     }
     let pool = state.pools.entry(pool).or_default();
+    if pool.unmapped {
+        return Err(Error::Invalid("map this graph pool before capture"));
+    }
     if pool.capture.is_some() {
         if !pool.routing {
             return Err(Error::Invalid("previous CUDA capture has not completed"));
@@ -2836,6 +2905,9 @@ pub fn pool_retain(device: i32, id: PoolId) -> Result<()> {
         .ok_or(Error::Invalid("unknown graph pool"))?;
     if pool.references == 0 {
         return Err(Error::Invalid("graph pool has no owner"));
+    }
+    if pool.unmapped {
+        return Err(Error::Invalid("map this graph pool before replay"));
     }
     pool.references = pool
         .references
