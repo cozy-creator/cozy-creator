@@ -1,0 +1,134 @@
+{
+  "passed": true,
+  "python": "3.12.15 (main, Oct  9 2026, 20:44:51) [GCC 14.2.1 20250110 (Red Hat 14.2.1-11)]",
+  "torch": "2.15.0+cu132",
+  "torch_git": "d0f2af8b66b20da4baa50644c0cd3f887a2eae2e",
+  "cuda_initialized": false,
+  "scope": "actual SDK preparation/phase_stats refusals and real native host replay scopes; no fake resources; CUDA uninitialized",
+  "refusal": {
+    "type": "RuntimeError",
+    "message": "install tensorfs.varena.torch in this child before using its allocator"
+  },
+  "evidence": {
+    "format_version": 2,
+    "available": true,
+    "scope": "actual returns and confirmed SDK capture/replay exits on this profiled inference thread; not a cross-thread admission capability",
+    "events": [
+      {
+        "active": true,
+        "boundary": "host_refusal",
+        "attempt": 1,
+        "device": 0,
+        "stage": 4,
+        "thread": 138264447706112,
+        "kind": "prepare_pool_return",
+        "pool": [
+          0,
+          0
+        ],
+        "requested_device": 0,
+        "requested_bytes": 2097152,
+        "returned_capacity_bytes": null,
+        "returned_capacity_available": false,
+        "caller": "prepare_refusal"
+      }
+    ],
+    "stored_native_samples": [
+      {
+        "device": 0,
+        "native_key": "capture-pressure-host",
+        "sample_error": "RuntimeError"
+      }
+    ],
+    "errors": [],
+    "same_lock_fit_eligibility": {
+      "available": false,
+      "missing": [
+        "stream_usable_free_total",
+        "largest_usable_range",
+        "live_and_blocked_ranges_with_reasons"
+      ],
+      "snapshot_scope": "existing native allocator-exception snapshot is post-lock, not an atomic usable-fit report",
+      "separate_native_report": "implemented in diagnostic307c9380 as VARENA_POOL_FIT_FAILURE_V1; production SDK257 remains separate"
+    }
+  },
+  "stage4_inactive_open_scope_unavailable": {
+    "format_version": 2,
+    "available": false,
+    "unavailable_reason": "capture_or_replay_completion_unconfirmed",
+    "events": null,
+    "stored_native_samples": null
+  },
+  "normal_scope_exit_resumes_collection": {
+    "format_version": 2,
+    "available": true,
+    "scope": "actual returns and confirmed SDK capture/replay exits on this profiled inference thread; not a cross-thread admission capability",
+    "events": [
+      {
+        "active": true,
+        "boundary": "host_refusal",
+        "attempt": 1,
+        "device": 0,
+        "stage": 4,
+        "thread": 138264447706112,
+        "kind": "prepare_pool_return",
+        "pool": [
+          0,
+          0
+        ],
+        "requested_device": 0,
+        "requested_bytes": 2097152,
+        "returned_capacity_bytes": null,
+        "returned_capacity_available": false,
+        "caller": "prepare_refusal"
+      },
+      {
+        "active": true,
+        "boundary": "host_refusal",
+        "attempt": 1,
+        "device": 0,
+        "stage": 4,
+        "thread": 138264447706112,
+        "kind": "prepare_pool_return",
+        "pool": [
+          0,
+          0
+        ],
+        "requested_device": 0,
+        "requested_bytes": 2097152,
+        "returned_capacity_bytes": null,
+        "returned_capacity_available": false,
+        "caller": "prepare_refusal"
+      }
+    ],
+    "stored_native_samples": [
+      {
+        "device": 0,
+        "native_key": "capture-pressure-host",
+        "sample_error": "RuntimeError"
+      }
+    ],
+    "errors": [],
+    "same_lock_fit_eligibility": {
+      "available": false,
+      "missing": [
+        "stream_usable_free_total",
+        "largest_usable_range",
+        "live_and_blocked_ranges_with_reasons"
+      ],
+      "snapshot_scope": "existing native allocator-exception snapshot is post-lock, not an atomic usable-fit report",
+      "separate_native_report": "implemented in diagnostic307c9380 as VARENA_POOL_FIT_FAILURE_V1; production SDK257 remains separate"
+    }
+  },
+  "exception_scope_exit_stays_unavailable": {
+    "format_version": 2,
+    "available": false,
+    "unavailable_reason": "capture_or_replay_completion_unconfirmed",
+    "events": null,
+    "stored_native_samples": null
+  },
+  "capture_complete_and_retained_CUDA_exclusion": "UNRUN; requires real GPU capture",
+  "successful_prepare_return": "UNRUN; requires actual CUDA pool",
+  "successful_phase_close_and_stored_sample": "UNRUN; requires actual CUDA observation",
+  "model_and_capture": "UNRUN"
+}

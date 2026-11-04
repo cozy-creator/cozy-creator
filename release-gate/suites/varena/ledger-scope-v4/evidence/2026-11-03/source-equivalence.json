@@ -1,0 +1,14 @@
+{
+  "base": "1a066af55a982c3fc6407af1a332a65695289437",
+  "feature": "906cebea719ae5c48900185c14b15f60095c3c45",
+  "checks": {
+    "full_scope_definition_and_current_unchanged": true,
+    "connection_check_unchanged": true,
+    "transactions_and_row_policy_unchanged": true,
+    "os_boundary_byte_identical": true,
+    "owner_identity_byte_identical": true,
+    "python_snapshot_binding_byte_identical": true,
+    "frozen_ledger_fixtures_unchanged": true,
+    "actual_recorded_magic_and_filenames_match_versions": true
+  }
+}

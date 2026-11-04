@@ -1,0 +1,10 @@
+usage: graph_retirement_wait_gpu.py [-h] [--device DEVICE] --provider PROVIDER
+                                    --provider-python PROVIDER_PYTHON
+                                    [--timeout-s TIMEOUT_S]
+
+options:
+  -h, --help            show this help message and exit
+  --device DEVICE
+  --provider PROVIDER
+  --provider-python PROVIDER_PYTHON
+  --timeout-s TIMEOUT_S

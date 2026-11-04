@@ -1,0 +1,29 @@
+{
+  "integration_parent": "a2bcda7f2c8f25a9c33a10d35b7c489630fed1b9",
+  "reason": "Last typed-storage release during capture or failed consumer tracking previously selected unpinned/context-join fallback. Checked failure now retains Pin, consumers and canonical Weight as explicit unproven custody.",
+  "core_check": {
+    "passed": true,
+    "seconds": 7.54
+  },
+  "bindings_check": {
+    "passed": true,
+    "seconds": 93
+  },
+  "final_combined_check": {
+    "passed": true,
+    "seconds": 9.08,
+    "command": "CARGO_BUILD_JOBS=1 nice -n 19 cargo check --locked -p varena -p tensorfs-py --target-dir <owned-debug-target>"
+  },
+  "python_compile": true,
+  "ruff": true,
+  "gpu_qualified": false,
+  "gpu_regression": "failed_tail_gpu.py; separate child intentionally retains quarantine until exit, not graceful reclamation",
+  "scope": "Source/CPU checks only. Existing GPU artifacts remain frozen08a.",
+  "files": {
+    "crates/varena/src/lib.rs": "ddca78590a6024736ee8be4672025aa6164447a9fac04eb6d1e0b19f482c3e14",
+    "crates/varena/src/tensor_consumers.rs": "e4a94fcc32bb9c5b6bbb38e094cf9ca62641636c67a6ca889aa51d2ab1029f82",
+    "crates/varena/src/abi/tensor_export.rs": "f00036445fae9e614e49053e148e76306d165188376fb118e06a625c1b41b994",
+    "crates/varena/src/abi/retirement.rs": "73442d9ae5e7c235f6f2c1f4bdb1f09b247e3d46ef3e236165e22c7c604a93c7",
+    "release-gate/suites/varena/native-tensor-export/failed_tail_gpu.py": "fdf2491cc79929c071a1755a1884700058bb2dff5d9f00df397e42900ff84e02"
+  }
+}

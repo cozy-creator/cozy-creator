@@ -1,0 +1,30 @@
+{
+  "reviewer": "/root/core_restart",
+  "source_owner": "/root/async_integration_review",
+  "source_worktree": "/home/fidika/cozy/.worktrees/cozy-creator/xs138-p4-raw-source-adoption",
+  "head": "3cc562878135bae12a9a26a6db390f394b00f547",
+  "state": "owned product WIP over plan-only head; exact hashes below",
+  "files": {
+    "crates/tensorfs/src/io/device.rs": "a5b98e946cfc76355c2871ba6aa73dc58dd1b63638959f3193de2b2677511eea",
+    "crates/tensorfs/src/io/device/owned.rs": "52c0def24dc3be95df1a69aef26feb39734deb48efb93b2ad8c02388b140da19",
+    "crates/tensorfs/src/io/source.rs": "32b15753d3c4c926bba1bcc78195a283c030b7cc336336f14c0993473fe187e0",
+    "crates/tensorfs/src/io/source/raw.rs": "62b21b64d4fa4bebcc9a99e5c08c0c57f53989f2f99d47abb036e26c74a18438",
+    "crates/tensorfs/src/session/checkpoint.rs": "cbd7de0a3bb51d73c13b8415a87b16a4250ce3bb1615885b33ff798194ead150",
+    "crates/tensorfs-py/src/varena/refill.rs": "ab2d530857b399eb38ed723ef52531d0911385d3b2f13e8331489114185d5533",
+    "crates/tensorfs-py/src/varena/refill/raw.rs": "a48d0e0be3a2d856a6869870b79964bc547e4ceace1813b5e2d318e23caea26e",
+    "crates/varena/src/async_fill.rs": "e1879a5a6c81c824dee0e283d7d47d4f199ae1bf61ecb018617fa1c9b4952b59",
+    "crates/varena/src/lib.rs": "a48adaa359d3dc5bc0e09b0a0d229d8311338545b4e4c54a652c1d0c9309282e"
+  },
+  "verdict": "no additional concrete ownership/failure blocker found in inspected snapshot",
+  "known_fixes_observed": [
+    "successful PreparedRead waits resources_retired and submitted_fills_retired",
+    "issued bytes belong to this actual Engine operation and are not a shared cancel-counter subtraction",
+    "returned untouched Fills abort and request Unready release",
+    "ReaderRing panic retains actual slots"
+  ],
+  "qualification_gaps": [
+    "mid-submission cancellation after successful enqueues uses a distinct slot return path and is not covered by current cancel-before case",
+    "current GPU helper appeared single-Fill; shared multi-Fill retirement needs named execution evidence"
+  ],
+  "actions": "read-only source review; no source writes, builds, installs, rentals or GPU calls"
+}

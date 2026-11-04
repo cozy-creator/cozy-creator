@@ -103,6 +103,13 @@ install_cozy() {
     [ "$found" = "$COZY" ] || fail "a login shell finds '$found', not $COZY"
   fi
   cozy --version
+  # Source candidates start from their complete native install. The old released
+  # updater cannot transport this prelaunch shared-library format.
+  if [ -f "$CAND_COZY" ]; then
+    install_candidate_binary
+    want=$("$CAND_COZY" --version) || fail "the candidate cozy does not start"
+    [ "$(cozy --version)" = "$want" ] || fail "the native candidate install reports the wrong version"
+  fi
   [ -n "$RELEASE" ] || return 0
   serve_release
   cozy --json machine ls > /dev/null || check "the installed cozy's Calcifer did not start"
@@ -223,17 +230,25 @@ candidates() {
   echo "the candidate Runtime: $CAND_RUNTIME (was ${before:-none})"
 }
 
+install_candidate_binary() {
+  local dir bundle
+  dir=$(dirname "$COZY") bundle=$(dirname "$CAND_COZY")
+  [ -f "$bundle/varena-native.json" ] || fail "source candidate has no varena-native.json: $CAND_COZY"
+  [ -f "$bundle/cozy-native.tar.gz" ] || fail "source candidate has no cozy-native.tar.gz: $CAND_COZY"
+  [ "${RUNNER_OS:-}" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
+  python3 "$E2E/../scripts/install-native.py" "$bundle/cozy-native.tar.gz" "$dir" \
+    || fail "installing the candidate native bundle failed"
+}
+
 # Where this OS runs no models itself there is no machine to take candidates: a candidate cozy is this computer's, as
 # `cozy update` puts one in place (an exact release version is that verb itself), a dev build's file swapped in as it
 # swaps (renamed over; a running cozy.exe is set aside), and `cozy doctor` restarts Calcifer on it.
 candidate_cozy() {
-  local want dir
+  local want
   [ -n "$CAND_COZY" ] || return 0
   if [ -f "$CAND_COZY" ]; then
-    want=$("$CAND_COZY" --version) dir=$(dirname "$COZY")
-    cp "$CAND_COZY" "$dir/.cozy-candidate" && chmod +x "$dir/.cozy-candidate" || fail "copying the candidate cozy failed"
-    [ "$RUNNER_OS" != Windows ] || mv -f "$COZY" "$dir/.cozy-replaced-$RANDOM.exe"
-    mv -f "$dir/.cozy-candidate" "$COZY" || fail "putting the candidate cozy in place failed"
+    install_candidate_binary
+    want=$("$CAND_COZY" --version) || fail "the candidate cozy does not start"
   else
     want="cozy ${CAND_COZY#v}"
     cozy --json update "${CAND_COZY#v}" > "$OUT/update-candidate.json" || fail "cozy update ${CAND_COZY#v} failed: $(head -c 300 "$OUT/update-candidate.json")"
