@@ -99,6 +99,7 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `machine.updated {machine}`: a machine as `GET /v1/machines` lists it, each time it changes. `machine.removed {name}`: it left the list.
 - `project.changed {id, rev}`: `rev` is opaque, and changes whenever `project.yaml` or `project.lock` does, as a landing's does, when a file comes to or goes from `files/`, as a pull's do, and when a push or pull ends. While a stream is open, the projects open here are looked at about once a second for edits from outside.
 - `canvas {id, etag, cards: {name: {x, y, w?} | null}}`: the rows of a project's canvas that changed.
+- `job.updated {project, job, seq}`: one job of a project's render, whole, each time it changes; `id` names it for as long as the render goes, and `GET /v1/projects/{id}`'s `board` has them all. A client reads the board, then keeps what's newer than its `seq`.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
 ### The page

@@ -61,6 +61,20 @@ impl Rendering {
                 self.board = board;
                 Fresh::Board
             }
+            Event::Job { job, seq } if seq >= self.board.seq => {
+                self.board.seq = seq;
+                match self.board.jobs.iter_mut().find(|held| held.id == job.id) {
+                    Some(held) => *held = job,
+                    None => self.board.jobs.push(job),
+                }
+                // What has ended first, in the order it did; then what goes; then what waits.
+                self.board.jobs.sort_by_key(|job| match job.state {
+                    JobState::Running => 1,
+                    JobState::Waiting => 2,
+                    _ => 0,
+                });
+                Fresh::Board
+            }
             Event::Warning { message, name } => {
                 let line = name.as_ref().map_or_else(|| format!("warning: {message}"), |name| format!("{name}: warning: {message}"));
                 match self.warnings.iter_mut().find(|warned| warned.message == message) {

@@ -19,6 +19,7 @@ mod thumbs;
 mod caption;
 mod direct;
 mod tools;
+mod walker;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -69,6 +70,7 @@ use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Maker, Package, Renderer};
 use jobs::{Going, Jobs};
+use walker::{End, Frozen, Graph, Kind as JobKind, Named, Node, Turn};
 use tools::Canvas;
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
@@ -112,6 +114,8 @@ struct Project {
     events: broadcast::Sender<Event>,
     /// What its render is doing, asset by asset.
     jobs: Jobs,
+    /// What its walker needn't read again: the jobs, and each text.
+    walker: Mutex<Walker>,
     /// Whether its one walker is going; it goes until nothing is owed.
     walking: Mutex<bool>,
     /// Tells the walker something was asked.
@@ -175,11 +179,12 @@ impl Projects {
         let id = project_id(dir);
         let project = (self.open.lock().expect("projects lock").entry(id.clone()))
             .or_insert_with(|| {
-                let (events, asked) = (broadcast::channel(256).0, Notify::new());
+                let (events, asked) = (broadcast::channel::<Event>(256).0, Notify::new());
                 Arc::new(Project {
                     folder,
+                    jobs: Jobs::new(id.clone(), events.clone()),
                     events,
-                    jobs: Jobs::default(),
+                    walker: Mutex::default(),
                     walking: Mutex::new(false),
                     asked,
                     cutting: Arc::default(),
@@ -435,23 +440,207 @@ fn following(api: &Arc<Api>, project: &Arc<Project>) -> tokio::task::JoinHandle<
     })
 }
 
-/// The board as project.lock stands now. `run` reads a run by its number.
+/// The board as the graph and what is on its way stand now. `run` reads a run by its number.
 fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), Error> {
-    let folder = &project.folder;
-    let lock = folder.lock()?;
-    let going = lock.pending.values().map(|pending| Going {
-        asset: pending.asset.clone(),
-        noun: held_noun(&lock, &pending.asset).into(),
-        number: pending.version.number,
-        run: pending.run,
-        earlier_ms: pending.version.execution_ms,
-        shot: lock.asset(&pending.asset).is_some_and(|held| held.kind == "video"),
+    let walk = project.folder.walk_now()?;
+    let walker = project.walker.lock().expect("walker lock");
+    let graph = &walker.graph;
+    let noun = |job: Option<&walker::Job>| if job.is_some_and(|job| job.video) { "take" } else { "version" };
+    let going = (walk.pending.iter()).map(|(key, pending)| {
+        let id = pending.job_of(key);
+        let job = graph.job(id);
+        Going {
+            job: id.to_owned(),
+            asset: pending.asset.clone(),
+            noun: noun(job).into(),
+            number: pending.version.number,
+            run: pending.run,
+            earlier_ms: pending.version.execution_ms,
+            shot: job.is_some_and(|job| job.shot),
+        }
     });
-    let on = lock.walk.asks.iter().map(|ask| &ask.target).chain(lock.pending.values().map(|pending| &pending.target));
+    let going = going.collect();
+    let sent: HashSet<&str> = walk.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
+    let coming = (graph.open_jobs().into_iter())
+        .filter(|&id| !sent.contains(graph.jobs[id].key.as_str()))
+        .map(|id| {
+            let job = &graph.jobs[id];
+            let waits = graph.waits_for(id);
+            let why = match waits.as_slice() {
+                [] => "next".to_owned(),
+                [a, b, c] => format!("after {a}, {b}, {c}"),
+                [a, b, c, more @ ..] => format!("after {a}, {b}, {c} and {} more", more.len()),
+                waits => format!("after {}", waits.join(", ")),
+            };
+            let row = Job { id: job.key.clone(), asset: job.asset.clone(), noun: noun(Some(job)).into(), needs: waits.iter().map(|name| (*name).to_owned()).collect(), why: Some(why), ..Job::default() };
+            (row, job.shot)
+        })
+        .collect();
+    drop(walker);
+    let on = walk.walk.asks.iter().map(|ask| &ask.target).chain(walk.pending.values().map(|pending| &pending.target));
     let on = on.flat_map(|target| target.on.iter().map(ToString::to_string)).collect();
-    let coming = owed(folder, &lock).into_iter().map(|owed| (owed.job, owed.shot)).collect();
-    project.jobs.sync(on, going.collect(), coming, run);
+    project.jobs.sync(on, going, coming, run);
     Ok(())
+}
+
+/// What a project's walker needn't read again.
+#[derive(Default)]
+struct Walker {
+    graph: Graph,
+    /// By text's digest: asks of one text read it once.
+    readings: HashMap<String, Reading>,
+    /// The asks in the graph.
+    joined: HashSet<String>,
+    /// Asks joined that it hasn't said anything of yet.
+    greet: Vec<String>,
+    /// Asks whose text doesn't read, and why.
+    unread: Vec<(String, Error)>,
+    /// The assets project.yaml names now, as of its stamp.
+    names: Option<(String, HashSet<String>)>,
+}
+
+/// One text a render was asked with, read once, and what stands by it: each asset worked out when asked of, and again once what it reads moved.
+struct Reading {
+    doc: Arc<Doc>,
+    nodes: Vec<Node>,
+    done: Vec<Standing>,
+    known: Vec<bool>,
+    /// What reads each.
+    readers: Vec<Vec<usize>>,
+}
+
+impl Reading {
+    fn new(doc: Doc) -> Self {
+        let n = doc.assets.len();
+        let mut readers = vec![vec![]; n];
+        for (i, reads) in doc.upstream.iter().enumerate() {
+            reads.iter().for_each(|&read| readers[read].push(i));
+        }
+        let nodes = (0..n).map(|i| node_of(&doc, i)).collect();
+        Self { nodes, done: vec![Standing::default(); n], known: vec![false; n], readers, doc: Arc::new(doc) }
+    }
+
+    fn ensure(&mut self, i: usize, lock: &Lock) {
+        if self.known[i] {
+            return;
+        }
+        for read in self.doc.upstream[i].clone() {
+            self.ensure(read, lock);
+        }
+        self.done[i] = self.doc.standing(i, lock, &self.done);
+        self.known[i] = true;
+    }
+
+    /// A new version of `name`: what stands by it is worked out again when next asked of.
+    fn moved(&mut self, name: &str) {
+        let Some(i) = self.doc.find(name) else { return };
+        let mut stack = vec![i];
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut self.known[i], false) {
+                stack.extend(&self.readers[i]);
+            }
+        }
+    }
+
+    /// What stands of asset `i` and all it reads: what sending it looks at. The rest of the list holds nothing, so it costs nothing.
+    fn cone(&mut self, i: usize, lock: &Lock) -> Vec<Standing> {
+        self.ensure(i, lock);
+        let mut out = vec![Standing::default(); self.done.len()];
+        let (mut stack, mut seen) = (vec![i], HashSet::new());
+        while let Some(i) = stack.pop() {
+            if seen.insert(i) {
+                out[i] = self.done[i].clone();
+                stack.extend(&self.doc.upstream[i]);
+            }
+        }
+        out
+    }
+}
+
+fn node_of(doc: &Doc, i: usize) -> Node {
+    let asset = &doc.assets[i];
+    let said = serde_json::to_string(&(&asset.fields, &asset.body)).unwrap_or_default();
+    let video = asset.kind == "video";
+    Node {
+        name: asset.name.clone(),
+        spec: hex::encode(Sha256::digest(said)),
+        reads: doc.upstream[i].clone(),
+        makes: doc.makes(i),
+        free: doc.tool(i).is_some(),
+        pinned: asset.pin.is_some(),
+        shot: video && doc.tool(i).is_none(),
+        video,
+    }
+}
+
+/// A frozen render as the graph reads it, by what project.lock holds now.
+struct Now<'a> {
+    reading: &'a mut Reading,
+    lock: &'a Lock,
+    ask: &'a Ask,
+}
+
+impl Frozen for Now<'_> {
+    fn nodes(&self) -> &[Node] {
+        &self.reading.nodes
+    }
+
+    fn order(&self) -> &[usize] {
+        &self.reading.doc.order
+    }
+
+    fn holds(&mut self, i: usize) -> bool {
+        self.reading.ensure(i, self.lock);
+        self.reading.done[i].files.is_some()
+    }
+
+    fn judged(&mut self, i: usize) -> bool {
+        if !self.ask.outdated {
+            return false;
+        }
+        self.reading.ensure(i, self.lock);
+        judged_pin(&self.reading.doc, &self.reading.done, self.ask, i)
+    }
+}
+
+impl Project {
+    /// Each render `lock` holds that the graph doesn't yet: its jobs made, what it left going taken in. Answers the jobs made.
+    fn join(&self, lock: &Lock) -> Vec<usize> {
+        let mut walker = self.walker.lock().expect("walker lock");
+        let Walker { graph, readings, joined, greet, unread, .. } = &mut *walker;
+        let mut made = vec![];
+        for ask in &lock.walk.asks {
+            if !joined.insert(ask.id.clone()) {
+                continue;
+            }
+            if !readings.contains_key(&ask.digest) {
+                let read = self.folder.text_of(ask).and_then(|text| Doc::read(&self.folder, &text));
+                match read {
+                    Ok(doc) => drop(readings.insert(ask.digest.clone(), Reading::new(doc))),
+                    Err(error) => {
+                        unread.push((ask.id.clone(), error));
+                        continue;
+                    }
+                }
+            }
+            greet.push(ask.id.clone());
+            let reading = readings.get_mut(&ask.digest).expect("just read");
+            for (key, pending) in lock.pending.iter().filter(|(_, pending)| pending.ask == ask.id) {
+                let job = pending.job_of(key);
+                if graph.id(job).is_none() {
+                    let node = reading.doc.find(&pending.asset).map(|i| reading.nodes[i].clone()).unwrap_or_default();
+                    graph.adopt(&ask.id, job, &pending.asset, &node, pending.approve);
+                }
+            }
+            let asked = walker::Asked {
+                all: ask.all,
+                tried: ask.sent.clone(),
+                takes: ask.takes.iter().map(|take| Named { key: take.key.clone(), asset: take.asset.clone(), approve: take.approve }).collect(),
+            };
+            made.extend(graph.add(&ask.id, &mut Now { reading, lock, ask }, &asked));
+        }
+        made
+    }
 }
 
 /// Records in the index which open projects are being walked, which the next start walks again.
@@ -630,7 +819,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
         Err(error) if !lock.owes() => return Err(Refusal(error)),
         // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
         Err(error) => {
-            let queue = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
+            let queue = queue(&project, &lock);
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
@@ -674,7 +863,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
-    let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
+    let queued = queue(&project, &lock);
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let kept: BTreeSet<&str> = assets.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !kept.contains(warning.message.as_str()));
@@ -851,12 +1040,6 @@ fn noun(doc: &Doc, lock: &Lock, i: usize) -> &'static str {
         true => "take",
         false => "version",
     }
-}
-
-/// What versions of `name` are called, of what project.lock holds.
-fn held_noun(lock: &Lock, name: &str) -> &'static str {
-    let video = lock.asset(name).is_some_and(|held| held.kind == "video" || held.versions.iter().any(|version| version.files.contains_key("video")));
-    if video { "take" } else { "version" }
 }
 
 /// A set of files as the API lists them.
@@ -1330,8 +1513,8 @@ async fn runs(
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
     let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
-    let before = queue(&project.folder, &lock);
-    let ask = Ask { id: new_key(), text, digest, target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
+    project.folder.keep_text(&digest, &text).map_err(Refusal)?;
+    let ask = Ask { id: new_key(), text: String::new(), digest, target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
     (project.folder.update_lock(|lock| {
         if !joined || added > 0 {
             lock.walk.asks.push(ask.clone());
@@ -1344,11 +1527,8 @@ async fn runs(
         }
     }))
     .map_err(Refusal)?;
-    let after = queue(&project.folder, &project.folder.lock().map_err(Refusal)?);
-    let queued = (after.iter().enumerate())
-        .filter(|(_, item)| !before.contains(item))
-        .map(|(at, (item, _))| QueuedNow { name: item.name.clone(), ahead: after[..at].iter().map(|(ahead, _)| ahead.name.clone()).collect() })
-        .collect();
+    let made = project.join(&project.folder.lock().map_err(Refusal)?);
+    let queued = queued_now(&project, &made);
     walk(&api, &project);
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
     Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder), board: project.jobs.board() })))
@@ -1362,89 +1542,32 @@ fn numbered(api: &Api) -> impl Fn(u64) -> Option<Run> + '_ {
     }
 }
 
-/// What the project has to do, in the order it goes: what is running, then what each render has queued, each with its take's key if
-/// it is one. Each render's by its own text.
-fn queue(folder: &Folder, lock: &Lock) -> Vec<(Queued, Option<String>)> {
-    let mut items: Vec<(Queued, Option<String>)> = (lock.pending.iter())
-        .map(|(key, pending)| (Queued { name: pending.asset.clone(), running: true, run: (pending.run > 0).then_some(pending.run) }, Some(key.clone())))
-        .collect();
-    let sent = owed(folder, lock).into_iter().filter(|owed| owed.sent);
-    items.extend(sent.map(|owed| (Queued { name: owed.job.asset, running: false, run: None }, owed.key)));
-    items
+/// What the project has to do, in the order it goes: what is running, then what each render has queued.
+fn queue(project: &Project, lock: &Lock) -> Vec<Queued> {
+    project.join(lock);
+    let runs: HashMap<&str, u64> = lock.pending.iter().map(|(key, pending)| (pending.job_of(key), pending.run)).collect();
+    let walker = project.walker.lock().expect("walker lock");
+    let graph = &walker.graph;
+    let row = |id: usize| {
+        let job = &graph.jobs[id];
+        let run = runs.get(job.key.as_str()).copied();
+        Queued { name: job.asset.clone(), running: run.is_some(), run: run.filter(|run| *run > 0) }
+    };
+    graph.open_jobs().into_iter().map(row).collect()
 }
 
-/// One thing each render still owes, as the board shows it.
-struct Owed {
-    job: Job,
-    /// The take it is, if it is one.
-    key: Option<String>,
-    /// A run is sent for it: not what comes of another's, as a tool and a written image do.
-    sent: bool,
-    /// It makes a shot: a video its package makes, not a cut.
-    shot: bool,
-}
+/// How many names a queued job says are ahead of it.
+const AHEAD_SAID: usize = 8;
 
-/// What each render still owes, by its own text, in the order it goes, each with what it waits for.
-fn owed(folder: &Folder, lock: &Lock) -> Vec<Owed> {
-    let mut going: BTreeSet<String> = lock.pending.values().map(|pending| name_key(&pending.asset)).collect();
-    let mut items = vec![];
-    for ask in &lock.walk.asks {
-        let waiting = |take: &&Take| !lock.pending.contains_key(&take.key);
-        let Ok(doc) = Doc::read(folder, &ask.text) else {
-            for take in ask.takes.iter().filter(waiting) {
-                going.insert(name_key(&take.asset));
-                let job = Job { asset: take.asset.clone(), noun: "version".into(), ..Job::default() };
-                items.push(Owed { job, key: Some(take.key.clone()), sent: true, shot: false });
-            }
-            continue;
-        };
-        let stand = doc.stand(lock);
-        let covered = covered(&doc, &stand, ask);
-        for &i in &doc.order {
-            let asset = &doc.assets[i];
-            let key = name_key(&asset.name);
-            let after = reads_going(&doc, i, &going);
-            let row = |why: String| Job { asset: asset.name.clone(), noun: noun(&doc, lock, i).into(), why: Some(why), ..Job::default() };
-            let why = match after.as_slice() {
-                [] if !doc.upstream[i].is_empty() && doc.tool(i).is_none() && doc.upstream[i].iter().any(|&read| stand[read].files.is_none()) => format!("can't go: {}", unread(&doc, &stand, lock, ask, i)),
-                [] => "next".to_owned(),
-                reads => format!("after {}", reads.join(", ")),
-            };
-            let shot = asset.kind == "video" && doc.tool(i).is_none();
-            let takes: Vec<&Take> = ask.takes.iter().filter(waiting).filter(|take| name_key(&take.asset) == key).collect();
-            items.extend(takes.iter().map(|take| Owed { job: row(why.clone()), key: Some(take.key.clone()), sent: true, shot }));
-            let tried = ask.sent.contains(&key);
-            let there = !takes.is_empty() || going.contains(&key);
-            let sent = !there && (covered[i] && stand[i].files.is_none() || outdated_now(&doc, &stand, ask, i)) && doc.makes(i) && doc.tool(i).is_none() && !tried;
-            let tool = !there && doc.tool(i).is_some() && doc.makes(i) && asset.pin.is_none() && !tried && (!after.is_empty() || (stand[i].files.is_none() && stand[i].inputs.is_some()));
-            if sent {
-                items.push(Owed { job: row(why), key: None, sent: true, shot });
-            } else if tool {
-                items.push(Owed { job: row(why), key: None, sent: false, shot: false });
-            }
-            if items.last().is_some_and(|owed: &Owed| owed.job.asset == asset.name) {
-                going.insert(key);
-            }
-        }
-    }
-    items
-}
-
-/// What asset `i` reads that is on its way, an entity's by what it links.
-fn reads_going(doc: &Doc, i: usize, going: &BTreeSet<String>) -> Vec<String> {
-    let mut found: Vec<String> = vec![];
-    for &read in &doc.upstream[i] {
-        let more = match doc.assets[read].links.is_some() {
-            true => reads_going(doc, read, going),
-            false => Vec::from_iter(going.contains(&name_key(&doc.assets[read].name)).then(|| doc.assets[read].name.clone())),
-        };
-        for name in more {
-            if !found.contains(&name) {
-                found.push(name);
-            }
-        }
-    }
-    found
+/// What `made` are, each with the names ahead of it.
+fn queued_now(project: &Project, made: &[usize]) -> Vec<QueuedNow> {
+    let walker = project.walker.lock().expect("walker lock");
+    let graph = &walker.graph;
+    let open = graph.open_jobs();
+    (open.iter().enumerate())
+        .filter(|(_, id)| made.contains(id))
+        .map(|(at, &id)| QueuedNow { name: graph.jobs[id].asset.clone(), ahead: open[..at].iter().take(AHEAD_SAID).map(|&ahead| graph.jobs[ahead].asset.clone()).collect() })
+        .collect()
 }
 
 /// `POST /v1/projects/{id}/cancel`: the names' queued work dropped and their runs canceled, as `cozy run cancel` does. `all` is
@@ -1462,7 +1585,7 @@ async fn cancel(
     let mut keys = BTreeSet::new();
     if !all {
         // Only an entity's name needs a file: this one, or if it doesn't read, the newest render's.
-        let doc = Doc::load(folder).ok().or_else(|| lock.walk.asks.last().and_then(|ask| Doc::read(folder, &ask.text).ok()));
+        let doc = Doc::load(folder).ok().or_else(|| lock.walk.asks.last().and_then(|ask| Doc::read(folder, &folder.text_of(ask).ok()?).ok()));
         for name in &asked.names {
             match doc.as_ref().and_then(|doc| Some((doc, doc.find(name).filter(|&i| doc.assets[i].links.is_some())?))) {
                 Some((doc, i)) => keys.extend(doc.linked(i).into_iter().map(|j| name_key(&doc.assets[j].name))),
@@ -1471,16 +1594,24 @@ async fn cancel(
         }
     }
     let wanted = |name: &str| all || keys.contains(&name_key(name));
-    let (mut dropped, mut owed) = (vec![], vec![]);
-    for (item, take) in queue(folder, &lock).into_iter().filter(|(item, _)| !item.running && wanted(&item.name)) {
-        if take.is_none() {
-            owed.push(name_key(&item.name));
-        }
-        dropped.push(item.name);
+    project.join(&lock);
+    let sent: HashSet<&str> = lock.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
+    let (dropped, unsent) = {
+        let mut walker = project.walker.lock().expect("walker lock");
+        let (dropped, going) = walker.graph.cancel(wanted);
+        let rows: Vec<walker::Job> = dropped.iter().map(|&id| walker.graph.jobs[id].clone()).collect();
+        // What is being sent, and has no run yet, isn't sent.
+        let unsent: Vec<String> = going.iter().map(|&id| &walker.graph.jobs[id]).filter(|job| !sent.contains(job.key.as_str())).map(|job| name_key(&job.asset)).collect();
+        (rows, unsent)
+    };
+    for job in &dropped {
+        project.jobs.ended(Job { id: job.key.clone(), asset: job.asset.clone(), state: JobState::Canceled, why: Some("canceled".into()), ..Job::default() });
     }
+    let owed: Vec<String> = dropped.iter().map(|job| name_key(&job.asset)).chain(unsent).collect();
+    let dropped: Vec<String> = dropped.into_iter().map(|job| job.asset).collect();
     folder
-        .update_lock(|lock| {
-            for ask in &mut lock.walk.asks {
+        .update_walk(|walk| {
+            for ask in &mut walk.walk.asks {
                 ask.takes.retain(|take| !wanted(&take.asset));
                 ask.all &= !all;
                 ask.outdated &= !all;
@@ -1813,7 +1944,7 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
             walker.measure()?;
             let (doc, lock) = (Doc::load(walker.folder())?, walker.folder().lock()?);
             let stand = doc.stand(&lock);
-            let tools = plan(&doc, &stand, &lock, &now).tools;
+            let tools = tools_ready(&doc, &stand, &lock);
             Ok((doc, lock, stand, tools))
         })();
         let (doc, lock, stand, tools) = match ready {
@@ -1867,7 +1998,12 @@ async fn events(
                     let sent = sse::Event::default().json_data(&event).expect("an event serializes");
                     return Some((Ok(sent), (tail, boards, stop)));
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                // It fell behind: what it missed is in the board.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let event = Event::Board { board: boards.borrow().clone() };
+                    let sent = sse::Event::default().json_data(&event).expect("an event serializes");
+                    return Some((Ok(sent), (tail, boards, stop)));
+                }
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
@@ -1977,6 +2113,8 @@ fn send(path: &FsPath, etag: &str, headers: &HeaderMap) -> Result<Response, Refu
 /// A version to send now: asset `i`'s because it has no state (take None), or a take's.
 struct Next {
     i: usize,
+    /// The job's key: its first run goes under it.
+    key: String,
     take: Option<Take>,
     /// A pin out of date: a new version, and when it lands, no pin.
     unpin: bool,
@@ -2011,6 +2149,29 @@ struct Walk {
     stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// That this computer's first need of ffprobe was met: it measures what adapters read.
     measuring: AtomicBool,
+    /// While that is fetched, nothing goes: an adapter reads those sizes.
+    holding: AtomicBool,
+}
+
+/// How many jobs go at once, per machine they may go to: being sent, in its line or running. What's beyond waits here, so a pod's queue stays short and what is asked later or canceled costs nothing there.
+const WINDOW: usize = 32;
+
+/// Something a walker started came to its end.
+enum Done {
+    Measured,
+    Sent { id: usize, key: String, ask: Arc<Ask>, name: String, kind: String, inputs: Option<String>, result: Result<(), Error> },
+    Made { id: usize, ask: String, name: String, kind: String, inputs: Option<String>, result: Result<(), Error> },
+    Landed { job: String, landed: Followed },
+}
+
+/// What a job's turn came to, done once the graph is let go.
+enum Act {
+    Stands { id: usize, ask: String, key: String, asset: String, noun: &'static str, number: Option<u32> },
+    Unread { id: usize, ask: String, on: Vec<On>, key: String, asset: String, kind: String, inputs: Option<String>, message: String },
+    Deleted { id: usize, ask: String, key: String, asset: String },
+    Kept { id: usize, ask: String, key: String, asset: String, said: String },
+    Send { id: usize, key: String, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, next: Next },
+    Tool { id: usize, ask: Arc<Ask>, doc: Arc<Doc>, stand: Arc<Vec<Standing>>, lock: Arc<Lock>, i: usize },
 }
 
 /// What a walk did not make, and how to ask for it again.
@@ -2025,9 +2186,6 @@ struct Missed {
     outdated: bool,
     on: Vec<On>,
 }
-
-/// A run being followed to its end.
-type Following<'a> = BoxFuture<'a, Followed>;
 
 /// A run followed to its end: its key, the asset, inputs and number it was a try at if it was still owed, and what landing it came to.
 struct Followed {
@@ -2050,6 +2208,7 @@ impl Walk {
             faults: Mutex::default(),
             stopped: Mutex::default(),
             measuring: AtomicBool::new(false),
+            holding: AtomicBool::new(false),
         }
     }
 
@@ -2145,10 +2304,7 @@ impl Walk {
     }
 
     /// Sizes an adapter reads are ffprobe's: with files to measure and none here, this computer's first need fetches it, or says what goes without.
-    async fn measuring(&self, lock: &Lock) {
-        if !self.folder().wants_ffprobe(lock) || self.measuring.swap(true, Ordering::Relaxed) {
-            return;
-        }
+    async fn measure_first(&self) {
         self.say(Event::Said { message: "fetching ffmpeg and ffprobe, which measure this project's files".into(), name: None });
         if let Err(error) = self.host.ffmpeg().await {
             self.say(Event::Warning { message: format!("adapters see no sizes for this project's files: {}: cozy doctor", error.message), name: None });
@@ -2173,34 +2329,34 @@ impl Walk {
     /// The project as the render `ask` was asked of it; one from no render in the lock, as the file reads now.
     fn doc_of(&self, ask: &str) -> Result<Doc, Error> {
         self.measure()?;
-        let text = self.folder().lock()?.walk.asks.into_iter().find(|mine| mine.id == ask).map(|mine| mine.text);
-        match text {
-            Some(text) => Doc::read(self.folder(), &text),
+        match self.folder().walk_now()?.walk.asks.iter().find(|mine| mine.id == ask) {
+            Some(mine) => Doc::read(self.folder(), &self.folder().text_of(mine)?),
             None => Doc::load(self.folder()),
         }
     }
 
-    /// What a render is left with, when nothing more of it can go, said; then it is done.
-    async fn finish(&self, id: &str, first: &mut Option<Error>) -> Result<(), Error> {
-        self.measure()?;
-        let lock = self.folder().lock()?;
-        if let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id)
-            && let Ok(doc) = Doc::read(self.folder(), &ask.text)
+    /// A render has nothing more that can go: each cut it ends on is said, and it is done.
+    async fn finish(&self, id: &str) -> Result<(), Error> {
+        let asks = self.folder().walk_now()?.walk.asks;
+        if let Some(ask) = asks.iter().find(|ask| ask.id == id)
+            && let Ok(doc) = self.folder().text_of(ask).and_then(|text| Doc::read(self.folder(), &text))
+            && (0..doc.assets.len()).any(|i| doc.tool(i) == Some(Tool::Cut))
         {
+            self.measure()?;
+            let lock = self.folder().lock()?;
             let stand = doc.stand(&lock);
-            let stopped = self.sending(id, &ask.target.on).is_empty();
-            for (i, message) in stuck(&doc, &stand, &lock, ask) {
-                match stopped {
-                    true => self.not_sent(&doc.assets[i].name),
-                    false => self.failed_asset(&doc, &stand, i, Error::new(Kind::NotFound, "file_missing", message), first),
-                }
-            }
             self.say_cuts(&doc, &stand).await?;
         }
-        self.folder().update_lock(|lock| {
-            lock.walk.asks.retain(|ask| ask.id != id);
-            if lock.walk.asks.is_empty() {
-                lock.walk.asked.clear();
+        if let Some(digest) = asks.iter().find(|ask| ask.id == id).map(|ask| &ask.digest) {
+            if !asks.iter().any(|ask| ask.id != id && &ask.digest == digest) {
+                self.project.walker.lock().expect("walker lock").readings.remove(digest);
+                self.folder().drop_text(digest);
+            }
+        }
+        self.folder().update_walk(|walk| {
+            walk.walk.asks.retain(|ask| ask.id != id);
+            if walk.walk.asks.is_empty() {
+                walk.walk.asked.clear();
             }
         })
     }
@@ -2254,83 +2410,34 @@ impl Walk {
         self.project.jobs.ended(Job { asset: name.to_owned(), state: JobState::Done, noun: noun.to_owned(), number: Some(number), why: Some(why), path, ..Job::default() });
     }
 
-    /// Sends whatever is ready, makes each tool whose reads have settled, follows every pending run (what it sent, what an earlier
-    /// walker sent), and plans again as each lands or something is asked, until nothing is owed: then the first thing that failed, if one did.
+    /// Gives each ready job its turn as it comes up, each sending, making or following on its own so none holds up another, and goes on
+    /// as each ends or something is asked, until nothing is owed: then the first thing that failed, if one did.
     async fn go(&self) -> Result<Option<Error>, Error> {
-        let (mut first, mut following, mut followed): (_, FuturesUnordered<Following<'_>>, _) = (None, FuturesUnordered::new(), HashSet::new());
-        let mut greeted = HashSet::new();
+        let (mut first, mut followed) = (None, HashSet::new());
+        let mut work: FuturesUnordered<BoxFuture<'_, Done>> = FuturesUnordered::new();
         loop {
-            let mut moved = false;
-            self.measuring(&self.folder().lock()?).await;
-            self.measure()?;
-            // Each render on its own text, all going at once: what is independent goes together.
-            let asks: Vec<String> = self.folder().lock()?.walk.asks.into_iter().map(|ask| ask.id).collect();
-            for id in asks {
-                let Some(text) = self.folder().lock()?.walk.asks.into_iter().find(|ask| ask.id == id).map(|ask| ask.text) else { continue };
-                let doc = match Doc::read(self.folder(), &text) {
-                    Ok(doc) => doc,
-                    Err(error) => {
-                        self.failed(error, &mut first);
-                        self.finish(&id, &mut first).await?;
+            self.joined(&mut first).await?;
+            while self.turns(&mut work, &mut first)? {}
+            for (key, pending) in self.folder().walk_now()?.pending {
+                if followed.insert(key.clone()) {
+                    let job = pending.job_of(&key).to_owned();
+                    work.push(async move { Done::Landed { job, landed: self.follow(key).await } }.boxed());
+                }
+            }
+            self.finish_asks().await?;
+            self.sync();
+            if work.is_empty() {
+                // What is going with nothing following it has ended.
+                {
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    let going: Vec<usize> = (0..walker.graph.jobs.len()).filter(|&id| walker.graph.jobs[id].state == walker::State::Going).collect();
+                    going.into_iter().for_each(|id| walker.graph.end(id, End::Done));
+                    if walker.graph.has_ready() {
                         continue;
                     }
-                };
-                let lock = self.folder().lock()?;
-                let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id) else { continue };
-                self.asked_of(ask);
-                if greeted.insert(id.clone()) {
-                    doc.warnings.iter().for_each(|warning| self.say(Event::Warning { message: warning.message.clone(), name: warning.name.clone() }));
                 }
-                let stand = doc.stand(&lock);
-                let planned = plan(&doc, &stand, &lock, ask);
-                for &i in &planned.kept {
-                    let name = &doc.assets[i].name;
-                    let why = doc.tags(i).and_then(|tags| doc.missing_inputs(i, tags)).unwrap_or_default();
-                    let why = why.strip_prefix(&format!("{name}: ")).unwrap_or(&why);
-                    let changed = match &stand[i].state {
-                        Stand::Pinned { changed, .. } => changed.join(", "),
-                        _ => String::new(),
-                    };
-                    self.say(Event::Said { message: format!("{name} stays pinned, though {changed} changed: {why}"), name: Some(name.clone()) });
-                    self.tried(&id, name)?;
-                }
-                let idle = planned.send.is_empty() && planned.tools.is_empty();
-                moved |= !idle;
-                for next in planned.send {
-                    let i = next.i;
-                    if let Err(error) = self.send(ask, &doc, &stand, &lock, next).await {
-                        self.send_failed(ask, &doc.assets[i].name, &error)?;
-                        self.failed_asset(&doc, &stand, i, error, &mut first);
-                    }
-                    // What has landed since: a machine failing every run stops the rest of this list.
-                    self.landed_now(&mut following, &mut followed, &mut first)?;
-                }
-                for i in planned.tools {
-                    let made = self.tool(ask, &doc, &stand, &lock, i).await;
-                    self.folder().update_lock(|lock| {
-                        for mine in lock.walk.asks.iter_mut().filter(|mine| mine.id == id) {
-                            mine.takes.retain(|take| name_key(&take.asset) != name_key(&doc.assets[i].name));
-                        }
-                    })?;
-                    if let Err(error) = made {
-                        self.failed_asset(&doc, &stand, i, error, &mut first);
-                        self.tried(&id, &doc.assets[i].name)?;
-                    }
-                }
-                if idle && !planned.open && !lock.pending.values().any(|pending| pending.ask == id) {
-                    self.finish(&id, &mut first).await?;
-                }
-            }
-            // What lands now was not in this pass's plan: a cut or a reader may be ready, so nothing is over yet.
-            let landed = self.landed_now(&mut following, &mut followed, &mut first)?;
-            self.sync();
-            if moved || landed {
-                continue;
-            }
-            if following.is_empty() {
-                // Nothing is on its way: what is left can't be made.
-                for ask in self.folder().lock()?.walk.asks {
-                    self.finish(&ask.id, &mut first).await?;
+                for ask in self.folder().walk_now()?.walk.asks {
+                    self.finish(&ask.id).await?;
                 }
                 if self.over()? {
                     return Ok(first);
@@ -2338,27 +2445,333 @@ impl Walk {
                 continue;
             }
             tokio::select! {
-                Some(landed) = following.next() => {
-                    self.landed(landed, &mut followed, &mut first)?;
-                }
+                Some(done) = work.next() => self.done(done, &mut followed, &mut first)?,
                 () = self.project.asked.notified() => {}
+            }
+            while let Some(Some(done)) = work.next().now_or_never() {
+                self.done(done, &mut followed, &mut first)?;
             }
         }
     }
 
-    /// Follows what is newly pending, and lands what has ended by now, waiting for nothing; whether any did.
-    fn landed_now<'a>(&'a self, following: &mut FuturesUnordered<Following<'a>>, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<bool, Error> {
-        for key in self.folder().lock()?.pending.into_keys() {
-            if followed.insert(key.clone()) {
-                following.push(self.follow(key).boxed());
+    /// Takes in what was asked since: said once, and what can't be read ends there.
+    async fn joined(&self, first: &mut Option<Error>) -> Result<(), Error> {
+        let walk = self.folder().walk_now()?;
+        let new = {
+            let walker = self.project.walker.lock().expect("walker lock");
+            walk.walk.asks.iter().any(|ask| !walker.joined.contains(&ask.id)) || !walker.greet.is_empty() || !walker.unread.is_empty()
+        };
+        if !new {
+            return Ok(());
+        }
+        self.project.join(&self.folder().lock()?);
+        let (greet, unread) = {
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            (std::mem::take(&mut walker.greet), std::mem::take(&mut walker.unread))
+        };
+        for ask in walk.walk.asks.iter().filter(|ask| greet.contains(&ask.id)) {
+            self.asked_of(ask);
+            let warnings = {
+                let walker = self.project.walker.lock().expect("walker lock");
+                walker.readings.get(&ask.digest).map(|reading| reading.doc.clone())
+            };
+            for warning in warnings.iter().flat_map(|doc| &doc.warnings) {
+                self.say(Event::Warning { message: warning.message.clone(), name: warning.name.clone() });
             }
         }
-        let mut any = false;
-        while let Some(Some(landed)) = following.next().now_or_never() {
-            self.landed(landed, followed, first)?;
-            any = true;
+        for (ask, error) in unread {
+            self.failed(error, first);
+            self.finish(&ask).await?;
         }
-        Ok(any)
+        Ok(())
+    }
+
+    /// The asks with nothing left, done.
+    async fn finish_asks(&self) -> Result<(), Error> {
+        let walk = self.folder().walk_now()?;
+        for ask in &walk.walk.asks {
+            let done = {
+                let walker = self.project.walker.lock().expect("walker lock");
+                walker.joined.contains(&ask.id) && !walker.graph.owes(&ask.id)
+            };
+            if done && !walk.pending.values().any(|pending| pending.ask == ask.id) {
+                self.finish(&ask.id).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The asset names project.yaml holds now, read again only when it changed. None: it doesn't read, so nothing is known gone.
+    fn names_now(&self, held: &mut Option<(String, HashSet<String>)>) -> Option<HashSet<String>> {
+        let path = self.folder().project();
+        let meta = std::fs::metadata(&path).ok()?;
+        let stamp = format!("{:?}-{}", meta.modified().ok(), meta.len());
+        if held.as_ref().is_none_or(|(was, _)| *was != stamp) {
+            let text = self.folder().text().ok()?;
+            let names: HashSet<String> = protocol::yaml::keys(&text, &["assets"]).iter().map(|name| name_key(name)).collect();
+            *held = Some((stamp, names));
+        }
+        held.as_ref().map(|(_, names)| names.clone()).filter(|names| !names.is_empty())
+    }
+
+    /// The ready jobs, as many as there is room for, each given its turn; whether there were any.
+    fn turns<'a>(&'a self, work: &mut FuturesUnordered<BoxFuture<'a, Done>>, first: &mut Option<Error>) -> Result<bool, Error> {
+        if self.holding.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        let room = {
+            let walker = self.project.walker.lock().expect("walker lock");
+            if !walker.graph.has_ready() {
+                return Ok(false);
+            }
+            WINDOW.saturating_sub(walker.graph.going())
+        };
+        if room == 0 {
+            return Ok(false);
+        }
+        let held = self.folder().lock()?;
+        if self.folder().wants_ffprobe(&held) && !self.measuring.swap(true, Ordering::Relaxed) {
+            self.holding.store(true, Ordering::Relaxed);
+            work.push(async {
+                self.measure_first().await;
+                Done::Measured
+            }.boxed());
+            return Ok(false);
+        }
+        self.measure()?;
+        let lock = Arc::new(self.folder().lock()?);
+        let mut asks: HashMap<String, Arc<Ask>> = HashMap::new();
+        let mut acts = vec![];
+        {
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            let Walker { graph, readings, names, .. } = &mut *walker;
+            let names = self.names_now(names);
+            for id in graph.take_ready(room) {
+                let (key, ask_id, node, kind, asset) = {
+                    let job = &graph.jobs[id];
+                    (job.key.clone(), job.ask.clone(), job.node, job.kind, job.asset.clone())
+                };
+                if !asks.contains_key(&ask_id)
+                    && let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == ask_id)
+                {
+                    asks.insert(ask_id.clone(), Arc::new(ask.clone()));
+                }
+                let Some(ask) = asks.get(&ask_id).cloned() else {
+                    graph.end(id, End::Dropped);
+                    continue;
+                };
+                let Some(reading) = readings.get_mut(&ask.digest) else {
+                    graph.end(id, End::Dropped);
+                    continue;
+                };
+                // Read with tags it didn't know: a package has been read since.
+                if !reading.doc.knows_tags_of(&lock)
+                    && let Ok(doc) = self.folder().text_of(&ask).and_then(|text| Doc::read(self.folder(), &text))
+                {
+                    *reading = Reading::new(doc);
+                }
+                let gone = |name: &str| names.as_ref().is_some_and(|names| !names.contains(&name_key(name)));
+                if gone(&asset) {
+                    acts.push(Act::Deleted { id, ask: ask_id, key, asset });
+                    continue;
+                }
+                let turn = graph.turn(id, &mut Now { reading, lock: &lock, ask: &ask });
+                let noun = if reading.nodes[node].video { "take" } else { "version" };
+                let row_of = |reading: &mut Reading| {
+                    reading.ensure(node, &lock);
+                    reading.done[node].clone()
+                };
+                match turn {
+                    Turn::Wait => {}
+                    Turn::Stands => {
+                        let number = row_of(reading).version();
+                        acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number });
+                    }
+                    Turn::Unread { read } => {
+                        let standing = row_of(reading);
+                        if kind == JobKind::Judged {
+                            acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number: standing.version() });
+                            continue;
+                        }
+                        let doc = reading.doc.clone();
+                        let stand = reading.cone(node, &lock);
+                        let why = match gone(&reading.nodes[read].name) && !stand[read].files.is_some() {
+                            true => format!("{} was deleted", reading.nodes[read].name),
+                            false => unread(&doc, &stand, &lock, &ask, node),
+                        };
+                        let message = format!("{asset} cannot render: {why}");
+                        let kind = doc.assets[node].kind.clone();
+                        acts.push(Act::Unread { id, ask: ask_id, on: ask.target.on.clone(), key, asset, kind, inputs: standing.inputs, message });
+                    }
+                    Turn::Go => {
+                        graph.go(id);
+                        let doc = reading.doc.clone();
+                        let stand = Arc::new(reading.cone(node, &lock));
+                        let standing = &stand[node];
+                        match kind {
+                            JobKind::Free { named } => {
+                                let makes = doc.makes(node) && standing.inputs.is_some() && (named || standing.files.is_none());
+                                match makes {
+                                    true => acts.push(Act::Tool { id, ask, doc, stand, lock: lock.clone(), i: node }),
+                                    false => {
+                                        let number = standing.version();
+                                        acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number });
+                                    }
+                                }
+                            }
+                            JobKind::Judged => {
+                                if outdated_now(&doc, &stand, &ask, node) {
+                                    let next = Next { i: node, key: key.clone(), take: None, unpin: true };
+                                    acts.push(Act::Send { id, key, ask, doc, stand, lock: lock.clone(), next });
+                                } else if pin_changed(&stand, node) {
+                                    let why = doc.tags(node).and_then(|tags| doc.missing_inputs(node, tags)).unwrap_or_default();
+                                    let why = why.strip_prefix(&format!("{asset}: ")).unwrap_or(&why);
+                                    let changed = match &standing.state {
+                                        Stand::Pinned { changed, .. } => changed.join(", "),
+                                        _ => String::new(),
+                                    };
+                                    let said = format!("{asset} stays pinned, though {changed} changed: {why}");
+                                    acts.push(Act::Kept { id, ask: ask_id, key, asset, said });
+                                } else {
+                                    let number = standing.version();
+                                    acts.push(Act::Stands { id, ask: ask_id, key, asset, noun, number });
+                                }
+                            }
+                            JobKind::Owed | JobKind::Take => {
+                                let take = ask.takes.iter().find(|take| take.key == key).cloned();
+                                let next = Next { i: node, key: key.clone(), take, unpin: false };
+                                acts.push(Act::Send { id, key, ask, doc, stand, lock: lock.clone(), next });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for act in acts {
+            self.act(act, work, first)?;
+        }
+        Ok(true)
+    }
+
+    /// `asset` was tried by render `ask`, whichever way it went: it isn't owed again, a restart too.
+    fn settled(&self, ask: &str, asset: &str, key: &str) -> Result<(), Error> {
+        let name = name_key(asset);
+        self.folder().update_walk(|walk| {
+            for mine in walk.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
+                mine.sent.insert(name.clone());
+                mine.takes.retain(|take| take.key != key);
+            }
+        })
+    }
+
+    fn act<'a>(&'a self, act: Act, work: &mut FuturesUnordered<BoxFuture<'a, Done>>, first: &mut Option<Error>) -> Result<(), Error> {
+        let end = |id: usize, how: End| self.project.walker.lock().expect("walker lock").graph.end(id, how);
+        match act {
+            Act::Stands { id, ask, key, asset, noun, number } => {
+                self.settled(&ask, &asset, &key)?;
+                match number {
+                    Some(number) => self.stands(&asset, noun, number, jobs::STANDS.into()),
+                    None => self.project.jobs.ended(Job { id: key, asset, state: JobState::Done, noun: noun.into(), why: Some("nothing to do".into()), ..Job::default() }),
+                }
+                end(id, End::Stands);
+            }
+            Act::Kept { id, ask, key, asset, said } => {
+                self.say(Event::Said { message: said, name: Some(asset.clone()) });
+                self.settled(&ask, &asset, &key)?;
+                self.project.jobs.ended(Job { id: key, asset, state: JobState::Done, noun: "version".into(), why: Some("stays pinned".into()), ..Job::default() });
+                end(id, End::Stands);
+            }
+            Act::Deleted { id, ask, key, asset } => {
+                self.settled(&ask, &asset, &key)?;
+                let why = format!("{asset} was deleted while it waited, so it isn't made");
+                self.say(Event::Said { message: why.clone(), name: Some(asset.clone()) });
+                self.project.jobs.ended(Job { id: key, asset, state: JobState::Canceled, why: Some(why), ..Job::default() });
+                end(id, End::Dropped);
+            }
+            Act::Unread { id, ask, on, key, asset, kind, inputs, message } => {
+                self.settled(&ask, &asset, &key)?;
+                match self.sending(&ask, &on).is_empty() {
+                    true => self.not_sent(&asset),
+                    false => self.failed_of(&asset, &kind, inputs, None, Error::new(Kind::NotFound, "file_missing", message), first),
+                }
+                end(id, End::Failed);
+            }
+            Act::Send { id, key, ask, doc, stand, lock, next } => {
+                let (name, kind, inputs) = (doc.assets[next.i].name.clone(), doc.assets[next.i].kind.clone(), stand[next.i].inputs.clone());
+                work.push(async move {
+                    let result = self.send(&ask, &doc, &stand, &lock, next).await;
+                    Done::Sent { id, key, ask, name, kind, inputs, result }
+                }.boxed());
+            }
+            Act::Tool { id, ask, doc, stand, lock, i } => {
+                let (name, kind, inputs) = (doc.assets[i].name.clone(), doc.assets[i].kind.clone(), stand[i].inputs.clone());
+                work.push(async move {
+                    let result = self.tool(&ask, &doc, &stand, &lock, i).await;
+                    Done::Made { id, ask: ask.id.clone(), name, kind, inputs, result }
+                }.boxed());
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes in what ended: what reads it can have its turn.
+    fn done(&self, done: Done, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<(), Error> {
+        let ended = |id: usize, how: End, name: &str| {
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            walker.graph.end(id, how);
+            walker.readings.values_mut().for_each(|reading| reading.moved(name));
+        };
+        match done {
+            Done::Measured => self.holding.store(false, Ordering::Relaxed),
+            Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
+                Ok(()) => {
+                    // No run came of it: it stands, it had no adapter, or it was canceled while being sent.
+                    if !self.folder().walk_now()?.pending.iter().any(|(sent, pending)| pending.job_of(sent) == key) {
+                        ended(id, End::Done, &name);
+                        self.project.jobs.ended_if_open(&key, &name);
+                    }
+                }
+                Err(error) => {
+                    self.send_failed(&ask, &name, &error)?;
+                    self.failed_of(&name, &kind, inputs, None, error, first);
+                    ended(id, End::Failed, &name);
+                }
+            },
+            Done::Made { id, ask, name, kind, inputs, result } => {
+                let key = name_key(&name);
+                self.folder().update_walk(|walk| {
+                    for mine in walk.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
+                        mine.takes.retain(|take| name_key(&take.asset) != key);
+                    }
+                })?;
+                let job = self.project.walker.lock().expect("walker lock").graph.jobs[id].key.clone();
+                match result {
+                    Ok(()) => {
+                        ended(id, End::Done, &name);
+                        self.project.jobs.ended_if_open(&job, &name);
+                    }
+                    Err(error) => {
+                        self.failed_of(&name, &kind, inputs, None, error, first);
+                        self.tried(&ask, &name)?;
+                        ended(id, End::Failed, &name);
+                    }
+                }
+            }
+            Done::Landed { job, landed } => {
+                let failed = landed.landed.as_ref().is_ok_and(Result::is_err);
+                let asset = landed.name.clone();
+                self.landed(landed, followed, first)?;
+                // Its next call, if its operation has one, goes on under its own key.
+                let goes_on = self.folder().walk_now()?.pending.iter().any(|(sent, pending)| pending.job_of(sent) == job);
+                if !goes_on {
+                    let id = self.project.walker.lock().expect("walker lock").graph.id(&job);
+                    if let Some(id) = id {
+                        ended(id, if failed { End::Failed } else { End::Done }, asset.as_deref().unwrap_or_default());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// A followed run came to its end: it is followed no more, and what failed is said as its asset's and kept on it.
@@ -2406,6 +2819,10 @@ impl Walk {
                 }
             })?;
         }
+        if !*walking {
+            *self.project.walker.lock().expect("walker lock") = Walker::default();
+            self.folder().drop_texts();
+        }
         Ok(!*walking)
     }
 
@@ -2414,10 +2831,6 @@ impl Walk {
         self.missed.lock().expect("missed lock").failed += 1;
         self.say(Event::Failed { error: error.clone(), name: None, run: None });
         first.get_or_insert(error);
-    }
-
-    fn failed_asset(&self, doc: &Doc, stand: &[Standing], i: usize, error: Error, first: &mut Option<Error>) {
-        self.failed_of(&doc.assets[i].name, &doc.assets[i].kind, stand[i].inputs.clone(), None, error, first);
     }
 
     /// What failed of `name`, by `run` if it is of one: said now, kept for whoever reads it later, never sent again this walk; what does not read
@@ -2483,7 +2896,7 @@ impl Walk {
         let i = next.i;
         let asset = &doc.assets[i];
         let name = asset.name.clone();
-        let key = next.take.as_ref().map_or_else(new_key, |take| take.key.clone());
+        let key = next.key.clone();
         let settle = |lock: &mut Lock| {
             let Some(mine) = lock.walk.asks.iter_mut().find(|mine| mine.id == ask.id) else { return };
             // Tried once either way: a take that fails isn't owed again for what reads it. Only a new render asks again.
@@ -2638,7 +3051,7 @@ impl Walk {
             let mut calls = calls.into_iter();
             let first = calls.next().expect("at least one");
             let seed = version.seed;
-            let pending = Pending { ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
+            let pending = Pending { job: key.clone(), ask: ask.id.clone(), asset: name.clone(), version, run: 0, approve, unpin: next.unpin.then(|| asset.kind.clone()), target: target.clone(), rest: calls.collect(), done: vec![] };
             let settling = |lock: &mut Lock| {
                 settle(lock);
                 if let Some(seed) = seed {
@@ -2657,6 +3070,13 @@ impl Walk {
             });
             if !stands {
                 return Ok(());
+            }
+            // Its machines stopped while it was on its way.
+            let mut pending = pending;
+            pending.target.on = self.sending(&ask.id, &pending.target.on);
+            if pending.target.on.is_empty() {
+                self.not_sent(&name);
+                return self.folder().update_lock(settle);
             }
             self.submit(&key, first, &package, asset, pending, &settling).await
         };
@@ -3364,96 +3784,21 @@ fn outdated_now(doc: &Doc, stand: &[Standing], ask: &Ask, i: usize) -> bool {
     ask.outdated && judged_pin(doc, stand, ask, i) && pin_changed(stand, i) && doc.tags(i).is_none_or(|tags| doc.missing_names(i, tags).is_empty())
 }
 
-/// What can be done now.
-struct Plan {
-    send: Vec<Next>,
-    /// Pins out of date that can't be made again, as something they read is gone: they stay, and that is said.
-    kept: Vec<usize>,
-    /// Tools whose reads have settled, with no version for what they read.
-    tools: Vec<usize>,
-    /// Something it covers is still on its way.
-    open: bool,
-}
-
-/// What a walk covers: everything, for `all`; each take; and through each with no state or with a take, or a tool, what it reads.
-fn covered(doc: &Doc, stand: &[Standing], ask: &Ask) -> Vec<bool> {
-    let key = |i: usize| name_key(&doc.assets[i].name);
-    let taken = |i: usize| ask.takes.iter().any(|take| name_key(&take.asset) == key(i));
-    let mut covered = vec![ask.all; doc.assets.len()];
-    for &i in doc.order.iter().rev() {
-        // Naming a cut cuts what stands, free: it pays for nothing it reads.
-        covered[i] |= taken(i) && doc.tool(i).is_none();
-        let tool = doc.tool(i).is_some() && doc.assets[i].pin.is_none();
-        if covered[i] && (stand[i].files.is_none() || taken(i) || tool) {
-            for &read in &doc.upstream[i] {
-                covered[read] = true;
-            }
-        }
-    }
-    covered
-}
-
-/// What can be sent now, in file order: what the walk covers with no state, and each take, once all it reads is settled and has a
-/// state. What a walk covers: everything, for `all`; each take; and through each with no state or with a take, what it reads. A
-/// tool has no state until made, whether asked or not, once what it reads has settled.
-fn plan(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Plan {
-    let key = |i: usize| name_key(&doc.assets[i].name);
-    let takes = |i: usize| ask.takes.iter().filter(move |take| name_key(&take.asset) == key(i));
-    let covered = covered(doc, stand, ask);
-    let mut unsettled = vec![false; doc.assets.len()];
-    let (mut send, mut kept, mut tools) = (vec![], vec![], vec![]);
+/// The tools with no state whose reads have settled: those nothing that's on its way goes into.
+fn tools_ready(doc: &Doc, stand: &[Standing], lock: &Lock) -> Vec<usize> {
+    let going: HashSet<String> = lock.pending.values().map(|pending| name_key(&pending.asset)).collect();
+    let mut waiting = vec![false; doc.assets.len()];
+    let mut ready = vec![];
     for &i in &doc.order {
         let pinned = doc.assets[i].pin.is_some();
-        let taken = takes(i).next().is_some();
-        // Asked to re-run what is out of date, a pin is judged once what it reads has settled.
-        let judged = ask.outdated && judged_pin(doc, stand, ask, i);
-        // A pin needs nothing it reads, unless a take of it does.
-        let reads: &[usize] = if pinned && !taken && !judged { &[] } else { &doc.upstream[i] };
-        let busy = lock.pending.values().any(|pending| name_key(&pending.asset) == key(i) && (pending.approve || Some(&pending.version.inputs) == stand[i].inputs.as_ref()));
-        let waiting = reads.iter().any(|&read| unsettled[read]);
-        let tool = doc.tool(i).is_some();
-        // A tool reads what stands, or the newest: it is held up only by what is on its way.
-        let blocked = !tool && reads.iter().any(|&read| !unsettled[read] && stand[read].files.is_none());
-        let tried = ask.sent.contains(&key(i));
-        let owed = covered[i] && stand[i].files.is_none() && doc.makes(i) && !tool && !tried;
-        let approving = takes(i).any(|take| take.approve);
-        let unpinning = lock.pending.values().any(|pending| pending.unpin.is_some() && name_key(&pending.asset) == key(i));
-        let outdated = judged && outdated_now(doc, stand, ask, i);
-        if judged && !waiting && !blocked && !outdated && pin_changed(stand, i) {
-            kept.push(i);
+        let reads_going = !pinned && doc.upstream[i].iter().any(|&read| waiting[read]);
+        waiting[i] = reads_going || (!pinned && going.contains(&name_key(&doc.assets[i].name)));
+        if !reads_going && doc.tool(i).is_some() && doc.makes(i) && stand[i].inputs.is_some() && stand[i].files.is_none() {
+            waiting[i] = true;
+            ready.push(i);
         }
-        unsettled[i] = waiting || approving || unpinning || (!pinned && (busy || taken)) || ((owed || outdated) && !blocked);
-        if waiting || blocked {
-            continue;
-        }
-        if tool {
-            // Named, it is made though it has a state.
-            if doc.makes(i) && stand[i].inputs.is_some() && (taken || (stand[i].files.is_none() && !tried)) {
-                unsettled[i] = true;
-                tools.push(i);
-            }
-            continue;
-        }
-        if outdated && !taken {
-            send.push(Next { i, take: None, unpin: true });
-        }
-        if owed && !busy && !taken {
-            send.push(Next { i, take: None, unpin: false });
-        }
-        // Under --missing, what is on its way with these inputs answers it. A plain render makes its own version.
-        send.extend(takes(i).filter(|take| take.new || !busy).map(|take| Next { i, take: Some(take.clone()), unpin: false }));
     }
-    Plan { send, kept, tools, open: unsettled.contains(&true) }
-}
-
-/// What a render owes that can't be made, and why: what it reads has no state and won't get one in this render.
-fn stuck(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Vec<(usize, String)> {
-    let takes = ask.takes.iter().filter_map(|take| doc.find(&take.asset));
-    let all = (0..doc.assets.len()).filter(|&i| ask.all && doc.makes(i) && doc.tool(i).is_none() && stand[i].files.is_none());
-    let mut said: Vec<usize> = takes.chain(all).filter(|&i| !ask.sent.contains(&name_key(&doc.assets[i].name))).collect();
-    said.sort_unstable();
-    said.dedup();
-    said.into_iter().map(|i| (i, format!("{} cannot render: {}", doc.assets[i].name, unread(doc, stand, lock, ask, i)))).collect()
+    ready
 }
 
 /// Why asset `i` can't read what it reads: the first read with no state, through an entity to the asset it links.

@@ -32,6 +32,8 @@ pub const CANVAS: &str = "project.canvas.yaml";
 pub const FILES: &str = "files";
 /// Where a run's outputs land before they are kept in `files/`.
 pub const RUNS: &str = ".runs";
+/// What a walk owes, in `.runs`: no one commits it, and it moves without touching what the project is.
+pub const WALK: &str = ".runs/walk.json";
 /// The lock's format.
 const FORMAT: u32 = 2;
 
@@ -273,6 +275,9 @@ impl Without {
 /// until it lands: whatever stops the walk, the next one follows it and never sends it again.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
+    /// The job it is of: the key of its first call, when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub job: String,
     /// The render it is of, whose text it lands and goes on with.
     #[serde(default)]
     pub ask: String,
@@ -420,11 +425,35 @@ pub struct Owed {
     pub renames: Vec<(String, String)>,
 }
 
+/// What a walk owes: what it sent and what its renders asked. Kept apart from the project, so it changes as often as it likes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WalkFile {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending: BTreeMap<String, Pending>,
+    #[serde(default, skip_serializing_if = "Owed::is_empty")]
+    pub walk: Owed,
+}
+
+impl WalkFile {
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.walk.is_empty()
+    }
+}
+
+impl Pending {
+    /// The job it is of, under the key `key` it is sent with.
+    pub fn job_of<'a>(&'a self, key: &'a str) -> &'a str {
+        if self.job.is_empty() { key } else { &self.job }
+    }
+}
+
 /// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
 /// of it, and a restart resumes it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ask {
     pub id: String,
+    /// Only in a walk from before its text was kept apart (`Folder::text_of`).
+    #[serde(default, skip_serializing)]
     pub text: String,
     /// `text`'s sha256: asks of the same text make the same inputs.
     pub digest: String,
@@ -573,20 +602,97 @@ impl Folder {
 
     pub fn lock(&self) -> Result<Lock, Error> {
         let path = self.dir.join(LOCK);
-        if !path.exists() {
-            return Ok(Lock::default());
+        let mut lock = match path.exists() {
+            true => parse_lock(&read(&path)?)?,
+            false => Lock::default(),
+        };
+        if let Some(walk) = self.walk_kept()? {
+            (lock.pending, lock.walk) = (walk.pending, walk.walk);
         }
-        parse_lock(&read(&path)?)
+        Ok(lock)
     }
 
-    /// Applies `change` to project.lock as it is now.
+    /// What the walk owes, with no need to read the rest. A lock from before holds its own until its next write.
+    pub fn walk_now(&self) -> Result<WalkFile, Error> {
+        if let Some(walk) = self.walk_kept()? {
+            return Ok(walk);
+        }
+        let lock = self.lock()?;
+        Ok(WalkFile { pending: lock.pending, walk: lock.walk })
+    }
+
+    fn walk_kept(&self) -> Result<Option<WalkFile>, Error> {
+        let path = self.dir.join(WALK);
+        if !path.exists() {
+            return Ok(None);
+        }
+        serde_json::from_str(&read(&path)?).map(Some).map_err(|e| Error::new(Kind::Validation, "walk_unreadable", format!("{WALK}: {e}")))
+    }
+
+    fn keep_walk(&self, walk: &WalkFile) -> Result<(), Error> {
+        let path = self.dir.join(WALK);
+        if walk.is_empty() {
+            return match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_at(&path, e)),
+                _ => Ok(()),
+            };
+        }
+        std::fs::create_dir_all(self.dir.join(RUNS)).map_err(|e| io_at(&path, e))?;
+        durable::replace(&path, serde_json::to_string(walk).expect("a walk serializes").as_bytes(), 0o644).map_err(io)
+    }
+
+    /// The text render `ask` was asked with: kept apart, so what the walk owes stays small.
+    pub fn text_of(&self, ask: &Ask) -> Result<String, Error> {
+        match ask.text.is_empty() {
+            true => read(&self.dir.join(RUNS).join("asked").join(&ask.digest)),
+            false => Ok(ask.text.clone()),
+        }
+    }
+
+    pub fn keep_text(&self, digest: &str, text: &str) -> Result<(), Error> {
+        let dir = self.dir.join(RUNS).join("asked");
+        std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
+        durable::replace(&dir.join(digest), text.as_bytes(), 0o644).map_err(io)
+    }
+
+    pub fn drop_text(&self, digest: &str) {
+        let _ = std::fs::remove_file(self.dir.join(RUNS).join("asked").join(digest));
+    }
+
+    /// No render holds any.
+    pub fn drop_texts(&self) {
+        let _ = std::fs::remove_dir_all(self.dir.join(RUNS).join("asked"));
+    }
+
+    /// Applies `change` to what the walk owes, touching nothing of what the project is.
+    pub fn update_walk(&self, change: impl Fn(&mut WalkFile)) -> Result<(), Error> {
+        // The lock's first write moves what it holds out to the walk's file.
+        if !self.dir.join(WALK).exists() && self.lock()?.owes() {
+            self.update_lock(|_| {})?;
+        }
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut walk = self.walk_kept()?.unwrap_or_default();
+        change(&mut walk);
+        self.keep_walk(&walk)
+    }
+
+    /// Applies `change` to project.lock as it is now, what the walk owes among it.
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
+        let kept = self.walk_kept()?;
         self.rewrite(&self.dir.join(LOCK), |text| {
             let mut lock: Lock = match text {
                 "" => Lock::default(),
                 text => parse_lock(text)?,
             };
+            if let Some(walk) = self.walk_kept()? {
+                (lock.pending, lock.walk) = (walk.pending, walk.walk);
+            }
             change(&mut lock);
+            let walk = WalkFile { pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
+            // Under the lock's writer: asked again after a save that lands first, it writes what that one holds.
+            if !walk.is_empty() || kept.is_some() {
+                self.keep_walk(&walk)?;
+            }
             Ok(serde_json::to_string_pretty(&lock).expect("a lock serializes") + "\n")
         })
     }

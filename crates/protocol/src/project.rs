@@ -844,6 +844,9 @@ pub enum JobState {
 /// One version of one asset being made.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Job {
+    /// The same for as long as the render goes, whatever it does: what `job.updated` names it by.
+    #[serde(default)]
+    pub id: String,
     pub asset: String,
     pub state: JobState,
     /// What its alternatives are called: `take` or `version`.
@@ -854,6 +857,9 @@ pub struct Job {
     /// Which of the render's shots it makes, 1 first, for the whole render: a `kind: video` its package makes. None for a cut or a still.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shot: Option<u32>,
+    /// The assets it waits for, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
     /// A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
@@ -909,6 +915,11 @@ pub enum Event {
     /// a slow reader missed.
     Board {
         board: Board,
+    },
+    /// One job as it stands now, whole. What changed since the `board` heard first: `seq` as that board's goes up.
+    Job {
+        job: Job,
+        seq: u64,
     },
     /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
     Started {

@@ -773,6 +773,11 @@ impl Doc {
     }
 
     /// Every asset's state, in the file's terms.
+    /// Whether this was read with the package tags `lock` knows now.
+    pub fn knows_tags_of(&self, lock: &Lock) -> bool {
+        self.reserved == lock.reserved
+    }
+
     pub fn stand(&self, lock: &Lock) -> Vec<Standing> {
         let mut done = vec![Standing::default(); self.assets.len()];
         for &i in &self.order {
@@ -783,7 +788,7 @@ impl Doc {
 
     /// The hash in the file, else its newest version for these inputs, else none. A hash that is a version's main file brings
     /// the version's whole file set; one that is none's is just that file.
-    fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
+    pub fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
         let asset = &self.assets[i];
         if let Some(links) = &asset.links {
             let mut files = Files::new();

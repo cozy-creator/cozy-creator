@@ -733,6 +733,9 @@ pub enum StreamEvent {
     /// The rows of a project's canvas that changed; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, etag: String, cards: BTreeMap<String, Option<crate::project::Card>> },
+    /// One job of a project's render as it stands now, whole; `GET /v1/projects/{id}` has them all under `board`.
+    #[serde(rename = "job.updated")]
+    JobUpdated { project: String, job: Box<crate::project::Job>, seq: u64 },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,
