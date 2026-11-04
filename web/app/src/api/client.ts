@@ -1,7 +1,9 @@
 import type {
+  Account,
   Agreed,
   Approved,
   Canvas,
+  Code,
   Ended,
   ErrorBody,
   Held,
@@ -14,13 +16,21 @@ import type {
   MachineModels,
   MachinePackages,
   MachineUpdate,
+  ModelDetail,
+  ModelReleased,
+  ModelSearch,
+  ModelUploading,
   Opened,
+  OrgClaim,
+  PackageDetail,
+  PackageRemovals,
   PackageSearch,
   ProjectList,
   ProjectState,
   Renamed,
   Row,
   Play,
+  Proven,
   Quote,
   Rent,
   Rented,
@@ -30,6 +40,7 @@ import type {
   RunQuote,
   RunRequest,
   Session,
+  SignedOutAnswer,
   Status,
   Submitted,
   Target,
@@ -88,6 +99,11 @@ export interface Hooks {
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
 const run = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
+// `org/name` on the wire; a first-party name has no owner, and its org is `_`.
+const orgOf = (name: string) => encodeURIComponent(name.includes("/") ? name.slice(0, name.indexOf("/")) : "_")
+const baseOf = (name: string) => encodeURIComponent(name.slice(name.indexOf("/") + 1))
+const pkg = (name: string) => `/v1/packages/${orgOf(name)}/${baseOf(name)}`
+const model = (name: string) => `/v1/models/${orgOf(name)}/${baseOf(name)}`
 
 export interface RunFilter {
   project?: string
@@ -355,6 +371,112 @@ export class Client {
 
   packages(q: string, limit: number, signal?: AbortSignal): Promise<PackageSearch> {
     return this.json(`/v1/packages?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  }
+
+  package(name: string, signal?: AbortSignal): Promise<PackageDetail> {
+    return this.json(pkg(name), { signal })
+  }
+
+  packageInstallQuote<T>(ask: T): Promise<RunQuote> {
+    return this.write("POST", "/v1/package-install-quotes", ask)
+  }
+
+  packageInstall<T>(ask: T, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/package-installs", ask, key)
+  }
+
+  packageRemove(name: string, on: string, key: string): Promise<PackageRemovals> {
+    return this.write("POST", "/v1/package-removals", { packages: [name], machine: on }, key)
+  }
+
+  yank(name: string, release: string): Promise<unknown> {
+    return this.write("POST", `${pkg(name)}/releases/${encodeURIComponent(release)}/yank`, {})
+  }
+
+  unyank(name: string, release: string): Promise<unknown> {
+    return this.json(`${pkg(name)}/releases/${encodeURIComponent(release)}/yank`, { method: "DELETE" })
+  }
+
+  deletePackage(name: string): Promise<unknown> {
+    return this.json(pkg(name), { method: "DELETE" })
+  }
+
+  // Models
+
+  models(q: string, limit: number, signal?: AbortSignal): Promise<ModelSearch> {
+    return this.json(`/v1/models?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  }
+
+  model(name: string, signal?: AbortSignal): Promise<ModelDetail> {
+    return this.json(model(name), { signal })
+  }
+
+  modelDownloadQuote<T>(ask: T): Promise<RunQuote> {
+    return this.write("POST", "/v1/model-download-quotes", ask)
+  }
+
+  modelDownload<T>(ask: T, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/model-downloads", ask, key)
+  }
+
+  /** `null` when nothing would rent: a Hub commit is only recorded. */
+  modelUploadQuote<T>(ask: T): Promise<RunQuote | null> {
+    return this.write("POST", "/v1/model-upload-quotes", ask)
+  }
+
+  modelUpload<T>(ask: T, key: string): Promise<ModelUploading> {
+    return this.write("POST", "/v1/model-uploads", ask, key)
+  }
+
+  modelQuantizeQuote<T>(ask: T): Promise<RunQuote> {
+    return this.write("POST", "/v1/model-quantization-quotes", ask)
+  }
+
+  modelQuantize<T>(ask: T, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/model-quantizations", ask, key)
+  }
+
+  /** The Hub never reuses a version, so asking again is safe and takes no key. */
+  modelPublish(name: string, version: string, commits: string[]): Promise<ModelReleased> {
+    return this.write("POST", `${model(name)}/releases`, { version, commits })
+  }
+
+  deleteModel(name: string): Promise<unknown> {
+    return this.json(model(name), { method: "DELETE" })
+  }
+
+  deleteModelRelease(name: string, version: string): Promise<unknown> {
+    return this.json(`${model(name)}/releases/${encodeURIComponent(version)}`, { method: "DELETE" })
+  }
+
+  deleteModelCommit(name: string, commit: string): Promise<unknown> {
+    return this.json(`${model(name)}/commits/${encodeURIComponent(commit)}`, { method: "DELETE" })
+  }
+
+  // Account
+
+  account(signal?: AbortSignal): Promise<Account> {
+    return this.json("/v1/account", { signal })
+  }
+
+  sendCode(purpose: "sign_in" | "sign_out_everywhere", email?: string): Promise<Code> {
+    return this.write("POST", "/v1/account/codes", { purpose, ...(email ? { email } : {}) })
+  }
+
+  proveCode(id: string, code: string): Promise<Proven> {
+    return this.write("POST", `/v1/account/codes/${encodeURIComponent(id)}`, { code })
+  }
+
+  nameAccount(name: string): Promise<Account> {
+    return this.write("PUT", "/v1/account/name", { name })
+  }
+
+  signOut(): Promise<SignedOutAnswer> {
+    return this.json("/v1/account", { method: "DELETE" })
+  }
+
+  claimOrg(org: string): Promise<OrgClaim> {
+    return this.write("POST", `/v1/orgs/${encodeURIComponent(org)}/claim`, {})
   }
 
   // Rentals: nothing here rents but `rent`, under a key that names one order forever.

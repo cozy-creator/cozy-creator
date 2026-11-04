@@ -425,6 +425,131 @@ export interface PackageSearch {
   older?: number
 }
 
+export interface PackageRelease {
+  release: string
+  published?: string
+  yanked: boolean
+}
+
+export interface PackageDetail {
+  package: string
+  latest_release?: string
+  releases: PackageRelease[]
+  warnings?: string[]
+}
+
+export interface PackageRemovals {
+  machine: string
+  runs: Run[]
+}
+
+// Models
+
+export interface ModelAuthor {
+  org: string
+  name: string
+  parked: boolean
+  reserved?: string
+}
+
+export interface FoundModel {
+  model: string
+  family?: string
+  release?: string
+  lanes: string[]
+  private: boolean
+  author?: ModelAuthor
+}
+
+export interface ModelSearch {
+  models: FoundModel[]
+  total?: number
+  older?: number
+}
+
+export interface ModelLane {
+  lane: string
+  commit: string
+  bytes: number
+  kinds?: string[]
+}
+
+export interface ModelRelease {
+  version: string
+  created_at: string
+  mirror?: boolean
+  by_admin?: boolean
+  lanes: ModelLane[]
+}
+
+export interface ModelCommit {
+  commit: string
+  lane: string
+  bytes: number
+  releases: string[]
+  created_at: string
+}
+
+export interface ModelDetail {
+  model: string
+  family?: string
+  created_at: string
+  source?: string
+  author?: ModelAuthor
+  trigger?: string
+  strength?: number
+  releases: ModelRelease[]
+  commits: ModelCommit[]
+}
+
+export interface ModelReleased {
+  model: string
+  version: string
+  warnings?: string[]
+}
+
+export interface ModelUploading {
+  run?: Run
+  replay: boolean
+  recorded?: { commit: string; from: string; lane: string; model: string; next?: string[] }
+}
+
+// Account
+
+export interface Account {
+  account?: string
+  balance_usd_micros?: number
+  billing?: string
+  buy_credits?: string
+  email?: string
+  key_refused?: boolean
+  logged_in: boolean
+  orgs: string[]
+}
+
+export interface Code {
+  id: string
+  email: string
+}
+
+export type Proven = ({ purpose: "sign_in" } & Account) | { purpose: "export" } | ({ purpose: "sign_out_everywhere" } & SignedOutAnswer)
+
+export interface SignedOutAnswer {
+  email?: string
+  everywhere: boolean
+  hub: string
+  notes: string[]
+  status: string
+}
+
+export interface OrgClaim {
+  claimed: boolean
+  code?: string
+  org: string
+  proofs: { checked: string; handle: string; where: string }[]
+  proven_by?: string
+}
+
 export interface RunRequest {
   target: string
   project?: string

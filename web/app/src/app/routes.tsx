@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
 import { createHashRouter, Navigate, type RouteObject } from "react-router-dom"
 import { projectsQuery } from "../api/queries"
+import { Account } from "../panels/Account"
+import { ModelDrawer, Models } from "../panels/library/Models"
+import { PackageDrawer, Packages } from "../panels/library/Packages"
 import { MachineDrawer } from "../panels/machines/MachineDrawer"
 import { Machines } from "../panels/machines/Machines"
 import { NewRun } from "../panels/newrun/NewRun"
@@ -31,11 +34,11 @@ const drawers: RouteObject[] = [
   drawer("runs/:number", <RunDrawer />),
   drawer("machines", <Machines />),
   drawer("machines/:name", <MachineDrawer />),
-  drawer("packages", <Stub title="Packages" />, "wide"),
-  drawer("packages/:name", <Stub title="Package" />, "wide"),
-  drawer("models", <Stub title="Models" />, "wide"),
-  drawer("models/:name", <Stub title="Model" />, "wide"),
-  drawer("account", <Stub title="Account" />),
+  drawer("packages", <Packages />, "wide"),
+  drawer("packages/:name", <PackageDrawer />, "wide"),
+  drawer("models", <Models />, "wide"),
+  drawer("models/:name", <ModelDrawer />, "wide"),
+  drawer("account", <Account />),
   drawer("projects", <Projects />),
 ]
 
