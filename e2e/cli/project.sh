@@ -1849,7 +1849,7 @@ code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
 # The browser session (project/browser.js) on the runner's Google Chrome, with playwright-core to drive it.
 browser_session() {
 step "a project: a browser on a Calcifer session, past a restart, and other origins refused"
-local P=$1 ID=$2 port pw=$OUT/playwright server code_got lock=$HOME/.cozy/calcifer/calcifer.lock.holder was_addr=$ADDR
+local P=$1 ID=$2 port pw=$OUT/playwright server code_got lock=$HOME/.cozy/calcifer/calcifer.lock.holder was_addr was_token
 CHROME=$(command -v google-chrome || true)
 [ -n "$CHROME" ] || { check "no Google Chrome on this runner"; return; }
 npm install -s --prefix "$pw" playwright-core@1.55.0 > "$OUT/npm.log" 2>&1 || { check "npm install playwright-core failed: $(tail -c 300 "$OUT/npm.log")"; return; }
@@ -1861,12 +1861,11 @@ sed 's/      - <a>/      - {video: <a>, start: 0, end: 120}/' "$P/project.yaml" 
 code_got=$(cozy --json web --no-open | jq -r .url | sed -n 's/.*#code=\([0-9a-f]*\)$/\1/p')
 local code=0 log=$HOME/.cozy/calcifer/calcifer.log seen pid
 seen=$(stat -c %s "$log" 2>/dev/null || echo 0)
-pid=$(jq -r .pid "$lock")
+pid=$(jq -r .pid "$lock") was_addr=$(jq -r .address "$lock") was_token=$(jq -r .token "$lock")
 CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/browser.js" "$ADDR" "$code_got" "$ID" "$HOSTILE" "$port" \
   "cp '$OUT/recut.yaml' '$P/project.yaml' && '$COZY' project -p '$P' render all --on local" \
   "kill -TERM $pid; while kill -0 $pid 2> /dev/null; do sleep 0.1; done; '$COZY' project ls > /dev/null" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
 kill "$server" 2> /dev/null || true
-local was_token=$TOKEN
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 { [ "$(jq -r .pid "$lock")" != "$pid" ] && [ "$TOKEN" != "$was_token" ]; } || check "browser: Calcifer did not restart: pid $pid is $(jq -r .pid "$lock")"
 echo "restarted: pid $pid is now $(jq -r .pid "$lock"), at $ADDR"
