@@ -1,4 +1,5 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
+const { writeFileSync } = require('fs');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
@@ -81,9 +82,50 @@ async function drop(page, files, x, y) {
 // The tab a proof is on, and what it looked like when the proof died: a thrown wait says only what it waited for.
 let looking;
 const lookAt = (page) => { looking = page; };
+// What opens and closes boxes, in order, in the page: the pointer between them, focus, a box or the canvas moving, a node coming or going.
+// For a tab that isn't measuring anything's speed.
+const watchBoxes = (page) => page.addInitScript(() => {
+  const log = (window.boxLog = []);
+  const say = (line) => {
+    log.push(`${Math.round(performance.now())} ${line}`);
+    if (log.length > 300) log.shift();
+  };
+  const boxOf = (el) => el?.closest?.('.react-flow__node')?.querySelector('.card')?.dataset.asset ?? null;
+  let under = null;
+  document.addEventListener('pointerover', ({ target, clientX, clientY }) => {
+    const now = boxOf(target);
+    if (now !== under) say(`pointer ${under} -> ${now} at ${clientX},${clientY}`);
+    under = now;
+  }, true);
+  for (const type of ['focusin', 'focusout']) {
+    document.addEventListener(type, ({ target }) => say(`${type} ${boxOf(target)} ${target.tagName}.${target.className} visible=${target.matches(':focus-visible')}`), true);
+  }
+  document.addEventListener('scroll', ({ target }) => say(`scrolled ${target.className ?? 'document'} to ${target.scrollLeft},${target.scrollTop}`), true);
+  new MutationObserver((records) => {
+    for (const { type, target, attributeName, oldValue, addedNodes, removedNodes } of records) {
+      for (const node of addedNodes) if (node.classList?.contains('react-flow__node')) say(`added ${boxOf(node)} ${node.style.transform}`);
+      for (const node of removedNodes) if (node.classList?.contains('react-flow__node')) say(`removed ${node.dataset.id}`);
+      if (type !== 'attributes') continue;
+      if (attributeName === 'class' && target.classList.contains('card')) {
+        const [was, is] = [/\bactive\b/.test(oldValue ?? ''), target.classList.contains('active')];
+        if (was !== is) say(`${target.dataset.asset} ${is ? 'opens' : 'closes'}`);
+      }
+      if (attributeName === 'style' && !oldValue?.includes(target.style.transform)) {
+        if (target.classList.contains('react-flow__viewport')) say(`canvas moved to ${target.style.transform}`);
+        if (target.classList.contains('react-flow__node')) say(`${boxOf(target)} moved to ${target.style.transform}`);
+      }
+    }
+  }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'], attributeOldValue: true });
+});
+const boxLog = (page) => page.evaluate(() => ({
+  log: window.boxLog?.slice(-40),
+  focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
+  under: [...document.querySelectorAll(':hover')].at(-1)?.className,
+}));
 async function lastLook() {
   if (!looking || !process.env.SHOT) return;
   await looking.screenshot({ path: `${process.env.SHOT}-died.png`, timeout: 10_000 }).catch(() => {});
+  await boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
 }
 
-module.exports = { MP4, STEP_MS, drop, lastLook, lookAt, png, until, wav };
+module.exports = { MP4, STEP_MS, boxLog, drop, lastLook, lookAt, png, until, watchBoxes, wav };

@@ -62,7 +62,28 @@ read_of() { row "$1" "$2" '[.reads[]?.name]'; }
 # file_at <project> <sha256>: where that file is.
 file_at() { ls "$1/files/${2#sha256:}"* 2> /dev/null | head -1; }
 # render <project> <args…>: on this computer, its words in $OUT/render.txt.
-render() { local P=$1; shift; cozy project -p "$P" render "$@" --on local > "$OUT/render.txt" 2>&1; }
+# As a person renders. No fixture here has weights, so one that starts downloading them is a fault, stopped at once: a runner has no business
+# fetching them, and on a rental the bytes bill. One whose output stops growing for 15 minutes has stalled, `step`'s rule in release-gate/sessions/lib.sh.
+render() {
+  local P=$1 pid last=-1 since=$SECONDS size why=''; shift
+  : > "$OUT/render.txt"
+  cozy project -p "$P" render "$@" --on local >> "$OUT/render.txt" 2>&1 & pid=$!
+  while [ -z "$why" ] && kill -0 "$pid" 2> /dev/null; do
+    sleep 0.2
+    grep -q 'downloading .* weights' "$OUT/render.txt" && why='it started downloading weights'
+    size=$(wc -c < "$OUT/render.txt")
+    if [ "$size" != "$last" ]; then last=$size since=$SECONDS; fi
+    [ $((SECONDS - since)) -lt 900 ] || why='its output stopped for 15 min'
+  done
+  if [ -n "$why" ]; then
+    check "render $*: $why: $(tail -c 300 "$OUT/render.txt")"
+    kill "$pid" 2> /dev/null || true
+    cozy project -p "$P" cancel all > /dev/null 2>&1 || true
+    wait "$pid" 2> /dev/null || true
+    return 1
+  fi
+  wait "$pid"
+}
 says() { grep -qF -- "$2" "$OUT/render.txt" || check "$1: render does not say '$2': $(tail -c 400 "$OUT/render.txt")"; }
 
 projects() {

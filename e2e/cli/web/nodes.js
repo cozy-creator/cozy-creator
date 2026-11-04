@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, drop, lastLook, lookAt, png, until } = require('./page');
+const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -47,6 +47,7 @@ function linesOf(text, name) {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
   lookAt(page);
+  await watchBoxes(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const refused = [];
@@ -275,6 +276,9 @@ function linesOf(text, name) {
   await knobs.locator('input[aria-label=megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
+  // Nothing has moved the pointer since it opened More. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
+  await page.waitForTimeout(300);
+  check('a_box_in_use_stays_open', (await knobs.locator('.edit-more').count()) === 1, await boxLog(page));
   await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field(/turbo: (\S+)/), (value) => value === 'false');

@@ -13,7 +13,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, STEP_MS, lastLook, lookAt, png, until, wav } = require('./page');
+const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -103,6 +103,7 @@ function summary(frames) {
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
   lookAt(page);
+  await watchBoxes(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const thumbs = [];
@@ -325,7 +326,9 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  // Under the pointer: a box says why when it's looked at, and this one sits low enough for the click to have moved things.
+  // Its reason shows on the box the pointer is still on. On Windows (41909619528) it had closed, and its neighbour opened.
+  await page.waitForTimeout(300);
+  check('a_box_stays_open_under_the_pointer', await needs.locator('.card').evaluate((el) => el.classList.contains('active')), await boxLog(page));
   await until('its reason shows', async () => {
     await open(page, 'needs');
     return needs.locator('.status.bad').count();
