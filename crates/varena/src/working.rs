@@ -1967,7 +1967,7 @@ pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize)>> {
             _ => return None,
         };
         let sample = samples.get(active.key.as_ref()?).filter(|sample| sample.known)?;
-        Some((sample.backing_peak_bytes.saturating_sub(active.backing), state.reusable_eager_pages()))
+        Some((sample.peak_bytes.saturating_sub(active.owned_charged), state.reusable_eager_pages()))
     })();
     if answer.is_none() {
         state.stats.prefetch_declines += 1;

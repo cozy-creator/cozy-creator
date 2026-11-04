@@ -37,4 +37,7 @@ def child(mode, case, ctx):
 def core(request: Request, ctx: Context) -> Report:
     native = child("native", "fast-path", ctx) if request.case in ("all", "fast-path") else None
     varena = child("varena", request.case, ctx)
-    return Report(varena["exit"] == 0, json.dumps({"native": native, "varena": varena}))
+    detail = json.dumps({"native": native, "varena": varena})
+    if varena["exit"] != 0:
+        raise RuntimeError(f"core rule failed: {detail[-4000:]}")
+    return Report(True, detail)

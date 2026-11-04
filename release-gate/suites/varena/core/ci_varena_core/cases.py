@@ -418,6 +418,7 @@ def split_sample_is_live():
     stream.synchronize()
     vt.phase_leave(0, token, completed=True)
     assert row["peak_bytes"] == 16 * MIB, row
+    drained()
     return {"peak_mib": row["peak_bytes"] // MIB}
 
 
@@ -438,6 +439,18 @@ def freed_pages_back_any_block():
         assert int(big[0]) == int(big[-1]) == 3
     stats = vt.stats(0)
     del big, keep
+    stream.synchronize()
+    settle()
+    # At the cap, with a large block just freed: a smaller one mustn't take a piece of it.
+    cap(1024 * MIB)
+    with torch.cuda.stream(stream):
+        freed = torch.empty(640 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+        held = torch.empty(370 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+        del freed
+        small = torch.empty(100 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
+        big = torch.empty(550 * MIB, dtype=torch.uint8, device="cuda").fill_(3)
+        assert int(big[0]) == int(big[-1]) == 3 and int(small[-1]) == 2 and int(held[-1]) == 1
+    del big, small, held
     stream.synchronize()
     settle()
     return {"mapped_mib": stats["mapped_bytes"] // MIB, "peak_mib": stats["mapped_peak"] // MIB}
@@ -475,7 +488,7 @@ def prefetch_rule():
     torch.cuda.synchronize()
     del value
     measured = vt.phase_leave(0, token, completed=True)
-    assert measured["published"] and measured["backing_peak_bytes"] == 8 * MIB, measured
+    assert measured["published"] and measured["peak_bytes"] == 8 * MIB, measured
     drained()
     with tempfile.TemporaryDirectory() as directory:
         writer = tensorfs.Writer(Path(directory) / "raw.cozytensors")
