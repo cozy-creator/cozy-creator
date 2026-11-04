@@ -176,13 +176,14 @@ jobs:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
+          DISPATCHED: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || '' }}
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
-          # A cut across repos lands as `rc/<x>` in each: a change on or into one runs against its siblings' `rc/<x>`
-          # where they have one, else master. A merge group's head names the PR, not the PR's branch.
+          # A cut across repos lands as `rc/<x>` in each: a change on or into one, or a dispatch from one, runs against its
+          # siblings' `rc/<x>` where they have one, else master. A merge group's head names the PR, not the PR's branch.
           rc=
-          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}"; do [[ $b == rc/* ]] && { rc=$b; break; }; done
+          for b in "${BASE_REF#refs/heads/}" "${HEAD_REF#refs/heads/}" "$DISPATCHED"; do [[ $b == rc/* ]] && { rc=$b; break; }; done
           if [ -z "$rc" ] && [[ ${HEAD_REF#refs/heads/} =~ ^gh-readonly-queue/.+/pr-([0-9]+)- ]]; then
             b=$(gh api "repos/cozy-creator/${REPO/#tensorhub/tensorhub-v2}/pulls/${BASH_REMATCH[1]}" -q .head.ref 2>/dev/null) || b=
             [[ $b != rc/* ]] || rc=$b
