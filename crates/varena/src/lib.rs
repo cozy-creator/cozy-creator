@@ -127,6 +127,23 @@ fn ask_peers(device: i32, bytes: usize, physical: bool, deadline: std::time::Ins
     None
 }
 
+/// Other processes hold idle memory, in no request: nothing is about to use it, so it goes before
+/// this process evicts its own weights.
+fn peers_idle(device: i32) -> bool {
+    #[cfg(target_os = "linux")]
+    return cooperative::peers_idle(device);
+    #[cfg(not(target_os = "linux"))]
+    { let _ = device; false }
+}
+
+/// Whether memory came back from such peers. No supervisor: this process still has its own to give.
+fn ask_idle_peers(device: i32, bytes: usize) -> bool {
+    #[cfg(target_os = "linux")]
+    return cooperative::ask_idle_peers(device, bytes);
+    #[cfg(not(target_os = "linux"))]
+    { let _ = (device, bytes); false }
+}
+
 /// Make this GPU usable by this process: its context, and its row in the GPU's ledger.
 /// Idempotent; the first caller's `shared` holds (true: yield idle memory to foreign programs).
 pub fn activate(device: i32, shared: bool) -> Result<()> {
@@ -1757,13 +1774,23 @@ impl Region {
     fn prepare_with_reclaim(self: &Arc<Self>, admission: Admission) -> Result<Preparation> {
         let result = (|| {
             let mut recovery = Recovery::default();
+            let mut peers_first = admission == Admission::Any;
             loop {
                 let mut physical = None;
+                let first = peers_first && peers_idle(self.arena.device);
                 let result = {
                     let captures = capture_counts()?;
                     let mut state = self.arena.lock()?;
-                    self.prepare_locked(admission, &captures, &mut state, &mut physical)
+                    self.prepare_locked(if first { Admission::None } else { admission }, &captures, &mut state, &mut physical)
                 };
+                if first && let (Err(Error::OutOfMemory { .. }), Some(bytes)) = (&result, physical) {
+                    peers_first = ask_idle_peers(self.arena.device, bytes);
+                    continue;
+                }
+                if first && matches!(result, Err(Error::OutOfMemory { .. })) {
+                    peers_first = false; // Not the driver's refusal: peers cannot help.
+                    continue;
+                }
                 if admission == Admission::Any
                     && let Err(Error::OutOfMemory { requested_bytes }) = &result
                     && recovery.next(self.arena.device, physical.unwrap_or(*requested_bytes), physical.is_some())?
@@ -1853,6 +1880,7 @@ impl Region {
             let handle = match allocation {
                 Ok(handle) => handle,
                 Err(error) if error.is_oom() => {
+                    *physical = error.physical_bytes();
                     match admission {
                         Admission::None | Admission::Prefetch => {
                             return Err(Error::OutOfMemory {

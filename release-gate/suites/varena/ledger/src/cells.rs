@@ -113,6 +113,20 @@ pub fn main() {
     assert!(took < Duration::from_millis(500), "{took:?}");
     let _ = (old.kill(), young.kill(), old.wait(), young.wait());
 
+    // Before an asker evicts its own weights: peers in no request give first, and one in a request
+    // does not count as a reason to ask.
+    let (uuid, table, row) = fresh(6);
+    table.request_begin(row);
+    assert!(!table.peers_idle(row));
+    let mut idle = spawn(uuid, 4, 0, 0);
+    assert!(table.peers_idle(row));
+    let gave = table.ask_idle_peers(row, GIB, Instant::now() + patience);
+    std::thread::sleep(Duration::from_millis(50));
+    println!("idle first: gave {gave}, {} GiB left idle", table.idle() / GIB);
+    assert!(gave);
+    assert_eq!(table.idle(), 3 * GIB);
+    let _ = (idle.kill(), idle.wait());
+
     // A donor killed mid-trim wakes the asker, and the other donor carries on.
     let (uuid, table, row) = fresh(2);
     let (mut dying, mut other) = (spawn(uuid, 8, 10_000, 0), spawn(uuid, 8, 0, 20));
@@ -191,7 +205,7 @@ pub fn main() {
     assert_eq!(ended.load(std::sync::atomic::Ordering::SeqCst), 2);
     let _ = (table, row);
 
-    for tag in [1u8, 2, 3, 4, 5] {
+    for tag in [1u8, 2, 3, 4, 5, 6] {
         let mut uuid = [tag; 16];
         uuid[..4].copy_from_slice(&std::process::id().to_le_bytes());
         let name: String = uuid.iter().map(|b| format!("{b:02x}")).collect();

@@ -80,6 +80,14 @@ pub(crate) fn recover(device: i32, bytes: usize, deadline: Instant) -> Recovery 
     }
 }
 
+pub(crate) fn peers_idle(device: i32) -> bool {
+    service(device).is_some_and(|service| service.table.peers_idle(service.row))
+}
+
+pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
+    service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
+}
+
 pub(crate) fn request_boundary(device: i32, begin: bool) {
     if let Some(service) = service(device) {
         if begin { service.table.request_begin(service.row) } else { service.table.request_end(service.row) }

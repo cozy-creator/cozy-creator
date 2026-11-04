@@ -1491,6 +1491,7 @@ fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, boun
 
 fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
     let mut recovery = crate::Recovery::default();
+    let mut peers_first = true;
     // Inspect once, only after a real refusal has initialized/validated Working.
     // Remember None too: a nested callback allocation cannot opt in later, while
     // our own worker's next action cannot revoke an already-authorized episode.
@@ -1498,9 +1499,13 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     let mut cold_checked = false;
     loop {
         let mut physical = None;
-        let result = alloc_local(device, bytes, stream, pool, &mut physical, bound);
+        let result = alloc_local(device, bytes, stream, pool, &mut physical, bound, peers_first);
         if pool.is_none() && let Err(Error::OutOfMemory { requested_bytes }) = &result
         {
+            if let (true, Some(physical)) = (peers_first && crate::peers_idle(device), physical) {
+                peers_first = crate::ask_idle_peers(device, physical);
+                continue;
+            }
             if !cold_checked {
                 cold = cold_recovery(device)?;
                 cold_checked = true;
@@ -1519,7 +1524,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
 }
 
 fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
-               physical: &mut Option<usize>, bound: bool) -> Result<u64> {
+               physical: &mut Option<usize>, bound: bool, peers_first: bool) -> Result<u64> {
     valid_stream(stream)?;
     if bytes == 0 && !bound {
         crate::check_process()?;
@@ -1599,6 +1604,10 @@ fn alloc_local(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>,
                 // Try completed retired backing before sacrificing reusable working pages.
                 retired_reclaimed = crate::reclaim_retired(device, mapped)?;
                 *physical = None;
+            }
+            // Idle peers before this process's own weights: its caller asks, with `physical` set.
+            Err(error @ Error::OutOfMemory { .. }) if attempt == 1 && peers_first && crate::peers_idle(device) => {
+                return Err(error);
             }
             Err(Error::OutOfMemory { .. }) if attempt == 1 => {
                 *physical = None;

@@ -381,6 +381,32 @@ impl Table {
         }
     }
 
+    /// Another process holds idle memory and is in no request: nothing is about to use it.
+    pub fn peers_idle(&self, row: Row) -> bool {
+        self.page.rows.iter().enumerate().any(|(index, words)| index != row.0 && words.pid.load(Acquire) != 0
+            && words.running.load(Acquire) == 0 && words.idle.load(Acquire) != 0)
+    }
+
+    /// Before this process evicts its own weights: one ask, and whether memory came back. Nothing
+    /// final hangs on it, so no re-asking and no supervisor.
+    pub fn ask_idle_peers(&self, row: Row, bytes: u64, deadline: Instant) -> bool {
+        let before = self.page.released.load(Acquire);
+        let generation = self.ask(row, bytes.max(SMALLEST_ASK));
+        let gave = loop {
+            let seen = self.page.answers.load(Acquire);
+            self.reap();
+            if self.page.released.load(Acquire) != before { break true; }
+            let live = |words: &Words| words.pid.load(Acquire) != 0;
+            let now = Instant::now();
+            if now >= deadline || self.page.rows.iter().all(|words| !live(words) || words.answered.load(Acquire) >= generation) {
+                break false;
+            }
+            wait(&self.page.answers, seen, TICK.min(deadline - now));
+        };
+        self.stop_asking(row);
+        gave
+    }
+
     /// TensorD's side, for this GPU. While the table's supervisor byte is held, an asker that
     /// peers could not help waits for `end_idle`: it ends an idle process, or says there is none.
     /// Only an exit returns a CUDA context. `end_idle` returns None when the service is gone.
