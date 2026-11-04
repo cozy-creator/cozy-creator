@@ -45,11 +45,12 @@ pod "pgrep -af 'cozy_runtime|[e]xecutor' | cut -c1-120" | tee -a "$D/cell.log"
 
 case $CELL in all|kill)
 log "kill: a donor dies the moment a peer asks"
-qwen qwen-3 "a snow globe holding a tiny city, macro photo" 6; table
-pod python3 /tmp/ledger/table.py kill-on-ask >"$D/kill.log" 2>&1 & killer=$!
-sdxl sdxl-4 "a brass telescope on a ship's deck at sunset, photo" 7
+sdxl sdxl-4 "a brass telescope on a ship's deck at sunset, photo" 7; table
+pod "timeout 300 python3 /tmp/ledger/table.py kill-on-ask" >"$D/kill.log" 2>&1 & killer=$!
+sleep 2
+qwen qwen-3 "a snow globe holding a tiny city, macro photo" 6
 log "kill: $(cat "$D/kill.log")"; wait "$killer"; table
-qwen qwen-4 "a greenhouse full of glass butterflies, soft light" 8; table
+sdxl sdxl-5 "a greenhouse full of glass butterflies, soft light, photo" 8; table
 ;; esac
 
 case $CELL in all|foreign)
@@ -60,7 +61,7 @@ cozy machine update "$M" --mode shared -y >"$D/mode.log" 2>&1; log "mode: $(tail
 qwen qwen-6 "a clockmaker's bench seen from above, warm lamp light, photo" 10; table
 log "foreign: shared gives way"
 pod python3 /tmp/ledger/foreign.py 4 30 15 | tee "$D/foreign-shared.json" | cut -c1-400 | tee -a "$D/cell.log"; table
-sdxl sdxl-5 "a koi pond in the rain, seen from a wooden deck, photo" 11; table
+sdxl sdxl-6 "a koi pond in the rain, seen from a wooden deck, photo" 11; table
 ;; esac
 
 case $CELL in all|binary)
