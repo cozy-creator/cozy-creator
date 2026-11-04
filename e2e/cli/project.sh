@@ -488,7 +488,7 @@ J '.assets[] | select(.name == "no_kind") | .kind == "image"' <<< "$(status "$C"
 sed -i 's/It renders without that\./Rendered again./' "$C/project.yaml"
 render "$C" all --missing || check "pins: render all with what can't be made: $(tail -c 400 "$OUT/render.txt")"
 says pins "no_adapter: "
-says pins "has no adapter for kind audio: it can't be made"
+says pins "has no adapter for kind audio, and no one function that makes it, so name one"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
 }
 

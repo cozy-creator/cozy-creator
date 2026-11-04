@@ -176,7 +176,7 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 ## How rendering decides
 
 **An asset's state** is the first of these that applies:
-1. A hash in the field of its type: a constant. Nothing is made for it, but naming one with an operation makes a version to look at, its state unmoved.
+1. A hash in the field of its type: a constant, or with versions of its own, what was approved of them. Nothing is made for a constant, but naming one with an operation makes a version to look at, its state unmoved.
 2. Its newest version whose inputs match now.
 3. Nothing: it's missing or out of date.
 

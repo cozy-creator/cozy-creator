@@ -359,8 +359,10 @@ impl Doc {
         if !written_kind.is_empty() && written_kind != kind {
             self.warn(name, format!("{name}'s kind: an asset is an image, a video or audio, and anything else belongs on an entity: {written_kind} is ignored"));
         }
-        // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind.
-        let constant = held.is_some() && body.keys().all(|key| key == "kind" || key == "description" || PINS.contains(&key.as_str()));
+        // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind. With versions of its own
+        // it was made, by `defaults`, and this hash is its approval.
+        let made = lock.assets.get(&key).is_some_and(|row| !row.versions.is_empty());
+        let constant = !made && held.is_some() && body.keys().all(|key| key == "kind" || key == "description" || PINS.contains(&key.as_str()));
         // `defaults` fills what its `render` doesn't write, but one naming its own `with` takes nothing from there.
         let (mut merged, mut options) = (Map::new(), Map::new());
         if let Some(section) = defaults.get(&kind).and_then(Value::as_object).filter(|_| !constant && !body.contains_key("with")) {
