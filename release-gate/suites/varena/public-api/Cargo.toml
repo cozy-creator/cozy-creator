@@ -10,11 +10,3 @@ crate-type = ["cdylib"]
 [dependencies]
 varena = { path = "../../../../crates/varena" }
 varena-client = { path = "../../../../crates/varena-client" }
-# Archive installation is a separate example, never part of the mixed library's
-# extension/GPU helper feature cohort.
-[dev-dependencies]
-platform = { path = "../../../../crates/platform", features = ["fetch"] }
-
-[[example]]
-name = "varena-native-install-proof"
-path = "src/install.rs"
