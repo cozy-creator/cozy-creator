@@ -502,18 +502,22 @@ assets:
   talk:
     kind: video
     render: {with: $here/project/shots.py}
-    summary: <look> says <d><English>Hello</d> to <kyogee>, <Picture 1> and <a b> too.
+    summary: <look> says <D><English>Hello<d> and <d><ENGLISH>Hi</d> to <kyogee>, <Klingon>, <Picture 1> and <a b> too.
 YAML
 render "$D" talk || check "text: render talk: $(tail -c 300 "$OUT/render.txt")"
 says text "<kyogee>: did you mean <kyogre>?"
-says text "talk mentions <English>, which is nothing in the project"
-J '.warnings | any(contains("<kyogee>: did you mean <kyogre>?")) and any(contains("<English>"))' <<< "$(status "$D")" || check "text: a name that names nothing was not said: $(status "$D" | jq -c .warnings)"
-J '[.warnings[] | select(contains("<d>") or contains("</d>") or contains("<a b>") or contains("Picture"))] == []' <<< "$(status "$D")" || check "text: a tag was warned of: $(status "$D" | jq -c .warnings)"
+says text "talk mentions <Klingon>, which is nothing in the project"
+! grep -qiE 'mentions <(d|english)>|<(d|english)>: did you mean' "$OUT/render.txt" || check "text: render warned of a tag: $(tail -c 400 "$OUT/render.txt")"
+J '.warnings | any(contains("<kyogee>: did you mean <kyogre>?")) and any(contains("<Klingon>"))' <<< "$(status "$D")" || check "text: a name that names nothing was not said: $(status "$D" | jq -c .warnings)"
+J '[.warnings[] | select(contains("<d>") or contains("<D>") or contains("</d>") or contains("nglish") or contains("NGLISH") or contains("<a b>") or contains("Picture"))] == []' <<< "$(status "$D")" || check "text: a tag was warned of: $(status "$D" | jq -c .warnings)"
 J '[.assets.talk.versions[0].reads[].name] == ["look"]' "$D/project.lock" || check "text: talk reads $(jq -c '.assets.talk.versions[0].reads' "$D/project.lock")"
-grep -qF '<d><English>Hello</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
+grep -qF '<D><English>Hello<d> and <d><ENGLISH>Hi</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
 sed -i "/^  look:\$/i\\  d:\\n    video: $look" "$D/project.yaml"
 J '.warnings | any(contains("d is also a tag of"))' <<< "$(status "$D")" || check "text: a name that is its package's tag was not said: $(status "$D" | jq -c .warnings)"
 [ "$(row "$D" talk .status)" = '"current"' ] || check "text: a thing named as a tag was read: $(row "$D" talk .status)"
+sed -i "/^  look:\$/i\\  ENGLISH:\\n    video: $look" "$D/project.yaml"
+sed -i 's/<Klingon>/<Englsh>/' "$D/project.yaml"
+J '(.warnings | any(contains("english is also a tag of"))) and (.warnings | any(contains("talk mentions <Englsh>, which is nothing")))' <<< "$(status "$D")" || check "text: a tag in another case, or a typo of one, was said wrong: $(status "$D" | jq -c .warnings)"
 
 step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle

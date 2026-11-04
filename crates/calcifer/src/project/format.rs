@@ -651,14 +651,14 @@ impl Doc {
             }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
-                // A tag of its package, as written, stays text, whatever the project names.
-                if tags.is_some_and(|tags| tags.contains(&mention)) {
+                // A tag of its package, in any case, stays text as written, whatever the project names.
+                if tags.is_some_and(|tags| is_tag(tags, &mention)) {
                     continue;
                 }
                 let Some(j) = self.find(&mention) else {
                     match tags {
-                        Some(_) => {
-                            let line = self.names_nothing(&asset.name, &mention);
+                        Some(tags) => {
+                            let line = self.names_nothing(&asset.name, &mention, tags);
                             if !said.contains(&line) {
                                 said.push(line);
                             }
@@ -714,9 +714,9 @@ impl Doc {
         self.reserved.get(&plain_with(&self.target(i)))
     }
 
-    /// What is said of a mention that names nothing and is no tag.
-    fn names_nothing(&self, name: &str, mention: &str) -> String {
-        match self.near(mention) {
+    /// What is said of a mention that names nothing and is no tag of `tags`.
+    fn names_nothing(&self, name: &str, mention: &str, tags: &[String]) -> String {
+        match self.near(mention, tags) {
             Some(close) => format!("<{mention}>: did you mean <{close}>?"),
             None => format!("{name} mentions <{mention}>, which is nothing in the project: it reaches its function as written"),
         }
@@ -724,17 +724,17 @@ impl Doc {
 
     /// What is said of asset `i`'s mentions naming nothing, now its package's `tags` are read.
     pub fn said_once_read(&self, i: usize, tags: &[String]) -> Vec<String> {
-        let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !tags.contains(mention));
-        let mut said: Vec<String> = mine.map(|(_, mention)| self.names_nothing(&self.assets[i].name, mention)).collect();
+        let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !is_tag(tags, mention));
+        let mut said: Vec<String> = mine.map(|(_, mention)| self.names_nothing(&self.assets[i].name, mention, tags)).collect();
         said.dedup();
         said
     }
 
-    /// The name `mention`, which names nothing, is likely a typo of: within two edits, and neither of them short.
-    fn near(&self, mention: &str) -> Option<&str> {
+    /// The name `mention`, which names nothing, is likely a typo of: within two edits, neither of them short, and no tag of `tags`.
+    fn near(&self, mention: &str, tags: &[String]) -> Option<&str> {
         const SHORTEST: usize = 4;
         let key = name_key(mention);
-        let names = self.assets.iter().map(|asset| (name_key(&asset.name), asset.name.as_str()));
+        let names = self.assets.iter().filter(|asset| !is_tag(tags, &asset.name)).map(|asset| (name_key(&asset.name), asset.name.as_str()));
         let close = names.filter(|(other, _)| key.chars().count() >= SHORTEST && other.chars().count() >= SHORTEST).map(|(other, name)| (edits(&key, &other), name));
         close.filter(|(apart, _)| *apart <= 2).min_by_key(|(apart, _)| *apart).map(|(_, name)| name)
     }
@@ -1378,6 +1378,11 @@ fn insert_line(lines: &[&str], after: usize, line: &str) -> String {
 
 fn invalid(code: &str, message: String) -> Error {
     Error::new(Kind::Validation, code, message)
+}
+
+/// Whether `name` is one of a package's `tags`, in any case.
+fn is_tag(tags: &[String], name: &str) -> bool {
+    tags.iter().any(|tag| name_key(tag) == name_key(name))
 }
 
 /// The line a YAML error names (`… line 4 column 4 …`) as it is written: said after the error, and alone.
