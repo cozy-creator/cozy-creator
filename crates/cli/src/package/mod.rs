@@ -152,7 +152,7 @@ impl PackageRef {
     /// A package target without a function (`run::target`'s grammar): `x/y` is account x's
     /// package y.
     pub fn parse(text: &str) -> Result<Self, Error> {
-        let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]"));
+        let invalid = || Error::new(Kind::Usage, "package_ref_invalid", format!("{text:?} is not [org/]name[@release]")).next("cozy package ls");
         let (package, release) = match Published::parse(text.trim()).map_err(|_| invalid())? {
             Published { package, function: None, release, .. } => (package, release),
             Published { owned: Some(owned), release, .. } => (owned, release),

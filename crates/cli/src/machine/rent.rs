@@ -440,6 +440,7 @@ fn ended(m: &Machine) -> Error {
         "rental_ended",
         format!("{}: ended without a machine, nothing bills ({why})", m.name),
     )
+    .next(m.rental.as_ref().map_or_else(|| "cozy machine rent".to_owned(), |rental| format!("cozy machine rent {}", rental.sku)))
 }
 
 fn mint_key() -> String {

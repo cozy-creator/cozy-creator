@@ -5,7 +5,7 @@
 """The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
 video is its plate, `given` the request it got, and `written` a picture per write; the field `bare` calls a function that takes no
 writes, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
-going, `fresh` makes its plate's video new bytes, a file nothing has measured, and `noise` a video ffprobe can't read. An `image`
+going, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read, and `crash` a run that fails saying it. An `image`
 types its operation's fields. An `audio` says its `options`."""
 
 import hashlib
@@ -63,11 +63,13 @@ def shoot(payload: Request, out: Outputs) -> Take:
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
-@app.project_adapter("video", reserved=["d"])
+@app.project_adapter("video", reserved=["d", "english"])
 def adapt(op: Operation) -> list[Invocation]:
     """Its own words, nothing the format names. A field says what to do: answer no run, refuse, or call another of its functions."""
     if op.fields.get("refuse"):
         raise Refuse(str(op.fields["refuse"]))
+    if op.fields.get("crash"):
+        return [Invocation(function="crash", input={"prompt": str(op.fields["crash"])})]
     if "seconds" in op.fields:
         return [Invocation(function="slow", input={"seconds": op.fields.get("seconds", 20)})]
     if op.fields.get("two_calls"):
@@ -134,6 +136,11 @@ def noise(payload: Text, out: Outputs) -> BareTake:
 
 class Saved(msgspec.Struct):
     given: File
+
+
+@app.entrypoint()
+def crash(payload: Text, out: Outputs) -> Saved:
+    raise RuntimeError(payload.prompt)
 
 
 @app.entrypoint()

@@ -345,7 +345,7 @@ reads. A failed call stops the list and makes no version; a function taking `see
 run failed. `models` and `lora` go on the first call. `options`, every key of `render` but `with`, `prompt`, `models` and `lora`, merged over `defaults.<type>`, goes only to the adapter, and `prompt` reaches it as `fields.instructions`. The version records each call as `invocations`, and
 each file by its output's name, later over earlier. `written`, a list, is a function's frames for `op.writes`, in order; a write with none is
 cut from the landed video. The package `cozy` is reserved: a `video` (a cut) and an `image` (a frame) run here, free, with no machine, once what they
-read settles and on `approve`, reading each asset's state, else its newest version, which they say. A tool keeps one version and its pinned one.
+read settles and on `approve`, reading each asset's state, else its newest version, which they say. A cut keeps its versions, a frame one and its pinned one.
 
 - `POST /v1/projects` `{path, create?}`: the project holding `path` (the nearest folder up from it with a
   project.yaml), or with `create` a new one made at `path` (`409 project_exists`). Answers `{id, path}` and
@@ -356,7 +356,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
 - `GET /v1/projects/{id}`: with a project.yaml that doesn't read and a render going, what it owes in `queue`, what's wrong in `warnings`, and no assets; with none going, that file is refused. `{id, path, assets, queue?: [{name, running, run?}], entities: [{name, kind, description?, links, subs}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
-  absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?}], warnings}`. Each asset is `{name, standing, making?, kind, noun, with?, versions, prefixes?,
+  absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?, without?}], warnings}`. Each asset is `{name, standing, making?, kind, noun, with?, versions, prefixes?,
   approved?, pinned?, inputs?, files, path?, made_by?, status}`: `standing` is `current`, `out_of_date`, `missing` or `making`, for a client that shows it, `making` the runs making it now, `approved` is the version a pin is, `pinned` that a hash in project.yaml is its state,
   `files` its state by output name, `path` its main file, and `status` is for people, in the asset's noun. An orphan is an asset project.lock keeps
   versions of that project.yaml no longer names; its `bytes` count what `reclaim` would free of it, each file once; `renamed_to` the one new asset of
@@ -373,15 +373,15 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   that asset's lines in project.yaml, editing that one line, re-read just before it writes, and checks what it wrote reads as the same project with that one change (`400 project_edit` otherwise, saying what to write by hand). A line holding an input keeps it, `video: <hash>  # was <clash>`.
   Makes any tool whose reads settled, with no machine.
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Removes that line, or restores the input it was over. A constant, nothing but its file, keeps it (`400 project_edit`).
-- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names `400 project_name` when `to` can't be a name.
-  now with no versions (`409 rename_taken`, `409 project_busy` while it renders). Nothing on disk moves. What reads it goes out of date unless pinned.
+- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions, queued?}`. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names `400 project_name` when `to` can't be a name.
+  now with no versions (`409 rename_taken`). While it renders, `queued`: it happens as that walk ends, unless `to` has versions by then. Nothing on disk moves. What reads it goes out of date unless pinned.
 - `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, deleted?}`. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
   project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
   each its own object, which its first push lists in project.lock under the file's `parts`. `transferred` on the events ends it.
 - `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
 - `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?}`. Drops their queued work and cancels their runs; nothing dropped is sent again. It needs no file but to follow an entity's name, using the newest render's text if project.yaml doesn't read.
-- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice.
+- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice. `ended`'s `error` is the first failure, or when more than that was asked, `render_incomplete`: `rendered 6 of 15; 9 failed: <the first>`, with the command for the rest in `next`. A second run failing the same way on a machine stops what that render sends there, and cancels what it sent that has not begun.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
 
 ### Tools and Calcifer

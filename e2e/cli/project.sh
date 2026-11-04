@@ -61,7 +61,10 @@ ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
 
 cut_of_takes
+said_once
+film_is_its_file
 short_film_heals
+cut_versions
 hard_cut
 memo
 pins
@@ -208,7 +211,7 @@ local R=$OUT/run-project away code hash other real lines
 away=$(mktemp -d)
 code=0; (cd "$away" && cozy run "$here/project/draw.py" prompt=outside) > "$OUT/outside.txt" 2>&1 || code=$?
 rmdir "$away"
-{ [ "$code" = 2 ] && grep -qF 'not in a project: cd into one, or cozy project new <name>' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
+{ [ "$code" = 2 ] && grep -qF 'not in a project: cd into one, or make one' "$OUT/outside.txt" && grep -qF 'next: cozy project new my-project' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
 cozy project new "$R" > /dev/null || check "runs: project new"
 cat > "$R/project.yaml" <<YAML
 version: 2
@@ -502,18 +505,22 @@ assets:
   talk:
     kind: video
     render: {with: $here/project/shots.py}
-    summary: <look> says <d><English>Hello</d> to <kyogee>, <Picture 1> and <a b> too.
+    summary: <look> says <D><English>Hello<d> and <d><ENGLISH>Hi</d> to <kyogee>, <Klingon>, <Picture 1> and <a b> too.
 YAML
 render "$D" talk || check "text: render talk: $(tail -c 300 "$OUT/render.txt")"
 says text "<kyogee>: did you mean <kyogre>?"
-says text "talk mentions <English>, which is nothing in the project"
-J '.warnings | any(contains("<kyogee>: did you mean <kyogre>?")) and any(contains("<English>"))' <<< "$(status "$D")" || check "text: a name that names nothing was not said: $(status "$D" | jq -c .warnings)"
-J '[.warnings[] | select(contains("<d>") or contains("</d>") or contains("<a b>") or contains("Picture"))] == []' <<< "$(status "$D")" || check "text: a tag was warned of: $(status "$D" | jq -c .warnings)"
+says text "talk mentions <Klingon>, which is nothing in the project"
+! grep -qiE 'mentions <(d|english)>|<(d|english)>: did you mean' "$OUT/render.txt" || check "text: render warned of a tag: $(tail -c 400 "$OUT/render.txt")"
+J '.warnings | any(contains("<kyogee>: did you mean <kyogre>?")) and any(contains("<Klingon>"))' <<< "$(status "$D")" || check "text: a name that names nothing was not said: $(status "$D" | jq -c .warnings)"
+J '[.warnings[] | select(contains("<d>") or contains("<D>") or contains("</d>") or contains("nglish") or contains("NGLISH") or contains("<a b>") or contains("Picture"))] == []' <<< "$(status "$D")" || check "text: a tag was warned of: $(status "$D" | jq -c .warnings)"
 J '[.assets.talk.versions[0].reads[].name] == ["look"]' "$D/project.lock" || check "text: talk reads $(jq -c '.assets.talk.versions[0].reads' "$D/project.lock")"
-grep -qF '<d><English>Hello</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
+grep -qF '<D><English>Hello<d> and <d><ENGLISH>Hi</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
 sed -i "/^  look:\$/i\\  d:\\n    video: $look" "$D/project.yaml"
 J '.warnings | any(contains("d is also a tag of"))' <<< "$(status "$D")" || check "text: a name that is its package's tag was not said: $(status "$D" | jq -c .warnings)"
 [ "$(row "$D" talk .status)" = '"current"' ] || check "text: a thing named as a tag was read: $(row "$D" talk .status)"
+sed -i "/^  look:\$/i\\  ENGLISH:\\n    video: $look" "$D/project.yaml"
+sed -i 's/<Klingon>/<Englsh>/' "$D/project.yaml"
+J '(.warnings | any(contains("english is also a tag of"))) and (.warnings | any(contains("talk mentions <Englsh>, which is nothing")))' <<< "$(status "$D")" || check "text: a tag in another case, or a typo of one, was said wrong: $(status "$D" | jq -c .warnings)"
 
 step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle
@@ -1126,6 +1133,9 @@ code=0; render "$T" reader || code=$?
 { [ "$code" != 0 ] && says failures "Not this one."; } || check "failures: Refuse (exit $code): $(tail -c 400 "$OUT/render.txt")"
 [ "$(made "$T" no)" = null ] || [ "$(made "$T" no)" = 0 ] || check "failures: a refusal made a version"
 says failures "reader cannot render: no failed in this render"
+stops
+absent_piece
+rename_waits
 [ -d "${PACKAGES:-}/minimax-h3" ] || return 0
 step "a project: H3's adapter refuses to keep another package's take"
 local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
@@ -1175,7 +1185,6 @@ render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 short=$(jq -r --arg p "$short" '.files | keys[] | select(contains($p))' "$T/project.lock")
 jq --arg s "$short" '.assets.edit.versions[-1].files.video = $s' "$T/project.lock" > "$T/lock.tmp" && mv "$T/lock.tmp" "$T/project.lock"
-# Not through the root file, a hard link into files/: cp would write the film in the store.
 rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
@@ -1185,7 +1194,7 @@ n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_r
 version=$(jq '.assets.edit.versions[-1].number' "$T/project.lock")
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
-[ "$(jq '.assets.edit.versions[-1].number' "$T/project.lock")" -gt "$version" ] || check "healing: naming it made no new version: $(tail -c 400 "$OUT/render.txt")"
+[ "$(jq '.assets.edit.versions[-1].number' "$T/project.lock")" = "$version" ] || check "healing: the same bytes made a new version: $(tail -c 400 "$OUT/render.txt")"
 }
 
 # Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also
@@ -1233,6 +1242,226 @@ render "$T" all || check "landed: render all: $(tail -c 400 "$OUT/render.txt")"
 filmed "render all"
 render "$T" two || check "landed: render two: $(tail -c 400 "$OUT/render.txt")"
 filmed "a new take of the last piece"
+}
+
+# Eight shots a machine fails alike: the second failure stops what is sent to it, and the render ends on how far it got.
+stops() {
+step "a project: runs failing alike stop at the second, and the last line says how far it got"
+local T=$OUT/stops code=0 name failed
+mkdir -p "$T"
+printf 'version: 2\nassets:\n' > "$T/project.yaml"
+for name in a b c d e f g h; do
+  printf '  %s:\n    kind: video\n    render: {with: %s/project/shots.py}\n    crash: the machine is broken\n' "$name" "$here" >> "$T/project.yaml"
+done
+render "$T" all || code=$?
+[ "$code" != 0 ] || check "stops: render exited 0: $(tail -c 400 "$OUT/render.txt")"
+says stops "runs failed the same way, so this render sends it nothing more"
+says stops "rendered 0 of 8; "
+says stops "cozy project render all --missing --on local"
+failed=$(cozy --json run ls -p "$T" --limit 0 --state failed | jq '.runs | length')
+[ "$failed" -lt 8 ] || check "stops: $failed of 8 runs ran: $(tail -c 400 "$OUT/render.txt")"
+}
+
+# A piece gone from this computer, and at no machine or Hub, is left out with a warning (Paul, 11-04): the film says so, the one before stays a
+# version, and once the piece is back the next render cuts it whole. So with a piece that has no version yet.
+frames_of() { ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1"; }
+absent_piece() {
+step "a project: a piece that can't be had is left out, said, and cut back in when it's here"
+local T=$OUT/absent a b first stored
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  b: {video: $b}
+  film:
+    kind: video
+    render: {with: cozy}
+    pieces: [<a>, <b>]
+YAML
+render "$T" film || check "absent: first cut: $(tail -c 400 "$OUT/render.txt")"
+first=$(sha "$T/film.mp4")
+rm -f "$T"/files/"$b"*
+sed -i 's/pieces: \[<a>, <b>\]/pieces: [<a>, <b>, <a>]/' "$T/project.yaml"
+render "$T" film || check "absent: a missing piece failed the render: $(tail -c 400 "$OUT/render.txt")"
+says absent "film.mp4 is cut without b"
+says absent "(without b: not on this computer)"
+[ "$(frames_of "$T/film.mp4")" = 288 ] || check "absent: the film is $(frames_of "$T/film.mp4") frames, not the 288 of what it could have"
+J '.cuts[0].without == ["b: not on this computer"]' <<< "$(status "$T")" || check "absent: status: $(status "$T" | jq -c .cuts)"
+cozy project -p "$T" status 2>&1 | grep -qF '(without b: not on this computer)' || check "absent: status doesn't say what it went without"
+[ "$(made "$T" film)" = 2 ] || check "absent: the short film is no new version: $(made "$T" film)"
+ls "$T/files/$first"* > /dev/null 2>&1 || check "absent: the longer film went"
+prefix "$T" "$T/b.mp4" > /dev/null
+render "$T" all --missing || check "absent: with it back: $(tail -c 400 "$OUT/render.txt")"
+[ "$(frames_of "$T/film.mp4")" = 432 ] || check "absent: with b back the film is $(frames_of "$T/film.mp4") frames, not 432: $(tail -c 400 "$OUT/render.txt")"
+J '(.cuts[0].without // []) == []' <<< "$(status "$T")" || check "absent: status with it back: $(status "$T" | jq -c .cuts)"
+
+step "a project: a piece whose bytes aren't its hash is left out"
+stored=$(jq -r --arg a "$a" '.files | to_entries[] | select(.key | contains($a)) | .value.path' "$T/project.lock")
+chmod u+w "$T/$stored"; printf 'changed' >> "$T/$stored"
+render "$T" film || check "absent: a changed piece failed the render: $(tail -c 400 "$OUT/render.txt")"
+says absent "(without a: its bytes changed)"
+[ "$(frames_of "$T/film.mp4")" = 144 ] || check "absent: a changed piece was cut: $(frames_of "$T/film.mp4") frames"
+
+step "a project: a piece with no version yet is left out, and its landing cuts it in"
+local P=$OUT/arriving
+mkdir -p "$P"
+plate "$P/a.mp4" testsrc2 440 800
+printf 'version: 2\nassets: {}\n' > "$P/project.yaml"
+a=$(prefix "$P" "$P/a.mp4")
+cat > "$P/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  later:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: Dusk on <a>.
+  film:
+    kind: video
+    render: {with: cozy}
+    pieces: [<a>, <later>]
+YAML
+render "$P" film || check "arriving: $(tail -c 400 "$OUT/render.txt")"
+says arriving "(without later: no version yet)"
+[ "$(frames_of "$P/film.mp4")" = 144 ] || check "arriving: the film is $(frames_of "$P/film.mp4") frames"
+render "$P" later || check "arriving: later: $(tail -c 400 "$OUT/render.txt")"
+[ "$(frames_of "$P/film.mp4")" = 288 ] || check "arriving: the film didn't cut it in: $(frames_of "$P/film.mp4") frames: $(tail -c 400 "$OUT/render.txt")"
+! grep -qF 'without later' "$OUT/render.txt" || check "arriving: still says without: $(tail -c 400 "$OUT/render.txt")"
+}
+
+# Status and the closing line say what the film holds, not what its pieces add up to; a piece with no version yet is warned of.
+film_is_its_file() {
+step "a project: a film's length is its file's, and a piece with no version warns"
+local T=$OUT/truth a
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800
+plate "$T/short.mp4" testsrc2 440 800 1
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  later:
+    kind: video
+    render: {with: $here/project/shots.py}
+    no_run: true
+  film:
+    kind: video
+    render: {with: cozy}
+    pieces: [<a>, <later>]
+YAML
+render "$T" film || check "truth: cut: $(tail -c 400 "$OUT/render.txt")"
+says truth "warning"
+says truth "(without later: no version yet)"
+J '.cuts[0].frames == 144' <<< "$(status "$T")" || check "truth: status of the film: $(status "$T" | jq -c .cuts)"
+[ "$(stat -c %h "$T/film.mp4")" = 1 ] || check "truth: film.mp4 is a hard link: $(stat -c %h "$T/film.mp4") names"
+local stored
+stored=$(jq -r '.files[.assets.film.versions[-1].files.video].path' "$T/project.lock")
+[ "$(id -u)" = 0 ] || [ ! -w "$T/$stored" ] || check "truth: $stored can be written"
+cp "$T/short.mp4" "$T/film.mp4"
+J '.cuts[0].frames == 24' <<< "$(status "$T")" || check "truth: status doesn't read the file: $(status "$T" | jq -c .cuts)"
+[ "$(sha "$T/$stored")" = "$(basename "${stored%.*}")" ] || check "truth: writing over film.mp4 changed $stored"
+}
+
+# A cut's versions are all kept and listed; approving an older one brings it and its timeline to the root, and unpinning goes back.
+cut_versions() {
+step "a project: a cut keeps its versions, and the film follows the state"
+local T=$OUT/edits a b one first_timeline two
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  b: {video: $b}
+  edit:
+    kind: video
+    render: {with: cozy}
+    pieces:
+      - <a>
+YAML
+render "$T" edit || check "edits: first cut: $(tail -c 400 "$OUT/render.txt")"
+one=$(sha "$T/edit.mp4"); first_timeline=$(sha "$T/edit.otio")
+sed -i 's/^      - <a>$/      - <a>\n      - <b>/' "$T/project.yaml"
+render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
+two=$(sha "$T/edit.mp4")
+[ "$one" != "$two" ] || check "edits: the second cut is the first"
+J '.assets[] | select(.name == "edit") | (.prefixes | length) == 2 and (.prefixes[0].from == ["a"]) and (.prefixes[1].from == ["a", "b"])' <<< "$(status "$T")" || check "edits: status: $(row "$T" edit .prefixes)"
+ls "$T/files/$one"* > /dev/null 2>&1 || check "edits: the first film is gone from files/"
+render "$T" edit || check "edits: naming it: $(tail -c 400 "$OUT/render.txt")"
+says edits "(unchanged)"
+[ "$(made "$T" edit)" = 2 ] || check "edits: the same pieces made a version: $(made "$T" edit)"
+cozy project -p "$T" approve edit "$(jq '.assets.edit.versions[0].number' "$T/project.lock")" > "$OUT/edits-approve.txt" 2>&1 || check "edits: approve: $(tail -c 300 "$OUT/edits-approve.txt")"
+[ "$(sha "$T/edit.mp4")" = "$one" ] || check "edits: edit.mp4 isn't the approved film: $(tail -c 300 "$OUT/edits-approve.txt")"
+[ "$(sha "$T/edit.otio")" = "$first_timeline" ] || check "edits: edit.otio isn't the approved film's"
+cozy project -p "$T" unpin edit > "$OUT/edits-unpin.txt" 2>&1 || check "edits: unpin: $(tail -c 300 "$OUT/edits-unpin.txt")"
+[ "$(sha "$T/edit.mp4")" = "$two" ] || check "edits: edit.mp4 didn't go back to the state: $(tail -c 300 "$OUT/edits-unpin.txt")"
+[ "$(made "$T" edit)" = 2 ] || check "edits: choosing made a version: $(made "$T" edit)"
+}
+
+# A rename asked while a render goes happens as it ends.
+rename_waits() {
+step "a project: a rename during a render waits for it"
+local T=$OUT/renaming going n
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  old:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 0
+  busy:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 12
+YAML
+render "$T" old || check "rename: first render: $(tail -c 400 "$OUT/render.txt")"
+cozy project -p "$T" render busy --on local > "$OUT/rename-busy.txt" 2>&1 &
+going=$!
+n=''
+for _ in $(seq 120); do n=$(row "$T" busy .status | sed -n 's/.*making (run \([0-9]*\)).*/\1/p'); [ -n "$n" ] && break; sleep 0.25; done
+[ -n "$n" ] || check "rename: the render never showed a run: $(tail -c 300 "$OUT/rename-busy.txt")"
+sed -i 's/^  old:/  new:/' "$T/project.yaml"
+cozy project -p "$T" rename old new > "$OUT/rename.txt" 2>&1 || check "rename: refused during a render: $(tail -c 300 "$OUT/rename.txt")"
+grep -q 'when the render going ends' "$OUT/rename.txt" || check "rename: does not say it waits: $(tail -c 300 "$OUT/rename.txt")"
+wait "$going" || check "rename: the render: $(tail -c 300 "$OUT/rename-busy.txt")"
+[ "$(made "$T" new)" = 1 ] || check "rename: new has $(made "$T" new) versions after the render ended"
+}
+
+# Three assets failing alike, a package that isn't there, so no run is made.
+said_once() {
+step "a project: a failure several assets share is said once"
+local T=$OUT/once code=0
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  one:
+    kind: image
+    render: {with: $T/missing.py}
+    description: A coast.
+  two:
+    kind: image
+    render: {with: $T/missing.py}
+    description: A harbor.
+  three:
+    kind: image
+    render: {with: $T/missing.py}
+    description: A wall.
+YAML
+render "$T" all || code=$?
+[ "$code" != 0 ] || check "once: render exited 0"
+[ "$(grep -v render_incomplete "$OUT/render.txt" | grep -c 'pyproject.toml')" = 1 ] || check "once: not said once: $(tail -c 400 "$OUT/render.txt")"
+says once "rendered 0 of 3; 3 failed"
+says once "cozy project render all --missing --on local"
 }
 
 # The two kinds of pieces, in frames; two cuts side by side, each its own film and timeline; an edit recut on approve with no machine;

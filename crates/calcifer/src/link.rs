@@ -47,7 +47,7 @@ pub enum LinkError {
     NotFound,
     /// A refusal the same request cannot change: the machine will not take it.
     #[error("the machine refused it ({code}): {message}")]
-    Refused { code: String, message: String },
+    Refused { code: String, message: String, remedy: Option<String>, next: Vec<String> },
     /// The machine released itself (a rental's idle end): it is gone.
     #[error("the machine released itself: {0}")]
     Released(String),
@@ -62,6 +62,9 @@ pub enum LinkError {
     /// machine, not an unreachable one. Ask again.
     #[error("{0}")]
     Unanswered(String),
+    /// It answered with an internal failure of its own: its bug, not its being busy.
+    #[error("{code}: {message}")]
+    Broken { code: String, message: String },
 }
 
 impl From<Error> for LinkError {
@@ -76,12 +79,19 @@ impl From<Error> for LinkError {
             Error::Refused { status: 401, error } if error.code == "machine_clock" => LinkError::Refused {
                 code: error.code,
                 message: error.message,
+                remedy: error.remedy,
+                next: error.next,
             },
             Error::Refused { status: 401, error } => LinkError::Unauthorized(error.message),
             Error::Refused { status, error } if status < 500 => LinkError::Refused {
                 code: error.code,
                 message: error.message,
+                remedy: error.remedy,
+                next: error.next,
             },
+            Error::Refused { error, .. } if error.kind == protocol::error::Kind::Internal => {
+                LinkError::Broken { code: error.code, message: error.message }
+            }
             Error::Refused { error, .. } => {
                 LinkError::Unanswered(format!("{}: {}", error.code, error.message))
             }
@@ -324,6 +334,8 @@ async fn put(
         Ranged::Stop(LinkError::Refused {
             code: "input_unreadable".into(),
             message: format!("{}: {e}", path.display()),
+            remedy: None,
+            next: vec![],
         })
     };
     let mut file = tokio::fs::File::open(&path).await.map_err(unreadable)?;

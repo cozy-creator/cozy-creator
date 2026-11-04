@@ -320,6 +320,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let renamed: Renamed = ctx.calcifer().await?.post(&path, &Rename { from, to }, None).await?;
             match ctx.json {
                 true => output::json(&renamed),
+                false if renamed.queued => output::say(ctx, &format!("{} becomes {} when the render going ends: its {} kept", renamed.from, renamed.to, renamed.versions)),
                 false => output::say(ctx, &format!("{} is {} now: its {} kept", renamed.from, renamed.to, renamed.versions)),
             }
         }
@@ -497,20 +498,23 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                 }
             }
             Event::Failed { error } => {
-                output::failure(ctx, &error.message, &error.next);
-                failed.insert(error.message);
+                if failed.insert(error.message.clone()) {
+                    output::failure(ctx, &error.message, &error.next);
+                }
             }
             Event::Moved { .. } | Event::Transferred { .. } => {}
-            Event::Cut { cut, frames, fps, retimed, unchanged, .. } => {
+            Event::Cut { cut, frames, fps, retimed, unchanged, without, .. } => {
                 let (path, seconds) = (output::link(ctx, &opened.path.join(&cut)), frames as f64 / fps);
                 let (name, left) = (cut.trim_end_matches(".mp4"), if unchanged { " (unchanged)" } else { "" });
-                let line = format!("{name}: {path}, {seconds:.1} s{}{left}", retimes(&retimed, fps));
+                let line = format!("{name}: {path}, {seconds:.1} s{}{left}{}", retimes(&retimed, fps), went_without(&without));
                 cuts.retain(|(named, _)| *named != cut);
                 cuts.push((cut, line));
             }
             Event::Ended { error, rendered } => {
                 cuts.iter().for_each(|(_, line)| output::say(ctx, line));
-                rendered.iter().for_each(|rendered| output::say(ctx, &finished(rendered)));
+                // A render that fell short ends on how far it got, the error's own words.
+                let short = error.as_ref().is_some_and(|error| error.code == "render_incomplete");
+                rendered.iter().filter(|_| !short).for_each(|rendered| output::say(ctx, &finished(rendered)));
                 return match error {
                     Some(error) if !ctx.json && failed.contains(&error.message) => Ok(ExitCode::from(error.exit_code() as u8)),
                     Some(error) => Err(error),
@@ -550,7 +554,11 @@ fn summary(ctx: &Context, state: &State) {
         output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");
     }
     for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
-        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}", asset.noun, made.number, made.prefix)).collect();
+        let from = |made: &protocol::project::VersionPrefix| match made.from.as_slice() {
+            [] => String::new(),
+            pieces => format!(" (from {})", pieces.join(", ")),
+        };
+        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}{}{}", asset.noun, made.number, made.prefix, from(made), went_without(&made.without))).collect();
         output::say(ctx, &format!("{}: {}", asset.name, made.join(", ")));
         for made in &asset.prefixes {
             if let Some(kept) = made.kept {
@@ -579,9 +587,10 @@ fn summary(ctx: &Context, state: &State) {
         output::next(ctx, &["cozy project reclaim"]);
     }
     for cut in &state.cuts {
-        let skips = match cut.skips.as_slice() {
-            [] => String::new(),
-            skips => format!("; it skips {} (nothing made yet)", skips.join(", ")),
+        let skips = match (cut.without.is_empty(), cut.skips.as_slice()) {
+            (false, _) => went_without(&cut.without),
+            (true, []) => String::new(),
+            (true, skips) => format!("; it would skip {} (nothing made yet)", skips.join(", ")),
         };
         let name = cut.cut.trim_end_matches(".mp4");
         let made = cut.frames.map(|frames| format!(", {}", length(frames, cut.fps))).unwrap_or_default();
@@ -599,6 +608,14 @@ fn summary(ctx: &Context, state: &State) {
         output::next(ctx, &["cozy project pull"]);
     } else if !state.missing.is_empty() || !state.stale.is_empty() {
         output::next(ctx, &["cozy project render all --on <machine>"]);
+    }
+}
+
+/// ` (without segment_3: no version yet)`, when a film went without something: a short film can't pass unnoticed.
+fn went_without(pieces: &[String]) -> String {
+    match pieces {
+        [] => String::new(),
+        pieces => format!(" (without {})", pieces.join("; ")),
     }
 }
 
