@@ -401,6 +401,9 @@ code {
   --mark: #ffffff70;
   outline: none;
 }
+.stage[data-carrying] .media.blank {
+  --mark: var(--ember);
+}
 .blank-glyph {
   color: #ffffff26;
 }

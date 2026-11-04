@@ -290,7 +290,15 @@ function Canvas({
 
   const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])
 
-  const dragStart = useCallback((nodes: ElementNode[]) => store.dragStarted(nodes), [store])
+  // While something's carried, what could take it says so, with no render of anything it isn't.
+  const carrying = (held: boolean) => stage.current?.toggleAttribute("data-carrying", held)
+  const dragStart = useCallback(
+    (nodes: ElementNode[]) => {
+      carrying(true)
+      store.dragStarted(nodes)
+    },
+    [store],
+  )
   const dragging = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       const { clientX, clientY } = pointOf(event)
@@ -300,6 +308,7 @@ function Canvas({
   )
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
+      carrying(false)
       const { clientX, clientY } = pointOf(event)
       const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
       if (!target) {

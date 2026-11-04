@@ -6,6 +6,8 @@
 .tl {
   display: flex;
   flex-direction: column;
+  border-radius: var(--round2);
+  overflow: hidden;
   outline: none;
 }
 .tl-stage {
