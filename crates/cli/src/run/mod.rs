@@ -87,7 +87,7 @@ struct RunArgs {
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
     /// Keep the function ready instead of running it.
-    #[arg(long, value_enum, value_name = "LEVEL")]
+    #[arg(long, value_enum, ignore_case = true, value_name = "LEVEL")]
     warm: Option<Warm>,
     /// Print the function's request contract instead of running it.
     #[arg(long)]
