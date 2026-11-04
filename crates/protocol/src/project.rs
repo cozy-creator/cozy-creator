@@ -62,6 +62,8 @@ pub struct Asked {
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
+    /// The render as this ask left it: `/events` says each change from here.
+    pub board: Board,
 }
 
 /// One thing an ask queued, and the names ahead of it.
@@ -162,6 +164,9 @@ pub struct State {
     /// Commands to run next, given what it holds and lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
+    /// Its render going, or its last since Calcifer started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<Board>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -800,10 +805,111 @@ pub struct Rendered {
     pub execution_ms: u64,
 }
 
+/// A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is
+/// the whole of what a client needs to show how a render goes, so a client follows no run of its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Board {
+    /// Goes up with each change, across a Calcifer restart: a client keeps the highest it heard.
+    pub seq: u64,
+    /// The machines it may go to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<String>,
+    pub began_at_ms: i64,
+    /// How long it took, once its walk ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    /// How many shots it will make, what's queued too: what a job's `shot` counts up to. It grows only as another render joins.
+    #[serde(default)]
+    pub shots: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<Job>,
+}
+
+/// How a job stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    Running,
+    Done,
+    Failed,
+    Canceled,
+    /// Its machines stopped taking work, so it was never sent.
+    NotSent,
+    /// It waits its turn, here or in its machine's line. Also what a reader shows of a state it doesn't know.
+    #[default]
+    #[serde(other)]
+    Waiting,
+}
+
+/// One version of one asset being made.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Job {
+    pub asset: String,
+    pub state: JobState,
+    /// What its alternatives are called: `take` or `version`.
+    pub noun: String,
+    /// Its take or version, once one is reserved for it. None for a file that comes with another's take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    /// Which of the render's shots it makes, 1 first, for the whole render: a `kind: video` its package makes. None for a cut or a still.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot: Option<u32>,
+    /// A sentence: what it waits for (`after a, b`, `comes with c`, `waiting for a GPU, held by d`), or what came of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The run making it now, or that last did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
+    /// When its machine began it. Its time counts from here, never its queue's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// How long its runs executed, once they ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub took_ms: Option<u64>,
+    /// Where it is, in words: `segment 2/2, denoise`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// How far through that: `14/30`, `12 GiB/52 GiB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// How far through the whole run, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fraction: Option<f64>,
+    /// It has stopped moving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled: Option<crate::calcifer::Stalled>,
+    /// What it has shown so far while it goes on: never the take or version itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<Preview>,
+    /// Its file in the project, once done: `files/<sha256>.<ext>`, or a cut's film.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A cut's length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    /// Why it failed, and what to run next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Error>,
+}
+
+/// A file a run showed before it ended: its package's word for it, in a sentence (`segment 1/2`), and its path in the project.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Preview {
+    pub label: String,
+    pub path: String,
+}
+
 /// `GET /v1/projects/{id}/events`: what the project's runs do, as they do it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    /// The project's render as it stands now, whole: heard when the stream opens and at each change, later ones standing for any
+    /// a slow reader missed.
+    Board {
+        board: Board,
+    },
     /// A run for `name` began: its id and number, which `GET /v1/runs/{id}/events` follows.
     Started {
         name: String,
@@ -821,18 +927,26 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_ms: Option<u64>,
     },
+    /// `name`: the asset it is of, if it is of one.
     Said {
         message: String,
-    },
-    Warning {
-        message: String,
-    },
-    /// Something asked could not be made, said as it happens; the walk goes on with what does not
-    /// read it. `name` is the asset it is of, when it is of one: its row's `failure` holds this for later readers.
-    Failed {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+    },
+    /// `name`: the asset whose run said it. The same `message` can come from several. With none, it names its asset itself, if it is of one.
+    Warning {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// Something asked could not be made, said as it happens; the walk goes on with what does not
+    /// read it. `name`, the asset, and `run`, the run that failed, when it is of one: its row's `failure` holds this for later readers.
+    Failed {
         error: Error,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<u64>,
     },
     /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.
     Moved {
@@ -847,9 +961,10 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<Error>,
     },
-    /// A cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes
+    /// Asset `name`'s cut (`edit.mp4`, and its `.otio`) was made here, in `took_s`: `frames` long at `fps`, the takes
     /// in `retimed` retimed to it. `unchanged`: what it holds did not change, so it was left.
     Cut {
+        name: String,
         cut: String,
         frames: u64,
         fps: f64,

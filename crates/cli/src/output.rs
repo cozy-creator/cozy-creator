@@ -41,6 +41,11 @@ impl Term {
             hyperlinks: stdout && supports_hyperlinks::on(supports_hyperlinks::Stream::Stdout),
         }
     }
+
+    /// Whether a path can be shown as a link.
+    pub fn links(&self) -> bool {
+        self.hyperlinks
+    }
 }
 
 /// Prints one JSON document on stdout.
@@ -116,6 +121,11 @@ pub fn warn(message: &str) {
     anstream::eprintln!("{WARN}warning{WARN:#}: {}", shown(message));
 }
 
+/// A line that is a warning, said as written.
+pub fn warned(line: &str) {
+    anstream::eprintln!("{}", shown(line));
+}
+
 /// Whether `name` holds every one of `words`, in any case: `ls` words over what a machine holds.
 pub fn names(name: &str, words: &[String]) -> bool {
     let name = name.to_lowercase();
@@ -156,13 +166,21 @@ pub fn link(ctx: &Context, path: &Path) -> String {
 /// `path` as `term` can show it: a link where it can.
 pub fn link_on(term: Term, path: &Path) -> String {
     let shown = path.display().to_string();
+    hyperlink(term, path, &shown).unwrap_or(shown)
+}
+
+/// `shown` as an OSC 8 link to the absolute `path`, on a terminal that opens them.
+pub fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> {
     if !term.hyperlinks || !path.is_absolute() {
-        return shown;
+        return None;
     }
-    match url::Url::from_file_path(path) {
-        Ok(url) => format!("\x1b]8;;{url}\x1b\\{shown}\x1b]8;;\x1b\\"),
-        Err(()) => shown,
-    }
+    let url = url::Url::from_file_path(path).ok()?;
+    Some(format!("\x1b]8;;{url}\x1b\\{shown}\x1b]8;;\x1b\\"))
+}
+
+/// A link to `path` that reads `shown`, where the terminal opens links; elsewhere `plain`, as what isn't a link must name the file itself.
+pub fn named_link(ctx: &Context, path: &Path, shown: &str, plain: &str) -> String {
+    hyperlink(ctx.term, path, shown).unwrap_or_else(|| plain.to_owned())
 }
 
 /// `key  value` lines, keys aligned, then notes.

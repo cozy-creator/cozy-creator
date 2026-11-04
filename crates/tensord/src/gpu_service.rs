@@ -2224,6 +2224,32 @@ impl Pool {
         }
         highest
     }
+    /// Whether `held` imports, as a warm install asks once it holds the code: its import-only
+    /// parent's first import, waited for. Its refusal's code and line; None where nothing imports
+    /// ahead for it (no fork, it binds no model, the host has no room): its first call says then.
+    pub fn import_verdict(self: &Arc<Self>, held: &HeldGeneration, stop: &crate::stop::Stop) -> Option<(&'static str, String)> {
+        self.prespawn(held.clone());
+        let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
+        // Package code runs here, and may not end: the install's cancel still does.
+        let mut state = parent.state.lock().unwrap();
+        while matches!(*state, ZygoteState::Starting) {
+            if stop.is_cancelled() {
+                return None;
+            }
+            state = parent.changed.wait_timeout(state, std::time::Duration::from_millis(250)).unwrap().0;
+        }
+        let ZygoteState::Failed(reason) = &*state else { return None };
+        let reason = reason.clone();
+        drop(state);
+        let (code, detail) = reason.strip_prefix("import-only start refused: ")?.split_once(": ")?;
+        let code = ["import_failed", "missing_dependency"].into_iter().find(|known| *known == code)?;
+        let refusal = Refused { code: code.into(), detail: detail.into() };
+        let said = floor_missed(&refusal, held).map_or_else(|| import_lines(&refusal).0.to_owned(), |said| said.detail);
+        // The next pass imports again.
+        self.forget_parent(held, &parent);
+        Some((code, said))
+    }
+
     /// `held`'s import-only parent, started here: empty once it is up, else why it is not.
     fn import(&self, held: &HeldGeneration) -> &'static str {
         let Some((parent, start)) = self.zygote(held) else {
@@ -2239,7 +2265,7 @@ impl Pool {
             (_, true) => {
                 // The next pass imports again; a request that needs it starts one itself.
                 self.forget_parent(held, &parent);
-                "its imports failed (the machine's log says why)"
+                "its imports failed (`cozy machine logs <machine>` says why)"
             }
         }
     }
@@ -2543,8 +2569,17 @@ impl Pool {
                     {
                         let name = holder.and_then(|record| record.submission.map(|s| s.request_id))
                             .filter(|id| !id.is_empty()).unwrap_or_else(|| format!("request {seq}"));
-                        return Err(Some(format!("its GPU lane is held by {name}, which has ended, and nothing \
-                            will release it; this call fails instead of waiting")));
+                        // Nothing else will release its lane, and no command restarts a rented TensorD.
+                        if let Some(lane) = self.allocations.release(seq) {
+                            tracing::warn!(root, holder = seq, "the GPU lane {lane:?} of {name}, which has ended, was never released: released now");
+                            self.note_gpus(engine, seq, "release", lane, Some(root));
+                        }
+                        // A call slot is a thread's, which may still be on the card: that one isn't ours to take.
+                        if self.allocations.holds(seq) {
+                            return Err(Some(format!("its GPU is held by a call of {name}, which has ended, and nothing \
+                                will release it; this call fails instead of waiting")));
+                        }
+                        return self.root_lane(engine, root, claims);
                     }
                 }
                 // A root not started yet just stays queued.
@@ -3756,7 +3791,10 @@ impl Pool {
                     gpu_memory_limit: self.config.gpu_memory_limit,
                 }),
                 &mut callbacks,
-            )?)?;
+            )?).map_err(|error| match refused(&error).and_then(|refusal| floor_missed(refusal, held)) {
+                Some(said) => io::Error::other(said),
+                None => error,
+            })?;
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
@@ -4371,10 +4409,13 @@ pub(crate) fn settle(engine: &Arc<Engine>, id: &str, error: &io::Error) -> io::R
         if let Err(log) = engine.append_log(id, "warn", &detail) { tracing::warn!("run {id}: {log}"); }
         Outcome::Canceled
     } else if let Some(refusal) = refused(error) {
-        // The executor's own reason, typed: a group's first fault names its GPU.
-        Outcome::Failed(
-            Failure::executor("failed", "runtime", &refusal.code, &refusal.detail),
-        )
+        // The executor's own reason, typed: a group's first fault names its GPU. An import's
+        // traceback is the run's detail, not its one line.
+        let (said, traceback) = import_lines(refusal);
+        if !traceback.is_empty() {
+            keep_import_triage(engine, id, &refusal.code, said, traceback);
+        }
+        Outcome::Failed(Failure::executor("failed", "runtime", &refusal.code, said))
     } else if record.state == State::Starting {
         Outcome::Failed(
             Failure::abandoned(&format!("device executor did not start: {error}")),
@@ -4530,6 +4571,59 @@ fn materialize_tree(
 
 /// The failed attempt's triage bundle, kept before the run settles: the executor's own terminal
 /// and traceback, and its stderr tail.
+/// A refusal's line and, for a package that did not import (`import_failed`, `missing_dependency`:
+/// what it raised, a blank line, its traceback), its traceback.
+fn import_lines(refusal: &Refused) -> (&str, &str) {
+    match refusal.code.as_str() {
+        "import_failed" | "missing_dependency" => {
+            let (said, traceback) = refusal.detail.split_once("\n\n").unwrap_or((&refusal.detail, ""));
+            // The exception's name and its code again: the reason names its code.
+            let said = said.strip_prefix("DiscoveryError: ").unwrap_or(said);
+            (said.strip_prefix(refusal.code.as_str()).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(said), traceback)
+        }
+        _ => (&refusal.detail, ""),
+    }
+}
+
+/// A package that did not import on a development Runtime that missed the package's own floor:
+/// that is why, and a traceback adds nothing a person can act on, so only the machine's log keeps it.
+fn floor_missed(refusal: &Refused, held: &HeldGeneration) -> Option<Refused> {
+    let (said, traceback) = import_lines(refusal);
+    let floors = &held.record.floors_missed;
+    if floors.is_empty() || traceback.is_empty() {
+        return None;
+    }
+    tracing::warn!("{said}\n{traceback}");
+    Some(Refused {
+        code: refusal.code.clone(),
+        detail: format!(
+            "{said}. {} {} needs {}, and this machine's development Runtime {} misses it: `cozy machine update <machine> {}`",
+            held.record.package, held.record.version, floors.join(" and "), held.record.runtime_build,
+            crate::published::environment::update_flags(floors),
+        ),
+    })
+}
+
+/// An import failure's bundle: its traceback, which travels as the run's detail.
+fn keep_import_triage(engine: &Engine, id: &str, code: &str, reason: &str, traceback: &str) {
+    let Ok(record) = engine.get(id) else {
+        return;
+    };
+    let request = record.submission.as_ref().map_or_else(|| id.to_string(), |s| s.request_id.clone());
+    engine.record_triage(id, &crate::triage::Facts {
+        request_id: &request,
+        attempt: record.attempt,
+        terminal: "failed",
+        origin: "runtime",
+        code,
+        message: reason,
+        traceback,
+        executor_pid: record.process.as_ref().map_or(0, |birth| birth.pid),
+        stderr_tail: "",
+        fault: "",
+    });
+}
+
 /// A lifecycle failure's bundle, when the executor wrote no terminal of its own: the reason
 /// and the end of its stderr. A canceled run keeps none.
 fn keep_lifecycle_triage(engine: &Engine, id: &str, pid: u32, code: &str, reason: &str, stderr_tail: &str, fault: &str) {

@@ -19,9 +19,11 @@ use std::{
 use crate::process::Supervised;
 use crate::{origin::Machine, stop::Stop};
 
-/// The file in a selected pair naming its development Runtime build (`0.24.6+e9baf7a4`),
-/// which runs report: a named wheel file is not a published release.
-pub const RUNTIME_BUILD: &str = "runtime-build";
+/// The file in a selected pair naming its development Runtime build (`0.24.6+e9baf7a4`), which
+/// runs report: only a wheel a caller sent is one, and a package's bounds on the pair don't bind it.
+const RUNTIME_BUILD: &str = "development-runtime";
+/// That file as an older TensorD wrote it, for a numbered prerelease it fetched too.
+const OLDER_RUNTIME_BUILD: &str = "runtime-build";
 
 /// The service's exit status asking its parent to start the service again on the selected pair.
 pub const REPLACE_EXIT: i32 = 75;
@@ -169,6 +171,9 @@ pub struct Request {
     /// Install the build toolchain (`super::toolchain`) instead of a software pair.
     #[serde(default)]
     pub toolchain: bool,
+    /// What its caller noted of the ask, for its outcome (`Status::notes`).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// An update waiting for the one in progress, with its status.
@@ -510,6 +515,7 @@ impl Updates {
                 gpu_memory_limit: None,
                 binary: None,
                 toolchain: true,
+                notes: vec![],
             };
             // One already answered (installed, failed or queued) asks nothing.
             let _ = self.request(fetch, true, |code| std::process::exit(code));
@@ -782,6 +788,7 @@ impl Updates {
             from: this_binary(identified(&self.paths.sdk()).map_err(server)?),
             pinned: request.pin.unwrap_or(false),
             history,
+            notes: request.notes.clone(),
             ..Status::default()
         };
         status.enter("waiting");
@@ -964,7 +971,7 @@ impl Updates {
             return match &request.cozy {
                 Some(named) if named != VERSION => Err(coded(
                     "binary_mismatch",
-                    format!("this machine runs cozy {VERSION} from its launch path, not {named}"),
+                    format!("this machine runs cozy {VERSION} from its launch path, not {named}: `cozy machine update <machine> --tensord {named}` fetches it"),
                 )),
                 _ => Ok(None),
             };
@@ -1112,7 +1119,9 @@ impl Updates {
             (None, Err(error), None) => return Err(error),
         };
         let runtime = stage(candidate, &runtime, "cozy_runtime")?;
-        if let Some(file) = request.runtime.as_ref().filter(|c| !c.file.is_empty()) {
+        // A file the caller sent is a development build; a numbered prerelease it named (`url`) is a
+        // release like any other, and a package's floor on it is met as ever.
+        if let Some(file) = request.runtime.as_ref().filter(|c| !c.file.is_empty() && c.url.is_empty()) {
             fs::write(candidate.join(RUNTIME_BUILD), build(&runtime, &file.sha256)?)?;
         }
         match tensorfs {
@@ -1125,7 +1134,7 @@ impl Updates {
                 let tensorfs = stage(candidate, &tensorfs, "tensorfs")?;
                 if let Err(reason) = self.compile(&[runtime, tensorfs])? {
                     let names: Vec<String> = wheels(candidate).into_iter().map(|(d, v, _)| format!("{d} {v}")).collect();
-                    return Err(invalid(&format!("{} do not install together: {reason}", names.join(" and "))));
+                    return Err(invalid(&format!("{} do not install together: {reason}; name ones that do with --runtime <version> and --tensorfs <version>", names.join(" and "))));
                 }
             }
         }
@@ -1318,6 +1327,25 @@ fn verify_wheel(path: &Path, distribution: &str) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The development Runtime of the selected pair in `wheels`; empty for a release. An older TensorD
+/// (the one an update moving TensorD and the pair together runs on) also marked a GitHub prerelease
+/// it fetched, so its mark counts only while the file a caller sent is still in `staged`.
+pub fn development_runtime(wheels: &Path, staged: &Path) -> String {
+    if let Ok(build) = fs::read_to_string(wheels.join(RUNTIME_BUILD)) {
+        return build;
+    }
+    let Ok(build) = fs::read_to_string(wheels.join(OLDER_RUNTIME_BUILD)) else {
+        return String::new();
+    };
+    let sent = existing_wheel(wheels, "cozy_runtime").ok().zip(identified(wheels).ok())
+        .is_some_and(|(wheel, pair)| wheel.file_name().is_some_and(|file| staged.join(pair.runtime_sha256).join(file).is_file()));
+    if sent {
+        return build;
+    }
+    tracing::info!("Runtime {build} was fetched, not sent: an older TensorD's mark, and no development build");
+    String::new()
 }
 
 /// A development Runtime wheel's version and build: the source commit it embeds, else its

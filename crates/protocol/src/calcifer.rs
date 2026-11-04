@@ -949,6 +949,8 @@ pub struct MachineStatus {
     pub disk_environments_bytes: u64,
     #[serde(default)]
     pub disk_runtime_bytes: u64,
+    #[serde(default)]
+    pub disk_runs_bytes: u64,
     /// This controller's queued, preparing or running runs there, as the machine says.
     #[serde(default)]
     pub runs: Vec<LiveRun>,

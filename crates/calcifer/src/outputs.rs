@@ -200,6 +200,26 @@ impl Calcifer {
         }
     }
 
+    /// Whether `machine` still has what stays on it, a byte of it read as `bring` reads it. Only its saying it holds that no more
+    /// is a no: one out of reach may have it yet.
+    pub(crate) async fn still_holds(&self, digest: &str, machine: &str) -> bool {
+        let Ok(Some((run, item))) = self.store.making(digest, machine) else { return false };
+        if run.machine.as_deref() == Some("local")
+            && let Some(machines) = self.machines()
+            && machines.local_up().await.is_err()
+        {
+            return true;
+        }
+        let link = match self.reach(&run, &mut None) {
+            Ok(link) => link,
+            Err(Failure::Lost(_)) => return false,
+            Err(_) => return true,
+        };
+        let Some(lane) = link.lane(0, false) else { return true };
+        let target = v1::OutputTarget { run: run.id.to_string(), output: item.name.clone(), index: item.index, member: String::new() };
+        !matches!(lane.get(&target, (0, 1), item.rev).await, Err(client::Error::Refused { status: 404, .. }))
+    }
+
     /// What stays on `machine` brought here now, because something needs it, as an export brings an output: its project's `files/`
     /// holds it after. A machine out of reach is tried again; Err says why it can't be had.
     pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {

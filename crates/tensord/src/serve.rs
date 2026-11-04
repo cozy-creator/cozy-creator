@@ -219,7 +219,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         false => crate::published::layer::Torch::Own { engine: engine.clone(), wanted: Default::default() },
     };
     identity.torch = Some(torch.clone());
-    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch);
+    let sdk = crate::published::PackageSdk::selected(&paths.sdk(), &paths.update("staged"), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch);
     boot.at("updates");
     let running = {
         let engine = service.engine.clone();

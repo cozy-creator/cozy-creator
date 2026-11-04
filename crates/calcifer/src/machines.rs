@@ -1693,6 +1693,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         disk_models_bytes: frame.disk.as_ref().map_or(0, |d| d.models_bytes),
         disk_environments_bytes: frame.disk.as_ref().map_or(0, |d| d.environments_bytes),
         disk_runtime_bytes: frame.disk.as_ref().map_or(0, |d| d.runtime_bytes),
+        disk_runs_bytes: frame.disk.as_ref().map_or(0, |d| d.runs_bytes),
         runs: vec![],
         models: frame
             .models

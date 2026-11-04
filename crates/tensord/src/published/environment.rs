@@ -47,6 +47,9 @@ pub(crate) struct Built {
     pub sdk: String,
     /// What the run is told of the pair (uv's findings, a development Runtime): empty for nothing.
     pub fallback: String,
+    /// The package's floors on the pair that a development Runtime missed and ran regardless.
+    #[serde(default)]
+    pub floors_missed: Vec<String>,
 }
 
 /// The pair's step: refused for a floor the pair misses, with what it misses.
@@ -179,7 +182,7 @@ impl Publisher {
                     if let Err(failure) = self.uv(&args, &[], job) {
                         // A floor only a GitHub prerelease meets: uv's index can't resolve the project.
                         let declared = declared_pair(project.dir);
-                        if failure.0 == super::CANCELED || declared.is_empty() {
+                        if failure.0 == super::CANCELED || failure.0 == super::UNREACHABLE || declared.is_empty() {
                             return Err(failure);
                         }
                         self.published_pair(env, &declared, &BTreeMap::new(), project.label, job)?;
@@ -213,7 +216,7 @@ impl Publisher {
             args.extend(own.iter().map(String::as_str));
             self.uv(&args, &[], job)?;
         }
-        let mut fallback = String::new();
+        let (mut fallback, mut floors_missed) = (String::new(), vec![]);
         let mut sdk = if own_sdk { "machine" } else { "locked" };
         if own_sdk {
             next();
@@ -223,7 +226,10 @@ impl Publisher {
                 None => installed(env),
             };
             fallback = match self.pair(env, &py, job) {
-                Ok(warning) => warning,
+                Ok((warning, missed)) => {
+                    floors_missed = missed;
+                    warning
+                }
                 Err(Pair::Failed(failure)) => return Err(failure),
                 Err(Pair::Floor(floors)) => {
                     sdk = "own";
@@ -246,7 +252,7 @@ impl Publisher {
                 return Err((TORCH_MISSED, missed.join(", ")));
             }
         }
-        Ok(Built { sdk: sdk.into(), fallback })
+        Ok(Built { sdk: sdk.into(), fallback, floors_missed })
     }
 
     /// This machine's own Runtime and TensorFS over the environment. Every other installed version
@@ -255,7 +261,7 @@ impl Publisher {
     /// pair that it misses (Fibo's `cozy-runtime>=0.30.16` for #1700's BatchNorm fix) is `Floor`
     /// (`own_pair`), never a run on a Runtime too old for it. What else uv's check finds that the pair adds (a
     /// ceiling a newer pair passes: version skew is allowed) is the run's warning.
-    fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<String, Pair> {
+    fn pair(&self, env: &Path, py: &str, job: &Job) -> Result<(String, Vec<String>), Pair> {
         let failed = Pair::Failed;
         let constraints = env.join("cozy-constraints.txt");
         let pins: String = installed(env).iter().filter(|(name, _)| !SDK.contains(&name.as_str()))
@@ -278,7 +284,8 @@ impl Publisher {
         let before = self.check(py, job).map_err(failed)?;
         let mut warnings = vec![];
         if let Err((code, detail)) = install(&["--constraints", &constraints]) {
-            if code == super::CANCELED {
+            // Unanswered says nothing of the pins: asked again, not installed without its dependencies.
+            if code == super::CANCELED || code == super::UNREACHABLE {
                 return Err(failed((code, detail)));
             }
             install(&["--no-deps"]).map_err(failed)?;
@@ -290,8 +297,16 @@ impl Publisher {
         let added: Vec<String> = self.check(py, job).map_err(failed)?.difference(&before).cloned().collect();
         // A development Runtime is its owner's choice: the package runs on it, warned below.
         let floors: Vec<String> = added.iter().filter_map(|line| floor(line)).map(String::from).collect();
-        if !floors.is_empty() && self.sdk.runtime_build.is_empty() {
-            return Err(Pair::Floor(floors));
+        // A pair that can't open a LoRA's view is a floor for every environment, LoRA or not:
+        // choosing per call would flip the environment back and forth.
+        let here = installed(env);
+        let views = super::VIEWS.iter().map(|(name, _, floor)| format!("{name}>={floor}"))
+            .filter(|view| Floor::parse(view).is_some_and(|floor| !here.get(&floor.name).is_some_and(|version| floor.meets(version))));
+        if self.sdk.runtime_build.is_empty() {
+            let wanted: Vec<String> = floors.iter().cloned().chain(views).collect();
+            if !wanted.is_empty() {
+                return Err(Pair::Floor(wanted));
+            }
         }
         if !added.is_empty() {
             warnings.push(format!("uv pip check: {}", added.join("; ")));
@@ -300,7 +315,7 @@ impl Publisher {
         if !warnings.is_empty() && !build.is_empty() {
             warnings.push(format!("this machine's development Runtime {build} (`--runtime <path>`) runs it regardless"));
         }
-        Ok(warnings.join("; "))
+        Ok((warnings.join("; "), floors))
     }
 
     /// A package needing a newer Runtime than this machine's: this environment alone takes it, and
@@ -324,7 +339,7 @@ impl Publisher {
         let before = self.check(py, job)?;
         let mut warnings = vec![];
         if let Err((code, detail)) = install(&["--constraints", constraints.to_str().unwrap_or_default()]) {
-            if code == super::CANCELED {
+            if code == super::CANCELED || code == super::UNREACHABLE {
                 return Err((code, detail));
             }
             install(&["--no-deps"])?;
@@ -333,7 +348,7 @@ impl Publisher {
         let found = self.check(py, job)?;
         let missed: Vec<&str> = found.iter().filter_map(|line| floor(line)).collect();
         if !missed.is_empty() {
-            return Err(("runtime_floor_unmet", format!("{label} needs {}, and {} doesn't meet it", missed.join(" and "), chosen.join(" and "))));
+            return Err(("runtime_floor_unmet", format!("{label} needs {}, and {} doesn't meet it: {}", missed.join(" and "), chosen.join(" and "), floor_remedy(label))));
         }
         let added: Vec<&String> = found.difference(&before).collect();
         if !added.is_empty() {
@@ -353,7 +368,7 @@ impl Publisher {
         let mut asked: Vec<String> = floors.to_vec();
         let mut chosen: BTreeMap<String, String> = BTreeMap::new();
         while let Some(requirement) = asked.pop() {
-            let invalid = || ("runtime_floor_unmet", format!("{label} needs {requirement}, which this machine can't read"));
+            let invalid = || ("runtime_floor_unmet", format!("{label} needs {requirement}, which this machine can't read: a newer cozy may, `cozy machine update <machine>`"));
             let floor = Floor::parse(&requirement).ok_or_else(invalid)?;
             if chosen.contains_key(&floor.name) {
                 continue;
@@ -363,6 +378,8 @@ impl Publisher {
             let input = format!("{}{bounds}\n", floor.name);
             let resolved = update::compile_sdk(&self.sdk.uv, &self.sdk.python, &input, &stop, false).map_err(io_failure)?;
             let prefix = format!("{}==", floor.name);
+            // A failed lookup says nothing of what the index holds.
+            let unread = resolved.as_ref().err().filter(|said| network(said)).cloned();
             let on_index = resolved.ok().and_then(|plan| plan.lines().find_map(|line| line.trim().strip_prefix(&prefix).map(str::to_owned)));
             let version = match on_index {
                 Some(version) => version,
@@ -371,11 +388,14 @@ impl Publisher {
                         Some(pin) => version == pin,
                         None => floor.meets(version),
                     };
+                    let index = if unread.is_some() { "uv's index can't be read now" } else { "uv's index doesn't have it" };
                     let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, &stop).map_err(|why| {
-                        ("runtime_floor_unread", format!("{label} needs {requirement}: uv's index doesn't have it, and its GitHub prereleases can't be read now ({why})"))
+                        let said = format!("{label} needs {requirement}: {index}, and a GitHub prerelease couldn't be fetched ({why})");
+                        (if why.kind() == io::ErrorKind::NotConnected { super::UNREACHABLE } else { "runtime_floor_unread" }, said)
                     })?;
-                    let (version, wheel) = found.ok_or_else(|| {
-                        ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't published: neither uv's index nor a GitHub prerelease has a version that meets it"))
+                    let (version, wheel) = found.ok_or_else(|| match &unread {
+                        Some(said) => (super::UNREACHABLE, format!("{label} needs {requirement}: no GitHub prerelease meets it, and uv's index can't be read now ({said})")),
+                        None => ("runtime_floor_unmet", format!("{label} needs {requirement}, which isn't published: neither uv's index nor a GitHub prerelease has a version that meets it: {}", floor_remedy(label))),
                     })?;
                     asked.extend(wheel_requires(&wheel).map_err(io_failure)?.into_iter().filter(|required| {
                         Floor::parse(required).is_some_and(|needed| !held.get(&needed.name).is_some_and(|version| needed.meets(version)))
@@ -419,7 +439,14 @@ impl Publisher {
         let step = args[..2.min(args.len())].join(" ");
         match ended.map_err(|e| ("package_installation_uv_failed", format!("uv: {e}")))? {
             Supervised::Exited(status) if status.success() => Ok(()),
-            Supervised::Exited(_) => Err(("package_installation_uv_failed", format!("uv {step}:\n{}", stderr_tail(&stderr)))),
+            Supervised::Exited(_) => {
+                let said = stderr_tail(&stderr);
+                Err(match (network(&said), full(&said)) {
+                    (true, _) => (super::UNREACHABLE, format!("uv {step}: {}", said.split_whitespace().collect::<Vec<_>>().join(" "))),
+                    (_, true) => ("machine_disk_full", format!("uv {step} ran out of disk{}", crate::reclaim::advice(self.store.root(), 0))),
+                    _ => ("package_installation_uv_failed", format!("uv {step}:\n{said}")),
+                })
+            }
             Supervised::Canceled => Err(canceled()),
         }
     }
@@ -450,34 +477,44 @@ impl Built {
         let runtime_build = if self.sdk == "machine" { runtime_build } else { "" };
         Ok(json!({"identity":identity,"package":distribution,"version":version,"application":application,
             "python":platform::paths::venv_python(env),"dependencies":dependencies,"interface":interface,"sdk":self.sdk,
-            "sdk_fallback":self.fallback,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees,"closures":closures}))
+            "sdk_fallback":self.fallback,"floors_missed":self.floors_missed,"runtime_build":runtime_build,"environment":environment,"source_digest":source_digest,"callees":callees,"closures":closures}))
     }
 }
 
 /// One question to the environment's own Runtime (`cozy-runtime machine-describe`), which reads
 /// sources and installed metadata without importing them.
-fn ask_runtime(python: &Path, request: &Value) -> Result<Value, Failure> {
+fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>) -> Result<Value, Failure> {
     // -S keeps authored .pth startup code out; only the venv's own site-packages are added.
     const BOOTSTRAP: &str = "import pathlib,runpy,sys;\
         root=pathlib.Path(sys.executable).absolute().parent.parent;\
         sys.path[:0]=[str(p) for p in (*(root/'lib').glob('python*/site-packages'),root/'Lib'/'site-packages') if p.is_dir()];\
         sys.argv=['cozy-runtime','machine-describe'];runpy.run_module('cozy_runtime.cli.main',run_name='__main__')";
     let failed = |why: String| ("package_prepare_description_failed", why);
-    let output = Command::new(python)
-        .args(["-I", "-S", "-c", BOOTSTRAP])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .and_then(|mut child| {
-            child.stdin.take().expect("piped").write_all(request.to_string().as_bytes())?;
-            child.wait_with_output()
-        })
-        .map_err(io_failure)?;
-    let reply: Value = serde_json::from_slice(&output.stdout).map_err(|e| failed(format!("the description failed: {e}")))?;
+    let mut command = Command::new(python);
+    command.args(["-I", "-S", "-c", BOOTSTRAP]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    platform::process::own_group(&mut command);
+    let mut child = command.spawn().map_err(io_failure)?;
+    // Its own exit says why, should it stop before reading the request.
+    let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
+    let mut stdout = child.stdout.take().expect("piped");
+    // Supervised, as uv is: a cancel ends it, so a description that does not end holds no install.
+    let (ended, read) = std::thread::scope(|scope| {
+        let drained = scope.spawn(move || {
+            let mut kept = Vec::new();
+            let _ = stdout.read_to_end(&mut kept);
+            kept
+        });
+        let ended = crate::process::supervise(&mut child, stop, &|_| ());
+        (ended, drained.join().unwrap_or_default())
+    });
+    let status = match ended.map_err(io_failure)? {
+        Supervised::Exited(status) => status,
+        Supervised::Canceled => return Err(canceled()),
+    };
+    let reply: Value = serde_json::from_slice(&read).map_err(|e| failed(format!("the description failed: {e}")))?;
     match reply["kind"].as_str() {
         Some("describe_failed") => Err(failed(format!("{}: {}", reply["code"].as_str().unwrap_or_default(), reply["detail"].as_str().unwrap_or_default()))),
-        Some(_) if output.status.success() => Ok(reply),
+        Some(_) if status.success() => Ok(reply),
         _ => Err(failed("the description did not complete".into())),
     }
 }
@@ -492,9 +529,9 @@ pub(crate) struct Described {
 /// The environment's root digest and the other Apps it holds (`packages`: their distributions'
 /// packages), described inside it, with the root's code closures when `closures` asks. A failed
 /// description fails the install: an environment never publishes with silently missing callees.
-pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>, closures: bool)
+pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMap<String, String>, closures: bool, stop: Option<&crate::stop::Stop>)
     -> Result<Described, Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures}))?;
+    let reply = ask_runtime(python, &json!({"kind": "describe_environment", "root": root, "packages": packages, "closures": closures}), stop)?;
     let callees = serde_json::from_value(reply["callees"].clone())
         .map_err(|e| ("package_prepare_description_failed", format!("the environment's callees: {e}")))?;
     Ok(Described { source_digest: reply["source_digest"].as_str().unwrap_or_default().to_string(), callees, closures: closures_of(&reply) })
@@ -502,8 +539,8 @@ pub(crate) fn describe_environment(python: &Path, root: &str, packages: &BTreeMa
 
 /// A live project's interface and code closures, read from its source directory by the
 /// environment's Runtime.
-pub(crate) fn describe_project(python: &Path, project: &Path) -> Result<(Value, BTreeMap<String, String>), Failure> {
-    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}))?;
+pub(crate) fn describe_project(python: &Path, project: &Path, stop: Option<&crate::stop::Stop>) -> Result<(Value, BTreeMap<String, String>), Failure> {
+    let reply = ask_runtime(python, &json!({"kind": "describe", "project": project, "environment_python": python}), stop)?;
     let interface = Some(reply["interface"].clone()).filter(Value::is_object)
         .ok_or(("package_prepare_description_failed", "the project's description holds no interface".into()))?;
     Ok((interface, closures_of(&reply)))
@@ -599,7 +636,10 @@ fn platform(failure: Failure, label: &str) -> Failure {
     match failure {
         (code, detail) if code == "package_installation_uv_failed" && OUTSIDE.iter().any(|s| detail.contains(s)) => (
             "release_platform_unsupported",
-            format!("{label} is not locked for this machine ({}/{}): {detail}", std::env::consts::OS, std::env::consts::ARCH),
+            format!("{label} is not locked for this machine ({}/{}): {detail}\n{}", std::env::consts::OS, std::env::consts::ARCH, match cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                true => format!("Its author adds this platform and locks again; another release may hold it: `cozy package info {}`", label.split(' ').next().unwrap_or(label)),
+                false => "`--on new` rents a Linux machine, or its author adds this platform and locks again".to_string(),
+            }),
         ),
         failure => failure,
     }
@@ -673,6 +713,36 @@ fn older(running: &str, wanted: &str) -> bool {
         }).collect()
     };
     parts(running) < parts(wanted)
+}
+
+/// Whether uv's words are about the network rather than what it was asked for: nothing about the
+/// package is settled, and asking again may be answered (`patiently`).
+fn network(said: &str) -> bool {
+    ["error sending request", "Request failed after", "operation timed out", "HTTP status server error"].iter().any(|word| said.contains(word))
+}
+
+/// Whether uv stopped because the disk filled.
+fn full(said: &str) -> bool {
+    said.contains("No space left on device")
+}
+
+/// `cozy machine update`'s flags for what `floors` asks of the pair (`cozy-runtime>=0.39.4`).
+pub(crate) fn update_flags(floors: &[String]) -> String {
+    let flag = |floor: &String| {
+        let parsed = Floor::parse(floor)?;
+        let lowest = parsed.bounds.split(',').find_map(|clause| [">=", "~=", "=="].iter().find_map(|op| clause.strip_prefix(op)))?;
+        Some(format!("--{} {lowest}", parsed.name.trim_start_matches("cozy-")))
+    };
+    floors.iter().filter_map(flag).collect::<Vec<_>>().join(" ")
+}
+
+/// What a person does about a floor nothing published meets.
+fn floor_remedy(label: &str) -> String {
+    let own = "or run it on a Runtime you built: `cozy machine update <machine> --runtime <path>`";
+    match label.split(' ').next().filter(|package| !package.starts_with("local/")) {
+        Some(package) => format!("an older release may not need it (`cozy package info {package}` lists them; `cozy run {package}@<release>`), {own}"),
+        None => format!("lower that bound in its pyproject.toml, {own}"),
+    }
 }
 
 /// An installer's stderr as a refusal quotes it: its last [`crate::triage::MAX_STDERR`] bytes

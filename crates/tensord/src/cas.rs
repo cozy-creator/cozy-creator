@@ -1,9 +1,10 @@
 //! TensorD's run objects (inputs, outputs, trees, products, local package sources), apart from
 //! the TensorFS store: `<root>/<aa>/<sha256>`, written to a temp file, hashed and renamed in,
-//! never changed after. An object's mtime is its last use. A hold (`holds/<id>.json`) keeps its
-//! roots until its owner releases it; a sweep removes unheld objects unused for its age.
+//! never changed after. An object's mtime is its last use, a read's too. A hold (`holds/<id>.json`)
+//! keeps its roots, a run's output, until they go unused (`evict_held`); a sweep removes unheld objects
+//! unused for its age.
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -122,15 +123,11 @@ impl Cas {
         self.put(bytes, None)
     }
 
-    /// `object` to read, its length checked.
+    /// `object` to read, its length checked. A read is a use.
     pub fn file(&self, object: &ObjectRef) -> io::Result<File> {
-        let file = File::open(self.path(object)?).map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", object.id())),
-            _ => error,
-        })?;
-        match file.metadata()?.len() == object.length {
-            true => Ok(file),
-            false => Err(io::Error::new(io::ErrorKind::InvalidData, format!("object {} has another length here", object.id()))),
+        match self.reuse(object)? {
+            true => File::open(self.path(object)?),
+            false => Err(io::Error::new(io::ErrorKind::NotFound, format!("object {} is absent", object.id()))),
         }
     }
 
@@ -175,6 +172,52 @@ impl Cas {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    /// Holds whose roots all went unused for `age`, and that `doomed` agrees to for each, least recently used first, until `room` bytes
+    /// are free: each goes with what only it kept. Counted, as a filesystem's free space lags a delete. The digests removed, with
+    /// their lengths.
+    pub fn evict_held(
+        &self,
+        age: Duration,
+        doomed: &mut dyn FnMut(&str) -> io::Result<bool>,
+        room: u64,
+    ) -> io::Result<Vec<(String, u64)>> {
+        let mut holds = vec![];
+        let mut named: BTreeMap<String, usize> = BTreeMap::new();
+        for entry in fs::read_dir(self.root.join("holds")).into_iter().flatten().flatten() {
+            let hold: Hold = serde_json::from_slice(&fs::read(entry.path())?).map_err(io::Error::other)?;
+            let used = hold.roots.iter().filter_map(|root| fs::metadata(self.path(root).ok()?).ok()?.modified().ok()).max();
+            hold.roots.iter().for_each(|root| *named.entry(root.sha256.clone()).or_default() += 1);
+            holds.push((used, entry.path(), hold));
+        }
+        holds.sort_by_key(|(used, ..)| *used);
+        let (mut removed, mut freed) = (vec![], 0);
+        for (_, path, hold) in holds {
+            if freed >= room {
+                break;
+            }
+            let _gate = GATE.write().unwrap();
+            let mut unused = true;
+            for root in &hold.roots {
+                let at = self.path(root)?;
+                unused = unused && (!at.exists() || old(&at, age)) && doomed(&root.sha256)?;
+            }
+            if !unused {
+                continue;
+            }
+            fs::remove_file(path)?;
+            for root in hold.roots {
+                let left = named.get_mut(&root.sha256).expect("counted above");
+                *left -= 1;
+                if *left == 0 && self.path(&root)?.exists() {
+                    fs::remove_file(self.path(&root)?)?;
+                    freed += root.length;
+                    removed.push((root.sha256, root.length));
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// Removes each unheld object unused for `age` that `doomed` agrees to, and temp files as

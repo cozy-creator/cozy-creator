@@ -388,6 +388,7 @@ components:
         environments_bytes: {type: integer, format: int64, minimum: 0}
         free_bytes: {type: integer, format: int64, minimum: 0}
         models_bytes: {type: integer, format: int64, minimum: 0}
+        runs_bytes: {type: integer, format: int64, minimum: 0}
         runtime_bytes: {type: integer, format: int64, minimum: 0}
         total_bytes: {type: integer, format: int64, minimum: 0}
     Envelope:

@@ -567,8 +567,9 @@ fn callees(project: &Path) -> Result<BTreeMap<String, String>, Error> {
 
 /// A script as the one-file package it is (xs-099): its PEP 723 block is its pyproject.toml
 /// (`dependencies` and `requires-python` are [project]'s, [tool] is [tool]), named for the file,
-/// whose module it is, with its `app`. The project is written under `~/.cozy/scripts`, one per
-/// script path, and from there it is read as any package directory is.
+/// its module `cozy_script_<name>`, so `copy.py` isn't Python's `copy`, with its `app`. The project is
+/// written under `~/.cozy/scripts`, one per script path, and from there it is read as any package
+/// directory is.
 fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
     let raw = fs::read(path).map_err(|e| refuse("script_unreadable", e))?;
     let mut block = pep723(&String::from_utf8_lossy(&raw))?;
@@ -586,12 +587,10 @@ fn script(home: &Home, path: &Path) -> Result<PathBuf, Error> {
             }
         })
         .collect();
-    let mut module: String = (stem.chars())
+    let module: String = (stem.chars())
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    if !module.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-        module.insert(0, '_');
-    }
+    let module = format!("cozy_script_{module}");
     let at = hex::encode(Sha256::digest(path.to_string_lossy().as_bytes()));
     let root = home
         .root()

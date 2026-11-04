@@ -171,31 +171,38 @@ def check(gate):
         hub, _ = hub_bytes(rows['download-again']['rec'])
         if hub:
             fails.append(f'tensorfs download-again: {hub / 2**20:.0f} MiB came from the Hub again: the store did not hold it')
-    if done('download-cut', cancelled=True) and done('download-resume'):
+    def resumed(cut, resume):
         # Judged against the model, not against what the resume fetched: it must find what the cut run
-        # landed (`local`) and fetch only the rest of the model's bytes.
-        cut = os.path.join(t, 'download-cut.cut')
-        moved = int(open(cut).read()) if os.path.exists(cut) else 0
-        rec = rows['download-resume']['rec']
+        # landed (`local`) and fetch only the rest of the model's bytes. Bytes arrived count in `moved` as they arrive
+        # (tfs-141), unfinished chunks too, and a chunk's kept bytes count in `local`, so this is every byte's fate.
+        path = os.path.join(t, cut + '.cut')
+        moved = int(open(path).read()) if os.path.exists(path) else 0
+        rec = rows[resume]['rec']
         hub, vol = hub_bytes(rec)
         found = landed_bytes(rec)
         local = sum(b.get('local') or 0 for b in found) if found and all('local' in b for b in found) else None
-        _, total = stage_progress(rows['download-resume']['evs'], 'downloading')
+        _, total = stage_progress(rows[resume]['evs'], 'downloading')
         fetched = (hub or 0) + (vol or 0)
         mib = lambda n: f'{(n or 0) / 2**20:.0f} MiB'
         if not moved:
-            fails.append('tensorfs download-resume: the first download was never cut part-way: nothing was resumed')
+            fails.append(f'tensorfs {resume}: the first download was never cut part-way: nothing was resumed')
         elif local is None or not total:
-            fails.append('tensorfs download-resume: its record carries no held (`local`) bytes or no total: not judged')
+            fails.append(f'tensorfs {resume}: its record carries no held (`local`) bytes or no total: not judged')
         elif local < 0.8 * min(moved, total) or fetched > total - local + 64 * 2**20:
-            fails.append(f'tensorfs download-resume: held {mib(local)} of {mib(total)} after {mib(moved)} had landed, '
+            fails.append(f'tensorfs {resume}: held {mib(local)} of {mib(total)} after {mib(moved)} had landed, '
                          f'then fetched {mib(fetched)}: it started over')
         elif vol or not hub:
-            fails.append(f'tensorfs download-resume: {mib(hub)} from the Hub, {mib(vol)} from the volume: the private '
+            fails.append(f'tensorfs {resume}: {mib(hub)} from the Hub, {mib(vol)} from the volume: the private '
                          f'fixture never reaches a volume, so the Hub path was not exercised')
         else:
-            notes.append(f'tensorfs download-resume: held {mib(local)} of {mib(total)} ({mib(moved)} had landed by the cut), '
+            notes.append(f'tensorfs {resume}: held {mib(local)} of {mib(total)} ({mib(moved)} had landed by the cut), '
                          f'fetched only the rest, {mib(hub)}, from the Hub')
+
+    if done('download-cut', cancelled=True) and done('download-resume'):
+        resumed('download-cut', 'download-resume')
+    # The same run goes on once TensorD is back: its own record is the resume.
+    if done('kill-cut'):
+        resumed('kill-cut', 'kill-cut')
     up = None
     if done('upload'):
         evs = rows['upload']['evs']
