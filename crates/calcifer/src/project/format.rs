@@ -935,7 +935,11 @@ impl Doc {
             .map(|read| {
                 let of = &self.assets[read.asset];
                 let files: Map<String, Value> = read.files.iter().map(|(name, sha256)| (name.clone(), file(sha256))).collect();
-                let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
+                // What an entity shows was made by what made the asset it links.
+                let links = of.links.as_ref();
+                let shows = links.and_then(|links| links.roles.get("image").or(links.roles.get("")).or(links.roles.values().next()));
+                let shown = shows.and_then(|asset| self.holds(asset)).unwrap_or(read.asset);
+                let made = stand[shown].version().or(read.newest).and_then(|number| lock.asset(&self.assets[shown].name)?.version(number));
                 let made_by = made.and_then(|made| made.made_by.as_ref()).map_or("", |by| by.with.as_str());
                 let record = json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by});
                 record
