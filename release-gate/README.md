@@ -119,6 +119,7 @@ Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, 
 runner with a second user as an added machine; `part` is `idle`, which ends with a page held open while the pod releases itself,
 or `release`, End through the door.
 `tool-functions` (cl-774) takes `qwen-image-2/generate_turbo`, `birefnet/remove_background`, `minimax-h3/generate_turbo` and `minimax-h3/upscale` from dropping the tool to accepting its output on one 4090, a shape like `lab`'s beside them, and a Caption, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`probes` (cl-775, cl-633) measures on one cpu pod whether an executor can read TensorD's memory (a benign check of a mapping's first four bytes), and WebRTC from the published HTTPS player in Chromium, Firefox and WebKit, which isn't Safari.
 `multi-machine` (xs-126) rents two pods with SSH and works in a shell on each (`cozy machine ssh`): a pod's `cozy` uses
 the image's TensorD as `local` beside the runner's runs, one pod controls the other by `authorize`/`add`, and the
 previous release and the session's cozy control each other (`-f params='{"old": "0.13.3"}'`). A session that rents
