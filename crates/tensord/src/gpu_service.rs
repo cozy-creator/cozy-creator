@@ -649,16 +649,11 @@ impl Zygote {
     fn fork(
         &self,
         config: ExecutorConfig,
-        canceled: &dyn Fn() -> bool,
         on_birth: impl FnOnce(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Forked> {
         let mut state = self.state.lock().unwrap();
-        // Package code runs in that import and may not end: its waiter's cancel still does.
         while matches!(*state, ZygoteState::Starting) {
-            if canceled() {
-                return Ok(Forked::Refused(Box::new(config), "its run was canceled".into()));
-            }
-            state = self.changed.wait_timeout(state, std::time::Duration::from_millis(250)).unwrap().0;
+            state = self.changed.wait(state).unwrap();
         }
         let ZygoteState::Ready(parent) = &mut *state else {
             return Ok(Forked::Refused(
@@ -2938,7 +2933,7 @@ impl Pool {
     /// Load `plan` on the lane from `start`, whose call slots the caller holds: into its
     /// environment's idle executor there, else a new one.
     fn prewarm(
-        self: &Arc<Self>,
+        &self,
         engine: &Arc<Engine>,
         held: &HeldGeneration,
         plan: Plan,
@@ -2973,7 +2968,7 @@ impl Pool {
             }
             None => {
                 let born = Mutex::new(vec![]);
-                let created = self.new_session(engine, held, &plan, start, &|| false, |birth, cancel| {
+                let created = self.new_session(engine, held, &plan, start, |birth, cancel| {
                     born.lock().unwrap().push(birth.clone());
                     serve(cancel);
                     Ok(())
@@ -3438,7 +3433,7 @@ impl Pool {
         Ok(path)
     }
     fn run(
-        self: &Arc<Self>,
+        &self,
         engine: &Arc<Engine>,
         id: &str,
         held: HeldGeneration,
@@ -3461,7 +3456,7 @@ impl Pool {
     /// there leaves the pool for the call (or one starts), and comes back once it served it.
     #[allow(clippy::too_many_arguments)]
     fn run_on(
-        self: &Arc<Self>,
+        &self,
         engine: &Arc<Engine>,
         id: &str,
         held: HeldGeneration,
@@ -3524,8 +3519,7 @@ impl Pool {
                     born.lock().unwrap().extend(executor_births(birth, &[]));
                     engine.register_managed(id, birth.clone(), stops(cancel.clone()))
                 };
-                let canceled = || engine.get(id).is_ok_and(|record| record.cancel_actor.is_some());
-                let created = self.new_session(engine, &held, &plan, start, &canceled, on_birth);
+                let created = self.new_session(engine, &held, &plan, start, on_birth);
                 let births = born.into_inner().unwrap();
                 *disposition = Disposition::Unknown(births.clone());
                 match created {
@@ -3608,12 +3602,11 @@ impl Pool {
     /// Launch an executor for `plan`'s environment (fork from its generation's import-only
     /// executor, else spawn) and open its selected metadata sources and CPU-buffer grants.
     fn new_session(
-        self: &Arc<Self>,
+        &self,
         engine: &Arc<Engine>,
         held: &HeldGeneration,
         plan: &Plan,
         start: usize,
-        canceled: &dyn Fn() -> bool,
         on_birth: impl Fn(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Session> {
         if plan.degree > 0 { self.make_room(engine, &plan.construction, start..start + plan.degree as usize, Some(vec![])); }
@@ -3631,12 +3624,9 @@ impl Pool {
                 break;
             };
             if start {
-                // On its own thread: an import that does not end holds no run past its cancel.
-                let (pool, parent, generation) = (self.clone(), zygote.clone(), held.clone());
-                std::thread::Builder::new().name("executor-import".into())
-                    .spawn(move || pool.start_parent(&parent, &generation))?;
+                self.start_parent(&zygote, held);
             }
-            match zygote.fork(config.take().expect("one config per launch"), canceled, &on_birth)? {
+            match zygote.fork(config.take().expect("one config per launch"), &on_birth)? {
                 Forked::Ready(executor) => {
                     forked = Some(*executor);
                     break;
