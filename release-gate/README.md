@@ -51,7 +51,7 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
    7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.
 4. Ends the rental and checks that it is gone.
 5. Runs `analyze.py`. Any GPU fault in the machine's log or kernel probe crash in its record fails the gate, whatever the
-   cells did. A cell passes when it completed, served the last PASS's kernels (with no fallback), produced
+   cells did. A cell passes when it completed, did not report `passed: false`, served the last PASS's kernels (with no fallback), produced
    a sane output, and kept execution / step 1 / steady s/step / VRAM within the last PASS's spread. VRAM is the
    driver's: TensorD reads each GPU's bytes in use (NVML) every 100 ms over a call into the record's `memory.driver`,
    and `runs.py` reads what the cell added at its fullest (caps judge everything in use). A GPU cell without it fails.

@@ -48,6 +48,7 @@ authority() {
   cap off
   vcell core "$V/core/core" seed:=$((R + 61)) --gpus=1
   vcell offload-adapter "$V/torch-offload/adapter" label="$NAME $R" --gpus=1
+  vcell offload-in-executor "$V/torch-offload/in_executor" label="$NAME $R" --gpus=1
   for mode in stock eager graphs; do
     i=$((i + 1))
     vcell "offload-$mode" "$V/torch-offload/sdxl" mode="$mode" seed:=$((R + 61 + i)) --gpus=1 \

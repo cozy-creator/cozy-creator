@@ -8,8 +8,7 @@ kernels, time and VRAM against the last pass.
   - host (`host-*`, a CPU rental): `host-cap` measured a cgroup cap below the RAM; each run kept its anonymous host
     high-water under the cap (its page/spill bytes are noted: a model that fits pages nothing);
   - every H3 cell produced its whole video;
-  - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it;
-  - `core` and `offload-*` report their own verdict. The fault cells are expect rows (faults.sh).
+  - no cell ends with varena backing that holds no page (resident - ready): a canceled prefetch's pages go back with it.
     check.py <gate dir> <SKU>     the same verdict alone"""
 import json, os, re, subprocess, sys
 
@@ -158,23 +157,11 @@ def unowned(recs):
     return fails, []
 
 
-def reports(recs):
-    fails, notes = [], []
-    for name, run in recs.items():
-        if name == 'core' or name.startswith('offload-'):
-            report = run.result or {}
-            if report.get('passed'):
-                notes.append(f'{name}: passed')
-            else:
-                fails.append(f'{name}: {str(report.get("detail"))[-400:]}')
-    return fails, notes
-
-
 def check(gate):
     recs, sku = gate['runs'], gate.get('sku', '')
     fails, notes = [], []
     for f, n in (bandwidth(recs, gate.setdefault('baseline', {})), caps(gate['out'], recs), host(recs), videos(recs),
-                 unowned(recs), reports(recs)):
+                 unowned(recs)):
         fails += f; notes += n
     parked = [c for k in json.load(open(os.path.join(HERE, '..', '..', 'known-failing.json')))
               if k['sku'] in (sku, '*') for c in k.get('cells', [])]

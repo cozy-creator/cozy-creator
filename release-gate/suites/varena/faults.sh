@@ -37,7 +37,7 @@ POD
     return
   fi
   while read -r row; do
-    expect "fault-$(jq -r .cell <<< "$row")" "$(jq -r 'if .result == "FAIL" then "FAIL" else "PASS" end' <<< "$row")" \
+    expect "fault-$(jq -r .cell <<< "$row")" "$(jq -r 'if .result == "FAIL" or (.problems | length) > 0 then "FAIL" else "PASS" end' <<< "$row")" \
       "$(jq -c '{result, problems, xids, seconds}' <<< "$row")"
   done < "$D/out/summary.txt"
 }
