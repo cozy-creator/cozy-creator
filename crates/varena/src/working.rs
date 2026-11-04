@@ -646,7 +646,7 @@ impl Device {
         if pool.is_some() || bytes <= LARGE {
             return None;
         }
-        if bytes <= SEGMENT {
+        if bytes < SEGMENT {
             Self::split_run(state, bytes, stream)?;
             return Self::take_class(state, bytes, requested, stream, None);
         }
