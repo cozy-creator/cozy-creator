@@ -143,6 +143,9 @@ pub struct SplitSelection {
     pub plan_generation: u64,
     pub phase: Option<String>,
     pub phase_weight_bytes: usize,
+    pub budget_bytes: usize,
+    pub capacity_bytes: usize,
+    pub live_bytes: usize,
 }
 #[derive(Clone, Debug)]
 pub struct SplitObservation {
@@ -284,22 +287,22 @@ fn fits(
         .sites
         .get(key)
         .ok_or(Error::Invalid("unknown split configuration"))?;
-    // A level not yet run is scaled as its measured siblings came out. Otherwise a declaration's
-    // excess keeps a coarser level from ever being tried, and a finer measured one sticks.
-    let mut scale: Option<(usize, usize)> = None;
-    for choice in &site.choices {
-        if let Some(sample) = site.samples.get(&choice.id).filter(|sample| sample.known) {
-            let measured = sample.peak;
-            if scale.is_none_or(|(m, d)| measured as u128 * d as u128 > m as u128 * choice.backing as u128) {
-                scale = Some((measured, choice.backing.max(1)));
-            }
-        }
-    }
-    let scaled = |bytes: usize| scale.map_or(bytes, |(m, d)| (bytes as u128 * m as u128 / d as u128) as usize);
+    // A level not yet run is scaled as its nearest measured sibling came out. Otherwise a
+    // declaration's excess keeps a coarser level from being tried, and a finer measured one sticks.
+    let measured: Vec<(usize, usize)> = site.choices.iter()
+        .filter_map(|choice| {
+            let sample = site.samples.get(&choice.id).filter(|sample| sample.known)?;
+            Some((choice.backing.max(1), sample.peak))
+        })
+        .collect();
     site.choices
         .iter()
         .map(|choice| {
             let sample = site.samples.get(&choice.id).filter(|sample| sample.known);
+            let nearest = measured.iter().min_by_key(|(declared, _)| declared.abs_diff(choice.backing));
+            let scaled = |bytes: usize| nearest.map_or(bytes, |(declared, peak)| {
+                (bytes as u128 * *peak as u128 / *declared as u128) as usize
+            });
             let classes = sample.map_or(&choice.classes, |sample| &sample.classes);
             let full = sample.map_or_else(|| scaled(choice.backing), |sample| sample.peak);
             let mut missing = classes.clone();
@@ -417,10 +420,14 @@ impl Menu {
     /// rest of the card. Following free memory instead runs at the finest level whenever weights
     /// fill the card, and makes millions of allocations.
     fn target(&self) -> usize {
-        let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        let cap = self.capacity.saturating_sub(weights).max(self.capacity / 5)
-            .min(self.capacity.saturating_sub(self.live));
+        let cap = self.budget();
         self.plans.iter().position(|plan| plan.full <= cap).unwrap_or(self.plans.len() - 1)
+    }
+
+    fn budget(&self) -> usize {
+        let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
+        self.capacity.saturating_sub(weights).max(self.capacity / 5)
+            .min(self.capacity.saturating_sub(self.live))
     }
 
     fn selection(&self, selected: &Fit, target: usize, stream: u64) -> SplitSelection {
@@ -441,6 +448,9 @@ impl Menu {
             plan_generation: selected.generation,
             phase: selected.phase.as_ref().map(|p| p.name.clone()),
             phase_weight_bytes: selected.phase.as_ref().map_or(0, |p| p.bytes),
+            budget_bytes: self.budget(),
+            capacity_bytes: self.capacity,
+            live_bytes: self.live,
         }
     }
 }
@@ -672,10 +682,10 @@ pub(super) fn refresh(state: &mut State) {
     let mut segments = BTreeSet::new();
     let mut classes = BTreeMap::<usize, usize>::new();
     for ptr in &active.allocations {
-        // Live only: a free still running on the GPU would make the sample depend on how far the
-        // host is ahead of it, and the same request would pick a different level next time.
+        // Live, as requested: a free still running on the GPU, or the larger block best-fit handed
+        // out, would tie the sample to what's free, and the same request would next pick differently.
         if let Some(block) = state.blocks.get(ptr).filter(|block| block.life == Life::Live) {
-            bytes += block.capacity;
+            bytes += block.requested;
             *classes.entry(block.capacity).or_default() += 1;
             segments.insert(block.segment);
         }

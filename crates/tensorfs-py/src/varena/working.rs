@@ -568,6 +568,9 @@ fn selection<'py>(
     row.set_item("plan_generation", selected.plan_generation)?;
     row.set_item("phase", &selected.phase)?;
     row.set_item("phase_weight_bytes", selected.phase_weight_bytes)?;
+    row.set_item("budget_bytes", selected.budget_bytes)?;
+    row.set_item("capacity_bytes", selected.capacity_bytes)?;
+    row.set_item("live_bytes", selected.live_bytes)?;
     Ok(row)
 }
 

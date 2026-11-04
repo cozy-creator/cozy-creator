@@ -398,10 +398,13 @@ def split_waits_and_caps():
 
 @case
 def split_sample_is_live():
-    """A split's measured peak counts live bytes only, so how far the host runs ahead of the GPU
-    can't change the level the next call picks (runs 28776 and 29081 chose differently)."""
+    """A split's measured peak is live bytes as requested, so neither how far the host runs ahead
+    of the GPU nor a larger block best-fit hands out changes the level the next call picks."""
     stream = torch.cuda.Stream()
     key = "core/sample-split"
+    with torch.cuda.stream(stream):
+        spare = torch.empty(20 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+        del spare  # Free on this stream, within twice the size asked for below.
     token = vt.phase_enter(0, "core/sample")
     selected = vt.split_select(0, key, [("only", [16 * MIB])], stream=stream.cuda_stream)
     opened = vt.split_begin(0, key, "only", stream=stream.cuda_stream, completion_owner=token,
