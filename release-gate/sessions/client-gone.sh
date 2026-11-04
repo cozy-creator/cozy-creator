@@ -285,8 +285,9 @@ YAML
   local t=0 lock='' asked=$SECONDS
   while [ $t -lt 150 ]; do
     lock=$(sh "cat /home/client/$TAG/project.lock")
+    t=$((SECONDS - asked))
     jq -e '(.assets.secondm.versions // []) != []' <<<"$lock" > /dev/null 2>&1 && break
-    t=$((SECONDS - asked)); sleep 3
+    sleep 3
   done
   echo "$lock" > "$OUT/m-$TAG.lock.json"
   sh 'cat /root/hosts.gone > /etc/hosts; kill $(cat /tmp/hole.pid)'
