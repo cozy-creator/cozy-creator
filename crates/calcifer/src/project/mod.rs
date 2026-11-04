@@ -1625,6 +1625,7 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
         if let Err(error) = host.ffmpeg().await {
             return warn!("measuring a project's files: {}", error.message);
         }
+        let dir = project.folder.dir.clone();
         let measuring = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock))
@@ -1632,6 +1633,8 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
         if let Ok(Err(error)) = measuring.await {
             warn!("measuring a project's files: {}", error.message);
         }
+        // What was read before this finished said nothing of how long a clip is.
+        crate::events::project_settled(&dir);
     });
 }
 
