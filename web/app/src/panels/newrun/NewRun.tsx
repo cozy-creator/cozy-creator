@@ -184,6 +184,13 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
             .map((file) => (
               <FileRow key={file.id} file={file} onRemove={() => files.remove(file.id)} />
             ))}
+          {[...labels.current]
+            .filter(([digest]) => !files.files.some((file) => file.digest === digest))
+            .map(([digest, label]) => (
+              <p className="muted" key={digest}>
+                <code>{label}</code> is a file it was given.
+              </p>
+            ))}
           <p className="muted">A field the function doesn't declare is dropped with a warning, shown on the run.</p>
         </>
       )}

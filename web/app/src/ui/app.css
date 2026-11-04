@@ -997,7 +997,7 @@ button:disabled {
   gap: 8px;
   margin: 8px 0;
 }
-.runform label {
+.runform .formrow {
   display: grid;
   grid-template-columns: 120px 1fr;
   gap: 8px;

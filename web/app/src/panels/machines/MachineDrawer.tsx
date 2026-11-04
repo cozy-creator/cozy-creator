@@ -154,7 +154,7 @@ export function MachineDrawer() {
           </Link>
         )}
       </div>
-      {ended && <p className="muted">It's gone: its Hub affirmed the pod destroyed. What it landed here stays.</p>}
+      {ended && <p className="muted">It's ended, and its Hub says nothing of it bills now. What landed here stays.</p>}
       {machine.state === "booting" && (
         <p className="muted">
           Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It goes on with this page closed, and bills once its machine is ready. End stops it.

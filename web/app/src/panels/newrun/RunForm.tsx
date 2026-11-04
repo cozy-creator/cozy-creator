@@ -57,13 +57,18 @@ function JsonField({ value, hint, onChange }: { value: unknown; hint: string; on
 function FileField({ field, asset, many, value, files, onChange }: { field: RequestField; asset: string; many: boolean; value: unknown; files: Files; onChange: (value: unknown) => void }) {
   const named = (many ? ((value as unknown[]) ?? []) : value ? [value] : []).filter(isFile) as string[]
   const [rows, setRows] = useState<number[]>([])
-  const shown = files.files.filter((file) => rows.includes(file.id) || (file.digest && named.includes(file.digest)))
+  const held = files.files.filter((file) => rows.includes(file.id) || (file.digest && named.includes(file.digest)))
+  // What Run again brought: named by the request, with no bytes moved here.
+  const brought = named.filter((digest) => !files.files.some((file) => file.digest === digest))
 
   const set = (digests: string[]) => onChange(many ? (digests.length ? digests : undefined) : digests[0])
 
   return (
     <div className="filefield">
-      {shown.map((file) => (
+      {brought.map((digest, at) => (
+        <FileRow key={digest} file={{ id: -at, name: "The file it was given", digest }} onRemove={() => set(named.filter((other) => other !== digest))} />
+      ))}
+      {held.map((file) => (
         <FileRow
           key={file.id}
           file={file}
@@ -74,15 +79,15 @@ function FileField({ field, asset, many, value, files, onChange }: { field: Requ
           }}
         />
       ))}
-      {(many || !shown.length) && (
+      {(many || !(held.length + brought.length)) && (
         <DropZone
           accept={acceptOf(field, asset)}
           multiple={many}
           onFiles={(chosen) => {
-            let held = named
+            let digests = named
             const ids = files.add(chosen, (sent) => {
-              held = [...held, sent.digest!]
-              set(many ? held : [sent.digest!])
+              digests = [...digests, sent.digest!]
+              set(many ? digests : [sent.digest!])
             })
             setRows((now) => [...now, ...ids])
           }}
@@ -180,15 +185,20 @@ export function RunForm({
 }) {
   return (
     <div className="runform">
-      {fields.map((field) => (
-        <label key={field.name} className={widgetOf(field.type).kind === "file" ? "asblock" : undefined}>
-          <span className="fname">
-            {field.name}
-            {(field.wire === undefined || field.wire === "required") && <i>*</i>}
-          </span>
-          <Control field={field} value={values[field.name]} files={files} target={target} onChange={(value) => onChange(field.name, value)} />
-        </label>
-      ))}
+      {fields.map((field) => {
+        const { kind } = widgetOf(field.type)
+        // A label activates the first button inside it, and a file's row has one that takes it out.
+        const Row = kind === "file" || kind === "tree" ? "div" : "label"
+        return (
+          <Row key={field.name} className="formrow">
+            <span className="fname">
+              {field.name}
+              {(field.wire === undefined || field.wire === "required") && <i>*</i>}
+            </span>
+            <Control field={field} value={values[field.name]} files={files} target={target} onChange={(value) => onChange(field.name, value)} />
+          </Row>
+        )
+      })}
     </div>
   )
 }

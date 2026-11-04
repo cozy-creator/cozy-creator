@@ -61,14 +61,7 @@ export function useFiles(start: Dropped[] = []) {
     setFiles((now) => now.filter((file) => file.id !== id))
   }
 
-  /** A file a request already names, by its hash: it needs no bytes. */
-  const known = (digest: string, name = "the same file as before"): Dropped => {
-    const row = { id: ++nextId, name, digest }
-    setFiles((now) => [...now, row])
-    return row
-  }
-
-  return { files, add, remove, known, moving: files.some((file) => !file.digest && !file.failed) }
+  return { files, add, remove, moving: files.some((file) => !file.digest && !file.failed) }
 }
 
 /** Somewhere to drop files, or click for a selector. */
