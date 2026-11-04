@@ -221,11 +221,17 @@ PY
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
+  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH (tfs_kill), with this computer's key, or a new one on
+  # a runner. An --only without it rents with no SSH.
+  SSH=
+  if [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; then
+    SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+  fi
   # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.
   RENT_BEGAN=$SECONDS
   for ((order = 1; order <= REORDERS; order++)); do
     : > rent.err
-    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
+    "$CLI" machine rent "$SKU" ${GPUS:+--gpus "$GPUS"} ${IMAGE:+--image-digest "$IMAGE"} ${SSH:+--ssh} --disk-gb "$DISK" -y >rent.out 2>rent.err & RP=$!
     until first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' rent.err | cut -d: -f1); [ -n "$first" ] || ! kill -0 "$RP" 2>/dev/null; do
       sleep 2
     done

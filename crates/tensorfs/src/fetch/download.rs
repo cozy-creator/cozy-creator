@@ -23,9 +23,13 @@
 //!   left alone, for whoever asks, whatever the URL or front end, while its requests add up: to
 //!   0.3-1 MB/s at 32 at once, no more at 256 (tfs-141). So an object whose requests are answered
 //!   and dropped twice running having moved under a part is read as parts: ranges of `PART_BYTES`,
-//!   `PARTS` at once, each judged only by its silence. They go into the store in order; those ahead wait in
-//!   memory. At most `PARTED` objects at a time: the rest stay as they are until one lands. An
-//!   object with under two parts to go stays one request: parts could gain it nothing.
+//!   `PARTS` at once, each judged only by its silence. Each lands in a file of its own, as it arrives,
+//!   and joins the bytes in order once whole. At most `PARTED` objects at a time: the rest stay as they
+//!   are until one lands. An object with under two parts to go stays one request: parts could gain it
+//!   nothing.
+//! - **Cut or killed.** What landed stays in the store's `tmp/` ([`ObjectStore::resume`]), an object's
+//!   parts too, and the next fetch asks only for the rest. Only the object's digest lets those bytes in,
+//!   and they count once: as `local` in a pull's [`Landed`](super::Landed), and past them as progress.
 //! - **Ending.** An object ends on an answer asking again cannot change (absent, refused after
 //!   a fresh location, the same wrong bytes twice), on a dead peer, or when the origin has only
 //!   answered "not now" while nothing in the whole fetch landed, for [`ask`]'s stall rule; the
@@ -34,9 +38,9 @@
 //!   grows by 1.2×, up to what the descriptor table holds (tfs-122); a full table halves them.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::future::Future;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -81,8 +85,6 @@ const MAX_DOUBLINGS: u32 = 6;
 const PART_BYTES: u64 = 1 << 20;
 /// Parts of one object at once: 8 moved 273 KB/s, 16 about 534, 32 about 750, 64 to 256 no more.
 const PARTS: usize = 32;
-/// How far past its first unfinished part an object's parts may be, in parts: what memory holds.
-const PARTS_AHEAD: u64 = 48;
 /// Objects read as parts at once, which bounds their sockets and memory.
 const PARTED: usize = 4;
 /// Requests in a row answered and dropped, each having moved under a part, before an object is
@@ -119,6 +121,8 @@ pub(crate) struct Task {
     started: AtomicBool,
     /// The most bytes any of its requests reached: only bytes past it are progress.
     reached: AtomicU64,
+    /// Those an earlier fetch had left, which this one did not fetch.
+    kept: AtomicU64,
     /// Where it is (`Phase`), and when it last moved: its phase changed or its bytes grew (Unix ms).
     phase: AtomicU8,
     moved_ms: AtomicU64,
@@ -129,6 +133,10 @@ impl Task {
     /// The most bytes its requests reached, and every part's.
     pub(crate) fn received(&self) -> u64 {
         self.reached.load(Ordering::Acquire).min(self.object.length)
+    }
+
+    pub(crate) fn kept(&self) -> u64 {
+        self.kept.load(Ordering::Acquire)
     }
 
     fn enter(&self, phase: Phase) {
@@ -542,23 +550,54 @@ struct Sink<'s> {
 }
 
 impl<'s> Sink<'s> {
-    fn open(shared: &'s Shared, task: &'s Task) -> Result<Sink<'s>> {
-        let admission = Some(shared.store.admit(&task.object)?);
+    /// The object's door, with whatever an earlier fetch left: taking that up hashes it, off the runtime.
+    async fn open(shared: &'s Shared, task: &'s Task) -> Result<Sink<'s>> {
+        let _writing = shared.writes.acquire().await;
+        let (store, object) = (Arc::clone(&shared.store), task.object.clone());
+        let admission = tokio::task::spawn_blocking(move || store.resume(&object))
+            .await
+            .map_err(|error| Refusal {
+                code: Code::IO_FAILED,
+                detail: error.to_string(),
+            })??;
+        let (reached, ahead) = admission.held();
+        if reached + ahead > 0 {
+            tracing::info!(object = %task.object.sha256, reached, ahead, "an earlier fetch's bytes taken up");
+        }
+        task.kept.store(reached + ahead, Ordering::Release);
+        task.reached.fetch_max(reached + ahead, Ordering::AcqRel);
         Ok(Sink {
             shared,
             task,
-            admission,
+            admission: Some(admission),
             buffer: Vec::with_capacity(WRITE_BYTES),
-            reached: 0,
+            reached,
         })
     }
 
-    /// Start the object over.
+    /// Start the object over, nothing kept.
     fn fresh(&mut self) -> Result<()> {
-        self.admission = Some(self.shared.store.admit(&self.task.object)?);
+        if let Some(admission) = self.admission.take() {
+            admission.discard();
+        }
+        self.admission = Some(self.shared.store.resume(&self.task.object)?);
+        self.task.kept.store(0, Ordering::Release);
         self.buffer.clear();
         self.reached = 0;
         Ok(())
+    }
+
+    /// Whether parts have somewhere to land.
+    fn keeps(&self) -> bool {
+        self.admission.as_ref().is_some_and(|admission| admission.keeps())
+    }
+
+    /// The file for the range at byte `at`, and what it holds.
+    fn range(&mut self, at: u64) -> Result<Option<(std::fs::File, u64)>> {
+        match &mut self.admission {
+            Some(admission) => admission.range(at),
+            None => refuse(Code::IO_FAILED, "the admission is gone"),
+        }
     }
 
     async fn push(&mut self, flight: &Flight, data: &[u8]) -> Result<()> {
@@ -581,13 +620,24 @@ impl<'s> Sink<'s> {
         Ok(())
     }
 
-    /// The next bytes, from parts whose arrival has counted already.
-    async fn deliver(&mut self, bytes: &[u8]) -> Result<()> {
-        self.buffer.extend_from_slice(bytes);
-        self.reached += bytes.len() as u64;
-        if self.buffer.len() >= WRITE_BYTES {
-            self.flush(None).await?;
-        }
+    /// The whole range at the byte reached, whose arrival has counted already, joins the bytes in order.
+    async fn take(&mut self) -> Result<()> {
+        self.flush(None).await?;
+        let Some(mut admission) = self.admission.take() else {
+            return refuse(Code::IO_FAILED, "the admission is gone");
+        };
+        let _writing = self.shared.writes.acquire().await;
+        let taken = tokio::task::spawn_blocking(move || {
+            let taken = admission.take();
+            (admission, taken)
+        })
+        .await;
+        let (admission, taken) = taken.map_err(|error| Refusal {
+            code: Code::IO_FAILED,
+            detail: error.to_string(),
+        })?;
+        self.admission = Some(admission);
+        self.reached = taken?;
         Ok(())
     }
 
@@ -639,11 +689,36 @@ impl<'s> Sink<'s> {
     }
 }
 
-/// One range of an object, gathered in memory.
+/// One range of an object, landing in its own file.
 struct Part {
     reached: u64,
     end: u64,
-    bytes: Vec<u8>,
+    file: Option<std::fs::File>,
+}
+
+impl Part {
+    /// `data` onto the file, as it arrives: a kill costs nothing that landed.
+    async fn write(&mut self, shared: &Shared, flight: &Flight, data: &[u8]) -> Result<()> {
+        let Some(mut file) = self.file.take() else {
+            return refuse(Code::IO_FAILED, "the part's file is gone");
+        };
+        let data = data.to_vec();
+        flight.local.store(true, Ordering::Release);
+        let _writing = shared.writes.acquire().await;
+        let written = tokio::task::spawn_blocking(move || {
+            let written = file.write_all(&data);
+            (file, written)
+        })
+        .await;
+        flight.moved();
+        flight.local.store(false, Ordering::Release);
+        let (file, written) = written.map_err(|error| Refusal {
+            code: Code::IO_FAILED,
+            detail: error.to_string(),
+        })?;
+        self.file = Some(file);
+        written.map_err(|error| crate::store::fail("write", format!("a part at {}", self.reached))(error).refusal())
+    }
 }
 
 /// Where a request's body goes: the object, in order, or one of its parts.
@@ -678,7 +753,7 @@ impl Target<'_, '_> {
                         format!("{}: the origin sent more than the range asked", task.object.sha256),
                     );
                 }
-                part.bytes.extend_from_slice(data);
+                part.write(shared, flight, data).await?;
                 part.reached += data.len() as u64;
                 shared.gained(task, data.len() as u64);
                 Ok(())
@@ -800,6 +875,7 @@ impl Shared {
                     waiters: AtomicUsize::new(1),
                     started: AtomicBool::new(false),
                     reached: AtomicU64::new(0),
+                    kept: AtomicU64::new(0),
                     phase: AtomicU8::new(Phase::Queued as u8),
                     moved_ms: AtomicU64::new(unix_ms()),
                     done: watch::channel(None).0,
@@ -942,13 +1018,24 @@ impl Shared {
         if self.store.has(&task.object) {
             return Ok(Tier::Local);
         }
+        let mut sink = Sink::open(self, task).await?;
+        let fetched = self.through_tiers(task, &mut sink).await;
+        if fetched.is_err() {
+            // What arrived and was waiting for a write is kept with the rest.
+            let _ = sink.flush(None).await;
+        }
+        fetched
+    }
+
+    /// `sink`'s object from the volume, else the origin, from the byte it holds.
+    async fn through_tiers(self: &Arc<Self>, task: &Arc<Task>, sink: &mut Sink<'_>) -> Result<Tier> {
         let mut replace = false;
         if let Some(volume) = self.volume.clone().filter(VolumeOrigin::answering) {
             let _reading = self.volume_reads.acquire().await;
             if volume.answering() {
                 task.enter(Phase::Volume);
                 match self
-                    .read_file(task, &volume, volume.blob(&task.object), 0)
+                    .read_file_into(task, sink, volume.blob(&task.object), 0, Some(&volume))
                     .await
                 {
                     FileRead::Admitted => {
@@ -958,14 +1045,17 @@ impl Shared {
                     }
                     FileRead::Corrupt(refusal) => {
                         tracing::info!(object = %task.object.sha256, %refusal, "volume copy refused");
-                        replace = true;
+                        // Bytes kept from an earlier fetch are as suspect as the copy: only a whole
+                        // read of the volume blames it.
+                        replace = task.kept() == 0;
+                        sink.fresh()?;
                     }
                     FileRead::Absent | FileRead::Stuck(_) => {}
                     FileRead::Failed(refusal) => return Err(refusal),
                 }
             }
         }
-        self.from_origin(task).await?;
+        self.from_origin(task, sink).await?;
         if task.origin.public() {
             self.write_back(task.object.clone(), replace);
         }
@@ -973,14 +1063,16 @@ impl Shared {
     }
 
     /// The origin's copy, asked again from the byte reached until it lands or ends.
-    async fn from_origin(self: &Arc<Self>, task: &Arc<Task>) -> Result<()> {
-        let mut sink = Sink::open(self, task)?;
+    async fn from_origin(self: &Arc<Self>, task: &Arc<Task>, sink: &mut Sink<'_>) -> Result<()> {
         let (mut location, mut delivery, mut relocated) = (None::<Location>, None::<Delivery>, false);
         let (mut doublings, mut wrong) = (0, None::<String>);
         let mut retry = Retry::new(self.tick, self.stats.landed.load(Ordering::Relaxed));
-        // Dropped requests in a row that moved under a part; its place among the parted objects;
-        // whether this origin redirects: a part learns no redirect, so one request asks it anew.
-        let (mut slow, mut ranges, mut parted, mut redirects) = (0, true, None, false);
+        // Dropped requests in a row that moved under a part; whether the origin takes ranges (a
+        // store that keeps none has nowhere for parts); its place among the parted objects; whether
+        // this origin redirects: a part learns no redirect, so one request asks it anew. An object
+        // that left parts behind was being read as parts, so it goes on so.
+        let left_parts = task.kept() > sink.reached;
+        let (mut slow, mut ranges, mut parted, mut redirects) = (if left_parts { SLOW_ASKS } else { 0 }, sink.keeps(), None, false);
         loop {
             if self.unwanted(task) {
                 return refuse(Code::TRANSFER_FAILED, "nothing wants it");
@@ -1019,12 +1111,17 @@ impl Shared {
             let from = sink.reached;
             let attempt = match &here {
                 Location::File(path) => match self
-                    .read_file_into(task, &mut sink, path.clone(), doublings, None)
+                    .read_file_into(task, sink, path.clone(), doublings, None)
                     .await
                 {
                     FileRead::Admitted => return Ok(()),
                     FileRead::Absent => {
                         return refuse(Code::REF_NOT_FOUND, format!("{}: absent", path.display()))
+                    }
+                    // Bytes kept from an earlier fetch are as suspect as the file: read it whole.
+                    FileRead::Corrupt(refusal) if task.kept() > 0 => {
+                        sink.fresh()?;
+                        Attempt::Again { why: refusal.to_string(), wait: None, dropped: false, heard: true, dripped: false }
                     }
                     FileRead::Corrupt(refusal) => Attempt::Fatal(refusal),
                     FileRead::Stuck(why) => Attempt::Again {
@@ -1054,9 +1151,9 @@ impl Shared {
                         }
                     }
                     match parted.is_some() && (delivered || !redirects) {
-                        true => self.parts(task, &mut sink, &asked, &headers, provider, delivered).await,
+                        true => self.parts(task, sink, &asked, &headers, provider, delivered).await,
                         false => {
-                            self.request(task, Target::Sink(&mut sink), &asked, &headers, provider, doublings, delivered, &mut delivery)
+                            self.request(task, Target::Sink(sink), &asked, &headers, provider, doublings, delivered, &mut delivery)
                                 .await
                         }
                     }
@@ -1114,8 +1211,10 @@ impl Shared {
         }
     }
 
-    /// What `sink` lacks, as ranged parts: `PARTS` at once, into the sink in order. Any answer a
-    /// part cannot take itself ends them all, for the caller to act on.
+    /// What `sink` lacks, as ranged parts: `PARTS` at once, each landing in a file of its own, joining
+    /// the sink in order once whole; those an earlier fetch left count as they stand. A part whose file
+    /// went (a disk short of space drops them) is seen when nothing else is left, and asked again. Any
+    /// answer a part cannot take itself ends them all, for the caller to act on.
     async fn parts(
         &self,
         task: &Arc<Task>,
@@ -1125,30 +1224,52 @@ impl Shared {
         provider: Option<&dyn TokenProvider>,
         delivered: bool,
     ) -> Attempt {
+        // On disk first: a resume finds parts where they follow what it holds.
+        if let Err(refusal) = sink.flush(None).await {
+            return refusal.into();
+        }
         let length = task.object.length;
         let began = Instant::now();
         let (mut next, from) = (sink.reached, sink.reached);
-        let mut ahead = BTreeMap::<u64, Vec<u8>>::new();
+        let mut whole = BTreeSet::<u64>::new();
         let mut flying = FuturesUnordered::new();
         loop {
-            while flying.len() < PARTS && next < length && next < sink.reached + PARTS_AHEAD * PART_BYTES {
-                let end = (next + PART_BYTES).min(length);
-                flying.push(self.part(task, url, headers, provider, delivered, next, end));
+            while flying.len() < PARTS && next < length {
+                let end = ((next / PART_BYTES + 1) * PART_BYTES).min(length);
+                let (file, held) = match sink.range(next) {
+                    Ok(Some(range)) => range,
+                    Ok(None) => return Attempt::NoRanges,
+                    Err(refusal) => return refusal.into(),
+                };
+                if next + held >= end {
+                    whole.insert(next);
+                } else {
+                    flying.push(self.part(task, url, headers, provider, delivered, next, end, file, held));
+                }
                 next = end;
             }
-            let Some((at, got)) = flying.next().await else {
+            while whole.remove(&sink.reached) {
+                if let Err(refusal) = sink.take().await {
+                    return refusal.into();
+                }
+            }
+            if sink.reached >= length {
                 break;
-            };
-            match got {
-                Ok(bytes) => {
-                    ahead.insert(at, bytes);
-                    while let Some(bytes) = ahead.remove(&sink.reached) {
-                        if let Err(refusal) = sink.deliver(&bytes).await {
-                            return refusal.into();
-                        }
+            }
+            match flying.next().await {
+                Some((at, Ok(()))) => {
+                    whole.insert(at);
+                }
+                Some((_, Err(attempt))) => return attempt,
+                None => {
+                    return Attempt::Again {
+                        why: format!("{}: a part went missing at {}", task.object.sha256, sink.reached),
+                        wait: None,
+                        dropped: false,
+                        heard: true,
+                        dripped: false,
                     }
                 }
-                Err(attempt) => return attempt,
             }
         }
         let seconds = began.elapsed().as_secs_f64();
@@ -1157,8 +1278,8 @@ impl Shared {
         Attempt::Done
     }
 
-    /// One part, asked again from the byte reached until it is whole; its offset and its bytes,
-    /// or what it cannot deal with.
+    /// One part, asked again from the byte reached until it is whole; its offset, or what it cannot
+    /// deal with. `file` holds `held` bytes of it, which are not asked again.
     #[allow(clippy::too_many_arguments)]
     async fn part(
         &self,
@@ -1169,8 +1290,10 @@ impl Shared {
         delivered: bool,
         at: u64,
         end: u64,
-    ) -> (u64, std::result::Result<Vec<u8>, Attempt>) {
-        let mut part = Part { reached: at, end, bytes: Vec::with_capacity((end - at) as usize) };
+        file: std::fs::File,
+        held: u64,
+    ) -> (u64, std::result::Result<(), Attempt>) {
+        let mut part = Part { reached: at + held, end, file: Some(file) };
         let mut retry = Retry::new(self.tick, self.stats.landed.load(Ordering::Relaxed));
         let mut doublings = PART_DOUBLINGS;
         // A part never takes a new delivery: `Attempt::Stale` sends the object back to the origin.
@@ -1179,7 +1302,7 @@ impl Shared {
             let reached = part.reached;
             let attempt = self.request(task, Target::Part(&mut part), url, headers, provider, doublings, delivered, &mut redirected).await;
             let pause = match attempt {
-                Attempt::Done => return (at, Ok(part.bytes)),
+                Attempt::Done => return (at, Ok(())),
                 Attempt::Again { why, wait, dropped, heard, .. } => {
                     let moved = part.reached > reached;
                     if dropped {
@@ -1413,22 +1536,7 @@ impl Shared {
         }
     }
 
-    /// `object` from a volume, judged by its silence.
-    async fn read_file(
-        &self,
-        task: &Arc<Task>,
-        volume: &VolumeOrigin,
-        path: PathBuf,
-        doublings: u32,
-    ) -> FileRead {
-        let mut sink = match Sink::open(self, task) {
-            Ok(sink) => sink,
-            Err(refusal) => return FileRead::Failed(refusal),
-        };
-        self.read_file_into(task, &mut sink, path, doublings, Some(volume))
-            .await
-    }
-
+    /// `object` from a file, from the byte `sink` holds, judged by its silence.
     async fn read_file_into(
         &self,
         task: &Arc<Task>,
@@ -1439,21 +1547,17 @@ impl Shared {
     ) -> FileRead {
         let flying = self.fly(task, true, false, doublings);
         let flight = &flying.flight;
-        if sink.reached > 0 {
-            if let Err(refusal) = sink.fresh() {
-                return FileRead::Failed(refusal);
-            }
-        }
-        let length = task.object.length;
+        let (length, from) = (task.object.length, sink.reached);
         let opened = blocking(
             volume,
             move || -> std::io::Result<std::fs::File> {
-                let file = std::fs::File::open(&path)?;
+                let mut file = std::fs::File::open(&path)?;
                 let metadata = file.metadata()?;
-                match metadata.is_file() && metadata.len() == length {
-                    true => Ok(file),
-                    false => Err(std::io::ErrorKind::NotFound.into()),
+                if !metadata.is_file() || metadata.len() != length {
+                    return Err(std::io::ErrorKind::NotFound.into());
                 }
+                file.seek(SeekFrom::Start(from))?;
+                Ok(file)
             },
             flight.aborted(),
         )

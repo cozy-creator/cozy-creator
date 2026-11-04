@@ -325,8 +325,22 @@ impl Store {
         Ok(())
     }
 
-    /// Removes the temps of puts and commits that died before the grace. Directories under
-    /// `tmp/` belong to the layers that made them.
+    /// Removes what fetches that ended unfinished kept, those running aside. Their ranges hold no
+    /// lock: a fetch that finds one gone asks for it again.
+    pub(super) fn drop_partials(&self) -> Result<()> {
+        for entry in list(&self.root.join("tmp"))? {
+            let partial = entry.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("partial-"));
+            if partial {
+                if let Some(_held) = exclusive(&entry)? {
+                    let _ = fs::remove_file(&entry);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes the temps of puts and commits that died before the grace, and what fetches that
+    /// ended unfinished kept. Directories under `tmp/` belong to the layers that made them.
     fn sweep_tmp(&self, cutoff: SystemTime) -> Result<()> {
         for entry in list(&self.root.join("tmp"))? {
             let Ok(metadata) = fs::symlink_metadata(&entry) else {
