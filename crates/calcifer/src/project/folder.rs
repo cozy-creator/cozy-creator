@@ -78,9 +78,10 @@ pub struct File {
 }
 
 impl File {
-    /// What an operation is given of it: no path, since nothing of this computer goes.
+    /// What an operation is given of it: no path, since nothing of this computer goes. Not measured yet, its sizes are 0, and nothing says it's opaque.
     pub fn record(&self) -> Value {
-        serde_json::json!({"sha256": self.sha256, "width": self.width, "height": self.height, "fps": self.fps, "frames": self.frames, "alpha": self.alpha})
+        let alpha = if self.unmeasured() { 1.0 } else { self.alpha };
+        serde_json::json!({"sha256": self.sha256, "width": self.width, "height": self.height, "fps": self.fps, "frames": self.frames, "alpha": alpha})
     }
 
     fn extension(&self) -> String {
@@ -575,6 +576,14 @@ impl Folder {
         self.update_lock(|lock| {
             let held = lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
             (held.machine, held.length) = (machine.to_owned(), length);
+        })
+    }
+
+    /// An output on its way here, in the lock's table: the file `name` makes it, and the machine that holds it meanwhile.
+    pub fn coming(&self, sha256: &str, machine: &str, length: u64, name: &str) -> Result<(), Error> {
+        let file = File { path: file_of(sha256, Path::new(name)), sha256: sha256.to_owned(), machine: machine.to_owned(), length, ..Default::default() };
+        self.update_lock(|lock| {
+            lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
         })
     }
 
