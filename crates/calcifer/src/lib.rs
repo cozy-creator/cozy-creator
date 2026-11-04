@@ -1051,12 +1051,17 @@ impl Calcifer {
             };
             let frame = match next {
                 Some(Ok(frame)) => frame,
+                // A stream's end with its outcome unread is, to a client, a body that broke off.
+                Some(Err(LinkError::Unanswered(_))) if finished(&state_now) => {
+                    self.record_batch(id, &mut batch)?;
+                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
+                }
                 Some(Err(e)) => {
                     self.record_batch(id, &mut batch)?;
                     return Err(e.into());
                 }
                 // A run its machine calls over with no outcome sent is no stream held open to start another: it can't read that outcome.
-                None if matches!(state_now.as_str(), "succeeded" | "completed" | "failed" | "canceled") => {
+                None if finished(&state_now) => {
                     self.record_batch(id, &mut batch)?;
                     return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
                 }
@@ -1382,6 +1387,11 @@ fn unstarted(run: &RunRow) -> bool {
     run.state == State::Accepted
         && run.started_at_ms.is_none()
         && matches!(run.machine_state.as_deref(), None | Some("preparing" | "queued"))
+}
+
+/// Whether a machine's word for a run says it is over.
+fn finished(state: &str) -> bool {
+    matches!(state, "succeeded" | "completed" | "failed" | "canceled")
 }
 
 fn queued(run: &Run) -> bool {
