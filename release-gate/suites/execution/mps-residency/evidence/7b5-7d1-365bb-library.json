@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-25",
+  "workflow": {
+    "run": 40189558417,
+    "url": "https://github.com/cozy-creator/cozy-creator/actions/runs/40189558417",
+    "head": "e6712605420a3c43a8cf2eaf5709aa70f5118b95",
+    "conclusion": "success",
+    "job_scope": "Explicitly selected MPS library cohort; default product jobs unchanged"
+  },
+  "cohort": {
+    "scope": "Current libraries through historical Mac-capable CLI; not current CLI local shipping qualification",
+    "cli_source": "7b5f6d86ce5c23c9add24b816039489b637f64b3",
+    "runtime_source": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+    "tensorfs_source": "365bb9c9b831b8f39fecaeccf4bd4af07d275a30",
+    "tensorfs_run": 40188308767,
+    "packages_source": "a3755916454acff2e941644776f74c1e371766ca",
+    "artifacts": {
+      "cozy": {
+        "filename": "cozy",
+        "sha256": "fe181f031c2a564a69b70deda3de7e4f759f8ac19ee033b963fccfb028872799",
+        "bytes": 42363424
+      },
+      "tensorfs": {
+        "filename": "tensorfs-0.15.8-cp311-abi3-macosx_11_0_arm64.whl",
+        "sha256": "1e46c7188adb17662278589eee839126e1c5d63986228456b0b65e82c85218df",
+        "bytes": 8600577
+      },
+      "runtime": {
+        "filename": "cozy_runtime-0.32.3+dev.g7d1e7854-py3-none-any.whl",
+        "sha256": "177a1ba9a1e938ae4193162612ddf515d4a8e91e47a4b90fa97a73be2c127936",
+        "bytes": 2190587
+      }
+    },
+    "installed": {
+      "cozy": "0.11.17+dev.g7b5f6d86",
+      "runtime": "0.32.3+dev.g7d1e7854",
+      "runtime_sha256": "177a1ba9a1e938ae4193162612ddf515d4a8e91e47a4b90fa97a73be2c127936",
+      "tensorfs": "0.15.8",
+      "tensorfs_sha256": "1e46c7188adb17662278589eee839126e1c5d63986228456b0b65e82c85218df"
+    }
+  },
+  "hardware": {
+    "os": "15.7.9",
+    "cpu_memory": [
+      "Apple M1 (Virtual)",
+      "7516192768"
+    ],
+    "gpu": [
+      {
+        "index": 0,
+        "name": "Apple Paravirtual device",
+        "memory_bytes": 5010096128,
+        "driver": "macOS 15.7.9",
+        "family": "apple",
+        "memory_class": "unified"
+      }
+    ],
+    "torch": "2.14.1"
+  },
+  "mps_residency": {
+    "number": 4,
+    "status": "completed",
+    "execution_ms": 10089,
+    "detail": {
+      "alias_retained": true,
+      "allocated_after_alias_drop": 65792,
+      "allocated_before_trim": 69304576,
+      "allocated_with_alias": 69271808,
+      "cross_window_bytes": 67112960,
+      "device": "mps",
+      "mps_stats": {
+        "allocated": 69308672,
+        "allocator_scope": "process",
+        "host": null,
+        "measurement": "observed_current",
+        "moved": {
+          "store": {
+            "bytes": 67145728,
+            "ns": 976468416
+          }
+        },
+        "overlapping": true,
+        "phase_policy_supported": false,
+        "phases": [],
+        "request": "mps-load-209103",
+        "reserved": 1083195392,
+        "sets": {
+          "/sha256:a37fca120ff3357628d8dfa96f37d5a2d95c481eb0ce9c118cb057e7a6355ce7/empty": 0,
+          "/sha256:a37fca120ff3357628d8dfa96f37d5a2d95c481eb0ce9c118cb057e7a6355ce7/half": 32768,
+          "/sha256:a37fca120ff3357628d8dfa96f37d5a2d95c481eb0ce9c118cb057e7a6355ce7/wide": 67112960
+        },
+        "trace": [
+          {
+            "block": 0,
+            "bytes": 67112960,
+            "origin": "store",
+            "sequence": 0,
+            "set": "/sha256:a37fca120ff3357628d8dfa96f37d5a2d95c481eb0ce9c118cb057e7a6355ce7/wide",
+            "speculative": false
+          },
+          {
+            "block": 0,
+            "bytes": 32768,
+            "origin": "store",
+            "sequence": 1,
+            "set": "/sha256:a37fca120ff3357628d8dfa96f37d5a2d95c481eb0ce9c118cb057e7a6355ce7/half",
+            "speculative": false
+          }
+        ],
+        "trace_scope": "fills"
+      },
+      "refill_bytes": 67112960,
+      "runtime": "0.32.3+dev.g7d1e7854",
+      "seed": 209103,
+      "tensorfs": "0.15.8",
+      "torch": "2.14.1",
+      "typed_and_zero_parts": true,
+      "warm_read_bytes": 0
+    }
+  },
+  "birefnet": {
+    "number": 6,
+    "status": "completed",
+    "execution_ms": 30269,
+    "memory": {
+      "peak_allocated_bytes": 448878336,
+      "peak_reserved_bytes": 3575185408,
+      "stats": {
+        "varena": [
+          {
+            "ceiling": {
+              "disk_gbps": 2.6963370629509567,
+              "h2d_gbps": null
+            },
+            "gpu": -1,
+            "stats": {
+              "allocated": 448878336,
+              "allocator_scope": "process",
+              "host": null,
+              "measurement": "observed_current",
+              "moved": {
+                "store": {
+                  "bytes": 444386812,
+                  "ns": 5967537650
+                }
+              },
+              "overlapping": false,
+              "phase_policy_supported": false,
+              "phases": [],
+              "request": "4",
+              "reserved": 3575185408,
+              "sets": {
+                "local/birefnet@0.1.0/sha256:6d58c74eab25351aa47a3d2390a54201d37ab4f8f40f0b9eb28b0051d21ccba5/model": 444386812
+              },
+              "trace": [
+                {
+                  "block": 0,
+                  "bytes": 444386812,
+                  "origin": "store",
+                  "sequence": 0,
+                  "set": "local/birefnet@0.1.0/sha256:6d58c74eab25351aa47a3d2390a54201d37ab4f8f40f0b9eb28b0051d21ccba5/model",
+                  "speculative": false
+                }
+              ],
+              "trace_scope": "fills"
+            },
+            "torch_peak": null
+          }
+        ]
+      }
+    },
+    "software": {
+      "attempt_ordinal": 1,
+      "runtime": "0.32.3+dev.g7d1e7854",
+      "tensord": "0.11.17+dev.g7b5f6d86",
+      "tensord_commit": "7b5f6d86ce5c23c9add24b816039489b637f64b3",
+      "tensorfs": "0.15.8"
+    },
+    "image": {
+      "sha256": "4699bd9945760c6a64a5880cd4e0d839380e32dae110f76ab0ab8897558b4065",
+      "bytes": 87714,
+      "size": [
+        500,
+        500
+      ],
+      "white_pixel_fraction_at_240": 0.912896,
+      "visual_check": "Corgi retained on a white background; inspected actual delivered artifact"
+    }
+  },
+  "sdxl": {
+    "number": 8,
+    "status": "failed",
+    "reason": {
+      "code": "memory_exhausted",
+      "message": "_/sdxl@1.0.0 keeps 6.5 GiB of weights on the GPU, and apple holds 4.7 GiB: run it on a Mac with more memory, or --on new",
+      "origin": "runtime"
+    },
+    "execution_ms": 4963,
+    "output": [],
+    "acceptance": "Permitted capacity refusal; no completed12-step image inference"
+  },
+  "verification": {
+    "all_three_input_digests_match": true,
+    "installed_runtime_and_tensorfs_digests_match": true,
+    "runtime_pure_source": {
+      "source": "7d1e7854ca638c5d153c6601f2d2c2b169d0b133",
+      "wheel_sha256": "177a1ba9a1e938ae4193162612ddf515d4a8e91e47a4b90fa97a73be2c127936",
+      "source_files": 192,
+      "record_entries": 221,
+      "provenance": "\"\"\"Exact source revision embedded by release automation.\"\"\"\n\nCOMMIT = \"7d1e7854ca638c5d153c6601f2d2c2b169d0b133\"",
+      "pure_no_native_modules": true
+    },
+    "mac_tensorfs_cpu_import_and_measured_quantize": "Actual workflow step passed full package import/version/control/Writer/pin/encoded capability and zero-row-value ConvRot numeric result"
+  },
+  "limits": [
+    "Historical Mac-capable CLI7b5, not current Linux-only local admission/shipping policy.",
+    "MPS uses Torch storage and computation; no CUDA Varena, PreparedRepeat or Windows claim.",
+    "SDXL refused capacity; no full SDXL image or performance comparison.",
+    "No cross-process pressure/cancellation/multi-GPU or general release qualification."
+  ],
+  "retention": {
+    "inputs_artifact": "mps-library-inputs, id12598115331; allthree files downloaded to canonical.task/mps-library-40189558417/",
+    "proof_artifact": "e2e-mps, id12597970654; source receipts and delivered image preserved"
+  },
+  "raw_sha256": {
+    "library-cohort.json": "78ac866bc985b5655839a04cce29fe7a87554b8e1da89114bdd7fd487e2d782d",
+    "candidate-artifacts.json": "eb54bb13d2de163c09b5bd89cb47fb00c0168302f198c1f88c917aa822bb1a02",
+    "machine.json": "f83d1df16046e3ac112c76bd5e2f9bf9b9087dd0b30da96a266bc1301dd80b85",
+    "apple-hardware.txt": "6afea4a8cdc278cb5cc9cdf155481a6756a6c3f1237b8fec0c716f2a75bea370",
+    "macos-version.txt": "3e7f3aac6ec05838460f29272ec4647dbdf438a5b83be784975079531ab79eb1",
+    "update.json": "2d5c9fc2c501865aa7e42f737a9bf86a968b5120c70e664428c9bd776e63995c",
+    "update-tensord.json": "f78c9bf2a9fa3c68738fab888ea14ea69e06dfcc5f21d8e09074027ddf74a51c",
+    "mps-residency.json": "00f250194c947f1ce6de6452f8583c7786564c1f983b668b83abedac3123fe46",
+    "mps-residency.ndjson": "64e56bb341644ccea6f10245d354936da75cc03cbceccc559942614d191e1f6f",
+    "birefnet.json": "dfe56f2a7ab1d641a04d933939e9d46580487a99ee3e2c392f2215dbf05a5ca6",
+    "birefnet.ndjson": "6fa453817c1bcc39c431b4af79cfb09516f2bc9be4d2daf3eb08ce3f1aaa1759",
+    "sdxl.json": "05c4db42e8bff1cd340d35a7433bc409ff891d3da330e9bec965f29219068ff3",
+    "sdxl.ndjson": "1129c89c6eb1b15d568a9185db46b049b2df4a8a8ec4e36af2d8cc1ac031a2c7",
+    "sdxl.refused": "477b8a1b5fc3af861509550b3b795d6291861038d52b72936c47f8df718a4497",
+    "out/birefnet/6-image.webp": "4699bd9945760c6a64a5880cd4e0d839380e32dae110f76ab0ab8897558b4065",
+    "workflow-full.log": "ed840004aa208a94fd2078b3ecca907819d527adf49efd11dd9f3bb6215e7e98"
+  }
+}
