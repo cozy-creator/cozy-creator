@@ -275,6 +275,7 @@ function linesOf(text, name) {
   await knobs.locator('input[aria-label=megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
+  await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field(/turbo: (\S+)/), (value) => value === 'false');
   check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
