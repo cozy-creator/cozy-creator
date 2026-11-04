@@ -38,8 +38,10 @@ struct Access {
 // CUDAAPI is __stdcall on Windows and the C ABI elsewhere.
 type Init = unsafe extern "system" fn(c_uint) -> Status;
 type DeviceGet = unsafe extern "system" fn(*mut c_int, c_int) -> Status;
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct Uuid { bytes: [u8; 16] }
+#[cfg(target_os = "linux")]
 type DeviceUuid = unsafe extern "system" fn(*mut Uuid, c_int) -> Status;
 type Retain = unsafe extern "system" fn(*mut Context, c_int) -> Status;
 type Push = unsafe extern "system" fn(Context) -> Status;
