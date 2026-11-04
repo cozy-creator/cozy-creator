@@ -96,7 +96,12 @@ export function MentionText({
 
   const remember = useCallback(() => {
     const selection = document.getSelection()
-    if (selection?.rangeCount && box.current?.contains(selection.anchorNode)) caret.current = selection.getRangeAt(0).cloneRange()
+    const at = selection?.anchorNode
+    if (!selection?.rangeCount || !at || !box.current?.contains(at)) return
+    // A caret in a name is in no text: a click on one, or End with one last, and what's typed would go nowhere. It goes just after.
+    const name = selection.isCollapsed ? (at instanceof Element ? at : at.parentElement)?.closest("[data-mention]") : null
+    if (name?.parentNode) return selection.collapse(name.parentNode, [...name.parentNode.childNodes].indexOf(name) + 1)
+    caret.current = selection.getRangeAt(0).cloneRange()
   }, [])
 
   /** A chip where `at` says, or else at the end, with a space after it to go on typing. */
