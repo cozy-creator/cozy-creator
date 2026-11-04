@@ -123,6 +123,7 @@ orphans
 joining
 walking
 walk_restarted
+[ "$(uname)" != Linux ] || walk_window
 render_all_n
 queueing
 every_render
@@ -1222,6 +1223,33 @@ local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] |
 J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
 [ "$(cozy --json run ls --limit 0 | jq -c --arg r "$copy" '[.runs[] | select(.project == $r)] | length')" = 0 ] || check "restarted: a copy sent a run"
 [ ! -e "$R/.runs/walk.json" ] || check "restarted: .runs/walk.json outlived the render"
+}
+
+walk_window() {
+step "a project: Calcifer killed between a landing's two writes loses no take and runs nothing twice"
+local K=$OUT/window lockf=$HOME/.cozy/calcifer/calcifer.lock.holder pid watcher code=0
+mkdir -p "$K"
+cat > "$K/project.yaml" <<YAML
+version: 3
+assets:
+  held:
+    tool: $here/project/draw.py/draw
+    instructions: A picture held in the window.
+YAML
+status "$K" > /dev/null
+pid=$(jq -r .pid "$lockf")
+python3 -I "$here/project/window.py" lock "$K" "$pid" > "$OUT/window.txt" 2>&1 & watcher=$!
+sleep 0.5
+cozy project -p "$K" render held --queue --on local > "$OUT/window-render.txt" 2>&1 || check "window: render: $(tail -c 300 "$OUT/window-render.txt")"
+wait "$watcher" || code=$?
+[ "$code" = 0 ] || check "window: Calcifer was never stopped in the window: $(cat "$OUT/window.txt")"
+while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+cozy project ls > /dev/null || check "window: cozy doesn't answer after Calcifer was killed"
+ADDR=$(jq -r .address "$lockf") TOKEN=$(jq -r .token "$lockf")
+for _ in $(seq 120); do J '.busy | not' <<< "$(status "$K")" && break; sleep 0.5; done
+[ "$(made "$K" held)" = 1 ] || check "window: held has $(made "$K" held) versions"
+[ "$(cozy --json run ls --limit 0 | jq --arg r "$K" '[.runs[] | select(.project == $r and .target == "local/draw/draw")] | length')" = 1 ] || check "window: held ran more than once"
+[ -n "$(file_at "$K" "$(jq -r '.assets.held.versions[0].files.image' "$K/project.lock")")" ] || check "window: held's file isn't in files/"
 }
 
 render_all_n() {
