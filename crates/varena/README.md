@@ -1,7 +1,8 @@
 # Varena: one authority for a process's GPU memory
 
 Varena ships inside the TensorFS wheel and has no release of its own. It is an original
-implementation against the CUDA Driver API.
+implementation against the CUDA Driver API. Using it: [PUBLIC-API.md](PUBLIC-API.md) for C, Rust
+and Python, [TORCH-OFFLOAD.md](TORCH-OFFLOAD.md) for Diffusers.
 
 ## Who decides
 
@@ -32,9 +33,10 @@ what it is asked for (`CacheOwner`), and TensorD may end an idle process.
 8. owner caches
 9. peer processes (physical shortage only, one last retry on their final answer)
 
-`Wait::No` stops before any wait, `Local` before other parties, `Yes` runs it all under a bounded
-budget of last resort. Eviction rank: contentless, prefetched and unused, unplanned, later phases
-furthest first, then this phase's used regions most recent first, then its next use.
+`Wait::No` takes completed memory only, `Local` also waits for submitted GPU work, and `Yes` adds
+owners and peers under a 2 s budget of last resort. Eviction rank: contentless, prefetched and
+unused, unplanned, later phases furthest first, then this phase's used regions most recent first,
+then its next use.
 
 ## Completion
 
@@ -49,12 +51,15 @@ capture out; replay does not block reclaim, because pins and references protect 
 
 ## Working memory
 
-Small size classes are 512-byte aligned. Blocks up to 64 MiB are runs in shared 64 MiB segments, cut
-best-fit and merged when free. Larger blocks own their pages, since a VMM handle comes back only whole. Own-stream reuse does
-no driver work. A split (`split_select`, `split_begin`) caps each operation at
-`max(capacity - phase_bytes, capacity / 4)`, and at what live working bytes and the most weights
-held this request leave, whatever is free right now. A level's size is what it was measured asking
-for, or its nearest measured sibling's ratio, so the same request picks the same level.
+Up to 1 MiB, one-class slabs, every block 512 B aligned. Up to 64 MiB, runs in shared 64 MiB
+segments, cut best-fit and merged when free. Larger blocks own their pages, since a VMM handle
+comes back only whole. Own-stream reuse does no driver work.
+
+A split (`split_select`, `split_begin`) picks the first level that fits
+`min(max(C − W, C/4), C − live − pinned)`, whatever is free right now. `C` is the card or its cap,
+`W` the phase's weights, `live` the live working bytes and `pinned` the most weights held at once
+this request. A level's size is what it was measured asking for, or its nearest measured sibling's
+ratio at 125%, so the same request picks the same level.
 
 ## Graph pools
 
@@ -66,16 +71,37 @@ Idle declared pools are then unmapped, keeping their addresses and graphs. Undec
 
 ## Prefetch
 
-A prefetch is admitted when `free >= bytes + (last peak for this phase - current backing)`, mapped
-reusable pages covering the gap first. It takes only idle completed memory, and what it filled and
-nobody used is evicted first.
+A phase with a measure admits a prefetch when `free >= bytes + (last peak - what it already holds)`,
+mapped reusable pages covering the gap first. It takes only idle completed memory, and what it
+filled and nobody used is evicted first. A phase with no measure yet prefetches only into room
+already free beside the `C/4` floor, and evicts nothing.
+
+## Sharing a GPU
+
+Each process takes a row in the GPU's ledger (`crates/varena-ledger`, Linux): one page of atomics.
+An asker publishes `want`, each donor thread works out its own share and trims, and the asker
+retries the driver. Rows are advisory: a table that cannot open costs donations, never an
+allocation. Every participant donates in every mode.
+
+Shared mode also yields to foreign programs. A process holding idle bytes samples the card every
+500 ms: `free < H` asks for `2H - free`, where `H` is `max(total/16, 512 MiB)`, and a new foreign
+process crossing 256 MiB asks for everything. Prefetch stops until a pass boundary with `2H` free.
 
 ## Caps
 
 `vt.set_limit(device, bytes)` makes the card read as a smaller one, the driver's own charge
-included; `make_room(device, limit)` holds this process's own bytes to a limit for foreign pressure.
+included; `make_room(device, limit)` holds this process's own bytes to a limit.
+
+## One process
+
+Varena state and its CUDA objects belong to one host process. Threads are fine. A fork child is
+refused before inherited locks, including raw forks, through a read-only `MADV_WIPEONFORK` page
+armed before CUDA. A spawn helper sharing the parent's address space must exec or exit before
+calling varena; the default guard doesn't catch one that copies authenticated TLS. The
+`strict-pid-guard` Cargo feature checks the real PID on every call instead, and non-Linux targets
+and a failed page setup do too.
 
 ## Tests
 
 Real runs only: `release-gate/suites/varena/core` through `cozy run`, the model cells in
-`release-gate/suites/varena/cells.sh`. See also `process-contract.md` and `PUBLIC-API.md`.
+`release-gate/suites/varena/cells.sh`, and the deliberate faults in `faults.sh`.

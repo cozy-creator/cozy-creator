@@ -1,23 +1,15 @@
-# Public ABI mixed-binding proof
+# Public ABI across bindings
 
-[Contract and examples](../../../../crates/varena/PUBLIC-API.md).
-
-`prove-host.sh OUTPUT` builds actual C, C++, Rust and TensorFS clients into a new
-durable output directory. It never initializes CUDA. `mixed.py` defaults to this
-host boundary; `--gpu` is only for the coordinating GPU owner's ordinary Cozy lane.
-The C and Rust libraries load simultaneously with the actual TensorFS extension,
-and the proof runs native-first and Python-first in separate processes.
-
-GPU invocation after the owner builds the matching Torch shim:
+Proves C, Rust and Python load in one process, in either order, and share one core: one mapped `libvarena.so` and one error state per thread. With a GPU,
+C, Rust and Torch allocations also balance on one set of stats. [Contract](../../../../crates/varena/PUBLIC-API.md).
 
 ```sh
-python mixed.py --c <output>/mixed-c.so --rust target/debug/libvarena_mixed_client.so \
-  --order native-first --gpu
-python mixed.py --c <output>/mixed-c.so --rust target/debug/libvarena_mixed_client.so \
-  --order python-first --gpu
+bash release-gate/suites/varena/public-api/prove-host.sh OUT    # no CUDA: builds the SDK, runs both load orders
 ```
 
-Record the exact SDK/wheel/native hashes, driver, Torch/CUDA shim, device UUID and
-both receipts. Follow with the native engine, Rust, Python and cache examples.
-Retain failed receipts. Host linking or a shared identity alone is not shared GPU
-allocation/reclamation proof; no GPU result has been recorded by the P4 owner.
+On a GPU, with a matching Torch shim:
+
+```sh
+python mixed.py --c OUT/mixed-c.so --rust target/debug/libvarena_mixed_client.so --order native-first --gpu
+python mixed.py --c OUT/mixed-c.so --rust target/debug/libvarena_mixed_client.so --order python-first --gpu
+```

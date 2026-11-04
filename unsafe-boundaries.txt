@@ -35,9 +35,6 @@ crates/tensorfs-py/src/varena/refill/raw.rs
 crates/tensorfs-py/src/varena/stage_continuation.rs
 crates/tensorfs-py/src/varena/tensor_export.rs
 crates/tensorfs-py/src/varena/working.rs
-crates/tensorfs/examples/raw_source.rs
-crates/tensorfs/examples/raw_source/extra.rs
-crates/tensorfs/examples/raw_source/gpu.rs
 crates/tensorfs/src/fetch/mod.rs
 crates/tensorfs/src/io/cuda.rs
 crates/tensorfs/src/io/decode.rs
@@ -60,10 +57,6 @@ crates/varena-client/examples/source.rs
 crates/varena-client/examples/support/cuda.rs
 crates/varena-client/src/lib.rs
 crates/varena-client/src/source.rs
-crates/varena/examples/async_fill.rs
-crates/varena/examples/async_fill/host.rs
-crates/varena/examples/async_fill/retirement.rs
-crates/varena/examples/fork_guard_cpu.rs
 crates/varena/src/abi.rs
 crates/varena/src/abi/host_parts.rs
 crates/varena/src/abi/host_source.rs

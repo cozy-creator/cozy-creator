@@ -12,13 +12,12 @@ extern "C" {
 #endif
 
 /* ABI 1: fixed-width statuses and non-reused opaque handles. No CUDA SDK needed.
- * Streams/pointers are CUDA primary-context handles represented as uint64_t.
+ * Streams and pointers are the GPU's primary-context handles as uint64_t.
  * Default-stream sentinels 0/1/2 are refused; pass a live explicit stream.
- * Handles are process-local; fork is unsupported.
- * Calls on live handles are thread-safe. Each handle has one owning caller: serialize
- * its close/ownership-transfer calls; close must not race use of a raw device pointer.
- * Caller buffers/UTF-8 strings must be valid for the call. Callbacks must not unwind.
- * ABI 1 layouts never grow: a different layout/symbol requires a new ABI version.
+ * Handles belong to one process; fork is unsupported.
+ * Calls on live handles are thread-safe. Serialize a handle's close or transfer; a close
+ * must not race use of a raw device pointer. Callbacks must not unwind.
+ * Layouts never grow: a change needs new symbols.
  */
 #define VR_ABI_VERSION 1u
 typedef uint64_t vr_handle;
@@ -37,10 +36,9 @@ VR_API uint64_t vr_v1_core_identity(void);
  * the next failing call. Requested bytes are meaningful for VR_EXHAUSTED only. */
 VR_API const char *vr_v1_last_error(void);
 VR_API uint64_t vr_v1_error_requested_bytes(void);
-/* Finalizers transfer, never silently discard a refused handle. Success invalidates
- * the caller's handle. Native retirement retries Capture/Busy/submitted fences off
- * the allocator stack. Live Cache pages and permanent faults are quarantined, not
- * freed or retried forever. Checked closes retain the same handle on every refusal. */
+/* For finalizers: hands the handle to the native retirer, and success invalidates it. The
+ * retirer retries through capture and busy states. Live Cache pages and permanent faults are
+ * quarantined, not freed. A checked close keeps its handle on every refusal. */
 VR_API vr_status vr_v1_defer_close(vr_handle);
 typedef struct {
     uint64_t queued, retired, quarantined, abandoned_cache_bytes;
@@ -50,25 +48,20 @@ VR_API vr_status vr_v1_retirement_stats(vr_retirement_stats_v1 *out, size_t out_
 VR_API vr_status vr_v1_gpu_open(int32_t device, vr_handle *out);
 VR_API vr_status vr_v1_gpu_close(vr_handle gpu); /* children retain GPU ownership */
 
-/* Immutable weights. Host construction copies immutable bytes immediately; cold
- * host fills use bounded pinned staging and explicit stream ordering. Neither provider
- * implies host-visible GPU completion. Native Source ownership transfers only on
- * successful region construction. */
+/* Immutable weights. from_host copies the bytes at once. A Source transfers only when
+ * construction succeeds, and may run again after eviction. */
 typedef void (*vr_drop_fn)(void *);
 typedef struct vr_source_job_v1 vr_source_job_v1;
 typedef vr_status (*vr_source_prepare_fn)(void *source, int32_t device,
     uint64_t offset, uint64_t bytes, vr_source_job_v1 *out);
 typedef vr_status (*vr_source_submit_fn)(void *job, uint64_t dst, uint64_t bytes);
 typedef vr_status (*vr_source_retire_fn)(void *context);
-/* Prepare gets no destination and submits NO GPU work. Failure transfers nothing:
- * Source retains every failed-prepare owner for checked final retirement. Success
- * returns a complete owned job and transfers its context. Producer handles are
- * actual nonzero primary-context CUstreams, never 0/1/2 sentinels. Their array/code/
- * source/staging owners remain retained; core copies the fixed array before begin.
- * Submit receives dst only after native admission and returns with every host
- * submitter closed. VR_OK certifies every byte initialized/enqueued; a normal error
- * aborts. VR_FAULT means closure is unproven and quarantines actual owners.
- * No callback may unwind, reenter the same Region, or run under an ABI/allocator lock.
+/* Prepare gets no destination and submits no GPU work. A failure transfers nothing: the
+ * Source keeps what it made for its own retirement. Success returns a complete job and transfers
+ * its context. `streams` are the live CUstreams it writes on, never 0/1/2, and stay retained.
+ * Submit gets dst once the core admits it, and returns with nothing left submitting. VR_OK means
+ * every byte is written or enqueued; an error aborts; VR_FAULT means that's unknown, and its owners
+ * are quarantined. No callback may reenter its own Region. None runs under an allocator lock.
  */
 struct vr_source_job_v1 {
     const uint64_t *streams;
@@ -84,25 +77,18 @@ typedef struct {
     vr_drop_fn drop;
     void *context;
 } vr_source_provider_v1;
-/* Both retire callbacks run on the native per-device queue under retirement exclusion.
- * VR_BUSY retains pending ownership, VR_OK leaves the wrapper inert (or transfers
- * equivalent custody), every other error quarantines without retry. They never wait
- * for Python/the GIL. drop is host-only/inert after checked retirement; it may not
- * run CUDA or arbitrary Python finalizers. Persistent Source outlives all its jobs.
- * Asynchronous failure/pending cleanup remains visible in retirement_stats.
- * The old by-value Source constructor is removed; there is no compatibility adapter.
+/* Both retire callbacks run on the native retirer. VR_BUSY asks again later, VR_OK leaves the
+ * wrapper inert, any other status quarantines it. They never wait for Python. drop, after
+ * retire, is host-only: no CUDA and no Python finalizers. A Source outlives its jobs.
  */
 VR_API vr_status vr_v1_region_from_source(vr_handle gpu, uint64_t bytes,
     const vr_source_provider_v1 *, size_t source_size, vr_handle *out);
 VR_API vr_status vr_v1_region_from_host(vr_handle, const uint8_t *, size_t, vr_handle *out);
 typedef struct { const uint8_t *data; size_t bytes; } vr_host_part_v1;
-/* One immutable Region, in input order with 256-byte-aligned member offsets and
- * zero-filled gaps. Copies directly into the final native snapshot before returning;
- * caller inputs need only remain readable and unchanged during this call.
- * Zero-length parts allow NULL data and receive aligned offsets; the aggregate must
- * contain payload bytes. Capture refuses before payload copying. Both outputs remain
- * unchanged on failure (unlike the scalar constructors above). offsets has count
- * writable uint64_t entries and must not overlap out. No partial Region is published. */
+/* One Region from parts, in order, at 256-byte-aligned offsets with zero-filled gaps. Copied
+ * before returning. A zero-length part may have NULL data, but the whole must hold bytes.
+ * offsets has count entries and must not overlap out. On failure both outputs stay
+ * unchanged, unlike the other constructors, and no partial Region exists. */
 VR_API vr_status vr_v1_region_from_host_parts(vr_handle gpu,
     const vr_host_part_v1 *parts, size_t count, uint64_t *offsets, vr_handle *out);
 /* The same layout filled from the caller's ranges without copying them. They stay readable and
@@ -113,39 +99,30 @@ VR_API vr_status vr_v1_region_borrow_host_parts(vr_handle gpu,
     void (*drop)(void *), void *context, vr_handle *out);
 VR_API vr_status vr_v1_region_ptr(vr_handle, uint64_t *out); /* VA only, never a pin */
 VR_API vr_status vr_v1_region_close(vr_handle);
-/* Success orders consumer stream work after Published producers. It is not host GPU
- * completion; each Region publishes only whole contents, but the group is not atomic. */
+/* Orders the stream's next work after each Region's fill. It is not GPU completion. */
 VR_API vr_status vr_v1_use(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_use_ptr(vr_handle use, size_t index, uint64_t *out);
-/* Outside capture/replay, await only this retained Use's current fill producers
- * and checked resource retirement. Refusal/failure retains ownership. This is
- * not consumer completion or global capture admission; unrelated producers may
- * still prevent capture. Concurrent done waits for this operation's pins lease. */
+/* Waits on the host for this Use's fills. Not for consumers; other work may still keep a
+ * capture out. Refused during capture or replay. A failure keeps the Use. */
 VR_API vr_status vr_v1_use_wait_ready(vr_handle use);
-/* Producer ordering covers only the stream supplied to use. Additional readers need
- * another Use on their stream, or a CUDA dependency behind the ordered stream BEFORE
- * reading. All additional consumers must join the retained stream before done.
- * Success consumes the Use. Fencing failure retains the core's conservative context
- * fence. No alias may access a Region after its last Use ends. */
+/* Only use's stream is ordered: another reader takes its own Use, or a CUDA dependency on that
+ * stream before reading, and joins it before done. Success consumes the Use.
+ * No alias may touch a Region after its last Use ends. */
 VR_API vr_status vr_v1_done(vr_handle use);
 
-/* Working memory: free consumes the allocation handle on success. Its allocation
- * stream must remain alive through free and any deferred retirement; side streams
- * require record_stream first. Use checked close/retry, or drain retirement before
- * destroying a borrowed stream.
- * Free is stream ordered, not proof of physical reclamation. */
+/* Working memory. Free is stream-ordered and consumes the handle; the pages go later. Keep the
+ * allocation's stream alive through it and any deferred retirement. Other streams need
+ * record_stream first. */
 VR_API vr_status vr_v1_alloc(vr_handle gpu, uint64_t bytes, uint64_t stream, vr_handle *out);
 VR_API vr_status vr_v1_allocation_ptr(vr_handle, uint64_t *out);
 VR_API vr_status vr_v1_record_stream(vr_handle allocation, uint64_t stream);
 VR_API vr_status vr_v1_free(vr_handle allocation);
 
-/* Rebuildable Cache. Shrink runs on the native callback worker without allocator
- * locks. VR_BUSY declines; VR_OK ends the attempt, it does not promise freed bytes.
- * Only owner-selected ranges released behind actual completion events count.
- * Callback gets this Cache's handle and may call release. It must not close itself.
- * Callback/context ownership transfers on success. close drains callbacks outside
- * locks, then refuses live/pending pages (handle remains retryable on failure).
- * Python must release the GIL while closing. NULL shrink/drop installs no callback.
+/* Rebuildable Cache. Shrink runs on a native worker with no allocator lock held, gets this
+ * Cache's handle and may call release. VR_BUSY declines; VR_OK ends the attempt. Only ranges
+ * released and completed count. It must not close its Cache. The callback transfers on success.
+ * close drains callbacks, then refuses live or pending pages, keeping the handle. A Python
+ * caller releases the GIL while closing. NULL shrink and drop install no callback.
  */
 typedef vr_status (*vr_shrink_fn)(void *, vr_handle cache, uint64_t bytes);
 typedef struct { vr_shrink_fn shrink; vr_drop_fn drop; void *context; } vr_shrinker_v1;
@@ -158,13 +135,11 @@ VR_API vr_status vr_v1_cache_commit(vr_handle, uint64_t offset, uint64_t bytes);
 VR_API vr_status vr_v1_cache_release(vr_handle, uint64_t offset, uint64_t bytes, uint64_t stream);
 VR_API vr_status vr_v1_cache_close(vr_handle);
 
-/* Plan copies descriptors and retains Regions AND Sources. Current core supports
- * same-GPU Regions across arenas and one active phase. Repeat/prefetch policy is not in ABI 1.
- * activate/deactivate expose region intent only: no fill, Pin, execution fingerprint
- * or successful H observation. Nested clients restore their prior intent explicitly.
- * enter uses an execution key including shape, dtype and kernel identity. Leave with
- * completed=1 only after checked successful completion; aborted passes never train it.
- * close aborts an open phase. This eager API does not manage CUDA graph lifetimes.
+/* Plan copies its descriptors and retains its Regions and their Sources. One GPU, one active
+ * plan, one phase at a time. activate/deactivate state intent only: no fill, pin or measure.
+ * enter's key covers shape, dtype and kernel. Leave with completed=1 only after the pass has
+ * checked its own completion: that publishes its measure, and an aborted pass doesn't.
+ * close aborts an open phase. No graph lifetimes here.
  */
 typedef struct { const char *name; const vr_handle *regions; size_t count; } vr_phase_v1;
 VR_API vr_status vr_v1_plan_new(vr_handle gpu, const vr_phase_v1 *, size_t n, vr_handle *out);
@@ -174,9 +149,8 @@ VR_API vr_status vr_v1_phase_enter(vr_handle plan, const char *name, const char 
 VR_API vr_status vr_v1_phase_leave(vr_handle plan, int32_t completed);
 VR_API vr_status vr_v1_plan_close(vr_handle);
 
-/* Snapshots are diagnostic, not allocation promises. working_mapped includes pools
- * but excludes caches; working_capacity includes rounding. Weight totals include
- * other TensorFS arenas in this shared core. */
+/* Snapshots, not promises. working_mapped includes pools and excludes caches;
+ * working_capacity includes rounding. Totals cover the whole process, TensorFS included. */
 typedef struct {
     uint64_t weights_resident, working_live, working_capacity;
     uint64_t working_mapped, working_pending, working_free, working_peak;

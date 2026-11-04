@@ -30,8 +30,5 @@ kernel-fork-guard = []
 # Additive Cargo features require an explicit override, including in transitive dependencies.
 strict-pid-guard = []
 
-[dev-dependencies]
-serde_json.workspace = true
-
 [lints]
 workspace = true

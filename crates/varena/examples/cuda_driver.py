@@ -1,4 +1,4 @@
-"""Caller-owned CUDA context, nonblocking stream and pinned readback for examples."""
+"""The examples' own CUDA context and stream, with host readback. Every launch names the stream."""
 
 import ctypes as C
 from contextlib import contextmanager

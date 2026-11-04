@@ -4454,7 +4454,6 @@ dependencies = [
  "nvml-wrapper",
  "nvml-wrapper-sys",
  "platform-signal",
- "serde_json",
  "thiserror 2.0.21",
  "varena-ledger",
 ]

@@ -1,16 +1,15 @@
-"""Run with the P4 TensorFS SDK/wheel and a CUDA GPU; no Cozy daemon/model required."""
+"""Python reads a Region's exact bytes back. Needs the TensorFS wheel and a CUDA GPU, nothing else."""
 
 import ctypes as C
 import json
 
+from cuda_driver import Stream, primary
 from tensorfs import varena
 
 
 def main() -> None:
     cuda = C.CDLL("libcuda.so.1")
-    # Establish the same primary context for caller-owned CUDA work.
-    from cuda_driver import Stream, primary
-
+    # Your own CUDA work uses the same primary context.
     with primary(cuda), Stream(cuda) as stream, varena.open(0) as gpu, gpu.region(bytes(range(64))) as region:
         with gpu.plan({"read": [region]}) as plan:
             for _ in range(2):
