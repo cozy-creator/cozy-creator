@@ -4,10 +4,10 @@
 //! `files/<sha256>.<ext>`, flat. project.yaml names one only by a hex prefix of its hash (`Lock::matching`),
 //! so the lock names nothing of this computer and travels with project.yaml.
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::Read,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 
@@ -178,6 +178,11 @@ pub struct Version {
     /// A cut's: the pieces it was cut without.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<Without>,
+    /// An Edit's: the clips that made it, and their rate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips: Vec<protocol::project::Clip>,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub fps: f64,
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -812,10 +817,20 @@ impl Folder {
         lock.files.values().any(File::unmeasured) && platform::tools::ffmpeg(&self.tools, &crate::tools::path()).is_none()
     }
 
-    /// How many frames the film at `path` holds, by its file; None with no file there, or no ffprobe to read it.
+    /// How many frames the film at `path` holds, by its file; None with no file there, or no ffprobe to read it. Asked of ffprobe once for
+    /// each size and time it has, since a read of a project asks this.
     pub fn film_frames(&self, path: &Path) -> Option<u64> {
+        let meta = std::fs::metadata(path).ok()?;
+        let held = (meta.len(), meta.modified().ok()?);
+        if let Some((known, frames)) = FILMS.lock().expect("films lock").get(path)
+            && *known == held
+        {
+            return *frames;
+        }
         let (_, ffprobe) = platform::tools::ffmpeg(&self.tools, &crate::tools::path())?;
-        path.is_file().then(|| super::tools::frames_of(&ffprobe, path)).flatten()
+        let frames = super::tools::frames_of(&ffprobe, path);
+        FILMS.lock().expect("films lock").insert(path.to_owned(), (held, frames));
+        frames
     }
 
     /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in
@@ -1028,6 +1043,9 @@ fn walked(dir: &Path) -> (u64, u64) {
 fn read(path: &Path) -> Result<String, Error> {
     std::fs::read_to_string(path).map_err(|e| io_at(path, e))
 }
+
+/// What ffprobe last said of each film at a project's root, by its size and time.
+static FILMS: LazyLock<Mutex<HashMap<PathBuf, ((u64, std::time::SystemTime), Option<u64>)>>> = LazyLock::new(Mutex::default);
 
 /// A file in `files/` is named for its bytes: read-only, so that writing to it fails rather than make its name a lie.
 pub(super) fn sealed(path: &Path) {

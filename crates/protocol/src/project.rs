@@ -279,6 +279,72 @@ pub struct CanvasPatched {
     pub etag: String,
 }
 
+/// An Edit's `fields.timeline`: its tracks, each of clips. One for now, V1; a higher one takes priority, later.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Timeline {
+    #[serde(default)]
+    pub tracks: Vec<Track>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Track {
+    #[serde(default)]
+    pub clips: Vec<Clip>,
+}
+
+/// A clip: an asset, and the part of it. Its place in the list is its place on the track, with no gaps. Points are frames at the Edit's rate.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    /// `<name>`.
+    pub clip: String,
+    /// A video's in point, from 0.
+    #[serde(rename = "in", default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<u64>,
+    /// A video's out point, exclusive. None: its end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<u64>,
+    /// A still's duration. None: 3 s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+}
+
+/// An Edit's clips as they read now, or as they read when a version of it was rendered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimelineNow {
+    pub fps: f64,
+    pub tracks: Vec<TrackNow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackNow {
+    pub clips: Vec<ClipNow>,
+}
+
+/// A clip and what it reads.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClipNow {
+    #[serde(flatten)]
+    pub clip: Clip,
+    pub name: String,
+    /// `video` or `image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// How many frames a video holds at the Edit's rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    /// Why a render goes on without it: it has no file to read here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
+}
+
 /// A version's number and the hash prefix project.yaml can name its file by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VersionPrefix {
@@ -302,6 +368,9 @@ pub struct VersionPrefix {
     /// A cut's: what it was cut without, `<piece>: <why>` each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<String>,
+    /// An Edit's: the clips that made this version, which an edit can carry on from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelineNow>,
 }
 
 /// The file people mean by a version, and what is measured of it so far.
@@ -465,6 +534,12 @@ pub struct Asset {
     /// A pin lists them too, for its text: it stands, and only fails if it is run again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
+    /// An Edit's: its clips as they read now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<TimelineNow>,
+    /// An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendering: Option<f64>,
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.

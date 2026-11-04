@@ -53,7 +53,7 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
         Some(project) => named_here(&api, &hub, project, &on).await?,
         None => vec![],
     };
-    let mut tools: Vec<Tool> = local.into_iter().chain(held(&api, &hub, &on).await).filter(|tool| q.is_none_or(|q| says(tool, q))).collect();
+    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(held(&api, &hub, &on).await).filter(|tool| q.is_none_or(|q| says(tool, q))).collect();
     let installed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
     let note = match tokio::time::timeout(HUB_LATE, on_the_hub(&api, &hub, q)).await {
         Ok(Ok(found)) => {
@@ -148,6 +148,9 @@ pub(crate) async fn candidates(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(Strin
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, read as a run of it on this computer would be.
 /// A tool can be local code, by a path from `dir`, and a package with one public function names that one.
 pub(crate) async fn kind(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<String, Error> {
+    if tool == tool::EDIT {
+        return Ok(tool::edit().kind);
+    }
     let hub = api.machines.hubs.default_origin();
     let found = target::describe(api, &hub, tool, Some(dir), &runs::default_on(api)).await?;
     let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;

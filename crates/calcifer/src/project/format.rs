@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use protocol::{
     error::{Error, Kind},
-    project::{Read, Warning},
+    project::{Read, Timeline, Track, Warning},
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -36,6 +36,13 @@ const COZY: &str = "cozy";
 const FOR_READERS: [&str; 3] = ["description", "use_audio", "follow"];
 /// What `cozy` reads of a cut or a frame.
 const TOOL_FIELDS: [&str; 6] = ["pieces", "fps", "aspect_ratio", "resolution", "video", "at"];
+
+/// Whether `with` names what Calcifer makes itself: the package `cozy`, or a function of it.
+pub fn made_here(with: &str) -> bool {
+    let with = with.trim();
+    let path = protocol::target::written_as_path(with) || with.ends_with(".py");
+    !path && with.split(['@', '/']).find(|part| *part != "_") == Some(COZY)
+}
 
 /// A new project's project.yaml: a short film that renders as it stands. Cozy never writes it again.
 pub fn starter() -> String {
@@ -405,7 +412,7 @@ impl Doc {
             fields.insert((*field).to_owned(), json!(was));
         }
         let with = merged.get("with").and_then(Value::as_str).map(|with| plain_with(with, folder));
-        let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["video", "image"].contains(&kind.as_str()));
+        let hollow = constant || with.is_none() || (with.as_deref().is_some_and(made_here) && !["video", "image"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
         self.assets.push(Asset { name: name.to_owned(), kind, tool: with, body: merged, fields, own, pin, hollow, reads: vec![], line: None, links: None });
         Some(self.assets.len() - 1)
@@ -606,6 +613,10 @@ impl Doc {
         // A pin over an input keeps it, and it is what the box shows.
         flat.extend(PINS.iter().filter_map(|field| Some(((*field).to_owned(), asset.fields.get(*field)?.clone()))));
         flat.extend(["models", "lora"].iter().filter_map(|field| Some(((*field).to_owned(), asset.body.get(*field)?.clone()))));
+        if let Some(pieces) = flat.remove("pieces") {
+            let timeline = Timeline { tracks: vec![Track { clips: super::tools::clips_of(&pieces) }] };
+            flat.insert("timeline".to_owned(), serde_json::to_value(timeline).expect("clips serialize"));
+        }
         flat
     }
 
@@ -728,7 +739,7 @@ impl Doc {
     /// Asset `i`'s operation when Calcifer runs it itself: the reserved package `cozy`.
     pub fn tool(&self, i: usize) -> Option<Tool> {
         let asset = &self.assets[i];
-        (asset.tool.as_deref()? == COZY).then_some(())?;
+        made_here(asset.tool.as_deref()?).then_some(())?;
         match asset.kind.as_str() {
             "video" => Some(Tool::Cut),
             "image" => Some(Tool::Frame),
@@ -878,7 +889,7 @@ impl Doc {
             .map(|(field, value)| (field.clone(), value.clone()))
             .collect();
         let mut digests: BTreeMap<String, String> = top.iter().map(|(field, value)| (field.clone(), digest(value))).collect();
-        digests.extend(fields.iter().map(|(field, value)| (field.clone(), digest(value))));
+        digests.extend(fields.iter().map(|(field, value)| (if field == "pieces" { "clips".to_owned() } else { field.clone() }, digest(value))));
         top.insert("fields".into(), Value::Object(fields));
         let mut sorted: Vec<&ReadNow> = reads.iter().collect();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));

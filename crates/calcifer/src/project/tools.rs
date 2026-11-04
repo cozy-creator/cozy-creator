@@ -1,11 +1,15 @@
-//! What Calcifer runs itself, free, with no machine, the reserved package `cozy`: a `video`, a film at the project's root and
-//! its timeline, and an `image`, one frame of a video. And what is measured of a file. Every in and out point is an exact frame.
+//! What Calcifer runs itself, free, with no machine, the reserved package `cozy`: an Edit, a film at the project's root and its
+//! timeline, of videos and stills, and an `image`, one frame of a video. And what is measured of a file. Every in and out point is an
+//! exact frame.
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
 };
 
-use protocol::error::{Error, Kind};
+use protocol::{
+    error::{Error, Kind},
+    project::{Clip, ClipNow, Timeline, TimelineNow, TrackNow},
+};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -24,15 +28,19 @@ pub struct Shape {
     pub frames: u64,
 }
 
+/// How long a still lasts when nothing says.
+const STILL_S: f64 = 3.0;
+
 /// A piece of a cut: the asset it reads, its file (here, its digest, its path in the project,
 /// `files/<sha256>.<ext>`, and its shape as project.lock records it), and its frames from `start`
-/// to `end` (exclusive) at the cut's rate.
+/// to `end` (exclusive) at the cut's rate. A still is one picture, held from 0 to `end`.
 pub struct Piece {
     pub asset: String,
     pub path: PathBuf,
     pub digest: String,
     pub file: String,
     pub shape: Option<Shape>,
+    pub still: bool,
     pub start: u64,
     pub end: u64,
 }
@@ -41,6 +49,9 @@ impl Piece {
     /// Its frames at `fps` within its take, `end` at most the take's last; None before its take is
     /// probed.
     fn frames(&self, fps: f64) -> Option<(u64, u64)> {
+        if self.still {
+            return Some((0, self.end));
+        }
         let frames = available(&self.shape?, fps);
         Some((self.start.min(frames), self.end.min(frames)))
     }
@@ -102,7 +113,7 @@ pub fn unread(ffprobe: &Path, path: &Path) -> Option<String> {
 
 /// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
 pub fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Vec<String> {
-    (pieces.iter().filter(|piece| piece.shape.is_none()))
+    (pieces.iter().filter(|piece| !piece.still && piece.shape.is_none()))
         .map(|piece| match probe(ffprobe, &piece.path, false) {
             Ok(_) => format!("{}: {} is no video a cut takes: those are mp4, mov, m4v, webm and mkv", piece.asset, piece.path.display()),
             Err(error) => format!("{}: {}", piece.asset, error.message),
@@ -198,21 +209,88 @@ fn text(value: &Value) -> String {
     }
 }
 
-/// A cut's pieces: each entry of its `pieces` (`<a>`, or a mapping holding a mention and `start` and `end` frames), or
-/// with none, all it reads. And what it names with nothing made yet, skipped. A whole take is what its function made.
-pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, lock: &Lock) -> (Vec<Piece>, Vec<String>) {
-    let entries: Vec<(String, Option<u64>, Option<u64>)> = match fields.get("pieces").and_then(Value::as_array) {
-        Some(items) => items
-            .iter()
-            .filter_map(|item| {
-                let mention = mentions_in(item).into_iter().next()?;
-                Some((mention, item["start"].as_u64(), item["end"].as_u64()))
-            })
-            .collect(),
-        None => reads.iter().map(|read| (read.name.clone(), None, None)).collect(),
+/// The clips `pieces` writes: `<a>`, or a mapping holding a mention with `start` and `end` frames, or a still's `frames`.
+pub fn clips_of(pieces: &Value) -> Vec<Clip> {
+    let clip = |item: &Value| {
+        let name = mentions_in(item).into_iter().next()?;
+        Some(Clip { clip: format!("<{name}>"), first: item["start"].as_u64().filter(|first| *first > 0), out: item["end"].as_u64(), frames: item["frames"].as_u64() })
     };
+    pieces.as_array().into_iter().flatten().filter_map(clip).collect()
+}
+
+/// A cut's clips: its `pieces`, or with none, all it reads.
+pub fn clips(fields: &Map<String, Value>, reads: &[ReadNow]) -> Vec<Clip> {
+    match fields.get("pieces") {
+        Some(pieces) => clips_of(pieces),
+        None => reads.iter().map(|read| Clip { clip: format!("<{}>", read.name), ..Default::default() }).collect(),
+    }
+}
+
+/// `fields` as the file writes them, the wire's `timeline` as `pieces`: the one place that translates, until the file holds tracks.
+/// What can be fixed is, and said.
+pub fn in_the_file(fields: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<String>), Error> {
+    let mut written = fields.clone();
+    let mut said = vec![];
+    let Some(value) = written.remove("timeline") else { return Ok((written, said)) };
+    if value.is_null() {
+        written.insert("pieces".to_owned(), Value::Null);
+        return Ok((written, said));
+    }
+    let timeline: Timeline = serde_json::from_value(value).map_err(|why| Error::new(Kind::Validation, "timeline_invalid", format!("timeline: {why}")))?;
+    if timeline.tracks.len() > 1 {
+        said.push(format!("an Edit has one track for now: the other {} are left out", timeline.tracks.len() - 1));
+    }
+    let pieces = timeline.tracks.first().into_iter().flat_map(|track| &track.clips).filter_map(piece_of);
+    written.insert("pieces".to_owned(), Value::Array(pieces.collect()));
+    Ok((written, said))
+}
+
+/// A clip as `pieces` writes it. A clip's points can't cross: its out point is at least a frame past its in point.
+fn piece_of(clip: &Clip) -> Option<Value> {
+    let name = mentions_in(&json!(clip.clip)).into_iter().next().or_else(|| Some(clip.clip.trim().to_owned()).filter(|name| !name.is_empty()))?;
+    let name = format!("<{name}>");
+    if let Some(frames) = clip.frames {
+        return Some(json!({"image": name, "frames": frames.max(1)}));
+    }
+    let first = clip.first.unwrap_or(0);
+    Some(match (first, clip.out) {
+        (0, None) => json!(name),
+        (first, None) => json!({"video": name, "start": first}),
+        (0, Some(out)) => json!({"video": name, "end": out.max(1)}),
+        (first, Some(out)) => json!({"video": name, "start": first, "end": out.max(first + 1)}),
+    })
+}
+
+/// `clips` and what each reads, at `fps`: `files` answers a name's files, or why it has none.
+pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<folder::Files, String>, folder: &Folder, lock: &Lock) -> TimelineNow {
+    let now = |clip: Clip| {
+        let name = mentions_in(&json!(clip.clip)).into_iter().next().unwrap_or_else(|| clip.clip.clone());
+        let file = files(&name).and_then(|files| folder::main_of(&files).and_then(|sha256| lock.files.get(sha256)).cloned().ok_or_else(|| "no version yet".to_owned()));
+        let mut row = ClipNow { clip, name, field: None, path: None, sha256: None, holds: None, width: None, height: None, missing: None };
+        match file {
+            Err(why) => row.missing = Some(why),
+            Ok(file) => {
+                let shape = (file.fps > 0.0).then_some(Shape { width: file.width, height: file.height, fps: file.fps, frames: file.frames });
+                row.holds = shape.map(|shape| available(&shape, fps));
+                row.width = (file.width > 0).then_some(file.width);
+                row.height = (file.height > 0).then_some(file.height);
+                row.field = Some(file.field().to_owned());
+                row.missing = (!folder.path(&file.path).is_file()).then(|| "not on this computer".to_owned());
+                row.path = Some(file.path);
+                row.sha256 = Some(file.sha256);
+            }
+        }
+        row
+    };
+    TimelineNow { fps, tracks: vec![TrackNow { clips: clips.into_iter().map(now).collect() }] }
+}
+
+/// A cut's pieces, and what its clips name with nothing made yet, skipped. A whole take is what its function made.
+pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, lock: &Lock) -> (Vec<Piece>, Vec<String>) {
+    let fps = Canvas::of(fields, &mut vec![]).fps;
     let (mut pieces, mut skipped) = (vec![], vec![]);
-    for (mention, start, end) in entries {
+    for clip in clips(fields, reads) {
+        let mention = mentions_in(&json!(clip.clip)).into_iter().next().unwrap_or_default();
         let read = reads.iter().find(|read| name_key(&read.name) == name_key(&mention));
         let Some((read, file)) = read.and_then(|read| Some((read, lock.files.get(folder::main_of(&read.files)?)?))) else {
             if !skipped.contains(&mention) {
@@ -220,6 +298,7 @@ pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, l
             }
             continue;
         };
+        let still = file.field() == "image";
         let shape = (file.fps > 0.0).then_some(Shape { width: file.width, height: file.height, fps: file.fps, frames: file.frames });
         pieces.push(Piece {
             asset: read.name.clone(),
@@ -227,8 +306,12 @@ pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, l
             digest: file.sha256.clone(),
             file: file.path.clone(),
             shape,
-            start: start.unwrap_or(0),
-            end: end.unwrap_or(u64::MAX),
+            still,
+            start: if still { 0 } else { clip.first.unwrap_or(0) },
+            end: match still {
+                true => clip.frames.unwrap_or((STILL_S * fps).round() as u64).max(1),
+                false => clip.out.unwrap_or(u64::MAX),
+            },
         });
     }
     (pieces, skipped)
@@ -237,14 +320,15 @@ pub fn pieces(fields: &Map<String, Value>, reads: &[ReadNow], folder: &Folder, l
 /// Cuts `pieces` into a file beside `<project>/<name>`, answered with what it is, with cozy's ffmpeg, here, on `canvas` (its short
 /// edge, or the first piece's) at its frame rate, and writes the same edit as OpenTimelineIO at the root
 /// (`<name>.otio`, `otio`). Every in and out point is an exact frame. Every piece fills the canvas
-/// and is center-cropped, never letterboxed or stretched. By fast join when every piece is already
-/// that size and rate: each piece's frames between keyframes are copied, only the GOPs at its ends
+/// and is center-cropped, never letterboxed or stretched; a still's transparency goes to black. By fast join when every piece is a video
+/// already that size and rate: each piece's frames between keyframes are copied, only the GOPs at its ends
 /// are encoded (kept in `cache`, cozy's cache folder, by take, frames and encoding, so a re-cut
 /// encodes only what changed; `prune` keeps it small), and the sound is encoded once. Pieces that
 /// differ in codec, size or frame rate are encoded whole, a take at another rate retimed to the
 /// project's. Nothing is encoded above or below its sources: an edge piece at its own take's video
 /// bitrate, a whole encode and the sound at the highest of the takes cut in (bitrate, sample rate,
-/// channels).
+/// channels). Sound comes with each clip, silence with one that has none. `told` hears how far it is, 0 to 1.
+#[allow(clippy::too_many_arguments)]
 pub fn cut(
     ffmpeg: &Path,
     ffprobe: &Path,
@@ -253,6 +337,7 @@ pub fn cut(
     canvas: &Canvas,
     name: &str,
     cache: &Path,
+    told: &(dyn Fn(f64) + Send + Sync),
 ) -> Result<(Cutted, PathBuf), Error> {
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
@@ -268,7 +353,10 @@ pub fn cut(
     std::fs::create_dir_all(cache).map_err(io)?;
     let work = tempfile::tempdir_in(cache).map_err(io)?;
     let video = work.path().join("video.mp4");
-    let highest = probes.iter().filter_map(|probe| probe.video_bit_rate).max();
+    // A picture's bitrate says nothing of a video's.
+    let highest = pieces.iter().zip(&probes).filter(|(piece, _)| !piece.still).filter_map(|(_, probe)| probe.video_bit_rate).max();
+    let share = |frames: u64| 0.9 * frames as f64 / made.frames.max(1) as f64;
+    let mut done = 0;
     let os = |args: &[&str]| args.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
     let fast = (pieces.iter().zip(&probes))
         .all(|(piece, p)| p.video == probes[0].video && p.video.starts_with("h264 ") && p.size == (width, height) && native(piece));
@@ -314,6 +402,8 @@ pub fn cut(
                 }
                 let _ = writeln!(list, "file '{}'", part.display().to_string().replace('\'', r"'\''"));
             }
+            done += end - start;
+            told(share(done));
         }
         let listed = work.path().join("pieces.txt");
         std::fs::write(&listed, list).map_err(io)?;
@@ -336,14 +426,22 @@ pub fn cut(
     } else {
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
         for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
+            if piece.still {
+                let held = format!("{:.6}", (end + 1) as f64 / fps);
+                inputs.extend(["-loop", "1", "-framerate", &rate, "-t", &held].map(Into::into));
+            }
             inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
             // A take at another rate is retimed first (each frame its source's nearest in time), then
             // cut by frame like any other.
-            let retime = if native(piece) { String::new() } else { format!("fps={rate},") };
+            let retime = match (piece.still, native(piece)) {
+                (true, _) => "premultiply=inplace=1,".to_owned(),
+                (false, true) => String::new(),
+                (false, false) => format!("fps={rate},"),
+            };
             let _ = write!(
                 filter,
                 "[{k}:v]{retime}trim=start_frame={start}:end_frame={end},setpts=PTS-STARTPTS,\
-                 scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1[v{k}];"
+                 scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p[v{k}];"
             );
             let _ = write!(joined, "[v{k}]");
         }
@@ -353,23 +451,32 @@ pub fn cut(
         args.extend(encode.into_iter().chain(bit_rate(highest).iter().map(String::as_str)).map(Into::into));
         args.extend(["-pix_fmt", "yuv420p", "-r", &rate, "-f", "mp4"].map(Into::into));
         args.push(video.clone().into_os_string());
-        run(ffmpeg, &args.iter().map(|a| a.as_os_str()).collect::<Vec<_>>())?;
+        run_counting(ffmpeg, &args, &|frame| told(share(frame)))?;
     }
     let mut mux: Vec<std::ffi::OsString> = vec!["-i".into(), video.into_os_string()];
     let sounds: Vec<&Sound> = probes.iter().filter_map(|probe| probe.sound.as_ref()).collect();
-    if sounds.len() == probes.len() {
-        // The sound once, over the whole edit, each piece's at its frames' times.
+    if !sounds.is_empty() {
+        // The sound once, over the whole edit, each piece's at its frames' times, however short it runs, and silence for one with none.
+        let most = |of: fn(&Sound) -> Option<u64>| sounds.iter().filter_map(|sound| of(sound)).max();
+        let silence = format!("anullsrc=r={}:cl={}", most(|s| s.sample_rate).unwrap_or(48_000), if most(|s| s.channels) == Some(1) { "mono" } else { "stereo" });
         let (mut filter, mut joined, mut inputs) = (String::new(), String::new(), vec![]);
-        for (k, (piece, (start, end))) in pieces.iter().zip(&ranges).enumerate() {
-            inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
-            let (start, end) = (*start as f64 / fps, *end as f64 / fps);
-            let _ = write!(filter, "[{k}:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[a{k}];");
+        for (k, ((piece, probe), (start, end))) in pieces.iter().zip(&probes).zip(&ranges).enumerate() {
+            let (start, end, lasts) = (*start as f64 / fps, *end as f64 / fps, (*end - *start) as f64 / fps);
+            match probe.sound {
+                Some(_) => {
+                    inputs.extend(["-i".into(), piece.path.clone().into_os_string()]);
+                    let _ = write!(filter, "[{k}:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS,apad=whole_dur={lasts}[a{k}];");
+                }
+                None => {
+                    inputs.extend(["-f", "lavfi", "-t", &format!("{lasts:.6}"), "-i", &silence].map(Into::into));
+                    let _ = write!(filter, "[{k}:a]asetpts=PTS-STARTPTS[a{k}];");
+                }
+            }
             let _ = write!(joined, "[a{k}]");
         }
         let _ = write!(filter, "{joined}concat=n={}:v=0:a=1[a]", pieces.len());
         let sound = work.path().join("sound.m4a");
         let mut args: Vec<std::ffi::OsString> = inputs;
-        let most = |of: fn(&Sound) -> Option<u64>| sounds.iter().filter_map(|sound| of(sound)).max();
         let mut encode = vec!["-filter_complex".to_owned(), filter, "-map".into(), "[a]".into(), "-c:a".into(), "aac".into()];
         for (flag, value) in [("-b:a", most(|s| s.bit_rate)), ("-ar", most(|s| s.sample_rate)), ("-ac", most(|s| s.channels))] {
             encode.extend(value.map(|value| [flag.to_owned(), value.to_string()]).into_iter().flatten());
@@ -428,17 +535,18 @@ fn otio(name: &str, pieces: &[Piece], probes: &[Probe], ranges: &[(u64, u64)], f
             if sound && probe.sound.is_none() {
                 return item("Gap.1", "", json!({}), range(0, end - start));
             }
-            let shape = piece.shape.expect("a piece cut is probed");
-            let metadata = match retimed(&shape, fps) {
-                true => json!({"cozy": {"retimed_from_fps": shape.fps}}),
-                false => json!({}),
+            // A still can be held as long as the cut says.
+            let (metadata, holds) = match piece.shape.filter(|_| !piece.still) {
+                None => (json!({"cozy": {"still": true}}), end),
+                Some(shape) if retimed(&shape, fps) => (json!({"cozy": {"retimed_from_fps": shape.fps}}), available(&shape, fps)),
+                Some(shape) => (json!({}), available(&shape, fps)),
             };
             let mut clip = item("Clip.2", &piece.asset, metadata, range(start, end - start));
             clip["media_references"] = json!({"DEFAULT_MEDIA": {
                 "OTIO_SCHEMA": "ExternalReference.1",
                 "metadata": {},
                 "name": piece.asset,
-                "available_range": range(0, available(&shape, fps)),
+                "available_range": range(0, holds),
                 "available_image_bounds": null,
                 "target_url": piece.file,
             }});
@@ -636,6 +744,31 @@ fn probe(ffprobe: &Path, path: &Path, keys: bool) -> Result<Probe, Error> {
 /// A number ffprobe wrote, as a string or a number.
 fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+
+/// One ffmpeg run, `frame` told each frame count it reports.
+fn run_counting(ffmpeg: &Path, args: &[std::ffi::OsString], frame: &dyn Fn(u64)) -> Result<(), Error> {
+    let started = std::process::Command::new(ffmpeg)
+        .args(["-y", "-v", "error", "-nostats", "-progress", "pipe:1"])
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = started.map_err(|e| failed(format!("ffmpeg did not start: {e}")))?;
+    let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+    // What it says goes on two pipes, each read as it comes, so a full one stops nothing.
+    let said = std::thread::spawn(move || std::io::read_to_string(stderr).unwrap_or_default());
+    for line in std::io::BufRead::lines(std::io::BufReader::new(stdout)).map_while(Result::ok) {
+        if let Some(count) = line.strip_prefix("frame=").and_then(|count| count.trim().parse().ok()) {
+            frame(count);
+        }
+    }
+    let status = child.wait().map_err(|e| failed(format!("ffmpeg: {e}")))?;
+    let said = said.join().unwrap_or_default();
+    match status.success() {
+        true => Ok(()),
+        false => Err(failed(format!("ffmpeg could not cut the edit: {}", said.trim()))),
+    }
 }
 
 /// One ffmpeg run, refused with what it said when it fails.

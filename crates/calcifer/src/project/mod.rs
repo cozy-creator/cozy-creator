@@ -43,6 +43,7 @@ use axum::{
 };
 use futures_util::{FutureExt as _, Stream, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use protocol::{
+    tool::EDIT,
     calcifer::{FileTerm, Kind as RunKind, On, Run, RunRequest, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
@@ -113,6 +114,8 @@ struct Project {
     asked: Notify,
     /// Held while a cut is made.
     cutting: Arc<Mutex<()>>,
+    /// How far each Edit being rendered here is, 0 to 1.
+    rendering: Arc<Mutex<BTreeMap<String, f64>>>,
     /// Held while its files move to or from its Hub.
     moving: tokio::sync::Mutex<()>,
     /// Held while an import chooses a name and writes it.
@@ -175,6 +178,7 @@ impl Projects {
                     walking: Mutex::new(false),
                     asked,
                     cutting: Arc::default(),
+                    rendering: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
                     importing: Mutex::default(),
                     keys: Mutex::default(),
@@ -605,6 +609,10 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
         .map(|i| {
             let mut row = row(&api, &doc, folder, &lock, &stand, i);
             row.etag = etags.get(&name_key(&row.name)).cloned();
+            row.rendering = project.rendering.lock().expect("rendering lock").get(&row.name).copied();
+            if row.rendering.is_some() {
+                row.standing = RowStanding::Making;
+            }
             match &stand[i].state {
                 Stand::Stale(why) => stale.push(Stale { name: row.name.clone(), why: why.clone() }),
                 Stand::Missing | Stand::Waits if doc.makes(i) => missing.push(row.name.clone()),
@@ -757,8 +765,12 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
     let (mut pieces, skips) = tools::pieces(&asset.fields, &stand[i].reads, folder, lock);
     tools::past_end(&mut pieces, canvas.fps);
     let made = tools::measure(&pieces, canvas.fps);
-    // The film's own length once one stands, whatever its pieces now add up to.
-    let frames = folder.film_frames(&path).or(made.as_ref().map(|made| made.frames));
+    // The film's own length once one stands, whatever its pieces now add up to. A film the size of its version is that version, whose
+    // frames are measured: a read runs no process.
+    let len = |at: &FsPath| std::fs::metadata(at).ok().map(|meta| meta.len());
+    let stands = stand[i].files.as_ref().and_then(|files| files.get("video")).and_then(|sha256| lock.files.get(sha256));
+    let measured = stands.filter(|film| film.frames > 0 && len(&path).is_some() && len(&folder.path(&film.path)) == len(&path)).map(|film| film.frames);
+    let frames = measured.or_else(|| folder.film_frames(&path)).or(made.as_ref().map(|made| made.frames));
     let retimed = made.map(|made| made.retimed).unwrap_or_default();
     let standing = stand[i].version().and_then(|number| lock.asset(&asset.name)?.version(number));
     let without = standing.map(|version| version.without.iter().map(folder::Without::said).collect()).unwrap_or_default();
@@ -767,7 +779,7 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
 
 /// What a cut's version was cut from: each piece's asset, and its version when it was one.
 fn cut_from(lock: &Lock, version: &Version) -> Vec<String> {
-    if version.made_by.as_ref().is_none_or(|by| by.with != "cozy/cut") {
+    if version.made_by.as_ref().is_none_or(|by| by.with != EDIT) {
         return vec![];
     }
     let took = |read: &ReadFrom| {
@@ -893,6 +905,14 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
                     main: main_file(folder, lock, &version.files),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
+                    timeline: (!version.clips.is_empty()).then(|| {
+                        let files = |name: &str| {
+                            let read = version.reads.iter().find(|read| name_key(&read.name) == name_key(name));
+                            let why = || version.without.iter().find(|left| name_key(&left.piece) == name_key(name)).map_or_else(|| "no longer in the project".to_owned(), |left| left.why.clone());
+                            read.map(|read| read.files.clone()).ok_or_else(why)
+                        };
+                        tools::timeline_now(version.clips.clone(), version.fps, files, folder, lock)
+                    }),
                 })
             })
             .collect(),
@@ -918,6 +938,15 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         failure,
         changed,
         missing: tags_now(api, doc, i).map_or_else(Vec::new, |tags| doc.missing_names(i, &tags)),
+        timeline: (doc.tool(i) == Some(Tool::Cut)).then(|| {
+            let files = |name: &str| {
+                let read = standing.reads.iter().find(|read| name_key(&read.name) == name_key(name));
+                let why = || if doc.find(name).is_some() { "no version yet" } else { "no longer in the project" }.to_owned();
+                read.map(|read| read.files.clone()).ok_or_else(why)
+            };
+            tools::timeline_now(tools::clips(&asset.fields, &standing.reads), Canvas::of(&asset.fields, &mut vec![]).fps, files, folder, lock)
+        }),
+        rendering: None,
     }
 }
 
@@ -986,7 +1015,7 @@ async fn reclaim(
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
         for held in lock.assets.iter().filter(|(key, _)| doc.holds(key).is_none()).map(|(_, held)| held) {
-            let cut = held.versions.iter().any(|version| version.made_by.as_ref().is_some_and(|by| by.with == "cozy/cut"));
+            let cut = held.versions.iter().any(|version| version.made_by.as_ref().is_some_and(|by| by.with == EDIT));
             if cut {
                 let name = cut_name(&held.name);
                 let _ = std::fs::remove_file(folder.dir.join(&name));
@@ -2823,15 +2852,17 @@ impl Walk {
         }
         let mut version = self.version(doc, standing, i, vec![], inputs);
         version.made_by = Some(MadeBy { with: match doc.tool(i) {
-            Some(Tool::Cut) => "cozy/cut".into(),
+            Some(Tool::Cut) => EDIT.into(),
             _ => "cozy/frame".into(),
         }, ..Default::default() });
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
-                let Some((files, without)) = self.cut_tool(doc, asset, standing, &ask.target).await? else { return Ok(()) };
+                let Some((files, without)) = self.cut_tool(doc, asset, standing, &ask.target, &version.inputs).await? else { return Ok(()) };
                 version.without = without;
+                version.clips = tools::clips(&asset.fields, &standing.reads);
+                version.fps = Canvas::of(&asset.fields, &mut vec![]).fps;
                 let now = self.folder().lock()?;
                 let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
                 if again {
@@ -2868,7 +2899,7 @@ impl Walk {
     /// fetched from the machine that keeps it, or the Hub. One that can't be had, or has no version yet, is left out, warned of and said
     /// with the film: Paul, "it'd generate the edit without them", and the film before it stays a version. One here that ffprobe can't
     /// read fails it: nothing is cut, and the film that stands stays.
-    async fn cut_tool(&self, doc: &Doc, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
+    async fn cut_tool(&self, doc: &Doc, asset: &format::Asset, standing: &Standing, target: &Target, inputs: &str) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
         let folder = self.folder();
         let mut said = vec![];
         let canvas = Canvas::of(&asset.fields, &mut said);
@@ -2891,6 +2922,12 @@ impl Walk {
             self.say(Event::Warning { message: format!("{name} is cut without {piece}, {said}") });
             without.push(folder::Without { piece, why: why.into(), absent: false });
         }
+        // The same edit, with everything it took here and its film right, isn't rendered again.
+        let film_stands = |old: &Version| old.files.get("video").and_then(|sha256| lock.files.get(sha256)).is_some_and(|film| folder.path(&film.path).is_file());
+        let again = |old: &Version| old.inputs == inputs && old.without.is_empty() && film_stands(old) && tools::film_off(&asset.fields, &standing.reads, &lock, old).is_none();
+        if without.is_empty() && lock.asset(&asset.name).is_some_and(|held| held.versions.iter().any(again)) {
+            return Ok(None);
+        }
         let unreadable = tools::unreadable(&ffprobe, &pieces);
         if !unreadable.is_empty() {
             return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: the film that stands stays", asset.name, unreadable.join("; "))).next("cozy project status"));
@@ -2904,12 +2941,27 @@ impl Walk {
         let cache = self.host.cache().join("cuts");
         let cutting_name = name.clone();
         let fps = canvas.fps;
-        let (made, part) = tokio::task::spawn_blocking(move || {
+        let (rendering, rendered) = (self.project.rendering.clone(), asset.name.clone());
+        rendering.lock().expect("rendering lock").insert(rendered.clone(), 0.0);
+        crate::events::project_settled(&folder.dir);
+        let cutting_result = tokio::task::spawn_blocking(move || {
             let _held = cutting.lock().expect("cutting lock");
-            tools::cut(&ffmpeg, &ffprobe, &project.folder, &pieces, &canvas, &cutting_name, &cache)
+            let dir = project.folder.dir.clone();
+            // Each twentieth, so a page shows it moving and reads the project a few times, however long the film.
+            let told = move |done: f64| {
+                let mut now = rendering.lock().expect("rendering lock");
+                if now.get(&rendered).is_none_or(|was| done - was >= 0.05) {
+                    now.insert(rendered.clone(), done.min(1.0));
+                    drop(now);
+                    crate::events::project_settled(&dir);
+                }
+            };
+            tools::cut(&ffmpeg, &ffprobe, &project.folder, &pieces, &canvas, &cutting_name, &cache, &told)
         })
-        .await
-        .map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
+        .await;
+        self.project.rendering.lock().expect("rendering lock").remove(&asset.name);
+        crate::events::project_settled(&folder.dir);
+        let (made, part) = cutting_result.map_err(|e| Error::new(Kind::Internal, "edit_cut", e.to_string()))??;
         let now = folder.lock()?;
         let held = now.asset(&asset.name);
         let before = held.and_then(|held| held.versions.last()?.files.get("video").cloned());

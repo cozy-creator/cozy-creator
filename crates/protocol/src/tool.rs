@@ -18,6 +18,9 @@ const NOT_ASKED: [&str; 2] = ["seed", "description"];
 /// What a node's text is called, whatever input of its function it goes to.
 pub const TEXT: &str = "instructions";
 
+/// The Edit: what Calcifer makes itself, free, with no machine.
+pub const EDIT: &str = "cozy/edit";
+
 /// `GET /v1/tools`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tools {
@@ -59,6 +62,8 @@ pub enum ControlType {
     Choice,
     Toggle,
     File,
+    /// An Edit's clips: `fields.timeline`.
+    Timeline,
 }
 
 /// One thing a box asks for.
@@ -92,6 +97,35 @@ pub struct Control {
     pub default: Option<Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
+}
+
+/// The Edit as a tool, listed before any function: clips on a track, rendered here.
+pub fn edit() -> Tool {
+    Tool {
+        id: EDIT.to_owned(),
+        package: "cozy".to_owned(),
+        function: "edit".to_owned(),
+        release: String::new(),
+        label: "Edit".to_owned(),
+        kind: "video".to_owned(),
+        description: "Put videos and stills together into one video, free, with no machine".to_owned(),
+        local: false,
+        ui: None,
+        controls: vec![Control {
+            field: "timeline".to_owned(),
+            ty: ControlType::Timeline,
+            label: "Edit".to_owned(),
+            options: None,
+            min: None,
+            max: None,
+            step: None,
+            accept: None,
+            multiple: false,
+            max_duration: None,
+            default: None,
+            required: false,
+        }],
+    }
 }
 
 /// What `callable` makes: the first field of its output that is a picture, a video or a sound. None: it makes no media.

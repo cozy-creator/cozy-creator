@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::PROJECT,
-    format::{Place, canonical, field_rest, invalid, key_of, names_a_file, significant, slot, spaces, split_comment, under_section, yaml_key},
+    format::{Place, canonical, made_here, field_rest, invalid, key_of, names_a_file, significant, slot, spaces, split_comment, under_section, yaml_key},
     graph::{mentions, name_key},
 };
 
@@ -284,7 +284,15 @@ fn write_field(text: &str, name: &str, in_render: bool, field: &str, value: &Val
 pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
     let mut wanted = read(text)?;
     let (mut edited, mut warnings) = (text.to_owned(), vec![]);
-    for (field, value) in fields {
+    let asset = slot(&mut wanted, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
+    let with = asset.get("render").and_then(|render| render.get("with")).or_else(|| asset.get("with")).and_then(Value::as_str);
+    // An Edit's clips, as the file holds them.
+    let (translated, said) = match with.is_some_and(made_here) {
+        true => super::tools::in_the_file(fields)?,
+        false => (fields.clone(), vec![]),
+    };
+    warnings.extend(said);
+    for (field, value) in &translated {
         let field = if field == INSTRUCTIONS { &"prompt".to_owned() } else { field };
         let asset = slot(&mut wanted, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?.clone();
         let rendered = asset.get("render").and_then(Value::as_object).is_some_and(|render| render.contains_key(field));
