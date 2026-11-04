@@ -579,6 +579,9 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
 
 /// Under the table: what is missing, what is out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
+    if let Some(held) = &state.held {
+        output::say(ctx, &render::held_line(held));
+    }
     let (running, queued): (Vec<_>, Vec<_>) = state.queue.iter().partition(|item| item.running);
     if !running.is_empty() {
         let shown: Vec<String> = running.iter().map(|item| item.run.map_or_else(|| item.name.clone(), |run| format!("{} (run {run})", item.name))).collect();
