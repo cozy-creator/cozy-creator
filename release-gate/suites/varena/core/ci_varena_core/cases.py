@@ -30,6 +30,13 @@ def case(function):
     return function
 
 
+def cap(managed, arena=None):
+    """A development cap leaving this much for our own bytes, the core's slack on top."""
+    free, total = torch.cuda.mem_get_info(0)
+    owned = vt.stats(0)["mapped_bytes"] + (arena.stats()["resident_bytes"] if arena else 0)
+    vt.set_limit(0, managed + max(total - free - owned, 0) + (128 << 20))
+
+
 def delta(before, after):
     return {key: after[key] - before[key] for key in COST}
 
@@ -128,7 +135,7 @@ def pending_working_before_weights():
     region = filled(arena, 8 * MIB, 41)
     a, b = torch.cuda.Stream(), torch.cuda.Stream()
     base = vt.stats(0)["mapped_bytes"]
-    vt.set_limit(0, base + 8 * MIB + 32 * MIB)
+    cap(base + 8 * MIB + 32 * MIB, arena)
     with torch.cuda.stream(a):
         scratch = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
         torch.cuda._sleep(SLEEP_S)
@@ -160,7 +167,7 @@ def wait_stalls_nobody():
         del warm
     vt.trim(0)
     base = vt.stats(0)["mapped_bytes"]
-    vt.set_limit(0, base + 34 * MIB)
+    cap(base + 34 * MIB)
     with torch.cuda.stream(a):
         scratch = torch.empty(32 * MIB, dtype=torch.uint8, device="cuda")
         torch.cuda._sleep(3 * SLEEP_S)
@@ -211,7 +218,7 @@ def owner_wait(physical):
         free, _ = torch.cuda.mem_get_info(0)
         filler = torch.empty(free - 128 * MIB, dtype=torch.uint8, device="cuda").fill_(4)
     else:
-        vt.set_limit(0, vt.stats(0)["mapped_bytes"] + 16 * MIB)
+        cap(vt.stats(0)["mapped_bytes"] + 16 * MIB)
     torch.cuda.synchronize()
     before = vt.stats(0)
     began = time.monotonic()
@@ -306,7 +313,7 @@ def split_waits_and_caps():
     stream = torch.cuda.Stream().cuda_stream
     base = vt.stats(0)["mapped_bytes"]
     other = torch.cuda.Stream()
-    vt.set_limit(0, base + 64 * MIB)
+    cap(base + 64 * MIB, arena)
     with torch.cuda.stream(other):
         scratch = torch.empty(60 * MIB, dtype=torch.uint8, device="cuda")
         torch.cuda._sleep(SLEEP_S)
@@ -315,12 +322,13 @@ def split_waits_and_caps():
     selected = vt.split_select(0, "core/pending", [("only", [48 * MIB])], preferred="only", stream=stream)
     assert selected["choice_id"] == "only", selected
     settle()
+    torch.cuda.synchronize()
     # A 96 MiB phase on a 128 MiB limit: each op gets at most 32 MiB, however much is free.
     weights = [filled(arena, 24 * MIB, index) for index in range(4)]
     plan = varena.Plan(arena, [("phase", weights)])
     plan.activate("phase")
     outside = filled(arena, 30 * MIB, 9)
-    vt.set_limit(0, 128 * MIB)
+    cap(128 * MIB, arena)
     menu = [("64", [64 * MIB]), ("16", [16 * MIB]), ("4", [4 * MIB])]
     selected = vt.split_select(0, "core/capped", menu, preferred="64", stream=stream)
     assert selected["choice_id"] == "16", selected
@@ -344,7 +352,7 @@ def eviction_order():
     touch(b)
     torch.cuda.synchronize()
     resident = vt.stats(0)["mapped_bytes"] + arena.stats()["resident_bytes"]
-    vt.set_limit(0, resident)
+    cap(resident, arena)
     first = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda")
     assert not outside.resident and a.resident and b.resident and c.resident, arena.stats()
     second = torch.empty(10 * MIB, dtype=torch.uint8, device="cuda")
@@ -381,7 +389,7 @@ def prefetch_rule():
         assert target.prepare_prefetch(checkpoint, parts, threads=1) is None
         vt.phase_leave(0, token, completed=False)
         # 12 MiB of room: 2 MiB idle region, 8 MiB peak, 2 MiB read: the idle region may stay.
-        vt.set_limit(0, 12 * MIB)
+        cap(13 * MIB, arena)
         token = vt.phase_enter(0, key)
         read = target.prepare_prefetch(checkpoint, parts, threads=1)
         assert read is not None and idle.resident
@@ -398,7 +406,7 @@ def prefetch_rule():
         vt.phase_leave(0, token, completed=False)
         # A full card: an idle region gives way to the read, by the same rule.
         vt.trim(0)
-        vt.set_limit(0, 2 * MIB + 8 * MIB)
+        cap(2 * MIB + 8 * MIB, arena)
         token = vt.phase_enter(0, key)
         read = target.prepare_prefetch(checkpoint, parts, threads=1)
         assert read is not None and not idle.resident, arena.stats()
@@ -412,6 +420,15 @@ def prefetch_rule():
     return {"attempts": after["prefetch_attempts"] - before["prefetch_attempts"],
             "admissions": after["prefetch_admissions"] - before["prefetch_admissions"]}
 
+
+if MODE == "varena":
+    warm = torch.empty(64 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+    torch.cuda._sleep(1000)
+    warm.add_(1)
+    int(warm.sum())
+    torch.cuda.synchronize()
+    del warm
+    vt.trim(0)
 
 if MODE == "native":
     def report(name, row):

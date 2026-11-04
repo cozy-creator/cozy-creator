@@ -37,7 +37,6 @@ def correct_bytes(tensor, expected):
 
 def measure():
     arena = varena.Arena(0)
-    arena.clear_streaming_limit()
     region = arena.reserve(8 * MIB)
     result = {"managed_limit_bytes": 64 * MIB, "request_bytes": 24 * MIB,
               "initial_cache_sizes": [8 * MIB, 16 * MIB, 32 * MIB]}

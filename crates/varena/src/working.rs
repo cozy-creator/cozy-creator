@@ -646,6 +646,7 @@ impl Working {
         pool: Option<PoolId>,
         class: usize,
     ) -> crate::AllocationResult<u64> {
+        self.room.sample(&self.driver)?;
         if self.room.over(bytes) != 0 {
             return Err(Error::OutOfMemory {
                 requested_bytes: bytes,

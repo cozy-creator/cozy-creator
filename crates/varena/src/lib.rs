@@ -349,15 +349,21 @@ pub struct Arena {
     state: Mutex<State>,
 }
 
-/// This process's GPU bytes on one device against the room it may hold (`make_room`): its mapped
-/// weight pages and working allocations. A smaller room reads as a
-/// smaller card to every fill and every working mapping.
+/// What the driver's own charge may grow by between samples under a development cap.
+const CAP_SLACK: usize = 128 << 20;
+
+/// This process's GPU bytes on one device against the room it may hold: its mapped weight
+/// pages and working allocations. A smaller room reads as a smaller card to every fill and
+/// every working mapping.
 struct Room {
-    /// usize::MAX: no limit.
+    /// `make_room`, bounding managed bytes. usize::MAX: no limit.
     limit: AtomicUsize,
     pages: AtomicUsize,
     working: AtomicUsize,
+    /// `set_limit`: the card as a smaller card would be, the driver's own charge included.
     ceiling: AtomicUsize,
+    /// That charge at the last sample: what the card uses beyond our own bytes.
+    outside: AtomicUsize,
     // Actual successful physical releases only. Observations permit a real retry,
     // never a grant or attribution to one callback/peer.
     released: AtomicU64,
@@ -370,26 +376,45 @@ impl Default for Room {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             ceiling: AtomicUsize::new(usize::MAX),
+            outside: AtomicUsize::new(0),
             released: AtomicU64::new(0),
         }
     }
 }
 
 impl Room {
+    fn owned(&self) -> usize {
+        self.pages.load(Ordering::Acquire).saturating_add(self.working.load(Ordering::Acquire))
+    }
+
+    /// The most our own bytes may reach right now.
+    fn capacity(&self) -> usize {
+        let ceiling = self.ceiling.load(Ordering::Acquire);
+        let cap = if ceiling == usize::MAX {
+            usize::MAX
+        } else {
+            ceiling.saturating_sub(self.outside.load(Ordering::Acquire).saturating_add(CAP_SLACK))
+        };
+        cap.min(self.limit.load(Ordering::Acquire))
+    }
+
     fn headroom(&self) -> usize {
-        self.limit.load(Ordering::Acquire).min(self.ceiling.load(Ordering::Acquire))
-            .saturating_sub(self.pages.load(Ordering::Acquire).saturating_add(self.working.load(Ordering::Acquire)))
+        self.capacity().saturating_sub(self.owned())
     }
 
     /// Bytes `more` would put over the limit.
     fn over(&self, more: usize) -> usize {
-        self.pages
-            .load(Ordering::Acquire)
-            .saturating_add(self.working.load(Ordering::Acquire))
-            .saturating_add(more)
-            .saturating_sub(
-                self.limit.load(Ordering::Acquire).min(self.ceiling.load(Ordering::Acquire)),
-            )
+        self.owned().saturating_add(more).saturating_sub(self.capacity())
+    }
+
+    /// Keep a development cap true: the driver's charge moves as contexts and kernels load.
+    /// A slow path calls this before it reads the room; outside capture, in the context.
+    fn sample(&self, driver: &cuda::Driver) -> Result<()> {
+        if self.ceiling.load(Ordering::Acquire) != usize::MAX {
+            let (free, total) = driver.memory_info()?;
+            self.outside.store(total.saturating_sub(free).saturating_sub(self.owned()), Ordering::Release);
+        }
+        Ok(())
     }
 }
 
@@ -742,6 +767,7 @@ impl Arena {
     /// reads as the driver's out of memory, so each admission treats a smaller room as a smaller
     /// card (reclaims what it may, else refuses).
     fn create(&self, bytes: usize) -> AllocationResult<u64> {
+        self.room.sample(&self.driver)?;
         if self.room.over(bytes) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
@@ -1711,13 +1737,19 @@ pub fn make_room(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
     reclaim_room(device, &room)
 }
 
-/// Bound managed physical memory, independently of the temporary room requested by a peer.
-/// Native decode, Torch working allocations and resident weight pages all count.
-/// Contexts and allocations made by other CUDA libraries are outside this ceiling.
+/// Development only: use at most this much of the card, as a smaller card would. The core
+/// keeps it true against the driver's own charge, which it samples at every slow path.
+/// Independent of the temporary room requested by a peer; the smaller wins.
 pub fn set_limit(device: i32, limit: Option<usize>) -> Result<ReclaimReport> {
-    let room = room(device)?;
-    room.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);
-    reclaim_room(device, &room)
+    let activity = activity(device)?;
+    activity.room.ceiling.store(limit.unwrap_or(usize::MAX), Ordering::Release);
+    if let Some(driver) = activity.driver.get()
+        && !is_capturing(device)?
+    {
+        let _context = driver.enter()?;
+        activity.room.sample(driver)?;
+    }
+    reclaim_room(device, &activity.room)
 }
 
 fn reclaim_room(device: i32, room: &Room) -> Result<ReclaimReport> {

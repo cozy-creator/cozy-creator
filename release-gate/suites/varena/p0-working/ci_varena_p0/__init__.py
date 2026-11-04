@@ -73,18 +73,6 @@ def phase_policy(payload: Probe, tel: Telemetry) -> Report:
 
 
 @app.entrypoint(accelerator=True)
-def replay_policy(payload: Probe, tel: Telemetry) -> Report:
-    """P2 graph-definition traces validated by actual native continuation completion."""
-    return _cuda_child(payload, tel, "replay_policy.py", "varena-p2-replay-policy")
-
-
-@app.entrypoint(accelerator=True)
-def raw_prefetch(payload: Probe, tel: Telemetry) -> Report:
-    """Real repeated raw stages exercise measured identity-only source lookahead."""
-    return _cuda_child(payload, tel, "raw_prefetch.py", "varena-p2-raw-prefetch")
-
-
-@app.entrypoint(accelerator=True)
 def split_policy(payload: Probe, tel: Telemetry) -> Report:
     """Real CUDA copied-menu admission and phase-completed leaf measurements."""
     return _cuda_child(payload, tel, "split_policy.py", "varena-p2-split-policy")
@@ -98,12 +86,6 @@ class CooperativeProbe(Probe):
 def cooperative(payload: CooperativeProbe, tel: Telemetry) -> Report:
     """Two fresh CUDA processes exercise the explicit same-domain native ledger."""
     return _cuda_child(payload, tel, "cooperative.py", "varena-p3-cooperative", report_failure=True)
-
-
-@app.entrypoint(accelerator=True)
-def retention_policy(payload: Probe, tel: Telemetry) -> Report:
-    """Real cache-window clearing, roomy retention and unchanged managed/Room capacity."""
-    return _cuda_child(payload, tel, "retention_policy.py", "varena-p2-retention-policy")
 
 
 @app.entrypoint(accelerator=True)

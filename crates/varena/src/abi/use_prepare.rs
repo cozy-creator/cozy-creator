@@ -258,11 +258,9 @@ impl Admission {
         let room = &self.gpu.arena.room;
         let weights = room.pages.load(Ordering::Acquire);
         let working = room.working.load(Ordering::Acquire);
-        let limit = room
-            .limit
-            .load(Ordering::Acquire)
-            .min(room.ceiling.load(Ordering::Acquire));
         let _context = self.gpu.arena.driver.enter()?;
+        room.sample(&self.gpu.arena.driver)?;
+        let limit = room.capacity();
         let (physical_free, _) = self.gpu.arena.driver.memory_info()?;
         let available = physical_free.min(limit.saturating_sub(weights.saturating_add(working)));
         Ok(Snapshot {

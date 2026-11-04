@@ -268,18 +268,9 @@ impl Fit {
 }
 
 fn headroom(owner: &Working, free: usize, released: usize) -> usize {
-    let owned = owner
-        .room
-        .pages
-        .load(Ordering::Acquire)
-        .saturating_add(owner.room.working.load(Ordering::Acquire));
-    let limit = owner
-        .room
-        .limit
-        .load(Ordering::Acquire)
-        .min(owner.room.ceiling.load(Ordering::Acquire));
+    let owned = owner.room.owned();
     free.saturating_add(released)
-        .min(limit.saturating_sub(owned.saturating_sub(released)))
+        .min(owner.room.capacity().saturating_sub(owned.saturating_sub(released)))
 }
 
 fn fits(
@@ -404,9 +395,10 @@ fn snapshot(device: i32, owner: &Working, key: &str, stream: u64) -> Result<Menu
     let _context = owner.driver.enter()?;
     let polled = owner.poll(&mut state);
     polled.map_err(|error| owner.fail(&mut state, error))?;
+    owner.room.sample(&owner.driver)?;
     let (free, total) = owner.driver.memory_info()?;
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
-    Ok(Menu { plans, capacity: total.min(owner.room.limit.load(Ordering::Acquire)).min(owner.room.ceiling.load(Ordering::Acquire)) })
+    Ok(Menu { plans, capacity: total.min(owner.room.capacity()) })
 }
 
 impl Menu {
@@ -582,6 +574,7 @@ fn split_begin_inner(
         let _context = owner.driver.enter()?;
         let result = (|| -> Result<u64> {
             owner.poll(&mut state)?;
+            owner.room.sample(&owner.driver)?;
             let (free, _) = owner.driver.memory_info()?;
             let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
             let plan = plans.iter().find(|plan| plan.id == choice_id)

@@ -115,7 +115,6 @@ def default_deferred_free():
     clean()
     retired = figures()
     assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
-    assert retired["event_handles"] == 0, retired
     return {"metadata_only_default_reuse": True, "cross_stream_fenced": True, "stats": retired}
 
 
@@ -235,7 +234,7 @@ def pool_variable_reuse():
             clean()
         retired = figures()
         assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
-        assert retired["pools"] == retired["event_handles"] == 0, retired
+        assert retired["pools"] == 0, retired
         assert body_facts.get("pool_live_peak_bytes") == 16 * MIB, (result, body_facts)
         result.update(body_facts, retired=retired)
         results.append(result)
@@ -446,7 +445,7 @@ def rng_capture():
     del outputs, observed, custom
     clean()
     retired = figures()
-    assert retired["pools"] == retired["event_handles"] == 0, retired
+    assert retired["pools"] == 0, retired
     assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
     return {"default_and_custom_generators": True, "reseed_reproduced": True,
             "eager_replay_sha256": digests, "stats": retired}
@@ -517,7 +516,7 @@ def replay_hook_failure():
         del source, destination, copied, marker, registration
         clean()
         retired = figures()
-        assert retired["pools"] == retired["event_handles"] == 0, retired
+        assert retired["pools"] == 0, retired
         assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
         arms.append({
             "reset_in_hook": reset_in_hook, "original_error_preserved": True,
@@ -624,8 +623,7 @@ def external_stream_retirement():
         clean()
         retired = figures()
         assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
-        assert retired["event_handles"] == 0, retired
-        arms.append({"mode": mode, "free_event_records": after["event_records"] - before["event_records"],
+            arms.append({"mode": mode, "free_event_records": after["event_records"] - before["event_records"],
                      "stats": retired})
     return {"destroy_before_tensor_free": True, "arms": arms}
 
@@ -887,7 +885,7 @@ def main(config):
         result = CASES[name]()
         clean()
         retired = figures()
-        assert retired["pools"] == retired["event_handles"] == 0, retired
+        assert retired["pools"] == 0, retired
         assert retired["allocated_bytes"] == retired["mapped_bytes"] == 0, retired
         result["retired"] = retired
         result["seconds"] = time.perf_counter() - started

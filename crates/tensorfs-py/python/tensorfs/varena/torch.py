@@ -183,11 +183,11 @@ def trim(device: DeviceLike = 0) -> int:
 
 
 def set_limit(device: DeviceLike, bytes: int | None = None) -> int:
-    """Bound resident weights plus mapped Torch/native working memory.
+    """Development only: use at most this much of the card, as a smaller card would.
 
-    This static ceiling is independent of temporary make_room limits; the smaller wins.
-    Contexts and allocations owned by other CUDA libraries are outside this managed total.
-    Live owners are retained when lowering the limit. Returns unused bytes reclaimed now.
+    The core keeps it true against the driver's own charge. Independent of temporary
+    make_room limits; the smaller wins. Live owners are retained when lowering it.
+    Returns unused bytes reclaimed now.
     """
     _installed()
     return _ext._varena_working_set_limit(_device(device), bytes)

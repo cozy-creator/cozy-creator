@@ -173,6 +173,7 @@ impl Cache {
                 )
                 .into());
             }
+            owner.room.sample(&owner.driver)?;
             if owner.room.over(bytes) != 0 {
                 return Err(Error::OutOfMemory {
                     requested_bytes: bytes,

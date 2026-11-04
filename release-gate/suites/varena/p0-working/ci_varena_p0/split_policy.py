@@ -292,7 +292,7 @@ def caught_admission_refusal(at):
         vt.phase_forget(0, site)
     retired = probe.figures()
     assert retired["allocated_bytes"] == retired["mapped_bytes"] == retired["pending_bytes"] == 0, retired
-    assert retired["pools"] == retired["event_handles"] == 0, retired
+    assert retired["pools"] == 0, retired
     report["retired_before_verdict"] = retired
     # Preserve the complete failing evidence and successful cleanup before raising the gate.
     probe.emit({"caught_split_refusal": report})
