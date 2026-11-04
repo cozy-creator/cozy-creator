@@ -999,10 +999,11 @@ impl Device {
             self.working.fetch_add(chunk.bytes, Ordering::AcqRel);
             state.stats.mapped_bytes += chunk.bytes;
             state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
-            self.driver().map_only(base + chunk.offset as u64, chunk.bytes, handle)?;
+            let at = base + chunk.offset as u64;
+            self.driver().map_only(at, chunk.bytes, handle)?;
+            observer::mapped(self, at, chunk.bytes, pool, class)?;
         }
         self.driver().grant(base, segment.bytes)?;
-        observer::mapped(self, base, segment.bytes, pool, class)?;
         Ok(())
     }
 

@@ -48,9 +48,13 @@ pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
     let states = owners.iter().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
     let mut segments = Vec::new();
     for (owner, state) in owners.iter().zip(&states) {
-        segments.extend(state.segments.iter().filter(|(_, segment)| segment.backed()).map(|(address, segment)| WorkingSegment {
-            device: owner.ordinal, address: *address, bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool,
-        }));
+        // By handle, as each comes and goes.
+        for (address, segment) in &state.segments {
+            segments.extend(segment.chunks.iter().filter(|chunk| chunk.handle.is_some()).map(|chunk| WorkingSegment {
+                device: owner.ordinal, address: *address + chunk.offset as u64, bytes: chunk.bytes,
+                size_class: segment.size_class, pool: segment.pool,
+            }));
+        }
     }
     observer.initialize(&segments)?;
     OBSERVER.set(observer).map_err(|_| Error::Invalid("working observer already installed"))
