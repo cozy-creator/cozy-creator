@@ -920,10 +920,6 @@ impl Updates {
         let publication = (|| {
             write_json(&self.paths.update("pending.json"), &pending)?;
             if let (Some(b), Some(staged)) = (&binary, staged) {
-                platform::native_bundle::copy_libraries(
-                    staged.parent().unwrap_or(Path::new(".")),
-                    b.launch.parent().unwrap_or(Path::new(".")),
-                )?;
                 super::binary::swap(&b.launch, staged)?;
             }
             if let Some(candidate) = &candidate {
@@ -1047,7 +1043,7 @@ impl Updates {
             }
         }
         self.set(|s| s.enter("preparing"))?;
-        let staged = platform::native_bundle::staged(&self.resolve("cozy", choice)?)?;
+        let staged = self.resolve("cozy", choice)?;
         #[cfg(unix)]
         fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
         let version = super::binary::check(&staged).map_err(|why| coded("binary_incompatible", why))?;
