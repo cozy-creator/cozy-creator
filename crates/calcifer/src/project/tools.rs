@@ -546,14 +546,33 @@ fn bit_rate(bit_rate: Option<u64>) -> Vec<String> {
     }
 }
 
-/// What is measured of a picture or video, when ffprobe reads it: a video's shape, a picture's size and its share fully transparent.
-pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, video: bool) -> Option<folder::File> {
+/// What is measured of a file of `field`, when ffprobe reads it: a video's shape, a picture's size and its share fully transparent, a sound's length.
+pub fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) -> Option<folder::File> {
+    if field == "audio" {
+        let duration_ms = (seconds_of(ffprobe, path)? * 1000.0).round() as u64;
+        return (duration_ms > 0).then(|| folder::File { duration_ms, ..Default::default() });
+    }
     let probe = probe(ffprobe, path, false).ok()?;
     let (width, height) = probe.size;
-    Some(match video {
-        true => folder::File { width, height, fps: probe.rate, frames: probe.frames, ..Default::default() },
-        false => folder::File { width, height, alpha: transparent_share(ffmpeg, path), ..Default::default() },
+    Some(match field {
+        "video" => folder::File { width, height, fps: probe.rate, frames: probe.frames, ..Default::default() },
+        _ => folder::File { width, height, alpha: transparent_share(ffmpeg, path), ..Default::default() },
     })
+}
+
+/// How long the video or sound at `path` lasts, as its container says.
+pub fn seconds_of(ffprobe: &Path, path: &Path) -> Option<f64> {
+    let args = ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"];
+    let done = std::process::Command::new(ffprobe).args(args).arg(path).output().ok()?;
+    String::from_utf8_lossy(&done.stdout).trim().parse().ok()
+}
+
+/// Whether the picture at `path` has an alpha channel, or a palette that may.
+pub fn has_alpha(ffprobe: &Path, path: &Path) -> bool {
+    let args = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"];
+    let Ok(done) = std::process::Command::new(ffprobe).args(args).arg(path).output() else { return false };
+    let format = String::from_utf8_lossy(&done.stdout);
+    ["rgba", "bgra", "argb", "abgr", "ya", "gbrap", "pal8"].iter().any(|alpha| format.contains(alpha))
 }
 
 /// What the edit needs of the video at `path`; its keyframes only with `keys`.

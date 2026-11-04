@@ -297,8 +297,7 @@ impl Doc {
             defaults.insert(section.clone(), Value::Object(unfolded(&format!("defaults.{section}"), block, &mut warnings)));
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
-        let mut lock = folder.lock()?;
-        folder.measure(&mut lock)?;
+        let lock = folder.lock()?;
         let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
         for name in protocol::yaml::keys(text, &["assets"]) {
             named(&name)?;
@@ -1077,11 +1076,11 @@ fn unfolded(name: &str, mut body: Map<String, Value>, warnings: &mut Vec<String>
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(" is not a hash: {written} is not read: `cozy project import {}` prints what to write", quoted(written)));
+        return Err(format!(" is not a hash: {written} is not read: `cozy project import {}` adds it to the project", quoted(written)));
     }
     match lock.matching(&written.to_ascii_lowercase()).as_slice() {
         [file] => Ok(file.sha256.clone()),
-        [] => Err(format!(": no file's hash starts with {written}: `cozy project import <file>` prints what to write")),
+        [] => Err(format!(": no file's hash starts with {written}: `cozy project import <file>` adds one to the project")),
         several => Err(format!(": {written} fits {} files: write more of its hash", several.len())),
     }
 }
@@ -1092,6 +1091,106 @@ fn quoted(text: &str) -> String {
         true => format!("'{}'", text.replace('\'', r"'\''")),
         false => text.to_owned(),
     }
+}
+
+/// A new empty project's project.yaml.
+pub fn blank() -> String {
+    format!("version: {FORMAT}\n")
+}
+
+/// `text` as it calls something new, if it can: through `as_name`, a `.` as `_`, since a `.` means a sub-entity or a numbered write.
+pub fn plain_name(text: &str) -> Option<String> {
+    let name = as_name(&text.replace('.', "_"));
+    (!name_key(&name).is_empty()).then_some(name)
+}
+
+/// `wanted`, or with `_2`, `_3`, … if something in the project goes by it, or versions wait in project.lock for it.
+pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
+    let taken = |name: &str| name_key(name) == ALL || doc.find(name).is_some() || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
+    if !taken(wanted) {
+        return wanted.to_owned();
+    }
+    (2..).map(|n| format!("{wanted}_{n}")).find(|name| !taken(name)).expect("a free name")
+}
+
+/// `name` as a key of a mapping: quoted when YAML would read it as another key, or none.
+pub fn yaml_key(name: &str) -> String {
+    match protocol::yaml::keys(&format!("{name}: 1"), &[]).as_slice() {
+        [key] if key == name => name.to_owned(),
+        _ => format!("\"{name}\""),
+    }
+}
+
+/// `text` with one constant more under `assets:`, on a line of its own after what is there, the section made if it isn't. Nothing
+/// else moves, and what it made is checked to read as this project with that one asset more. Err: why not, and what to write by hand.
+pub fn constant(text: &str, name: &str, field: &str, value: &str) -> Result<String, Error> {
+    let one = format!("{}: {{{field}: {value}}}", yaml_key(name));
+    let by_hand = |why: &str| invalid("project_edit", format!("{name} can't be added to {}: {why}", folder::PROJECT)).remedy(format!("write `{one}` under `assets:` yourself"));
+    let read = |text: &str| protocol::yaml::to_json(text);
+    let mut wanted = read(text).map_err(|why| invalid("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
+    if wanted.is_null() {
+        wanted = json!({});
+    }
+    let top = wanted.as_object_mut().ok_or_else(|| by_hand("it is no mapping of sections"))?;
+    let assets = top.entry("assets").or_insert(Value::Null);
+    if assets.is_null() {
+        *assets = json!({});
+    }
+    let written = read(value).unwrap_or_else(|_| json!(value));
+    assets.as_object_mut().ok_or_else(|| by_hand("its `assets:` is no mapping"))?.insert(name.to_owned(), json!({field: written}));
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let header = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some("assets"));
+    let tries: Vec<String> = match header {
+        None => {
+            let glue = if text.is_empty() { "" } else if text.ends_with('\n') { "\n" } else { "\n\n" };
+            vec![format!("{text}{glue}assets:\n  {one}\n")]
+        }
+        Some(at) => {
+            let (written, comment) = split_comment(&lines[at][lines[at].find(':').expect("a key") + 1..]);
+            let comment = comment.map_or(String::new(), |comment| format!("  {comment}"));
+            match written {
+                "" => {
+                    let end = ((at + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+                    let last = ((at + 1)..end).rev().find(|&n| significant(lines[n]));
+                    let indent = ((at + 1)..end).find(|&n| significant(lines[n])).map_or(2, |n| spaces(lines[n]));
+                    let line = format!("{}{one}\n", " ".repeat(indent));
+                    // Past a text's last line unless that isn't the text's end, then at the section's end.
+                    [last.unwrap_or(at), end - 1].iter().map(|&after| insert_line(&lines, after, &line)).collect()
+                }
+                "{}" | "~" | "null" => vec![replace_line(&lines, at, &format!("assets:{comment}\n  {one}\n"))],
+                written => match written.strip_prefix('{').and_then(|inner| inner.strip_suffix('}')) {
+                    Some(inner) => vec![replace_line(&lines, at, &format!("assets: {{{one}, {}}}{comment}\n", inner.trim_start()))],
+                    None => vec![],
+                },
+            }
+        }
+    };
+    tries.into_iter().find(|edited| read(edited).is_ok_and(|read| read == wanted)).ok_or_else(|| by_hand("the edit would change something else"))
+}
+
+/// `text` with asset `from` called `to`: its key, and every `<from>`. Comments and formatting stay.
+pub fn renamed_in(text: &str, from: &str, to: &str) -> Result<String, Error> {
+    let by_hand = || invalid("project_edit", format!("{from} can't be renamed in {}: it has no line of its own under `assets:`", folder::PROJECT)).remedy(format!("rename it there yourself, then `cozy project rename {from} {to}`"));
+    let (mut said, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let inner = after.find(['<', '>', '\n']).filter(|&end| after.as_bytes()[end] == b'>').map(|end| &after[..end]);
+        match inner.filter(|inner| is_name(inner) && name_key(inner) == name_key(from)) {
+            Some(inner) => {
+                said.push_str(&rest[..=open]);
+                said.push_str(to);
+                rest = &after[inner.len()..];
+            }
+            None => {
+                said.push_str(&rest[..=open]);
+                rest = after;
+            }
+        }
+    }
+    said.push_str(rest);
+    let place = Place::find(&said, from).ok_or_else(by_hand)?;
+    let written = key_of(place.lines[place.key]).ok_or_else(by_hand)?;
+    Ok(replace_line(&place.lines, place.key, &place.lines[place.key].replacen(&written, &yaml_key(to), 1)))
 }
 
 /// `value` as a file field writes it: quoted when YAML would read it as a number.

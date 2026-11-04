@@ -207,7 +207,7 @@ test = "pr: projects: only what has no state; reverting runs nothing; cuts; adap
 test = "pr: projects: a queued take dropped; alone or not, what it canceled isn't sent again"
 
 ["project import"]
-test = "pr: projects: a path and a URL as real files, a type refused, what it says when it copies nothing"
+test = "pr: projects: a path and a URL as real files and named elements, a type refused, one file for two elements; what the page does: parts, by hash, canvas, thumbs"
 "--remove-background" = "pr: a project's imports: already transparent, no machine; model: a real run"
 "--on" = "pr: a project's imports: no such machine"
 

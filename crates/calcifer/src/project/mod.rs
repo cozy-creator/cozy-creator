@@ -2,15 +2,17 @@
 //! (and keeps every folder it opened in its index) and walks it: an operation makes an asset only when it has no state, and is an
 //! ordinary run, sent as soon as what it reads has settled, so independent ones run at once and the machines' schedulers place
 //! them. Its package's adapter for its kind turns it into calls, and they land as one version of the asset, in `files/` and
-//! project.lock (people write project.yaml; cozy writes one line of it, at `approve` and `unpin`). The reserved package `cozy` runs
+//! project.lock (people write project.yaml; cozy writes one line of it at `approve`, `unpin`, `import` and `rename`). The reserved package `cozy` runs
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in
 //! project.lock, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod archive;
+mod canvas;
 mod folder;
 mod format;
 mod graph;
 pub(crate) mod host;
 mod remote;
+mod thumbs;
 mod tools;
 
 use std::{
@@ -66,6 +68,15 @@ pub struct Projects {
     open: Mutex<HashMap<String, Arc<Project>>>,
     /// Read on first use.
     index: Mutex<Option<Index>>,
+    /// What was last heard of each published package projects name, by `with`.
+    heard: Mutex<HashMap<String, Heard>>,
+}
+
+/// A package as a project's read knows it: when it was last asked of, and what that found.
+#[derive(Default)]
+struct Heard {
+    asked: Option<Instant>,
+    package: Option<Package>,
 }
 
 /// Every project folder Calcifer opened, by id.
@@ -95,6 +106,8 @@ struct Project {
     cutting: Arc<Mutex<()>>,
     /// Held while its files move to or from its Hub.
     moving: tokio::sync::Mutex<()>,
+    /// Held while an import chooses a name and writes it.
+    importing: Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
 }
@@ -104,6 +117,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects", post(open).get(list))
         .route("/v1/projects/{id}", get(state).delete(forget))
         .route("/v1/projects/{id}/imports", post(import))
+        .route("/v1/projects/{id}/canvas", get(canvas::read).patch(canvas::patch))
+        .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
         .route("/v1/projects/{id}/runs", post(runs))
         .route("/v1/projects/{id}/cancel", post(cancel))
         .route("/v1/projects/{id}/approve", post(approve))
@@ -150,6 +165,7 @@ impl Projects {
                     asked,
                     cutting: Arc::default(),
                     moving: tokio::sync::Mutex::default(),
+                    importing: Mutex::default(),
                     keys: Mutex::default(),
                 })
             })
@@ -173,6 +189,10 @@ impl Projects {
 
 /// A picture at least this share transparent has its background gone already.
 const OPAQUE_BELOW: f64 = 0.05;
+/// How long what an import under an `Idempotency-Key` answered is kept for its retries: as long as a held file waits.
+const IMPORT_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
+/// How long what was heard of a package stands before a read asks again, in the background.
+const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// The words a run hears outside a project, as `git` says it of a repository.
 pub(crate) fn not_in_one() -> Error {
@@ -377,30 +397,33 @@ fn status_next(folder: &Folder) -> Vec<String> {
     vec![format!("cozy project -p {} status", folder.dir.display())]
 }
 
-/// Opens the project holding `path` (the nearest folder up from it with a project.yaml), or makes
-/// one there (`create`: the folder and its project.yaml); either way it is recorded in the index as
+/// By `name`, makes a new empty project under `~/.cozy/projects`. By `path`, opens the project holding it (the nearest folder up from
+/// it with a project.yaml), or makes one there (`create`: the folder and its project.yaml). Either way it is recorded in the index as
 /// used now.
 async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
-    if !open.path.is_absolute() {
-        return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is opened by its absolute path")));
-    }
-    let io = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", open.path.display())));
-    let dir = match open.create {
-        true => {
-            let project = open.path.join(folder::PROJECT);
+    let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
+    let dir = match (&open.name, &open.path) {
+        (Some(name), _) => named_project(&api, name).map_err(Refusal)?,
+        (None, Some(path)) if !path.is_absolute() => {
+            return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is opened by its absolute path")));
+        }
+        (None, Some(path)) if open.create => {
+            let project = path.join(folder::PROJECT);
             if project.exists() {
-                let said = format!("{} is a project already", open.path.display());
+                let said = format!("{} is a project already", path.display());
                 return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said)));
             }
-            std::fs::create_dir_all(&open.path).map_err(io)?;
-            platform::durable::replace(&project, format::starter().as_bytes(), 0o644)
-                .map_err(|e| io(std::io::Error::other(e)))?;
-            let dir = std::fs::canonicalize(&open.path).map_err(io)?;
+            std::fs::create_dir_all(path).map_err(|e| io(path, e))?;
+            platform::durable::replace(&project, format::starter().as_bytes(), 0o644).map_err(|e| io(path, std::io::Error::other(e)))?;
+            let dir = std::fs::canonicalize(path).map_err(|e| io(path, e))?;
             crate::events::project_changed(&dir);
             dir
         }
-        false => holding(&open.path).map_err(Refusal)?,
+        (None, Some(path)) => holding(path).map_err(Refusal)?,
+        (None, None) => {
+            return Err(Refusal(Error::new(Kind::Usage, "project_path", "a project is made by its name, or opened by its absolute path")));
+        }
     };
     // Indexed first: a walk this open starts records itself there.
     let (id, used_at_ms) = (project_id(&dir), now_ms());
@@ -410,7 +433,37 @@ async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) 
     });
     api.projects.open(&api, &dir).map_err(Refusal)?;
     let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
-    Ok(Json(Opened { id, path: dir, next }))
+    Ok(Json(Opened { next, ..opened(id, &dir) }))
+}
+
+/// The project `id`, in `dir`, as an answer gives it.
+fn opened(id: String, dir: &FsPath) -> Opened {
+    let name = dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    Opened { id, path: dir.to_owned(), name, next: vec![] }
+}
+
+/// A new empty project called `name` under `~/.cozy/projects`, or the next free name: what it could be called, `_2`, `_3`, ….
+fn named_project(api: &Api, name: &str) -> Result<PathBuf, Error> {
+    let home = api.machines.hubs.home().projects();
+    let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
+    std::fs::create_dir_all(&home).map_err(io)?;
+    let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
+    let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
+    for name in names {
+        let dir = home.join(name);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                let project = dir.join(folder::PROJECT);
+                platform::durable::replace(&project, format::blank().as_bytes(), 0o644).map_err(|e| io(std::io::Error::other(e)))?;
+                let dir = std::fs::canonicalize(&dir).map_err(io)?;
+                crate::events::project_changed(&dir);
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io(e)),
+        }
+    }
+    unreachable!("names go on")
 }
 
 /// The project folder holding `path`: the nearest, up from it, with a project.yaml.
@@ -496,7 +549,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     };
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
-    warnings.extend(unadapted(&api, &doc, folder).await);
+    warnings.extend(unadapted(&api, &doc));
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
         let made = standing.version().and_then(|number| held?.version(number));
@@ -558,27 +611,38 @@ fn entity_row(doc: &Doc, i: usize) -> protocol::project::Entity {
     }
 }
 
-/// Each asset whose published package, as this computer knows it or can ask at once, has no adapter for its kind. Local code is
-/// described only on a machine, so a render says it.
-async fn unadapted(api: &Arc<Api>, doc: &Doc, folder: &Folder) -> Vec<String> {
-    let host = Host::new(api);
-    let (mut said, mut known) = (vec![], HashMap::new());
+/// What can be said of each asset whose published package has been heard of: its adapter for its kind, its tags. A read waits on no
+/// Hub and writes nothing, so what isn't heard of yet is said by a later read, or a render. Local code is described only on a machine, so a render says it.
+fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<String> {
+    let mut said = vec![];
     for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()) {
         let with = doc.target(i);
         if protocol::target::written_as_path(&with) || with.ends_with(".py") {
             continue;
         }
-        if !known.contains_key(&with) {
-            let asked = tokio::time::timeout(std::time::Duration::from_secs(3), host.published("", &with, None)).await;
-            known.insert(with.clone(), asked.ok().and_then(Result::ok));
-        }
-        let Some(package) = &known[&with] else { continue };
-        said.extend(read_tags(doc, folder, i, package));
+        let Some(package) = heard_of(api, &with) else { continue };
+        said.extend(doc.said_once_read(i, &package.reserved()));
         if doc.assets[i].pin.is_none() && package.adapter(&doc.assets[i].kind).is_none() {
             said.push(no_adapter(&doc.assets[i].name, &package.name, &doc.assets[i].kind));
         }
     }
     said
+}
+
+/// What was last heard of the package `with`, this moment. If that isn't recent, it is asked again in the background.
+fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
+    let mut heard = api.projects.heard.lock().expect("heard lock");
+    let entry = heard.entry(with.to_owned()).or_default();
+    if entry.asked.is_none_or(|asked| asked.elapsed() > HEARD_FOR) {
+        entry.asked = Some(Instant::now());
+        let (api, with) = (api.clone(), with.to_owned());
+        tokio::spawn(async move {
+            if let Ok(package) = Host::new(&api).published("", &with, None).await {
+                api.projects.heard.lock().expect("heard lock").entry(with).or_default().package = Some(package);
+            }
+        });
+    }
+    entry.package.clone()
 }
 
 /// Keeps `package`'s tags in project.lock for what reads the file, and answers what asset `i` couldn't be told until now.
@@ -670,6 +734,8 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         ([], Stand::Missing) => format!("no {noun} yet"),
     };
     let made = standing.version().and_then(|number| held?.version(number));
+    let main = folder::main_of(&files).and_then(|sha256| lock.files.get(sha256));
+    let measured = |number: fn(&folder::File) -> u64| main.map(number).filter(|&number| number > 0);
     let row_standing = match (making.is_empty(), &standing.state) {
         (false, _) => RowStanding::Making,
         (true, Stand::Stale(_)) => RowStanding::OutOfDate,
@@ -692,6 +758,11 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         inputs: standing.inputs.clone(),
         path: main_path(lock, &files),
         files: listed(lock, &files),
+        sha256: main.map(|file| file.sha256.clone()),
+        field: main.map(|file| file.field().to_owned()),
+        width: measured(|file| file.width),
+        height: measured(|file| file.height),
+        duration_ms: measured(folder::File::lasts_ms),
         made_by: made.and_then(|made| made.made_by.as_ref()).map(|by| by.with.clone()),
         status,
     }
@@ -799,13 +870,16 @@ async fn reclaim(
         folder.update_lock(|lock| lock.assets.retain(|key, _| doc.holds(key).is_some())).map_err(Refusal)?;
     }
     let (files, bytes) = folder.sweep(&kept, asked.yes).map_err(Refusal)?;
+    if asked.yes {
+        canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
+    }
     let next = (!asked.yes && (files > 0 || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
     Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes, next }))
 }
 
-/// Keeps what project.lock has of `from` as `to`, an asset project.yaml names now with no versions: its versions and pin, and what
-/// is pending or owed of it. Its readers' text changed, so they go out of date unless pinned. Refused while the project renders.
-/// Nothing on disk moves.
+/// Renames asset `from` to `to`: in project.yaml its key and every `<from>`, unless the file has moved to `to` already, then what
+/// project.lock keeps of it, its pin and what is pending or owed of it, and its row on the canvas. Its readers' text changed, so they
+/// go out of date unless pinned. Refused while the project renders. Nothing on disk moves.
 async fn rename(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -819,20 +893,38 @@ async fn rename(
     if *project.walking.lock().expect("walking lock") {
         return Err(refuse(Kind::Conflict, "project_busy", "the project is rendering: rename once its runs land".into()));
     }
-    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
-    let Some(old) = lock.asset(&asked.from).filter(|held| !held.versions.is_empty()) else {
-        return Err(refuse(Kind::NotFound, "asset_unknown", format!("project.lock keeps no version of {}", asked.from)));
-    };
+    let mut doc = Doc::load(folder).map_err(Refusal)?;
+    let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
+    if let Some(i) = doc.holds(&asked.from).filter(|_| free) {
+        if !doc.declared(i) {
+            let said = format!("{} is named by another's lines in {}: rename it there", asked.from, folder::PROJECT);
+            return Err(refuse(Kind::Usage, "project_edit", said));
+        }
+        folder.edit_project(|text| format::renamed_in(text, &asked.from, &asked.to)).map_err(Refusal)?;
+        doc = Doc::load(folder).map_err(Refusal)?;
+    }
+    let lock = folder.lock().map_err(Refusal)?;
     let Some(i) = doc.holds(&asked.to) else {
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
         return Err(refuse(Kind::NotFound, "asset_unknown", said));
     };
+    let old = lock.asset(&asked.from).filter(|held| !held.versions.is_empty());
+    let stands = !free && doc.holds(&asked.from).is_some();
+    if old.is_none() && stands {
+        return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
+    }
+    if old.is_none() && !free && canvas::row(folder, &asked.from).map_err(Refusal)?.is_none() {
+        return Err(refuse(Kind::NotFound, "asset_unknown", format!("project.lock keeps no version of {}", asked.from)));
+    }
     let to = doc.assets[i].name.clone();
-    if lock.asset(&to).is_some_and(|held| !held.versions.is_empty()) {
+    if old.is_some() && lock.asset(&to).is_some_and(|held| !held.versions.is_empty()) {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
     }
-    let (from, versions) = (asked.from.clone(), old.versions.len() as u32);
-    folder.update_lock(|lock| renamed(lock, &from, &to)).map_err(Refusal)?;
+    let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
+    if old.is_some() {
+        folder.update_lock(|lock| renamed(lock, &from, &to)).map_err(Refusal)?;
+    }
+    canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
     Ok(Json(Renamed { from, to, versions }))
 }
 
@@ -1128,62 +1220,177 @@ fn keeps_of(doc: &Doc, lock: &Lock, stand: &[Standing], i: usize, take: Option<u
     }
 }
 
-/// `source` kept as a file of the project, in project.lock, with the line to paste.
-async fn kept(folder: &Folder, source: &str) -> Result<Imported, String> {
-    let folder::Kept { file, field, already } = folder.import(source).await?;
-    let prefix = folder::prefix_of(&file.sha256).to_owned();
-    let line = format!("{field}: {}", format::yaml_scalar(&prefix));
-    Ok(Imported { path: file.path, sha256: file.sha256, prefix, line, already, run: None, note: None })
-}
-
-/// A picture's background removed by a run of the project, which lands the one file kept. With nothing to remove, or no way to run
-/// it, a plain copy stands instead, and says why. The one place Calcifer names this package.
-async fn remove_background(api: &Arc<Api>, folder: &Folder, at: PathBuf, field: &str, on: Option<On>) -> Result<Imported, String> {
-    let note = if field != "image" {
-        "--remove-background takes a picture: this is kept as it is".to_owned()
-    } else if folder.transparent(&at) >= OPAQUE_BELOW {
-        "already transparent, so it is kept as it is".to_owned()
-    } else {
-        let image = FileTerm { name: Some("image".into()), file: at.to_string_lossy().into_owned() };
-        let ask = RunRequest { target: "birefnet/remove_background".into(), on, files: vec![image], project: Some(folder.dir.clone()), ..Default::default() };
-        match crate::runs::request(api, &new_key(), ask).await {
-            Ok(submitted) => {
-                let run = Some(Box::new(submitted.run));
-                return Ok(Imported { path: String::new(), sha256: String::new(), prefix: String::new(), line: String::new(), already: false, run, note: None });
-            }
-            Err(error) if error.code == "local_unavailable" => format!("{}: rent one with `cozy machine rent`, or add `--on <machine>`; a plain copy is kept", error.message),
-            Err(error) => format!("{}; a plain copy is kept", error.message),
-        }
+/// `source` kept as a file of the project, in project.lock.
+async fn keep_file(api: &Api, folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
+    let Some(digest) = held_name(source)? else {
+        return folder.import(source).await.map_err(|why| import_failed(source, why));
     };
-    let imported = kept(folder, &at.to_string_lossy()).await?;
-    // A URL's bytes were only here to look at.
-    if at.starts_with(folder.dir.join(folder::RUNS)) {
-        let _ = std::fs::remove_file(&at);
+    match crate::runs::files::held(&api.calcifer, &digest) {
+        Some(at) => tokio::task::block_in_place(|| folder.take_held(&at, &digest.to_string())).map_err(|why| import_failed(source, why)),
+        None => folder.own(&digest.to_string()).ok_or_else(|| not_held(source)),
     }
-    Ok(Imported { note: Some(note), ..imported })
 }
 
-/// Keeps the file at `source` as a file of the project, in project.lock, and answers the line to paste.
+/// The digest `source` names, if it names one.
+fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
+    if !source.starts_with("sha256:") {
+        return Ok(None);
+    }
+    let digest = source.parse().map_err(|why: &str| Refusal(Error::new(Kind::Usage, "file_name_invalid", format!("{source:?}: {why}")).remedy("name a file sha256:<hex>")))?;
+    Ok(Some(digest))
+}
+
+fn import_failed(source: &str, why: String) -> Refusal {
+    Refusal(Error::new(Kind::Validation, "import_failed", format!("{source}: {why}")).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
+}
+
+fn not_held(source: &str) -> Refusal {
+    Refusal(Error::new(Kind::NotFound, "file_not_held", format!("Calcifer holds no file {source}, and the project has none")).remedy(format!("PUT its bytes to /v1/files/{source} first")))
+}
+
+/// What a person's `name`, or `source`'s stem, calls an element: `file` when neither can be a name.
+fn element_name(name: Option<&str>, source: &str) -> String {
+    let stem = || {
+        let path = match folder::is_url(source) {
+            true => source.split_once("://")?.1.split_once('/')?.1.split(['?', '#']).next()?,
+            false => source.strip_prefix("sha256:").map_or(Some(source), |_| None)?,
+        };
+        FsPath::new(path).file_stem()?.to_str().and_then(format::plain_name).map(|stem| stem.to_lowercase())
+    };
+    name.and_then(format::plain_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
+}
+
+/// The run that removes the background of the picture at `at`. Err: why there is none, and a plain copy stands. The one place Calcifer names this package.
+async fn removing_background(api: &Arc<Api>, folder: &Folder, at: &FsPath, field: &str, on: Option<On>, key: &str) -> Result<Run, String> {
+    if field != "image" {
+        return Err("--remove-background takes a picture: this is kept as it is".to_owned());
+    }
+    if folder.transparent(at) >= OPAQUE_BELOW {
+        return Err("already transparent, so it is kept as it is".to_owned());
+    }
+    let image = FileTerm { name: Some("image".into()), file: at.to_string_lossy().into_owned() };
+    let ask = RunRequest { target: "birefnet/remove_background".into(), on, files: vec![image], project: Some(folder.dir.clone()), ..Default::default() };
+    match crate::runs::request(api, key, ask).await {
+        Ok(submitted) => Ok(submitted.run),
+        Err(error) if error.code == "local_unavailable" => Err(format!("{}: rent one with `cozy machine rent`, or add `--on <machine>`; a plain copy is kept", error.message)),
+        Err(error) => Err(format!("{}; a plain copy is kept", error.message)),
+    }
+}
+
+/// The element a kept file makes: one constant more in project.yaml, under a name nothing has, and with `at`, its row on the canvas.
+/// Its answer is kept for its key.
+fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, kept: folder::Kept, note: Option<String>, key: Option<&(String, String)>) -> Result<Imported, Refusal> {
+    let folder = &project.folder;
+    let _one = project.importing.lock().expect("importing lock");
+    if let Some(done) = replayed(folder, key)? {
+        return Ok(done);
+    }
+    let lock = folder.lock().map_err(Refusal)?;
+    let value = format::yaml_scalar(folder::prefix_of(&kept.file.sha256));
+    let name = std::cell::RefCell::new(String::new());
+    (folder.edit_project(|text| {
+        let free = format::free_name(&Doc::read(folder, text)?, &lock, wanted);
+        let edited = format::constant(text, &free, kept.field, &value)?;
+        *name.borrow_mut() = free;
+        Ok(edited)
+    }))
+    .map_err(Refusal)?;
+    let name = name.into_inner();
+    let answer = Imported { name: name.clone(), sha256: kept.file.sha256, field: kept.field.to_owned(), path: kept.file.path, already: kept.already, run: None, note };
+    if let Some((key, digest)) = key {
+        let at_ms = now_ms();
+        (folder.update_lock(|lock| {
+            lock.imported.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
+            lock.imported.insert(key.clone(), folder::Keyed { digest: digest.clone(), at_ms, answer: answer.clone() });
+        }))
+        .map_err(Refusal)?;
+    }
+    if let Some(card) = at {
+        canvas::set(folder, id, BTreeMap::from([(name, Some(card))])).map_err(Refusal)?;
+    }
+    Ok(answer)
+}
+
+/// What an import under this key answered, if one did: it answers the same. Another import under it is refused.
+fn replayed(folder: &Folder, key: Option<&(String, String)>) -> Result<Option<Imported>, Refusal> {
+    let Some((key, digest)) = key else { return Ok(None) };
+    match folder.lock().map_err(Refusal)?.imported.remove(key) {
+        Some(row) if row.digest == *digest => Ok(Some(row.answer)),
+        Some(_) => Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another import already")))),
+        None => Ok(None),
+    }
+}
+
+/// What a project's files are measured as, once its ffprobe is here, from a task of its own: a read waits for neither.
+fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
+    let (host, project) = (Host::new(api), project.clone());
+    tokio::spawn(async move {
+        if project.folder.lock().map_or(true, |lock| !lock.files.values().any(folder::File::unmeasured)) {
+            return;
+        }
+        if let Err(error) = host.ffmpeg().await {
+            return warn!("measuring a project's files: {}", error.message);
+        }
+        let permit = thumbs::FFMPEGS.acquire().await.expect("ffmpeg's turns never close");
+        let measuring = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            project.folder.lock().and_then(|mut lock| project.folder.measure(&mut lock))
+        });
+        if let Ok(Err(error)) = measuring.await {
+            warn!("measuring a project's files: {}", error.message);
+        }
+    });
+}
+
+/// `POST /v1/projects/{id}/imports`: `source` kept in the project as an element, in one call. With `remove_background`, a picture goes
+/// to a run first; the element is what the client then imports of its output, under the `name` answered.
 async fn import(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Imported>, Refusal> {
-    let asked: Import = parse(&body?)?;
+    let body = body?;
+    let asked: Import = parse(&body)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let failed = |why: String| {
-        let said = format!("{}: {why}", asked.source);
-        Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("cozy project import takes a picture, video or sound, by path or http(s) URL"))
-    };
-    let imported = match asked.remove_background {
-        false => kept(folder, &asked.source).await,
-        true => {
-            let (at, field) = folder.source(&asked.source).await.map_err(failed)?;
-            remove_background(&api, folder, at, field, asked.on.clone()).await
+    let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
+    if let Some(done) = replayed(folder, key.as_ref())? {
+        return Ok(Json(done));
+    }
+    let wanted = element_name(asked.name.as_deref(), &asked.source);
+    let (mut source, mut note, mut looked_at) = (asked.source.clone(), None, None);
+    if asked.remove_background {
+        let readable = match held_name(&asked.source)? {
+            Some(digest) => (crate::runs::files::held(&api.calcifer, &digest))
+                .or_else(|| folder.own(&digest.to_string()).map(|kept| folder.path(&kept.file.path)))
+                .ok_or_else(|| not_held(&asked.source))?
+                .to_string_lossy()
+                .into_owned(),
+            None => asked.source.clone(),
+        };
+        let (at, field) = folder.source(&readable).await.map_err(|why| import_failed(&asked.source, why))?;
+        let run_key = key.as_ref().map_or_else(new_key, |(key, _)| format!("import-{key}"));
+        match removing_background(&api, folder, &at, field, asked.on.clone(), &run_key).await {
+            Ok(run) => {
+                let run = Some(Box::new(run));
+                return Ok(Json(Imported { name: wanted, sha256: String::new(), field: String::new(), path: String::new(), already: false, run, note: None }));
+            }
+            Err(why) => note = Some(why),
         }
-    };
-    Ok(Json(imported.map_err(failed)?))
+        // A URL's bytes are here now, only to look at.
+        if folder::is_url(&asked.source) {
+            source = at.to_string_lossy().into_owned();
+            looked_at = Some(at);
+        }
+    }
+    let kept = keep_file(&api, folder, &source).await?;
+    if let Some(at) = looked_at {
+        let _ = std::fs::remove_file(at);
+    }
+    let answer = element(&project, &id, &wanted, asked.at, kept, note, key.as_ref())?;
+    measure_soon(&api, &project);
+    Ok(Json(answer))
 }
 
 /// `name` pinned to a file in project.yaml: one line, in the field of its kind, written over what the file holds this moment. An
@@ -1311,6 +1518,7 @@ async fn settle(api: &Arc<Api>, project: &Arc<Project>) -> Vec<String> {
     let mut tried: HashSet<String> = HashSet::new();
     loop {
         let ready = (|| -> Result<_, Error> {
+            walker.measure()?;
             let (doc, lock) = (Doc::load(walker.folder())?, walker.folder().lock()?);
             let stand = doc.stand(&lock);
             let tools = plan(&doc, &stand, &lock, &now).tools;
@@ -1504,8 +1712,14 @@ impl Walk {
         &self.project.folder
     }
 
+    /// What has landed, measured: a cut and an adapter read those sizes, and a film is judged by its frames.
+    fn measure(&self) -> Result<(), Error> {
+        self.folder().measure(&mut self.folder().lock()?)
+    }
+
     /// The project as the render `ask` was asked of it; one from no render in the lock, as the file reads now.
     fn doc_of(&self, ask: &str) -> Result<Doc, Error> {
+        self.measure()?;
         let text = self.folder().lock()?.walk.asks.into_iter().find(|mine| mine.id == ask).map(|mine| mine.text);
         match text {
             Some(text) => Doc::read(self.folder(), &text),
@@ -1515,6 +1729,7 @@ impl Walk {
 
     /// What a render is left with, when nothing more of it can go, said; then it is done.
     async fn finish(&self, id: &str, first: &mut Option<Error>) -> Result<(), Error> {
+        self.measure()?;
         let lock = self.folder().lock()?;
         if let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id)
             && let Ok(doc) = Doc::read(self.folder(), &ask.text)
@@ -1561,6 +1776,7 @@ impl Walk {
         let mut greeted = HashSet::new();
         loop {
             let mut moved = false;
+            self.measure()?;
             // Each render on its own text, all going at once: what is independent goes together.
             let asks: Vec<String> = self.folder().lock()?.walk.asks.into_iter().map(|ask| ask.id).collect();
             for id in asks {
@@ -1573,7 +1789,6 @@ impl Walk {
                         continue;
                     }
                 };
-                // The lock after the doc, whose read measures what has landed: a cut and an adapter read those sizes.
                 let lock = self.folder().lock()?;
                 let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id) else { continue };
                 if greeted.insert(id.clone()) {
@@ -2500,16 +2715,8 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 fn media_type(path: &FsPath) -> &'static str {
     let extension = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
         "otio" => "application/json",
         "yaml" => "text/yaml; charset=utf-8",
-        _ => "application/octet-stream",
+        extension => folder::media_of(extension).map_or("application/octet-stream", |(media, _)| media),
     }
 }

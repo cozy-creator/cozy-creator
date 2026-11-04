@@ -363,7 +363,7 @@ pub(super) async fn pushed(
     let (project, hub, client, endpoint) = asked(&api, &id, body)?;
     let path = project.folder.dir.clone();
     tokio::spawn(async move { ended(&project, push(&project, &hub, &client, &endpoint).await) });
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path, next: vec![] })))
+    Ok((StatusCode::ACCEPTED, Json(super::opened(id, &path))))
 }
 
 /// `POST /v1/projects/{id}/pull`.
@@ -373,7 +373,11 @@ pub(super) async fn pulled(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Opened>), Refusal> {
     let (project, _, _, endpoint) = asked(&api, &id, body)?;
-    let path = project.folder.dir.clone();
-    tokio::spawn(async move { ended(&project, pull(&project, &endpoint).await) });
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path, next: vec![] })))
+    let opened = super::opened(id, &project.folder.dir);
+    tokio::spawn(async move {
+        ended(&project, pull(&project, &endpoint).await);
+        // What came is no one's to measure until a render otherwise.
+        super::measure_soon(&api, &project);
+    });
+    Ok((StatusCode::ACCEPTED, Json(opened)))
 }

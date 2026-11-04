@@ -1,4 +1,4 @@
-//! A project folder: `project.yaml` (people's; cozy writes it at `cozy project new`, and one line of it at `approve` and `unpin`),
+//! A project folder: `project.yaml` (people's; cozy writes it at `cozy project new`, and one line of it at `approve`, `unpin`, `import` and `rename`),
 //! `project.lock` (cozy's: each file, each asset's versions, what made each, the runs still making one, and what
 //! its walk still owes), `files/`, and the cuts at its root. Every file the project uses is a real file in
 //! `files/<sha256>.<ext>`, flat. project.yaml names one only by a hex prefix of its hash (`Lock::matching`),
@@ -26,6 +26,8 @@ use super::graph::name_key;
 
 pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
+/// Where the elements sit: only the page reads it, and nothing in it is an input.
+pub const CANVAS: &str = "project.canvas.yaml";
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
 pub const FILES: &str = "files";
 /// Where a run's outputs land before they are kept in `files/`.
@@ -48,6 +50,55 @@ pub struct Kept {
 
 /// How many hex characters of its hash cozy prints for a file, for project.yaml.
 const PREFIX: usize = 12;
+
+/// Each kind of file a project keeps by what it is: its extension, its media type, and the field that names one.
+const MEDIA: [(&str, &str, &str); 40] = [
+    ("png", "image/png", "image"),
+    ("jpg", "image/jpeg", "image"),
+    ("jpeg", "image/jpeg", "image"),
+    ("webp", "image/webp", "image"),
+    ("avif", "image/avif", "image"),
+    ("gif", "image/gif", "image"),
+    ("bmp", "image/bmp", "image"),
+    ("tif", "image/tiff", "image"),
+    ("tiff", "image/tiff", "image"),
+    ("heif", "image/heif", "image"),
+    ("jxl", "image/jxl", "image"),
+    ("jp2", "image/jp2", "image"),
+    ("jxr", "image/vnd.ms-photo", "image"),
+    ("ico", "image/vnd.microsoft.icon", "image"),
+    ("psd", "image/vnd.adobe.photoshop", "image"),
+    ("cr2", "image/x-canon-cr2", "image"),
+    ("ora", "image/openraster", "image"),
+    ("djvu", "image/vnd.djvu", "image"),
+    ("dwg", "image/vnd.dwg", "image"),
+    ("mp4", "video/mp4", "video"),
+    ("m4v", "video/x-m4v", "video"),
+    ("mov", "video/quicktime", "video"),
+    ("webm", "video/webm", "video"),
+    ("mkv", "video/x-matroska", "video"),
+    ("avi", "video/x-msvideo", "video"),
+    ("wmv", "video/x-ms-wmv", "video"),
+    ("mpg", "video/mpeg", "video"),
+    ("flv", "video/x-flv", "video"),
+    ("wav", "audio/wav", "audio"),
+    ("mp3", "audio/mpeg", "audio"),
+    ("flac", "audio/flac", "audio"),
+    ("ogg", "audio/ogg", "audio"),
+    ("opus", "audio/ogg", "audio"),
+    ("m4a", "audio/mp4", "audio"),
+    ("aac", "audio/aac", "audio"),
+    ("aiff", "audio/aiff", "audio"),
+    ("midi", "audio/midi", "audio"),
+    ("amr", "audio/amr", "audio"),
+    ("dsf", "audio/x-dsf", "audio"),
+    ("ape", "audio/x-ape", "audio"),
+];
+/// The media type and field of an extension, in any case, if it is a picture, video or sound.
+pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
+    let extension = extension.to_ascii_lowercase();
+    MEDIA.iter().find(|(known, ..)| *known == extension).map(|(_, media, field)| (*media, *field))
+}
 
 /// A file the project uses: its path in the project (`files/<sha256>.<ext>`), its sha256, and what is
 /// measured of it once: a picture's or video's size, a video's rate and frames, a picture's alpha (the
@@ -75,6 +126,9 @@ pub struct File {
     /// Its bytes, when it isn't here to measure.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub length: u64,
+    /// A sound's length; a video's comes of its rate and frames.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub duration_ms: u64,
 }
 
 impl File {
@@ -87,17 +141,9 @@ impl File {
         Path::new(&self.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
     }
 
-    pub fn is_video(&self) -> bool {
-        VIDEOS.contains(&self.extension().as_str())
-    }
-
     /// The role that pins it, by what it is.
     pub fn field(&self) -> &'static str {
-        match self.extension().as_str() {
-            _ if self.is_video() => "video",
-            "wav" | "mp3" | "flac" | "ogg" | "m4a" | "aac" => "audio",
-            _ => "image",
-        }
+        media_of(&self.extension()).map_or("image", |(_, field)| field)
     }
 
     /// Whether a machine was left keeping it.
@@ -105,15 +151,23 @@ impl File {
         !self.machine.is_empty()
     }
 
+    /// How long it lasts, if it does and that is measured.
+    pub fn lasts_ms(&self) -> u64 {
+        match self.fps > 0.0 {
+            true => (self.frames as f64 / self.fps * 1000.0).round() as u64,
+            false => self.duration_ms,
+        }
+    }
+
     /// Not measured yet, and one that can be.
-    fn unmeasured(&self) -> bool {
-        self.width == 0 && (self.is_video() || PICTURES.contains(&self.extension().as_str()))
+    pub fn unmeasured(&self) -> bool {
+        match media_of(&self.extension()) {
+            Some((_, "audio")) => self.duration_ms == 0,
+            Some(_) => self.width == 0,
+            None => false,
+        }
     }
 }
-
-/// The extensions of the files that are measured.
-const VIDEOS: [&str; 5] = ["mp4", "mov", "m4v", "webm", "mkv"];
-const PICTURES: [&str; 5] = ["png", "jpg", "jpeg", "webp", "avif"];
 
 /// A version's files: by output name, each one's sha256.
 pub type Files = BTreeMap<String, String>;
@@ -288,6 +342,17 @@ pub struct Lock {
     pub reserved: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
+    /// What each import under an `Idempotency-Key` answered, for its retries, by that key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub imported: BTreeMap<String, Keyed>,
+}
+
+/// An import's answer, and the digest of what asked it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Keyed {
+    pub digest: String,
+    pub at_ms: i64,
+    pub answer: protocol::project::Imported,
 }
 
 /// One file a `cozy run` left in the project.
@@ -301,7 +366,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new() }
     }
 }
 
@@ -491,6 +556,19 @@ impl Folder {
         self.rewrite(&self.project(), change)
     }
 
+    /// What project.canvas.yaml holds, nothing if it isn't there.
+    pub fn canvas_text(&self) -> Result<String, Error> {
+        match self.dir.join(CANVAS).exists() {
+            true => read(&self.dir.join(CANVAS)),
+            false => Ok(String::new()),
+        }
+    }
+
+    /// Writes one change to project.canvas.yaml, as `edit_project` does to project.yaml.
+    pub fn edit_canvas(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+        self.rewrite(&self.dir.join(CANVAS), change)
+    }
+
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
     pub fn keep(&self, source: &Path) -> Result<String, Error> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
@@ -551,11 +629,33 @@ impl Folder {
         })
     }
 
-    /// The file at `path` in the lock's table, unless it is there.
+    /// The file at `path` in the lock's table, unless it is there; one a machine kept is here now.
     fn tabled(&self, path: String, sha256: &str) -> Result<(), Error> {
         let file = File { path, sha256: sha256.to_owned(), ..Default::default() };
         self.update_lock(|lock| {
-            lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
+            let row = lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
+            if row.stays() {
+                *row = file.clone();
+            }
+        })
+    }
+
+    /// The file `sha256` as the project has it, here or kept by a machine: nothing need come for it.
+    pub fn own(&self, sha256: &str) -> Option<Kept> {
+        let file = self.lock().ok()?.files.remove(sha256)?;
+        (file.stays() || self.path(&file.path).is_file()).then(|| Kept { field: file.field(), file, already: true })
+    }
+
+    /// The held file at `at`, of `sha256`, moved into `files/` and recorded in project.lock. Err: why not.
+    pub fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {
+        let mut head = Vec::new();
+        std::fs::File::open(at).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
+        let (kind, field) = media(infer::get(&head))?;
+        let path = file_named(sha256, kind.extension());
+        self.recorded(path, sha256.to_owned(), field, |part| match std::fs::rename(at, part) {
+            Ok(()) => Ok(()),
+            // Another disk.
+            Err(_) => std::fs::copy(at, part).and_then(|_| std::fs::remove_file(at)),
         })
     }
 
@@ -608,10 +708,10 @@ impl Folder {
     /// The share of the picture at `path` that is fully transparent; 0 with no ffmpeg to say.
     pub fn transparent(&self, path: &Path) -> f64 {
         let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return 0.0 };
-        super::tools::measured(&found.path, &ffprobe, path, false).map_or(0.0, |file| file.alpha)
+        super::tools::measured(&found.path, &ffprobe, path, "image").map_or(0.0, |file| file.alpha)
     }
 
-    /// An import's bytes at `path`, written by `write` unless they are there, named in project.lock.
+    /// An import's bytes at `path`, written by `write` unless the project has them under any name, named in project.lock.
     fn recorded(
         &self,
         path: String,
@@ -620,6 +720,9 @@ impl Folder {
         write: impl Fn(&Path) -> std::io::Result<()>,
     ) -> Result<Kept, String> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(kept) = self.own(&sha256).filter(|kept| self.path(&kept.file.path).is_file()) {
+            return Ok(kept);
+        }
         let already = !self.store(&path, write).map_err(|e| e.message)?;
         self.tabled(path.clone(), &sha256).map_err(|e| e.message)?;
         Ok(Kept { file: File { path, sha256, ..Default::default() }, field, already })
@@ -660,7 +763,7 @@ impl Folder {
             .filter(|file| self.dir.join(&file.path).is_file())
             .filter_map(|file| {
                 let at = self.dir.join(&file.path);
-                let probed = super::tools::measured(&found.path, &ffprobe, &at, file.is_video())?;
+                let probed = super::tools::measured(&found.path, &ffprobe, &at, file.field())?;
                 Some((file.sha256.clone(), File { path: file.path.clone(), sha256: file.sha256.clone(), parts: file.parts.clone(), ..probed }))
             })
             .collect();

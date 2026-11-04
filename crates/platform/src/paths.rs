@@ -102,6 +102,16 @@ impl Home {
         self.root.join("services")
     }
 
+    /// Where a project made by name lives.
+    pub fn projects(&self) -> PathBuf {
+        self.root.join("projects")
+    }
+
+    /// Thumbnails of projects' files, kept while they are used.
+    pub fn thumbs(&self) -> PathBuf {
+        self.root.join("cache").join("thumbs")
+    }
+
     /// Tools cozy fetched for this computer's own use on first need, never bundled.
     pub fn tools(&self) -> PathBuf {
         self.root.join("tools")

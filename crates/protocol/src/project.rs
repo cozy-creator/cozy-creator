@@ -8,13 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{calcifer::On, error::Error};
 
-/// `POST /v1/projects`: the project holding `path` (the nearest folder up from it with a
-/// project.yaml), or with `create` a new one made at `path`. The same folder is always the same
-/// project, and opening it records it in the index.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `POST /v1/projects`: by `name`, a new empty project under `~/.cozy/projects`, the next free name when that one is taken. By `path`,
+/// the project holding it (the nearest folder up from it with a project.yaml), or with `create` a new one made there. The same folder
+/// is always the same project, and opening it records it in the index.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Open {
-    pub path: PathBuf,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub create: bool,
 }
 
@@ -22,6 +25,8 @@ pub struct Open {
 pub struct Opened {
     pub id: String,
     pub path: PathBuf,
+    /// Its folder's name.
+    pub name: String,
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
@@ -186,11 +191,17 @@ pub struct File {
     pub sha256: String,
 }
 
-/// `POST /v1/projects/{id}/imports`: the file at `source` (an absolute path, or an `http(s)` URL) kept in the project.
+/// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
+/// project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), an absolute path, or an `http(s)` URL.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Import {
     pub source: String,
-    /// Runs `birefnet/remove_background` on it as a run of the project, whose output is the one file kept.
+    /// What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the stem of a path or URL, lower-cased, else `file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+    /// Runs `birefnet/remove_background` on it as a run of the project: its output is what to import.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub remove_background: bool,
     /// The machine that run goes to; absent: this computer if it can run models, else a machine you have up.
@@ -198,23 +209,40 @@ pub struct Import {
     pub on: Option<crate::calcifer::On>,
 }
 
-/// What an import kept, its hash prefix, and the line to paste into project.yaml.
+/// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Imported {
-    pub path: String,
+    pub name: String,
     pub sha256: String,
-    pub prefix: String,
-    /// `image: ab12cd34ef56`, or `video:` or `audio:`, by what the file is.
-    pub line: String,
+    pub field: String,
+    pub path: String,
     /// Its bytes were in `files/` already, so nothing was copied.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
-    /// The run removing its background, to follow: its output is the file kept and the line to paste, and the fields above are empty.
+    /// The run removing its background, to follow. No element yet, and `name` is what to call its output: `sha256`, `field` and `path` are empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<Box<crate::calcifer::Run>>,
-    /// Why its background wasn't removed: a plain copy stands, and `line` is its.
+    /// Why its background wasn't removed: a plain copy stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// `GET /v1/projects/{id}/canvas`: each element's row, by name. A name with no row isn't listed, and the page places it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Canvas {
+    pub etag: String,
+    pub cards: BTreeMap<String, Card>,
+}
+
+/// `PATCH /v1/projects/{id}/canvas`: these rows set, a null one gone. Last move wins.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CanvasPatch {
+    pub cards: BTreeMap<String, Option<Card>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CanvasPatched {
+    pub etag: String,
 }
 
 /// A version's number and the hash prefix project.yaml can name its file by.
@@ -312,6 +340,17 @@ pub struct Asset {
     /// The file people mean by it, for people who want it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The hash of that file, the field that names one of its type, and what is measured of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     /// The function that made its state, `org/package/function@release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,

@@ -266,6 +266,11 @@ pub(crate) fn paste(ctx: &Context, run: &Run) {
     }
 }
 
+/// The files a run left in its project, by hash, what people mean by it first.
+pub(crate) fn kept_files(run: &Run) -> Vec<String> {
+    follow::for_people(run).iter().filter(|output| output.path.is_some()).filter_map(|output| Some(output.sha256.as_ref()?.to_string())).collect()
+}
+
 /// The request `args` make of `target`.
 fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: PathBuf) -> Result<RunRequest, Error> {
     Ok(RunRequest {

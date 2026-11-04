@@ -26,7 +26,7 @@ project() {
 imported() {
   local P=$1 f h; shift
   for f in "$@"; do
-    h=$("$CLI" project -p "$P" import "$P/$f" | tail -1 | sed 's/^[a-z]*: //')
+    h=$("$CLI" --json project -p "$P" import "$P/$f" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]')
     sed -i "s#: $f\b#: $h#" "$P/project.yaml"
   done
 }

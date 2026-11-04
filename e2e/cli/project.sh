@@ -32,7 +32,7 @@ still() { ffmpeg -v error -y -f lavfi -i "color=c=$2:size=832x480" -frames:v 1 "
 sha() { sha256sum "$1" | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # prefix <project> <file>: `cozy project import`, and what project.yaml writes for it.
-prefix() { (cd "$1" && cozy --json project import "$2" | jq -r .prefix) || check "import $2 failed"; }
+prefix() { (cd "$1" && cozy --json project import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
 # api <curl args…>: Calcifer, with the bearer of its lock record.
 api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
 # status <project> [file]: its status as JSON.
@@ -1397,47 +1397,171 @@ YAML
 render "$P" all || check "cuts: the HTTP surface's project: $(tail -c 300 "$OUT/render.txt")"
 }
 
-# `cozy project import` by path and URL, a real file either way, what to paste, with no machine.
+# `cozy project import` by path and URL: one call, a real file, a name, one constant in project.yaml, with no machine. Then what the
+# page does by the same routes: a project by name, bytes by parts and resumed, an element by hash, its canvas row, its thumbnail.
 imports() {
-step "a project: import by path and by URL"
-local U=$OUT/imported code hash value
+step "a project: import by path and by URL, and the name it gets"
+local U=$OUT/imported code hash name lock=$HOME/.cozy/calcifer/calcifer.lock.holder ID
 local seed=https://github.com/cozy-creator/cozy-creator/raw/master/release-gate/ref/seed.jpg
 local lost=https://raw.githubusercontent.com/cozy-creator/cozy-creator/master/release-gate/ref/no-such.jpg
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 mkdir -p "$U"; printf 'version: 2\nassets: {}\n' > "$U/project.yaml"
-cozy project -p "$U" import "$seed" > "$OUT/import-url.txt" 2> "$OUT/import-url.err" || check "import: a URL: $(tail -c 300 "$OUT/import-url.err")"
-value=$(sed -n '2s/^image: //p' "$OUT/import-url.txt")
+name=$(cozy project -p "$U" import "$seed" 2> "$OUT/import-url.err") || check "import: a URL: $(tail -c 300 "$OUT/import-url.err")"
 hash=$(sha256sum "$U"/files/*.jpg | cut -c1-64)
-{ [ "${#value}" = 12 ] && [ "${hash:0:12}" = "$value" ] && [ ! -L "$U/files/$hash.jpg" ] && [ "$(sed -n 1p "$OUT/import-url.txt")" = "imported $value" ]; } \
-  || check "import: a URL did not print its 12 characters and land as a real file: $(cat "$OUT/import-url.txt"); $(ls -l "$U/files" 2>&1 | head -3)"
+{ [ "$name" = seed ] && [ ! -L "$U/files/$hash.jpg" ] && grep -qF "  seed: {image: ${hash:0:12}}" "$U/project.yaml"; } \
+  || check "import: a URL did not print its name, land as a real file and become one constant: $name; $(cat "$U/project.yaml"); $(ls -l "$U/files" 2>&1 | head -3)"
+[ "$(row "$U" seed .pinned)" = true ] || check "import: status does not show seed as a constant: $(row "$U" seed .)"
 ! grep -q github "$U/project.lock" || check "import: the lock names the URL"
 code=0; cozy project -p "$U" import "$lost" > "$OUT/import-lost.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "import: a URL that is not there was accepted"
 printf 'not a picture\n' > "$U/note.txt"
 code=0; cozy project -p "$U" import "$U/note.txt" > "$OUT/import-txt.txt" 2>&1 || code=$?
 [ "$code" != 0 ] || check "import: a text file was accepted"
-still "$U/kyogre.png" red
-cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-first.txt" 2>&1 || check "import: a file: $(tail -c 300 "$OUT/import-first.txt")"
-cozy project -p "$U" import "$U/kyogre.png" > "$OUT/import-again.txt" 2>&1 || check "import: again: $(tail -c 300 "$OUT/import-again.txt")"
-grep -q '^already imported ' "$OUT/import-again.txt" || check "import: a second import does not say so: $(cat "$OUT/import-again.txt")"
+still "$U/Kyogre Art (1).png" red
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png")" = kyogre_art_1 ] || check "import: a stem is not lower-cased and made a name"
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" 'Hero.Sheet one')" = Hero_Sheet_one ] || check "import: a written name does not keep its case with . and space as _"
+[ "$(cozy project -p "$U" import "$U/Kyogre Art (1).png" hero-sheet.one)" = hero-sheet_one_2 ] || check "import: a name taken in another case and with - for _ does not take _2"
+[ "$(ls "$U/files" | grep -c "^$(sha "$U/Kyogre Art (1).png")")" = 1 ] || check "import: three elements of one file are not one file: $(ls "$U/files")"
+[ "$(cozy --json project -p "$U" import "$U/Kyogre Art (1).png" | jq -r .already)" = true ] || check "import: a file the project has does not say already"
+
+step "a project: import keeps every comment and text of project.yaml, and reads no name twice"
+local Y=$OUT/imported-kept; mkdir -p "$Y"
+cat > "$Y/project.yaml" <<'YAML'
+# Before everything.
+version: 2
+entities:
+  hero:   # an entity is a name too
+    kind: character
+    description: |
+      A hero,
+
+      in two paragraphs.
+assets:
+  # Among the assets.
+  shot:
+    kind: video
+    summary: |
+      Kept as it is, <hero> and all.
+      # not a comment, though it looks like one
+
+# Before the end.
+YAML
+cp "$Y/project.yaml" "$OUT/imported-kept.before"
+still "$Y/hero.png" navy
+[ "$(cozy project -p "$Y" import "$Y/hero.png")" = hero_2 ] || check "import: an entity's name is not taken"
+grep -vF '  hero_2: {image: ' "$Y/project.yaml" | diff - "$OUT/imported-kept.before" > "$OUT/imported-kept.diff" || check "import: other lines of project.yaml moved: $(cat "$OUT/imported-kept.diff")"
+J '.assets | map(.name) | sort == ["hero_2", "shot"]' <<< "$(status "$Y")" || check "import: the file does not read as it did with one asset more: $(status "$Y" | jq -c '.assets | map(.name)')"
+
+step "a project: a name makes one, bytes by parts in any order and resumed, an element by hash"
+local X P2 len hex mid url held big n
+api -o "$OUT/named.json" -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" > /dev/null
+X=$(jq -r .path "$OUT/named.json") ID=$(jq -r .id "$OUT/named.json")
+{ [ "$X" = "$HOME/.cozy/projects/web_made_it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made_it ] && [ "$(cat "$X/project.yaml")" = 'version: 2' ]; } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
+P2=$(api -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" | jq -r .path)
+[ "$P2" = "$X"_2 ] || check "POST /v1/projects {name}, again: $P2"
+plate "$OUT/parts.mp4" testsrc2 440 800 2
+len=$(stat -c %s "$OUT/parts.mp4") hex=$(sha "$OUT/parts.mp4") mid=$((len / 2))
+url=http://$ADDR/v1/files/sha256:$hex
+tail -c +$((mid + 1)) "$OUT/parts.mp4" > "$OUT/parts.tail"; head -c "$mid" "$OUT/parts.mp4" > "$OUT/parts.head"
+code=$(api -o /dev/null -D "$OUT/part.hdr" -w '%{http_code}' -X PUT -H "Content-Range: bytes $mid-$((len - 1))/$len" --data-binary "@$OUT/parts.tail" "$url")
+{ [ "$code" = 204 ] && grep -qi "^cozy-held: $mid-$((len - 1))" "$OUT/part.hdr"; } || check "a part: $code, $(cat "$OUT/part.hdr")"
+code=$(api -o /dev/null -D "$OUT/part.hdr" -w '%{http_code}' -I "$url")
+{ [ "$code" = 404 ] && grep -qi "^cozy-held: $mid-$((len - 1))" "$OUT/part.hdr"; } || check "HEAD of a partial file: $code, $(cat "$OUT/part.hdr")"
+code=$(api -o "$OUT/part.json" -w '%{http_code}' -X PUT -H "Content-Range: bytes 0-$((mid - 1))/$len" --data-binary "@$OUT/parts.head" "$url")
+{ [ "$code" = 201 ] && J --arg d "sha256:$hex" --argjson l "$len" '.digest == $d and .length == $l and .media_type == "video/mp4"' "$OUT/part.json"; } || check "the last part: $code, $(cat "$OUT/part.json")"
+[ "$(api -o /dev/null -w '%{http_code}' -I "$url")" = 200 ] || check "HEAD of a file whole by parts is not 200"
+big=$OUT/killed.bin n=$((20 << 20)); head -c "$n" /dev/urandom > "$big"
+hash=$(sha "$big"); url=http://$ADDR/v1/files/sha256:$hash
+api -o /dev/null -X PUT --limit-rate 2M -H "Content-Range: bytes 0-$((n - 1))/$n" -T "$big" "$url" & local pid=$!
+sleep 2; kill "$pid" 2> /dev/null || true; wait "$pid" 2> /dev/null || true
+held=$(api -o /dev/null -D - -I "$url" | tr -d '\r' | sed -n 's/^[Cc]ozy-[Hh]eld: 0-//p')
+[ -n "$held" ] && [ "$held" -lt $((n - 1)) ] || check "a killed upload: it held $held of $n"
+tail -c +$((held + 2)) "$big" > "$big.rest"
+[ "$(api -o /dev/null -w '%{http_code}' -X PUT -H "Content-Range: bytes $((held + 1))-$((n - 1))/$n" -T "$big.rest" "$url")" = 201 ] || check "a killed upload did not resume from byte $((held + 1))"
+head -c 100 "$big" > "$big.other"
+[ "$(api -o "$OUT/part.json" -w '%{http_code}' -X PUT -T "$big.other" "http://$ADDR/v1/files/sha256:$(sha "$OUT/parts.head")")" = 400 ] || check "bytes of another digest: $(cat "$OUT/part.json")"
+code=$(api -o "$OUT/by-hash.json" -w '%{http_code}' -X POST -H 'Idempotency-Key: place-1' -d "{\"source\":\"sha256:$hex\",\"name\":\"my clip\",\"at\":{\"x\":10.5,\"y\":-20,\"w\":320}}" "http://$ADDR/v1/projects/$ID/imports")
+{ [ "$code" = 200 ] && J --arg s "sha256:$hex" --arg p "files/$hex.mp4" '.name == "my_clip" and .sha256 == $s and .field == "video" and .path == $p' "$OUT/by-hash.json"; } || check "import by hash: $code, $(cat "$OUT/by-hash.json")"
+[ -f "$X/files/$hex.mp4" ] || check "import by hash: no file in the project"
+[ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "import by hash: the held file was copied, not moved"
+api -o "$OUT/by-hash-2.json" -X POST -H 'Idempotency-Key: place-1' -d "{\"source\":\"sha256:$hex\",\"name\":\"my clip\",\"at\":{\"x\":10.5,\"y\":-20,\"w\":320}}" "http://$ADDR/v1/projects/$ID/imports" > /dev/null
+{ diff -q "$OUT/by-hash.json" "$OUT/by-hash-2.json" > /dev/null && [ "$(grep -c my_clip "$X/project.yaml")" = 1 ]; } || check "the same Idempotency-Key made another element: $(cat "$OUT/by-hash-2.json")"
+[ "$(api -o /dev/null -w '%{http_code}' -X POST -H 'Idempotency-Key: place-1' -d '{"source":"sha256:'"$hex"'","name":"other"}' "http://$ADDR/v1/projects/$ID/imports")" = 409 ] || check "one Idempotency-Key, another import: not refused"
+[ "$(api -X POST -d "{\"source\":\"sha256:$hex\"}" "http://$ADDR/v1/projects/$ID/imports" | jq -r '.name + " " + (.already | tostring)')" = "file true" ] || check "the same file by hash: not a second element with no new bytes"
+[ "$(api -o /dev/null -w '%{http_code}' -X POST -d "{\"source\":\"sha256:$(sha "$big.other")\"}" "http://$ADDR/v1/projects/$ID/imports")" = 404 ] || check "a hash held nowhere is not 404 file_not_held"
+[ "$(api -o /dev/null -w '%{http_code}' -X POST -d "{\"source\":\"sha256:$hash\"}" "http://$ADDR/v1/projects/$ID/imports")" = 400 ] || check "a held file that is no media is not 400 import_failed"
+
+step "a project: the canvas moves elements and nothing else"
+local inputs C=http://$ADDR/v1/projects/$ID/canvas E2
+grep -qF '  my_clip: {x: 10.5, y: -20, w: 320}' "$X/project.canvas.yaml" || check "canvas: import's at wrote no row: $(cat "$X/project.canvas.yaml")"
+J '.cards.my_clip == {x: 10.5, y: -20, w: 320} and (.etag | length > 0)' <<< "$(api "$C")" || check "GET canvas: $(api "$C")"
+inputs=$(status "$X" | jq -c '[.assets[] | [.name, .inputs]]')
+E2=$OUT/canvas-events.txt; api -N --max-time 3 "http://$ADDR/v1/events" > "$E2" & pid=$!
+sleep 1
+J '.etag | length > 0' <<< "$(api -X PATCH -d '{"cards":{"zebra":{"x":1,"y":2},"my_clip":{"x":-5.125,"y":0},"apple":{"x":3,"y":4},"zebra2":null}}' "$C")" || check "PATCH canvas"
+wait "$pid" 2> /dev/null || true
+grep -q '"type":"canvas"' "$E2" && grep -q '"my_clip"' "$E2" || check "PATCH canvas: no canvas event: $(tail -c 300 "$E2")"
+[ "$(sed -n '/^cards:/,$p' "$X/project.canvas.yaml" | tail -n +2 | cut -d: -f1 | tr -d ' ' | paste -sd,)" = apple,my_clip,zebra ] || check "canvas: not one line per card, sorted: $(cat "$X/project.canvas.yaml")"
+grep -qF '  my_clip: {x: -5.13, y: 0}' "$X/project.canvas.yaml" || grep -qF '  my_clip: {x: -5.12, y: 0}' "$X/project.canvas.yaml" || check "canvas: a move: $(cat "$X/project.canvas.yaml")"
+[ "$(status "$X" | jq -c '[.assets[] | [.name, .inputs]]')" = "$inputs" ] || check "canvas: a move changed inputs"
+api -o /dev/null -X PATCH -d '{"cards":{"zebra":null}}' "$C"; J '.cards | has("zebra") | not' <<< "$(api "$C")" || check "canvas: a null did not remove a row"
+cozy project -p "$X" rename my_clip the_clip > "$OUT/rename-clip.txt" 2>&1 || check "rename of an element: $(cat "$OUT/rename-clip.txt")"
+{ grep -q '^  the_clip: {x:' "$X/project.canvas.yaml" && ! grep -q my_clip "$X/project.canvas.yaml" && grep -q '^  the_clip: {video: ' "$X/project.yaml" && ! grep -q my_clip "$X/project.yaml"; } || check "rename did not move the key and the row: $(cat "$X/project.yaml" "$X/project.canvas.yaml")"
+cozy project -p "$X" reclaim --yes > "$OUT/reclaim-canvas.txt" 2>&1 || check "reclaim: $(cat "$OUT/reclaim-canvas.txt")"
+grep -q '^  apple:' "$X/project.canvas.yaml" && check "reclaim did not prune a row nothing names: $(cat "$X/project.canvas.yaml")"
+grep -q '^  the_clip:' "$X/project.canvas.yaml" || check "reclaim pruned a row something names"
+
+step "a project: thumbnails, and what reading a project gives"
+local T=http://$ADDR/v1/projects/$ID/thumbs thumb
+ffmpeg -v error -y -f lavfi -i "color=c=red@0.5:size=1024x512,format=rgba" -frames:v 1 "$OUT/alpha.png"
+ffmpeg -v error -y -f lavfi -i "sine=frequency=330:duration=2" "$OUT/sound.wav"
+name=$(jq -nc --arg s "$OUT/alpha.png" '{source: $s, name: "alpha"}' | api -X POST -d @- "http://$ADDR/v1/projects/$ID/imports" | jq -r .sha256)
+hash=$(jq -nc --arg s "$OUT/sound.wav" '{source: $s, name: "sound"}' | api -X POST -d @- "http://$ADDR/v1/projects/$ID/imports" | jq -r .sha256)
+api -o "$OUT/thumb.png" -D "$OUT/thumb.hdr" "$T/$name?w=128" || true
+{ grep -qi '^content-type: image/png' "$OUT/thumb.hdr" && grep -qi 'immutable' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,pix_fmt -of csv=p=0 "$OUT/thumb.png")" = '128,rgba' ]; } \
+  || check "a picture's thumbnail: $(cat "$OUT/thumb.hdr"); $(ffprobe -v error -select_streams v:0 -show_entries stream=width,pix_fmt -of csv=p=0 "$OUT/thumb.png" 2>&1)"
+thumb=$(tr -d '\r' < "$OUT/thumb.hdr" | sed -n 's/^[Ee][Tt]ag: //p')
+[ "$(api -o /dev/null -w '%{http_code}' -H "If-None-Match: $thumb" "$T/$name?w=128")" = 304 ] || check "a thumbnail's ETag: not 304"
+[ "$(api -o /dev/null -w '%{http_code}' -I "$T/$name?w=128")" = 200 ] || check "HEAD of a thumbnail"
+api -o "$OUT/thumb.jpg" -D "$OUT/thumb.hdr" "$T/$hex?w=100" || true
+{ grep -qi '^content-type: image/jpeg' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$OUT/thumb.jpg")" = 100 ]; } || check "a video's poster: $(cat "$OUT/thumb.hdr")"
+api -o "$OUT/strip.jpg" "$T/sha256:$hex?w=100&strip=4" || true
+[ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$OUT/strip.jpg")" = 400 ] || check "a video's strip of 4 at 100 is not 400 wide"
+api -o "$OUT/wave.png" -D "$OUT/thumb.hdr" "$T/$hash?w=200" || true
+{ grep -qi '^content-type: image/png' "$OUT/thumb.hdr" && [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$OUT/wave.png")" = 200 ]; } || check "a sound's waveform: $(cat "$OUT/thumb.hdr")"
+[ "$(api -o /dev/null -w '%{http_code}' "$T/$(sha "$OUT/parts.head")")" = 404 ] || check "a thumbnail of no such file is not 404"
+J --arg s "$name" '[.assets[] | select(.name == "alpha")][0] | .sha256 == $s and .field == "image"' <<< "$(status "$X")" || check "reading: an element's hash and field: $(status "$X" | jq -c .assets)"
+local tries=0; until J '[.assets[] | select(.name == "alpha" or .name == "sound" or .name == "file")] | map(.width // .duration_ms) | all' <<< "$(status "$X")" || [ "$tries" = 40 ]; do sleep 0.5; tries=$((tries + 1)); done
+J '([.assets[] | select(.name == "alpha")][0] | .width == 1024 and .height == 512)
+  and ([.assets[] | select(.name == "sound")][0] | .duration_ms > 1500)
+  and ([.assets[] | select(.name == "file")][0] | .width == 854 and .height == 480 and .duration_ms > 1500)' <<< "$(status "$X")" || check "reading: what is measured: $(status "$X" | jq -c '[.assets[] | {name, width, height, duration_ms}]')"
+cat >> "$X/project.yaml" <<'YAML'
+  made:
+    render: {with: no-such-package-of-ours, prompt: Anything.}
+YAML
+hash=$(sha256sum "$X/project.lock"); status "$X" > /dev/null; status "$X" > /dev/null
+[ "$(sha256sum "$X/project.lock")" = "$hash" ] || check "reading a project wrote project.lock"
+api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$ID"; api -o /dev/null -X DELETE "http://$ADDR/v1/projects/$(jq -r .id <<< "$(cozy --json project -p "$P2" status)")"
 
 step "a project: import --remove-background"
-local clear runs_before line cleaned original
+local runs_before cleaned original
 ffmpeg -v error -y -f lavfi -i "color=c=black@0.0:size=64x64,format=rgba" -frames:v 1 "$U/clear.png"
 runs_before=$(jq '.runs // [] | length' "$U/project.lock")
 cozy project -p "$U" import "$U/clear.png" --remove-background > "$OUT/import-clear.txt" 2> "$OUT/import-clear.err" || check "import: already transparent: $(tail -c 300 "$OUT/import-clear.err")"
 grep -q 'already transparent' "$OUT/import-clear.err" || check "import: already transparent is not said: $(cat "$OUT/import-clear.err")"
-[ "$(wc -l < "$OUT/import-clear.txt")" = 1 ] && grep -q "^image: $(sha "$U/clear.png" | cut -c1-12)\$" "$OUT/import-clear.txt" || check "import: already transparent printed: $(cat "$OUT/import-clear.txt")"
-cozy project -p "$U" import "$U/kyogre.png" --remove-background --on no_such_machine > "$OUT/import-none.txt" 2> "$OUT/import-none.err" || check "import: no machine: $(tail -c 300 "$OUT/import-none.err")"
+[ "$(cat "$OUT/import-clear.txt")" = clear ] && grep -qF "  clear: {image: $(sha "$U/clear.png" | cut -c1-12)}" "$U/project.yaml" || check "import: already transparent printed: $(cat "$OUT/import-clear.txt")"
+still "$U/kyogre.png" red
+cozy project -p "$U" import "$U/kyogre.png" kept_plain --remove-background --on no_such_machine > "$OUT/import-none.txt" 2> "$OUT/import-none.err" || check "import: no machine: $(tail -c 300 "$OUT/import-none.err")"
 grep -q 'a plain copy is kept' "$OUT/import-none.err" || check "import: no machine is not said: $(cat "$OUT/import-none.err")"
-grep -q "^image: $(sha "$U/kyogre.png" | cut -c1-12)\$" "$OUT/import-none.txt" || check "import: no machine printed: $(cat "$OUT/import-none.txt")"
+[ "$(cat "$OUT/import-none.txt")" = kept_plain ] && grep -qF "  kept_plain: {image: $(sha "$U/kyogre.png" | cut -c1-12)}" "$U/project.yaml" || check "import: no machine printed: $(cat "$OUT/import-none.txt")"
 [ "$(jq '.runs // [] | length' "$U/project.lock")" = "$runs_before" ] || check "import: a run with no machine, or of a transparent file"
 if [ -n "${MODEL:-}" ]; then
   still "$U/blue.png" blue
   original=$(sha "$U/blue.png")
-  cozy project -p "$U" import "$U/blue.png" --remove-background > "$OUT/import-clean.txt" 2> "$OUT/import-clean.err" || check "import: remove the background: $(tail -c 300 "$OUT/import-clean.err")"
-  [ "$(wc -l < "$OUT/import-clean.txt")" = 1 ] || check "import: more than one line: $(cat "$OUT/import-clean.txt")"
-  line=$(cat "$OUT/import-clean.txt"); cleaned=${line#image: }
-  { [ "${#cleaned}" = 12 ] && [ "$cleaned" != "${original:0:12}" ] && ls "$U/files/$cleaned"* > /dev/null 2>&1; } || check "import: the cleaned file: $line"
+  cozy project -p "$U" import "$U/blue.png" cutout --remove-background > "$OUT/import-clean.txt" 2> "$OUT/import-clean.err" || check "import: remove the background: $(tail -c 300 "$OUT/import-clean.err")"
+  [ "$(cat "$OUT/import-clean.txt")" = cutout ] || check "import: it printed: $(cat "$OUT/import-clean.txt")"
+  cleaned=$(sed -n 's/^  cutout: {image: \(.*\)}$/\1/p' "$U/project.yaml")
+  { [ "${#cleaned}" = 12 ] && [ "$cleaned" != "${original:0:12}" ] && ls "$U/files/$cleaned"* > /dev/null 2>&1; } || check "import: the cleaned file: $(grep cutout "$U/project.yaml")"
   ! ls "$U/files/$original"* > /dev/null 2>&1 || check "import: the original was kept"
 fi
 }

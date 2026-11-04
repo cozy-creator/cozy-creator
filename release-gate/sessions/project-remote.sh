@@ -34,7 +34,7 @@ plate "$P/plates/a.mp4" testsrc2 "$((200 + RANDOM % 2000))" || fail "plate"
 plate "$P/plates/b.mp4" testsrc "$((200 + RANDOM % 2000))" || fail "plate"
 ffmpeg -v error -y -f lavfi -i "color=c=teal:size=832x480" -frames:v 1 -metadata comment="$RANDOM$RANDOM" "$F/coast.png" || fail "image"
 # hash_of <file>: the file imported, and the prefix that names it.
-hash_of() { cozy --json project -p "$P" import "$1" | jq -r .prefix | sed 's/.*/"&"/'; }
+hash_of() { cozy --json project -p "$P" import "$1" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]' | sed 's/.*/"&"/'; }
 {
   cat <<YAML
 version: 2

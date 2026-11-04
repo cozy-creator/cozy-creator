@@ -21,12 +21,12 @@ const PARTIAL: u8 = 3;
 const EXAMPLES: &str = "Examples:
   cozy project new garden
   cozy project open garden                     in your browser
-  cd garden && cozy project import ./kyogre.png   prints what to paste into project.yaml
+  cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2                 writes its hash into fight's lines in project.yaml: fight is a constant now
   cozy project unpin fight                     removes that line
-  cozy project rename theo mara                after renaming it in project.yaml
+  cozy project rename theo mara                in project.yaml, its <mentions> and its versions
   cozy project reclaim --yes                   deletes what project.yaml no longer names
   cozy project push                            its files to your Tensorhub account
   cozy project pull                            on another computer, beside project.yaml and project.lock
@@ -110,9 +110,9 @@ enum Verb {
     /// Keep an asset's versions after renaming it in project.yaml.
     #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
     Rename {
-        /// Its name in project.lock.
+        /// Its name now, or in project.lock if project.yaml has moved on.
         from: String,
-        /// Its name in project.yaml now: an asset with no versions.
+        /// Its new name.
         to: String,
     },
     /// List what project.yaml no longer names, and with --yes delete it: its versions, and any file nothing else names.
@@ -130,19 +130,22 @@ enum Verb {
     Pull,
 }
 
-/// Bring a picture, video or sound into the project, and print the line that names it in project.yaml.
+/// Add a picture, video or sound to the project as an element with a name, and print the name it got.
 #[derive(clap::Args, Debug)]
 #[command(after_help = "Examples:
-  cozy project import ./kyogre.png
+  cozy project import ./kyogre.png               prints kyogre
+  cozy project import ./kyogre.png kyogre_art    prints kyogre_art
   cozy project import https://example.com/groudon.png
-  cozy project import ./coast.jpg
 
+A name something in the project has takes _2, and the same file twice is two elements and one file: <name> reads it in any text.
 A URL is downloaded here, up to 64 MiB, from a public address.")]
 struct ImportFile {
     /// A path, or an http(s) URL.
     source: String,
-    /// Remove a picture's background, by a run of `birefnet/remove_background`, and keep only the result, printing its line. Without
-    /// this, import is a plain copy and needs no machine.
+    /// What to call it. Default: the file's name, lower-cased.
+    name: Option<String>,
+    /// Remove a picture's background, by a run of `birefnet/remove_background`, and keep only the result. Without this, import is a
+    /// plain copy and needs no machine.
     #[arg(long)]
     remove_background: bool,
     /// The machine that run goes to (default: this computer if it can run models, else a machine you have up).
@@ -386,7 +389,7 @@ async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) 
     Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.path.display())))
 }
 
-/// `POST /v1/projects/{id}/imports`, and what to paste.
+/// `POST /v1/projects/{id}/imports`, and the name it got. With `--remove-background`, what a run makes is what is imported, by the same call.
 async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
@@ -395,34 +398,30 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         true => args.source,
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
-    let (remove_background, on) = (args.remove_background, args.on.map(On::from));
-    let imported: Imported = calcifer.post(&format!("/v1/projects/{}/imports", opened.id), &Import { source, remove_background, on }, None).await?;
+    let path = format!("/v1/projects/{}/imports", opened.id);
+    let ask = Import { source, name: args.name, at: None, remove_background: args.remove_background, on: args.on.map(On::from) };
+    let mut imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
+    if let Some(run) = imported.run.take() {
+        // The live view alone, where a run's progress goes: its record would be more lines on stdout.
+        let run = watched(ctx, *run).await?;
+        let cleaned = crate::run::kept_files(&run).into_iter().next().filter(|_| run.status == protocol::calcifer::Status::Completed);
+        let Some(source) = cleaned else {
+            output::warn(&format!("run {} hasn't removed its background, and nothing is kept: import it again", run.number));
+            return Ok(crate::run::exit_code(&run));
+        };
+        let ask = Import { source, name: Some(imported.name), at: None, remove_background: false, on: None };
+        imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
+    }
     if ctx.json {
         output::json(&imported);
         return Ok(ExitCode::SUCCESS);
     }
-    let verb = if imported.already { "already imported" } else { "imported" };
-    if !remove_background {
-        anstream::println!("{verb} {}", imported.prefix);
-        anstream::println!("{}", imported.line);
-        return Ok(ExitCode::SUCCESS);
-    }
-    // One line on stdout, the one to paste; the rest goes where a run's progress goes.
+    // One line on stdout, its name; the rest goes where a run's progress goes.
     if let Some(note) = &imported.note {
         output::warn(note);
     }
-    let Some(run) = imported.run else {
-        anstream::println!("{}", imported.line);
-        return Ok(ExitCode::SUCCESS);
-    };
-    // The live view alone, where a run's progress goes: its record would be more lines on stdout.
-    let run = watched(ctx, *run).await?;
-    if run.status == protocol::calcifer::Status::Completed {
-        crate::run::paste(ctx, &run);
-        return Ok(ExitCode::SUCCESS);
-    }
-    output::warn(&format!("run {} hasn't removed its background, and nothing is kept: import it again", run.number));
-    Ok(crate::run::exit_code(&run))
+    anstream::println!("{}", imported.name);
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {
@@ -625,5 +624,5 @@ async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opene
         Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
         None => cwd,
     };
-    ctx.calcifer().await?.post("/v1/projects", &Open { path, create }, None).await
+    ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await
 }
