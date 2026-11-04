@@ -42,7 +42,7 @@ function plate(path, color, seconds, hz) {
   const link = process.argv[2];
   const base = new URL(link).origin;
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
-  const context = await browser.newContext({ viewport: { width: 1500, height: 950 } });
+  const context = await browser.newContext({ viewport: { width: 1900, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
@@ -69,7 +69,7 @@ function plate(path, color, seconds, hz) {
   const read = async () => (await call('GET', `/v1/projects/${id}`)).body;
   const folder = (await read()).path;
   seen.project = { id, folder };
-  const edit = async () => (await read()).assets.find((asset) => asset.name === 'edit');
+  const edit = async () => (await read()).assets.find((asset) => asset.name === 'Edit');
 
   // Real clips, each one color and one tone, and a still with its left half transparent.
   const dir = mkdtempSync(join(tmpdir(), 'web-timeline-'));
@@ -86,13 +86,7 @@ function plate(path, color, seconds, hz) {
   const tools = (await call('GET', '/v1/tools')).body.tools;
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.label === 'Edit' && tool.kind === 'video' && tool.controls[0]?.type === 'timeline', tool);
-  await page.waitForSelector('.tool:has(b:text-is("Edit"))');
-  const transfer = await page.evaluateHandle(() => {
-    const data = new DataTransfer();
-    data.setData('application/x-cozy-tool', 'cozy/edit');
-    return data;
-  });
-  for (const type of ['dragenter', 'dragover', 'drop']) await page.dispatchEvent('.stage', type, { dataTransfer: transfer, clientX: stage.x + 300, clientY: stage.y + 420 });
+  await page.locator('.tools .tool').filter({ has: page.locator('b:text-is("Edit")') }).dragTo(page.locator('.stage'), { targetPosition: { x: 1000, y: 100 } });
   await page.waitForSelector('.tl');
   check('its_name', Boolean(await edit()), (await read()).assets.map((asset) => asset.name));
   const clips = () => page.$$eval('.tl-clip', (els) => els.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames), missing: el.dataset.missing })));
@@ -123,7 +117,7 @@ function plate(path, color, seconds, hz) {
   const start = await clips();
   check('whole_takes', JSON.stringify(start.map((clip) => clip.frames)) === JSON.stringify([3 * FPS, 2 * FPS, 3 * FPS]), start);
   await until('the file holds them', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => /<title>[\s\S]*<red>[\s\S]*<blue>/.test(text));
-  check('a_filmstrip_each', await page.locator('.tl-clip img').count() >= 3, await page.locator('.tl-clip img').count());
+  check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
 
   // Pull an end: the bubble says the timecode, the clips stay snapped.
   const pull = async (name, side, by) => {
@@ -186,15 +180,15 @@ function plate(path, color, seconds, hz) {
 
   // Render: free, with no machine, showing how far it is, and a version like any other.
   const render = async () => {
-    await page.hover('.card:has(.tl) .head');
-    await page.locator('.card:has(.tl) button[aria-label="Render"]').click();
+    await card('Edit').locator('.head').hover();
+    await card('Edit').locator('button[aria-label="Render"]').click();
   };
   await page.evaluate(() => { window.rendering = 0; new MutationObserver(() => { if (document.querySelector('.tl-rendering')) window.rendering += 1; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
   await render();
   const landed = (count) => until(`${count} versions`, async () => (await edit()).versions, (n) => n === count, 180_000);
   await landed(1);
   check('progress_shown', (await page.evaluate(() => window.rendering)) > 0);
-  const film = join(folder, 'edit.mp4');
+  const film = join(folder, 'Edit.mp4');
   await until('its film', () => existsSync(film), Boolean);
   check('frames_exact', countFrames(film) === expected, { film: countFrames(film), expected });
   const sound = streamSeconds(film, 'a'), picture = streamSeconds(film, 'v');
@@ -212,7 +206,7 @@ function plate(path, color, seconds, hz) {
   const assets = (await read()).assets;
   const file = (name) => assets.find((asset) => asset.name === name).path;
   const otioClip = (clip) => (clip.name === 'title' ? `title:0:${clip.frames}:${file('title')}:still` : `${clip.name}:${clip.in}:${clip.out}:${file(clip.name)}`);
-  const otio = spawnSync('uv', ['run', '-q', '--no-project', '--with', 'opentimelineio==0.17.0', 'python', '-I', join(__dirname, '..', 'project', 'otio_check.py'), join(folder, 'edit.otio'), String(FPS), ...placed.map(otioClip)], { encoding: 'utf8' });
+  const otio = spawnSync('uv', ['run', '-q', '--no-project', '--with', 'opentimelineio==0.17.0', 'python', '-I', join(__dirname, '..', 'project', 'otio_check.py'), join(folder, 'Edit.otio'), String(FPS), ...placed.map(otioClip)], { encoding: 'utf8' });
   check('otio_reads_back', otio.status === 0 && /otio PASS/.test(otio.stdout), `${otio.stdout}${otio.stderr}`.slice(-1500));
 
   // The same edit again renders nothing.
@@ -236,33 +230,28 @@ function plate(path, color, seconds, hz) {
   check('second_frames_exact', countFrames(film) === second.reduce((sum, clip) => sum + clip.frames, 0), { film: countFrames(film), second });
 
   // Back to the first: its arrangement shows, and an edit carries on from there.
-  await page.hover('.card:has(.tl)');
-  await page.locator('.card:has(.tl) .take').first().click();
+  await card('Edit').locator('.head').hover();
+  await card('Edit').locator('.take').first().click();
   await until('version 1\'s clips', clips, (now) => now[0].out === placed[0].out);
   await pull('blue', 'in', 10);
   await until('carried on from it', async () => (await edit()).fields.timeline.tracks[0].clips[0].out, (out) => out === placed[0].out);
   check('carried_on', (await edit()).fields.timeline.tracks[0].clips[0].in > placed[0].in, (await edit()).fields.timeline);
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
-  const takes = page.locator('.card:has(.tl) .take[draggable=true]');
-  const out = await page.evaluateHandle(() => new DataTransfer());
-  await page.hover('.card:has(.tl)');
-  await takes.first().dispatchEvent('dragstart', { dataTransfer: out });
-  for (const type of ['dragenter', 'dragover', 'drop']) await page.dispatchEvent('.stage', type, { dataTransfer: out, clientX: stage.x + 1100, clientY: stage.y + 100 });
-  const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'edit'), Boolean);
+  await card('Edit').locator('.head').hover();
+  await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.stage'), { targetPosition: { x: 300, y: 700 } });
+  const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
   // Approved, that version is what the Edit is, and its film follows.
-  await page.hover('.card:has(.tl) .head');
-  await page.locator('.card:has(.tl) .take').nth(1).click();
-  await page.locator('.card:has(.tl) button:text-is("Approve")').click();
+  await card('Edit').locator('.head').hover();
+  await card('Edit').locator('.take').nth(1).click();
+  await card('Edit').locator('button:text-is("Approve")').click();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
-  await page.locator('.card:has(.media) button:text-is("Unapprove")').click();
+  await card('Edit').locator('.head').hover();
+  await card('Edit').locator('button:text-is("Unapprove")').click();
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
-  await page.hover('.card:has(.media) .head');
-  const flip = page.locator('.react-flow__node').filter({ has: page.locator('.nm:text-is("edit")') }).locator('button[aria-label="Edit"]');
-  if (await flip.count()) await flip.click();
   await page.waitForSelector('.tl');
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
@@ -280,7 +269,7 @@ function plate(path, color, seconds, hz) {
 
   if (process.env.COZY) {
     const status = JSON.parse(execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
-    check('cli_sees_its_versions', status.assets.find((asset) => asset.name === 'edit')?.versions === before + 1, status.assets.find((asset) => asset.name === 'edit'));
+    check('cli_sees_its_versions', status.assets.find((asset) => asset.name === 'Edit')?.versions === before + 1, status.assets.find((asset) => asset.name === 'Edit'));
   }
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   check('no_page_errors', errors.length === 0, errors);
