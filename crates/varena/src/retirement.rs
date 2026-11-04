@@ -123,14 +123,27 @@ pub(crate) fn stats() -> Result<Stats> {
 
 fn run(retirer: Arc<Retirer>, receiver: mpsc::Receiver<Job>) {
     let mut pending = Vec::new();
+    // A read's demand waits on its fill's retirement, which is usually microseconds behind the first
+    // look: the fill's events are done, the read's own end event not quite. At 20 ms each, 124 blocks
+    // of SDXL took 2 s of its first step (run 29637). Look again at once, easing off to 12.8 ms.
+    let mut quiet = 0u32;
     loop {
         if pending.is_empty() {
             match receiver.recv() {
-                Ok(job) => pending.push(job),
+                Ok(job) => {
+                    pending.push(job);
+                    quiet = 0;
+                }
                 Err(_) => return,
             }
-        } else if let Ok(job) = receiver.recv_timeout(Duration::from_millis(20)) {
-            pending.push(job);
+        } else {
+            match receiver.recv_timeout(Duration::from_micros(100 << quiet.min(7))) {
+                Ok(job) => {
+                    pending.push(job);
+                    quiet = 0;
+                }
+                Err(_) => quiet += 1,
+            }
         }
         pending.extend(receiver.try_iter());
         let mut index = 0;
@@ -143,6 +156,7 @@ fn run(retirer: Arc<Retirer>, receiver: mpsc::Receiver<Job>) {
                     drop(pending.swap_remove(index));
                     retirer.queued.fetch_sub(1, Ordering::Relaxed);
                     retirer.retired.fetch_add(1, Ordering::Relaxed);
+                    quiet = 0;
                 }
                 failure => {
                     let error = match failure {
