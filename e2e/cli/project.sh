@@ -66,6 +66,7 @@ pins
 project_runs
 entities
 orphans
+joining
 keeps
 written
 adapters
@@ -623,6 +624,37 @@ for _ in $(seq 60); do J '.busy' <<< "$(status "$T")" && break; sleep 0.5; done
 code=0; cozy project -p "$T" reclaim --yes > "$OUT/busy.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'rendering' "$OUT/busy.txt"; } || check "orphans: reclaim --yes while rendering (exit $code): $(tail -c 300 "$OUT/busy.txt")"
 wait "$going" || check "orphans: the slow render: $(tail -c 300 "$OUT/slow.txt")"
+}
+
+# A second render of a project already rendering is told at once what is going, and follows it as the first does.
+joining() {
+step "a project: a second render joins the one going, and hears its run at once"
+local T=$OUT/joining first second n heard
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  waiting:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 15
+YAML
+cozy project -p "$T" render waiting --on local > "$OUT/join-first.txt" 2>&1 &
+first=$!
+n=''
+for _ in $(seq 240); do n=$(row "$T" waiting .status | sed -n 's/.*making (run \([0-9]*\)).*/\1/p'); [ -n "$n" ] && break; sleep 0.25; done
+[ -n "$n" ] || check "joining: the first render never showed a run: $(tail -c 300 "$OUT/join-first.txt")"
+cozy project -p "$T" render waiting --on local > "$OUT/join-second.txt" 2>&1 &
+second=$!
+heard=''
+for _ in $(seq 12); do
+  grep -q 'already going in joining, and this adds nothing to it: joining it' "$OUT/join-second.txt" && grep -q "$n" "$OUT/join-second.txt" && { heard=1; break; }
+  sleep 0.25
+done
+[ -n "$heard" ] || check "joining: the second render said nothing within 3 s, while run $n went: $(cat "$OUT/join-second.txt")"
+wait "$first" || check "joining: the first render: $(tail -c 300 "$OUT/join-first.txt")"
+wait "$second" || check "joining: the second render: $(tail -c 300 "$OUT/join-second.txt")"
+[ "$(made "$T" waiting)" = 1 ] || check "joining: two renders of one ask made $(made "$T" waiting)"
 }
 
 # --take and --in: another draw of the same inputs, the take resolved here, the rest the adapter's.

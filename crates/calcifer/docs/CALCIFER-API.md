@@ -365,7 +365,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
 - `GET /v1/projects/{id}/assets/{name}`: `{asset, versions: [{number, files, made_by?, seed?, runs, approved?, warnings?, kept?}]}`.
 - `GET /v1/projects/{id}/yaml`: project.yaml's bytes, its `ETag` the digest of them (`If-None-Match` is `304`).
 - `PUT /v1/projects/{id}/yaml` with `If-Match` (`400 if_match_required` without): the body becomes project.yaml, if it still holds what that ETag read, else `409 project_changed` and it stands. `204`, the new `ETag`. A body that doesn't read as a project is `400 project_yaml`, the file untouched. A client keeps comments and formatting by changing only the lines it means to. It renders nothing, though a walk going reads the file as it goes.
-- `POST /v1/projects/{id}/runs` `{names, n?, on, hub?, approve?, new?, take?, in_s?}` (`Idempotency-Key`): each name, or `all`, and what it reads: run
+- `POST /v1/projects/{id}/runs` `{names, n?, on, hub?, approve?, new?, take?, in_s?}` (`Idempotency-Key`): answers `{id, path, joined?, added}`: `joined`, a render was going already; `added` 0 with it is no new work. A take goes where its own ask said, and what the walk owes beyond its takes stays where the ask that began it said. each name, or `all`, and what it reads: run
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`); the adapter gets it as `keep`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its events.
@@ -380,7 +380,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
   each its own object, which its first push lists in project.lock under the file's `parts`. `transferred` on the events ends it.
 - `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
-- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`.
+- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
 
 ### Tools and Calcifer

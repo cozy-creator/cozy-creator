@@ -39,7 +39,7 @@ use protocol::{
     error::{Error, Kind},
     ids::Digest,
     machine as v1,
-    project::{
+    project::{Asked, 
         Approve, Approved, Asset as Row, AssetVersions, Cut, Event, File as Listing, Import, Imported, Kept, Known, Open, Opened,
         Orphan, Projects as Listed, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         Version as VersionRow, VersionPrefix,
@@ -749,7 +749,7 @@ async fn runs(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<Opened>), Refusal> {
+) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
     let asked: Runs = parse(&body)?;
     if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
@@ -771,7 +771,7 @@ async fn runs(
         let mut keys = project.keys.lock().expect("keys lock");
         match keys.get(key) {
             Some(seen) if *seen == digest => {
-                return Ok((StatusCode::OK, Json(Opened { id, path: project.folder.dir.clone() })));
+                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0 })));
             }
             Some(_) => {
                 let said = format!("Idempotency-Key {key} asked another render already");
@@ -864,14 +864,21 @@ async fn runs(
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
         return Err(Refusal(error));
     }
+    let joined = *project.walking.lock().expect("walking lock");
+    let added = takes.len() as u32 + u32::from(all && !lock.walk.all);
+    // A take goes where its own ask said. What the walk owes beyond them stays where the ask that began it said.
+    if let Some(going) = lock.walk.target.as_ref().filter(|going| joined && going.on != target.on) {
+        let on: Vec<String> = going.on.iter().map(On::to_string).collect();
+        said(format!("what this render reads, or is already owed, stays on {}, where it began", on.join(", ")));
+    }
     (project.folder.update_lock(|lock| {
-        lock.walk.target = Some(target.clone());
+        lock.walk.target.get_or_insert_with(|| target.clone());
         lock.walk.all |= all;
         lock.walk.takes.extend(takes.iter().cloned());
     }))
     .map_err(Refusal)?;
     walk(&api, &project);
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path: project.folder.dir.clone() })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added })))
 }
 
 /// What `--take` and `--in` ask of asset `i`: the take a new one keeps the start of, the one that is its state, else its newest, if
@@ -1099,9 +1106,13 @@ async fn events(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>, Refusal> {
-    let tail = api.projects.get(&api, &id)?.events.subscribe();
+    let project = api.projects.get(&api, &id)?;
+    // Heard from before what is going is read, so nothing falls between: a run can be told twice, never not at all.
+    let tail = project.events.subscribe();
+    let going = going(&api, &project.folder).map_err(Refusal)?;
+    let told = going.into_iter().map(|event| Ok(sse::Event::default().json_data(&event).expect("an event serializes")));
     let stop = api.stop_signal();
-    let stream = futures_util::stream::unfold((tail, stop), |(mut tail, mut stop)| async move {
+    let stream = futures_util::stream::iter(told).chain(futures_util::stream::unfold((tail, stop), |(mut tail, mut stop)| async move {
         loop {
             let event = tokio::select! {
                 event = tail.recv() => event,
@@ -1116,8 +1127,19 @@ async fn events(
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
-    });
+    }));
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// The runs going in the project now, as each was told when it began, for whoever comes after: one more render, or a page.
+fn going(api: &Api, folder: &Folder) -> Result<Vec<Event>, Error> {
+    let lock = folder.lock()?;
+    let store = api.calcifer.store();
+    let running = lock.pending.values().filter(|pending| pending.run > 0).filter_map(|pending| {
+        let row = store.run_by_number(pending.run).ok()??;
+        (row.state != crate::store::State::Settled).then(|| Event::Started { name: pending.asset.clone(), run: row.id.to_string(), number: pending.run })
+    });
+    Ok(running.collect())
 }
 
 /// project.yaml's ETag, as `text` holds it.

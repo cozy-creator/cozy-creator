@@ -24,6 +24,19 @@ pub struct Opened {
     pub path: PathBuf,
 }
 
+/// `POST /v1/projects/{id}/runs`: what the ask found. `/events` opens with the runs already going.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Asked {
+    pub id: String,
+    pub path: PathBuf,
+    /// A render was going already: this ask joined it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub joined: bool,
+    /// What it added to the walk; 0 with `joined` is no new work.
+    #[serde(default)]
+    pub added: u32,
+}
+
 /// `GET /v1/projects`: the projects this computer's Calcifer has opened, last used first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Projects {

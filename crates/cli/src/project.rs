@@ -7,7 +7,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -410,15 +410,24 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         in_s: args.in_s,
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
-    let _: Opened = calcifer.post(&path, &runs, Some(&mint_key())).await?;
+    let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
+    if asked.joined {
+        let name = opened.path.file_name().map_or_else(|| opened.path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        output::say(ctx, &match asked.added {
+            0 => format!("a render is already going in {name}, and this adds nothing to it: joining it"),
+            _ => format!("a render is already going in {name}: joining it"),
+        });
+    }
     let status = format!("cozy project -p {} status", opened.path.display());
     let (mut failed, mut warned) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    // `/events` opens with the runs going, and one that began just then can be told twice.
+    let mut followed = std::collections::HashSet::new();
     // Each cut as last said: a render ends on what it holds, not on what it held as a take landed.
     let mut cuts: Vec<(String, String)> = vec![];
     while let Some(event) = events.next().await {
         match event {
             Event::Started { run, .. } => {
-                if !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
+                if followed.insert(run.clone()) && !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
                     output::say(ctx, "the project's runs go on in Calcifer");
                     output::next(ctx, &[&status]);
                     return Ok(ExitCode::SUCCESS);
