@@ -500,10 +500,18 @@ def prefetch_rule():
         idle = filled(gpu, 2 * MIB, 5)
         target = gpu.reserve(source.nbytes)
         before = vt.stats(0)
-        assert target.prepare_prefetch(checkpoint, parts, threads=1) is None  # no phase
+        # Nothing measured: only into room already free beside a quarter of the card, evicting nothing.
+        cap(4 * MIB, gpu)
+        assert target.prepare_prefetch(checkpoint, parts, threads=1) is None and idle.resident  # no phase
         token = vt.phase_enter(0, "core/unmeasured")
-        assert target.prepare_prefetch(checkpoint, parts, threads=1) is None
+        assert target.prepare_prefetch(checkpoint, parts, threads=1) is None and idle.resident
         vt.phase_leave(0, token, completed=False)
+        cap(64 * MIB, gpu)
+        read = target.prepare_prefetch(checkpoint, parts, threads=1)
+        assert read is not None and idle.resident
+        read.cancel()
+        read.wait()
+        del read
         # 12 MiB of room: 2 MiB idle region, 8 MiB peak, 2 MiB read: the idle region may stay.
         cap(13 * MIB, gpu)
         token = vt.phase_enter(0, key)

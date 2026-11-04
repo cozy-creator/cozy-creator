@@ -341,9 +341,10 @@ pub(crate) fn release(
 
 /// The prefetch rule: free >= bytes + what this phase's last pass still needs of working
 /// memory, where free counts completed free working pages and completed idle regions that
-/// reclaim would take anyway. False declines with no IO and no waiting.
+/// reclaim would take anyway. With nothing measured yet, a first pass, it reads ahead only
+/// into room already free. False declines with no IO and no waiting.
 pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>) -> Result<bool> {
-    let Some((gap, reusable)) = working::prefetch_gap(device)? else {
+    let Some((gap, reusable, known)) = working::prefetch_gap(device)? else {
         return Ok(false);
     };
     // Mapped free pages serve the phase's working demand first.
@@ -374,7 +375,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>) ->
         return Ok(true);
     }
     let short = needed - room;
-    if short > idle + excess {
+    if !known || short > idle + excess {
         return Ok(false);
     }
     let trimmed = working::release_completed(device, short.min(excess), usize::MAX, None)?;

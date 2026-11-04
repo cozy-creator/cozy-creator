@@ -1949,8 +1949,9 @@ pub fn phase_forget(device: i32, key: &str) -> Result<bool> {
 }
 
 /// What the rest of this phase still needs of working memory, per its last pass, and the
-/// completed free pages already mapped for it. None declines: unknown phase, or pressure.
-pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize)>> {
+/// completed free pages already mapped for it. With no measure it says a quarter of the card, the
+/// same floor a split has, and whether it knew. None declines: capture, or pressure.
+pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize, bool)>> {
     let Some(owner) = existing(device)? else {
         return Ok(None);
     };
@@ -1960,14 +1961,20 @@ pub(crate) fn prefetch_gap(device: i32) -> Result<Option<(usize, usize)>> {
         if state.prefetch_suppressed {
             return None;
         }
-        let active = state.phases.active.as_ref().filter(|active| active.invalid.is_none())?;
+        let reusable = state.reusable_eager_pages();
+        let unknown = Some((owner.capacity() / 4, reusable, false));
+        let Some(active) = state.phases.active.as_ref().filter(|active| active.invalid.is_none()) else {
+            return unknown;
+        };
         let samples = match active.mode {
             PhaseMode::Eager => &state.phases.samples,
             PhaseMode::Replay => &state.phases.replay_samples,
             _ => return None,
         };
-        let sample = samples.get(active.key.as_ref()?).filter(|sample| sample.known)?;
-        Some((sample.peak_bytes.saturating_sub(active.owned_charged), state.reusable_eager_pages()))
+        let Some(sample) = active.key.as_ref().and_then(|key| samples.get(key)).filter(|sample| sample.known) else {
+            return unknown;
+        };
+        Some((sample.peak_bytes.saturating_sub(active.owned_charged), reusable, true))
     })();
     if answer.is_none() {
         state.stats.prefetch_declines += 1;
