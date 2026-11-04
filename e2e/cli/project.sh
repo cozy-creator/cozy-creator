@@ -281,11 +281,16 @@ step "a project: a hash of a file, a constant, a hash of nothing"
 local C=$OUT/constants pic; mkdir -p "$C"; still "$C/teal.png" teal
 printf 'version: 2\nassets: {}\n' > "$C/project.yaml"
 pic=$(prefix "$C" "$C/teal.png")
+ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=1 "$C/voice.wav"
+local sound; sound=$(prefix "$C" "$C/voice.wav")
 cat > "$C/project.yaml" <<YAML
 version: 2
 assets:
   teal:
     image: $pic
+  singer:
+    image: $pic
+    audio: $sound
   wrong:
     with: $here/project/draw.py
     kind: picture
@@ -305,6 +310,7 @@ assets:
     description: Nor me either.
 YAML
 J '.assets[] | select(.name == "teal") | .pinned and (.with == null) and (.approved == null)' <<< "$(status "$C")" || check "pins: a constant: $(row "$C" teal .)"
+J '.assets[] | select(.name == "singer") | (.files | keys) == ["audio", "image"]' <<< "$(status "$C")" || check "pins: a constant of two files: $(row "$C" singer .files)"
 J '.warnings | any(contains("no file'"'"'s hash starts with cafe0000")) and any(contains("is not a hash"))' <<< "$(status "$C")" || check "pins: a bad pin is not warned of: $(status "$C" | jq -c .warnings)"
 render "$C" teal || check "pins: render a constant: $(tail -c 300 "$OUT/render.txt")"
 says pins "is a constant"
@@ -615,6 +621,27 @@ code=0; render "$T" reader || code=$?
 { [ "$code" != 0 ] && says failures "Not this one."; } || check "failures: Refuse (exit $code): $(tail -c 400 "$OUT/render.txt")"
 [ "$(made "$T" no)" = null ] || [ "$(made "$T" no)" = 0 ] || check "failures: a refusal made a version"
 says failures "reader cannot render: what it reads was not made"
+[ -d "${PACKAGES:-}/minimax-h3" ] || return 0
+step "a project: H3's adapter refuses to keep another package's take"
+local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
+printf 'version: 2\nassets: {}\n' > "$H/project.yaml"
+look=$(prefix "$H" "$H/look.mp4")
+cat > "$H/project.yaml" <<YAML
+version: 2
+assets:
+  look:
+    video: $look
+  clash:
+    with: $here/project/shots.py
+    kind: shot
+    summary: <look>.
+    beats:
+      - duration: 6
+YAML
+render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.txt")"
+sed -i "s#with: .*shots.py#with: $PACKAGES/minimax-h3#" "$H/project.yaml"
+code=0; render "$H" clash --take 1 --in 5 || code=$?
+{ [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
 }
 
 # The two kinds of pieces, in frames; two cuts side by side, each its own film and timeline; an edit recut on approve with no machine;

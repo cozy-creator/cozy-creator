@@ -188,7 +188,7 @@ pub struct Pending {
     /// Where it goes, and each call after this one of the operation's list.
     pub target: Target,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rest: Vec<Call>,
+    pub rest: Vec<Invocation>,
     /// What each call before this one saved, for a later one that reads it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub done: Vec<Files>,
@@ -196,7 +196,7 @@ pub struct Pending {
 
 /// One call an adapter answered: a function of its package, and its exact input.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Call {
+pub struct Invocation {
     pub function: String,
     #[serde(default)]
     pub input: Map<String, Value>,

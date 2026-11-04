@@ -52,7 +52,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
-use folder::{Call, Files, Folder, Keeps, Lock, MadeBy, Pending, ReadFrom, Take, Target, Tried, Version, Written};
+use folder::{Files, Folder, Invocation, Keeps, Lock, MadeBy, Pending, ReadFrom, Take, Target, Tried, Version, Written};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Package, Renderer};
@@ -541,7 +541,7 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
 /// Every file something the file names uses: its assets' versions, what is on its way, and its file pins.
 fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
     let mut kept: BTreeSet<String> = lock.named(|key| doc.find(key).is_some()).into_iter().map(str::to_owned).collect();
-    kept.extend(doc.assets.iter().filter_map(|asset| Some(asset.pin.as_ref()?.1.clone())));
+    kept.extend(doc.assets.iter().flat_map(|asset| asset.pin.iter().map(|(_, sha256)| sha256).chain(asset.also.values()).cloned()));
     kept
 }
 
@@ -1306,7 +1306,7 @@ impl Walk {
 
     /// A package's project adapter on `operation`, an ordinary run on the machine the render goes to: the calls it answers, in order,
     /// and what it said. None is no run. It holds no files: a file is its digest.
-    async fn adapt(&self, adapter: &Renderer, operation: &Value, hub: &str, on: &[On]) -> Result<(Vec<Call>, Vec<String>), Error> {
+    async fn adapt(&self, adapter: &Renderer, operation: &Value, hub: &str, on: &[On]) -> Result<(Vec<Invocation>, Vec<String>), Error> {
         let failed = |why: String| Error::new(Kind::Unavailable, "project_adapter", format!("{}'s adapter for {}: {why}", adapter.package, operation["kind"].as_str().unwrap_or_default()));
         let placed = self.host.place(on, adapter);
         let (source, inputs) = match &adapter.local {
@@ -1335,7 +1335,7 @@ impl Walk {
     /// Sends `call` to its function of `package` on one of the pending's machines, as an ordinary run under `key`, recorded as pending
     /// (with `settle`: what it settles of the walk) in one write before it is sent. The seed, and on the first call the asset's
     /// `models` and `lora`, as `cozy run --input` takes them, and on any call its `options` the function takes, go on top.
-    async fn submit(&self, key: &str, call: Call, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut Lock)) -> Result<(), Error> {
+    async fn submit(&self, key: &str, call: Invocation, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut Lock)) -> Result<(), Error> {
         let renderer = package.function(&call.function)?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
         let first = pending.done.is_empty();
@@ -1727,11 +1727,11 @@ impl Walk {
 }
 
 /// What an adapter answered: its `invocations`, in order, and what it said of them. None is no run.
-fn answered(result: Option<&Value>) -> (Vec<Call>, Vec<String>) {
+fn answered(result: Option<&Value>) -> (Vec<Invocation>, Vec<String>) {
     let calls = result.and_then(|result| result["invocations"].as_array()).map(Vec::as_slice).unwrap_or_default();
     let said = calls.iter().flat_map(|call| call["warnings"].as_array().into_iter().flatten()).filter_map(|said| said.as_str().map(str::to_owned)).collect();
     let calls = calls.iter().filter_map(|call| {
-        Some(Call { function: call["function"].as_str()?.to_owned(), input: call["input"].as_object().cloned().unwrap_or_default() })
+        Some(Invocation { function: call["function"].as_str()?.to_owned(), input: call["input"].as_object().cloned().unwrap_or_default() })
     });
     (calls.collect(), said)
 }

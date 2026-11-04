@@ -125,12 +125,14 @@ pub struct Asset {
     pub own: BTreeSet<String>,
     /// A pin, the line `approve` writes: its field and sha256. Its `with` and text stay in the file, ignored while it stands.
     pub pin: Option<(&'static str, String)>,
+    /// A constant's other hashes (a character's `image` and `audio`): its files with the pin's, when the pin is no version's.
+    pub also: Files,
     /// It has no operation: no `with`, of its own or from defaults, or no `kind` for its package's adapter.
     pub hollow: bool,
     /// A free frame a beat names: `cozy` makes it, and it stays the world state it is to what reads it.
     pub frame: bool,
-    /// What it reads: each as the text mentions it, and which.
-    pub reads: Vec<(String, usize)>,
+    /// What it reads, in the order its text mentions them.
+    pub reads: Vec<usize>,
     /// The revisions it sends to its function.
     pub writes: Vec<Write>,
     /// The asset whose function sends this revision: its state comes with that one's take.
@@ -321,7 +323,7 @@ impl Doc {
             }
         }
         merged.extend(body);
-        let mut pin = None;
+        let (mut pin, mut also) = (None, Files::new());
         for field in PINS {
             let Some(value) = merged.get(field) else { continue };
             let written = match value {
@@ -336,7 +338,10 @@ impl Doc {
                     if !here {
                         self.warnings.push(format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
                     }
-                    pin.get_or_insert((field, sha256));
+                    match pin {
+                        None => pin = Some((field, sha256)),
+                        Some(_) => drop(also.insert(field.to_owned(), sha256)),
+                    }
                 }
                 Err(why) => {
                     self.warnings.push(format!("{name}'s {field}{why}"));
@@ -354,7 +359,7 @@ impl Doc {
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
         let hollow = with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, also, hollow, frame: false, reads: vec![], writes: vec![], writer: None });
     }
 
     /// `scene`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
@@ -374,6 +379,7 @@ impl Doc {
                     fields: Map::new(),
                     own: BTreeSet::new(),
                     pin: None,
+                    also: Files::new(),
                     hollow: false,
                     frame: false,
                     reads: vec![],
@@ -432,14 +438,14 @@ impl Doc {
                 let key = name_key(&self.assets[j].name);
                 if j != i && !own.contains(key.as_str()) && !upstream[i].contains(&j) {
                     upstream[i].push(j);
-                    reads[i].push((mention, j));
+                    reads[i].push(j);
                 }
             }
         }
         said.dedup();
         let graph = Graph::new(upstream, &fixed);
         for &(reader, read) in &graph.closing {
-            reads[reader].retain(|(_, j)| *j != read);
+            reads[reader].retain(|j| *j != read);
             said.push(format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name));
         }
         for (asset, reads) in self.assets.iter_mut().zip(reads) {
@@ -527,7 +533,11 @@ impl Doc {
                     };
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
                 }
-                None => stand(State::Pinned { version: None, changed: vec![] }, Some(Files::from([((*field).to_owned(), sha256.clone())]))),
+                None => {
+                    let mut files = asset.also.clone();
+                    files.insert((*field).to_owned(), sha256.clone());
+                    stand(State::Pinned { version: None, changed: vec![] }, Some(files))
+                }
             };
         }
         if let Some(writer) = asset.writer {
@@ -544,7 +554,8 @@ impl Doc {
             (Some(version), _) => stand(State::Current(version.number), Some(version.files.clone())),
             (None, None) => stand(State::Missing, None),
             (None, Some(last)) => {
-                let changed = changed(&last.digests, &digests);
+                // A version from before digests (a migrated one) can't say which.
+                let changed = if last.digests.is_empty() { vec![] } else { changed(&last.digests, &digests) };
                 let why = if changed.is_empty() { "its inputs changed".to_owned() } else { format!("{} changed", changed.join(", ")) };
                 stand(State::Stale(why), None)
             }
@@ -556,13 +567,13 @@ impl Doc {
     fn reading(&self, i: usize, lock: &Lock, done: &[Standing]) -> Option<Vec<ReadNow>> {
         let tool = self.tool(i).is_some();
         let mut reads = vec![];
-        for (_, j) in &self.assets[i].reads {
-            let name = self.assets[*j].name.clone();
-            match &done[*j].files {
-                Some(files) => reads.push(ReadNow { name, asset: *j, files: files.clone(), newest: None }),
+        for &j in &self.assets[i].reads {
+            let name = self.assets[j].name.clone();
+            match &done[j].files {
+                Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), newest: None }),
                 None if tool => {
-                    let newest = lock.asset(&self.assets[*j].name).and_then(|held| held.versions.last());
-                    reads.extend(newest.map(|newest| ReadNow { name, asset: *j, files: newest.files.clone(), newest: Some(newest.number) }));
+                    let newest = lock.asset(&self.assets[j].name).and_then(|held| held.versions.last());
+                    reads.extend(newest.map(|newest| ReadNow { name, asset: j, files: newest.files.clone(), newest: Some(newest.number) }));
                 }
                 None => return None,
             }

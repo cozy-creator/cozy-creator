@@ -60,14 +60,16 @@ defaults:
     with: cozy
 assets:
   hero:
+    kind: character
     image: hero.png
     description: "$CHAR"
   yard:
+    kind: environment
     image: place.png
     description: "$SCENE"
-  wall:
-    image: place.png
-    description: a stepladder against the wall
+  wall.1:
+    kind: scene
+    description: a stepladder against the wall, and fresh paint
   mural:
     kind: shot
     options: {seed: $((R + 300))}
@@ -103,6 +105,8 @@ YAML
     expect project-split "$(jq -r 'if (.runs | length) == 1 and .files.latents != null and .writes["wall.1"].image != null then "PASS" else "FAIL" end' <<< "$v")" \
       "runs $(jq -c .runs <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v"), wall.1 $(jq -r '.writes["wall.1"].image // "none"' <<< "$v"), made by $(jq -r '.made_by.with' <<< "$v")"
     expect project-split-text "$(jq -r 'if ([.warnings[]? | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
+    # The gate's hero picture has a background: H3's adapter says it goes into the shot (se-104). A warning, no failed run.
+    expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
   fi
   if want project-upscale && [ -n "$f" ]; then
     render project-upscale "$P" "mural upscale" || expect project-upscale FAIL "render mural upscale: $(tail -c 300 project-upscale.log)"
@@ -130,6 +134,7 @@ defaults:
     with: $H3
 assets:
   yard:
+    kind: environment
     image: place.png
     description: "$SCENE"
   look:
@@ -162,6 +167,9 @@ YAML
     s=$(nice -n 19 ffmpeg -nostdin -v info -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$old" -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$f" -lavfi ssim -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)
     expect project-in-kept "$(awk -v s="${s:-0}" 'BEGIN { print s >= 0.95 ? "PASS" : "FAIL" }')" "SSIM of the kept part to take 1: ${s:-none}"
   fi
+  # H3's adapter refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
+  render project-in-end "$P" look --take 2; code=$?
+  expect project-in-end "$([ "$code" != 0 ] && grep -q "already reaches the shot's end" project-in-end.log && echo PASS || echo FAIL)" "exit $code: $(tail -c 200 project-in-end.log)"
 fi
 
 if want project-plate; then
@@ -174,6 +182,7 @@ defaults:
     with: $H3
 assets:
   pattern:
+    kind: environment
     image: plate.png
     description: a synthetic broadcast test pattern
   take one:
@@ -207,13 +216,13 @@ defaults:
   shot:
     with: $H3
 assets:
-  speech:
-    audio: voice.wav
   host:
+    kind: character
     image: hero.png
+    audio: voice.wav
     description: "$CHAR"
-    voice: <speech>
   yard:
+    kind: environment
     image: place.png
     description: "$SCENE"
   hello:
