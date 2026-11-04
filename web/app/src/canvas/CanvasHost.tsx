@@ -28,6 +28,8 @@ import { Placer } from "./place"
 import { TextSheet } from "./TextSheet"
 
 const nodeTypes = { element: Card, entity: EntityCard }
+// Nothing fitted goes under the dock.
+const FIT = { maxZoom: 1, padding: { top: "24px", right: "24px", bottom: "88px", left: "24px" } } as const
 
 const ACCEPT = "image/*,video/*,audio/*"
 const MULTI = ["Shift", "Meta", "Control"]
@@ -181,7 +183,7 @@ function Canvas({
     const fitOnce = async () => {
       if (fitted || !store.projectId) return
       fitted = true
-      if (openedOn) await flow.fitView({ maxZoom: 1, padding: 0.12 })
+      if (openedOn) await flow.fitView(FIT)
       saveViewport(scope, store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
@@ -195,7 +197,7 @@ function Canvas({
     return () => store.detach()
   }, [store, flow, saved, scope, openedOn, bridge])
 
-  const fit = useCallback(() => void flow.fitView({ maxZoom: 1, padding: 0.12, duration: 150 }), [flow])
+  const fit = useCallback(() => void flow.fitView({ ...FIT, duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])
 
   // The middle of what's visible: the canvas less any drawer over it.

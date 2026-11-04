@@ -1,5 +1,5 @@
 import type { NodeProps } from "@xyflow/react"
-import { memo, useCallback, useState } from "react"
+import { type MouseEvent, memo, useCallback, useState } from "react"
 import { useSignal } from "../ui/signal"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
@@ -27,6 +27,11 @@ function dotOf(view: ElementView): string {
   if (asset?.failure) return "s-failed"
   if (asset && shownOf(view)?.absent) return "s-missing"
   return DOTS[asset?.standing ?? "current"] ?? "s-missing"
+}
+
+/** A button on a card does its one thing: selecting would dim every other edge. */
+export function buttonsOnly(event: MouseEvent) {
+  if ((event.target as Element).closest("button")) event.stopPropagation()
 }
 
 /** Where edges land: a measure of the card finds these as it would React Flow's own handles, at no cost per frame. */
@@ -169,11 +174,7 @@ function About({ seconds }: { seconds: number }) {
 function Pull() {
   const store = useCanvasStore()
   const moving = useSignal(store.transferring)
-  return (
-    <div className="status">
-      On another computer {moving ? "· pulling" : <Act label="Pull" onClick={() => void store.pull()} />}
-    </div>
-  )
+  return <div className="status">{moving ? "Pulling" : <Act label="Pull" onClick={() => void store.pull()} />}</div>
 }
 
 /** What it says under its media: how far an import or a run is, and what's wrong and what to do about it. Never a hash. */
@@ -269,7 +270,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   return (
     <>
       <Anchors anchors={anchorsFor(view, width)} />
-      <div className={`card ${versions.length > 1 ? "stacked" : ""}`} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)}>
+      <div className={`card ${versions.length > 1 ? "stacked" : ""}`} onClick={buttonsOnly} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)}>
         <div className="head">
           {view.draft !== undefined ? (
             <NameField name={name} draft={view.draft} onCancel={cancel} />

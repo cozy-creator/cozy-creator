@@ -1,7 +1,7 @@
 import type { NodeProps } from "@xyflow/react"
 import { memo } from "react"
 import type { Entity } from "../types"
-import { Anchors } from "./Card"
+import { Anchors, buttonsOnly } from "./Card"
 import type { ElementNode } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
 import { Thumb } from "./Media"
@@ -54,7 +54,7 @@ const EntityBody = memo(function EntityBody({ name, width }: { name: string; wid
   return (
     <>
       <Anchors anchors={anchorsFor(view, width)} />
-      <div className="card entity">
+      <div className="card entity" onClick={buttonsOnly}>
         <div className="head">
           <span className="nm" title={name}>
             {name}

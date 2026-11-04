@@ -77,22 +77,24 @@ async function drag(page, handle, dx, dy) {
   await page.mouse.up();
 }
 
-/** The median frame while a pan goes on, and how many places the viewport went: a pan that didn't move proves nothing. */
+/** The frames while a pan goes on, how many places the viewport went, as a pan that didn't move proves nothing, and the fewest cards on
+ *  screen at any moment of it. It goes 480 px left and back. */
 const panning = (page, ms) => page.evaluate((ms) => new Promise((done) => {
   const pane = document.querySelector('.react-flow__pane');
   const viewport = document.querySelector('.react-flow__viewport');
   const frames = [];
   const places = new Set();
-  let [last, sign, count] = [performance.now(), 1, 0];
+  let [last, sign, count, fewest] = [performance.now(), 1, 0, Infinity];
   const end = last + ms;
   const step = (now) => {
     frames.push(now - last);
     last = now;
     places.add(getComputedStyle(viewport).transform);
+    fewest = Math.min(fewest, document.querySelectorAll('.react-flow__node').length);
     if (++count % 40 === 0) sign = -sign;
     pane.dispatchEvent(new WheelEvent('wheel', { deltaX: sign * 12, deltaY: 0, bubbles: true, cancelable: true }));
     if (now < end) requestAnimationFrame(step);
-    else done({ frames: frames.slice(1), places: places.size });
+    else done({ frames: frames.slice(1), places: places.size, fewest });
   };
   requestAnimationFrame(step);
 }), ms);
@@ -297,6 +299,7 @@ entities:
   const dashes = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ge')].map((edge) => [edge.dataset.edge, getComputedStyle(edge.querySelector('.ge-line')).strokeDasharray])));
   const look = (dash) => (dash === 'none' ? 'none' : parseFloat(dash) < 3 ? 'dotted' : 'dashed');
   check('edge_looks', Object.entries(want).every(([edge, style]) => look(dashes[edge]) === style), dashes);
+  check('edge_width_ignores_zoom', await page.evaluate(() => [...document.querySelectorAll('.ge-line')].every((line) => getComputedStyle(line).vectorEffect === 'non-scaling-stroke')));
 
   // Selecting lights its edges and dims the rest.
   await element(page, 'shot').locator('.nm').click();
@@ -346,6 +349,7 @@ entities:
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1);
+  check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0, await page.getAttribute('.stage', 'data-focus'));
   check('landed_with_no_reload', await notReloaded());
   // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it.
   await until('the cut landed', () => asset('edit'), (held) => held.standing === 'current');
@@ -503,11 +507,11 @@ entities:
     const bigState = await api(`/v1/projects/${made.id}`);
     const read_ms = Date.now() - began;
     check('scale_state', bigState.assets.length === COUNT, bigState.assets?.length);
-    const open = async (zoom) => {
+    const open = async (zoom, x) => {
       const tab = await context.newPage();
       watch(tab);
       tab.setDefaultTimeout(STEP_MS);
-      await tab.addInitScript(([id, zoom]) => localStorage.setItem(`cozy.view:here:${id}`, JSON.stringify({ x: 40, y: 60, zoom })), [made.id, zoom]);
+      await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:here:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
       await tab.goto(`${base}/#/projects/${made.id}`);
       await tab.waitForSelector('.react-flow__node');
       await until('every card its thumbnail', () => tab.evaluate(() => {
@@ -520,20 +524,22 @@ entities:
     const onScreen = (tab) => tab.evaluate(() => ({ cards: document.querySelectorAll('.react-flow__node').length, edges: document.querySelectorAll('.ge').length }));
     seen.scale = { elements: COUNT, edges, read_ms };
 
-    let tab = await open(0.7);
+    let tab = await open(0.7, 40);
     const near = await panning(tab, 3000);
-    seen.scale.pan_70 = { ...(await onScreen(tab)), ...summary(near.frames) };
+    seen.scale.pan_70 = { ...(await onScreen(tab)), fewest_cards: near.fewest, ...summary(near.frames) };
     check('scale_near_panned', near.places > 10, near.places);
     await tab.close();
 
-    tab = await open(0.11);
+    // At 11% the 18 columns are about 630 px of this 1800 px window. From here its pan, 480 px left and back, keeps them all on screen,
+    // so every frame measured draws all 300.
+    tab = await open(0.11, 800);
     const far = await panning(tab, 3000);
-    seen.scale.pan_11 = { ...(await onScreen(tab)), ...summary(far.frames) };
+    seen.scale.pan_11 = { ...(await onScreen(tab)), fewest_cards: far.fewest, ...summary(far.frames) };
     check('scale_far_panned', far.places > 10, far.places);
-    check('scale_far_shows_all', seen.scale.pan_11.cards === COUNT, seen.scale.pan_11);
+    check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === edges, seen.scale.pan_11);
     await tab.close();
 
-    tab = await open(0.7);
+    tab = await open(0.7, 40);
     const name = element(tab, 'n39').locator('.nm');
     const box = await name.boundingBox();
     let frames;

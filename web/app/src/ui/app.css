@@ -478,6 +478,7 @@ code {
   margin: 0;
   padding: 8px;
   align-self: flex-start;
+  width: 100%;
   max-height: 96px;
   color: var(--mute);
   font-size: 11.5px;
@@ -640,19 +641,24 @@ code {
 /* Edges: one attribute on the stage dims them, and only those lit hear of a selection. */
 .ge-line {
   fill: none;
-  stroke: #5a5d65;
-  stroke-width: 1.25;
+  stroke: var(--edge);
+  stroke-width: 1.4;
+  /* The same on screen at any zoom: scaled with the canvas, a line is under a pixel by 55% and the graph stops reading as one. */
+  vector-effect: non-scaling-stroke;
 }
 .ge.link .ge-line {
+  stroke: var(--edge-soft);
   stroke-dasharray: 2 4;
 }
 .ge.write .ge-line {
-  stroke-dasharray: 6 5;
+  stroke: var(--edge-soft);
+  stroke-dasharray: 7 5;
 }
 .ge-hit {
   fill: none;
   stroke: transparent;
   stroke-width: 14;
+  vector-effect: non-scaling-stroke;
   pointer-events: stroke;
   cursor: pointer;
 }
@@ -661,19 +667,15 @@ code {
   stroke: var(--ink);
 }
 .stage[data-focus="on"] .ge-line {
-  opacity: 0.18;
+  opacity: 0.25;
 }
 .stage[data-focus="on"] .ge.lit .ge-line {
   opacity: 1;
   stroke: var(--ember);
-  stroke-width: 1.75;
+  stroke-width: 2;
 }
 .stage[data-lod="2"] .ge-line {
-  stroke-width: 4;
   stroke-dasharray: none;
-}
-.stage[data-lod="2"] .ge-hit {
-  stroke-width: 40;
 }
 .edge-tip {
   position: fixed;
