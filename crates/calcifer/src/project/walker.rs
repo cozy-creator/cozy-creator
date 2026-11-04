@@ -353,9 +353,22 @@ impl Graph {
         Turn::Go
     }
 
-    /// Back to waiting for its turn: a machine isn't free for it yet.
+    /// Back to waiting for its turn: a machine isn't free for it yet, or sending it found out what it is.
     pub fn put_back(&mut self, id: usize) {
+        self.jobs[id].state = State::Waiting;
         self.ready.insert((self.jobs[id].rank, id));
+    }
+
+    /// What the jobs not ended of the renders `asks` names are, now their text is read knowing more.
+    pub fn read_again(&mut self, asks: impl Fn(&str) -> bool, nodes: &[Node]) {
+        let open: Vec<usize> = self.open.values().flatten().copied().filter(|&id| asks(&self.jobs[id].ask)).collect();
+        for id in open {
+            let job = &mut self.jobs[id];
+            if let Some(node) = nodes.get(job.node) {
+                job.spec.clone_from(&node.spec);
+                (job.shot, job.video) = (node.shot, node.video);
+            }
+        }
     }
 
     /// The jobs ready for their turn, smallest rank first, at most `room`. Each stays the caller's until `going`, `end` or it waits again.

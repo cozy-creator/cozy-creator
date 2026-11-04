@@ -182,6 +182,8 @@ pub struct Doc {
     index: HashMap<String, usize>,
     /// Each package's own tags, as project.lock last read them. A package not here hasn't been read yet.
     reserved: BTreeMap<String, Vec<String>>,
+    /// What each tool makes, as project.lock last read it.
+    makes: BTreeMap<String, String>,
     /// Mentions naming nothing and no tag its package is known to have. Until a package is read its tags may be among them, so
     /// nothing is made of these before then.
     unread: Vec<(usize, String)>,
@@ -301,7 +303,7 @@ impl Doc {
         for name in protocol::yaml::keys(text, &["assets"]) {
             named(&name)?;
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], dir: folder.dir.clone() };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone() };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
             doc.declare(&name, written, &defaults, folder, lock);
@@ -602,7 +604,7 @@ impl Doc {
     /// Every asset's state, in the file's terms.
     /// Whether this was read with the package tags `lock` knows now.
     pub fn knows_tags_of(&self, lock: &Lock) -> bool {
-        self.reserved == lock.reserved
+        self.reserved == lock.reserved && self.makes == lock.makes
     }
 
     pub fn stand(&self, lock: &Lock) -> Vec<Standing> {

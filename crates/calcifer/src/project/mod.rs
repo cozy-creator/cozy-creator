@@ -513,6 +513,8 @@ struct Walker {
     greet: Vec<String>,
     /// Asks whose text doesn't read, and why.
     unread: Vec<(String, Error)>,
+    /// Jobs whose sending found out what their package makes: they have their turn again, read knowing that.
+    again: HashSet<String>,
     /// The assets project.yaml names now, as of its stamp.
     names: Option<(String, Arc<HashSet<String>>)>,
     /// What machines were asked to fetch ahead: machine, function and its model choices.
@@ -2824,6 +2826,7 @@ impl Walk {
                     && let Ok(doc) = self.folder().text_of(&ask).and_then(|text| Doc::read(self.folder(), &text))
                 {
                     *reading = Reading::new(doc);
+                    graph.read_again(|job_ask| lock.walk.asks.iter().any(|other| other.id == job_ask && other.digest == ask.digest), &reading.nodes);
                 }
                 let gone = |name: &str| names.as_ref().is_some_and(|names| !names.contains(&name_key(name)));
                 // With several machines it stays here until one is free for it, so nothing commits early to the wrong queue.
@@ -2975,6 +2978,12 @@ impl Walk {
             Done::Ahead => {}
             Done::Sent { id, key, ask, name, kind, inputs, result } => match result {
                 Ok(()) => {
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    if walker.again.remove(&key) {
+                        walker.graph.put_back(id);
+                        return Ok(());
+                    }
+                    drop(walker);
                     // No run came of it: it stands, it had no adapter, or it was canceled while being sent.
                     if !self.folder().walk_now()?.pending.iter().any(|(sent, pending)| pending.job_of(sent) == key) {
                         ended(id, End::Done, &name);
@@ -3216,7 +3225,7 @@ impl Walk {
             }
             // What it outputs says what `defaults` fill, and so its key: planned again knowing that.
             if read_tags(doc, self.folder(), i, &package) {
-                self.project.asked.notify_one();
+                self.project.walker.lock().expect("walker lock").again.insert(key.clone());
                 return Ok(());
             }
             // Before anything that could cost: its adapter's run, or a function's.
