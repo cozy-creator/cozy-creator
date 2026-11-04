@@ -2346,7 +2346,7 @@ impl Walk {
         }
         let unreadable = tools::unreadable(&ffprobe, &pieces);
         if !unreadable.is_empty() {
-            return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render, and the film that stands stays: {}", asset.name, unreadable.join("; "))).next("cozy project status"));
+            return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: the film that stands stays", asset.name, unreadable.join("; "))).next("cozy project status"));
         }
         said.extend(tools::past_end(&mut pieces, canvas.fps));
         said.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
@@ -2401,7 +2401,7 @@ impl Walk {
             false => [pull, again],
         };
         let [first, second] = nexts;
-        Err(Error::new(Kind::NotFound, "piece_absent", format!("{} cannot render, and the film that stands stays: {why}", asset.name)).next(first).next(second))
+        Err(Error::new(Kind::NotFound, "piece_absent", format!("{} cannot render: {why}: the film that stands stays", asset.name)).next(first).next(second))
     }
 
     /// Lists a tool's version, its older ones gone unless pinned, and whatever files only they named.

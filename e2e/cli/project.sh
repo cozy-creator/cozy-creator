@@ -208,7 +208,7 @@ local R=$OUT/run-project away code hash other real lines
 away=$(mktemp -d)
 code=0; (cd "$away" && cozy run "$here/project/draw.py" prompt=outside) > "$OUT/outside.txt" 2>&1 || code=$?
 rmdir "$away"
-{ [ "$code" = 2 ] && grep -qF 'not in a project: cd into one, or cozy project new <name>' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
+{ [ "$code" = 2 ] && grep -qF 'not in a project: cd into one, or make one' "$OUT/outside.txt" && grep -qF 'next: cozy project new my-project' "$OUT/outside.txt"; } || check "runs: outside a project: exit $code: $(tail -c 300 "$OUT/outside.txt")"
 cozy project new "$R" > /dev/null || check "runs: project new"
 cat > "$R/project.yaml" <<YAML
 version: 2
