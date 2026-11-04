@@ -1044,28 +1044,22 @@ impl Store {
             let mut events = vec![];
             for row in rows {
                 let row = row?;
-                let id = row.id.to_string();
-                let ended = if row.cancel_requested {
-                    let reason = Reason { code: "canceled".into(), message: format!("canceled; {reason}"), ..Default::default() };
-                    end(tx, &id, Status::Canceled, Some(reason))?
-                } else if row.state != State::Accepted && !row.pinned && served {
-                    tx.execute(
-                        "UPDATE runs SET machine = NULL, state = 'queued', cursor = 0, machine_state = NULL
-                         WHERE id = ?1",
-                        [&id],
-                    )?;
-                    vec![lifecycle(tx, &id)?]
-                } else {
-                    let message = match row.state {
-                        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted the run, but its result never reached Calcifer, and {machine} released itself after 15 idle minutes: the result is gone"),
-                        State::Accepted => format!("its machine {machine} ended mid-run, and the run was not retried: {reason}"),
-                        _ => format!("its machine {machine} ended before it accepted the run: {reason}"),
-                    };
-                    end(tx, &id, Status::Failed, Some(Reason { code: "machine_lost".into(), message, ..Default::default() }))?
-                };
+                let ended = machine_gone(tx, &row, machine, reason, served)?;
                 events.extend(ended.into_iter().map(|event| (row.id.clone(), event)));
             }
             Ok(events)
+        })
+    }
+
+    /// Ends run `id` as its machine's end would, for a machine its Hub says is stopped: nothing is
+    /// left to answer for the run, and the machine itself isn't ended, as its provider may resume it.
+    pub fn machine_stopped(&self, id: &str, machine: &str, reason: &str) -> Result<Vec<Event>> {
+        self.write(|tx| {
+            let served: bool = tx.query_row("SELECT served FROM machines WHERE name = ?1", [machine], |r| r.get(0))?;
+            match run_in(tx, id)? {
+                Some(row) if row.state != State::Settled => machine_gone(tx, &row, machine, reason, served),
+                _ => Ok(vec![]),
+            }
         })
     }
 
@@ -1703,6 +1697,26 @@ fn lifecycle(tx: &Transaction, id: &str) -> Result<Event> {
 }
 
 /// Settles the run: its outputs can no longer change, and its terminal event is the last.
+/// Run `row` with `machine` gone: a canceled run ends canceled, one it never accepted and could
+/// run elsewhere goes back to be placed (`served`), and any other ends `machine_lost`.
+fn machine_gone(tx: &rusqlite::Transaction<'_>, row: &RunRow, machine: &str, reason: &str, served: bool) -> Result<Vec<Event>> {
+    let id = row.id.to_string();
+    if row.cancel_requested {
+        let reason = Reason { code: "canceled".into(), message: format!("canceled; {reason}"), ..Default::default() };
+        return end(tx, &id, Status::Canceled, Some(reason));
+    }
+    if row.state != State::Accepted && !row.pinned && served {
+        tx.execute("UPDATE runs SET machine = NULL, state = 'queued', cursor = 0, machine_state = NULL WHERE id = ?1", [&id])?;
+        return Ok(vec![lifecycle(tx, &id)?]);
+    }
+    let message = match row.state {
+        State::Accepted if reason == "released_by_pod" => format!("{machine} accepted the run, but its result never reached Calcifer, and {machine} released itself after 15 idle minutes: the result is gone"),
+        State::Accepted => format!("its machine {machine} ended mid-run, and the run was not retried: {reason}"),
+        _ => format!("its machine {machine} ended before it accepted the run: {reason}"),
+    };
+    end(tx, &id, Status::Failed, Some(Reason { code: "machine_lost".into(), message, ..Default::default() }))
+}
+
 fn end(tx: &Transaction, id: &str, status: Status, reason: Option<Reason>) -> Result<Vec<Event>> {
     let mut events = vec![];
     let open: Vec<(String, i64)> = {

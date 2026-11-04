@@ -113,6 +113,11 @@ impl Hubs {
         offline(&self.rental(&row.hub, row.rental_id.as_deref()?)?)
     }
 
+    /// Why a rental's provider stopped it, by its Hub's last word.
+    pub(crate) fn stopped(&self, row: &MachineRow) -> Option<String> {
+        stopped(&self.rental(&row.hub, row.rental_id.as_deref()?)?)
+    }
+
     /// A rental's price an hour as its Hub last said it.
     pub(crate) fn hourly(&self, row: &MachineRow) -> Option<i64> {
         Some(hourly(&self.rental(&row.hub, row.rental_id.as_deref()?)?))
@@ -1557,16 +1562,18 @@ pub(crate) enum Word {
 /// Why a rental cannot be reached, by its Hub's word: its provider stopped it (the Hub keeps it,
 /// and it returns if the provider resumes it), or its Hub is ending it.
 fn offline(rental: &types::Rental) -> Option<String> {
-    let provider = rental.provider.as_deref().filter(|p| !p.is_empty());
-    let who = provider.unwrap_or("its provider");
+    stopped(rental).or_else(|| {
+        (rental.state == "release_requested").then(|| format!("its Hub is ending it ({})", cause(rental)))
+    })
+}
+
+/// Its provider stopped it, by its Hub's word.
+fn stopped(rental: &types::Rental) -> Option<String> {
     let code = rental.failure.as_ref().map_or("", |f| f.code.as_str());
-    match rental.state.as_str() {
-        "degraded" if code.starts_with("readiness.provider_stopped") => {
-            Some(format!("{who} stopped it"))
-        }
-        "release_requested" => Some(format!("its Hub is ending it ({})", cause(rental))),
-        _ => None,
-    }
+    (rental.state == "degraded" && code.starts_with("readiness.provider_stopped")).then(|| {
+        let provider = rental.provider.as_deref().filter(|p| !p.is_empty());
+        format!("{} stopped it", provider.unwrap_or("its provider"))
+    })
 }
 
 /// The Hub has no pod for this order yet: none can be bought now, or it is placing it again.

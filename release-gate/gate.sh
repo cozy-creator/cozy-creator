@@ -224,7 +224,7 @@ if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD (kill-at.sh, put there over SSH), and suite tensord measures the
   # pod's link over it, with this computer's key, or a new one on a runner. A tensorfs --only without `kill` rents with no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; }; then
+  if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* || $ONLY == *,stopped,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
   # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.

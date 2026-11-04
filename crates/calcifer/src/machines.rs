@@ -868,6 +868,12 @@ impl Machines {
         self.offline_in(&row, &lock(&self.seen))
     }
 
+    /// Whether it is offline because its provider stopped it, rather than because it is ending.
+    pub(crate) fn stopped(&self, name: &str) -> bool {
+        self.offline(name).is_some()
+            && self.store().machine(name).ok().flatten().is_some_and(|row| self.hubs.stopped(&row).is_some())
+    }
+
     fn offline_in(&self, row: &MachineRow, seen: &HashMap<String, Seen>) -> Option<String> {
         let answering = seen
             .get(&row.name)

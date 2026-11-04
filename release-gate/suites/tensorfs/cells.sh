@@ -196,6 +196,19 @@ if [ -n "${SSH:-}" ] && tfs_case kill; then
 fi
 # Local paths go absolute: `cozy model upload ./folder` resolves them against Calcifer, not here (2026-10-24).
 # Refused before the bulk downloads (tfs-137): nothing reaches the Hub, so no model to delete.
+# A machine its provider stops: the run ends at once, with that word. It ends the pod, so it runs only when named, and alone.
+# Vast says so within about a minute. RunPod starts the container again (gate 41933525232) or has left it `ready` for
+# 20 min (lafter, tachibana): either leaves the cell unjudged.
+if [ -n "${SSH:-}" ] && [[ $ONLY == *,stopped,* ]] && tfs_case stopped; then
+  d=$WHO/ci-tfs-stopped-$R
+  tfs_fixture stopped-fixture "$d"
+  "$CLI" machine ssh "$M" -- 'cat > /tmp/kill-at.sh' <"$HERE/suites/tensorfs/kill-at.sh" || exit 1
+  "$CLI" machine ssh "$M" -- "setsid sh /tmp/kill-at.sh $((TFS_RESUME_MB * 3 / 10 << 20)) machine >/tmp/kill-at.log 2>&1 </dev/null &" </dev/null || exit 1
+  ( sleep 300; kill "$(cat "$T/stopped.pid")" 2>/dev/null ) & guard=$!
+  tfs_step stopped model download "$d@$TFS_COMMIT" --on "$M" -y
+  kill "$guard" 2>/dev/null
+  tfs_cleanup
+fi
 if tfs_case family && [ -n "$WHO" ]; then
   tfs_step family-refusal model upload "hf://wangqyqq/sd_xl_base_1.0_inpainting_0.1.safetensors@26a6b2ff3ea6d7762d33eb57b0ad424f96ac3e09/sd_xl_base_1.0_inpainting_0.1.safetensors" \
     "$WHO/ci-tfs-family-$R" --lane fp16 --on "$M" -y

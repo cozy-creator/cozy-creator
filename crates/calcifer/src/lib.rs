@@ -720,8 +720,7 @@ impl Calcifer {
                 continue;
             }
             // Offline by its Hub's word: an unsent run leaves it now (an `any` run to be placed
-            // again, any other fails), and a sent one waits for it to come back or end. Nothing
-            // dials it meanwhile.
+            // again, any other fails), and a sent one waits for it to end. Nothing dials it meanwhile.
             if let Some(reason) = self.offline(&name) {
                 let message = format!("{name} is offline: {reason}");
                 if run.state == State::Queued {
@@ -736,6 +735,18 @@ impl Calcifer {
                     match left {
                         Ok(events) => self.publish(id, events),
                         Err(e) => warn!(run = %id, "{e}"),
+                    }
+                    continue;
+                }
+                // Stopped by its provider: nothing is left to answer for the run, so it ends now
+                // with that word. One its Hub is ending hears the end itself.
+                if self.machines().is_some_and(|machines| machines.stopped(&name)) {
+                    match self.store.machine_stopped(id.as_str(), &name, &reason) {
+                        Ok(events) => self.publish(id, events),
+                        Err(e) => {
+                            warn!(run = %id, "{e}");
+                            pause.wait(wake, None).await;
+                        }
                     }
                     continue;
                 }

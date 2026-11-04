@@ -219,6 +219,19 @@ def check(gate):
     # The same run goes on once TensorD is back: its own record is the resume.
     if done('kill-cut'):
         resumed('kill-cut', 'kill-cut')
+    # A machine its provider stopped: the run ends with that word. Still open after the cell's wait: its Hub never said so.
+    if chosen('stopped') and 'stopped' in rows:
+        rec = rows['stopped']['rec'] or {}
+        why = rec.get('reason') or {}
+        if rec.get('status') == 'in_progress':
+            notes.append(f'tensorfs stopped: not judged, its Hub never said the provider stopped it: {rec.get("waiting")}')
+        elif rec.get('status') == 'failed' and why.get('code') == 'machine_lost' and 'stopped it' in why.get('message', ''):
+            notes.append(f'tensorfs stopped: run {rows["stopped"]["run"]}: {why["message"]}')
+        elif rec.get('status') == 'completed':
+            # RunPod starts an exited container again (gate 41933525232: back in 12 s), and the run goes on.
+            notes.append(f'tensorfs stopped: not judged, run {rows["stopped"]["run"]} completed: its provider started the machine again')
+        else:
+            fails.append(f'tensorfs stopped: run {rows["stopped"]["run"]} {rec.get("status")} {json.dumps(why)[:300]}')
     up = None
     if done('upload'):
         evs = rows['upload']['evs']

@@ -175,6 +175,8 @@ that pair misses takes its own Runtime in its own environment, and the machine's
     (nothing from the Hub), and cut part-way then resumed (only the rest comes): once by a cancel, once by killing
     TensorD on the rental, as a crash ends it (`kill`, rented with SSH; an `only` without it rents none). Unfinished
     chunks count: at least 80% of the bytes that had arrived must be held. A boot that ends `boot_idle` is ordered again.
+  - `stopped`, only when named, as it ends the pod: its container exits mid-download, and the run must fail with the
+    provider's word. A provider that says nothing in 5 min leaves it unjudged.
   - `model upload` of new random weights from the gate's host to a throwaway `<account>/ci-tfs-<R>` (the time
     includes staging from the host: run it from a runner), the same folder as a second commit in another lane (dedup:
     the same objects, a tenth of the time), and new weights cut part-way then resumed. The model is deleted after.
