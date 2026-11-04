@@ -103,7 +103,7 @@ for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "st
 done
 J ".document.csp // \"\" | contains(\"'unsafe-eval'\") | not" "$OUT/web.json" || check "web-serves: the page's CSP allows eval: $(jq -c .document.csp "$OUT/web.json")"
 J '(.violations | length) == 0 and (.page_errors | length) == 0' "$OUT/web.json" || check "web-serves: the page broke under its CSP: $(jq -c '{violations, page_errors}' "$OUT/web.json")"
-[ "$(jq '.console_errors | length' "$OUT/web.json")" = 0 ] || echo "the page's console errors: $(jq -c .console_errors "$OUT/web.json")"
+J '.console_errors | length == 0' "$OUT/web.json" || check "web-serves: the page's console has errors, such as a route Calcifer lacks: $(jq -c .console_errors "$OUT/web.json")"
 J '[.document.set_cookie, .session.set_cookie] == [null, null] and (.cookies | length) == 0' "$OUT/web.json" || check "web-serves: a cookie was set: $(jq -c '{document, session, cookies}' "$OUT/web.json")"
 J '(.assets | length) > 0 and (.assets | all(.status == 200 and (.cache_control // "" | contains("immutable"))))' "$OUT/web.json" || check "web-serves: /assets/* is not 200 and immutable: $(jq -c .assets "$OUT/web.json")"
 J --arg b "Bearer $session" '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith("text/event-stream")) and .page_stream.authorization == $b' "$OUT/web.json" \
