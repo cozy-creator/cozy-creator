@@ -186,8 +186,9 @@ pub(crate) fn landing_within(path: &FsPath) -> Option<String> {
     Some(landing(&holding_folder(path)?).to_string_lossy().into_owned())
 }
 
-/// `--file`'s term in `project`: six or more hex digits that start one of its files' hash are that file.
-pub(crate) fn file_term(project: Option<&FsPath>, term: &FileTerm) -> Result<FileTerm, Error> {
+/// `--file`'s term in `project`: six or more hex digits that start one of its files' hash are that file, what stays on a machine
+/// fetched now that it's named.
+pub(crate) async fn file_term(calcifer: &crate::Calcifer, project: Option<&FsPath>, term: &FileTerm) -> Result<FileTerm, Error> {
     let written = term.file.as_str();
     let hashlike = written.len() >= 6 && written.bytes().all(|byte| byte.is_ascii_hexdigit());
     let Some(project) = project.filter(|_| hashlike) else { return Ok(term.clone()) };
@@ -195,7 +196,14 @@ pub(crate) fn file_term(project: Option<&FsPath>, term: &FileTerm) -> Result<Fil
     let lock = folder.lock()?;
     match lock.matching(&written.to_ascii_lowercase()).as_slice() {
         [] => Ok(term.clone()),
-        [file] => Ok(FileTerm { name: term.name.clone(), file: folder.path(&file.path).to_string_lossy().into_owned() }),
+        [file] => {
+            let at = folder.path(&file.path);
+            if file.stays() && !at.is_file() {
+                let fetched = calcifer.bring(&file.sha256, &file.machine).await;
+                fetched.map_err(|why| Error::new(Kind::Unavailable, "file_on_a_machine", format!("{written} stays on {}, and can't be had: {why}", file.machine)))?;
+            }
+            Ok(FileTerm { name: term.name.clone(), file: at.to_string_lossy().into_owned() })
+        }
         several => Err(Error::new(Kind::Usage, "file_ambiguous", format!("{written} fits {} files of this project: write more of its hash", several.len()))),
     }
 }
@@ -223,6 +231,11 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<P
         let _ = std::fs::remove_file(dest);
     }
     Ok(kept)
+}
+
+/// An output its machine keeps, in its project's lock.
+pub(crate) fn stays(project: &FsPath, sha256: &str, machine: &str, length: u64) -> Result<(), String> {
+    Folder::at(project).stays(sha256, machine, length).map_err(|e| e.message)
 }
 
 /// One folder's id, the same for as long as it is there.
@@ -435,7 +448,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let cuts = (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).map(|i| cut_row(&doc, folder, &lock, &stand, i)).collect();
     let busy = *project.walking.lock().expect("walking lock");
     let moving = project.moving.try_lock().is_err();
-    let absent = lock.files.values().filter(|file| !folder.path(&file.path).is_file()).count() as u64;
+    let absent = lock.files.values().filter(|file| folder.missing(file)).count() as u64;
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
@@ -549,7 +562,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         .collect();
     let files = standing.files.clone().unwrap_or_default();
     let gone: Vec<&str> = (files.values())
-        .filter(|sha256| lock.files.get(*sha256).is_none_or(|file| !folder.path(&file.path).is_file()))
+        .filter(|sha256| lock.files.get(*sha256).is_none_or(|file| folder.missing(file)))
         .map(|sha256| folder::prefix_of(sha256))
         .collect();
     let status = match (making.as_slice(), &standing.state) {
@@ -1354,6 +1367,18 @@ struct Next {
     take: Option<Take>,
 }
 
+/// Where a run can read a file from.
+enum Reach {
+    /// In `files/`, or nowhere it knows of, which a pull answers.
+    Here,
+    /// That machine, one it may go to, holds it.
+    There(On),
+    /// The machine that keeps it is there to fetch it from.
+    Fetch,
+    /// With the machine that kept it.
+    Gone,
+}
+
 /// A project's one walker: what project.lock owes, each operation sent once what it reads has settled, each run followed until it lands.
 struct Walk {
     host: Host,
@@ -1590,7 +1615,7 @@ impl Walk {
             let inputs = standing.inputs.clone().ok_or_else(|| cannot(&name, "what it reads has no state".into()))?;
             for read in &standing.reads {
                 let gone: Vec<&str> = (read.files.values())
-                    .filter(|sha256| lock.files.get(*sha256).is_none_or(|file| !self.folder().path(&file.path).is_file()))
+                    .filter(|sha256| lock.files.get(*sha256).is_none_or(|file| self.folder().missing(file)))
                     .map(|sha256| folder::prefix_of(sha256))
                     .collect();
                 if !gone.is_empty() {
@@ -1616,12 +1641,30 @@ impl Walk {
             if keeps.is_some() && keep.is_none() {
                 self.say(Event::Warning { message: format!("{name}: that take holds no video to keep: the whole {noun} renders") });
             }
+            if let Some(keep) = &keep
+                && let Some(file) = keep["latents"]["sha256"].as_str().and_then(|sha256| lock.files.get(sha256))
+                && matches!(self.reach(file, &target.on).await, Reach::Gone)
+            {
+                let said = format!("{name}: take {}'s latents went with its machine: `cozy project render {name}` renders the whole shot", keep["take"]);
+                return Err(Error::new(Kind::NotFound, "take_latents_gone", said));
+            }
+            // What stays on a machine that's gone isn't read: an adapter does without it.
+            let mut reads = standing.reads.clone();
+            for read in &mut reads {
+                for (field, sha256) in read.files.clone() {
+                    if let Some(file) = lock.files.get(&sha256)
+                        && matches!(self.reach(file, &target.on).await, Reach::Gone)
+                    {
+                        read.files.remove(&field);
+                    }
+                }
+            }
             let mut warnings = vec![];
             if let Some(signature) = &adapter.signature {
                 let unknown = (asset.own.iter()).filter(|field| asset.fields.contains_key(*field) && !signature.contains(*field));
                 warnings.extend(unknown.map(|field| format!("{name}: {} reads no field {field}", adapter.target())));
             }
-            let operation = doc.operation(i, &standing.reads, lock, keep.clone(), stand);
+            let operation = doc.operation(i, &reads, lock, keep.clone(), stand);
             let (calls, said) = self.adapt(&adapter, &operation, &target.hub, &target.on).await?;
             warnings.extend(said);
             // No call: this asset's files are what it reads.
@@ -1691,6 +1734,20 @@ impl Walk {
         sent
     }
 
+    /// Where a run going `on` can read `file` from.
+    async fn reach(&self, file: &folder::File, on: &[On]) -> Reach {
+        if !file.stays() || self.folder().path(&file.path).is_file() {
+            return Reach::Here;
+        }
+        if let Some(machine) = self.host.holding(&file.sha256, file.length, on).await {
+            return Reach::There(machine);
+        }
+        match self.host.fetchable(&file.sha256, &file.machine) {
+            true => Reach::Fetch,
+            false => Reach::Gone,
+        }
+    }
+
     /// A version of asset `i` as it stands now, its files not yet known.
     fn version(&self, doc: &Doc, standing: &Standing, i: usize, warnings: Vec<String>, inputs: String) -> Version {
         let asset = &doc.assets[i];
@@ -1731,7 +1788,7 @@ impl Walk {
             ..Default::default()
         };
         let out = Some(landing(&self.folder().dir));
-        let submit = SubmitRun { on: placed, hub: hub.to_owned(), kind: RunKind::Call, target: adapter.target(), spec, inputs, out, warnings: vec![], agreed: None };
+        let submit = SubmitRun { on: placed, hub: hub.to_owned(), kind: RunKind::Call, target: adapter.target(), spec, inputs, held: vec![], out, warnings: vec![], agreed: None };
         let run = self.send_run(&new_key(), submit).await?;
         let run = self.host.wait(&run.id).await?;
         if run.status != RunStatus::Completed {
@@ -1779,18 +1836,43 @@ impl Walk {
         let models = choices::wire(&choices.into_choices()).map_err(named)?;
         let payload = Value::Object(payload);
         let lock = self.folder().lock()?;
-        let (mut inputs, mut staged) = (vec![], vec![]);
+        let (mut inputs, mut staged, mut held, mut holder) = (vec![], vec![], vec![], None);
         for (field, path, digest) in tools::files_in(&payload, self.folder(), &lock) {
-            let length = std::fs::metadata(&path)
-                .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"))?
-                .len();
+            let file = &lock.files[&digest];
+            // What stays on a machine: read there by its hash, else fetched now that a run needs it.
+            let mut on_machine = false;
+            match self.reach(file, holder.as_ref().map_or(on.as_slice(), std::slice::from_ref)).await {
+                Reach::Here => {}
+                Reach::There(machine) => {
+                    self.say(Event::Said { message: format!("{name}: {field} is read on {machine}, which holds it") });
+                    holder = Some(machine);
+                    on_machine = true;
+                }
+                Reach::Fetch => {
+                    self.say(Event::Said { message: format!("{name}: fetching {field} from {}", file.machine) });
+                    let fetched = self.host.fetch(&digest, &file.machine).await;
+                    fetched.map_err(|why| cannot(&name, format!("{field} is on {}, and can't be had: {why}", file.machine)))?;
+                }
+                Reach::Gone => return Err(cannot(&name, format!("{field} went with its machine {}", file.machine))),
+            }
+            let length = match on_machine {
+                true => file.length,
+                false => {
+                    std::fs::metadata(&path)
+                        .map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", path.display())).next("cozy project pull"))?
+                        .len()
+                }
+            };
             let order = field.split('.').filter_map(|part| part.parse().ok()).next_back().unwrap_or(0);
             let media_type = media_type(&path).to_owned();
             inputs.push(v1::InputFile { field, digest: digest.clone(), length, media_type, order });
             let digest: Digest = digest.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
-            staged.push(StagedInput { path, digest, length });
+            match on_machine {
+                true => held.push(digest),
+                false => staged.push(StagedInput { path, digest, length }),
+            }
         }
-        let placed = self.host.place(&on, &renderer);
+        let placed = holder.unwrap_or_else(|| self.host.place(&on, &renderer));
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
@@ -1817,6 +1899,7 @@ impl Walk {
             target: renderer.target(),
             spec,
             inputs: staged,
+            held,
             out: Some(landing(&self.folder().dir)),
             warnings,
             agreed: None,
@@ -1889,8 +1972,21 @@ impl Walk {
             }
         }
         // Every file the run saved, by its output's name (a list's items as `<name>-<n>`). `written` is the frames it was asked for, in order.
-        let mut saved = Files::new();
+        let (mut saved, mut stayed) = (Files::new(), Files::new());
         for output in &run.output {
+            // The first of a list goes by its name, so a reader that takes one takes it.
+            let file = match output.index {
+                0 | 1 => output.name.clone(),
+                n => format!("{}-{n}", output.name),
+            };
+            // What stays on its machine is listed with who holds it, and no file.
+            if output.stays && output.path.as_ref().is_none_or(|path| !path.is_file()) {
+                if let (Some(sha256), Some(machine)) = (&output.sha256, &run.machine) {
+                    folder.stays(&sha256.to_string(), machine, output.length)?;
+                    stayed.insert(file, sha256.to_string());
+                }
+                continue;
+            }
             let Some(path) = output.path.as_ref().filter(|path| path.is_file()) else { continue };
             if output.name == "written" {
                 if let Some(write) = pending.writes.get(output.index as usize) {
@@ -1898,17 +1994,13 @@ impl Walk {
                 }
                 continue;
             }
-            // The first of a list goes by its name, so a reader that takes one takes it.
-            let file = match output.index {
-                0 | 1 => output.name.clone(),
-                n => format!("{}-{n}", output.name),
-            };
             saved.insert(file, folder.keep(path)?);
         }
         if saved.is_empty() && pending.rest.is_empty() && version.files.is_empty() {
             let said = format!("{name}: run {} saved no file", run.number);
             return Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run show {}", run.number)));
         }
+        saved.append(&mut stayed);
         version.files.extend(saved.clone());
         // Its next call, if the adapter answered several: one version, whichever call makes what.
         if !pending.rest.is_empty() {

@@ -56,6 +56,8 @@ pub fn retain(
         retention_id: owner.into(),
     };
     engine.bind_native_output(actor, owner, &crate::archive::encode_native_byte_retention_request(&native))?;
+    // The signer's own, so a later run of it may name these bytes by their hash, with nothing written.
+    engine.with_journal(|j| j.bind_object(actor, object))?;
     Ok(native)
 }
 

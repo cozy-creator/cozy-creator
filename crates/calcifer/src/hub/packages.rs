@@ -247,6 +247,7 @@ impl Ask for PackageInstall {
                 ..Default::default()
             },
             inputs: vec![],
+            held: vec![],
             out: None,
             warnings: vec![],
         };
@@ -294,6 +295,7 @@ pub(super) async fn remove(
                 ..Default::default()
             },
             inputs: vec![],
+            held: vec![],
             out: None,
             warnings: vec![],
         };

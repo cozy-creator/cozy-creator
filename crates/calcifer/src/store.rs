@@ -1112,12 +1112,10 @@ impl Store {
     /// Calcifer has not given up.
     pub fn exports_owed(&self) -> Result<Vec<(RunId, u64)>> {
         self.read(|conn| {
-            let mut statement = conn.prepare(
+            let mut statement = conn.prepare(&format!(
                 "SELECT DISTINCT runs.id, runs.number FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev
-                   AND outputs.checkpoint IS NULL
-                 ORDER BY runs.number",
-            )?;
+                 WHERE {OWED} ORDER BY runs.number"
+            ))?;
             let rows = statement
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1131,13 +1129,12 @@ impl Store {
     /// not given up, by run and appearance.
     pub fn exports_owed_on(&self, machine: &str) -> Result<Vec<OwedExport>> {
         self.read(|conn| {
-            let mut statement = conn.prepare(
+            let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
                  FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE runs.machine = ?1 AND outputs.exported_rev IS NOT outputs.rev
-                   AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
-                 ORDER BY runs.number, outputs.created_seq",
-            )?;
+                 WHERE runs.machine = ?1 AND {OWED}
+                 ORDER BY runs.number, outputs.created_seq"
+            ))?;
             let rows = statement
                 .query_map([machine], |r| {
                     Ok((
@@ -1164,18 +1161,32 @@ impl Store {
         })
     }
 
-    /// The run's outputs to export, in the order they first appeared. A checkpoint is never
-    /// exported (`OutputItem::is_checkpoint`), so it is owed nowhere.
+    /// The run's outputs to export, in the order they first appeared.
     pub fn outputs_to_export(&self, run: &str) -> Result<Vec<OutputRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {OUTPUT_COLUMNS} FROM outputs WHERE run = ?1 AND exported_rev IS NOT rev
-                 AND failed_rev IS NOT rev AND checkpoint IS NULL ORDER BY created_seq"
+                "SELECT {OUTPUT_COLUMNS} FROM outputs WHERE run = ?1 AND {OWED} ORDER BY created_seq"
             ))?;
             Ok(statement
                 .query_map([run], output_row)?
                 .collect::<rusqlite::Result<_>>()?)
         })
+    }
+
+    /// The newest run on `machine` that made these bytes, with its output: what can read them from there.
+    pub fn making(&self, digest: &str, machine: &str) -> Result<Option<(RunRow, OutputRow)>> {
+        let found: Option<(String, String, i64)> = self.read(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT outputs.run, outputs.name, outputs.idx FROM outputs JOIN runs ON runs.id = outputs.run
+                     WHERE outputs.digest = ?1 AND outputs.done AND runs.machine = ?2 ORDER BY runs.number DESC LIMIT 1",
+                    params![digest, machine],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?)
+        })?;
+        let Some((run, name, index)) = found else { return Ok(None) };
+        Ok(self.run(&run)?.zip(self.output(&run, &name, index as u32)?))
     }
 
     pub fn output(&self, run: &str, name: &str, index: u32) -> Result<Option<OutputRow>> {
@@ -1275,6 +1286,18 @@ fn export_settled(
         },
     }])
 }
+
+/// Whether an output stays on its machine (`OutputItem::stays`): untyped bytes, such as a model's latents, of a run that made
+/// something else. A run whose only output is untyped brings that here.
+const STAYS: &str = "(outputs.media_type LIKE 'application/octet-stream%'
+    AND EXISTS (SELECT 1 FROM outputs made WHERE made.run = outputs.run AND made.media_type NOT LIKE 'application/octet-stream%'))";
+
+/// An output owed to this computer: its newest revision neither landed nor given up, and no checkpoint. Untyped bytes wait for
+/// their run's end, when `STAYS` is known, and are owed then only if they don't stay.
+const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
+    AND (outputs.media_type NOT LIKE 'application/octet-stream%'
+        OR ((SELECT state FROM runs WHERE runs.id = outputs.run) = 'settled'
+            AND NOT EXISTS (SELECT 1 FROM outputs made WHERE made.run = outputs.run AND made.media_type NOT LIKE 'application/octet-stream%')))";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
     CASE WHEN failed_rev = rev THEN export_error END, checkpoint";
@@ -1789,12 +1812,12 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
 
 /// A run row as the API answers it, with its output items in the order they first appeared.
 fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT name, idx, rev, length, digest, media_type, label, done,
              CASE WHEN exported_rev = rev THEN path END, CASE WHEN failed_rev = rev THEN export_error END,
-             checkpoint
-         FROM outputs WHERE run = ?1 ORDER BY created_seq",
-    )?;
+             checkpoint, {STAYS}
+         FROM outputs WHERE run = ?1 ORDER BY created_seq"
+    ))?;
     let settled_ok = row.status == Some(Status::Completed);
     let items = statement.query_map([row.id.as_str()], |r| {
         let name: String = r.get(0)?;
@@ -1829,6 +1852,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
                 .get::<_, Option<String>>(9)?
                 .filter(|_| checkpoint.is_none()),
             checkpoint,
+            stays: r.get(11)?,
         })
     })?;
     Ok(Run {

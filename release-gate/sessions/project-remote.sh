@@ -8,6 +8,7 @@
 #     the same duration and frames, each with an SSIM of at least 0.99.
 #   A file over the Hub's 5 GiB goes as parts (cl-731), which project.lock lists: a push killed mid-way sends only the parts it
 #     had not, and a pull killed mid-way goes on inside the file and comes out its sha256.
+#   What stays on a machine (a hash with no file) is neither sent, fetched nor warned of.
 #   A file not at the Hub (cl-730): a pull gets everything else, names it in a warning and exits 3, and so does a push from
 #     that copy.
 # Its commits are deleted after; the Hub's GC takes their bytes.
@@ -194,5 +195,15 @@ second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-
 J '.absent == 1' "$OUT/status-huge.json" || fail "status does not count the one file: $(jq -c '{absent, missing}' "$OUT/status-huge.json")"
 second --json project -p "$C2" push > "$OUT/push-partial-copy.json" 2> "$OUT/push-partial-copy.err"; code=$?
 { [ "$code" = 3 ] && J '(.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/push-partial-copy.json"; } || fail "push from the partial copy, exit $code: $(tail -3 "$OUT/push-partial-copy.err")"
+
+say "what stays on a machine is no file of this computer's or the Hub's: no warning, and it counts for nothing"
+KEPT=$(printf 'ab%.0s' $(seq 32))
+sudo sh -c "jq --arg h '$KEPT' '.files[\"sha256:\" + \$h] = {path: (\"files/\" + \$h), sha256: (\"sha256:\" + \$h), machine: \"gone\", length: 1}' '$C2/project.lock' > '$C2/lock.new' && cat '$C2/lock.new' > '$C2/project.lock' && rm '$C2/lock.new'" || fail "no such row"
+second --json project -p "$C2" status > "$OUT/status-stays.json" 2> "$OUT/status-stays.err" || fail "status: $(tail -3 "$OUT/status-stays.err")"
+J '.absent == 1' "$OUT/status-stays.json" || fail "status counts what stays on a machine: $(jq -c .absent "$OUT/status-stays.json")"
+for verb in push pull; do
+  second --json project -p "$C2" "$verb" > "$OUT/$verb-stays.json" 2> "$OUT/$verb-stays.err"; code=$?
+  { [ "$code" = 3 ] && J '(.skipped | length == 1) and all(.skipped[]; .path | test("abab") | not)' "$OUT/$verb-stays.json"; } || fail "$verb with what stays on a machine, exit $code: $(tail -3 "$OUT/$verb-stays.err")"
+done
 
 say "PROVEN"

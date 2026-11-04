@@ -9,9 +9,9 @@ use std::{
 };
 
 use protocol::{
-    calcifer::{On, Run, Status as RunStatus, SubmitRun},
+    calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
-    ids::RunId,
+    ids::{Digest, RunId},
     interface::{self, Slot},
     model_ref::ModelRef,
 };
@@ -214,7 +214,7 @@ impl Host {
             let row =
                 row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
             let run = calcifer.record(&row).map_err(refused)?;
-            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && !owed(&run) {
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && !run.output.iter().any(OutputItem::owed) {
                 return Ok(run);
             }
             tokio::select! {
@@ -222,6 +222,37 @@ impl Host {
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             }
         }
+    }
+
+    /// The machine among `on` that already holds these bytes for this computer.
+    pub async fn holding(&self, sha256: &str, length: u64, on: &[On]) -> Option<On> {
+        let digest: Digest = sha256.parse().ok()?;
+        for machine in on {
+            let On::Machine(text) = machine else { continue };
+            let machines = &self.api.machines;
+            if text == "local" && machines.local_up().await.is_err() {
+                continue;
+            }
+            let Ok((_, link)) = machines.linked(text) else { continue };
+            if length > 0 && link.held(&digest, length).await.is_ok_and(|held| held >= length) {
+                return Some(machine.clone());
+            }
+        }
+        None
+    }
+
+    /// Whether `machine` is there to fetch `sha256` from: Calcifer knows the run on it that made these bytes, it hasn't ended, and its
+    /// Hub doesn't call it offline.
+    pub fn fetchable(&self, sha256: &str, machine: &str) -> bool {
+        let (machines, store) = (&self.api.machines, self.api.calcifer.store());
+        store.making(sha256, machine).is_ok_and(|made| made.is_some())
+            && machines.here(machine).is_ok_and(|row| row.is_some_and(|row| row.state != MachineState::Ended))
+            && machines.offline(machine).is_none()
+    }
+
+    /// `sha256`, which `machine` keeps, brought here now as an export brings an output: into its project's `files/`. Err: why not.
+    pub async fn fetch(&self, sha256: &str, machine: &str) -> Result<(), String> {
+        self.api.calcifer.bring(sha256, machine).await
     }
 
     /// Where a run of `renderer` goes among `on`: one is where it goes; of several, the machine
@@ -263,11 +294,6 @@ impl Host {
         let found = crate::tools::ffmpeg(home, &|line| tracing::info!("{line}")).await?;
         Ok((found.ffmpeg, found.ffprobe))
     }
-}
-
-/// An output still owed to this computer: its last revision neither landed nor failed.
-fn owed(run: &Run) -> bool {
-    run.output.iter().any(|item| !item.is_checkpoint() && item.path.is_none() && item.export_error.is_none())
 }
 
 fn refused(error: crate::Error) -> Error {

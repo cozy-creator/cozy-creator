@@ -856,9 +856,16 @@ YAML
 given() { cat "$T/$(jq -r --arg s "${1:-clash}" '.files[.assets[$s].versions[-1].files.given].path' "$T/project.lock")"; }
 render "$T" clash || check "keeps: render: $(tail -c 300 "$OUT/render.txt")"
 J '.keep == null and (.prompt | contains("clash") and contains("look=")) and .seed != null' <<< "$(given)" || check "keeps: the adapter's words did not reach the function: $(given)"
+# Its untyped bytes stay on the machine: the lock says which, nothing lands, and nothing counts them as missing.
+local held; held=$(jq -r '.assets.clash.versions[-1].files.latents' "$T/project.lock")
+J --arg h "$held" '.files[$h] | .machine == "local" and .length == 32' "$T/project.lock" || check "keeps: the lock does not say who holds the latents: $(jq -c --arg h "$held" '.files[$h]' "$T/project.lock")"
+[ ! -e "$T/files/${held#sha256:}" ] || check "keeps: the latents landed in files/"
+J '.absent == 0' <<< "$(status "$T")" || check "keeps: status counts what stays on its machine as absent: $(status "$T" | jq -c .absent)"
 code=0; render "$T" clash --take 9 || code=$?
 { [ "$code" = 2 ] && says keeps "has no take 9"; } || check "keeps: --take 9 exit $code: $(tail -c 300 "$OUT/render.txt")"
 render "$T" clash --take 1 --in 3 || check "keeps: --take 1 --in 3: $(tail -c 300 "$OUT/render.txt")"
+says keeps "continue_from.latents is read on local, which holds it"
+[ ! -e "$T/files/${held#sha256:}" ] || check "keeps: --in fetched what its machine holds"
 J '.keep == 3' <<< "$(given)" || check "keeps: --in 3 is not op.keep: $(given)"
 J '.assets.clash.versions[-1] | .kept == {"take": 1, "until_s": 3.04} and (.seed != null)' "$T/project.lock" || check "keeps: the version does not record what it keeps: $(jq -c '.assets.clash.versions[-1].kept' "$T/project.lock")"
 says keeps "take 2 is take 1 to 3.04 s"
@@ -866,6 +873,19 @@ render "$T" clash --in 2 || check "keeps: --in 2: $(tail -c 300 "$OUT/render.txt
 J '.assets.clash.versions[-1].kept.take == 2' "$T/project.lock" || check "keeps: --in alone keeps the take in use: $(jq -c '.assets.clash.versions[-1].kept' "$T/project.lock")"
 render "$T" all --missing --in 2 || check "keeps: all --in: $(tail -c 300 "$OUT/render.txt")"
 says keeps "--take and --in keep the start of one asset"
+
+step "a project: a run's untyped bytes stay on its machine unless they're all it made"
+(cd "$T" && cozy --json run "$here/project/shots.py/shoot" prompt=kept --file "plate.video=$T/look.mp4" --on local) > "$OUT/kept.ndjson" 2> "$OUT/kept.err" || check "stays: the run did not end: $(tail -c 300 "$OUT/kept.err")"
+tail -1 "$OUT/kept.ndjson" | jq .run > "$OUT/kept.json"
+J '.output[] | select(.name == "latents") | .stays and .path == null and .sha256 != null' "$OUT/kept.json" || check "stays: --json: $(jq -c '.output' "$OUT/kept.json")"
+J '.output[] | select(.name == "video") | .path != null and (.stays | not)' "$OUT/kept.json" || check "stays: its video did not land: $(jq -c '.output' "$OUT/kept.json")"
+held=$(jq -r '.output[] | select(.name == "latents") | .sha256' "$OUT/kept.json")
+J --arg h "$held" '.files[$h].machine == "local"' "$T/project.lock" || check "stays: a plain run's latents aren't in the lock"
+local at; at=$(jq -r '.address + " " + .token' "$HOME/.cozy/calcifer/calcifer.lock.holder")
+[ "$(curl -sS -H "Authorization: Bearer ${at#* }" -o /dev/null -w '%{http_code}' "http://${at%% *}/v1/runs/$(jq -r .number "$OUT/kept.json")/outputs/latents")" = 409 ] || check "stays: the output route did not refuse"
+(cd "$T" && cozy --json run "$here/project/shots.py/only_untyped" prompt=alone --on local) > "$OUT/alone.ndjson" 2> "$OUT/alone.err" || check "stays: an untyped-only run did not end: $(tail -c 300 "$OUT/alone.err")"
+tail -1 "$OUT/alone.ndjson" | J '.run.output[0] | (.stays | not) and .path != null' || check "stays: an untyped-only run did not come here: $(tail -1 "$OUT/alone.ndjson" | jq -c '.run.output')"
+cozy project -p "$T" reclaim > "$OUT/reclaim-stays.txt" 2>&1 || check "stays: reclaim: $(tail -c 300 "$OUT/reclaim-stays.txt")"
 }
 
 # An image a beat writes: a screenshot at `at` into the beat. What the shot reads after that beat goes to its function, in its key; what

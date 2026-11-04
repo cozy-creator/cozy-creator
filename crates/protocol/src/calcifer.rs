@@ -11,7 +11,7 @@
 //! that will not land is `output_item.done` again, carrying `export_error`). A reconnect replays
 //! a landed item as `output_item.landed`, the whole item. The terminal events `run.completed`,
 //! `run.failed` and `run.canceled` end the run; its stream ends after the terminal once each of
-//! its outputs has landed or carries an `export_error`.
+//! its outputs has landed or carries an `export_error`, but for what stays on its machine.
 use std::{fmt, net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +53,9 @@ pub struct SubmitRun {
     /// (`object://sha256:<hex>/<file>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<StagedInput>,
+    /// Those of `spec.inputs` its machine already holds, which nothing here writes to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<Digest>,
     /// Where its outputs land: its project's `.runs`, from which each is kept in `files/`. Absent for what is no person's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<PathBuf>,
@@ -437,12 +440,21 @@ pub struct OutputItem {
     /// A checkpoint already written to TensorFS; it has no output bytes to export here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<crate::machine::CheckpointRef>,
+    /// Untyped bytes, such as a model's latents, of a run that made something else: its machine keeps them, they aren't
+    /// brought here unless something needs them, and nothing waits for them. A person isn't told of them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stays: bool,
 }
 
 impl OutputItem {
     /// A checkpoint reference needs no local byte export.
     pub fn is_checkpoint(&self) -> bool {
         self.checkpoint.is_some()
+    }
+
+    /// Still owed to this computer: its last revision neither landed nor failed.
+    pub fn owed(&self) -> bool {
+        !self.is_checkpoint() && !self.stays && self.path.is_none() && self.export_error.is_none()
     }
 }
 

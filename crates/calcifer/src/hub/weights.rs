@@ -191,6 +191,7 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
         target,
         spec,
         inputs: made.staged,
+        held: vec![],
         out: None,
         warnings: vec![],
     }
@@ -353,6 +354,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
         target: format!("upload {}#{} to {destination}", run.number, item.name),
         spec,
         inputs: vec![],
+        held: vec![],
         out: None,
         warnings: vec![],
     })

@@ -289,7 +289,10 @@ async fn call(
         return Err(crate::project::not_in_one());
     }
     // `--file image=65b436d4f9a3` names a file of the project's by its hash.
-    let files = ask.files.iter().map(|term| crate::project::file_term(project.as_deref(), term)).collect::<Result<Vec<_>, _>>()?;
+    let mut files = vec![];
+    for term in &ask.files {
+        files.push(crate::project::file_term(&api.calcifer, project.as_deref(), term).await?);
+    }
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),

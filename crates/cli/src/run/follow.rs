@@ -1,7 +1,7 @@
 //! Following a run: live progress on stderr, each output named as it lands, and the run's record
 //! on stdout at the end; NDJSON of Calcifer's events with `--json`, its terminal event last. A
 //! followed run is over once it ended and each output's last revision landed here (checked
-//! against its digest) or failed; an output not saved fails the follow. Ctrl-C (Esc or q in
+//! against its digest) or failed, but for what stays on its machine; an output not saved fails the follow. Ctrl-C (Esc or q in
 //! `cozy run ls`) stops following and never cancels: the run is Calcifer's, and `cozy run
 //! show` reattaches.
 use std::{
@@ -112,12 +112,9 @@ async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-/// An output still owed to this computer: its last revision neither landed nor failed. A
-/// checkpoint stays on its machine and is owed nowhere.
+/// An output still owed to this computer.
 fn owed(run: &Run) -> bool {
-    run.output
-        .iter()
-        .any(|item| !item.is_checkpoint() && item.path.is_none() && item.export_error.is_none())
+    run.output.iter().any(OutputItem::owed)
 }
 
 /// `run`, once each of its outputs' last revision landed; else a refusal naming those that did not.
@@ -125,7 +122,7 @@ fn saved(run: Run) -> Result<Run, Error> {
     let lost: Vec<String> = run
         .output
         .iter()
-        .filter(|item| !item.is_checkpoint() && item.path.is_none())
+        .filter(|item| !item.is_checkpoint() && !item.stays && item.path.is_none())
         .map(|item| match &item.export_error {
             Some(error) => format!("{} ({error})", item_name(item)),
             None => format!("{} (still saving when following ended)", item_name(item)),
@@ -429,16 +426,9 @@ pub(super) fn status(run: &Run) -> String {
     status
 }
 
-/// Whether a person has no use for it: untyped bytes, such as a model's latents.
-fn unopenable(item: &OutputItem) -> bool {
-    item.media_type.split(';').next().unwrap_or_default().trim().eq_ignore_ascii_case("application/octet-stream")
-}
-
-/// The outputs a person is told of: not what they couldn't open, unless nothing else came, so a package whose real output is untyped
-/// isn't left with nothing. `--json` lists them all.
+/// The outputs a person is told of: not what stays on its machine. `--json` lists them all.
 pub(crate) fn for_people(run: &Run) -> Vec<&OutputItem> {
-    let opens: Vec<&OutputItem> = run.output.iter().filter(|item| !unopenable(item)).collect();
-    if opens.is_empty() { run.output.iter().collect() } else { opens }
+    run.output.iter().filter(|item| !item.stays).collect()
 }
 
 fn item_name(item: &OutputItem) -> String {
@@ -531,7 +521,7 @@ impl View {
             Event::Progress { progress } => self.progress(progress),
             // Each output is named once, when its file first lands; a person's terminal shows
             // where to look, the log off a terminal each revision after.
-            Event::OutputLanded { item, .. } if unopenable(item) => {}
+            Event::OutputLanded { item, .. } if item.stays => {}
             Event::OutputLanded { item, .. } => {
                 match (item.path.as_ref(), self.named.insert(item.id.clone())) {
                     (Some(path), true) => {

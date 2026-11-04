@@ -40,8 +40,8 @@ warning each). A model-only upload's lane labels the commit it makes.
 ## What disappears
 
 - **Prepare and warm-up** are runs (`kind: warm`); uninstall is `kind: remove` (`remove/1`).
-- **Acknowledge** is deleted. A read that reaches the final length of an output's final revision
-  marks it delivered, and delivered bytes are evicted first.
+- **Acknowledge** is deleted. A run's outputs stay for as long as the machine lives, whether or not
+  anything read them: each is held, and bound to its signer, so a later run may name it by its hash.
 - **Hub access**: released content is read anonymously. A run that names private commits by hash
   or publishes carries a run capability (`tensorfs.token`, with the Hub's `endpoint`, `ca_der`
   and `expires_unix_ms`), never the account's sign-in: see

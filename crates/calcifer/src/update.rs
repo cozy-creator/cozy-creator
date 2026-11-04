@@ -174,6 +174,7 @@ impl Machines {
                 ..Default::default()
             },
             inputs: staged,
+            held: vec![],
             out: None,
             warnings: vec![],
         };

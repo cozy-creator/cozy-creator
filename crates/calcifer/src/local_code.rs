@@ -791,6 +791,7 @@ pub fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> SubmitRun
         target,
         spec,
         inputs: source.inputs.clone(),
+        held: vec![],
         out: None,
         warnings: vec![],
     }

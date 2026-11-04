@@ -69,6 +69,12 @@ pub struct File {
     /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<tensorfs::format::ObjectRef>,
+    /// The machine that keeps it, an output not brought here (`OutputItem::stays`): nothing is in `files/` until something needs it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
+    /// Its bytes, when it isn't here to measure.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub length: u64,
 }
 
 impl File {
@@ -92,6 +98,11 @@ impl File {
             "wav" | "mp3" | "flac" | "ogg" | "m4a" | "aac" => "audio",
             _ => "image",
         }
+    }
+
+    /// Whether a machine was left keeping it.
+    pub fn stays(&self) -> bool {
+        !self.machine.is_empty()
     }
 
     /// Not measured yet, and one that can be.
@@ -531,6 +542,15 @@ impl Folder {
         Ok(path)
     }
 
+    /// An output its machine keeps, in the lock's table: its hash, which machine, and no file.
+    pub fn stays(&self, sha256: &str, machine: &str, length: u64) -> Result<(), Error> {
+        let file = File { path: format!("{FILES}/{}", hex_of(sha256)), sha256: sha256.to_owned(), ..Default::default() };
+        self.update_lock(|lock| {
+            let held = lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
+            (held.machine, held.length) = (machine.to_owned(), length);
+        })
+    }
+
     /// The file at `path` in the lock's table, unless it is there.
     fn tabled(&self, path: String, sha256: &str) -> Result<(), Error> {
         let file = File { path, sha256: sha256.to_owned(), ..Default::default() };
@@ -622,6 +642,11 @@ impl Folder {
     /// A file's path, as the lock writes it, on this computer.
     pub fn path(&self, file: &str) -> PathBuf {
         self.dir.join(file)
+    }
+
+    /// Whether a file the lock names should be here and isn't, so a pull is what it needs: what stays on a machine isn't.
+    pub fn missing(&self, file: &File) -> bool {
+        !file.stays() && !self.path(&file.path).is_file()
     }
 
     /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in

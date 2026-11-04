@@ -130,9 +130,10 @@ impl Tally {
     }
 }
 
-/// The files project.lock names.
+/// The files project.lock names, but what stays on a machine and isn't here: that is no file of this computer or the Hub's.
 fn named(project: &Project) -> Result<Vec<folder::File>, Error> {
-    Ok(project.folder.lock()?.files.into_values().collect())
+    let at = &project.folder;
+    Ok(at.lock()?.files.into_values().filter(|file| !file.stays() || at.path(&file.path).is_file()).collect())
 }
 
 /// The sha256 of the file at `path`, and its parts.

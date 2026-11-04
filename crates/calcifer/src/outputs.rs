@@ -4,7 +4,8 @@
 //! from the run's machine into a `.part` beside the file (ranged and side by side when big) and
 //! replace the file whole once they match the revision's digest; a tree output is a directory
 //! replaced the same way. One exporter works per run with something to export, started by the
-//! run's output events or, at startup, from the store. `serve` answers
+//! run's output events or, at startup, from the store. What stays on its machine (`OutputItem::stays`)
+//! is no export's: `bring` fetches it when something needs it. `serve` answers
 //! `GET /v1/runs/{id}/outputs/{name}` from the exported file.
 use std::{
     collections::HashMap,
@@ -57,6 +58,8 @@ const RANGE: u64 = 8 << 20;
 const RANGES_PER_LANE: usize = 4;
 /// How many whole reads of one revision may fail its digest before it is given up.
 const WRONG_READS: u32 = 3;
+/// How many times what stays on a machine is tried for, with what needs it waiting.
+const BRING_TRIES: u32 = 5;
 
 /// An output Calcifer still owes this computer: its run's number, its name and index, its length
 /// and the bytes of it in place.
@@ -145,6 +148,11 @@ impl Calcifer {
                         | Event::OutputDelta { .. }
                         | Event::OutputDone { .. },
                     )) => me.export(&id),
+                    // Untyped bytes were waiting for this: they stay on the machine, or are all that came.
+                    Ok((id, event)) if event.is_terminal() => {
+                        me.note_stays(&id);
+                        me.export(&id);
+                    }
                     Ok(_) => {}
                     Err(RecvError::Lagged(_)) => match me.store.exports_owed() {
                         Ok(owed) => owed.iter().for_each(|(id, _)| me.export(id)),
@@ -177,6 +185,52 @@ impl Calcifer {
         };
         let (me, id) = (self.clone(), id.clone());
         self.spawn_task(async move { me.export_run(&id, &wake).await });
+    }
+
+    /// A project's run that ended: what stays on its machine, in project.lock with who holds it.
+    fn note_stays(&self, id: &RunId) {
+        let Ok(Some(row)) = self.store.run(id.as_str()) else { return };
+        let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return };
+        let Ok(run) = self.store.record(&row) else { return };
+        for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
+            let Some(sha256) = &item.sha256 else { continue };
+            if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
+                warn!(run = %id, output = %item.name, "not in its project's lock: {why}");
+            }
+        }
+    }
+
+    /// What stays on `machine` brought here now, because something needs it, as an export brings an output: its project's `files/`
+    /// holds it after. A machine out of reach is tried again; Err says why it can't be had.
+    pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {
+        let made = self.store.making(digest, machine).map_err(|e| e.to_string())?;
+        let Some((run, item)) = made else {
+            return Err(format!("Calcifer knows of no run on {machine} that made it"));
+        };
+        if run.machine.as_deref() == Some("local")
+            && let Some(machines) = self.machines()
+        {
+            machines.local_up().await.map_err(|e| e.message)?;
+        }
+        let mut why = String::new();
+        for attempt in 0..BRING_TRIES {
+            if attempt > 0 {
+                info!(run = %run.id, output = %item.name, attempt = attempt + 1, "bringing it here: {why}");
+                tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+            }
+            let mut changed = None;
+            let done = match self.reach(&run, &mut changed) {
+                Ok(link) => self.export_item(&run, &item, &link, changed).await,
+                Err(failure) => Err(failure),
+            };
+            match done {
+                Ok(()) => return Ok(()),
+                Err(Failure::Superseded) => return Err("a newer revision of it is recorded".into()),
+                Err(Failure::Lost(message) | Failure::Refused(message)) => return Err(message),
+                Err(Failure::Again(message) | Failure::Wrong(message)) => why = message,
+            }
+        }
+        Err(why)
     }
 
     /// Exports the run's outputs, each at its newest revision, until none is left: up to `LANES`
@@ -531,6 +585,12 @@ pub async fn serve(
         return Err(api::refuse(Kind::Conflict, "output_is_a_tree", message));
     }
     let (Some(file), Some(rev)) = (file, item.exported_rev) else {
+        let record = api.calcifer.record(&row)?;
+        if record.output.iter().any(|kept| kept.stays && kept.name == name && kept.index == index) {
+            let on = row.machine.as_deref().unwrap_or("its machine");
+            let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
+            return Err(api::refuse(Kind::Conflict, "output_on_its_machine", message));
+        }
         if let Some(reason) = item.export_error {
             let message = format!("output {name} of run {number} will not land: {reason}");
             return Err(api::refuse(

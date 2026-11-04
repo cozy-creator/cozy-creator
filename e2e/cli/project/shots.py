@@ -75,7 +75,7 @@ def adapt(op: Operation) -> list[Invocation]:
         return []
     if op.fields.get("bare"):
         return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
-    said = [f"{read.name}={read.kind}" for read in op.reads]
+    said = [f"{read.name}={read.kind}{'+latents' if 'latents' in read.files else ''}" for read in op.reads]
     told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
     request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}, "writes": [{"name": write.name, "at_s": write.at_s} for write in op.writes]}
     if op.keep:
@@ -123,6 +123,15 @@ def typed(payload: Text, out: Outputs) -> Saved:
 @app.project_adapter("image")
 def adapt_typed(op: TypedOperation) -> list[Invocation]:
     return [Invocation(function="typed", input={"prompt": op.fields.summary})]
+
+
+class Untyped(msgspec.Struct):
+    blob: File
+
+
+@app.entrypoint()
+def only_untyped(payload: Text, out: Outputs) -> Untyped:
+    return Untyped(out.save_bytes(payload.prompt.encode() + os.urandom(4), media_type="application/octet-stream"))
 
 
 class First(msgspec.Struct):
