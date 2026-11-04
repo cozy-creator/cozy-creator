@@ -288,7 +288,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
 
 /// Where a run that names no machine goes: this computer's, on an OS that runs models itself; on
 /// another, a machine this computer has when it has one, else `local`, refused with the way forward.
-fn default_on(api: &Api) -> On {
+pub(crate) fn default_on(api: &Api) -> On {
     let local = On::Machine("local".into());
     if platform::Os::CURRENT.local_inference() {
         return local;

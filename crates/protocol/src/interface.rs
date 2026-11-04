@@ -187,6 +187,14 @@ pub const RECIPES: &str = "quantize";
 /// A project adapter's function is named this and the kind it adapts (`App.project_adapter`): `cozy project`'s own, never offered to run by hand.
 pub const ADAPTER: &str = "project-adapter-";
 
+/// The name of the adapter of `kind` that speaks for `function`, or with none the one that picks for itself.
+pub fn adapter_name(kind: &str, function: Option<&str>) -> String {
+    match function {
+        Some(function) => format!("{ADAPTER}{kind}-{function}"),
+        None => format!("{ADAPTER}{kind}"),
+    }
+}
+
 /// One declared recipe: the lane it writes and the model it reads.
 #[derive(Debug, Deserialize)]
 pub struct Recipe {
@@ -302,6 +310,9 @@ pub struct Field {
     pub constraints: Constraints,
     #[serde(default, deserialize_with = "or_default")]
     pub asset_bound: AssetBound,
+    /// What the author added for readers: `msgspec.Meta(extra=...)`.
+    #[serde(default, deserialize_with = "or_default")]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -409,6 +420,12 @@ impl Interface {
 }
 
 impl Interface {
+    /// The project adapter of `kind` told `function`, or, with none, the one that picks for itself.
+    pub fn adapter(&self, kind: &str, function: Option<&str>) -> Option<&Callable> {
+        let name = adapter_name(kind, function);
+        self.callables.iter().find(|callable| callable.name == name)
+    }
+
     /// Whether `callable` is the `quantize` that runs this package's recipes.
     pub fn runs_recipes(&self, callable: &Callable) -> bool {
         callable.name == RECIPES && !self.recipes.is_empty()
@@ -458,6 +475,14 @@ impl Callable {
 
     pub fn field(&self, name: &str) -> Option<&Field> {
         self.request.fields.iter().find(|f| f.name == name)
+    }
+
+    /// An adapter's typed `fields`, what a box of it shows; none for one that takes them as they come.
+    pub fn typed_fields(&self) -> Option<&Struct> {
+        match &self.field("fields")?.ty {
+            Type::Struct(fields) => Some(fields),
+            _ => None,
+        }
     }
 
     /// Whether `field` is the declared Assets collection.

@@ -31,6 +31,7 @@ pub mod runs;
 pub mod serve;
 mod sessions;
 pub mod store;
+mod toolbox;
 mod update;
 
 use std::{
