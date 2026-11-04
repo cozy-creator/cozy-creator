@@ -922,13 +922,6 @@ fn own_part(key: &str) -> &str {
     key.get(..OWN_PART).unwrap_or(key)
 }
 
-/// `made` as an asset's tool writes it: no root namespace, nothing of this computer, no release. None: it's `tool`, so nothing need be said.
-pub(super) fn other_than(made: &str, tool: Option<&str>) -> Option<String> {
-    let plain = made.split('@').next().unwrap_or(made);
-    let plain = plain.strip_prefix("_/").or_else(|| plain.strip_prefix("local/")).unwrap_or(plain);
-    (Some(plain) != tool).then(|| made.to_owned())
-}
-
 pub(super) fn invalid(code: &str, message: String) -> Error {
     Error::new(Kind::Validation, code, message)
 }

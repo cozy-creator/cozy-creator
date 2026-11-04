@@ -1188,8 +1188,8 @@ YAML
 cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-1.txt" 2>&1 || check "two: first: $(tail -c 300 "$OUT/queue-two-1.txt")"
 sed -i 's/Text one/Text two/' "$Q/project.yaml"
 cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-2.txt" 2>&1 || check "two: second: $(tail -c 300 "$OUT/queue-two-2.txt")"
-for _ in $(seq 240); do J '.busy | not' <<< "$(status "$Q")" && break; sleep 0.5; done
-{ grep -q '^Text one' <<< "$(asked "$Q" note 0 | jq -r .input.prompt)" && grep -q '^Text two' <<< "$(asked "$Q" note 1 | jq -r .input.prompt)"; } || check "two: note was made from $(jq -c '[.assets.note.versions[].invocations[0].input.prompt]' "$Q/project.lock")"
+for _ in $(seq 240); do [ "$(made "$Q" note)" = 2 ] && J '.busy | not' <<< "$(status "$Q")" && break; sleep 0.5; done
+{ grep -q '^Text one' <<< "$(asked "$Q" note 0 | jq -r .input.prompt)" && grep -q '^Text two' <<< "$(asked "$Q" note 1 | jq -r .input.prompt)"; } || check "two: note was made from: $(asked "$Q" note 0 | jq -r .input.prompt) / $(asked "$Q" note 1 | jq -r .input.prompt)"
 J '.walk | not' "$Q/project.lock" || check "two: a finished render left its text in the lock: $(jq -c '.walk | keys' "$Q/project.lock")"
 
 [ -n "${ALONE:-}" ] && return 0
@@ -1651,7 +1651,7 @@ look=$(prefix "$T" "$T/look.mp4")
 cat > "$T/project.yaml" <<YAML
 version: 3
 assets:
-  False:
+  no:
     tool: $here/project/shots.py/shoot
     refuse: Not this one.
     summary: <look>.
@@ -1687,8 +1687,9 @@ assets:
 YAML
 render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.txt")"
 sed -i "s#tool: .*shots.py/shoot#tool: $(cd "$PACKAGES" && pwd)/minimax-h3/generate_turbo#" "$H/project.yaml"
-code=0; render "$H" clash --take 1 --in 5 || code=$?
-{ [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
+# Bounded: past the refusal it's H3 itself, and its weights.
+code=0; timeout 120 cozy project -p "$H" render clash --take 1 --in 5 --on local > "$OUT/render.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && [ "$code" != 124 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
 }
 
 # A film short of its pieces, as a lock from 0.18.5 can hold one, isn't its state: any render cuts it whole, with its pieces as written.

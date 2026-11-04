@@ -217,7 +217,7 @@ pub struct Version {
     pub run: Option<u64>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub execution_ms: u64,
-    /// What made it, `org/package/function@release`, only when that isn't the asset's own tool.
+    /// What made it, `org/package/function@release`, as the asset's tool can change after.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     /// And the start of another take that it keeps.

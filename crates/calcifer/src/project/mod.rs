@@ -2553,7 +2553,7 @@ impl Walk {
                 let Some(number) = holds else {
                     let mut version = Version { inputs: inputs.clone(), warnings, ..Default::default() };
                     if let Maker::Adapter(adapter, _) = &maker {
-                        version.tool = format::other_than(&adapter.target(), asset.tool.as_deref());
+                        version.tool = Some(adapter.target());
                     }
                     self.land_read(&name, &asset.kind, version, standing, noun, approve, settle)?;
                     if next.unpin {
@@ -2698,7 +2698,7 @@ impl Walk {
         let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
         choices.take(&mut payload).map_err(named)?;
         if first {
-            pending.version.tool = format::other_than(&renderer.target(), asset.tool.as_deref());
+            pending.version.tool = Some(renderer.target());
         }
         let mut warnings = match choices.dropped.is_empty() {
             true => vec![],
