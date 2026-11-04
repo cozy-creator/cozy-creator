@@ -1,6 +1,6 @@
-//! An asset as project.yaml holds it: the one place that knows where its fields land in the file, so the routes and the page speak of
-//! assets and the file can change under them. Each write finds its lines, changes only those, keeps comments and `|`, and checks
-//! the file reads as the same project with that one change.
+//! An asset as project.yaml holds it: the one place that knows where its keys land in the file, so the routes and the page speak of
+//! assets and the file can change under them. A person types prompts in this file, so each write finds its lines, changes only those,
+//! keeps comments and `|`, and checks the file reads as the same project with that one change.
 use std::{collections::HashMap, ops::Range};
 
 use protocol::{
@@ -11,19 +11,14 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    folder::PROJECT,
-    format::{Place, canonical, made_here, field_rest, invalid, key_of, names_a_file, significant, slot, spaces, split_comment, under_section, yaml_key},
-    graph::{mentions, name_key},
+    folder::{PROJECT, prefix_of},
+    format::{canonical, invalid, names_a_file, yaml_key},
+    graph::{is_name, name_key},
 };
 
 /// Where an asset's tool lands.
-pub(super) const TOOL: &str = "with";
-/// The fields that are how it's made. Any other lands at the root of its lines, unless it's already written in `render`.
-const IN_RENDER: [&str; 8] = ["with", INSTRUCTIONS, "models", "lora", "aspect_ratio", "megapixels", "turbo", "style"];
-/// The text a person writes on the wire: the file calls it `prompt`, under `render`.
-const INSTRUCTIONS: &str = "instructions";
-const PINS: [&str; 3] = ["image", "video", "audio"];
-const SECTIONS: [&str; 2] = ["assets", "entities"];
+pub(super) const TOOL: &str = "tool";
+const SECTION: &str = "assets";
 
 fn by_hand(name: &str, why: impl std::fmt::Display) -> Error {
     invalid("project_edit", format!("{name} can't be written in {PROJECT}: {why}")).next(format!("edit {name} in {PROJECT} yourself"))
@@ -35,6 +30,138 @@ fn read(text: &str) -> Result<Value, Error> {
 
 fn pad(indent: usize) -> String {
     " ".repeat(indent)
+}
+
+/// The value `name` is under `assets:`.
+fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+    let key = doc[SECTION].as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned()?;
+    doc[SECTION].get_mut(&key)
+}
+
+/// Where an asset's lines are in the text.
+struct Place<'a> {
+    lines: Vec<&'a str>,
+    /// The line that names it.
+    key: usize,
+    /// The lines after it that are its body.
+    body: Range<usize>,
+    /// How far its fields are indented.
+    child: usize,
+    /// All on one line, `name: {…}`: what is before `{`, what is inside, what follows `}`.
+    flow: Option<(String, String, String)>,
+}
+
+impl<'a> Place<'a> {
+    /// The lines of `name` under `assets:`.
+    fn find(text: &'a str, name: &str) -> Option<Self> {
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == "assets:")? + 1;
+        let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+        let (key, body, child, flow) = block(&lines, start..end, name)?;
+        Some(Self { lines, key, body, child, flow })
+    }
+}
+
+fn significant(line: &str) -> bool {
+    !line.trim().is_empty() && !line.trim_start().starts_with('#')
+}
+
+fn spaces(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+/// The lines of the key `name` among the mapping that fills `within`: the line opening it, its body, how far its fields are
+/// indented, and for one all on one line, what is before `{`, what is inside, and what follows `}`.
+#[allow(clippy::type_complexity)]
+fn block(lines: &[&str], within: Range<usize>, name: &str) -> Option<(usize, Range<usize>, usize, Option<(String, String, String)>)> {
+    let (start, end) = (within.start, within.end);
+    let at = spaces(lines[start..end].iter().find(|line| significant(line))?);
+    let key = (start..end).find(|&n| significant(lines[n]) && spaces(lines[n]) == at && key_of(lines[n]).is_some_and(|key| name_key(&key) == name_key(name)))?;
+    let finish = ((key + 1)..end).find(|&n| significant(lines[n]) && spaces(lines[n]) <= at).unwrap_or(end);
+    let first = ((key + 1)..finish).find(|&n| significant(lines[n]));
+    let child = first.map_or(at + 2, |n| spaces(lines[n]));
+    // Where its value starts: past the colon that ends the key.
+    let after = lines[key].find(": ").map(|colon| colon + 2);
+    let flow = after.and_then(|after| {
+        let (head, value) = lines[key].split_at(after);
+        let (written, _) = split_comment(value);
+        let inner = written.strip_prefix('{')?.strip_suffix('}')?;
+        let close = value.find(written)? + written.len();
+        Some((head.to_owned(), inner.to_owned(), value[close..].to_owned()))
+    });
+    Some((key, (key + 1)..finish, child, flow))
+}
+
+/// The key a line opens: `name:`, `"name":`, `'name':`.
+fn key_of(line: &str) -> Option<String> {
+    let line = line.trim();
+    if let Some(quote @ ('"' | '\'')) = line.chars().next() {
+        let rest = &line[1..];
+        let end = rest.find(quote)?;
+        return rest[end + 1..].trim_start().starts_with(':').then(|| rest[..end].to_owned());
+    }
+    let colon = line.find(": ").or_else(|| line.strip_suffix(':').map(str::len))?;
+    Some(line[..colon].to_owned())
+}
+
+/// A field's line as its indent and what follows `field:`.
+fn field_rest<'a>(line: &'a str, field: &str) -> (&'a str, &'a str) {
+    let spaces = line.len() - line.trim_start_matches(' ').len();
+    (&line[..spaces], line[spaces + field.len()..].trim_start_matches(':').trim())
+}
+
+/// What a value writes, and its comment. A `#` in quotes is no comment, and neither is one with no space before it.
+fn split_comment(rest: &str) -> (&str, Option<&str>) {
+    let (mut quote, bytes) = (None, rest.as_bytes());
+    for (n, byte) in bytes.iter().enumerate() {
+        match (quote, *byte) {
+            (Some(open), byte) if byte == open => quote = None,
+            (None, b'"' | b'\'') => quote = Some(*byte),
+            (None, b'#') if n == 0 || bytes[n - 1].is_ascii_whitespace() => return (rest[..n].trim(), Some(rest[n..].trim())),
+            _ => {}
+        }
+    }
+    (rest.trim(), None)
+}
+
+/// The ways to add `block`, a key's lines written from column 0, to `section`, keeping what is there, to try in turn. A mapping all on one
+/// line takes only a single line, and a block of several needs lines of its own.
+fn under_section(text: &str, section: &str, block: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let indented = |indent: usize| block.split_inclusive('\n').map(|line| if line.trim().is_empty() { line.to_owned() } else { format!("{}{line}", " ".repeat(indent)) }).collect::<String>();
+    let Some(at) = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some(section)) else {
+        let glue = if text.is_empty() { "" } else if text.ends_with('\n') { "\n" } else { "\n\n" };
+        return vec![format!("{text}{glue}{section}:\n{}", indented(2))];
+    };
+    let (written, comment) = split_comment(&lines[at][lines[at].find(':').expect("a key") + 1..]);
+    let comment = comment.map_or(String::new(), |comment| format!("  {comment}"));
+    match written {
+        "" => {
+            let end = ((at + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+            let indent = ((at + 1)..end).find(|&n| significant(lines[n])).map_or(2, |n| spaces(lines[n]));
+            let last = ((at + 1)..end).rev().find(|&n| significant(lines[n]) || (!lines[n].trim().is_empty() && spaces(lines[n]) > indent));
+            // Past a text's last line, and what comments on it, unless that isn't the text's end, then at the section's end.
+            [last.unwrap_or(at), end - 1].iter().map(|&after| insert_line(&lines, after, &indented(indent))).collect()
+        }
+        "{}" | "~" | "null" => vec![replace_line(&lines, at, &format!("{section}:{comment}\n{}", indented(2)))],
+        written => match written.strip_prefix('{').and_then(|inner| inner.strip_suffix('}')) {
+            Some(inner) if block.trim_end().lines().count() == 1 => vec![replace_line(&lines, at, &format!("{section}: {{{}, {}}}{comment}\n", block.trim_end(), inner.trim_start()))],
+            _ => vec![],
+        },
+    }
+}
+
+fn replace_line(lines: &[&str], at: usize, line: &str) -> String {
+    let mut kept: Vec<&str> = lines.to_vec();
+    let ended = if line.ends_with('\n') || !lines[at].ends_with('\n') { line.to_owned() } else { format!("{line}\n") };
+    kept[at] = &ended;
+    kept.concat()
+}
+
+fn insert_line(lines: &[&str], after: usize, line: &str) -> String {
+    let (head, tail) = lines.split_at(after + 1);
+    let glue = if lines[after].ends_with('\n') { "" } else { "\n" };
+    [head.concat().as_str(), glue, line, tail.concat().as_str()].concat()
 }
 
 /// Where an asset's own lines end: a blank line or a comment after them, at or left of its name, is the next one's.
@@ -57,16 +184,14 @@ pub(super) fn etag(text: &str, name: &str) -> Option<String> {
 pub(super) fn etags(text: &str) -> HashMap<String, String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut found = HashMap::new();
-    for section in SECTIONS {
-        let Some(header) = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some(section)) else { continue };
-        let end = ((header + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
-        let Some(at) = lines[header + 1..end].iter().find(|line| significant(line)).map(|line| spaces(line)) else { continue };
-        let keys: Vec<usize> = ((header + 1)..end).filter(|&n| significant(lines[n]) && spaces(lines[n]) == at).collect();
-        for (n, &key) in keys.iter().enumerate() {
-            let finish = keys.get(n + 1).copied().unwrap_or(end);
-            if let Some(name) = key_of(lines[key]) {
-                found.insert(name_key(&name), digest(&lines[key..end_of(&lines, key, finish)]));
-            }
+    let Some(header) = lines.iter().position(|line| spaces(line) == 0 && key_of(line).as_deref() == Some(SECTION)) else { return found };
+    let end = ((header + 1)..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
+    let Some(at) = lines[header + 1..end].iter().find(|line| significant(line)).map(|line| spaces(line)) else { return found };
+    let keys: Vec<usize> = ((header + 1)..end).filter(|&n| significant(lines[n]) && spaces(lines[n]) == at).collect();
+    for (n, &key) in keys.iter().enumerate() {
+        let finish = keys.get(n + 1).copied().unwrap_or(end);
+        if let Some(name) = key_of(lines[key]) {
+            found.insert(name_key(&name), digest(&lines[key..end_of(&lines, key, finish)]));
         }
     }
     found
@@ -165,55 +290,16 @@ fn holds_comment(lines: &[String]) -> bool {
     false
 }
 
-/// `render`'s lines as a mapping, whatever form they're in: its text becomes `prompt`. What it fills now, and how far its fields are indented.
-fn open_render(lines: &mut Vec<String>, span: Range<usize>, indent: usize) -> (Range<usize>, usize) {
-    let (written, comment) = {
-        let (written, comment) = split_comment(field_rest(&lines[span.start], "render").1);
-        (written.to_owned(), comment.map_or(String::new(), |comment| format!("  {comment}")))
-    };
-    if written.is_empty() {
-        let inner = ((span.start + 1)..span.end).find(|&n| significant(&lines[n])).map_or(indent + 2, |n| spaces(&lines[n]));
-        return ((span.start + 1)..span.end, inner);
-    }
-    let fields = match written.strip_prefix('{').and_then(|inner| inner.strip_suffix('}')) {
-        Some(inner) => flow_lines(inner, indent + 2),
-        None => {
-            let rest = lines[span.start + 1..span.end].iter().map(|line| if line.trim().is_empty() { line.clone() } else { format!("  {line}") });
-            std::iter::once(format!("{}prompt: {written}\n", pad(indent + 2))).chain(rest).collect()
-        }
-    };
-    let count = fields.len();
-    lines.splice(span.clone(), std::iter::once(format!("{}render:{comment}\n", pad(indent))).chain(fields));
-    ((span.start + 1)..(span.start + 1 + count), indent + 2)
-}
-
-/// `field` set in what the file reads as: with `render` in the form the edit leaves it.
-fn expect(wanted: &mut Value, name: &str, in_render: bool, field: &str, value: &Value) -> Result<(), String> {
+/// `field` set in what the file reads as.
+fn expect(wanted: &mut Value, name: &str, field: &str, value: &Value) -> Result<(), String> {
     let asset = slot(wanted, name).ok_or("it isn't in the file")?;
     if asset.is_null() {
         *asset = json!({});
     }
-    let asset = asset.as_object_mut().ok_or("it is no mapping of fields")?;
-    if !in_render {
-        match value {
-            Value::Null => drop(asset.remove(field)),
-            value => drop(asset.insert(field.to_owned(), value.clone())),
-        }
-        return Ok(());
-    }
-    let render = asset.entry("render").or_insert(Value::Null);
-    match render.take() {
-        Value::Null => *render = json!({}),
-        text @ Value::String(_) => *render = json!({"prompt": text}),
-        held => *render = held,
-    }
-    let target = render.as_object_mut().ok_or("its render is no mapping of fields")?;
+    let asset = asset.as_object_mut().ok_or("it is no mapping of keys")?;
     match value {
-        Value::Null => drop(target.remove(field)),
-        value => drop(target.insert(field.to_owned(), value.clone())),
-    }
-    if target.is_empty() {
-        asset.remove("render");
+        Value::Null => drop(asset.remove(field)),
+        value => drop(asset.insert(field.to_owned(), value.clone())),
     }
     Ok(())
 }
@@ -223,50 +309,31 @@ fn tidied(mut value: Value, name: &str) -> Value {
     if let Some(asset) = slot(&mut value, name).filter(|asset| asset.is_null()) {
         *asset = json!({});
     }
-    for section in SECTIONS {
-        if value.get(section).is_some_and(|held| held.is_null() || held.as_object().is_some_and(Map::is_empty)) {
-            value.as_object_mut().expect("a section's mapping").remove(section);
-        }
+    if value.get(SECTION).is_some_and(|held| held.is_null() || held.as_object().is_some_and(Map::is_empty)) {
+        value.as_object_mut().expect("a section's mapping").remove(SECTION);
     }
     canonical(&value)
 }
 
-/// `text` with one field of asset `name` written: its lines replaced, or new ones after what's there. Whether a comment inside them went.
-fn write_field(text: &str, name: &str, in_render: bool, field: &str, value: &Value) -> Result<(String, bool), Error> {
+/// `text` with one key of asset `name` written: its lines replaced, or new ones after what's there. Whether a comment inside them went.
+fn write_field(text: &str, name: &str, field: &str, value: &Value) -> Result<(String, bool), Error> {
     let place = Place::find(text, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
     let mut lines: Vec<String> = place.lines.iter().map(|line| if line.ends_with('\n') { (*line).to_owned() } else { format!("{line}\n") }).collect();
     let (key, mut indent) = (place.key, place.child);
-    let mut body = (key + 1)..end_of(&place.lines, key, place.body.end);
+    let mut within = (key + 1)..end_of(&place.lines, key, place.body.end);
     if let Some((head, inner, tail)) = &place.flow {
         let fields = flow_lines(inner, spaces(&lines[key]) + 2);
         indent = spaces(&lines[key]) + 2;
         lines[key] = format!("{}{}\n", head.trim_end(), tail.trim_end());
         let count = fields.len();
         lines.splice((key + 1)..(key + 1), fields);
-        body = (key + 1)..(key + 1 + count);
+        within = (key + 1)..(key + 1 + count);
     }
-    let mapping = match (in_render, span_of(&lines, &body, indent, "render")) {
-        (false, _) => (body, indent),
-        (true, Some(span)) => open_render(&mut lines, span, indent),
-        (true, None) if value.is_null() => return Ok((lines.concat(), false)),
-        (true, None) => {
-            lines.insert(body.end, format!("{}render:\n", pad(indent)));
-            ((body.end + 1)..(body.end + 1), indent + 2)
-        }
-    };
-    let (within, indent) = mapping;
     let held = span_of(&lines, &within, indent, field);
     let lost = held.as_ref().is_some_and(|span| !value.is_null() && holds_comment(&lines[span.clone()]));
     match (held, value) {
         (None, Value::Null) => {}
-        (Some(span), Value::Null) => {
-            let gone = span.len();
-            lines.drain(span);
-            let left = within.start..(within.end - gone);
-            if in_render && !lines[left.clone()].iter().any(|line| significant(line)) {
-                lines.drain((left.start - 1)..left.end);
-            }
-        }
+        (Some(span), Value::Null) => drop(lines.drain(span)),
         (Some(span), value) => {
             let comment = split_comment(field_rest(&lines[span.start], field).1).1.map(str::to_owned);
             let mut fresh = emitted(field, value, indent);
@@ -280,36 +347,20 @@ fn write_field(text: &str, name: &str, in_render: bool, field: &str, value: &Val
     Ok((lines.concat(), lost))
 }
 
-/// `text` with these fields of asset `name` set, a null cleared, and what went doing so. Setting what it holds changes nothing.
+/// `text` with these keys of asset `name` set, a null cleared, and what went doing so. Setting what it holds changes nothing.
 pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
     let mut wanted = read(text)?;
     let (mut edited, mut warnings) = (text.to_owned(), vec![]);
-    let asset = slot(&mut wanted, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
-    let with = asset.get("render").and_then(|render| render.get("with")).or_else(|| asset.get("with")).and_then(Value::as_str);
     // An Edit's clips, as the file holds them.
-    let (translated, said) = match with.is_some_and(made_here) {
-        true => super::tools::in_the_file(fields)?,
-        false => (fields.clone(), vec![]),
-    };
+    let (translated, said) = super::tools::in_the_file(fields)?;
     warnings.extend(said);
     for (field, value) in &translated {
-        let field = if field == INSTRUCTIONS { &"prompt".to_owned() } else { field };
-        let asset = slot(&mut wanted, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?.clone();
-        let rendered = asset.get("render").and_then(Value::as_object).is_some_and(|render| render.contains_key(field));
-        let in_render = asset.get(field).is_none() && (rendered || field == "prompt" || IN_RENDER.contains(&field.as_str()));
-        if PINS.contains(&field.as_str()) && asset.get(field).and_then(Value::as_str).is_some_and(|held| mentions(held).is_empty()) {
-            let said = format!("{name} is accepted as that {field}: unaccept it to change what it reads");
-            return Err(Error::new(Kind::Usage, "asset_accepted", said));
-        }
-        let held = match in_render {
-            true => asset.get("render").and_then(|render| render.get(field)),
-            false => asset.get(field),
-        };
-        if held.map_or(value.is_null(), |held| canonical(held) == canonical(value)) {
+        let asset = slot(&mut wanted, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
+        if asset.get(field).map_or(value.is_null(), |held| canonical(held) == canonical(value)) {
             continue;
         }
-        expect(&mut wanted, name, in_render, field, value).map_err(|why| by_hand(name, why))?;
-        let (next, lost) = write_field(&edited, name, in_render, field, value)?;
+        expect(&mut wanted, name, field, value).map_err(|why| by_hand(name, why))?;
+        let (next, lost) = write_field(&edited, name, field, value)?;
         edited = next;
         if lost {
             warnings.push(format!("a comment inside {name}'s {field} was lost"));
@@ -320,61 +371,109 @@ pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result
 }
 
 /// `text` with a new asset at the end of `assets:`, made by `tool`.
-pub(super) fn added(text: &str, name: &str, tool: &str, kind: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
-    let block = format!("{}:\n  kind: {kind}\n  render:\n    with: {}\n", yaml_key(name), inline(&json!(tool)));
-    let edited = add_block(text, "assets", name, &block)?;
+pub(super) fn added(text: &str, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
+    let block = format!("{}:\n  tool: {}\n", yaml_key(name), inline(&json!(tool)));
+    let edited = add_block(text, name, &block)?;
     set(&edited, name, fields)
 }
 
-fn add_block(text: &str, section: &str, name: &str, block: &str) -> Result<String, Error> {
+/// `text` with one file more, on a line of its own: a name and the file it holds.
+pub(super) fn constant(text: &str, name: &str, sha256: &str) -> Result<String, Error> {
+    add_block(text, name, &format!("{}: {{approved: {}}}\n", yaml_key(name), inline(&json!(prefix_of(sha256)))))
+}
+
+/// `text` with asset `name` holding that file.
+pub(super) fn approved(text: &str, name: &str, sha256: &str) -> Result<String, Error> {
+    set(text, name, &Map::from_iter([("approved".to_owned(), json!(prefix_of(sha256)))])).map(|(edited, _)| edited)
+}
+
+/// `text` with asset `name` holding no file: its state follows its inputs again.
+pub(super) fn unapproved(text: &str, name: &str) -> Result<String, Error> {
+    set(text, name, &Map::from_iter([("approved".to_owned(), Value::Null)])).map(|(edited, _)| edited)
+}
+
+/// `text` with asset `from` called `to`: its key, and every `<from>`. Comments and formatting stay.
+pub(super) fn renamed(text: &str, from: &str, to: &str) -> Result<String, Error> {
+    let not_its_own = || by_hand(from, "it has no line of its own under `assets:`");
+    let said = text_renamed(text, &|name: &str| (name_key(name) == name_key(from)).then(|| to.to_owned()));
+    let place = Place::find(&said, from).ok_or_else(not_its_own)?;
+    let written = key_of(place.lines[place.key]).ok_or_else(not_its_own)?;
+    Ok(replace_line(&place.lines, place.key, &place.lines[place.key].replacen(&written, &yaml_key(to), 1)))
+}
+
+fn add_block(text: &str, name: &str, block: &str) -> Result<String, Error> {
     let mut wanted = read(text)?;
     if wanted.is_null() {
         wanted = json!({});
     }
     // In its section, where a hash reads as a hash.
     let framed: String = block.split_inclusive('\n').map(|line| format!("  {line}")).collect();
-    let framed = read(&format!("{section}:\n{framed}")).map_err(|_| by_hand(name, "its lines don't read"))?;
+    let framed = read(&format!("{SECTION}:\n{framed}")).map_err(|_| by_hand(name, "its lines don't read"))?;
     let top = wanted.as_object_mut().ok_or_else(|| by_hand(name, "the file is no mapping of sections"))?;
-    let held = top.entry(section).or_insert(Value::Null);
+    let held = top.entry(SECTION).or_insert(Value::Null);
     if held.is_null() {
         *held = json!({});
     }
-    let body = framed[section].as_object().and_then(|block| block.values().next()).cloned().unwrap_or(Value::Null);
-    held.as_object_mut().ok_or_else(|| by_hand(name, format!("its `{section}:` is no mapping")))?.insert(name.to_owned(), body);
+    let body = framed[SECTION].as_object().and_then(|block| block.values().next()).cloned().unwrap_or(Value::Null);
+    held.as_object_mut().ok_or_else(|| by_hand(name, format!("its `{SECTION}:` is no mapping")))?.insert(name.to_owned(), body);
     let wanted = canonical(&wanted);
     let same = |edited: &String| read(edited).is_ok_and(|read| canonical(&read) == wanted);
-    under_section(text, section, block).into_iter().find(same).ok_or_else(|| by_hand(name, "the edit would change something else"))
+    under_section(text, SECTION, block).into_iter().find(same).ok_or_else(|| by_hand(name, "the edit would change something else"))
 }
 
 /// `text` with asset `name`'s lines gone, and what puts them back.
 pub(super) fn removed(text: &str, name: &str) -> Result<(String, String), Error> {
     let place = Place::find(text, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
-    let at = spaces(place.lines[place.key]);
-    let section = SECTIONS.into_iter().find(|section| {
-        let header = place.lines[..place.key].iter().rposition(|line| significant(line) && spaces(line) == 0);
-        header.is_some_and(|header| key_of(place.lines[header]).as_deref() == Some(section))
-    });
-    let Some(section) = section.filter(|_| at > 0) else { return Err(by_hand(name, "it is part of what's around it")) };
     let end = end_of(&place.lines, place.key, place.body.end);
-    let back = format!("{section}:\n{}", place.lines[place.key..end].concat());
+    let back = format!("{SECTION}:\n{}", place.lines[place.key..end].concat());
     let edited = [place.lines[..place.key].concat(), place.lines[end..].concat()].concat();
     let mut wanted = read(text)?;
-    let key = wanted[section].as_object().and_then(|held| held.keys().find(|key| name_key(key) == name_key(name)).cloned());
+    let key = wanted[SECTION].as_object().and_then(|held| held.keys().find(|key| name_key(key) == name_key(name)).cloned());
     let key = key.ok_or_else(|| by_hand(name, "it is part of what's around it"))?;
-    wanted[section].as_object_mut().expect("a section's mapping").remove(&key);
+    wanted[SECTION].as_object_mut().expect("a section's mapping").remove(&key);
     (tidied(read(&edited)?, name) == tidied(wanted, name)).then_some(()).ok_or_else(|| by_hand(name, "the edit would change something else"))?;
     Ok((edited, back))
 }
 
-/// `text` with what `removed` said back in its section, under the name it had.
+/// `text` with what `removed` said back in `assets:`, under the name it had.
 pub(super) fn restored(text: &str, name: &str, back: &str) -> Result<String, Error> {
     let refused = || Error::new(Kind::Validation, "asset_text", format!("that isn't what deleting {name} answered"));
     let (header, lines) = back.split_once('\n').ok_or_else(refused)?;
-    let section = SECTIONS.into_iter().find(|section| header.strip_suffix(':') == Some(*section)).ok_or_else(refused)?;
+    if header.strip_suffix(':') != Some(SECTION) {
+        return Err(refused());
+    }
     let at = lines.lines().next().map_or(0, spaces);
     if lines.lines().next().and_then(key_of).is_none_or(|key| name_key(&key) != name_key(name)) || read(back).is_err() {
         return Err(refused());
     }
     let block: String = lines.split_inclusive('\n').map(|line| line.get(at..).filter(|_| spaces(line) >= at).unwrap_or(line)).collect();
-    add_block(text, section, name, &block)
+    add_block(text, name, &block)
 }
+/// `value` with each `<name>` in it as `renamed` says.
+pub(super) fn mentions_renamed(value: &mut Value, renamed: &dyn Fn(&str) -> Option<String>) {
+    match value {
+        Value::String(text) => *text = text_renamed(text, renamed),
+        Value::Array(items) => items.iter_mut().for_each(|item| mentions_renamed(item, renamed)),
+        Value::Object(fields) => fields.values_mut().for_each(|field| mentions_renamed(field, renamed)),
+        _ => {}
+    }
+}
+
+fn text_renamed(text: &str, renamed: &dyn Fn(&str) -> Option<String>) -> String {
+    let (mut said, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let inner = after.find(['<', '>', '\n']).filter(|&end| after.as_bytes()[end] == b'>').map(|end| &after[..end]);
+        said.push_str(&rest[..=open]);
+        match inner.filter(|inner| is_name(inner)).and_then(|inner| Some((inner, renamed(inner)?))) {
+            Some((inner, to)) => {
+                said.push_str(&to);
+                rest = &after[inner.len()..];
+            }
+            None => rest = after,
+        }
+    }
+    said.push_str(rest);
+    said
+}
+

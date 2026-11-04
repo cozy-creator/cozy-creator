@@ -126,34 +126,54 @@ function Drawn({ own, name, view, controls }: { own: Own; name: string; view: El
   )
 }
 
-/** A box's controls: each drawn as declared, unless its tool's package ships a component for them all or for one. The approved face is never a component's. */
-export function ToolBox({ tool, name, view, controls, row }: { tool: Tool | undefined; name: string; view: ElementView; controls: Control[]; row(control: Control): React.ReactNode }) {
+/** A box's controls, those shown and those behind More: each drawn as declared, unless its tool's package ships a component for them all or for one. The approved face is never a component's. */
+export function ToolBox({
+  tool,
+  name,
+  view,
+  shown,
+  folded,
+  row,
+  children,
+}: {
+  tool: Tool | undefined
+  name: string
+  view: ElementView
+  shown: Control[]
+  folded: Control[]
+  row(control: Control): React.ReactNode
+  children(shown: React.ReactNode, folded: React.ReactNode): React.ReactNode
+}) {
   const { own, trouble } = useOwn(tool)
-  const declared = controls.map(row)
+  const controls = [...shown, ...folded]
   if (!own) {
-    return (
-      <>
-        {declared}
-        {trouble && <Trouble why={trouble} />}
-      </>
+    return children(
+      shown.length || trouble ? (
+        <>
+          {shown.map(row)}
+          {trouble && <Trouble why={trouble} />}
+        </>
+      ) : null,
+      folded.map(row),
     )
   }
   const drawn = <Drawn own={own} name={name} view={view} controls={controls} />
   const field = own.field
   if (!field || !controls.some((control) => control.field === field)) {
-    return (
-      <Guard key={own.module} fallback={declared}>
+    return children(
+      <Guard key={own.module} fallback={controls.map(row)}>
         {drawn}
-      </Guard>
+      </Guard>,
+      null,
     )
   }
-  return controls.map((control) =>
+  const each = (control: Control) =>
     control.field === field ? (
       <Guard key={own.module} fallback={row(control)}>
         {drawn}
       </Guard>
     ) : (
       row(control)
-    ),
-  )
+    )
+  return children(shown.length ? shown.map(each) : null, folded.map(each))
 }

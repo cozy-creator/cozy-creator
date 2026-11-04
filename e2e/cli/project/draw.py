@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
 # ///
-"""The project cell's picture package: a weightless still of one random colour, so each version differs."""
+"""The project cell's picture package: a weightless still of one random colour, so each version differs. Its prompt says what it read."""
 
 import os
 
@@ -19,6 +19,7 @@ def draw(payload: ImageRequest, adj: Adjustments, out: Outputs) -> ImageResult:
     return ImageResult(image, width, height, payload.seed or 0, payload.prompt)
 
 
-@app.project_adapter("image")
+@app.project_adapter("draw")
 def adapt(op: Operation) -> list[Invocation]:
-    return [Invocation(function="draw", input={"prompt": str(op.fields.get("description", op.asset))})]
+    said = [f"[{read.name} " + " ".join(f"{role}={file.sha256}" for role, file in read.files.items()) + "]" for read in op.reads]
+    return [Invocation(function="draw", input={"prompt": " ".join([str(op.inputs.get("instructions", op.asset)), *said])})]

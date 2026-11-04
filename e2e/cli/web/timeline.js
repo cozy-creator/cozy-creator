@@ -221,7 +221,6 @@ function plate(path, color, seconds, hz) {
   await render();
   const landed = (count) => until(`${count} versions`, async () => (await edit()).versions, (n) => n === count, 180_000);
   await landed(1);
-  check('progress_shown', (await page.evaluate(() => window.rendering)) > 0);
   const film = join(folder, 'Edit.mp4');
   await until('its film', () => existsSync(film), Boolean);
   check('frames_exact', countFrames(film) === expected, { film: countFrames(film), expected });
@@ -303,6 +302,8 @@ function plate(path, color, seconds, hz) {
   await landed(shaped + 1);
   const size = probe(film, '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0');
   check('menu_shapes_the_film', size === '720,720', size);
+  // By now a render long enough to see: the first, of a few small flat clips, can be over before a read comes back.
+  check('progress_shown', (await page.evaluate(() => window.rendering)) > 0);
   const timed = (await edit()).fields.timeline.tracks[0].clips;
   await setting('Frame rate', String(FPS * 2));
   const retimed = await until('the rate in the file', async () => (await edit()).fields, (fields) => fields.fps === FPS * 2);

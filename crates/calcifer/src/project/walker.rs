@@ -161,6 +161,11 @@ impl Graph {
         self.open.values().flatten().filter(|&&id| self.jobs[id].state == State::Going).count()
     }
 
+    /// The name keys of the assets with jobs not ended.
+    pub fn open_names(&self) -> impl Iterator<Item = &String> {
+        self.open.keys()
+    }
+
     /// Whether a job is ready for its turn.
     pub fn has_ready(&self) -> bool {
         !self.ready.is_empty()

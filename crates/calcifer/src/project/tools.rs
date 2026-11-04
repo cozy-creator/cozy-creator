@@ -314,44 +314,43 @@ fn text(value: &Value) -> String {
     }
 }
 
-/// The clips `pieces` writes: `<a>`, or a mapping holding a mention with `start` and `end` frames, or a still's `frames`.
-pub fn clips_of(pieces: &Value) -> Vec<Clip> {
+/// The clips of an edit's `tracks`, the first for now: `<a>`, or a mapping holding a mention with `in` and `out` frames, or a still's `frames`.
+pub fn clips_of(tracks: &Value) -> Vec<Clip> {
     let clip = |item: &Value| {
         let name = mentions_in(item).into_iter().next()?;
-        Some(Clip { clip: format!("<{name}>"), first: item["start"].as_u64().filter(|first| *first > 0), out: item["end"].as_u64(), frames: item["frames"].as_u64() })
+        Some(Clip { clip: format!("<{name}>"), first: item["in"].as_u64().filter(|first| *first > 0), out: item["out"].as_u64(), frames: item["frames"].as_u64(), sha256: None })
     };
-    pieces.as_array().into_iter().flatten().filter_map(clip).collect()
+    tracks[0]["clips"].as_array().into_iter().flatten().filter_map(clip).collect()
 }
 
-/// A cut's clips: its `pieces`, or with none, all it reads.
+/// An edit's clips: its `tracks`, or with none, all it reads.
 pub fn clips(fields: &Map<String, Value>, reads: &[ReadNow]) -> Vec<Clip> {
-    match fields.get("pieces") {
-        Some(pieces) => clips_of(pieces),
+    match fields.get("tracks") {
+        Some(tracks) => clips_of(tracks),
         None => reads.iter().map(|read| Clip { clip: format!("<{}>", read.name), ..Default::default() }).collect(),
     }
 }
 
-/// `fields` as the file writes them, the wire's `timeline` as `pieces`: the one place that translates, until the file holds tracks.
-/// What can be fixed is, and said.
+/// `fields` as the file writes them, the wire's `timeline` as `tracks`. What can be fixed is, and said.
 pub fn in_the_file(fields: &Map<String, Value>) -> Result<(Map<String, Value>, Vec<String>), Error> {
     let mut written = fields.clone();
     let mut said = vec![];
     let Some(value) = written.remove("timeline") else { return Ok((written, said)) };
     if value.is_null() {
-        written.insert("pieces".to_owned(), Value::Null);
+        written.insert("tracks".to_owned(), Value::Null);
         return Ok((written, said));
     }
     let timeline: Timeline = serde_json::from_value(value).map_err(|why| Error::new(Kind::Validation, "timeline_invalid", format!("timeline: {why}")))?;
     if timeline.tracks.len() > 1 {
         said.push(format!("an Edit has one track for now: the other {} are left out", timeline.tracks.len() - 1));
     }
-    let pieces = timeline.tracks.first().into_iter().flat_map(|track| &track.clips).filter_map(piece_of);
-    written.insert("pieces".to_owned(), Value::Array(pieces.collect()));
+    let clips: Vec<Value> = timeline.tracks.first().into_iter().flat_map(|track| &track.clips).filter_map(clip_in_the_file).collect();
+    written.insert("tracks".to_owned(), json!([{"clips": clips}]));
     Ok((written, said))
 }
 
-/// A clip as `pieces` writes it. A clip's points can't cross: its out point is at least a frame past its in point.
-fn piece_of(clip: &Clip) -> Option<Value> {
+/// A clip as `tracks` writes it. A clip's points can't cross: its out point is at least a frame past its in point.
+fn clip_in_the_file(clip: &Clip) -> Option<Value> {
     let name = mentions_in(&json!(clip.clip)).into_iter().next().or_else(|| Some(clip.clip.trim().to_owned()).filter(|name| !name.is_empty()))?;
     let name = format!("<{name}>");
     if let Some(frames) = clip.frames {
@@ -360,9 +359,9 @@ fn piece_of(clip: &Clip) -> Option<Value> {
     let first = clip.first.unwrap_or(0);
     Some(match (first, clip.out) {
         (0, None) => json!(name),
-        (first, None) => json!({"video": name, "start": first}),
-        (0, Some(out)) => json!({"video": name, "end": out.max(1)}),
-        (first, Some(out)) => json!({"video": name, "start": first, "end": out.max(first + 1)}),
+        (first, None) => json!({"video": name, "in": first}),
+        (0, Some(out)) => json!({"video": name, "out": out.max(1)}),
+        (first, Some(out)) => json!({"video": name, "in": first, "out": out.max(first + 1)}),
     })
 }
 

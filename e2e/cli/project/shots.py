@@ -5,7 +5,7 @@
 """The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
 video is its plate and `given` the request it got; the field `bare` calls a function of just its video, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
 going, `segments` makes a long shot's way, segment by segment, each shown as it ends, `fresh` makes its plate's video new bytes, a file nothing has measured, `noise` a video ffprobe can't read, and `crash` a run that fails saying it. An `image`
-types its operation's fields. An `audio` says its `options`."""
+types its operation's inputs. `echo` says its `inputs`."""
 
 import hashlib
 import json
@@ -53,30 +53,30 @@ def shoot(payload: Request, out: Outputs) -> Take:
                 (keeps.at_s or 0) + 0.04 if keeps else None, [])
 
 
-@app.project_adapter("video", reserved=["d", "english"])
+@app.project_adapter("shoot", reserved=["d", "english"])
 def adapt(op: Operation) -> list[Invocation]:
     """Its own words, nothing the format names. A field says what to do: answer no run, refuse, or call another of its functions."""
-    if op.fields.get("refuse"):
-        raise Refuse(str(op.fields["refuse"]))
-    if op.fields.get("crash"):
-        return [Invocation(function="crash", input={"prompt": str(op.fields["crash"])})]
-    if "seconds" in op.fields:
-        return [Invocation(function="slow", input={"seconds": op.fields.get("seconds", 20)})]
-    if op.fields.get("two_calls"):
+    if op.inputs.get("refuse"):
+        raise Refuse(str(op.inputs["refuse"]))
+    if op.inputs.get("crash"):
+        return [Invocation(function="crash", input={"prompt": str(op.inputs["crash"])})]
+    if "seconds" in op.inputs:
+        return [Invocation(function="slow", input={"seconds": op.inputs.get("seconds", 20)})]
+    if op.inputs.get("two_calls"):
         return [Invocation(function="first_call", input={"prompt": op.asset}), Invocation(function="second_call", input={"of": "$0.first"})]
     plate = next((read for read in op.reads if "video" in read.files), None)
-    if plate is None or op.fields.get("no_run"):
+    if plate is None or op.inputs.get("no_run"):
         return []
-    if "segments" in op.fields:
-        return [Invocation(function="scenes", input={"plate": plate.files["video"].sha256, "segments": op.fields["segments"], "seconds": op.fields.get("each", 2)})]
-    if op.fields.get("bare"):
-        return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
-    if op.fields.get("fresh"):
+    if "segments" in op.inputs:
+        return [Invocation(function="scenes", input={"plate": plate.files["video"].sha256, "segments": op.inputs["segments"], "seconds": op.inputs.get("each", 2)})]
+    if op.inputs.get("bare"):
+        return [Invocation(function="bare", input={"prompt": str(op.inputs.get("summary", "")), "plate": plate.files["video"].sha256})]
+    if op.inputs.get("fresh"):
         return [Invocation(function="fresh", input={"plate": plate.files["video"].sha256})]
-    if op.fields.get("noise"):
+    if op.inputs.get("noise"):
         return [Invocation(function="noise", input={"prompt": op.asset})]
     said = [f"{read.name}={read.kind}{'+latents' if 'latents' in read.files else ''}" for read in op.reads]
-    told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
+    told = " | ".join([op.asset, str(op.inputs.get("summary", "")), *said])
     request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}}
     if op.keep:
         request["continue_from"] = {"video": op.keep.video.sha256, "at_s": op.keep.at_s} | ({"latents": op.keep.latents.sha256} if op.keep.latents else {})
@@ -137,7 +137,7 @@ class Words(msgspec.Struct, kw_only=True):
 
 
 class TypedOperation(Operation, kw_only=True):
-    fields: Words
+    inputs: Words
 
 
 class Text(msgspec.Struct, kw_only=True):
@@ -163,9 +163,9 @@ def typed(payload: Text, out: Outputs) -> Saved:
     return Saved(out.save_bytes(payload.prompt.encode() + os.urandom(4), media_type="application/json"))
 
 
-@app.project_adapter("image")
+@app.project_adapter("typed")
 def adapt_typed(op: TypedOperation) -> list[Invocation]:
-    return [Invocation(function="typed", input={"prompt": op.fields.summary})]
+    return [Invocation(function="typed", input={"prompt": op.inputs.summary})]
 
 
 class Untyped(msgspec.Struct):
@@ -206,10 +206,9 @@ def echo(payload: Text, out: Outputs) -> Saved:
     return Saved(out.save_bytes(payload.prompt.encode(), media_type="application/json"))
 
 
-@app.project_adapter("audio")
+@app.project_adapter("echo")
 def adapt_told(op: Operation) -> list[Invocation]:
-    """`options` is its own map: what it does with them is its business."""
-    return [Invocation(function="echo", input={"prompt": json.dumps(op.options, sort_keys=True)})]
+    return [Invocation(function="echo", input={"prompt": json.dumps(op.inputs, sort_keys=True)})]
 
 
 class Wait(msgspec.Struct, kw_only=True):

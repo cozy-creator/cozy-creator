@@ -76,7 +76,7 @@ const constants = (folder) => {
   const folder = state.path;
   seen.project = { id, folder };
   // A file a person wrote: every comment and `|` of it must outlast the page.
-  const written = '# Mine, and kept.\nentities:\n  coast:\n    kind: environment\n    # Kept too.\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
+  const written = '# Mine, and kept.\nassets:\n  coast:\n    # Kept too.\n    asset_type: environment\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
   writeFileSync(join(folder, 'project.yaml'), written);
 
   // A PNG, an MP4 and a WAV dropped together: each there at once under its stem, nothing focused.
@@ -86,7 +86,7 @@ const constants = (folder) => {
     { name: 'Clash Take.mp4', type: 'video/mp4', bytes: MP4 },
     { name: 'Sea.Sound.wav', type: 'audio/wav', bytes: wav() },
   ], 500, 300);
-  // The entity in the file above can show before or after these.
+  // The asset in the file above can show before or after these.
   const atOnce = (await names(page)).filter((name) => name !== 'coast');
   check('three_appear_at_once', atOnce.length === 3, atOnce);
   check('none_focused', await page.evaluate(() => document.activeElement?.tagName !== 'INPUT'));
@@ -185,12 +185,12 @@ const constants = (folder) => {
 
   // Reload restores everything: names, positions, viewport, thumbnails.
   const namesBefore = await names(page);
-  // By name, each element with a file has its picture back, whatever was up before. The file's entity, coast, is an element with none.
+  // By name, each element with a file has its picture back, whatever was up before. The file's coast is an element with none.
   const withFiles = Object.keys(constants(folder)).sort();
   const picturesUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => [...node.querySelectorAll('.media img')].some((img) => img.naturalWidth > 0)).map((node) => node.querySelector('.nm')?.textContent).sort());
-  check('elements_are_its_files_and_its_entity', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
+  check('elements_are_its_files_and_its_words', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
   // Its text was written with no version line, so that's the one thing said of the file, and the top bar says it.
-  check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 2'), await page.getAttribute('.top .sum.ood', 'title'));
+  check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 3'), await page.getAttribute('.top .sum.ood', 'title'));
   const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform]).sort()));
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));

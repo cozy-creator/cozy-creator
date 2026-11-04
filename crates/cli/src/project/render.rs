@@ -468,7 +468,8 @@ impl Lines {
                         Some(first) => output::failure(ctx, &format!("{asset}: failed the same way as {first}"), &[]),
                         None => {
                             let line = if error.message.contains(asset.as_str()) { error.message.clone() } else { format!("{asset}: {}", error.message) };
-                            output::failure(ctx, &line, &error.next);
+                            let remedy = error.remedy.as_deref().map(|remedy| format!("\n  {remedy}")).unwrap_or_default();
+                            output::failure(ctx, &format!("{line}{remedy}"), &error.next);
                             self.reasons.insert(reason, asset.clone());
                         }
                     }

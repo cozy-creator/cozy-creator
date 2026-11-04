@@ -169,63 +169,57 @@ function summary(frames) {
     imported[name] = (await asset(name)).sha256;
   }
   const prefix = imported.hero_art.replace('sha256:', '').slice(0, 12);
+  const olderPrefix = imported.older_art.replace('sha256:', '').slice(0, 12);
 
-  // An edit in an editor: a shot with beats, a cut, a frame, an entity with a sub-entity, what can't be made, and a warning.
+  // An edit in an editor: a shot with beats, a cut, a frame, a character, what can't be made, and a warning.
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   const draw = join(__dirname, '..', 'project', 'draw.py');
   replaceFile(yamlAt, `${readFileSync(yamlAt, 'utf8').trimEnd()}
   shot:
-    kind: video
     summary: |
       <hero> looks hard at <clip>.
-    render: {with: see-no-such-package}
+    tool: see-no-such-package/shoot
     beats:
       - duration: 4
         description: |
-          <hero.older> waits on the shore.
+          <older> waits on the shore.
       - duration: 3
         description: |
           It goes on.
   picture:
-    kind: image
     video: <clip>
     at: 0.5
-    render: {with: cozy}
+    tool: cozy/frame
   edit:
-    kind: video
-    render: {with: cozy}
-    pieces:
-      - <clip>
-      - <clip_b>
-  odd: {kind: widget, image: "${prefix}"}
+    tool: cozy/edit
+    tracks:
+      - clips:
+          - <clip>
+          - <clip_b>
+  odd: {kind: widget, approved: "${prefix}"}
   hollow_thing:
-    description: Nothing makes this.
+    instructions: Nothing makes this.
   needs:
-    kind: image
     video: <hollow_thing>
-    render: {with: cozy}
-${local ? `  card:\n    kind: image\n    description: A still of one colour.\n    render: {with: ${draw}}\n` : ''}
-entities:
+    tool: cozy/frame
+${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/draw\n` : ''}
   hero:
-    kind: character
-    description: |
-      A hero of few words.
-    image: <hero_art>
-    older:
-      description: |
-        The same hero, older.
-      image: <older_art>
-      deeper:
-        description: Sub-entities go one level.
+    approved: "${prefix}"
+    description: A hero of few words.
+    asset_type: character
+  older:
+    approved: "${olderPrefix}"
+    description: The same hero, older.
+    asset_type: villain
 `);
-  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', ...(local ? ['card'] : [])];
+  const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
 
   // Every name is placed once and its row written, with no reload.
   const cards = async () => (await api(`/v1/projects/${id}/canvas`)).cards;
   const rows = await until('a row for every name', cards, (now) => named.every((name) => now[name]));
   check('each_placed_and_written', true);
   const left = (read, reader) => rows[reader].x > rows[read].x;
-  check('reads_left_to_right', left('hero_art', 'hero') && left('hero', 'shot') && left('clip', 'shot') && left('clip', 'picture') && left('clip', 'edit') && left('older_art', 'hero'), rows);
+  check('reads_left_to_right', left('hero', 'shot') && left('clip', 'shot') && left('clip', 'picture') && left('clip', 'edit'), rows);
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
   await until('every element on screen', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
@@ -235,25 +229,22 @@ entities:
   const read = await state();
   const of = (name) => read.assets.find((held) => held.name === name);
   const shotReads = Object.fromEntries((of('shot').reads ?? []).map((held) => [held.name, held.at]));
-  check('wire_reads', shotReads.hero?.includes('summary') && shotReads.clip?.includes('summary') && shotReads['hero.older']?.includes('beats.0.description'), of('shot').reads);
+  check('wire_reads', shotReads.hero?.includes('summary') && shotReads.clip?.includes('summary') && shotReads.older?.includes('beats.0.description'), of('shot').reads);
   check('wire_fields', of('shot').fields?.summary?.includes('looks hard') && of('shot').fields?.beats?.[1]?.description?.includes('goes on'), of('shot').fields);
-  check('wire_fields_no_platform_field', !('render' in (of('shot').fields ?? {})) && !('with' in (of('shot').fields ?? {})), of('shot').fields);
+  check('wire_fields_no_platform_field', !('tool' in (of('shot').fields ?? {})) && !('kind' in (of('shot').fields ?? {})), of('shot').fields);
   check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
-  check('wire_entity', read.entities?.[0]?.links?.image === 'hero_art' && read.entities?.[0]?.subs?.[0]?.links?.image === 'older_art', read.entities);
+  check('wire_asset_type', of('hero').fields?.asset_type === 'character' && of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
   // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'edit', hero: 'character' };
+  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'edit' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
-  check('entity_sub_row', (await element(page, 'hero').locator('.sub-name').textContent()) === 'hero.older');
-  check('entity_slots', (await element(page, 'hero').locator('.slot').count()) === 2);
   await away(page);
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
   await open(page, 'odd');
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
-  check('wire_warning_of_a_sub_entity', read.warnings?.some((said) => said.name === 'hero.older'), read.warnings);
-  check('warned_mark_of_a_sub_entity', (await element(page, 'hero').locator('.warned').count()) === 1);
+  check('wire_warning_of_an_asset_type', read.warnings?.some((said) => said.name === 'older' && said.message.includes('asset_type')), read.warnings);
   check('dot_hollow_when_nothing_made', (await element(page, 'shot').locator('.dot.s-missing').count()) === 1);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
   await until('checkerboard under alpha', () => element(page, 'hero_art').locator('.media.alpha').count(), (n) => n === 1);
@@ -319,7 +310,8 @@ entities:
   await page.waitForTimeout(300);
   check('two_videos_at_most', (await page.locator('video').count()) === 2, await page.locator('video').count());
   await until('none playing', async () => {
-    if (await page.locator('.stop').count()) await page.locator('.stop').first().click();
+    // One that ends takes its Stop away as this reaches for it.
+    if (await page.locator('.stop').count()) await page.locator('.stop').first().click({ timeout: 2000 }).catch(() => {});
     return page.locator('video').count();
   }, (n) => n === 0);
 
@@ -329,7 +321,11 @@ entities:
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  await until('its reason shows', () => needs.locator('.status.bad').count(), (n) => n === 1);
+  // Under the pointer: a box says why when it's looked at, and this one sits low enough for the click to have moved things.
+  await until('its reason shows', async () => {
+    await open(page, 'needs');
+    return needs.locator('.status.bad').count();
+  }, (n) => n === 1);
   check('failed_dot', (await needs.locator('.dot.s-failed').count()) === 1);
   check('try_again_offered', (await needs.locator('.status.bad .act').textContent()) === 'Try again');
   const told = spawnSync(COZY, ['project', '-p', folder, 'status'], { encoding: 'utf8' });
@@ -438,11 +434,11 @@ entities:
     const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    let text = 'version: 2\nassets:\n';
+    let text = 'version: 3\nassets:\n';
     let rowsText = '# Where cards sit. Only the page reads this. Nothing here is an input.\nversion: 1\ncards:\n';
     for (let i = 0; i < COUNT; i++) {
       const reads = [1 + (i % 7), perRow + (i % 3)].filter((back) => i - back >= 0).map((back) => `<n${i - back}>`);
-      text += `  n${i}:\n    ${i % 5 ? `image: "${hash('a_picture')}"` : `video: "${hash('a_video')}"`}\n    render:\n      with: see-no-such-package\n      prompt: from ${reads.join(' and ') || 'nothing'}\n`;
+      text += `  n${i}:\n    ${i % 5 ? `approved: "${hash('a_picture')}"` : `approved: "${hash('a_video')}"`}\n    tool: see-no-such-package/draw\n    instructions: from ${reads.join(' and ') || 'nothing'}\n`;
       rowsText += `  n${i}: {x: ${(i % perRow) * 304}, y: ${Math.floor(i / perRow) * 240}, w: 240}\n`;
     }
     replaceFile(join(big, 'project.yaml'), text);

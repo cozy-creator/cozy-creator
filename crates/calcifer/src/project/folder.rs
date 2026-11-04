@@ -1,4 +1,4 @@
-//! A project folder: `project.yaml` (people's; cozy writes it at `cozy project new`, and one line of it at `approve`, `unpin`, `import` and `rename`),
+//! A project folder: `project.yaml` (what a person or the page says, which Calcifer writes whole, `assetfile`),
 //! `project.lock` (cozy's: each file, each asset's versions, what made each, the runs still making one, and what
 //! its walk still owes), `files/`, and the cuts at its root. Every file the project uses is a real file in
 //! `files/<sha256>.<ext>`, flat. project.yaml names one only by a hex prefix of its hash (`Lock::matching`),
@@ -34,8 +34,10 @@ pub const FILES: &str = "files";
 pub const RUNS: &str = ".runs";
 /// What a walk owes, in `.runs`: no one commits it, and it moves without touching what the project is.
 pub const WALK: &str = ".runs/walk.json";
+/// A cache of what is measured of each file, which a read of the file can always make again.
+pub(super) const MEASURED: &str = ".measured.json";
 /// The lock's format.
-const FORMAT: u32 = 2;
+pub(super) const FORMAT: u32 = 3;
 
 /// The most a URL may give: far past any picture, and a shared project can't fill a disk with it.
 const URL_MOST: usize = 64 << 20;
@@ -102,22 +104,24 @@ pub fn media_of(extension: &str) -> Option<(&'static str, &'static str)> {
     MEDIA.iter().find(|(known, ..)| *known == extension).map(|(_, media, field)| (*media, *field))
 }
 
-/// A file the project uses: its path in the project (`files/<sha256>.<ext>`), its sha256, and what is
-/// measured of it once: a picture's or video's size, a video's rate and frames, a picture's alpha (the
-/// share of it fully transparent).
+/// A file the project uses: its path in the project (`files/<sha256>.<ext>`), its sha256, and what is measured of it: a picture's or video's
+/// size, a video's rate and frames, a picture's alpha (the share of it fully transparent). Project.lock holds only what can't be read again
+/// from a file here (`Folder::fill`): where it stays, and its parts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct File {
+    #[serde(skip)]
     pub path: String,
+    #[serde(skip)]
     pub sha256: String,
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(skip)]
     pub width: u64,
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(skip)]
     pub height: u64,
-    #[serde(default, skip_serializing_if = "is_zero_f")]
+    #[serde(skip)]
     pub fps: f64,
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(skip)]
     pub frames: u64,
-    #[serde(default, skip_serializing_if = "is_zero_f")]
+    #[serde(skip)]
     pub alpha: f64,
     /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -129,8 +133,25 @@ pub struct File {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub length: u64,
     /// A sound's length; a video's comes of its rate and frames.
-    #[serde(default, skip_serializing_if = "is_zero")]
+    #[serde(skip)]
     pub duration_ms: u64,
+}
+
+/// What is measured of a file, kept apart from project.lock, as ffprobe can always say it again.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(super) struct Measured {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    width: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    height: u64,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    fps: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    frames: u64,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    alpha: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    duration_ms: u64,
 }
 
 impl File {
@@ -144,9 +165,14 @@ impl File {
         Path::new(&self.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
     }
 
+    /// What it is, `image`, `video` or `audio`, if its name says.
+    pub fn media(&self) -> Option<&'static str> {
+        media_of(&self.extension()).map(|(_, field)| field)
+    }
+
     /// The role that pins it, by what it is.
     pub fn field(&self) -> &'static str {
-        media_of(&self.extension()).map_or("image", |(_, field)| field)
+        media_of(&self.extension()).map_or(if self.fps > 0.0 { "video" } else { "image" }, |(_, field)| field)
     }
 
     /// Whether a machine was left keeping it.
@@ -175,72 +201,42 @@ impl File {
 /// A version's files: by output name, each one's sha256.
 pub type Files = BTreeMap<String, String>;
 
-/// One result of an operation: its number, its files, the key it was made under, and what made it.
+/// One result of a tool: its number, its files and the key it was made under.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Version {
-    /// A cut's: the pieces it was cut without.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub without: Vec<Without>,
-    /// An Edit's: the clips that made it, and their rate.
+    /// 1 first, never reused.
+    #[serde(default)]
+    pub number: u32,
+    /// Its key, 16 hex digits: what says it is out of date. Empty for one whose inputs can't be known: it never reads as current.
+    #[serde(default)]
+    pub inputs: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: Files,
+    /// The seed Calcifer drew. None: its function takes no seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// The last run that made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub execution_ms: u64,
+    /// What made it, `org/package/function@release`, only when that isn't the asset's own tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// And the start of another take that it keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<protocol::project::Kept>,
+    /// An Edit's: the clips that made it, each with its file, and their rate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clips: Vec<protocol::project::Clip>,
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub fps: f64,
-    /// 1 first, never reused.
-    #[serde(default)]
-    pub number: u32,
-    /// The memo key's inputs. Empty for one whose inputs can't be known: it never reads as current.
-    #[serde(default)]
-    pub inputs: String,
-    /// The key's sample: the seed Calcifer drew. None: its function takes no seed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
-    /// And the start of another take that it keeps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept: Option<protocol::project::Kept>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub files: Files,
-    /// A digest per field of its record, to say which changed.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub digests: BTreeMap<String, String>,
-    /// What it read: for people, never for a decision.
+    /// A cut's: the pieces it was cut without.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reads: Vec<ReadFrom>,
-    /// The function, models, LoRAs and options that made it. Outside the key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub made_by: Option<MadeBy>,
-    /// The runs that made it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runs: Vec<u64>,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub execution_ms: u64,
-    /// What each of those runs was asked: a function and its exact input.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub invocations: Vec<Value>,
+    pub without: Vec<Without>,
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-}
-
-/// An asset a version read, and the files that were.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct ReadFrom {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub files: Files,
-}
-
-/// What made a version: `with` as `org/package/function@release`, and its run's model choices and
-/// options as the file gave them.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct MadeBy {
-    pub with: String,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub models: Value,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub lora: Value,
-    #[serde(default, skip_serializing_if = "Map::is_empty")]
-    pub options: Map<String, Value>,
 }
 
 impl Version {
@@ -374,6 +370,9 @@ pub struct Lock {
     /// Each package's own tags, by the name its memo knows it by, as last read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reserved: BTreeMap<String, Vec<String>>,
+    /// What each tool outputs, `image`, `video` or `audio`, as its interface last said, for what `defaults` fill before it has a version.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub makes: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
     /// What each import under an `Idempotency-Key` answered, for its retries, by that key.
@@ -411,7 +410,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new(), assets_made: BTreeMap::new() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new(), assets_made: BTreeMap::new() }
     }
 }
 
@@ -558,6 +557,18 @@ impl Lock {
         asset.numbered
     }
 
+    /// The lock as it's written. A file holds a row only for what can't be read again from a file here: where it stays, its parts, or, with nothing
+    /// else naming it, its whole hash, which `project.yaml` holds only the start of.
+    pub fn written(&self) -> String {
+        let mut named = self.named(|_| true);
+        named.extend(self.runs.iter().map(|row| row.sha256.as_str()));
+        let mut value = serde_json::to_value(self).expect("a lock serializes");
+        if let Some(files) = value["files"].as_object_mut() {
+            files.retain(|sha256, row| !row.as_object().is_some_and(Map::is_empty) || !named.contains(sha256.as_str()));
+        }
+        serde_json::to_string_pretty(&value).expect("a lock serializes") + "\n"
+    }
+
     /// Every sha256 a version or pending run of a kept asset names; `keep` says which assets are kept, by key.
     pub fn named(&self, keep: impl Fn(&str) -> bool) -> BTreeSet<&str> {
         let versions = (self.assets.iter().filter(|(key, _)| keep(key))).flat_map(|(_, asset)| &asset.versions);
@@ -604,16 +615,45 @@ impl Folder {
         read(&self.project())
     }
 
+    /// The history: this and `update_lock` are the one way to it, whatever holds it.
     pub fn lock(&self) -> Result<Lock, Error> {
         let path = self.dir.join(LOCK);
-        let mut lock = match path.exists() {
-            true => parse_lock(&read(&path)?)?,
-            false => Lock::default(),
-        };
+        let mut lock = if path.exists() { parse_lock(&read(&path)?)? } else { Lock::default() };
+        self.fill(&mut lock);
         if let Some(walk) = self.walk_kept()? {
             (lock.pending, lock.walk) = (walk.pending, walk.walk);
         }
         Ok(lock)
+    }
+
+    /// `lock`'s file table whole, from what needs no record: each file in `files/` names itself, what a version or run names and isn't here has
+    /// its hash, and what is measured comes from a cache a read of the file can always make again.
+    pub(super) fn fill(&self, lock: &mut Lock) {
+        for (sha256, file) in &mut lock.files {
+            file.sha256.clone_from(sha256);
+            file.path = format!("{FILES}/{}", hex_of(sha256));
+        }
+        let named: Vec<String> = lock.named(|_| true).into_iter().map(str::to_owned).chain(lock.runs.iter().map(|row| row.sha256.clone())).collect();
+        for sha256 in named {
+            let file = lock.files.entry(sha256.clone()).or_default();
+            file.path = format!("{FILES}/{}", hex_of(&sha256));
+            file.sha256 = sha256;
+        }
+        for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let hex = name.split('.').next().unwrap_or_default();
+            if hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                let file = lock.files.entry(format!("sha256:{hex}")).or_default();
+                file.path = format!("{FILES}/{name}");
+                file.sha256 = format!("sha256:{hex}");
+            }
+        }
+        let measured: BTreeMap<String, Measured> = std::fs::read(self.dir.join(MEASURED)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        for (sha256, held) in measured {
+            if let Some(file) = lock.files.get_mut(&sha256) {
+                (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (held.width, held.height, held.fps, held.frames, held.alpha, held.duration_ms);
+            }
+        }
     }
 
     /// What the walk owes, with no need to read the rest. A lock from before holds its own until its next write.
@@ -688,6 +728,7 @@ impl Folder {
                 "" => Lock::default(),
                 text => parse_lock(text)?,
             };
+            self.fill(&mut lock);
             if let Some(walk) = self.walk_kept()? {
                 (lock.pending, lock.walk) = (walk.pending, walk.walk);
             }
@@ -697,12 +738,12 @@ impl Folder {
             if !walk.is_empty() || kept.is_some() {
                 self.keep_walk(&walk)?;
             }
-            Ok(serde_json::to_string_pretty(&lock).expect("a lock serializes") + "\n")
+            Ok(lock.written())
         })
     }
 
     /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
-    /// so that edit stands. The only write of it but `cozy project new`.
+    /// so that edit stands. The only write of it but `cozy project new` and `cozy project upgrade`.
     pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
         self.rewrite(&self.project(), change)
     }
@@ -806,13 +847,12 @@ impl Folder {
         })
     }
 
-    /// The file at `path` in the lock's table, unless it is there; one a machine kept is here now.
-    fn tabled(&self, path: String, sha256: &str) -> Result<(), Error> {
-        let file = File { path, sha256: sha256.to_owned(), ..Default::default() };
+    /// The file at `path` is here: a machine that kept it keeps it no longer, and `written` lists it if nothing else names it.
+    fn tabled(&self, _path: String, sha256: &str) -> Result<(), Error> {
         self.update_lock(|lock| {
-            let row = lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
-            if row.stays() {
-                *row = file.clone();
+            if let Some(row) = lock.files.get_mut(sha256).filter(|row| row.stays()) {
+                row.machine.clear();
+                row.length = 0;
             }
         })
     }
@@ -859,33 +899,6 @@ impl Folder {
             let at = file_named(&sha256, kind.extension());
             self.recorded(at, sha256, field, |part| std::fs::copy(path, part).map(drop))
         })
-    }
-
-    /// A source for a run to read, kept nowhere: a file where it is, or a URL's bytes where runs land. With the field that names it.
-    pub async fn source(&self, source: &str) -> Result<(PathBuf, &'static str), String> {
-        if is_url(source) {
-            let bytes = fetch_url(source).await?;
-            let (kind, field) = media(infer::get(&bytes))?;
-            let dir = self.dir.join(RUNS);
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let at = dir.join(format!("{}.{}", hex::encode(Sha256::digest(&bytes)), kind.extension()));
-            std::fs::write(&at, &bytes).map_err(|e| e.to_string())?;
-            return Ok((at, field));
-        }
-        let path = Path::new(source);
-        if !path.is_absolute() {
-            return Err("it is neither an absolute path nor an http(s) URL".into());
-        }
-        let mut head = Vec::new();
-        std::fs::File::open(path).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
-        let (_, field) = media(infer::get(&head))?;
-        Ok((path.to_owned(), field))
-    }
-
-    /// The share of the picture at `path` that is fully transparent; 0 with no ffmpeg to say.
-    pub fn transparent(&self, path: &Path) -> f64 {
-        let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return 0.0 };
-        super::tools::measured(&found.path, &ffprobe, path, "image").map_or(0.0, |file| file.alpha)
     }
 
     /// An import's bytes at `path`, written by `write` unless the project has them under any name, named in project.lock.
@@ -960,22 +973,23 @@ impl Folder {
         let Some((found, ffprobe)) = platform::tools::ffmpeg(&self.tools, &crate::tools::path()) else { return Ok(()) };
         let measured: BTreeMap<String, File> = (lock.files.values().filter(|file| file.unmeasured()))
             .filter(|file| self.dir.join(&file.path).is_file())
-            .filter_map(|file| {
-                let at = self.dir.join(&file.path);
-                let probed = super::tools::measured(&found.path, &ffprobe, &at, file.field())?;
-                Some((file.sha256.clone(), File { path: file.path.clone(), sha256: file.sha256.clone(), parts: file.parts.clone(), ..probed }))
-            })
+            .filter_map(|file| Some((file.sha256.clone(), super::tools::measured(&found.path, &ffprobe, &self.dir.join(&file.path), file.field())?)))
             .collect();
         if measured.is_empty() {
             return Ok(());
         }
-        let fill = |lock: &mut Lock| {
-            for (sha256, file) in &measured {
-                lock.files.insert(sha256.clone(), file.clone());
+        for (sha256, probed) in &measured {
+            if let Some(file) = lock.files.get_mut(sha256) {
+                (file.width, file.height, file.fps, file.frames, file.alpha, file.duration_ms) = (probed.width, probed.height, probed.fps, probed.frames, probed.alpha, probed.duration_ms);
             }
-        };
-        fill(lock);
-        self.update_lock(fill)
+        }
+        self.rewrite(&self.dir.join(MEASURED), |text| {
+            let mut held: BTreeMap<String, Measured> = serde_json::from_str(text).unwrap_or_default();
+            for (sha256, file) in &measured {
+                held.insert(sha256.clone(), Measured { width: file.width, height: file.height, fps: file.fps, frames: file.frames, alpha: file.alpha, duration_ms: file.duration_ms });
+            }
+            Ok(serde_json::to_string(&held).expect("what is measured serializes"))
+        })
     }
 
     /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, and
@@ -1044,7 +1058,7 @@ fn parse_lock(text: &str) -> Result<Lock, Error> {
 
 fn old_lock(format: &str) -> Error {
     let said = format!("{LOCK} is format {format} and cozy reads format {FORMAT}: it is left as it is");
-    Error::new(Kind::Validation, "lock_format", said).remedy("migrate the project once with a cozy that reads it (design/project-graph)")
+    Error::new(Kind::Validation, "lock_format", said).next("cozy project upgrade")
 }
 
 /// The file at `url`, public addresses only at every hop, up to `URL_MOST`. Err: why not.

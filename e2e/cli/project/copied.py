@@ -23,7 +23,7 @@ def copy(payload: Picture, out: Outputs) -> Copied:
     return Copied(out.save_bytes(payload.image.read_bytes() + b"copied", media_type="image/png"))
 
 
-@app.project_adapter("image")
+@app.project_adapter("copy")
 def adapt(op: Operation) -> list[Invocation]:
     picture = next(read for read in op.reads if "image" in read.files)
     if picture.files["image"].alpha >= 0.05:

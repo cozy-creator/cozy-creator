@@ -177,16 +177,21 @@ export class CanvasStore {
   private adding = 0
   private seen = false
   private selected: Set<string>
+  /** The boxes with More open. */
+  private moreOpen: Set<string>
   private named = new Set<() => void>()
   /** The project was read for the first time; whether it held anything. */
   onFirstRead?: (held: boolean) => void
   /** Elements with no row were just placed. */
   onPlaced?: () => void
+  /** More was opened or shut. */
+  onMore?: (names: string[]) => void
 
-  constructor(client: Client, projectId: string | null, selected: Iterable<string>) {
+  constructor(client: Client, projectId: string | null, selected: Iterable<string>, moreOpen: Iterable<string>) {
     this.client = client
     this.projectId = projectId
     this.selected = new Set(selected)
+    this.moreOpen = new Set(moreOpen)
   }
 
   attach(flow: Flow) {
@@ -439,6 +444,8 @@ export class CanvasStore {
     if (!items.length) return
     const nodes = items.map(({ element, row }) => {
       const making = element.asset?.making ?? []
+      // A name a box had before it was renamed, now another's.
+      this.aliases.delete(element.name)
       // Its card may be placed after what its run said came back.
       this.views.set(element.name, { ...viewOf(element), landing: this.landings.delete(element.name) || undefined, run: making.length ? this.runs.get(Math.min(...making)) : undefined })
       for (const number of making) this.owners.set(number, element.name)
@@ -588,6 +595,7 @@ export class CanvasStore {
     this.ids.delete(name)
     this.masks.delete(name)
     this.shapes.delete(name)
+    if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
     this.notify(name)
     if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
   }
@@ -608,6 +616,10 @@ export class CanvasStore {
     const shape = this.shapes.get(from)
     this.shapes.delete(from)
     if (shape) this.shapes.set(to, shape)
+    if (this.moreOpen.delete(from)) {
+      this.moreOpen.add(to)
+      this.onMore?.([...this.moreOpen])
+    }
     const row = this.rows?.get(from)
     if (row) {
       this.rows!.delete(from)
@@ -618,6 +630,19 @@ export class CanvasStore {
   }
 
   // A node's inputs
+
+  /** Whether its More is open: as it was left, box by box. */
+  showsMore(name: string): boolean {
+    return this.moreOpen.has(this.resolveName(name))
+  }
+
+  setMore(name: string, open: boolean) {
+    const key = this.resolveName(name)
+    if (open) this.moreOpen.add(key)
+    else this.moreOpen.delete(key)
+    this.patch(key, {})
+    this.onMore?.([...this.moreOpen])
+  }
 
   /** What a control shows: what's typed, else what was sent, else what it holds. */
   valueOf(name: string, field: string): unknown {
@@ -989,6 +1014,7 @@ export class CanvasStore {
   expect(name: string, at: Row) {
     this.rows?.set(name, at)
     this.focusing = name
+    this.editing.set(null)
     this.landings.add(name)
   }
 

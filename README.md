@@ -79,17 +79,17 @@ restarts a Calcifer that is stuck or runs an older cozy.
 
 ## Projects
 
-A project is a folder: `project.yaml`, which says what should exist; `project.lock` and `files/`, cozy's record of what was made; and the cuts. Everything in the film is an asset, a package makes it through an adapter for its kind, and a run happens only when an asset has no state. Putting old text back returns the old take with no run, and a pin in the file is what approving means.
+A project is a folder: `project.yaml`, which says what should exist; `project.lock` and `files/`, cozy's record of what was made; and the cuts. Everything in the film is an asset, a package's function makes it, and a run happens only when an asset has no state. Putting old text back returns the old take with no run, and a pin in the file is what approving means.
 
 ```sh
 cozy project new garden && cd garden       # a short film that renders as it stands
 cozy project render all --on <machine>
 cozy project render clash -n 3 --on <machine>
-cozy project approve clash 2               # pins take 2, one line in project.yaml
+cozy project approve clash 2               # clash holds take 2, as `approved` in project.yaml
 cozy project status
 ```
 
-The format, the kinds and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
+The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
 
 ## Remove cozy
 

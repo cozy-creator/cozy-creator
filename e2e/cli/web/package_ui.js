@@ -146,6 +146,12 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await box(name).locator('.nm').hover();
     await box(name).locator('button[aria-label=Render]').waitFor();
   };
+  // Behind its More, opened if it isn't.
+  const more = async (name) => {
+    await open(name);
+    if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
+    await box(name).locator('.edit-more').waitFor();
+  };
   const toolUi = (tool, project = id) => api(`/v1/tools/${encodeURIComponent(tool)}/ui${project ? `?project=${project}` : ''}`);
   let nth = 0;
   const dropTool = async (name, tool) => {
@@ -177,8 +183,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await fit();
     await until('the local tools listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((tool) => tool.local).length, (n) => n === 6, FIRST_RUN_MS);
 
-    // One field: its swatches where the declared range would be, a relative import behind them, and the rest of the box as declared.
-    await open('shaded');
+    // One field: its swatches where the declared range would be, behind More as that would be, a relative import behind them, and the rest of the box as declared.
+    await more('shaded');
     const shade = box('shaded').locator('[data-boxed=shade]');
     await shade.waitFor({ timeout: FIRST_RUN_MS });
     check('draws_one_field', (await shade.getAttribute('data-asset')) === 'shaded');
@@ -198,7 +204,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await page.reload();
     await page.waitForSelector('.react-flow__node');
     await fit();
-    await open('shaded');
+    await more('shaded');
     await box('shaded').locator('[data-boxed=shade]').waitFor();
     check('reload_reads_it_back', (await box('shaded').locator('button[aria-label="Shade 0.75"]').getAttribute('aria-pressed')) === 'true');
     check('a_component_is_called_for_by_its_id', uiCalls.some((path) => path.endsWith('/ui') && path.includes(encodeURIComponent('./boxed/one_field'))), uiCalls);
@@ -216,7 +222,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
 
     // What doesn't draw leaves the declared box and the canvas.
     const fallsBack = async (name) => {
-      await open(name);
+      await more(name);
       await box(name).locator('.tool-ui-failed').waitFor();
       check(`${name}_falls_back`, (await box(name).locator('[data-boxed]').count()) === 0 && (await box(name).locator('input[type=range]').count()) === 1 && (await box(name).locator('.mention-text[data-field=instructions]').count()) === 1, await box(name).innerText());
     };
@@ -226,7 +232,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await fallsBack('later');
     await fallsBack('gone');
     check('canvas_stays_up', (await page.evaluate(() => window.notReloaded === true)) && (await page.locator('.react-flow__node').count()) === 6);
-    await open('shaded');
+    await more('shaded');
     await box('shaded').locator('[data-boxed=shade]').waitFor();
     check('others_still_draw', true);
     const missing = await toolUi('./boxed/gone');
@@ -274,7 +280,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await page.reload();
     await page.waitForSelector('.react-flow__node');
     await fit();
-    await open('shaded');
+    await more('shaded');
     await box('shaded').locator('.tool-ui-failed').waitFor();
     check('hash_nothing_holds_does_not_load', (await box('shaded').locator('[data-boxed]').count()) === 0 && (await box('shaded').locator('input[type=range]').count()) === 1);
     await page.unroute(faked);
@@ -326,7 +332,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await fit();
       const before = await toolUi(released);
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
-      await open('from_the_hub');
+      await more('from_the_hub');
       await page.waitForTimeout(1000);
       check('not_installed_is_declared_and_quiet', (await box('from_the_hub').locator('[data-boxed]').count()) === 0 && (await box('from_the_hub').locator('.tool-ui-failed').count()) === 0 && (await box('from_the_hub').locator('input[type=range]').count()) === 1, await box('from_the_hub').innerText());
       check('not_installed_read_no_wheel', !hub.asked.some((line) => line.includes('/wheels/')), hub.asked);
@@ -338,7 +344,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await page.reload();
       await page.waitForSelector('.react-flow__node');
       await fit();
-      await open('from_the_hub');
+      await more('from_the_hub');
       await box('from_the_hub').locator('[data-boxed=shade]').waitFor();
       check('release_draws', true);
       await shot('release');
@@ -354,7 +360,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await page.reload();
       await page.waitForSelector('.react-flow__node');
       await fit();
-      await open('lied_about');
+      await more('lied_about');
       await box('lied_about').locator('.tool-ui-failed').waitFor();
       check('hash_mismatch_is_declared', (await box('lied_about').locator('[data-boxed]').count()) === 0 && (await box('lied_about').locator('input[type=range]').count()) === 1, await box('lied_about').innerText());
       await shot('mismatch');

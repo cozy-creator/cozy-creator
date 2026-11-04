@@ -315,6 +315,10 @@ async fn fetch(project: &Project, endpoint: &Endpoint, tally: &Tally, wanted: fo
         let _ = std::fs::remove_file(&part);
         return Err(Failed { code: Code::OBJECT_ID_MISMATCH, detail: format!("{path}: what landed is not its sha256; pull again") });
     }
+    // Project.lock holds no name for it: its bytes say what it is.
+    let mut head = vec![];
+    File::open(&part).and_then(|file| std::io::Read::read_to_end(&mut std::io::Read::take(file, 8192), &mut head)).map_err(named)?;
+    let at = infer::get(&head).map_or_else(|| at.clone(), |kind| at.with_extension(kind.extension()));
     std::fs::rename(&part, &at).map_err(named)?;
     folder::sealed(&at);
     tally.moved.fetch_add(1, Ordering::Relaxed);

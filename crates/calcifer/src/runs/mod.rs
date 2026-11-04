@@ -132,15 +132,6 @@ fn local(api: &Api, ask: &RunRequest) -> Option<Result<(PathBuf, Option<String>)
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
 /// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
-    submit_ask(api, key, ask, true).await
-}
-
-/// As `request`, keeping nothing it's given: only what it makes is the project's.
-pub(crate) async fn request_keeping_outputs(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
-    submit_ask(api, key, ask, false).await
-}
-
-async fn submit_ask(api: &Arc<Api>, key: &str, ask: RunRequest, keep: bool) -> Result<Submitted, Error> {
     let digest = digest(&ask);
     let calcifer = &api.calcifer;
     if let Some((row, recorded)) = calcifer.store().recorded(key).map_err(store)? {
@@ -157,7 +148,7 @@ async fn submit_ask(api: &Arc<Api>, key: &str, ask: RunRequest, keep: bool) -> R
         }
         Prepared::Run { submit, mut notes } => {
             let given = given(&submit);
-            let project = submit.out.as_deref().and_then(crate::project::of_landing).filter(|_| keep).map(Path::to_owned);
+            let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
             let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
             if let Some(project) = project.filter(|_| !submitted.replay) {
                 let uploads = files::dir(calcifer);

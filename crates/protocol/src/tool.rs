@@ -1,5 +1,5 @@
 //! A tool: a public function that makes a picture, a video or a sound, as `GET /v1/tools` lists it. What it makes comes from its
-//! output, and its box from what it takes: the typed `fields` of an adapter that speaks for it, else its own inputs. Nothing here
+//! output, and its box from what it takes: the typed `inputs` of an adapter that speaks for it, else its own inputs. Nothing here
 //! knows a model.
 use std::fmt::Write as _;
 
@@ -13,7 +13,7 @@ use crate::{
 
 /// The kinds of file a node can be.
 const MEDIA: [&str; 3] = ["image", "video", "audio"];
-/// What no tool's box asks for: a run sets the seed, and every asset has a description, whatever made it.
+/// What no tool's box asks for: a run sets the seed, and every asset can have a description, whatever made it.
 const NOT_ASKED: [&str; 2] = ["seed", "description"];
 /// What a node's text is called, whatever input of its function it goes to.
 pub const TEXT: &str = "instructions";
@@ -166,10 +166,10 @@ pub fn tools_of(package: &str, release: &str, interface: &Interface) -> Vec<Tool
 fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Callable) -> Option<Tool> {
     let kind = output_kind(callable)?;
     let package = shown(package);
-    let box_of = interface.adapter(kind, Some(&callable.name)).and_then(Callable::typed_fields);
+    let box_of = interface.adapter(&callable.name).and_then(|adapter| Some((adapter, adapter.typed_inputs()?)));
     let controls = match box_of {
-        Some(fields) => controls(fields, None),
-        None => controls(&callable.request, Some(callable)),
+        Some((adapter, fields)) => controls(fields, adapter, "request/inputs/"),
+        None => controls(&callable.request, callable, "request/"),
     };
     Some(Tool {
         id: format!("{package}/{}", callable.name),
@@ -201,9 +201,10 @@ fn capitalized(text: &str) -> String {
     chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
 }
 
-fn controls(fields: &Struct, callable: Option<&Callable>) -> Vec<Control> {
+/// The box of `fields`, as `callable` takes them under `path`, where its author's defaults are kept.
+fn controls(fields: &Struct, callable: &Callable, path: &str) -> Vec<Control> {
     let text = text_input(fields);
-    let mut controls: Vec<Control> = fields.fields.iter().filter_map(|field| control(field, callable)).collect();
+    let mut controls: Vec<Control> = fields.fields.iter().filter_map(|field| control(field, callable, path)).collect();
     for control in controls.iter_mut().filter(|control| text.is_some_and(|text| text.name == control.field)) {
         control.field = TEXT.to_owned();
         if !text.is_some_and(|text| text.extra.contains_key("label")) {
@@ -214,9 +215,9 @@ fn controls(fields: &Struct, callable: Option<&Callable>) -> Vec<Control> {
 }
 
 /// A field as its control. None: it isn't one, because a run sets it, mentions fill it, or a person couldn't set it by hand.
-fn control(field: &Field, callable: Option<&Callable>) -> Option<Control> {
+fn control(field: &Field, callable: &Callable, path: &str) -> Option<Control> {
     let hidden = field.extra.get("hidden").and_then(Value::as_bool) == Some(true);
-    if hidden || NOT_ASKED.contains(&field.name.as_str()) || callable.is_some_and(|callable| callable.is_assets(&field.name)) {
+    if hidden || NOT_ASKED.contains(&field.name.as_str()) || callable.is_assets(&field.name) {
         return None;
     }
     let ty = optional(&field.ty);
@@ -231,7 +232,7 @@ fn control(field: &Field, callable: Option<&Callable>) -> Option<Control> {
         accept: None,
         multiple: false,
         max_duration: None,
-        default: callable.and_then(|callable| callable.invocable.defaults.get(&format!("request/{}", field.name))).or(field.default.as_ref()).filter(|value| !value.is_null()).cloned(),
+        default: callable.invocable.defaults.get(&format!("{path}{}", field.name)).or(field.default.as_ref()).filter(|value| !value.is_null()).cloned(),
         required: field.wire == Wire::Required,
     };
     if let Some(accept) = field.extra.get("accept").and_then(Value::as_str) {

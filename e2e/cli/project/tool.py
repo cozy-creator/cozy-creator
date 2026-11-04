@@ -3,7 +3,7 @@
 # dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19"]
 # ///
 """The tool cell's package: weightless functions as a canvas drops them. `still` has no adapter, so it's called directly. `told` has an
-adapter told its name, whose answer says what it saw of what it reads. `need` wants a file it may not get, `clip` makes a video, `words`
+adapter, whose answer says what it saw of what it reads. `need` wants a file it may not get, `clip` makes a video, `words`
 makes no media, and `ask` answers text, by an adapter of kind `text`."""
 
 import json
@@ -52,8 +52,9 @@ class Beat(msgspec.Struct, kw_only=True):
     duration: Annotated[float | None, msgspec.Meta(extra={"max_duration": 15})] = None
 
 
-class ToldFields(msgspec.Struct, kw_only=True):
+class ToldInputs(msgspec.Struct, kw_only=True):
     instructions: str = ""
+    bright: bool = True
     shade: Annotated[float | None, msgspec.Meta(extra={"min": 0, "max": 1})] = None
     aspect_ratio: Annotated[str | None, msgspec.Meta(extra={"options": ["1:1"]})] = None
     beats: list[Beat] = []
@@ -62,7 +63,7 @@ class ToldFields(msgspec.Struct, kw_only=True):
 
 
 class ToldOperation(Operation, kw_only=True):
-    fields: ToldFields
+    inputs: ToldInputs
 
 
 class ToldInput(msgspec.Struct, kw_only=True):
@@ -77,16 +78,12 @@ def told(payload: ToldInput, out: Outputs) -> Picture:
 
 
 def _heard(op: Operation) -> list[Invocation]:
-    heard = {"function": op.function, "fields": msgspec.to_builtins(op.fields), "options": op.options, "reads": [msgspec.to_builtins(read.fields) for read in op.reads]}
+    reads = [{"description": read.description, "inputs": read.inputs} for read in op.reads]
+    heard = {"function": op.function, "inputs": msgspec.to_builtins(op.inputs), "reads": reads}
     return [Invocation(function=op.function or "told", input={"prompt": json.dumps(heard)})]
 
 
-@app.project_adapter("image")
-def adapt_alone(op: Operation) -> list[Invocation]:
-    return _heard(op)
-
-
-@app.project_adapter("image", functions=["told"])
+@app.project_adapter("told")
 def adapt_told(op: ToldOperation) -> list[Invocation]:
     return _heard(op)
 
