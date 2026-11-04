@@ -363,7 +363,7 @@ pub(super) async fn pushed(
     let (project, hub, client, endpoint) = asked(&api, &id, body)?;
     let path = project.folder.dir.clone();
     tokio::spawn(async move { ended(&project, push(&project, &hub, &client, &endpoint).await) });
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path })))
+    Ok((StatusCode::ACCEPTED, Json(Opened { id, path, next: vec![] })))
 }
 
 /// `POST /v1/projects/{id}/pull`.
@@ -375,5 +375,5 @@ pub(super) async fn pulled(
     let (project, _, _, endpoint) = asked(&api, &id, body)?;
     let path = project.folder.dir.clone();
     tokio::spawn(async move { ended(&project, pull(&project, &endpoint).await) });
-    Ok((StatusCode::ACCEPTED, Json(Opened { id, path })))
+    Ok((StatusCode::ACCEPTED, Json(Opened { id, path, next: vec![] })))
 }

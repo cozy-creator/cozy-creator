@@ -132,6 +132,13 @@ pub fn next(ctx: &Context, commands: &[&str]) {
     }
 }
 
+/// The commands Calcifer's answer names, every one.
+pub fn nexts(ctx: &Context, commands: &[String]) {
+    for command in commands {
+        next(ctx, &[command]);
+    }
+}
+
 /// A local path, as an OSC 8 link on a terminal that opens them; the bare path anywhere else.
 pub fn link(ctx: &Context, path: &Path) -> String {
     link_on(ctx.term, path)

@@ -333,6 +333,11 @@ fn remember(api: &Api) {
     });
 }
 
+/// What to run while a project's render goes on.
+fn status_next(folder: &Folder) -> Vec<String> {
+    vec![format!("cozy project -p {} status", folder.dir.display())]
+}
+
 /// Opens the project holding `path` (the nearest folder up from it with a project.yaml), or makes
 /// one there (`create`: the folder and its project.yaml); either way it is recorded in the index as
 /// used now.
@@ -365,7 +370,8 @@ async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) 
         index.projects.insert(id.clone(), Entry { path: dir.clone(), used_at_ms, walking });
     });
     api.projects.open(&api, &dir).map_err(Refusal)?;
-    Ok(Json(Opened { id, path: dir }))
+    let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
+    Ok(Json(Opened { id, path: dir, next }))
 }
 
 /// The project folder holding `path`: the nearest, up from it, with a project.yaml.
@@ -446,7 +452,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![warning] }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![warning], next: vec![] }));
         }
     };
     let stand = doc.stand(&lock);
@@ -480,7 +486,23 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
     let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings }))
+    let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next }))
+}
+
+/// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
+fn next_steps(orphans: &[Orphan], absent: u64, owed: bool) -> Vec<String> {
+    let renames = orphans.iter().map(|orphan| format!("cozy project rename {} {}", orphan.name, orphan.renamed_to.as_deref().unwrap_or("<its new name>")));
+    let mut next: Vec<String> = renames.collect();
+    if !orphans.is_empty() {
+        next.push("cozy project reclaim".into());
+    }
+    if absent > 0 {
+        next.push("cozy project pull".into());
+    } else if owed {
+        next.push("cozy project render all --on <machine>".into());
+    }
+    next
 }
 
 /// Entity `i` as `GET /v1/projects/{id}` lists it, with its links and sub-entities.
@@ -738,7 +760,8 @@ async fn reclaim(
         folder.update_lock(|lock| lock.assets.retain(|key, _| doc.holds(key).is_some())).map_err(Refusal)?;
     }
     let (files, bytes) = folder.sweep(&kept, asked.yes).map_err(Refusal)?;
-    Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes }))
+    let next = (!asked.yes && (files > 0 || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
+    Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes, next }))
 }
 
 /// Keeps what project.lock has of `from` as `to`, an asset project.yaml names now with no versions: its versions and pin, and what
@@ -825,7 +848,7 @@ async fn runs(
         let mut keys = project.keys.lock().expect("keys lock");
         match keys.get(key).or(kept.as_ref()) {
             Some(seen) if seen == digest => {
-                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0, skipped: vec![], queued: vec![] })));
+                return Ok((StatusCode::OK, Json(Asked { id, path: project.folder.dir.clone(), joined: false, added: 0, skipped: vec![], queued: vec![], next: status_next(&project.folder) })));
             }
             Some(_) => {
                 let said = format!("Idempotency-Key {key} asked another render already");
@@ -965,7 +988,7 @@ async fn runs(
         .map(|(at, (item, _))| QueuedNow { name: item.name.clone(), ahead: after[..at].iter().map(|(ahead, _)| ahead.name.clone()).collect() })
         .collect();
     walk(&api, &project);
-    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, skipped, queued })))
+    Ok((StatusCode::ACCEPTED, Json(Asked { id, path: project.folder.dir.clone(), joined, added, skipped, queued, next: status_next(&project.folder) })))
 }
 
 /// What the project has to do, in the order it goes: what is running, then what each render has queued, each with its take's key if
@@ -1150,25 +1173,26 @@ async fn approve(
     }
     let noun = noun(&doc, &lock, i);
     let versions: Vec<&Version> = lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions).collect();
-    // A file of the project's, by hash: any picture can be what this asset is.
-    let chosen = match (&asked.file, asked.version) {
-        (Some(prefix), _) => match lock.matching(&prefix.to_ascii_lowercase()).as_slice() {
+    // A short run of digits is a version. Anything else is a file of the project's, by hash: any picture can be what this asset is.
+    let wanted = asked.version.parse::<u32>().ok().filter(|_| asked.version.len() <= 6);
+    let chosen = match wanted {
+        None => match lock.matching(&asked.version.to_ascii_lowercase()).as_slice() {
             [file] => file.sha256.clone(),
             [] => {
-                let said = format!("no file of this project's starts with {prefix}");
+                let said = format!("no file of this project's starts with {}", asked.version);
                 return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
             }
             several => {
-                let said = format!("{prefix} fits {} files of this project: write more of its hash", several.len());
+                let said = format!("{} fits {} files of this project: write more of its hash", asked.version, several.len());
                 return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said)));
             }
         },
-        (None, wanted) => {
-            let Some(sha256) = versions.iter().find(|version| Some(version.number) == wanted).and_then(|version| version.main()) else {
+        Some(wanted) => {
+            let Some(sha256) = versions.iter().find(|version| version.number == wanted).and_then(|version| version.main()) else {
                 let numbers: Vec<String> = versions.iter().map(|version| version.number.to_string()).collect();
                 let said = match numbers.as_slice() {
                     [] => format!("{} has no {noun} yet", asset.name),
-                    numbers => format!("{} has no {noun} {}: it has {}", asset.name, wanted.unwrap_or_default(), numbers.join(", ")),
+                    numbers => format!("{} has no {noun} {wanted}: it has {}", asset.name, numbers.join(", ")),
                 };
                 return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
             };
@@ -1176,7 +1200,7 @@ async fn approve(
         }
     };
     let field = asset.kind.as_str();
-    if let Some(is) = lock.files.get(&chosen).map(folder::File::field).filter(|is| asked.file.is_some() && *is != field) {
+    if let Some(is) = lock.files.get(&chosen).map(folder::File::field).filter(|is| wanted.is_none() && *is != field) {
         let said = format!("{} makes one {field}, and that file is {is}", asset.name);
         return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).remedy(format!("if it should be {is}, write `kind: {is}` on it"))));
     }

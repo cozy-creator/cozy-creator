@@ -181,7 +181,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let opened = open(ctx, Some(&path), true).await?;
             let folder = output::link(ctx, &opened.path);
             output::say(ctx, &format!("made {folder}: a short film, ready to render or change in its project.yaml"));
-            output::next(ctx, &[&format!("cd {} && cozy project render all --on <machine>", opened.path.display())]);
+            output::nexts(ctx, &opened.next);
         }
         Verb::Ls => {
             let listed: Projects = ctx.calcifer().await?.get("/v1/projects").await?;
@@ -209,11 +209,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/approve", opened.id);
-            // A short run of digits is a version; anything else, a file's hash.
-            let number = version.parse::<u32>().ok().filter(|_| version.len() <= 6);
-            let file = number.is_none().then_some(version);
-            let approved: Approved =
-                ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version: number, file }, None).await?;
+            let approved: Approved = ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version }, None).await?;
             approved.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
                 output::json(&approved);
@@ -274,11 +270,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             match (reclaimed.deleted, files) {
                 (true, _) => output::say(ctx, &format!("deleted {files} files, {bytes}")),
                 (false, 0) if reclaimed.orphans.is_empty() => output::say(ctx, "nothing to reclaim"),
-                (false, _) => {
-                    output::say(ctx, &format!("{files} files nothing else names, {bytes}"));
-                    output::next(ctx, &["cozy project reclaim --yes"]);
-                }
+                (false, _) => output::say(ctx, &format!("{files} files nothing else names, {bytes}")),
             }
+            output::nexts(ctx, &reclaimed.next);
         }
         Verb::Status => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
@@ -440,7 +434,6 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     };
     let path = format!("/v1/projects/{}/runs", opened.id);
     let asked: Asked = calcifer.post(&path, &runs, Some(&mint_key())).await?;
-    let status = format!("cozy project -p {} status", opened.path.display());
     match asked.skipped.as_slice() {
         [] => {}
         [one] => output::say(ctx, &format!("{one} is pinned: skipped. Name it to make a new version, or unpin it")),
@@ -460,7 +453,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         if asked.queued.is_empty() {
             output::say(ctx, "nothing to queue: what that names has its state, or is going already");
         }
-        output::next(ctx, &[&status]);
+        output::nexts(ctx, &asked.next);
         return Ok(ExitCode::SUCCESS);
     };
     output::say(ctx, "following the render: Ctrl-C leaves it queued");
@@ -481,7 +474,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             Event::Started { run, .. } => {
                 if followed.insert(run.clone()) && !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
                     output::say(ctx, "the project's runs go on in Calcifer");
-                    output::next(ctx, &[&status]);
+                    output::nexts(ctx, &asked.next);
                     return Ok(ExitCode::SUCCESS);
                 }
             }
@@ -519,7 +512,8 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             }
         }
     }
-    Err(Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go").next(status))
+    let ended = Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go");
+    Err(asked.next.iter().fold(ended, |error, next| error.next(next.as_str())))
 }
 
 /// `3m52s`, or under a minute `38s`.
@@ -572,11 +566,6 @@ fn summary(ctx: &Context, state: &State) {
         let (n, name, kind) = (orphan.versions, &orphan.name, &orphan.kind);
         let said = format!("project.lock keeps {n} made of {name} (a {kind}), {}, which project.yaml no longer names", output::bytes(orphan.bytes));
         output::say(ctx, &said);
-        let to = orphan.renamed_to.as_deref().unwrap_or("<its new name>");
-        output::next(ctx, &[&format!("cozy project rename {} {to}", orphan.name)]);
-    }
-    if !state.orphans.is_empty() {
-        output::next(ctx, &["cozy project reclaim"]);
     }
     for cut in &state.cuts {
         let skips = match cut.skips.as_slice() {
@@ -596,10 +585,8 @@ fn summary(ctx: &Context, state: &State) {
     }
     if state.absent > 0 {
         output::say(ctx, &format!("{} files project.lock names are not on this computer", state.absent));
-        output::next(ctx, &["cozy project pull"]);
-    } else if !state.missing.is_empty() || !state.stale.is_empty() {
-        output::next(ctx, &["cozy project render all --on <machine>"]);
     }
+    output::nexts(ctx, &state.next);
 }
 
 /// A cut's length: `271 frames (11.3 s at 24 fps)`.

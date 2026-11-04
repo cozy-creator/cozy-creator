@@ -22,6 +22,9 @@ pub struct Open {
 pub struct Opened {
     pub id: String,
     pub path: PathBuf,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
@@ -50,6 +53,9 @@ pub struct Asked {
     /// What it added, each with what is ahead of it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued: Vec<QueuedNow>,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 /// One thing an ask queued, and the names ahead of it.
@@ -147,6 +153,9 @@ pub struct State {
     pub cuts: Vec<Cut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Commands to run next, given what it holds and lacks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -386,15 +395,12 @@ pub struct Entity {
     pub subs: Vec<Entity>,
 }
 
-/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to its version `version` (1 first), or to `file`, a hash prefix
-/// of any file in the project's `files/`.
+/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
+/// anything else a hash prefix of any file in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approve {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub file: Option<String>,
+    pub version: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -461,6 +467,9 @@ pub struct Reclaimed {
     /// Whether they are gone (`yes`), or only listed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
 }
 
 /// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file
