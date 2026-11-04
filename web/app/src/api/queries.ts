@@ -7,7 +7,7 @@ function keepAssets(old: unknown, next: unknown): unknown {
   const before = old as ProjectState | undefined
   const after = next as ProjectState
   if (!before) return after
-  return { ...after, nodes: kept(before.nodes, after.nodes), entities: kept(before.entities ?? [], after.entities ?? []) }
+  return { ...after, assets: kept(before.assets, after.assets), entities: kept(before.entities ?? [], after.entities ?? []) }
 }
 
 function kept<T extends { name: string }>(before: T[], after: T[]): T[] {

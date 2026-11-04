@@ -71,7 +71,7 @@ export interface Read {
   at?: string[]
 }
 
-export interface ProjectNode {
+export interface Asset {
   name: string
   standing: Standing
   making?: number[]
@@ -152,7 +152,7 @@ export interface ProjectState {
   id: string
   path: string
   name?: string
-  nodes: ProjectNode[]
+  assets: Asset[]
   entities?: Entity[]
   queue?: Queued[]
   missing?: string[]
@@ -896,19 +896,19 @@ export type ServerEvent =
   | { type: "canvas"; id: string; etag: string; cards: Record<string, Row | null> }
   | { type: "resync" }
 
-export interface NodeMade {
+export interface AssetMade {
   name: string
   etag: string
 }
 
-export interface NodePatched {
+export interface AssetPatched {
   name: string
   etag: string
   was: string
   warnings?: string[]
 }
 
-export interface NodeDeleted {
+export interface AssetDeleted {
   name: string
   /** Opaque: what `PUT` takes to put it back. */
   text: string

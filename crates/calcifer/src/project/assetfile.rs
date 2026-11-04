@@ -1,5 +1,5 @@
-//! A node as project.yaml holds it: the one place that knows where a node's fields land in the file, so the routes and the page speak in
-//! nodes and the file can change under them. Each write finds the node's lines, changes only those, keeps comments and `|`, and checks
+//! An asset as project.yaml holds it: the one place that knows where its fields land in the file, so the routes and the page speak of
+//! assets and the file can change under them. Each write finds its lines, changes only those, keeps comments and `|`, and checks
 //! the file reads as the same project with that one change.
 use std::{collections::HashMap, ops::Range};
 
@@ -16,10 +16,12 @@ use super::{
     graph::{mentions, name_key},
 };
 
-/// Where a node's tool lands.
+/// Where an asset's tool lands.
 pub(super) const TOOL: &str = "with";
 /// The fields that are how it's made. Any other lands at the root of its lines, unless it's already written in `render`.
-const IN_RENDER: [&str; 8] = ["with", "prompt", "models", "lora", "aspect_ratio", "megapixels", "turbo", "style"];
+const IN_RENDER: [&str; 8] = ["with", INSTRUCTIONS, "models", "lora", "aspect_ratio", "megapixels", "turbo", "style"];
+/// The text a person writes on the wire: the file calls it `prompt`, under `render`.
+const INSTRUCTIONS: &str = "instructions";
 const PINS: [&str; 3] = ["image", "video", "audio"];
 const SECTIONS: [&str; 2] = ["assets", "entities"];
 
@@ -35,7 +37,7 @@ fn pad(indent: usize) -> String {
     " ".repeat(indent)
 }
 
-/// Where a node's own lines end: a blank line or a comment after them, at or left of its name, is the next one's.
+/// Where an asset's own lines end: a blank line or a comment after them, at or left of its name, is the next one's.
 fn end_of(lines: &[&str], key: usize, finish: usize) -> usize {
     let at = spaces(lines[key]);
     ((key + 1)..finish).rev().find(|&n| significant(lines[n]) || (!lines[n].trim().is_empty() && spaces(lines[n]) > at)).map_or(key + 1, |n| n + 1)
@@ -45,13 +47,13 @@ fn digest(lines: &[&str]) -> String {
     format!("\"{}\"", hex::encode(Sha256::digest(lines.concat())))
 }
 
-/// The digest of node `name`'s own lines, so an edit of another moves nothing.
+/// The digest of asset `name`'s own lines, so an edit of another moves nothing.
 pub(super) fn etag(text: &str, name: &str) -> Option<String> {
     let place = Place::find(text, name)?;
     Some(digest(&place.lines[place.key..end_of(&place.lines, place.key, place.body.end)]))
 }
 
-/// Every node's ETag, by name key, at once: a read of the project needn't look for each.
+/// Every asset's ETag, by name key, at once: a read of the project needn't look for each.
 pub(super) fn etags(text: &str) -> HashMap<String, String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut found = HashMap::new();
@@ -216,7 +218,7 @@ fn expect(wanted: &mut Value, name: &str, in_render: bool, field: &str, value: &
     Ok(())
 }
 
-/// What the file says of a project, with what an empty section or node reads as made the same.
+/// What the file says of a project, with what an empty section or asset reads as made the same.
 fn tidied(mut value: Value, name: &str) -> Value {
     if let Some(asset) = slot(&mut value, name).filter(|asset| asset.is_null()) {
         *asset = json!({});
@@ -229,7 +231,7 @@ fn tidied(mut value: Value, name: &str) -> Value {
     canonical(&value)
 }
 
-/// `text` with one field of node `name` written: its lines replaced, or new ones after what's there. Whether a comment inside them went.
+/// `text` with one field of asset `name` written: its lines replaced, or new ones after what's there. Whether a comment inside them went.
 fn write_field(text: &str, name: &str, in_render: bool, field: &str, value: &Value) -> Result<(String, bool), Error> {
     let place = Place::find(text, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
     let mut lines: Vec<String> = place.lines.iter().map(|line| if line.ends_with('\n') { (*line).to_owned() } else { format!("{line}\n") }).collect();
@@ -278,17 +280,18 @@ fn write_field(text: &str, name: &str, in_render: bool, field: &str, value: &Val
     Ok((lines.concat(), lost))
 }
 
-/// `text` with these fields of node `name` set, a null cleared, and what went doing so. Setting what it holds changes nothing.
+/// `text` with these fields of asset `name` set, a null cleared, and what went doing so. Setting what it holds changes nothing.
 pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
     let mut wanted = read(text)?;
     let (mut edited, mut warnings) = (text.to_owned(), vec![]);
     for (field, value) in fields {
+        let field = if field == INSTRUCTIONS { &"prompt".to_owned() } else { field };
         let asset = slot(&mut wanted, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?.clone();
         let rendered = asset.get("render").and_then(Value::as_object).is_some_and(|render| render.contains_key(field));
-        let in_render = asset.get(field).is_none() && (rendered || IN_RENDER.contains(&field.as_str()));
+        let in_render = asset.get(field).is_none() && (rendered || field == "prompt" || IN_RENDER.contains(&field.as_str()));
         if PINS.contains(&field.as_str()) && asset.get(field).and_then(Value::as_str).is_some_and(|held| mentions(held).is_empty()) {
             let said = format!("{name} is accepted as that {field}: unaccept it to change what it reads");
-            return Err(Error::new(Kind::Usage, "node_accepted", said));
+            return Err(Error::new(Kind::Usage, "asset_accepted", said));
         }
         let held = match in_render {
             true => asset.get("render").and_then(|render| render.get(field)),
@@ -308,7 +311,7 @@ pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result
     Ok((edited, warnings))
 }
 
-/// `text` with a new node at the end of `assets:`, made by `tool`.
+/// `text` with a new asset at the end of `assets:`, made by `tool`.
 pub(super) fn added(text: &str, name: &str, tool: &str, kind: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
     let block = format!("{}:\n  kind: {kind}\n  render:\n    with: {}\n", yaml_key(name), inline(&json!(tool)));
     let edited = add_block(text, "assets", name, &block)?;
@@ -335,7 +338,7 @@ fn add_block(text: &str, section: &str, name: &str, block: &str) -> Result<Strin
     under_section(text, section, block).into_iter().find(same).ok_or_else(|| by_hand(name, "the edit would change something else"))
 }
 
-/// `text` with node `name`'s lines gone, and what puts them back.
+/// `text` with asset `name`'s lines gone, and what puts them back.
 pub(super) fn removed(text: &str, name: &str) -> Result<(String, String), Error> {
     let place = Place::find(text, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?;
     let at = spaces(place.lines[place.key]);
@@ -357,7 +360,7 @@ pub(super) fn removed(text: &str, name: &str) -> Result<(String, String), Error>
 
 /// `text` with what `removed` said back in its section, under the name it had.
 pub(super) fn restored(text: &str, name: &str, back: &str) -> Result<String, Error> {
-    let refused = || Error::new(Kind::Validation, "node_text", format!("that isn't what deleting {name} answered"));
+    let refused = || Error::new(Kind::Validation, "asset_text", format!("that isn't what deleting {name} answered"));
     let (header, lines) = back.split_once('\n').ok_or_else(refused)?;
     let section = SECTIONS.into_iter().find(|section| header.strip_suffix(':') == Some(*section)).ok_or_else(refused)?;
     let at = lines.lines().next().map_or(0, spaces);

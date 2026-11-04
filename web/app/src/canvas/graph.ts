@@ -33,7 +33,7 @@ function subsOf(entities: Entity[]): Map<string, string> {
 
 /** Where a name sits: an element, or a sub-entity's row in one. A link of an entity, `<kyogre.image>`, sits where its entity does. */
 function anchors(state: ProjectState) {
-  const elements = new Set([...state.nodes.map((asset) => asset.name), ...(state.entities ?? []).map((entity) => entity.name)])
+  const elements = new Set([...state.assets.map((asset) => asset.name), ...(state.entities ?? []).map((entity) => entity.name)])
   const owners = subsOf(state.entities ?? [])
   return (name: string): { element: string; sub?: string } | null => {
     for (let at = name; ; at = at.slice(0, at.lastIndexOf("."))) {
@@ -68,7 +68,7 @@ export function edgesOf(state: ProjectState): EdgeSpec[] {
     if (held) held.at.push(...spec.at)
     else edges.set(id, { ...spec, id })
   }
-  for (const asset of state.nodes) {
+  for (const asset of state.assets) {
     for (const read of asset.reads ?? []) {
       const from = anchor(read.name)
       if (from) add({ kind: "mention", source: from.element, sourceHandle: from.sub && subSource(from.sub), target: asset.name, reader: asset.name, read: read.name, at: [...(read.at ?? [])] })

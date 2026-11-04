@@ -6,13 +6,13 @@
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in
 //! project.lock, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod archive;
+mod assetfile;
+mod assets;
 mod canvas;
 mod folder;
 mod format;
 mod graph;
 pub(crate) mod host;
-mod nodefile;
-mod nodes;
 mod remote;
 mod thumbs;
 mod tools;
@@ -45,7 +45,7 @@ use protocol::{
     ids::Digest,
     machine as v1,
     project::{
-        Approve, Approved, Asked, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Kept, Known, MainFile, Node as Row, Open, Opened,
+        Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Kept, Known, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
         VersionPrefix, Warning as ProjectWarning,
     },
@@ -133,8 +133,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/pull", post(remote::pulled))
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
-        .route("/v1/projects/{id}/nodes", post(nodes::create))
-        .route("/v1/projects/{id}/nodes/{name}", get(nodes::read).patch(nodes::patch).delete(nodes::delete).put(nodes::put_back))
+        .route("/v1/projects/{id}/assets", post(assets::create))
+        .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete).put(assets::put_back))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/archive", get(archive::archive))
@@ -576,7 +576,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), nodes: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![] }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![] }));
         }
     };
     let stand = doc.stand(&lock);
@@ -591,8 +591,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
     let entities = (0..doc.assets.len()).filter(|&i| doc.assets[i].links.as_ref().is_some_and(|links| links.parent.is_none())).map(|i| entity_row(&doc, i)).collect();
-    let etags = nodefile::etags(&text);
-    let nodes: Vec<Row> = (0..doc.assets.len())
+    let etags = assetfile::etags(&text);
+    let assets: Vec<Row> = (0..doc.assets.len())
         .filter(|&i| doc.assets[i].links.is_none())
         .map(|i| {
             let mut row = row(&api, &doc, folder, &lock, &stand, i);
@@ -614,9 +614,9 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
     let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
-    let kept: BTreeSet<&str> = nodes.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
+    let kept: BTreeSet<&str> = assets.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !kept.contains(warning.message.as_str()));
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), nodes, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next }))
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next }))
 }
 
 /// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
