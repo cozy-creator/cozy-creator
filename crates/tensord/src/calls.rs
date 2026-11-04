@@ -237,6 +237,14 @@ impl Calls {
         }
     }
 
+    /// A disk still low after every cache (`objects::Objects::make_room`).
+    pub fn make_room(&self) -> io::Result<(usize, u64)> {
+        match self.runs.upgrade() {
+            Some(runs) => runs.objects.make_room(),
+            None => Ok((0, 0)),
+        }
+    }
+
     /// Every unfinished child of `parent` is canceled with it.
     pub(crate) fn stop_children(&self, parent: &str) {
         let Some(service) = self.service.upgrade() else {

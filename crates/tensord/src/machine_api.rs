@@ -239,6 +239,7 @@ impl NativeBackend {
                 let native = crate::products::retain(
                     &self.service.engine,
                     &context.actor,
+                    &record.id,
                     &owner,
                     &mut source,
                     &object,
@@ -254,7 +255,7 @@ impl NativeBackend {
                             .ok_or_else(|| Error::internal("custody_corrupt", "a tree member is not held"))?;
                         let owner = identity(&json!({"workspace":self.workspace_id(),"actor":context.actor,
                             "request":context.request_id,"asset":binding.asset_ref,"member":sha}))?;
-                        crate::products::retain(&self.service.engine, &context.actor, &owner,
+                        crate::products::retain(&self.service.engine, &context.actor, &record.id, &owner,
                             &mut self.service.engine.open_result(&record.id, member).map_err(problem)?,
                             &ObjectRef { sha256: sha, length }).map_err(problem)?;
                     }

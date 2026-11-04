@@ -1552,7 +1552,7 @@ enum Reach {
     There(On),
     /// The machine that keeps it is there to fetch it from.
     Fetch,
-    /// With the machine that kept it.
+    /// With the machine that kept it, or evicted by it.
     Gone,
 }
 
@@ -2061,7 +2061,7 @@ impl Walk {
                 && let Some(file) = keep["latents"]["sha256"].as_str().and_then(|sha256| lock.files.get(sha256))
                 && matches!(self.reach(file, &target.on).await, Reach::Gone)
             {
-                let said = format!("{name}: take {}'s latents went with its machine: rendering again renders the whole shot", keep["take"]);
+                let said = format!("{name}: take {}'s latents are gone from their machine: rendering again renders the whole shot", keep["take"]);
                 let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
                 return Err(Error::new(Kind::NotFound, "take_latents_gone", said).next(format!("cozy project render {name} --on {on}")));
             }
@@ -2162,7 +2162,7 @@ impl Walk {
         if let Some(machine) = self.host.holding(&file.sha256, file.length, on).await {
             return Reach::There(machine);
         }
-        match self.host.fetchable(&file.sha256, &file.machine) {
+        match self.host.fetchable(&file.sha256, &file.machine).await {
             true => Reach::Fetch,
             false => Reach::Gone,
         }
@@ -2274,7 +2274,7 @@ impl Walk {
                     let fetched = self.host.fetch(&digest, &file.machine).await;
                     fetched.map_err(|why| cannot(&name, format!("{field} is on {}, and can't be had: {why}", file.machine)))?;
                 }
-                Reach::Gone => return Err(cannot(&name, format!("{field} went with its machine {}", file.machine))),
+                Reach::Gone => return Err(cannot(&name, format!("{field} is gone from its machine {}", file.machine))),
             }
             let length = match on_machine {
                 true => file.length,
@@ -2683,7 +2683,7 @@ impl Walk {
             }
             let why = if changed { "its bytes changed" } else { "not on this computer" };
             self.say(Event::Said { message: format!("{}: {} is {why}: fetching it", asset.name, piece.asset), name: Some(asset.name.clone()) });
-            let brought = match file.stays() && self.host.fetchable(&file.sha256, &file.machine) {
+            let brought = match file.stays() && self.host.fetchable(&file.sha256, &file.machine).await {
                 true => self.host.fetch(&file.sha256, &file.machine).await,
                 false => self.host.pull_one(&self.project, &target.hub, file.clone()).await,
             };

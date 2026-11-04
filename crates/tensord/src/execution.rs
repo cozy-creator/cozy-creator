@@ -1232,6 +1232,19 @@ impl Engine {
     }
 
     /// A held result file. Custody hashed it once as it took it (`custody`); a read serves it.
+    /// Whether nothing reads a run's result copies any more: its outputs are held and its outcome kept for its client
+    /// (`commit_public_terminal`), or, for a call, its parent ended, having read them.
+    pub fn result_copies_spent(&self, id: &str) -> io::Result<bool> {
+        let record = self.get(id)?;
+        if !record.state.terminal() {
+            return Ok(false);
+        }
+        match record.invocation.parent.as_str() {
+            "" => Ok(self.public_terminal(id)?.is_some()),
+            parent => Ok(self.get(parent).map_or_else(|e| e.kind() == io::ErrorKind::NotFound, |parent| parent.state.terminal())),
+        }
+    }
+
     pub fn open_result(&self, id: &str, index: usize) -> io::Result<File> {
         let record = self.get(id)?;
         let artifact = record
