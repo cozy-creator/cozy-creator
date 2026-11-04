@@ -355,7 +355,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
-- `GET /v1/projects/{id}`: `{id, path, assets, queue?: [{name, running, run?}], entities: [{name, kind, description?, links, subs}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
+- `GET /v1/projects/{id}`: while a walk waits on a project.yaml that doesn't read, what it owes in `queue`, why in `warnings`, and no assets; with no walk, that file is refused. `{id, path, assets, queue?: [{name, running, run?}], entities: [{name, kind, description?, links, subs}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
   absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?}], warnings}`. Each asset is `{name, standing, making?, kind, noun, with?, versions, prefixes?,
   approved?, pinned?, inputs?, files, path?, made_by?, status}`: `standing` is `current`, `out_of_date`, `missing` or `making`, for a client that shows it, `making` the runs making it now, `approved` is the version a pin is, `pinned` that a hash in project.yaml is its state,
   `files` its state by output name, `path` its main file, and `status` is for people, in the asset's noun. An orphan is an asset project.lock keeps

@@ -96,8 +96,8 @@ struct Project {
     moving: tokio::sync::Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
-    /// project.yaml as the walk last read it, and whether it has said it can't read a later save.
-    read: Mutex<Option<(String, bool)>>,
+    /// project.yaml as the walk last read it.
+    read: Mutex<Option<String>>,
 }
 
 pub fn routes() -> Router<Arc<Api>> {
@@ -395,12 +395,29 @@ async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<S
     }
 }
 
+/// What is said while a walk waits on a project.yaml that doesn't read.
+fn waits_on_file(error: &Error) -> String {
+    format!("{}: what is running goes on, and what is queued waits until it reads", error.message)
+}
+
 /// Its assets as they stand.
 async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<ProjectState>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let doc = Doc::load(folder).map_err(Refusal)?;
     let lock = folder.lock().map_err(Refusal)?;
+    let doc = match Doc::load(folder) {
+        Ok(doc) => doc,
+        Err(error) if !lock.owes() => return Err(Refusal(error)),
+        // A walk owes something: it waits on the file, so what it owes and why are the answer.
+        Err(error) => {
+            let running = lock.pending.values().map(|pending| Queued { name: pending.asset.clone(), running: true, run: (pending.run > 0).then_some(pending.run) });
+            let queued = lock.walk.takes.iter().filter(|take| !lock.pending.contains_key(&take.key)).map(|take| Queued { name: take.asset.clone(), running: false, run: None });
+            let queue = running.chain(queued).collect();
+            let busy = *project.walking.lock().expect("walking lock");
+            let moving = project.moving.try_lock().is_err();
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![waits_on_file(&error)] }));
+        }
+    };
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
     warnings.extend(unadapted(&api, &doc, folder).await);
@@ -1357,24 +1374,13 @@ impl Walk {
         &self.project.folder
     }
 
-    /// The project as project.yaml reads now. A save that doesn't read, say mid-edit, stops nothing:
-    /// the walk goes on with what it last read, and says so once.
+    /// The project as project.yaml reads now, else as it last read, for what is already going: a run landing, or its next call.
     fn doc(&self) -> Result<Doc, Error> {
-        let text = self.folder().text()?;
-        let mut read = self.project.read.lock().expect("read lock");
-        match Doc::read(self.folder(), &text) {
-            Ok(doc) => {
-                *read = Some((text, false));
-                Ok(doc)
-            }
-            Err(e) if e.kind == Kind::Validation && read.is_some() => {
-                let (last, said) = read.as_mut().expect("is some");
-                if !std::mem::replace(said, true) {
-                    self.say(Event::Warning { message: format!("{}: the render goes on with what it said before", e.message) });
-                }
-                Doc::read(self.folder(), last)
-            }
-            Err(e) => Err(e),
+        let last = self.project.read.lock().expect("read lock").clone();
+        match (self.folder().text().and_then(|text| Doc::read(self.folder(), &text)), last) {
+            (Ok(doc), _) => Ok(doc),
+            (Err(error), None) => Err(error),
+            (Err(_), Some(last)) => Doc::read(self.folder(), &last),
         }
     }
 
@@ -1402,12 +1408,58 @@ impl Walk {
     /// Sends whatever is ready, makes each tool whose reads have settled, follows every pending run (what it sent, what an earlier
     /// walker sent), and plans again as each lands or something is asked, until nothing is owed: then the first thing that failed, if one did.
     async fn go(&self) -> Result<Option<Error>, Error> {
-        for message in self.doc()?.warnings {
-            self.say(Event::Warning { message });
-        }
         let (mut first, mut following, mut followed) = (None, FuturesUnordered::new(), HashSet::new());
+        // The file as it last failed to read, what was said of that, and whether the walk has said a file that reads.
+        let (mut unread, mut said_of_it, mut greeted) = (None::<String>, None::<String>, false);
         loop {
-            let (doc, lock) = (self.doc()?, self.folder().lock()?);
+            let text = self.folder().text();
+            let read = match &text {
+                Ok(text) if unread.as_deref() == Some(text.as_str()) => None,
+                Ok(text) => Some(Doc::read(self.folder(), text)),
+                Err(error) => Some(Err(error.clone())),
+            };
+            let doc = match read {
+                Some(Ok(doc)) => doc,
+                // A save that doesn't read, say mid-edit, stops nothing: what is running goes on, what is queued waits, and it goes
+                // on by itself. After a restart with nothing read yet, what is running lands once the file reads.
+                unreadable => {
+                    if let Some(Err(error)) = unreadable {
+                        let message = waits_on_file(&error);
+                        if said_of_it.as_ref() != Some(&message) {
+                            self.say(Event::Warning { message: message.clone() });
+                            said_of_it = Some(message);
+                        }
+                    }
+                    unread = text.ok().or(unread);
+                    if self.project.read.lock().expect("read lock").is_some() {
+                        for key in self.folder().lock()?.pending.into_keys() {
+                            if followed.insert(key.clone()) {
+                                following.push(self.follow(key));
+                            }
+                        }
+                    }
+                    tokio::select! {
+                        Some((key, landed)) = following.next() => {
+                            followed.remove(&key);
+                            if let Err(error) = landed? {
+                                self.failed(error, &mut first);
+                            }
+                        }
+                        () = self.project.asked.notified() => {}
+                        () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                    }
+                    continue;
+                }
+            };
+            unread = None;
+            if said_of_it.take().is_some() {
+                self.say(Event::Said { message: format!("{} reads again: the render goes on", folder::PROJECT) });
+            }
+            *self.project.read.lock().expect("read lock") = text.ok();
+            if !std::mem::replace(&mut greeted, true) {
+                doc.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
+            }
+            let lock = self.folder().lock()?;
             let stand = doc.stand(&lock);
             for take in lock.walk.takes.iter().filter(|take| doc.find(&take.asset).is_none()) {
                 let said = format!("{} is no longer in {}: its version is not made", take.asset, folder::PROJECT);
