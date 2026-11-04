@@ -1,0 +1,11 @@
+{
+  "product_source_commit": "6c598b9f425984c4525e0b2cf2bd8f5cb61ae2dd",
+  "files": {
+    "host.py": "316546b3a7f2f746bd3a18d147ed1e176056fac7f04744f7d628a51d74bff29f",
+    "README.md": "69d5f2643479dc6aa4c2eb591aa187eb924ff1e6423ddab7404503a55cdce1dc",
+    "gpu.py": "198bc3ea940e35f81336c1485337fd46d00371a76664c6d0f5ce2aa169e6e0bc",
+    "host.rs": "14d5602e1289ceca22742564108d00afdd96d9d94799d81affa7b7efab745746",
+    "evidence/native-check.log": "cc55d0c2abff770a9adb6158f032d02fa93f39979e3c270a545adc7b6b2b423a",
+    "evidence/host-20261104.json": "06f32f8d523e62889b2600d0ddcef605cfbb54d2c8dbef6ffd1d1269585f16fc"
+  }
+}
