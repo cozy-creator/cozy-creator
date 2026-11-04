@@ -137,8 +137,10 @@ function plate(path, color, seconds, hz) {
   // At the point it's dropped: before red.
   await dragIn('title', track.x + 4, track.y + 30);
   check('dropped_at_the_point', (await order()) === 'title red blue', await order());
-  const start = await clips();
-  check('whole_takes', JSON.stringify(start.map((clip) => clip.frames)) === JSON.stringify([3 * FPS, 2 * FPS, 3 * FPS]), start);
+  // Whole, once measured: a clip Calcifer hasn't read yet lasts as a still does, for as long as ffprobe takes.
+  const whole = JSON.stringify([3 * FPS, 2 * FPS, 3 * FPS]);
+  const start = await until('its clips measured', clips, (now) => JSON.stringify(now.map((clip) => clip.frames)) === whole).catch(() => clips());
+  check('whole_takes', JSON.stringify(start.map((clip) => clip.frames)) === whole, start);
   await until('the file holds them', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => /<title>[\s\S]*<red>[\s\S]*<blue>/.test(text));
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
   await away();
@@ -282,7 +284,8 @@ function plate(path, color, seconds, hz) {
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
   await card('Edit').locator('.head').hover();
-  await card('Edit').locator('button:text-is("Unapprove")').click();
+  // Unapproved, it has no film of what it holds now, so it's cut there and then, and the call answers when that's done: what's counted below is what's asked below.
+  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('button:text-is("Unapprove")').click()]);
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
   await openEdit();
 
