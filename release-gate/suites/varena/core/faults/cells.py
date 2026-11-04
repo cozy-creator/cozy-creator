@@ -913,6 +913,19 @@ def no_stream_capture() -> None:
     verdict("correct" if same and fell_back else "corrupt", identical=same, fell_back=fell_back)
 
 
+def no_stream_graph() -> None:
+    """vt.graph with no stream given captures on a blocking one, so CUDA refuses a stray launch."""
+    vt.install(DEVICE)
+    value = torch.ones(16, device=device)
+    refused = None
+    try:
+        with vt.graph(torch.cuda.CUDAGraph()), torch.cuda.stream(torch.cuda.default_stream(DEVICE)):
+            value.add(1.0)
+    except torch.AcceleratorError as error:
+        refused = str(error)
+    verdict("correct" if refused and "capturing blocking stream" in refused else "corrupt", refused=str(refused)[:120])
+
+
 def workspace_graphs(stream):
     """Two graphs on one stream at flag 1, sharing Torch's cached workspace."""
     a, b = Graph(model(seed=21), stream), Graph(model(seed=22), stream)

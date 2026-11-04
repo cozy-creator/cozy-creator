@@ -293,6 +293,7 @@ CELLS = {
     "lazy_workspace": main_only,
     "no_stream_eager": main_only,
     "no_stream_capture": main_only,
+    "no_stream_graph": main_only,
     "workspace_unmapped": main_only,
     "workspace_reuse": main_only,
 }

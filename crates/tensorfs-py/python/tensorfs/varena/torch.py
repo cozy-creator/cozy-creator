@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 from contextlib import contextmanager
+import functools
 import json
 import os
 from pathlib import Path
@@ -372,6 +373,28 @@ def external_callback(device: DeviceLike) -> Iterator[None]:
         scope.close()
 
 
+def _blocking_stream(device: int) -> Stream:
+    """Everything that executes or captures runs on a blocking stream. A library's kernel launched
+    with no stream argument keeps order only with one: on a non-blocking stream it races (Xid 31,
+    run 28772). A capture on one refuses that launch instead of silently leaving it out of the graph
+    (noise after replay, 28892), and the caller falls back to eager. CUDA's runtime makes it, so a
+    thread that hasn't touched the device needs no context. It lives until the process exits.
+    """
+    import torch
+
+    handle = ctypes.c_void_p()
+    with torch.cuda.device(device):
+        code = torch.cuda.cudart().cudaStreamCreate(ctypes.addressof(handle))
+        if code:
+            raise RuntimeError(f"cudaStreamCreate failed with CUDA error {code}")
+        return torch.cuda.ExternalStream(handle.value, device=device)
+
+
+@functools.cache
+def _graph_stream(device: int) -> Stream:
+    return _blocking_stream(device)
+
+
 @contextmanager
 def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None) -> Iterator[Any]:
     """Prepare and finish capture, joining only its explicit stream and the caller.
@@ -385,7 +408,7 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
 
     device = _device(stream.device if stream is not None else None)
     caller = torch.cuda.current_stream(device)
-    stream = torch.cuda.Stream(device=device) if stream is None else stream
+    stream = _graph_stream(device) if stream is None else stream
     pool = cast(PoolId, torch.cuda.graph_pool_handle()) if pool is None else pool
     try:
         if _workspace_cache_enabled() and (device, stream.cuda_stream) not in _primed:

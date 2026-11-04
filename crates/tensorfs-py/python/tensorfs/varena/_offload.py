@@ -7,10 +7,8 @@ take the placeholder's slow path. A thread's work all runs on one explicit strea
 
 from __future__ import annotations
 
-import ctypes
 import functools
 import os
-import sys
 import threading
 import weakref
 
@@ -33,20 +31,6 @@ class OffloadError(RuntimeError):
 _UNIT_BYTES = 512 << 20
 
 
-def _blocking_stream(index):
-    """A library's kernel launched with no stream argument keeps order only with a blocking stream:
-    with a non-blocking one it raced (Xid 31, run 28772). Capture refuses one instead of silently
-    leaving it out of the graph (noise after replay, 28892), and that capture falls back to eager."""
-    driver = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
-    driver.cuStreamCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint]
-    handle = ctypes.c_void_p()
-    with torch.cuda.device(index):
-        code = driver.cuStreamCreate(ctypes.byref(handle), 0)
-        if code:
-            raise RuntimeError(f"cuStreamCreate failed with CUDA error {code}")
-        return torch.cuda.ExternalStream(handle.value, device=index)
-
-
 class _Owner:
     """What weights need from an adopted model: never the model itself."""
 
@@ -54,7 +38,7 @@ class _Owner:
         vt.install(index)
         self.device = torch.device("cuda", index)
         self.gpu = api.open(index)
-        self.stream = _blocking_stream(index)
+        self.stream = vt._blocking_stream(index)
         self.lock = threading.RLock()
         self.converting = False
 

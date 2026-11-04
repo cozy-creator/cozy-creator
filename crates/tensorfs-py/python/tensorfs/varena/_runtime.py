@@ -26,6 +26,11 @@ def activate(device: int, *, shared: bool) -> None:
     _ext._varena_activate(device, shared)
 
 
+def poisoned() -> str | None:
+    """Why native state can no longer be trusted, if it can't. Opens nothing."""
+    return _ext._varena_poisoned()
+
+
 def request_boundary(device: int, *, begin: bool) -> None:
     """A request started or ended here: orders who donates first. An atomic store, never fails."""
     _ext._varena_request_boundary(device, begin)

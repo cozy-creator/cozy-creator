@@ -1843,6 +1843,17 @@ pub(crate) fn prefetch_admitted(device: i32) -> Result<()> {
     Ok(())
 }
 
+/// Why this process's native state can't be trusted, if it can't. Opens nothing.
+pub fn poisoned() -> Result<Option<String>> {
+    for device in devices()? {
+        let state = device.state.lock().map_err(|_| Error::Poisoned("device table mutex".into()))?;
+        if let Some(why) = &state.poison {
+            return Ok(Some(why.clone()));
+        }
+    }
+    Ok(None)
+}
+
 pub fn stats(device: i32) -> Result<WorkingStats> {
     let Some(owner) = existing(device)? else {
         return Ok(WorkingStats::default());

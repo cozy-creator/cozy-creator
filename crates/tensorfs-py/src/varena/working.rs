@@ -300,6 +300,11 @@ fn _varena_working_initialize(py: Python<'_>, device: i32) -> PyResult<()> {
 
 /// Runtime's Start: this GPU's context and this process's row, in the machine's mode.
 #[pyfunction]
+fn _varena_poisoned(py: Python<'_>) -> PyResult<Option<String>> {
+    py.detach(varena::working::poisoned).map_err(|e| super::raise(py, e))
+}
+
+#[pyfunction]
 fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
     py.detach(|| {
         check()?;
@@ -840,6 +845,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_bindings, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_activate, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_poisoned, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;
