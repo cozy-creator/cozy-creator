@@ -339,11 +339,21 @@ export class CanvasStore {
     }
     for (const [other, view] of this.views) {
       if (!view.placing) continue
-      const name = freeName(other === key ? (view.draft ?? view.name) : view.name, taken)
+      const name = freeName(asName(other === key ? (view.draft ?? view.name) : view.name), taken)
       if (other === key) return name
       taken.push(name)
     }
     return key
+  }
+
+  /** What the open name field would come to, when that isn't what it says: a taken name gets `_2`. */
+  nameWillBe(name: string): string | null {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (view?.draft === undefined) return null
+    const typed = asName(view.draft)
+    const will = view.placing ? this.shownName(key) : freeName(typed, this.takenBesides(key))
+    return typed && will !== typed ? will : null
   }
 
   /** Resolves once its name field is shut. */

@@ -54,11 +54,12 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
   const [failed, setFailed] = useState(false)
   const projectId = store.projectId
   const leaveLine = useRef(() => {})
+  const width = thumbWidth(cardWidth)
   useEffect(() => {
     if (!projectId) return
     let live = true
     leaveLine.current = thumbLine(() => {
-      void client.transport.src(client.thumb(projectId, sha256, thumbWidth(cardWidth))).then((url) => {
+      void client.transport.src(client.thumb(projectId, sha256, width)).then((url) => {
         if (live) setSrc(url)
       })
     })
@@ -66,7 +67,7 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
       live = false
       leaveLine.current()
     }
-  }, [client, projectId, sha256, cardWidth])
+  }, [client, projectId, sha256, width])
   if (failed) return <span className="media-note">No preview</span>
   if (!src) return null
   return (

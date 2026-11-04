@@ -40,7 +40,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   }, [store, name])
   if (!view) return null
 
-  const status = statusLine(view)
+  const will = store.nameWillBe(name)
+  const status = will ? { text: `Will be ${will}`, tone: "" } : statusLine(view)
   const dot = view.placing ? "s-making" : (DOTS[view.asset?.standing ?? "current"] ?? "s-missing")
   return (
     <div className="card">

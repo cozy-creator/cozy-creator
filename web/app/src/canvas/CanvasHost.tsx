@@ -202,7 +202,8 @@ function Canvas({
       const command = event.metaKey || event.ctrlKey
       if (event.key === "Escape") {
         for (const node of flow.getNodes()) {
-          if (node.selected && store.get(node.data.name)?.placing) store.cancel(store.resolveName(node.data.name))
+          const placing = store.get(node.data.name)?.placing
+          if (node.selected && placing && placing.stage !== "adding") store.cancel(store.resolveName(node.data.name))
         }
         flow.setNodes((nodes) => nodes.map((node) => (node.selected ? { ...node, selected: false } : node)))
       } else if (command && event.key.toLowerCase() === "a") {

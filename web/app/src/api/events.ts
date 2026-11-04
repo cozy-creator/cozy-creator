@@ -47,10 +47,12 @@ export class EventStream {
   private holding = false
   private client: Client
   private scope: string
+  private remote: boolean
 
-  constructor(client: Client, scope: string) {
+  constructor(client: Client, scope: string, remote: boolean) {
     this.client = client
     this.scope = scope
+    this.remote = remote
     this.channel = new BroadcastChannel(`cozy-events:${scope}`)
     this.channel.onmessage = ({ data }: MessageEvent<Shared>) => {
       if ("event" in data) this.dispatch(data.event)
@@ -83,15 +85,18 @@ export class EventStream {
     this.channel.postMessage({ event } satisfies Shared)
   }
 
-  /** Holds the lock for as long as this tab lives, unless Calcifer says it's signed out. */
+  /** Holds the lock for as long as this tab lives, unless this computer's Calcifer says it's signed out. */
   private async hold() {
     this.holding = true
     for (let attempt = 1; ; attempt++) {
       try {
         if (await this.follow()) attempt = 1
       } catch {
-        this.say({ state: "signed_out" })
-        return
+        if (!this.remote) {
+          this.say({ state: "signed_out" })
+          return
+        }
+        this.client.unauthorized()
       }
       this.say({ state: "reconnecting", attempt })
       await new Promise((done) => setTimeout(done, Math.min(5000, 250 * 2 ** (attempt - 1))))

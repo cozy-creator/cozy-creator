@@ -123,7 +123,8 @@ export class Placer {
     this.store.beginAdding()
     try {
       const id = await this.project()
-      const answer = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: digest, name, at })
+      const tried = (attempt: number) => this.store.patchPlacing(key, { attempt: attempt || undefined })
+      const answer = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: digest, name, at }, tried)
       this.store.land(key, answer, at)
       if (answer.note) say(answer.note)
       this.hooks.refresh(id)

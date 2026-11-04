@@ -74,6 +74,11 @@ export class Client {
     this.hooks = hooks
   }
 
+  /** Calcifer said 401. Whether that signs anyone out is the connection's to judge: through a door, it's the pod's word. */
+  unauthorized() {
+    this.hooks.signedOut()
+  }
+
   /** What can't reach Calcifer tries again where that's safe, saying each attempt, then gives up. */
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
     const safe = init.method !== "POST" || new Headers(init.headers).has("Idempotency-Key")
@@ -90,7 +95,7 @@ export class Client {
           return response
         }
         failure = await refusal(response)
-        if (response.status === 401) this.hooks.signedOut()
+        if (response.status === 401) this.unauthorized()
         if (response.status !== 503) {
           if (attempt > 1) say(0)
           throw failure
@@ -146,10 +151,11 @@ export class Client {
   async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void): Promise<true | [number, number][]> {
     const response = await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
     if (response.ok) return true
+    // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
     for (const part of (response.headers.get("Cozy-Held") ?? "").split(",")) {
       const [first, last] = part.split("-").map(Number)
-      if (Number.isFinite(first) && Number.isFinite(last)) ranges.push([first, last])
+      if (Number.isSafeInteger(first) && Number.isSafeInteger(last) && first >= 0 && last >= first) ranges.push([first, last])
     }
     return ranges
   }
@@ -187,8 +193,8 @@ export class Client {
     return (await this.send(`${project(id)}/yaml`, { signal })).text()
   }
 
-  import(id: string, key: string, body: Import): Promise<Imported> {
-    return this.write("POST", `${project(id)}/imports`, body, key)
+  import(id: string, key: string, body: Import, onAttempt?: (attempt: number) => void): Promise<Imported> {
+    return this.write("POST", `${project(id)}/imports`, body, key, { onAttempt })
   }
 
   rename(id: string, from: string, to: string): Promise<Renamed> {

@@ -137,29 +137,48 @@ function chosenRemote(): string | null {
   }
 }
 
+/** Look at a machine's Calcifer in this tab, or with null this computer's again. */
+export function chooseCalcifer(machine: string | null) {
+  try {
+    if (machine) sessionStorage.setItem(REMOTE_KEY, machine)
+    else sessionStorage.removeItem(REMOTE_KEY)
+  } catch {
+    // Without storage, this tab stays on this computer's.
+  }
+  location.reload()
+}
+
+export type Boot = { connection: Connection } | { failed: "signed_out" | "unreachable" } | { failed: "remote"; machine: string }
+
 /** One per Calcifer, with its own `QueryClient`, so one Calcifer's world never shows as another's. */
-export async function connect(): Promise<{ connection: Connection } | { failed: "signed_out" | "unreachable"; client: Client }> {
+export async function connect(): Promise<Boot> {
   const remote = chosenRemote()
-  const scope = remote ?? "here"
   const attempt = signal(0)
   const signedOut = signal(false)
-  const transport = sameOrigin(readSession, remote ? `/v1/machines/${encodeURIComponent(remote)}/calcifer` : "")
-  const client = new Client(transport, {
-    signedOut: () => signedOut.set(true),
-    attempt: (n) => attempt.set(n),
-  })
+  const hooks = { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) }
+  const here = new Client(sameOrigin(readSession), hooks)
+  // Through a door, the session is still this computer's, and a 401 is the pod's or its TensorD's: only this computer can sign us out.
+  const client = remote
+    ? new Client(sameOrigin(readSession, `/v1/machines/${encodeURIComponent(remote)}/calcifer`), {
+        signedOut: () => void here.status().catch(() => {}),
+        attempt: hooks.attempt,
+      })
+    : here
   let status: Status
   try {
+    if (remote) await here.status()
     status = await client.status()
   } catch {
-    return { failed: signedOut.get() ? "signed_out" : "unreachable", client }
+    if (signedOut.get()) return { failed: "signed_out" }
+    return remote ? { failed: "remote", machine: remote } : { failed: "unreachable" }
   }
   const queries = new QueryClient({
     defaultOptions: {
       queries: { staleTime: Infinity, retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false },
     },
   })
-  const stream = new EventStream(client, scope)
+  const scope = remote ?? "here"
+  const stream = new EventStream(client, scope, Boolean(remote))
   const bridge = new Bridge(queries)
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
