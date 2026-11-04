@@ -17,6 +17,16 @@ for tool in jq node npm curl python3 sudo ss iptables tc; do command -v "$tool" 
 [ -f ~/.ssh/id_ed25519.pub ] || { mkdir -p ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519; } || fail "no SSH key"
 RENT_ARGS=--ssh
 
+# What this runner's Calcifer recorded is this session's, so a lost answer's order is ended too.
+own() { machines_json | jq -r '.machines[] | select(.kind == "rental" and .recorded and .state != "ended") | .rental_id // .name'; }
+claim() {
+  local r
+  for r in $(own); do
+    [[ " ${RIDS[*]:-} " == *" $r "* ]] || { RIDS+=("$r"); echo "$r" >> "$OUT/rental"; say "this runner's Calcifer also holds $r"; }
+  done
+}
+trap 'code=$?; claim; (exit "$code"); finish' EXIT
+
 PW=$(mktemp -d)
 npm install -s --prefix "$PW" playwright-core@1.55.0 > "$OUT/npm.log" 2>&1 || fail "npm install playwright-core: $(tail -c 300 "$OUT/npm.log")"
 node "$PW/node_modules/playwright-core/cli.js" install --with-deps chromium firefox webkit > "$OUT/browsers.log" 2>&1 || fail "the browsers: $(tail -c 300 "$OUT/browsers.log")"
@@ -70,8 +80,14 @@ if [ "$REHEARSE" = true ]; then
   mark "rehearsal passed"
 fi
 
-# A boot, the update, a Runtime's first run, three browsers: under half an hour. Three 100 MB reads and three drops a browser, and the runs' landing.
-quote 3 1800
+# A cpu pod leaves the catalog and returns by the minute: the wait is here, before anything is ordered and where it costs nothing.
+for _ in $(seq 30); do
+  cozy machine rent "$SKU" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null 2>&1 | grep -q quote_unagreed && break
+  say "no $SKU on offer yet"
+  sleep 120
+done
+# A boot, the update, a Runtime's first run, three browsers: under half an hour. Some 900 MB each way for a browser, and the runs' landing.
+quote 4 1800
 
 ( until [ -s "$OUT/rental" ]; do sleep 1; done; echo "::notice::rental $(head -1 "$OUT/rental")" ) & BG="$BG $!"
 rent

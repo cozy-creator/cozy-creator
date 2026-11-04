@@ -34,9 +34,9 @@ function library(cozy) {
   const make = RTCPeerConnection.prototype.createDataChannel;
   let channel = null;
   RTCPeerConnection.prototype.createDataChannel = function (...args) { return (channel = make.apply(this, args)); };
-  const open = async () => {
+  const open = async (window) => {
     const t = now();
-    const session = await cozy.connect(link, { cap: link.cap });
+    const session = await cozy.connect(link, { cap: link.cap, ...(window ? { window } : {}) });
     return { session, ms: now() - t, channel };
   };
   const read = (session, offset, length, { into, moved } = {}) => new Promise((resolve, reject) => {
@@ -95,8 +95,8 @@ function library(cozy) {
       return spread(ms);
     },
     /** Small reads, one after another, while one bulk read shares the session: what an API over it would feel. */
-    async underLoad(megabytes) {
-      const { session } = await open();
+    async underLoad(megabytes, window) {
+      const { session } = await open(window);
       const { length } = await measure(session);
       const size = megabytes ? Math.min(megabytes * 1e6, length) : length;
       let done = false, lag = 0, tick = now();
@@ -110,7 +110,7 @@ function library(cozy) {
       const r = await bulk;
       clearInterval(beat);
       session.close();
-      return { small: spread(ms), bulk_mb: size / 1e6, bulk_mb_s: round(r.got / 1e3 / r.ms), page_main_thread_worst_lag_ms: round(lag) };
+      return { window: window ?? 8 << 20, small: spread(ms), bulk_mb: size / 1e6, bulk_mb_s: round(r.got / 1e3 / r.ms), page_main_thread_worst_lag_ms: round(lag) };
     },
     /** cozy/1 has no upload: padded no-op messages are what the channel carries up, unforwarded. The ordered reply says the pod took them all. */
     async uplink(megabytes) {
@@ -260,6 +260,9 @@ async function one(name, type) {
     await step('bulk_again', () => page.evaluate('P.bulk()'));
     await step('smalls', () => page.evaluate('P.smalls(100)'));
     await step('under_load', () => page.evaluate('P.underLoad(0)'));
+    // The client's credit is how much can sit ahead of a small read: the player's 8 MiB above, then the design's 4 MiB and less.
+    await step('under_load_window_4mib', () => page.evaluate(`P.underLoad(0, ${4 << 20})`));
+    await step('under_load_window_1mib', () => page.evaluate(`P.underLoad(0, ${1 << 20})`));
     await step('uplink_noop_messages', () => page.evaluate('P.uplink(100)'));
     await step('drop_reset', () => drop(page, 'reset'));
     await step('drop_blip_3s', () => drop(page, 'blip'));
