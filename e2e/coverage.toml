@@ -177,6 +177,10 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
+[web]
+test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal"
+"--no-open" = "pr: web-serves"
+
 ["project new"]
 test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
 

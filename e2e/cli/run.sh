@@ -5,7 +5,7 @@
 # BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
 # with an --file input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
-# rest of that list but the machine.
+# rest of that list but the machine. On every OS, the page Calcifer serves (web.sh).
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
@@ -16,6 +16,7 @@ parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/project.sh"
+. "$(dirname "$0")/web.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "cozy project new failed"
@@ -246,14 +247,14 @@ cozy --json package remove local/one_script --on local > /dev/null || check "pac
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters projects bound_runs web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || parts="catalog refusals web_serves completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done
