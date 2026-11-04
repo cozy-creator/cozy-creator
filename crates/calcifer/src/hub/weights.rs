@@ -82,6 +82,29 @@ async fn source(raw: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal
     Ok((choice, Some(staged)))
 }
 
+/// The file `named` holds (`PUT /v1/files`, `sha256:<hex>`) as the model a warm run makes present: one `.safetensors` file by its
+/// bytes, since a held file has no name to read. Its digest is its name.
+fn held(api: &Api, named: &str) -> Result<(ModelChoice, Option<StagedInput>), Refusal> {
+    let digest: Digest = named.parse().map_err(|why: &str| usage("file_name_invalid", format!("{named:?}: {why}")))?;
+    let path = crate::runs::files::dir(&api.calcifer).join(hex::encode(digest.bytes()));
+    if !path.is_file() {
+        let said = format!("Calcifer holds no file {named}");
+        return Err(Refusal(Error::new(Kind::NotFound, "file_not_held", said).remedy(format!("PUT its bytes to /v1/files/{named} first"))));
+    }
+    let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
+    let mut file = std::fs::File::open(&path).map_err(|e| refused(e.to_string()))?;
+    let length = file.metadata().map_err(|e| refused(e.to_string()))?.len();
+    let mut head = [0; 9];
+    file.read_exact(&mut head).map_err(|_| refused(format!("{named} is not a .safetensors file")))?;
+    let header = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
+    if head[8] != b'{' || header.saturating_add(8) > length {
+        return Err(refused(format!("{named} is not a .safetensors file")));
+    }
+    crate::runs::files::touch(&path);
+    let choice = ModelChoice { parameter: "model".into(), source: format!("object://{digest}/model.safetensors"), ..Default::default() };
+    Ok((choice, Some(StagedInput { path, digest, length })))
+}
+
 /// A local model file, measured once: one regular `.safetensors` file.
 fn measure(path: &Path) -> Result<StagedInput, Refusal> {
     let refused = |why: String| Refusal(Error::new(Kind::Validation, "model_file_refused", why));
@@ -272,6 +295,7 @@ impl Ask for ModelUpload {
                 }
                 folder(api, path.to_owned()).await?
             }
+            None if self.source.starts_with("sha256:") => held(api, &self.source)?.into(),
             None => source(&self.source).await?.into(),
         };
         if let Some(format) = &self.source_format {

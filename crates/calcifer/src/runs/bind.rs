@@ -38,6 +38,8 @@ pub struct Terms {
     pub inputs: Vec<String>,
     /// The whole payload as a JSON or YAML file; the terms override it.
     pub input_file: Option<PathBuf>,
+    /// The whole payload as JSON or YAML text; the files it names start at `cwd`.
+    pub input_text: Option<String>,
     /// Attached files: `[field.path|label]` and a file.
     pub assets: Vec<FileTerm>,
     /// `--file-fidelity label-or-index=auto|low|medium|high`.
@@ -57,6 +59,8 @@ pub struct Terms {
     pub clips: Clips,
     /// Where uploaded files are held (`PUT /v1/files`), by their digest's hex.
     pub uploads: PathBuf,
+    /// The run's project, whose files a request may name by hash.
+    pub project: Option<crate::project::Holding>,
 }
 
 impl Terms {
@@ -75,6 +79,22 @@ impl Terms {
             super::files::touch(&path);
         }
         held.then_some(path)
+    }
+
+    /// Whether `text` names a file by content: held here, or one of its project's by hash.
+    fn by_hash(&self, text: &str) -> bool {
+        self.upload(text).is_some() || self.project.as_ref().is_some_and(|project| project.names(text))
+    }
+
+    /// The file `text` names by content, here now; none when it names none.
+    async fn by_content(&self, text: &str) -> Result<Option<PathBuf>, Error> {
+        if let Some(path) = self.upload(text) {
+            return Ok(Some(path));
+        }
+        match &self.project {
+            Some(project) => project.file(text).await,
+            None => Ok(None),
+        }
     }
 }
 
@@ -178,6 +198,7 @@ pub async fn warm_choices(
         || !terms.assets.is_empty()
         || !terms.fidelities.is_empty()
         || terms.input_file.is_some()
+        || terms.input_text.is_some()
         || terms.input.is_some()
     {
         if program {
@@ -222,16 +243,12 @@ pub async fn bind(
     };
     let mut inputs = terms.inputs.clone();
     let destination = binder.conversion(&mut inputs)?;
-    match (&terms.input_file, &terms.input) {
-        (Some(_), Some(_)) => {
-            return Err(usage("input_twice", "a request gives its payload as input or input_file, not both"));
-        }
-        (Some(path), None) => binder.load(path)?,
-        (None, Some(input)) => {
-            let base = terms.cwd.clone();
-            binder.take(input.clone(), base.as_deref())?;
-        }
-        (None, None) => {}
+    match (&terms.input_file, &terms.input_text, &terms.input) {
+        (Some(path), None, None) => binder.load(path)?,
+        (None, Some(text), None) => binder.read(text, false, "input_text", terms.cwd.as_deref())?,
+        (None, None, Some(input)) => binder.take(input.clone(), terms.cwd.as_deref())?,
+        (None, None, None) => {}
+        _ => return Err(usage("input_twice", "a request gives its payload as one of input, input_file or input_text")),
     }
     let positional = binder.read_terms(&inputs)?;
     binder.primary(positional)?;
@@ -330,20 +347,20 @@ impl Binder<'_> {
         let yaml = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
-        let loaded: Value = match serde_json::from_str(&text) {
+        // A file named inside the file is relative to the file.
+        self.read(&text, yaml, &format!("--input {}", path.display()), path.parent())
+    }
+
+    /// A payload as text: JSON, or YAML when it says so or is not JSON. The files it names are relative to `base`.
+    fn read(&mut self, text: &str, yaml: bool, what: &str, base: Option<&Path>) -> Result<(), Error> {
+        let loaded: Value = match serde_json::from_str(text) {
             Ok(value) if !yaml => value,
-            _ => protocol::yaml::to_json(&text).map_err(|e| {
-                invalid("input_invalid", format!("--input {}: {e}", path.display()))
-            })?,
+            _ => protocol::yaml::to_json(text).map_err(|e| invalid("input_invalid", format!("{what}: {e}")))?,
         };
         let Value::Object(loaded) = loaded else {
-            return Err(invalid(
-                "input_invalid",
-                format!("--input {} does not hold one object", path.display()),
-            ));
+            return Err(invalid("input_invalid", format!("{what} does not hold one object")));
         };
-        // A file named inside the file is relative to the file.
-        self.take(loaded, path.parent())
+        self.take(loaded, base)
     }
 
     /// The payload's fields and model choices; the files they name are relative to `base`.
@@ -352,7 +369,7 @@ impl Binder<'_> {
         for (key, mut value) in loaded {
             let key = self.fold(&key)?;
             if let (Some(field), Some(base)) = (self.callable.field(&key), base) {
-                relative_files(&field.ty, &mut value, base);
+                relative_files(&field.ty, &mut value, base, &|source| self.terms.by_hash(source));
             }
             self.document.insert(key, value);
         }
@@ -639,7 +656,7 @@ impl Binder<'_> {
             })?;
             let (source, range) = clip::fragment(&spec.source, &field)?;
             let named = source.to_string_lossy();
-            let path = match self.terms.upload(&named) {
+            let path = match self.terms.by_content(&named).await? {
                 Some(path) => path,
                 None if named.starts_with("sha256:") => {
                     return Err(Error::new(Kind::NotFound, "file_not_held", format!("{field}: Calcifer holds no file {named}"))
@@ -743,6 +760,9 @@ impl Binder<'_> {
             .unwrap_or_else(|| std::env::temp_dir().join("cozy-trees"));
         let mut members = vec![];
         for (field, source) in found {
+            if source.starts_with("sha256:") {
+                return Err(usage("tree_not_held", format!("{field}: a folder goes by its path, and {source} names none")).remedy("name the folder again"));
+            }
             let root = self.resolve(Path::new(&source))?;
             if !root.is_dir() {
                 return Err(usage(
@@ -1224,13 +1244,10 @@ fn asset_at(
     }
 }
 
-/// Files named inside the payload: a string at an input-file position that is not a digest,
-/// or the digest of a file uploaded to Calcifer.
+/// Files named inside the payload: any string at an input-file position.
 fn embedded_files(ty: &Type, value: &Value, path: &str, terms: &Terms, out: &mut Vec<Spec>) -> Result<(), Error> {
     match (ty, value) {
-        (Type::Asset(_), Value::String(source))
-            if (!source.starts_with("sha256:") || terms.upload(source).is_some()) && !source.is_empty() =>
-        {
+        (Type::Asset(_), Value::String(source)) if !source.is_empty() => {
             if source.contains("://") {
                 return Err(invalid(
                     "asset_url",
@@ -1276,9 +1293,7 @@ fn embedded_files(ty: &Type, value: &Value, path: &str, terms: &Terms, out: &mut
 /// Local directories at Tree positions: each field's path and the directory as written.
 fn tree_dirs(ty: &Type, value: &Value, path: &str, out: &mut Vec<(String, String)>) {
     match (ty, value) {
-        (Type::Tree, Value::String(source))
-            if !source.starts_with("sha256:") && !source.is_empty() =>
-        {
+        (Type::Tree, Value::String(source)) if !source.is_empty() => {
             out.push((path.to_owned(), source.clone()));
         }
         (Type::Union { branches, .. }, value) => {
@@ -1302,14 +1317,15 @@ fn tree_dirs(ty: &Type, value: &Value, path: &str, out: &mut Vec<(String, String
     }
 }
 
-/// Rewrites relative file names at input-file positions against `base`.
-fn relative_files(ty: &Type, value: &mut Value, base: &Path) {
+/// Rewrites relative file names at input-file positions against `base`: not what `by_hash` says names a file by its content.
+fn relative_files(ty: &Type, value: &mut Value, base: &Path, by_hash: &dyn Fn(&str) -> bool) {
     match (ty, value) {
         (Type::Asset(_) | Type::Tree, Value::String(source))
             if !source.contains("://")
                 && !source.starts_with("sha256:")
                 && !written_as_path(source)
-                && !source.is_empty() =>
+                && !source.is_empty()
+                && !by_hash(source) =>
         {
             *source = base.join(&*source).to_string_lossy().into_owned();
         }
@@ -1327,16 +1343,16 @@ fn relative_files(ty: &Type, value: &mut Value, base: &Path) {
             }) =>
         {
             for branch in branches {
-                relative_files(branch, value, base);
+                relative_files(branch, value, base, by_hash);
             }
         }
         (Type::List(item), Value::Array(values)) => values
             .iter_mut()
-            .for_each(|v| relative_files(item, v, base)),
+            .for_each(|v| relative_files(item, v, base, by_hash)),
         (Type::Struct(s), Value::Object(object)) => {
             for field in &s.fields {
                 if let Some(value) = object.get_mut(&field.name) {
-                    relative_files(&field.ty, value, base);
+                    relative_files(&field.ty, value, base, by_hash);
                 }
             }
         }

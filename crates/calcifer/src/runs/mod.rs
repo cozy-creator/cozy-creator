@@ -203,7 +203,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest) -> Result<Prepared
         }
     };
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
-    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || !ask.files.is_empty() || ask.warm.is_some();
+    let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_file.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
     let Some(function) = function.or(target::only_function(code.interface).filter(|_| given)) else {
         let release = match &resolved {
             Resolved::Release { release: Some(release), .. } => Some(release.as_str()),
@@ -284,20 +284,19 @@ async fn call(
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
     // A person's run belongs to a project, as a commit to a repository. Keeping a function warm and `cozy model quantize` are no one's run.
-    let project = ask.project.as_deref().and_then(crate::project::holding_folder);
+    let project = match ask.project.as_deref() {
+        Some(named) => crate::project::named(api, named)?,
+        None => None,
+    };
     if project.is_none() && ask.warm.is_none() && !ask.recipes {
         return Err(crate::project::not_in_one());
-    }
-    // `--file image=65b436d4f9a3` names a file of the project's by its hash.
-    let mut files = vec![];
-    for term in &ask.files {
-        files.push(crate::project::file_term(&api.calcifer, project.as_deref(), term).await?);
     }
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
         input_file: ask.input_file.clone(),
-        assets: files,
+        input_text: ask.input_text.clone(),
+        assets: ask.files.clone(),
         fidelities: ask.fidelities.clone(),
         loras: ask.loras.clone(),
         key: key.to_owned(),
@@ -307,6 +306,7 @@ async fn call(
         manifests: Some(home.join("cache").join("trees")),
         clips: clip::Clips { dir: home.join("cache").join("clips"), home: api.machines.hubs.home().clone() },
         uploads: files::dir(&api.calcifer),
+        project: project.clone().map(|dir| crate::project::Holding::new(api.calcifer.clone(), dir)),
     };
     for term in &terms.fidelities {
         protocol::calcifer::fidelity(term).map_err(|why| Error::new(Kind::Usage, "file_fidelity_invalid", why))?;

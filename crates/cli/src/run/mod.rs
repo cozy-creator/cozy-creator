@@ -203,7 +203,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 status: state,
                 package,
                 machine: on,
-                project: holding(&within).filter(|_| !all),
+                project: Some(within).filter(|_| !all),
                 before: None,
                 limit,
             };
@@ -249,12 +249,6 @@ async fn run(ctx: &Context, args: RunArgs, within: PathBuf) -> Result<ExitCode, 
     }
 }
 
-/// The project holding `path`: it, or the nearest folder above it with a project.yaml, as git finds its repository.
-fn holding(path: &Path) -> Option<PathBuf> {
-    let start = std::fs::canonicalize(path).ok()?;
-    start.ancestors().find(|dir| dir.join("project.yaml").is_file()).map(Path::to_owned)
-}
-
 /// One line per file a run left in its project, to paste into project.yaml: `image: 65b436d4f9a3`.
 pub(crate) fn paste(ctx: &Context, run: &Run) {
     if ctx.json || run.project.is_none() {
@@ -281,6 +275,7 @@ fn request(ctx: &Context, args: &RunArgs, target: String, cwd: &Path, within: Pa
         hub: ctx.hub().to_string(),
         input: None,
         input_file: args.input_file.clone(),
+        input_text: None,
         terms: args.inputs.clone(),
         files: args.assets.iter().map(|raw| FileTerm::parse(raw)).collect(),
         fidelities: args.fidelities.clone(),

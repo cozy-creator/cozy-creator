@@ -187,35 +187,72 @@ pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
 }
 
-/// The project holding `path`, if one does.
-pub(crate) fn holding_folder(path: &FsPath) -> Option<PathBuf> {
-    holding(path).ok()
+/// The folder of the project a request names: its id (`404 project_unknown` when this computer knows none), else the project
+/// holding a path, if one does.
+pub(crate) fn named(api: &Api, named: &FsPath) -> Result<Option<PathBuf>, Error> {
+    let text = named.to_string_lossy();
+    if !text.starts_with("project-") || text.contains(['/', '\\']) {
+        return Ok(holding(named).ok());
+    }
+    match indexed(api, false, |index| index.projects.get(text.as_ref()).map(|entry| entry.path.clone())) {
+        Some(path) => Ok(Some(path)),
+        None => Err(Error::new(Kind::NotFound, "project_unknown", format!("this computer knows no project {text}")).next("cozy project ls")),
+    }
 }
 
-/// The landing folder of the project holding `path`, as a run's record has it.
-pub(crate) fn landing_within(path: &FsPath) -> Option<String> {
-    Some(landing(&holding_folder(path)?).to_string_lossy().into_owned())
+/// The folder a project's runs land in, as a run's record has it.
+pub(crate) fn landed_in(dir: &FsPath) -> String {
+    landing(dir).to_string_lossy().into_owned()
 }
 
-/// `--file`'s term in `project`: six or more hex digits that start one of its files' hash are that file, what stays on a machine
-/// fetched now that it's named.
-pub(crate) async fn file_term(calcifer: &crate::Calcifer, project: Option<&FsPath>, term: &FileTerm) -> Result<FileTerm, Error> {
-    let written = term.file.as_str();
-    let hashlike = written.len() >= 6 && written.bytes().all(|byte| byte.is_ascii_hexdigit());
-    let Some(project) = project.filter(|_| hashlike) else { return Ok(term.clone()) };
-    let folder = Folder::at(project);
-    let lock = folder.lock()?;
-    match lock.matching(&written.to_ascii_lowercase()).as_slice() {
-        [] => Ok(term.clone()),
-        [file] => {
-            let at = folder.path(&file.path);
-            if file.stays() && !at.is_file() {
-                let fetched = calcifer.bring(&file.sha256, &file.machine).await;
-                fetched.map_err(|why| Error::new(Kind::Unavailable, "file_on_a_machine", format!("{written} stays on {}, and can't be had: {why}", file.machine)))?;
+/// A run's project, whose files its request may name by hash.
+#[derive(Clone)]
+pub(crate) struct Holding {
+    calcifer: Arc<crate::Calcifer>,
+    dir: PathBuf,
+}
+
+impl std::fmt::Debug for Holding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Holding({})", self.dir.display())
+    }
+}
+
+/// The hex of a hash as a request writes it: `sha256:<hex>`, or six or more hex digits.
+fn written_hash(written: &str) -> Option<String> {
+    let hex = written.strip_prefix("sha256:").unwrap_or(written);
+    (hex.len() >= 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| hex.to_ascii_lowercase())
+}
+
+impl Holding {
+    pub(crate) fn new(calcifer: Arc<crate::Calcifer>, dir: PathBuf) -> Self {
+        Self { calcifer, dir }
+    }
+
+    /// Whether `written` starts the hash of a file of this project.
+    pub(crate) fn names(&self, written: &str) -> bool {
+        let Some(hex) = written_hash(written) else { return false };
+        Folder::at(&self.dir).lock().is_ok_and(|lock| !lock.matching(&hex).is_empty())
+    }
+
+    /// The file of this project `written` names by its hash, what stays on a machine fetched now that it's named. None: it names
+    /// none of them.
+    pub(crate) async fn file(&self, written: &str) -> Result<Option<PathBuf>, Error> {
+        let Some(hex) = written_hash(written) else { return Ok(None) };
+        let folder = Folder::at(&self.dir);
+        let lock = folder.lock()?;
+        match lock.matching(&hex).as_slice() {
+            [] => Ok(None),
+            [file] => {
+                let at = folder.path(&file.path);
+                if file.stays() && !at.is_file() {
+                    let fetched = self.calcifer.bring(&file.sha256, &file.machine).await;
+                    fetched.map_err(|why| Error::new(Kind::Unavailable, "file_on_a_machine", format!("{written} stays on {}, and can't be had: {why}", file.machine)))?;
+                }
+                Ok(Some(at))
             }
-            Ok(FileTerm { name: term.name.clone(), file: at.to_string_lossy().into_owned() })
+            several => Err(Error::new(Kind::Usage, "file_ambiguous", format!("{written} fits {} files of this project: write more of its hash", several.len()))),
         }
-        several => Err(Error::new(Kind::Usage, "file_ambiguous", format!("{written} fits {} files of this project: write more of its hash", several.len()))),
     }
 }
 

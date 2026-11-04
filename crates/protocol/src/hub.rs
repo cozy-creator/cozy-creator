@@ -450,7 +450,7 @@ pub struct ModelUpload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<String>,
     /// A provider source, `local/<alias>`, a Hub model, an absolute path to a `.safetensors` file
-    /// or a CozyTensors folder, or `run:N[#output]`: a run's weights output, uploaded from the
+    /// or a CozyTensors folder, a held file's `sha256:<hex>`, or `run:N[#output]`: a run's weights output, uploaded from the
     /// machine that holds it. A Hub commit uploads only on a `base`; else it is recorded, and nothing
     /// runs.
     pub source: String,

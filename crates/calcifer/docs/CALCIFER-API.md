@@ -129,19 +129,20 @@ A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds i
 interface, cuts and stages its files and builds the machine's spec (`crates/calcifer/src/runs`). No client builds
 a spec.
 
-- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, a folder in or holding one: without it `400 not_in_a_project`, and its outputs land in that project's `files/` and `project.lock`'s `runs`. Answers `202` (`200` when the key had made it) with
+- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, its id or a folder in or holding one: without it `400 not_in_a_project`, an unknown id `404 project_unknown`, and its outputs land in that project's `files/` and `project.lock`'s `runs`. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing}`:
   - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
     `./script.py[/fn]`.
   - `on` (`local`, a machine, `any`, `new[:sku]`), `hub`, `gpus`, `lane`, `attention_kernel`, `project`, `warm`
     (a level, instead of running), `agreed` (a `new` run's quote).
-  - The payload: `input` (an object) or `input_file` (a JSON or YAML file here; files it names are relative to
-    it); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
+  - The payload: `input` (an object), `input_file` (a JSON or YAML file here; files it names are relative to
+    it) or `input_text` (the same read from text; files it names are relative to `cwd`); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
     positional value, input files), `loras` (`[slot=]ref[,strength]`), `files` (`{name?, file}`: an input's
     field path, a label, or none for the declared files) and `fidelities`. A file is a path here (a video's may
-    end `#t=<start>,<end>`, cut once into `~/.cozy/cache/clips`), a directory at a tree input, or an uploaded
-    `sha256:<hex>`. Relative paths start at `cwd`; without one they are refused.
+    end `#t=<start>,<end>`, cut once into `~/.cozy/cache/clips`), a directory at a tree input, a held
+    `sha256:<hex>` (`404 file_not_held` when neither Calcifer nor the project holds it), or six or more hex digits that start the hash of a file of the
+    project. Relative paths start at `cwd`; without one they are refused.
   - An omitted integer `seed` derives from the key, so a retried key rebuilds the same request. The same key
     again answers the recorded run without binding anything; another request under it is `409`.
   - A value over a limit is no refusal: Runtime clamps a number and cuts text or a list, each in the run's
@@ -163,7 +164,7 @@ a spec.
   read it, `request` its schema. `next` names the functions to describe.
 - `PUT /v1/files/sha256:<hex>`: a file's bytes, which must hash to its name: `201`, or `200` when held, with
   `{digest, length, media_type}`. `HEAD` asks whether it is held. A held file unnamed for a day is dropped.
-- `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is a folder:
+- `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is an id (`404 project_unknown`), or a folder:
   the runs of the project holding it; in none, all of them. Each run names its `project`.
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
   `done_fraction`, `bytes_per_s` and `eta_s`. `?detail=full` adds `measurements`, `calls` and `report` (each
@@ -308,7 +309,7 @@ once the machine completes the run happens before the run settles and is in its 
 - `POST /v1/model-uploads` `ModelUpload` (quote: `/v1/model-upload-quotes`): a warm run that makes
   the source and uploads it as a private commit of `destination` in `lane`; `ModelUploading`, the run
   and the mirror recorded before it (`mirror`). `source` is a provider source, a Hub model, a
-  `local/` alias, an absolute path to a file or a CozyTensors folder, or `run:N[#output]`, which runs
+  `local/` alias, an absolute path to a file or a CozyTensors folder, a held file's `sha256:<hex>` (`PUT /v1/files`, `404 file_not_held`), or `run:N[#output]`, which runs
   on the machine that holds the output. A commit, `org/name@sha256:…`, on no `base` is at the Hub
   already: it's recorded as a commit of `destination` when the caller may read its whole closure,
   checked against `lane` before the mirror is recorded. That answers `200` with `recorded`

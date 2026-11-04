@@ -141,6 +141,10 @@ pub struct RunRequest {
     /// The payload from a JSON or YAML file on this computer; the files it names are relative to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_file: Option<PathBuf>,
+    /// The payload as JSON or YAML text, read as that file is; the files it names are `sha256:<hex>`, a hash prefix of a file of
+    /// its project's, or relative to `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_text: Option<String>,
     /// `key=value` (typed as the field is declared), `key:=<json>`, `model.<slot>=<ref>`, one
     /// positional value, and input files.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -170,7 +174,7 @@ pub struct RunRequest {
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
-    /// The project it belongs to: a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
+    /// The project it belongs to: its id, or a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<PathBuf>,
     /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
