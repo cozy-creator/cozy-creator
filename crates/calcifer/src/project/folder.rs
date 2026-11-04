@@ -353,7 +353,7 @@ fn is_zero_f(n: &f64) -> bool {
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        self.asks.is_empty() && self.asked.is_empty()
+        self.asks.is_empty() && self.asked.is_empty() && self.renames.is_empty()
     }
 }
 
