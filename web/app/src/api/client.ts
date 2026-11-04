@@ -205,7 +205,7 @@ export class Client {
 
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */
   thumb(id: string, sha256: string, w: number, strip?: number): string {
-    return `${project(id)}/thumbs/${sha256}?w=${w}${strip ? `&strip=${strip}` : ""}`
+    return `${project(id)}/thumbs/${encodeURIComponent(sha256)}?w=${w}${strip ? `&strip=${strip}` : ""}`
   }
 
   file(id: string, file: string): string {

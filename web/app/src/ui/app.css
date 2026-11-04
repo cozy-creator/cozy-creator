@@ -253,6 +253,7 @@ code {
   cursor: text;
 }
 .nm-field {
+  user-select: text;
   font: 12px var(--mono);
   flex: 1;
   min-width: 0;

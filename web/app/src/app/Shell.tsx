@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
@@ -66,13 +66,15 @@ export function Shell() {
   // The first import on an empty canvas makes a project: the same canvas stays mounted, so nothing on it is lost.
   const adopted = useRef(new Map<string, string>())
   const hostKey = (id && adopted.current.get(id)) ?? id ?? "empty"
+  const queries = useQueryClient()
 
   const adopt = useCallback(
     (project: string) => {
       adopted.current.set(project, "empty")
+      void queries.invalidateQueries({ queryKey: ["projects"] })
       navigate(`/projects/${project}${location.pathname.replace(/^\/$/, "")}`, { replace: true })
     },
-    [navigate, location.pathname],
+    [navigate, location.pathname, queries],
   )
 
   useEffect(() => {

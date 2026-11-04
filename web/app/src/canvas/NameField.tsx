@@ -1,4 +1,4 @@
-import { type ChangeEvent, type KeyboardEvent, useLayoutEffect, useRef } from "react"
+import { type ChangeEvent, type KeyboardEvent, useEffect, useLayoutEffect, useRef } from "react"
 import { useCanvasStore } from "./context"
 import { typingName } from "./names"
 
@@ -19,6 +19,14 @@ export function NameField({ name, draft, onCancel }: { name: string; draft: stri
     input.current?.setSelectionRange(caret.current, caret.current)
     caret.current = null
   }, [draft])
+
+  // Panned out of view, the field unmounts with no blur; an import mustn't wait on a field nobody can see.
+  useEffect(() => {
+    const field = input.current
+    return () => {
+      if (field && !field.isConnected && !cancelled.current) store.acceptName(name, field.value)
+    }
+  }, [store, name])
 
   const change = (event: ChangeEvent<HTMLInputElement>) => {
     const { value, selectionStart } = event.target

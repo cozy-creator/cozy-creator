@@ -75,11 +75,13 @@ function forward(req: IncomingMessage, res: ServerResponse) {
 
 /** `vite dev` against this computer's real Calcifer, whose lock says where it listens and what it wants. */
 function calcifer(): Plugin {
-  const attach = (server: { middlewares: { use(handler: (req: IncomingMessage, res: ServerResponse, next: () => void) => void): void } }) =>
+  // Returns nothing: Vite calls a function returned here as a later hook.
+  const attach = (server: { middlewares: { use(handler: (req: IncomingMessage, res: ServerResponse, next: () => void) => void): unknown } }) => {
     server.middlewares.use((req, res, next) => {
       if (req.url?.startsWith("/v1/")) forward(req, res)
       else next()
     })
+  }
   return { name: "calcifer", configureServer: attach, configurePreviewServer: attach }
 }
 

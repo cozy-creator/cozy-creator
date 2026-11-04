@@ -302,6 +302,7 @@ export class CanvasStore {
     if (!view || !id) return
     this.views.delete(from)
     this.ids.delete(from)
+    if (this.dragging.delete(from)) this.dragging.add(to)
     this.views.set(to, { ...view, name: to })
     this.ids.set(to, id)
     this.aliases.set(from, to)
@@ -422,6 +423,7 @@ export class CanvasStore {
     } catch (error) {
       say("A move didn't save", error)
       for (const name of Object.keys(batch)) this.masks.delete(name)
+      void this.client.canvas(this.projectId).then(({ cards }) => this.applyCanvas(cards), () => {})
     }
     this.sending = false
     void this.sendMoves()

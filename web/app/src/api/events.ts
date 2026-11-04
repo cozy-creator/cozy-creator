@@ -1,6 +1,6 @@
 import type { ServerEvent } from "../types"
 import { signal } from "../ui/signal"
-import { ApiError, type Client } from "./client"
+import type { Client } from "./client"
 
 export type Health =
   | { state: "connecting" }
@@ -44,7 +44,6 @@ export class EventStream {
   readonly health = signal<Health>({ state: "connecting" })
   private listeners = new Set<(event: ServerEvent) => void>()
   private channel: BroadcastChannel
-  private stopping = new AbortController()
   private holding = false
   private client: Client
   private scope: string
@@ -67,14 +66,7 @@ export class EventStream {
 
   start() {
     this.channel.postMessage({ ask: true } satisfies Shared)
-    navigator.locks
-      .request(`cozy-events:${this.scope}`, { signal: this.stopping.signal }, () => this.hold())
-      .catch(() => {})
-  }
-
-  stop() {
-    this.stopping.abort()
-    this.channel.close()
+    void navigator.locks.request(`cozy-events:${this.scope}`, () => this.hold())
   }
 
   private dispatch(event: ServerEvent) {
@@ -91,41 +83,33 @@ export class EventStream {
     this.channel.postMessage({ event } satisfies Shared)
   }
 
+  /** Holds the lock for as long as this tab lives, unless Calcifer says it's signed out. */
   private async hold() {
     this.holding = true
-    const { signal: stopping } = this.stopping
-    let attempt = 0
-    while (!stopping.aborted) {
+    for (let attempt = 1; ; attempt++) {
       try {
-        const live = await this.follow()
-        if (live) attempt = 0
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
-          this.say({ state: "signed_out" })
-          return
-        }
+        if (await this.follow()) attempt = 1
+      } catch {
+        this.say({ state: "signed_out" })
+        return
       }
-      if (stopping.aborted) return
-      attempt += 1
       this.say({ state: "reconnecting", attempt })
       await new Promise((done) => setTimeout(done, Math.min(5000, 250 * 2 ** (attempt - 1))))
     }
   }
 
-  /** One connection, until it ends. Whether it ever said `hello`. */
+  /** One connection, until it ends. Whether it ever said `hello`; throws if signed out. */
   private async follow(): Promise<boolean> {
     const connection = new AbortController()
-    const stop = () => connection.abort()
-    this.stopping.signal.addEventListener("abort", stop)
     let last = Date.now()
     const watch = setInterval(() => {
       if (Date.now() - last > SILENT_MS) connection.abort()
     }, SILENT_MS / 3)
     let live = false
     try {
-      const response = await this.client.events(connection.signal)
-      if (response.status === 401) throw new ApiError(401, { kind: "credential", code: "unauthenticated", message: "Signed out" })
-      if (!response.ok || !response.body) return false
+      const response = await this.client.events(connection.signal).catch(() => null)
+      if (response?.status === 401) throw new Error("signed out")
+      if (!response?.ok || !response.body) return false
       await readEvents(
         response.body,
         (data) => {
@@ -140,14 +124,10 @@ export class EventStream {
         () => {
           last = Date.now()
         },
-      )
-      return live
-    } catch (error) {
-      if (error instanceof ApiError) throw error
+      ).catch(() => {})
       return live
     } finally {
       clearInterval(watch)
-      this.stopping.signal.removeEventListener("abort", stop)
     }
   }
 }
@@ -180,7 +160,17 @@ async function ration(names: string[], signal: AbortSignal): Promise<() => void>
     const release = await lock(name, { ifAvailable: true })
     if (release) return release
   }
-  return (await lock(names[0], { signal }))!
+  // All taken: in line for each, keeping whichever comes first.
+  const settled = new AbortController()
+  const waits = names.map((name) => lock(name, { signal: AbortSignal.any([signal, settled.signal]) }))
+  const first = (await Promise.any(waits))!
+  settled.abort()
+  for (const wait of waits) {
+    wait.then((release) => {
+      if (release !== first) release?.()
+    }, () => {})
+  }
+  return first
 }
 
 /** One of the two live `<video>`s or `<audio>`s, across tabs. Resolves when it is ours; abort to stop waiting. */

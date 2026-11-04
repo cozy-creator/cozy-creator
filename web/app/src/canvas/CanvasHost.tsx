@@ -10,15 +10,10 @@ import {
   useStore,
   type Viewport,
 } from "@xyflow/react"
-import {
-  type ChangeEvent,
-  type DragEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react"
+import { type ChangeEvent, type DragEvent, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { useNavigate } from "react-router-dom"
+import { ApiError } from "../api/client"
 import { canvasQuery, projectQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { loadSelection, loadViewport, saveSelection, saveViewport } from "../app/view"
@@ -39,6 +34,7 @@ const typing = (target: EventTarget | null) =>
 function ProjectSync({ id }: { id: string }) {
   const { client, stream, bridge } = useConnection()
   const store = useCanvasStore()
+  const navigate = useNavigate()
   const { data: state, error: stateError } = useQuery(projectQuery(client, id))
   const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
 
@@ -49,8 +45,10 @@ function ProjectSync({ id }: { id: string }) {
     if (canvas) store.applyCanvas(canvas.cards)
   }, [store, canvas])
   useEffect(() => {
-    if (stateError) say("Couldn't read this project", stateError)
-  }, [stateError])
+    if (!stateError) return
+    say("Couldn't read this project", stateError)
+    if (stateError instanceof ApiError && stateError.status === 404) navigate("/", { replace: true })
+  }, [stateError, navigate])
   useEffect(() => {
     if (canvasError) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
@@ -58,7 +56,7 @@ function ProjectSync({ id }: { id: string }) {
     () =>
       stream.subscribe((event) => {
         if (event.type === "canvas" && event.id === id) store.applyRows(event.cards)
-        if (event.type === "resync") store.clearMasks()
+        if (event.type === "resync" || event.type === "hello") store.clearMasks()
       }),
     [stream, store, id],
   )
@@ -123,7 +121,10 @@ function Canvas({
   const { scope, client, bridge } = connection
   const [saved] = useState(() => loadViewport(scope, projectId))
   const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId)))
-  const [placer] = useState(() => new Placer(store, client, { adopt: onAdopt, refresh: (id) => bridge.refresh(id) }))
+  const adopt = useRef(onAdopt)
+  adopt.current = onAdopt
+  const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id), refresh: (id) => bridge.refresh(id) }))
+  const [openedOn] = useState(projectId)
   const [selected] = useState(() => signal(0))
   const [veil, setVeil] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
@@ -134,12 +135,12 @@ function Canvas({
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
     store.onFirstRead = async (held) => {
       if (saved || !store.projectId) return
-      if (held && projectId) await flow.fitView({ maxZoom: 1, padding: 0.12 })
+      if (held && openedOn) await flow.fitView({ maxZoom: 1, padding: 0.12 })
       saveViewport(scope, store.projectId, flow.getViewport())
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, scope, projectId])
+  }, [store, flow, saved, scope, openedOn])
 
   const fit = useCallback(() => void flow.fitView({ maxZoom: 1, padding: 0.12, duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])

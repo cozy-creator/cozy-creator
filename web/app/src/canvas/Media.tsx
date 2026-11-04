@@ -17,6 +17,7 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
+  const [failed, setFailed] = useState(false)
   const projectId = store.projectId
   useEffect(() => {
     if (!projectId) return
@@ -28,12 +29,14 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
       live = false
     }
   }, [client, projectId, sha256, cardWidth])
+  if (failed) return <span className="media-note">No preview</span>
   if (!src) return null
   return (
     <img
       src={src}
       alt=""
       draggable={false}
+      onError={() => setFailed(true)}
       onLoad={(event) => {
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) store.patch(name, { aspect: naturalWidth / naturalHeight })
@@ -47,13 +50,27 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
 const playingHere: (() => void)[] = []
 
 function Player({ field, path }: { field: string; path: string }) {
-  const { client } = useConnection()
+  const { client, stream } = useConnection()
   const store = useCanvasStore()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const element = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const stopRef = useRef<() => void>(() => {})
 
   useEffect(() => () => stopRef.current(), [])
+
+  // Calcifer came back: what was playing reloads where it was.
+  useEffect(
+    () =>
+      stream.subscribe((event) => {
+        const el = element.current
+        if (event.type !== "hello" || !el?.getAttribute("src") || !el.error) return
+        const at = el.currentTime
+        el.load()
+        el.currentTime = at
+        el.play().catch(() => {})
+      }),
+    [stream],
+  )
 
   useEffect(() => {
     if (state !== "waiting") return
@@ -102,7 +119,9 @@ function Player({ field, path }: { field: string; path: string }) {
         preload="none"
         onEnded={() => stopRef.current()}
         onError={() => {
-          if (element.current?.getAttribute("src")) setState("unplayable")
+          const el = element.current
+          // Bytes that didn't come are Calcifer's to fix by coming back. Bytes this browser can't decode, it can't.
+          if (el?.getAttribute("src") && el.error?.code !== MediaError.MEDIA_ERR_NETWORK && stream.health.get().state === "live") setState("unplayable")
         }}
       />
       <button type="button" className="stop nodrag" aria-label="Stop" onClick={() => stopRef.current()}>
@@ -119,7 +138,8 @@ export function Media({ view, name, cardWidth }: { view: ElementView; name: stri
   const field = asset?.field ?? landed?.field ?? placing?.media
   const measured = asset?.width && asset.height ? asset.width / asset.height : undefined
   const aspect = view.aspect ?? measured ?? (field === "audio" ? 3 : 16 / 9)
-  const path = asset?.path
+  // A project's file, by its hash. Anything else from a state isn't followed: a remote Calcifer's answers are hostile.
+  const path = asset?.path && /^files\/[0-9a-f]{64}(\.\w+)?$/.test(asset.path) ? asset.path : undefined
 
   return (
     <div className={`media ${field === "image" ? "alpha" : ""}`} style={{ aspectRatio: aspect }}>

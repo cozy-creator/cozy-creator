@@ -263,6 +263,11 @@ export interface Run {
   stalled?: Stalled
 }
 
+export interface RunList {
+  runs: Run[]
+  older?: number
+}
+
 // Machines
 
 export type MachineKind = "local" | "rental" | "added"

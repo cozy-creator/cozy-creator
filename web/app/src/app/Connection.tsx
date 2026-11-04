@@ -3,7 +3,7 @@ import { createContext, useContext } from "react"
 import { Client } from "../api/client"
 import { EventStream } from "../api/events"
 import { sameOrigin } from "../api/transport"
-import type { Machine, MachineList, Run, ServerEvent, Status } from "../types"
+import type { Machine, MachineList, Run, RunList, ServerEvent, Status } from "../types"
 import { signal } from "../ui/signal"
 import { readSession } from "./session"
 
@@ -64,7 +64,14 @@ class Bridge {
       this.queries.setQueryData(["run", run.number], run)
       for (const listener of this.runListeners) listener(run)
     }
-    this.queries.invalidateQueries({ queryKey: ["runs"] })
+    // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
+    for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["runs"] })) {
+      if (!list) continue
+      const held = new Set(list.runs.map((run) => run.number))
+      const changed = new Map(batch.map((run) => [run.number, run]))
+      this.queries.setQueryData<RunList>(key, { ...list, runs: list.runs.map((run) => changed.get(run.number) ?? run) })
+      if (batch.some((run) => !held.has(run.number))) void this.queries.invalidateQueries({ queryKey: key, exact: true })
+    }
   }
 
   private machines(change: (machines: Machine[]) => Machine[]) {
