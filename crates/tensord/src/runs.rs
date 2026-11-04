@@ -160,6 +160,36 @@ fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> 
         .collect())
 }
 
+/// What the checkpoints and components of `each` all share, and all of them with that first. No components names a whole checkpoint.
+fn shared_first(each: &[Vec<(String, Vec<String>)>]) -> (Vec<(String, Vec<String>)>, Vec<(String, Vec<String>)>) {
+    let holds = |list: &[(String, Vec<String>)], header: &str, component: Option<&str>| {
+        list.iter().any(|(held, components)| held == header && (components.is_empty() || component.is_none_or(|component| components.iter().any(|c| c == component))))
+    };
+    let (mut shared, mut rest): (Vec<(String, Vec<String>)>, Vec<(String, Vec<String>)>) = (vec![], vec![]);
+    let add = |list: &mut Vec<(String, Vec<String>)>, header: &str, component: Option<&str>| {
+        if holds(list, header, component) {
+            return;
+        }
+        match (list.iter_mut().find(|(held, _)| held == header), component) {
+            (Some((_, components)), Some(component)) => components.push(component.to_owned()),
+            (Some((_, components)), None) => components.clear(),
+            (None, _) => list.push((header.to_owned(), component.map(str::to_owned).into_iter().collect())),
+        }
+    };
+    for (header, components) in each.iter().flatten() {
+        let names: Vec<Option<&str>> = match components.is_empty() {
+            true => vec![None],
+            false => components.iter().map(|component| Some(component.as_str())).collect(),
+        };
+        for component in names {
+            let everywhere = each.iter().all(|list| holds(list, header, component));
+            add(if everywhere { &mut shared } else { &mut rest }, header, component);
+        }
+    }
+    let all = shared.iter().chain(&rest).cloned().collect();
+    (shared, all)
+}
+
 /// Whether `installation` declares a public entrypoint `name` for a warm set.
 fn declares(installation: &Installation, name: &str) -> Result<bool, Refused> {
     let interface: Value = serde_json::from_slice(&installation.interface)
@@ -816,28 +846,41 @@ impl Runs {
                 true => self.warm_models(actor, id, &spec, &*observe, stoppable)?,
                 false => vec![],
             };
-            // A function that loads no model itself runs on what it calls: the first of its package's
-            // internal functions stands for them. A wrong guess costs bytes, and its run fetches the rest.
-            let plan = match plan {
-                None if !install_only => match internal_models(&installation)?.first() {
-                    Some(callee) => {
-                        let own: Vec<_> = spec.models.iter().filter(|c| own_choice(c, callee)).cloned().collect();
+            // A function that loads no model itself runs on what it calls, and which of its package's internal functions
+            // that is, only it knows: H3's shot takes one transformer with references and another without. So all of them,
+            // what they share first, as that's sure. A wrong guess costs bytes, and stops when its job's run begins.
+            let plans: Vec<_> = match plan {
+                None if !install_only => {
+                    let mut plans = vec![];
+                    for callee in internal_models(&installation)? {
+                        let own: Vec<_> = spec.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
                         let report = observe.clone();
-                        self.resolve(actor, id, Some(installation.clone()), None, hub.clone(), &spec, callee, &own, None, &spec.lane,
-                            Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))), Some(&stoppable.stop))?.1
+                        let resolved = self.resolve(actor, id, Some(installation.clone()), None, hub.clone(), &spec, &callee, &own, None, &spec.lane,
+                            Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))), Some(&stoppable.stop));
+                        match resolved {
+                            Ok((_, plan, ..)) => plans.extend(plan),
+                            Err(error) if plans.is_empty() => tracing::warn!("run {id}: {callee}'s weights aren't fetched ahead: {}", error.message),
+                            Err(_) => {}
+                        }
                     }
-                    None => None,
-                },
-                plan => plan,
+                    plans
+                }
+                plan => plan.into_iter().collect(),
             };
             // A function's warm run ends holding what its constructions read (`downloaded`), its
             // on-demand models' too: only if that fits. It is a guess, so it never makes room.
             let mut moved = tensorfs::fetch::Landed::default();
-            if let Some(plan) = &plan {
+            if !plans.is_empty() {
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
-                let selected = [plan.upfront(), plan.on_demand()].concat();
-                let absent = fetch.absent(&selected)?;
+                let each: Vec<_> = plans.iter().map(|plan| [plan.upfront(), plan.on_demand()].concat()).collect();
+                let (shared, all) = shared_first(&each);
                 let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+                // What they all need if all of them won't fit.
+                let selected = match fetch.absent(&all)? <= free {
+                    true => all,
+                    false => shared,
+                };
+                let absent = fetch.absent(&selected)?;
                 if absent > free {
                     return Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free")));
                 }
