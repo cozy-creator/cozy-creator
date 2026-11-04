@@ -400,6 +400,23 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   const editing = face === "edit" && active
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
+  const actions = (
+    <>
+      {editing && <RenderButton name={name} view={view} />}
+      <Approve view={view} name={name} />
+      {Object.keys(view.drafts ?? {}).some((field) => field !== "description") && (
+        <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
+          Save
+        </button>
+      )}
+    </>
+  )
+  const more = asset && !view.placing && (
+    <>
+      {!asset.timeline && <FromHere view={view} name={name} />}
+      <Description name={name} view={view} />
+    </>
+  )
   return (
     <div
       className={`card ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
@@ -472,21 +489,18 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
       {active && (
         <div className="asset-more">
           {asset && !view.placing && <Takes view={view} name={name} width={width} />}
-          {asset && !view.placing && (
-            <div className="row actions">
-              {editing && <RenderButton name={name} view={view} />}
-              <Approve view={view} name={name} />
-              {Object.keys(view.drafts ?? {}).some((field) => field !== "description") && (
-                <button type="button" className="act nodrag" onClick={() => void store.save(name)}>
-                  Save
-                </button>
-              )}
-            </div>
+          {editing ? (
+            <AssetEdit name={name} view={view} actions={actions}>
+              {more}
+            </AssetEdit>
+          ) : (
+            <>
+              {asset && !view.placing && <div className="row actions">{actions}</div>}
+              {asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
+              <Bar view={view} name={name} />
+              {asset && !view.placing && <Description name={name} view={view} />}
+            </>
           )}
-          {asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
-          {!editing && <Bar view={view} name={name} />}
-          {editing && <AssetEdit name={name} view={view} />}
-          {asset && !view.placing && <Description name={name} view={view} />}
           {view.warned && warned ? (
             <div className="warned-lines">
               {view.warnings!.map((warning) => (

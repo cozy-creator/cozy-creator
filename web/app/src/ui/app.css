@@ -577,6 +577,9 @@ code {
   justify-content: center;
   text-align: center;
 }
+.in-frame .slot-control .ctl-name {
+  display: none;
+}
 .corner {
   position: absolute;
   right: 0;
@@ -665,6 +668,7 @@ code {
   text-decoration: none;
 }
 .actions {
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 8px 2px;
@@ -1743,8 +1747,9 @@ a.tab:hover {
   background: #ffffff0d;
 }
 
-/* Its controls. */
-.edit-face {
+/* Its controls: what it asks for, Render, and all else when that's asked for. */
+.edit-shown,
+.edit-more {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1752,6 +1757,63 @@ a.tab:hover {
 }
 .edit-face .mention-text {
   min-height: 30px;
+}
+.edit-more {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+}
+.edit-more .slide > .ctl-name:first-child {
+  flex: 0 0 68px;
+}
+.text-row {
+  align-items: flex-start;
+}
+.text-row > .ctl-name {
+  padding-top: 6px;
+}
+.text-box {
+  flex: 1;
+  min-width: 0;
+}
+.text-box .mention-text:empty::before {
+  content: none;
+}
+.edit-more .desc-row,
+.edit-more .desc-open,
+.edit-more .from-here {
+  padding-left: 0;
+  padding-right: 0;
+}
+.more-toggle {
+  flex: 1 1 40px;
+  min-width: 40px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 11px;
+  color: var(--faint);
+}
+.more-toggle:hover {
+  color: var(--ink);
+}
+.more-marks {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--mute);
+}
+.more-word {
+  flex: none;
+}
+.held-value {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--faint);
 }
 .mention-text {
   min-height: 44px;
@@ -1866,10 +1928,39 @@ input[type="checkbox"] {
 .beat {
   position: relative;
 }
+.beat.can-go .mention-text {
+  padding-right: 22px;
+}
 .beat > .iconb {
   position: absolute;
   right: 2px;
   top: 2px;
+}
+.beat-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.beat-time .slide {
+  flex: 1;
+  min-width: 0;
+}
+.add-beat {
+  flex: none;
+  font-size: 11px;
+  color: var(--faint);
+}
+.add-beat:hover {
+  color: var(--ink);
+}
+.beats-last {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--mute);
 }
 .slot-control {
   display: flex;

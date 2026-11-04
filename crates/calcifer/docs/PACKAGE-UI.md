@@ -31,6 +31,8 @@ export default function Box({ React, asset, fields, setFields, mentions, limits,
 | `limits` | What the tool declares of each field, by field: `{type, label, min?, max?, step?, options?, accept?, multiple?, max_duration?, default?, required?}`. |
 | `tokens` | The host's look, as CSS values: `bg card panel line ink mute faint accent good warn busy bad sans mono`. |
 
+A component for one field is drawn where that field's control would be: behind the box's More, unless it's the box's first text, its beats or required. A whole face is drawn in place of them all, and More then holds only what the app adds.
+
 `api` is what a module speaks. One that says anything else isn't drawn. Neither is one that throws, or can't be got: the declared box stands, and the canvas goes on. The approved face is always the app's.
 
 It runs with your power in the page, under its CSP, so no inline `<style>` and no `<script>` from elsewhere: use the `style` prop. Its siblings are real modules too: a relative import reaches any `.js` or `.mjs` under the folder `ui` names. A `ui` at the top of a package is that one file.

@@ -17,7 +17,7 @@ import { useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { loadSelection, loadToolsShut, loadViewport, saveSelection, saveToolsShut, saveViewport } from "../app/view"
+import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Tool } from "../types"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -159,7 +159,7 @@ function Canvas({
   const navigate = useNavigate()
   const { scope, client, bridge } = connection
   const [saved] = useState(() => loadViewport(scope, projectId))
-  const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId)))
+  const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId), loadMore(scope, projectId)))
   const adopt = useRef(onAdopt)
   adopt.current = onAdopt
   const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id), refresh: (id) => bridge.refresh(id) }))
@@ -188,6 +188,9 @@ function Canvas({
       if (flow.getNodes().length || !store.projectId) return fitOnce()
     }
     store.onPlaced = fitOnce
+    store.onMore = (names) => {
+      if (store.projectId) saveMore(scope, store.projectId, names)
+    }
     store.refresh = () => {
       if (store.projectId) bridge.refresh(store.projectId)
     }

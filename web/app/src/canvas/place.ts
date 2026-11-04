@@ -3,6 +3,7 @@ import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Tool } from "../types"
 import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
+import { startingFields } from "./controls"
 import { stemName } from "./names"
 
 const GAP = 32
@@ -63,7 +64,7 @@ export class Placer {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     try {
       const id = await this.project()
-      const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.local ? undefined : tool.label })
+      const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.local ? undefined : tool.label, fields: startingFields(tool) })
       this.store.expect(made.name, at)
       this.hooks.refresh(id)
     } catch (error) {

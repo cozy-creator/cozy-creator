@@ -20,6 +20,7 @@ function write(key: string, value: unknown) {
 
 const viewKey = (scope: string, id: string) => `cozy.view:${scope}:${id}`
 const selectionKey = (scope: string, id: string) => `cozy.selection:${scope}:${id}`
+const moreKey = (scope: string, id: string) => `cozy.more:${scope}:${id}`
 
 const machineKey = (scope: string) => `cozy.machine:${scope}`
 const TOOLS_KEY = "cozy.tools-shut"
@@ -33,3 +34,5 @@ export const loadViewport = (scope: string, id: string | null) => (id ? read<Vie
 export const saveViewport = (scope: string, id: string, viewport: Viewport) => write(viewKey(scope, id), viewport)
 export const loadSelection = (scope: string, id: string | null) => (id ? (read<string[]>(selectionKey(scope, id)) ?? []) : [])
 export const saveSelection = (scope: string, id: string, names: string[]) => write(selectionKey(scope, id), names)
+export const loadMore = (scope: string, id: string | null) => (id ? (read<string[]>(moreKey(scope, id)) ?? []) : [])
+export const saveMore = (scope: string, id: string, names: string[]) => write(moreKey(scope, id), names)
