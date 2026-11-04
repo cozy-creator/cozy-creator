@@ -378,6 +378,8 @@ pub struct Device {
     limit: AtomicUsize,
     /// `set_limit`: the card as a smaller card would be, the driver's own charge included.
     ceiling: AtomicUsize,
+    /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
+    total: AtomicUsize,
     /// That charge at the last sample: what the card uses beyond our own bytes.
     outside: AtomicUsize,
     pages: AtomicUsize,
@@ -409,6 +411,7 @@ impl Device {
             retirements: AtomicUsize::new(0),
             limit: AtomicUsize::new(usize::MAX),
             ceiling: AtomicUsize::new(usize::MAX),
+            total: AtomicUsize::new(usize::MAX),
             outside: AtomicUsize::new(0),
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
@@ -488,7 +491,7 @@ impl Device {
 
     /// The most our own bytes may reach right now.
     fn capacity(&self) -> usize {
-        let ceiling = self.ceiling.load(Ordering::Acquire);
+        let ceiling = self.ceiling.load(Ordering::Acquire).min(self.total.load(Ordering::Acquire));
         let cap = if ceiling == usize::MAX {
             usize::MAX
         } else {
@@ -506,14 +509,18 @@ impl Device {
         self.owned().saturating_add(more).saturating_sub(self.capacity())
     }
 
-    /// Keep a development cap true: the driver's charge moves as contexts and kernels load.
-    /// A slow path calls this before it reads the room; outside capture, in the context.
+    /// What this process has no say over moves as contexts and kernels load and peers come and
+    /// go. A slow path calls this before it reads the room; outside capture, in the context.
     fn sample(&self) -> Result<()> {
-        if self.ceiling.load(Ordering::Acquire) != usize::MAX {
-            let (free, total) = self.driver().memory_info()?;
-            self.outside.store(total.saturating_sub(free).saturating_sub(self.owned()), Ordering::Release);
-        }
+        let (free, total) = self.driver().memory_info()?;
+        self.total.store(total, Ordering::Release);
+        self.outside.store(total.saturating_sub(free).saturating_sub(self.owned()), Ordering::Release);
         Ok(())
+    }
+
+    /// A limit someone set: other processes' memory cannot lift it, unlike the card's own.
+    fn capped(&self) -> bool {
+        self.ceiling.load(Ordering::Acquire) != usize::MAX || self.limit.load(Ordering::Acquire) != usize::MAX
     }
 
     /// Physical pages for one region, inside this process's room: over the room reads as the

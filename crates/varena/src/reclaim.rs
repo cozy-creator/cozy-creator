@@ -282,7 +282,7 @@ pub(crate) fn acquire<T>(
         let want = shortfall(need, &failure, sequence.gpu)?.max(floor);
         sequence.released = 0;
         // Other processes' memory cannot lift a local cap.
-        let physical = failure.physical_bytes().is_some()
+        let physical = !sequence.gpu.capped() || failure.physical_bytes().is_some()
             || matches!(failure, AllocationFailure::Other(Error::Exhausted { .. }))
                 && sequence.gpu.over(want) == 0;
         if !sequence.advance(want, physical)? {

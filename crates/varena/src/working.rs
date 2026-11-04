@@ -176,6 +176,13 @@ struct Block {
     reusable_on: Option<u64>,
 }
 
+impl Pool {
+    /// A graph here may have bound a stream's cached workspace.
+    fn names_stream(&self, stream: u64) -> bool {
+        (self.references != 0 || self.capture.is_some()) && self.streams.contains(&stream)
+    }
+}
+
 impl Block {
     fn free(segment: u64, capacity: usize) -> Self {
         Self {
@@ -268,8 +275,8 @@ pub(crate) struct State {
     prefetch_suppressed: bool,
     // A cached library workspace's exact sizes, when Torch caches them per stream.
     workspace_sizes: Vec<usize>,
-    // Freed workspaces by (stream, requested bytes), kept for that stream's next one.
-    parked_workspaces: BTreeMap<(u64, usize), u64>,
+    // Freed workspaces by (stream, address): a graph on that stream may still name them.
+    parked_workspaces: BTreeSet<(u64, u64)>,
 }
 
 impl State {
@@ -453,6 +460,24 @@ const AUXILIARY_CLASS: usize = 512;
 impl Device {
     pub(crate) fn page(&self) -> usize {
         self.page.load(Ordering::Acquire)
+    }
+
+    /// Parked workspaces on this stream become ordinary free blocks, once it has passed them.
+    fn release_parked(&self, state: &mut State, stream: u64) {
+        let parked: Vec<_> = state.parked_workspaces.iter().filter(|(on, _)| *on == stream).copied().collect();
+        let mut fences = self.fences();
+        for key in parked {
+            state.parked_workspaces.remove(&key);
+            let block = state.blocks.get_mut(&key.1).expect("parked workspace");
+            block.workspace = false;
+            block.life = Life::Pending;
+            block.reusable_on = None;
+            fences.stamp(stream, &mut block.waits);
+            if !block.fenced {
+                block.fenced = true;
+                state.fenced.push(key.1);
+            }
+        }
     }
 
     fn free_block(state: &State, class: usize) -> Option<u64> {
@@ -1065,13 +1090,9 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         workspace = state.workspace_sizes.contains(&bytes);
         if workspace {
             // Bound into every graph on its stream, and freed by any one graph's reset: it never
-            // lives in a pool, and its address stays this stream's. An ordinary allocation of
-            // exactly this size shares that treatment, which only costs it a reserved block.
+            // lives in a pool, and stays reserved while a graph on its stream may name it. An
+            // ordinary allocation of exactly this size shares that treatment, costing only a block.
             pool = None;
-            if let Some(ptr) = state.parked_workspaces.remove(&(stream, bytes)) {
-                state.blocks.get_mut(&ptr).expect("parked workspace").requested = bytes;
-                return Ok(Device::activate(&mut state, ptr, bytes));
-            }
         }
         if let Some(pool) = pool {
             let session = state
@@ -1159,14 +1180,17 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
     if block.life != Life::Live {
         return Err(Error::Invalid("working allocation already freed"));
     }
-    if block.workspace && !block.origin_retired {
-        let key = (block.stream, block.requested);
-        state.stats.allocated_bytes -= key.1;
+    if block.workspace && !block.origin_retired
+        && pools.values().any(|pool| pool.names_stream(block.stream))
+    {
+        let (origin, requested) = (block.stream, block.requested);
+        block.requested = 0;
+        state.stats.allocated_bytes -= requested;
         state.stats.frees += 1;
-        state.blocks.get_mut(&ptr).expect("checked block").requested = 0;
-        state.parked_workspaces.insert(key, ptr);
+        state.parked_workspaces.insert((origin, ptr));
         return Ok(());
     }
+    block.workspace = false;
     let pool = segments[&block.segment].pool;
     // The original stream is already tracked unless explicitly retired. Torch supplies
     // that original handle again on free; never reintroduce it after retirement.
@@ -1416,15 +1440,7 @@ fn retire_stream_inner(owner: &Device, device: i32, stream: u64) -> Result<()> {
     if !owner.driver().query_stream(stream as usize)? {
         return Err(Error::Busy);
     }
-    let parked: Vec<_> = state.parked_workspaces.keys().filter(|key| key.0 == stream).copied().collect();
-    for key in parked {
-        let ptr = state.parked_workspaces.remove(&key).expect("listed workspace");
-        let block = state.blocks.get_mut(&ptr).expect("parked workspace");
-        block.workspace = false;
-        block.life = Life::Ready;
-        block.waits.clear();
-        block.reusable_on = None;
-    }
+    owner.release_parked(&mut state, stream);
     let mut fences = owner.fences();
     fences.retire(stream);
     for block in state.blocks.values_mut() {
@@ -2197,5 +2213,12 @@ pub fn pool_release(device: i32, id: PoolId) -> Result<()> {
         .references
         .checked_sub(1)
         .ok_or(Error::Invalid("graph pool reference underflow"))?;
+    // The last graph on a stream is gone: nothing names its parked workspaces now.
+    let streams: Vec<u64> = pool.streams.iter().copied().collect();
+    for stream in streams {
+        if !state.pools.values().any(|pool| pool.names_stream(stream)) {
+            owner.release_parked(&mut state, stream);
+        }
+    }
     Ok(())
 }
