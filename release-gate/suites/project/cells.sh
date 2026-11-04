@@ -65,7 +65,7 @@ assets:
     image: place.png
     description: "$SCENE"
   wall.1:
-    kind: scene
+    kind: storyboard
     description: a stepladder against the wall, and fresh paint
   mural:
     kind: shot
@@ -77,7 +77,7 @@ assets:
         description: |
           <hero> rolls bright orange paint across the wall in big letters that read OPEN.
         writes:
-          - scene: wall.1
+          - world_state: wall.1
             at: 5
       - duration: 4
         description: |

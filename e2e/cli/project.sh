@@ -513,10 +513,10 @@ render "$T" all --in 2 || check "keeps: all --in: $(tail -c 300 "$OUT/render.txt
 says keeps "--take and --in keep the start of one asset"
 }
 
-# A scene a beat writes: a screenshot at `at` into the beat. What the shot reads after that beat goes to its function, in its key; what
+# A world_state a beat writes: a screenshot at `at` into the beat. What the shot reads after that beat goes to its function, in its key; what
 # it doesn't is a free frame, outside its key. A mention names exactly the asset it names.
 world_states() {
-step "a project: scenes written by beats"
+step "a project: world_states written by beats"
 local T=$OUT/series look take frames
 mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 8
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
@@ -542,14 +542,14 @@ assets:
       - duration: 4
         description: She runs on <coast>.
         writes:
-          - scene: coast.1
+          - world_state: coast.1
             at: 1
-          - scene: coast.2
+          - world_state: coast.2
             at: 3
       - duration: 4
         description: She stands on <coast.1>, then <coast.2>.
         writes:
-          - scene: harbor.1
+          - world_state: harbor.1
             at: 1
   next:
     with: $here/project/shots.py
@@ -560,7 +560,7 @@ assets:
     kind: picture
     description: <coast.1> as a poster.
 YAML
-J '[.assets[] | select(.name == "coast.1" or .name == "coast.2") | .kind] == ["scene", "scene"]' <<< "$(status "$T")" || check "series: revisions are not assets: $(status "$T" | jq -c '[.assets[].name]')"
+J '[.assets[] | select(.name == "coast.1" or .name == "coast.2") | .kind] == ["world_state", "world_state"]' <<< "$(status "$T")" || check "series: revisions are not assets: $(status "$T" | jq -c '[.assets[].name]')"
 render "$T" all || check "series: render all: $(tail -c 400 "$OUT/render.txt")"
 given() { cat "$T/$(jq -r --arg s "$1" '.files[.assets[$s].versions[-1].files.given].path' "$T/project.lock")"; }
 J '.writes == ["coast.1", "coast.2"] and .at == [1, 3]' <<< "$(given 'long take')" || check "series: long take's writes are not its beats', on the shot's clock: $(given 'long take')"
@@ -580,7 +580,7 @@ step "a project: a free frame, moved, re-renders nothing"
 J '.assets["harbor.1"].versions[-1] | .made_by.with == "cozy/frame" and (.files.image != null)' "$T/project.lock" || check "series: harbor.1 is not a free frame: $(jq -c '.assets["harbor.1"].versions[-1].made_by' "$T/project.lock")"
 frames=$(runs "$T")
 local was=$(row "$T" 'long take' .inputs)
-sed -i '/scene: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
+sed -i '/world_state: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
 [ "$(row "$T" 'long take' .inputs)" = "$was" ] || check "series: moving a free write moved its shot's key"
 render "$T" 'harbor.1' || check "series: render a free frame: $(tail -c 300 "$OUT/render.txt")"
 says series "made here, free"
@@ -596,7 +596,7 @@ J '.assets[] | select(.name == "coast.2") | .pinned' <<< "$(status "$T")" || che
 sed -i '/^  coast.2:$/,+1d' "$T/project.yaml"
 sed -i '0,/at: 1$/s//at: 40/' "$T/project.yaml"
 J '.warnings | any(contains("at 40 s into a beat 4 s long"))' <<< "$(status "$T")" || check "series: a write past its beat did not warn: $(status "$T" | jq -c .warnings)"
-sed -i '0,/scene: harbor.1/s//&\n            description: Not a field of a write./' "$T/project.yaml"
+sed -i '0,/world_state: harbor.1/s//&\n            description: Not a field of a write./' "$T/project.yaml"
 J '.warnings | any(contains("write of harbor.1: cozy reads no field description"))' <<< "$(status "$T")" || check "series: another field on a write did not warn: $(status "$T" | jq -c .warnings)"
 sed -i 's/^    summary: Walking on <look>\.$/    writes: {coast.9: 1}\n&/' "$T/project.yaml"
 J '.warnings | any(contains("go on the beat"))' <<< "$(status "$T")" || check "series: writes on an asset did not warn: $(status "$T" | jq -c .warnings)"
@@ -619,7 +619,7 @@ assets:
       - duration: 4
         description: The wall turns.
         writes:
-          - scene: wall.1
+          - world_state: wall.1
             at: 3
       - duration: 2
         description: It stands by <wall.1>.
