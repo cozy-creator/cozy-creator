@@ -47,7 +47,8 @@ def finish(code: int = 0) -> None:
 
 
 class Block(torch.nn.Module):
-    """A Conv2d, GroupNorm, LayerNorm, attention, Linear and an explicit cuBLAS matmul."""
+    """A Conv2d, GroupNorm, LayerNorm, attention, Linear and an explicit cuBLAS matmul, with the
+    cross-attention shape (154, 2048) x (2048, 1280) that writes its cuBLAS workspace."""
 
     def __init__(self, channels: int = 320, dim: int = 640, heads: int = 10, rng: bool = False) -> None:
         super().__init__()
@@ -60,6 +61,9 @@ class Block(torch.nn.Module):
         self.up, self.down = torch.nn.Linear(dim, 4 * dim), torch.nn.Linear(4 * dim, dim)
         self.weight = torch.nn.Parameter(torch.eye(dim) + 0.01 * torch.randn(dim, dim))
         self.back = torch.nn.Conv2d(dim, channels, 1)
+        self.text = torch.nn.Linear(2048, 1280, bias=False)
+        self.words = torch.nn.Linear(1280, dim)
+        self.context = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, _, h, w = x.shape
@@ -68,6 +72,7 @@ class Block(torch.nn.Module):
         split = lambda t: t.reshape(b, h * w, self.heads, self.dim // self.heads).transpose(1, 2)
         a = F.scaled_dot_product_attention(split(self.query(z)), split(self.key(z)), split(self.value(z)))
         y = y + a.transpose(1, 2).reshape(b, h * w, self.dim)
+        y = y + self.words(self.text(self.context)).mean(1, keepdim=True)
         y = y + self.down(F.gelu(self.up(self.norm(y))))
         y = torch.matmul(y, self.weight)
         if self.rng:
@@ -77,7 +82,11 @@ class Block(torch.nn.Module):
 
 def model(depth: int = ARGS.depth, rng: bool = False, seed: int = 138) -> torch.nn.Module:
     torch.manual_seed(seed)
-    return torch.nn.Sequential(*[Block(rng=rng) for _ in range(depth)]).to(device, DTYPE).eval()
+    net = torch.nn.Sequential(*[Block(rng=rng) for _ in range(depth)]).to(device, DTYPE).eval()
+    context = torch.randn(2, 77, 2048, dtype=torch.float32).to(device, DTYPE)
+    for block in net:
+        block.context = context
+    return net
 
 
 def sample(cycle: int) -> torch.Tensor:
@@ -429,8 +438,8 @@ def arm_alias(stream) -> None:
 def arm_lazy_workspace(stream) -> None:
     """Flag 1 with no primed workspace: it is first made inside capture, so in the pool."""
     stream = torch.cuda.Stream(device=DEVICE)  # no eager cuBLAS has run on this one
-    net = torch.nn.Linear(640, 640).to(device, DTYPE).eval()
-    static = torch.randn(2, 4096, 640, dtype=DTYPE, device=device)
+    net = torch.nn.Linear(2048, 1280, bias=False).to(device, DTYPE).eval()
+    static = torch.randn(2, 77, 2048, dtype=DTYPE, device=device)
     graph = torch.cuda.CUDAGraph()
     pool = tuple(torch.cuda.graph_pool_handle())
     torch.cuda.set_stream(stream)
