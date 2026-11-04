@@ -65,7 +65,7 @@ YAML
 step render project -p "$P" render all --on local || fail "render all: $(tail -5 "$OUT/render.txt")"
 [ "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4")" = 1344,768 ] || fail "the edit is not its takes' size"
 # The cut and its timeline are files of the project's too: what project.lock lists is what moves.
-CUT=$(sha "$P/edit.mp4") TOTAL=$(cat "$F/coast.png" "$P"/plates/* "$P"/refs/* "$P/edit.mp4" "$P/edit.otio" | wc -c) FILES=$(jq '.files | length' "$P/project.lock")
+CUT=$(sha "$P/edit.mp4") TOTAL=$(cat "$F/coast.png" "$P"/plates/* "$P"/refs/* "$P/edit.mp4" "$P/edit.otio" | wc -c) FILES=$(ls "$P/files" | wc -l)
 say "edit.mp4 $CUT; $TOTAL bytes to move"
 ! grep -qE "$HOME|\"original\"|\"method\"" "$P/project.lock" || fail "project.lock names this computer: $(grep -nE "$HOME|\"original\"|\"method\"" "$P/project.lock" | head -3)"
 
@@ -152,7 +152,7 @@ rm -f "$OUT/edges-second.mp4"
 second --json project -p "$C" push > "$OUT/push-second.json" 2> "$OUT/push-second.err" || fail "push from the second computer: $(tail -3 "$OUT/push-second.err")"
 # Its own cut's bytes are all that is new, and its timeline's if that came out different.
 SIZE=$(sudo stat -c %s "$C/edit.mp4") OTIO=$(sudo stat -c %s "$C/edit.otio")
-J --argjson n "$SIZE" --argjson o "$OTIO" --argjson f "$(sudo cat "$C/project.lock" | jq '.files | length')" '.files == $f and ((.moved == 1 and .bytes == $n) or (.moved == 2 and .bytes == $n + $o))' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
+J --argjson n "$SIZE" --argjson o "$OTIO" --argjson f "$(sudo ls "$C/files" | wc -l)" '.files == $f and ((.moved == 1 and .bytes == $n) or (.moved == 2 and .bytes == $n + $o))' "$OUT/push-second.json" || fail "the second computer's push did not send only its cut: $(jq -c . "$OUT/push-second.json")"
 cozy --json project -p "$P" push > "$OUT/push-edges.json" 2> "$OUT/push-edges.err" || fail "push the first computer's cut: $(tail -3 "$OUT/push-edges.err")"
 
 say "a file over the Hub's limit goes as parts, a new file beside it, and its push killed mid-way"

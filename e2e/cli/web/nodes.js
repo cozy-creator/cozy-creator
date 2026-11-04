@@ -626,8 +626,8 @@ function linesOf(text, name) {
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const lock = JSON.parse(readFileSync(join(folder, 'project.lock'), 'utf8'));
-    const given = lock.files[lock.assets.clip?.versions?.at(-1).files.given ?? lock.assets.Clip?.versions?.at(-1).files.given];
-    const told = JSON.parse(readFileSync(join(folder, given.path), 'utf8'));
+    const given = lock.assets.clip.versions.at(-1).files.given.replace('sha256:', '');
+    const told = JSON.parse(readFileSync(join(folder, 'files', readdirSync(join(folder, 'files')).find((name) => name.startsWith(given))), 'utf8'));
     check('kept_up_to_there', told.keep === 0.5, told);
     check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile, linesOf(yaml(), 'Clip'));
     await open('Clip');
