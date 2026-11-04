@@ -132,7 +132,7 @@ def declared(row: arch.Row, sm: int) -> dict:
             import_module(name.removesuffix(".__init__"))
     on_row = [c for c in attention.KERNELS if not attention._off_row(c, row)]
     names = [f"attention:{c.name}" for c in on_row]
-    names += [f"big:{c.name}" for c in on_row if c.artifact and not c.sparse and c.admits("bfloat16", 128)]
+    names += [f"big:{c.name}" for c in on_row if c.artifact and c.admits("bfloat16", 128)]
     named = {c.kernels for c in attention.KERNELS if c.kernels}
     used = {import_module(c.kernels).KERNELS.name for c in on_row if c.kernels}
     every = {import_module(n).KERNELS.name for n in named}
@@ -275,21 +275,50 @@ def _big(name: str, index: int) -> dict:
     free, _ = torch.cuda.mem_get_info(index)
     if free < 24 << 30:
         return {"passed": True, "detail": f"not run: {free >> 30} GiB free cannot hold 2^31 elements of Q, K, V and out"}
-    shape = _BIG
+    tokens, heads, dim = _BIG[1:]
     g = torch.Generator(device=target).manual_seed(9)
-    tokens, heads, dim = shape[1], shape[2], shape[3]
-    one = [torch.randn(tokens, 1, dim, generator=g, device=target, dtype=torch.float32) for _ in range(3)]
+    if candidate.sparse:
+        block, blocks = 64, -(-tokens // 64)
+        centers = torch.randn(blocks, 1, dim, generator=g, device=target, dtype=torch.float32) * 2.0
+        values = torch.randn(blocks, 1, dim, generator=g, device=target, dtype=torch.float32)
+        home = torch.arange(tokens, device=target) // block
+        goes = torch.randint(0, blocks, (blocks,), generator=g, device=target)[home]
+        one = [
+            x + torch.randn(tokens, 1, dim, generator=g, device=target, dtype=torch.float32) * s
+            for x, s in ((centers[goes], 0.1), (centers[home], 0.1), (values[home], 0.05))
+        ]
+        del centers, values, home, goes
+    else:
+        one = [torch.randn(tokens, 1, dim, generator=g, device=target, dtype=torch.float32) for _ in range(3)]
     q, k, v = (x.to(torch.bfloat16)[None].expand(1, tokens, heads, dim).contiguous() for x in one)
-    out = dispatch_attention_fn(q, k, v, backend=ready.member)
+    if candidate.sparse:
+        if candidate.name == "sol-attn":
+            row = attention.device_row(device)
+            walk = attention.walk(row, 8 if 8 in attention.DENSE.get(row.family, {}) else 16, layout=True)
+            attention._bind_sol_dense(attention._sol_dense(walk[walk.index("sol-attn") + 1 :], device, {}, {}))
+        if candidate.import_name == "sol_attn":
+            _sol_built(q)
+        layout = AttentionLayout(live_tokens=tokens, protected_prefix=1259, step=1, dense_until_step=1)
+        site = attention_sol._SITE.set(attention_sol.Site("kernels-suite", "attn"))
+        try:
+            with attention_scope(layout), attention_sol.observing() as counts:
+                out = dispatch_attention_fn(q, k, v, backend=ready.member)
+        finally:
+            attention_sol._SITE.reset(site)
+        took = dict(counts)
+        budget = 1 / 3
+    else:
+        out = dispatch_attention_fn(q, k, v, backend=ready.member)
+        took = {}
+        budget = prebuilt.ATTENTION_BUDGET[candidate.exact]
     got = out[0] if isinstance(out, tuple) else out
     spread = verify.error(torch, got[:, :, -1], got[:, :, 0])
     rows = torch.tensor([0, 1, tokens // 2, tokens - 1], device=target)
     scores = (one[0][rows, 0].double() @ one[1][:, 0].double().T) / dim**0.5
     want = torch.softmax(scores, -1) @ one[2][:, 0].double()
     error = verify.error(torch, got[0, rows, -1], want)
-    budget = prebuilt.ATTENTION_BUDGET[candidate.exact]
-    ok = spread <= budget and error <= budget
-    return {"passed": ok, "detail": f"{tokens}x{heads}x{dim}: last head vs first {spread:.2e}, sampled rows vs exact {error:.2e} (budget {budget:g})"}
+    ok = spread <= budget and error <= budget and (not candidate.sparse or took.get("sparse") == 1)
+    return {"passed": ok, "detail": f"{tokens}x{heads}x{dim}: last head vs first {spread:.2e}, sampled rows vs exact {error:.2e} (budget {budget:.3g}) {took or ''}"}
 
 
 def _sol_built(q) -> None:
