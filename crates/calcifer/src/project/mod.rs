@@ -1463,9 +1463,8 @@ impl Walk {
             // Each render on its own text, all going at once: what is independent goes together.
             let asks: Vec<String> = self.folder().lock()?.walk.asks.into_iter().map(|ask| ask.id).collect();
             for id in asks {
-                let lock = self.folder().lock()?;
-                let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id) else { continue };
-                let doc = match Doc::read(self.folder(), &ask.text) {
+                let Some(text) = self.folder().lock()?.walk.asks.into_iter().find(|ask| ask.id == id).map(|ask| ask.text) else { continue };
+                let doc = match Doc::read(self.folder(), &text) {
                     Ok(doc) => doc,
                     Err(error) => {
                         self.failed(error, &mut first);
@@ -1473,6 +1472,9 @@ impl Walk {
                         continue;
                     }
                 };
+                // The lock after the doc, whose read measures what has landed: a cut and an adapter read those sizes.
+                let lock = self.folder().lock()?;
+                let Some(ask) = lock.walk.asks.iter().find(|ask| ask.id == id) else { continue };
                 if greeted.insert(id.clone()) {
                     doc.warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
                 }
@@ -2073,7 +2075,7 @@ impl Walk {
         }, ..Default::default() });
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
-                let Some(files) = self.cut_tool(asset, standing, lock, &mut version).await? else {
+                let Some(files) = self.cut_tool(asset, standing, &mut version).await? else {
                     return self.tried(&ask.id, &name);
                 };
                 version.files = files;
@@ -2108,19 +2110,27 @@ impl Walk {
     }
 
     /// Cuts `asset`'s pieces, its film and timeline at the root. None: nothing to cut. The film stays at the root however its
-    /// version goes; a cut missing a file here is recorded under no key, so it is made again.
-    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, lock: &Lock, version: &mut Version) -> Result<Option<Files>, Error> {
+    /// version goes; a cut missing a file here is recorded under no key, so it is made again. A piece here that it can't read
+    /// fails it: nothing is cut, and no film stands short of a piece.
+    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, version: &mut Version) -> Result<Option<Files>, Error> {
         let folder = self.folder();
         let mut said = vec![];
         let canvas = Canvas::of(&asset.fields, &mut said);
-        let (mut pieces, skips) = tools::pieces(&asset.fields, &standing.reads, folder, lock);
+        // ffprobe first, as this may be its first need here, then every file measured.
+        let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
+        let mut lock = folder.lock()?;
+        folder.measure(&mut lock)?;
+        let (mut pieces, skips) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
         let name = cut_name(&asset.name);
         if !skips.is_empty() {
             self.say(Event::Said { message: format!("{name} skips {}: no version yet", skips.join(", ")) });
         }
-        let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
         let absent = pieces.iter().any(|piece| !piece.path.is_file());
-        said.extend(tools::unreadable(&mut pieces));
+        said.extend(tools::absent(&mut pieces));
+        let unreadable = tools::unreadable(&ffprobe, &pieces);
+        if !unreadable.is_empty() {
+            return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}", asset.name, unreadable.join("; "))));
+        }
         said.extend(tools::past_end(&mut pieces, canvas.fps));
         said.iter().for_each(|message| self.say(Event::Warning { message: message.clone() }));
         if pieces.is_empty() {

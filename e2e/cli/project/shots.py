@@ -5,11 +5,13 @@
 """The project cell's shot package: weightless, an adapter per file type, and each function says what it was given. A `video`: its
 video is its plate, `given` the request it got, and `written` a picture per write; the field `bare` calls a function that takes no
 writes, `two_calls` answers a list of calls, the second reading the first's output, and `seconds` waits, so a render can be caught
-going. An `image` types its operation's fields. An `audio` says its `options`."""
+going, `fresh` makes its plate's video new bytes, a file nothing has measured, and `noise` a video ffprobe can't read. An `image`
+types its operation's fields. An `audio` says its `options`."""
 
 import hashlib
 import json
 import os
+import struct
 import time
 
 import msgspec
@@ -75,6 +77,10 @@ def adapt(op: Operation) -> list[Invocation]:
         return []
     if op.fields.get("bare"):
         return [Invocation(function="bare", input={"prompt": str(op.fields.get("summary", "")), "plate": plate.files["video"].sha256})]
+    if op.fields.get("fresh"):
+        return [Invocation(function="fresh", input={"plate": plate.files["video"].sha256})]
+    if op.fields.get("noise"):
+        return [Invocation(function="noise", input={"prompt": op.asset})]
     said = [f"{read.name}={read.kind}{'+latents' if 'latents' in read.files else ''}" for read in op.reads]
     told = " | ".join([op.asset, str(op.fields.get("summary", "")), *said])
     request = {"prompt": told, "plate": {"video": plate.files["video"].sha256}, "writes": [{"name": write.name, "at_s": write.at_s} for write in op.writes]}
@@ -92,9 +98,19 @@ class BareTake(msgspec.Struct):
     video: File
 
 
+class Fresh(msgspec.Struct, kw_only=True):
+    plate: File
+    seed: int | None = None
+
+
 @app.entrypoint()
 def bare(payload: Bare, out: Outputs) -> BareTake:
     return BareTake(out.save_bytes(payload.plate.read_bytes(), media_type="video/mp4"))
+
+
+@app.entrypoint()
+def fresh(payload: Fresh, out: Outputs) -> BareTake:
+    return BareTake(out.save_bytes(payload.plate.read_bytes() + struct.pack(">I4s", 24, b"free") + os.urandom(16), media_type="video/mp4"))
 
 
 
@@ -109,6 +125,11 @@ class TypedOperation(Operation, kw_only=True):
 
 class Text(msgspec.Struct, kw_only=True):
     prompt: str
+
+
+@app.entrypoint()
+def noise(payload: Text, out: Outputs) -> BareTake:
+    return BareTake(out.save_bytes(os.urandom(4096), media_type="video/mp4"))
 
 
 class Saved(msgspec.Struct):

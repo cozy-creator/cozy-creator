@@ -650,7 +650,7 @@ impl Folder {
     }
 
     /// Every file `lock` names and nothing has measured, measured once and recorded, in `lock` and in
-    /// project.lock. With no ffprobe here yet (the walk fetches one first), they wait for the next read.
+    /// project.lock. With no ffprobe here yet they wait for the next read, or a cut, which fetches one first.
     pub fn measure(&self, lock: &mut Lock) -> Result<(), Error> {
         if !lock.files.values().any(File::unmeasured) {
             return Ok(());

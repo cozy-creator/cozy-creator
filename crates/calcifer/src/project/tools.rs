@@ -79,19 +79,27 @@ pub fn past_end(pieces: &mut Vec<Piece>, fps: f64) -> Vec<String> {
     said
 }
 
-/// Takes from `pieces` what a cut cannot read here, and says each: the rest still make the cut.
-pub fn unreadable(pieces: &mut Vec<Piece>) -> Vec<String> {
+/// Takes from `pieces` what isn't on this computer, and says each: the rest still make the cut.
+pub fn absent(pieces: &mut Vec<Piece>) -> Vec<String> {
     let mut said = vec![];
     pieces.retain(|piece| {
-        let why = match (piece.path.is_file(), piece.shape.is_some()) {
-            (false, _) => "is not on this computer: cozy project pull",
-            (true, false) => "holds no video ffprobe reads",
-            (true, true) => return true,
-        };
-        said.push(format!("{}: {} {why}: that cut is left out", piece.asset, piece.path.display()));
-        false
+        let here = piece.path.is_file();
+        if !here {
+            said.push(format!("{}: {} is not on this computer: cozy project pull: that cut is left out", piece.asset, piece.path.display()));
+        }
+        here
     });
     said
+}
+
+/// Why a cut can't take each of `pieces` that measuring left with no shape: asked of ffprobe now, so it says what is true.
+pub fn unreadable(ffprobe: &Path, pieces: &[Piece]) -> Vec<String> {
+    (pieces.iter().filter(|piece| piece.shape.is_none()))
+        .map(|piece| match probe(ffprobe, &piece.path, false) {
+            Ok(_) => format!("{}: {} is no video a cut takes: those are mp4, mov, m4v, webm and mkv", piece.asset, piece.path.display()),
+            Err(error) => format!("{}: {}", piece.asset, error.message),
+        })
+        .collect()
 }
 
 /// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.

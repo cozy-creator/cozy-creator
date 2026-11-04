@@ -60,6 +60,7 @@ mkdir -p "$P/sub"
 ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
 
+cut_of_takes
 hard_cut
 memo
 pins
@@ -1068,6 +1069,38 @@ J '.assets.both.versions | length == 1 and (.[0] | (.runs | length == 2) and (.i
 
 # Runs that fail on purpose, on a machine with no history to keep clean: never alone.
 failures() {
+step "a project: a piece ffprobe can't read fails its cut, and no film stands short of it"
+local U=$OUT/unreadable look code=0
+mkdir -p "$U"; plate "$U/look.mp4" testsrc2 440 800 4
+printf 'version: 2\nassets: {}\n' > "$U/project.yaml"
+look=$(prefix "$U" "$U/look.mp4")
+cat > "$U/project.yaml" <<YAML
+version: 2
+assets:
+  look:
+    video: $look
+  good:
+    kind: video
+    render: {with: $here/project/shots.py}
+    fresh: true
+    summary: Dusk on <look>.
+  bad:
+    kind: video
+    render: {with: $here/project/shots.py}
+    noise: true
+    summary: Dusk on <look>.
+  film:
+    kind: video
+    render: {with: cozy}
+    pieces:
+      - <good>
+      - <bad>
+YAML
+cozy project -p "$U" render all --on local > "$OUT/render.txt" 2>&1 || code=$?
+[ "$code" != 0 ] || check "unreadable: render exited 0"
+says unreadable "film cannot render: bad: "
+says unreadable "holds no video ffprobe reads"
+[ ! -e "$U/film.mp4" ] || check "unreadable: a film was made without bad"
 step "a project: a failed run is no version, and its seed is kept for the next try"
 local T=$OUT/failing look seed
 mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800
@@ -1113,6 +1146,53 @@ render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.
 sed -i "s#with: .*shots.py#with: $PACKAGES/minimax-h3#" "$H/project.yaml"
 code=0; render "$H" clash --take 1 --in 5 || code=$?
 { [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
+}
+
+# Takes cut in the walk that lands them, new bytes nothing has measured. First in the project part: on a new computer this is also
+# what fetches Calcifer's ffprobe.
+cut_of_takes() {
+step "a project: a cut holds every take landed in its walk"
+local T=$OUT/landed a b n
+mkdir -p "$T/plates"
+plate "$T/plates/a.mp4" testsrc2 440 800 4; plate "$T/plates/b.mp4" testsrc 550 800 4
+printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/plates/a.mp4") b=$(prefix "$T" "$T/plates/b.mp4")
+cat > "$T/project.yaml" <<YAML
+version: 2
+assets:
+  plate_a:
+    video: $a
+  plate_b:
+    video: $b
+  one:
+    kind: video
+    render: {with: $here/project/shots.py}
+    fresh: true
+    summary: Dusk on <plate_a>.
+  two:
+    kind: video
+    render: {with: $here/project/shots.py}
+    fresh: true
+    summary: Dawn on <plate_b>.
+  film:
+    kind: video
+    render: {with: cozy}
+    fps: 24
+    pieces:
+      - <one>
+      - <two>
+YAML
+filmed() {
+  n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$T/film.mp4" 2>/dev/null) || n=
+  [ "$n" = 192 ] || check "landed: $1: film.mp4 is $n frames, not 192: $(grep -F 'left out' "$OUT/render.txt" | cut -c1-200)"
+  ! grep -qF 'left out' "$OUT/render.txt" || check "landed: $1: a piece was left out: $(grep -F 'left out' "$OUT/render.txt" | cut -c1-200)"
+  J --arg want "$(jq -r '.assets.two.versions[-1].files.video' "$T/project.lock")" '.assets.film.versions[-1].reads[] | select(.name == "two") | .files.video == $want' "$T/project.lock" \
+    || check "landed: $1: film does not read two's newest take"
+}
+render "$T" all || check "landed: render all: $(tail -c 400 "$OUT/render.txt")"
+filmed "render all"
+render "$T" two || check "landed: render two: $(tail -c 400 "$OUT/render.txt")"
+filmed "a new take of the last piece"
 }
 
 # The two kinds of pieces, in frames; two cuts side by side, each its own film and timeline; an edit recut on approve with no machine;
