@@ -514,7 +514,8 @@ fn size_class(bytes: usize, page: usize) -> Result<usize> {
 const AUXILIARY_CLASS: usize = 512;
 // Above this, blocks are runs that split and merge; below it, slabs of one class.
 const LARGE: usize = 1 << 20;
-// A new large segment's least size, so large blocks share pages and their runs can merge.
+// Runs share segments of this size, so their pages can be reused. Above it a block owns its pages:
+// one handle's pages come back only whole, and a small block left in a large one would hold them all.
 const SEGMENT: usize = 64 << 20;
 
 impl Device {
@@ -645,17 +646,23 @@ impl Device {
         if pool.is_some() || bytes <= LARGE {
             return None;
         }
-        Self::split_run(state, bytes, stream, false)?;
-        Self::take_class(state, bytes, requested, stream, None)
+        if bytes <= SEGMENT {
+            Self::split_run(state, bytes, stream)?;
+            return Self::take_class(state, bytes, requested, stream, None);
+        }
+        // Above a segment a block owns its pages, so freeing it returns them all. A free block up
+        // to twice the size beats releasing it and mapping new pages.
+        let larger: BTreeSet<usize> = state.free.range((None, bytes + 1, None)..=(None, bytes * 2, Some(u64::MAX)))
+            .filter(|(_, slots)| !slots.is_empty())
+            .map(|((_, class, _), _)| *class)
+            .collect();
+        larger.into_iter().find_map(|class| Self::take_class(state, class, requested, stream, None))
     }
 
     /// Best fit: cut the smallest free run this stream may use down to `bytes`. The rest stays
     /// free with the same ordering. Each size holding its own pages cost SDXL 560 MB beside 327 live.
-    /// While there's room, a much larger segment isn't cut: one small block left in it would keep
-    /// it all mapped.
-    fn split_run(state: &mut State, bytes: usize, stream: u64, any: bool) -> Option<()> {
-        let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..)
-            .take_while(|((pool, class, _), _)| pool.is_none() && (any || *class <= SEGMENT || *class <= bytes * 4))
+    fn split_run(state: &mut State, bytes: usize, stream: u64) -> Option<()> {
+        let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..=(None, SEGMENT, Some(u64::MAX)))
             .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
             .find_map(|((_, class, origin), slots)| {
                 slots.iter().rev()
@@ -1255,14 +1262,9 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 Some(ptr) => ptr,
                 None => {
                     owner.sample()?;
-                    // With no room for a new block, any free run beats a wait or a weight.
-                    let cut = class > LARGE && owner.over(exact) != 0
-                        && Device::split_run(&mut state, class, stream, true).is_some();
-                    if !cut {
-                        // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
-                        let mapped = if class > LARGE && owner.headroom() >= segment { segment } else { exact };
-                        owner.map(&mut state, mapped, None, class)?;
-                    }
+                    // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
+                    let mapped = if class > LARGE && owner.headroom() >= segment { segment } else { exact };
+                    owner.map(&mut state, mapped, None, class)?;
                     Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
                 }
             };

@@ -343,16 +343,15 @@ fn fits(
                     }
                 }
             }
-            // What's left of the large ones can be cut from free runs.
-            let mut runs: Vec<(usize, u64)> = state.free.range((None, LARGE + 1, None)..)
-                .take_while(|((pool, ..), _)| pool.is_none())
+            // What's left of the shared sizes can be cut from free runs.
+            let mut runs: Vec<(usize, u64)> = state.free.range((None, LARGE + 1, None)..=(None, SEGMENT, Some(u64::MAX)))
                 .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
                 .flat_map(|((_, capacity, origin), slots)| slots.iter().filter_map(|ptr| {
                     let block = state.blocks.get(ptr).filter(|block| block.capacity == *capacity && block.reusable_from(*origin))?;
                     (!used.contains(ptr)).then_some((*capacity, block.segment))
                 }))
                 .collect();
-            for (&class, count) in missing.iter_mut().rev().take_while(|(class, _)| **class > LARGE) {
+            for (&class, count) in missing.iter_mut().rev().filter(|(class, _)| (LARGE + 1..=SEGMENT).contains(*class)) {
                 while *count != 0 {
                     let Some(run) = runs.iter_mut().filter(|run| run.0 >= class).min_by_key(|run| run.0) else {
                         break;

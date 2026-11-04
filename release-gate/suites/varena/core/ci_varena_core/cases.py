@@ -422,6 +422,28 @@ def split_sample_is_live():
 
 
 @case
+def freed_pages_back_any_block():
+    """Blocks freed around small live ones give back their pages, under a cap: one handle's pages
+    come back only whole, so no small block may hold a large block's (run 29341)."""
+    cap(1024 * MIB)
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        keep, large = [], []
+        for size in (300, 200, 100, 180):
+            large.append(torch.empty(size * MIB, dtype=torch.uint8, device="cuda").fill_(1))
+            keep.append(torch.empty(2 * MIB, dtype=torch.uint8, device="cuda").fill_(1))
+        del large  # 780 MiB freed, still running, between small blocks still live.
+        keep += [torch.empty(90 * MIB, dtype=torch.uint8, device="cuda").fill_(2)]  # Under a third of the 300.
+        big = torch.empty(800 * MIB, dtype=torch.uint8, device="cuda").fill_(3)
+        assert int(big[0]) == int(big[-1]) == 3
+    stats = vt.stats(0)
+    del big, keep
+    stream.synchronize()
+    settle()
+    return {"mapped_mib": stats["mapped_bytes"] // MIB, "peak_mib": stats["mapped_peak"] // MIB}
+
+
+@case
 def eviction_order():
     """Outside the plan first, then the phase's most recently used; its next use stays."""
     gpu = varena.Device(0)
