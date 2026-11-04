@@ -58,6 +58,7 @@ export function Thumb({
   sha256,
   cardWidth,
   strip,
+  exact,
   className,
   frame,
   onSize,
@@ -66,6 +67,8 @@ export function Thumb({
   sha256: string
   cardWidth: number
   strip?: number
+  /** `cardWidth` is the size wanted, not a card's: a small strip stays small. */
+  exact?: boolean
   className?: string
   frame?: number
   onSize?: (aspect: number) => void
@@ -77,7 +80,7 @@ export function Thumb({
   const [failed, setFailed] = useState(false)
   const projectId = store.projectId
   const leaveLine = useRef(() => {})
-  const width = thumbWidth(cardWidth)
+  const width = exact ? cardWidth : thumbWidth(cardWidth)
   useEffect(() => {
     if (!projectId) return
     let live = true

@@ -24,12 +24,12 @@ export function beatsOf(text?: Record<string, unknown>): Beat[] {
 
 export const beatLength = (beat: Beat) => beat.duration ?? BEAT_S
 
-/** What a cut holds, in order, as its text says: the names in `<>`. */
+/** What an Edit holds, in order, as its `timeline` says: the names in `<>`. */
 export function piecesOf(text?: Record<string, unknown>): string[] {
-  const pieces = text?.pieces
-  if (!Array.isArray(pieces)) return []
-  return pieces.flatMap((piece) => {
-    const held = string(piece)?.match(/<([^<>\s]+)>/)
+  const clips = (text?.timeline as { tracks?: { clips?: { clip?: unknown }[] }[] } | undefined)?.tracks?.[0]?.clips
+  if (!Array.isArray(clips)) return []
+  return clips.flatMap((clip) => {
+    const held = string(clip?.clip)?.match(/<([^<>\s]+)>/)
     return held ? [held[1]] : []
   })
 }

@@ -10,8 +10,9 @@ import { DRAGGED_FILE } from "./drag"
 import { Media, stageLine, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, makes, ratioOf, shownOf } from "./shown"
+import { aspectOf, faceOf, madeHere, makes, ratioOf, shownOf } from "./shown"
 import { beatLength, beatsOf, clock, noHash, piecesOf, took } from "./text"
+import { TimelineControl } from "./timeline/TimelineControl"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
 const WIDEST = 1600
@@ -21,7 +22,7 @@ function kindOf(view: ElementView): string {
   if (view.placing || view.landed) return "file"
   const asset = view.asset
   if (!asset) return ""
-  if (asset.tool === "cozy") return asset.kind === "video" ? "cut" : "frame"
+  if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
   if (asset.field && !asset.tool) return "file"
   return asset.kind === "video" ? "shot" : asset.kind
 }
@@ -231,7 +232,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     if (run?.queue_position !== undefined) return <div className="status mak">Queued, number {run.queue_position} in line</div>
     return (
       <div className="status mak">
-        Making
+        {asset.rendering !== undefined ? `Rendering ${Math.round(asset.rendering * 100)}%` : "Making"}
         {progress?.done_fraction !== undefined && `, ${Math.round(progress.done_fraction * 100)}%`}
         {progress?.eta_s !== undefined && (
           <>
@@ -457,16 +458,20 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
         )}
         <span className={`dot ${dotOf(view)}`} />
       </div>
-      <Media view={view} name={name} cardWidth={width}>
-        {active && asset && !view.placing && <Corner name={name} view={view} width={width} />}
-      </Media>
+      {asset?.timeline && face === "edit" ? (
+        <TimelineControl name={name} />
+      ) : (
+        <Media view={view} name={name} cardWidth={width}>
+          {active && asset && !view.placing && <Corner name={name} view={view} width={width} />}
+        </Media>
+      )}
       {active && (
         <div className="asset-more">
           {asset && !view.placing && <Takes view={view} name={name} width={width} />}
           {asset && !view.placing && (
             <div className="row approve-row">
               <Approve view={view} name={name} />
-              <FromHere view={view} name={name} />
+              {!asset.timeline && <FromHere view={view} name={name} />}
             </div>
           )}
           {!editing && <Bar view={view} name={name} />}

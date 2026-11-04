@@ -255,6 +255,8 @@ function Conflict({ name }: { name: string }) {
 /** Render. How far it's got is on the picture. On an approved box it makes one more to look at, and what's approved stays. */
 function RenderButton({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
+  // An Edit's film is only a moment's work here, and has no run to cancel.
+  if (view.asset?.rendering !== undefined) return null
   if (view.asset?.standing === "making") {
     return (
       <button type="button" className="act nodrag" onClick={() => void store.cancelRender(view.asset?.name ?? name)}>

@@ -27,6 +27,7 @@ import { CanvasStoreProvider, useCanvasStore } from "./context"
 import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { Placer } from "./place"
+import { madeHere } from "./shown"
 import { ToolPanel } from "./ToolPanel"
 
 const nodeTypes = { element: Card, entity: EntityCard }
@@ -55,7 +56,7 @@ function ProjectSync({ id }: { id: string }) {
     // A tool an asset names that the list didn't hold, asked for by its name, once.
     for (const tool of new Set(state?.assets.flatMap((asset) => asset.tool ?? []))) {
       // Local code, by its path, is no one's to search for.
-      if (tool === "cozy" || /^[./~\\]|^\w:[\\/]/.test(tool) || asked.current.has(tool) || store.tools.get().has(tool)) continue
+      if (madeHere(tool) || /^[./~\\]|^\w:[\\/]/.test(tool) || asked.current.has(tool) || store.tools.get().has(tool)) continue
       asked.current.add(tool)
       client.tools(tool.split("/").slice(0, -1).join(" "), null).then(({ tools }) => store.addTools(tools), () => {})
     }
@@ -105,7 +106,7 @@ function RenderAll({ id }: { id: string }) {
   const { data } = useQuery(projectQuery(client, id))
   const [outdated, setOutdated] = useState(false)
   const assets = data?.assets ?? []
-  const fresh = assets.filter((asset) => asset.tool && asset.tool !== "cozy" && !asset.pinned).length
+  const fresh = assets.filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
   const late = assets.filter((asset) => asset.pinned && asset.tool && asset.standing === "out_of_date").length
   const also = outdated && late > 0
   if (!fresh && !late) return null
@@ -245,7 +246,7 @@ function Canvas({
   const dragging = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       const { clientX, clientY } = pointOf(event)
-      store.dropTargetAt(clientX, clientY, draggedEls(nodes))
+      store.dropTargetAt(clientX, clientY, draggedEls(nodes))?.over(nodes.map((node) => node.data.name), clientX, clientY)
     },
     [store],
   )

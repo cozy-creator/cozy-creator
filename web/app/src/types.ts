@@ -59,6 +59,12 @@ export interface Kept {
 export interface VersionPrefix {
   number: number
   prefix: string
+  /** An Edit's: the clips that made this version. */
+  timeline?: TimelineNow
+  /** A cut's: what it was cut from, `<asset> <version>` each. */
+  from?: string[]
+  /** A cut's: what it was cut without, `<piece>: <why>` each. */
+  without?: string[]
   kept?: Kept
   execution_ms?: number
   run?: number
@@ -102,11 +108,42 @@ export interface Asset {
   fields?: Record<string, unknown>
   /** What `PATCH`'s `If-Match` names. */
   etag?: string
+  /** An Edit's: its clips as Calcifer reads them now. */
+  timeline?: TimelineNow
+  /** An Edit being rendered here: how far, 0 to 1. It has no run to ask. */
+  rendering?: number
   failure?: ErrorBody
   /** A pin's: what changed since the version it holds was made. */
   changed?: string[]
   /** What its text reads that is nothing in the project. */
   missing?: string[]
+}
+
+/** A clip as an edit's `fields.timeline` writes it: `<name>`, and the part of it. A video's `in` to `out`, exclusive, in frames at the edit's rate: no `out` is to its end. A picture's `frames`, how long it's held. Its place in the list is its place in the film. */
+export interface Clip {
+  clip: string
+  in?: number
+  out?: number
+  frames?: number
+}
+
+/** A clip and what it reads now. */
+export interface ClipNow extends Clip {
+  name?: string
+  field?: string
+  path?: string
+  sha256?: string
+  /** How many frames a video holds at the edit's rate. */
+  holds?: number
+  width?: number
+  height?: number
+  /** Why the render goes on without it. */
+  missing?: string
+}
+
+export interface TimelineNow {
+  fps: number
+  tracks: { clips: ClipNow[] }[]
 }
 
 export interface Queued {
@@ -145,6 +182,8 @@ export interface Cut {
   frames?: number
   retimed?: string[]
   skips?: string[]
+  /** The film that stands was cut without these: `<piece>: <why>`. */
+  without?: string[]
 }
 
 export interface ProjectState {
@@ -221,6 +260,8 @@ export interface Renamed {
   from: string
   to: string
   versions: number
+  /** A render is going: it happens as that ends. */
+  queued?: boolean
 }
 
 export interface Row {

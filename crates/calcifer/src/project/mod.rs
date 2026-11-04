@@ -792,6 +792,9 @@ fn cut_from(lock: &Lock, version: &Version) -> Vec<String> {
 /// What its versions are called.
 fn noun(doc: &Doc, lock: &Lock, i: usize) -> &'static str {
     let asset = &doc.assets[i];
+    if doc.tool(i) == Some(Tool::Cut) {
+        return "version";
+    }
     let video = lock.asset(&asset.name).is_some_and(|held| held.versions.iter().any(|version| version.files.contains_key("video")));
     match video || asset.kind == "video" {
         true => "take",

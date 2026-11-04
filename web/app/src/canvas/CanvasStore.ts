@@ -5,7 +5,7 @@ import { say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { asName, freeName, nameKey } from "./names"
-import { heightFor, widthFor } from "./shown"
+import { heightFor, madeHere, widthFor } from "./shown"
 
 export type ElementData = { name: string }
 export type ElementNode = Node<ElementData, "element" | "entity">
@@ -494,7 +494,7 @@ export class CanvasStore {
     if (!this.projectId || !(await this.save(name))) return
     const asset = this.get(name)?.asset
     if (!asset) return
-    const on = asset.tool === "cozy" ? ["local"] : this.machines()
+    const on = madeHere(asset.tool) ? ["local"] : this.machines()
     if (!on.length) {
       this.patch(name, { waiting: keep ?? {} })
       this.askMachine()
