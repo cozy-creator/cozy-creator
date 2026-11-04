@@ -2825,7 +2825,7 @@ impl Walk {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
-                let Some((files, without)) = self.cut_tool(asset, standing, &ask.target).await? else { return Ok(()) };
+                let Some((files, without)) = self.cut_tool(doc, asset, standing, &ask.target).await? else { return Ok(()) };
                 version.without = without;
                 let now = self.folder().lock()?;
                 let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
@@ -2863,7 +2863,7 @@ impl Walk {
     /// fetched from the machine that keeps it, or the Hub. One that can't be had, or has no version yet, is left out, warned of and said
     /// with the film: Paul, "it'd generate the edit without them", and the film before it stays a version. One here that ffprobe can't
     /// read fails it: nothing is cut, and the film that stands stays.
-    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
+    async fn cut_tool(&self, doc: &Doc, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
         let folder = self.folder();
         let mut said = vec![];
         let canvas = Canvas::of(&asset.fields, &mut said);
@@ -2879,8 +2879,12 @@ impl Walk {
         let (mut pieces, skips) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
         pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
         for piece in skips {
-            self.say(Event::Warning { message: format!("{name} is cut without {piece}, which has no version yet: cozy project render {piece} --on {on}") });
-            without.push(folder::Without { piece, why: "no version yet".into(), absent: false });
+            let (why, said) = match doc.find(&piece) {
+                Some(_) => ("no version yet", format!("which has no version yet: cozy project render {piece} --on {on}")),
+                None => ("no longer in the project", "which is no longer in the project".to_owned()),
+            };
+            self.say(Event::Warning { message: format!("{name} is cut without {piece}, {said}") });
+            without.push(folder::Without { piece, why: why.into(), absent: false });
         }
         let unreadable = tools::unreadable(&ffprobe, &pieces);
         if !unreadable.is_empty() {

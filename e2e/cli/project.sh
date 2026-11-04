@@ -1594,6 +1594,10 @@ says arriving "(without later: no version yet)"
 render "$P" later || check "arriving: later: $(tail -c 400 "$OUT/render.txt")"
 [ "$(frames_of "$P/film.mp4")" = 288 ] || check "arriving: the film didn't cut it in: $(frames_of "$P/film.mp4") frames: $(tail -c 400 "$OUT/render.txt")"
 ! grep -qF 'without later' "$OUT/render.txt" || check "arriving: still says without: $(tail -c 400 "$OUT/render.txt")"
+sed -i 's/pieces: \[<a>, <later>\]/pieces: [<a>, <later>, <lost>]/' "$P/project.yaml"
+render "$P" film || check "arriving: a piece that names nothing failed the cut: $(tail -c 400 "$OUT/render.txt")"
+says arriving "(without lost: no longer in the project)"
+[ "$(frames_of "$P/film.mp4")" = 288 ] || check "arriving: with a piece that names nothing the film is $(frames_of "$P/film.mp4") frames"
 }
 
 # Status and the closing line say what the film holds, not what its pieces add up to; a piece with no version yet is warned of.
