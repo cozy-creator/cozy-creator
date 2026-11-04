@@ -1792,13 +1792,16 @@ fn log_refusal(name: &str, log: MachineLog, e: LinkError) -> Error {
 /// A machine's refusal, as the API answers it.
 fn refusal(name: &str, e: LinkError) -> Error {
     match e {
-        LinkError::Refused { code, message } => Error::new(
-            Kind::Conflict,
-            "machine_refused",
-            format!("{name}: {message}"),
-        )
-        .cause(code)
-        .next(format!("cozy machine show {name}")),
+        LinkError::Refused { code, message, remedy, next } => {
+            let named = |text: String| text.replace("<machine>", name);
+            let mut error = Error::new(Kind::Conflict, "machine_refused", format!("{name}: {}", named(message))).cause(code);
+            error.remedy = remedy.map(named);
+            error.next = next.into_iter().map(named).collect();
+            match error.next.is_empty() {
+                true => error.next(format!("cozy machine show {name}")),
+                false => error,
+            }
+        }
         LinkError::Unauthorized(message) => Error::new(
             Kind::Credential,
             "machine_unauthorized",

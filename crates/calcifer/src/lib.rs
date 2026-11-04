@@ -141,7 +141,9 @@ enum Stop {
 impl From<LinkError> for Stop {
     fn from(e: LinkError) -> Self {
         match e {
-            LinkError::Refused { code, message } => {
+            // A run's reason has only its words: what to do goes in them.
+            LinkError::Refused { code, message, remedy, next } => {
+                let message = remedy.into_iter().chain(next.into_iter().map(|next| format!("next: {next}"))).fold(message, |said, more| format!("{said}; {more}"));
                 Stop::Refused(Reason { code, message, ..Default::default() })
             }
             LinkError::Released(message) => Stop::Released(message),
@@ -794,7 +796,8 @@ impl Calcifer {
                     }
                 }
                 // A run its machine accepted ends only with the machine's outcome.
-                Err(Stop::Refused(reason)) if run.state == State::Accepted => {
+                Err(Stop::Refused(mut reason)) if run.state == State::Accepted => {
+                    reason.message = reason.message.replace("<machine>", &name);
                     self.waiting(
                         id,
                         format!(
@@ -804,10 +807,13 @@ impl Calcifer {
                     );
                     pause.wait(wake, Some(&mut changed)).await;
                 }
-                Err(Stop::Refused(reason)) => match self.store.fail(id.as_str(), reason) {
-                    Ok(events) => self.publish(id, events),
-                    Err(e) => warn!(run = %id, "{e}"),
-                },
+                Err(Stop::Refused(mut reason)) => {
+                    reason.message = reason.message.replace("<machine>", &name);
+                    match self.store.fail(id.as_str(), reason) {
+                        Ok(events) => self.publish(id, events),
+                        Err(e) => warn!(run = %id, "{e}"),
+                    }
+                }
                 // This computer's machine exiting idle as the run came: it starts again.
                 Err(Stop::Released(message)) if name == "local" => {
                     self.waiting(id, format!("local is restarting: {message}"));
@@ -964,7 +970,7 @@ impl Calcifer {
     /// refuses the capability signed for the old one: its key is read again and the run sent again.
     async fn send_run(&self, run: &RunRow, machine: &str, link: &Link, spec: v1::RunSpec) -> Result<v1::RunState, Stop> {
         match self.answered(&run.id, machine, link.submit(run.id.as_str(), spec)).await {
-            Err(LinkError::Refused { code, message }) if code == "workload_key_changed" => {
+            Err(LinkError::Refused { code, message, .. }) if code == "workload_key_changed" => {
                 if let Some(machines) = self.machines() {
                     machines.forget_workload_key(machine);
                 }

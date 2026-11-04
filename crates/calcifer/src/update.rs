@@ -29,9 +29,12 @@ use crate::{
     store::RunRow,
 };
 
-/// What a machine refuses for being older than this Calcifer, which a newer TensorD doesn't: before 0.18.5, a package's floor on
-/// the Runtime, since then met in that package's own environment.
-const OLDER_REFUSALS: [&str; 1] = ["runtime_floor_unmet"];
+/// Whether a machine older than this Calcifer failed for its age, which a newer TensorD doesn't: before 0.18.5, a package's floor on
+/// the Runtime, since then met in that package's own environment. uv says the same of a package with no lock.
+fn for_its_age(reason: &Reason) -> bool {
+    reason.code == "runtime_floor_unmet"
+        || (reason.code == "package_installation_uv_failed" && reason.message.contains("No solution found") && reason.message.contains("cozy-runtime"))
+}
 
 /// The warning on the update run that brings a machine up, which is also said to whoever waits on it.
 pub(crate) const BRINGING_UP: &str = "machine_brought_up";
@@ -52,7 +55,7 @@ impl Machines {
     /// this cozy, going or done, the same one for everything that asks, said in one line. None: it isn't that, and the failure stands.
     /// A machine this computer's user doesn't own, a dev build, or one with work here isn't updated unasked: the refusal is the command.
     pub(crate) async fn brought_up(self: &Arc<Self>, name: &str, reason: &Reason) -> Result<Option<BroughtUp>, Error> {
-        if !OLDER_REFUSALS.contains(&reason.code.as_str()) {
+        if !for_its_age(reason) {
             return Ok(None);
         }
         let m = self.show(name).await?;
@@ -260,12 +263,15 @@ impl Machines {
     /// restarting again (for an update queued behind this one) is judged by what this update's
     /// outcome says it left; a dev build's flag is its status's alone.
     pub(crate) async fn verified(self: &Arc<Self>, row: &RunRow, mut outcome: v1::Outcome) -> v1::Outcome {
-        // A refusal for its age says what ends it, wherever the run was headed.
-        if let (Some(name), Some(reason)) = (row.machine.as_deref(), outcome.reason.as_mut().filter(|reason| OLDER_REFUSALS.contains(&reason.code.as_str())))
-            && let Ok(m) = self.show(name).await
-            && let Some(status) = m.status.as_ref().filter(|status| newer(env!("CARGO_PKG_VERSION"), &status.version))
-        {
-            reason.message += &format!("; {name} runs cozy {}: `{}` brings it up", status.version, bring_up_command(name));
+        // A machine can't know what it's called here, and a refusal for its age says what ends it, wherever the run was headed.
+        if let (Some(name), Some(reason)) = (row.machine.as_deref(), outcome.reason.as_mut()) {
+            reason.message = reason.message.replace("<machine>", name);
+            if for_its_age(reason)
+                && let Ok(m) = self.show(name).await
+                && let Some(status) = m.status.as_ref().filter(|status| newer(env!("CARGO_PKG_VERSION"), &status.version))
+            {
+                reason.message += &format!("; {name} runs cozy {}: `{}` brings it up", status.version, bring_up_command(name));
+            }
         }
         let Some(name) = row.machine.as_deref().filter(|_| row.kind == wire::Kind::Update && outcome.status == "succeeded") else {
             return outcome;
