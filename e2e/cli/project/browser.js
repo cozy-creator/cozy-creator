@@ -27,8 +27,7 @@ const until = async (page, ask, ms = 120000) => {
     if (!q.url().startsWith(base)) return;
     const s = { method: q.method(), path: q.url().slice(base.length), status: null, failed: null };
     seen.set(q, s);
-    q.allHeaders().then((h) => Object.assign(s, { range: h['range'] || null, origin: h['origin'] || null,
-      site: h['sec-fetch-site'] || null, credential: !!h['authorization'] || !!h['cookie'] })).catch(() => {});
+    q.allHeaders().then((h) => Object.assign(s, { range: h['range'] || null, site: h['sec-fetch-site'] || null })).catch(() => {});
   });
   context.on('requestfinished', async (q) => {
     const s = seen.get(q), r = s && await q.response().catch(() => null);
@@ -108,16 +107,22 @@ const until = async (page, ask, ms = 120000) => {
   }
   out.other_pages = [];
   for (const origin of others) {
-    const other = await context.newPage();
+    const other = await context.newPage(), asked = [], settling = [];
+    other.on('request', (q) => {
+      if (!q.url().startsWith(base)) return;
+      const s = { method: q.method(), path: q.url().slice(base.length), status: null, credential: null };
+      asked.push(s);
+      settling.push(q.allHeaders().then((h) => { s.credential = !!h['authorization'] || !!h['cookie']; }).catch(() => {}));
+      settling.push(q.response().then((r) => { s.status = r && r.status(); }).catch(() => {}));
+    });
     await other.goto(`${origin}/cross-site.html?target=${encodeURIComponent(base)}&id=${id}`);
     await until(other, () => window.done === true);
-    out.other_pages.push(await other.evaluate(() => ({ results: window.results, kept: localStorage.length })));
+    await Promise.all(settling);
+    out.other_pages.push({ origin, asked, ...await other.evaluate(() => ({ results: window.results, kept: localStorage.length })) });
     await other.close();
   }
-  const all = [...seen.values()];
-  out.ranges = all.filter((s) => s.path.includes('/cuts/edit.mp4') && s.site === 'same-origin')
+  out.ranges = [...seen.values()].filter((s) => s.path.includes('/cuts/edit.mp4') && s.site === 'same-origin')
     .map((s) => ({ status: s.status, range: s.range, content_range: s.content_range }));
-  out.others_at_calcifer = all.filter((s) => others.includes(s.origin) || s.site === 'cross-site' || s.site === 'same-site');
   console.log(JSON.stringify(out, null, 2));
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });

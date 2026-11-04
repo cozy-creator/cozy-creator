@@ -28,7 +28,7 @@ let mine = false;
   const page = await context.newPage();
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
-    (/Content Security Policy/.test(m.text()) ? out.violations : out.console_errors).push(m.text());
+    (/Content Security Policy/.test(m.text()) ? out.violations : out.console_errors).push(`${m.text()} ${m.location().url}`);
   });
   page.on('pageerror', (e) => out.page_errors.push(String(e)));
   // Until `what` in the page holds, by polling from here.

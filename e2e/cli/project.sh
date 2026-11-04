@@ -1711,7 +1711,8 @@ J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) 
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
 token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")
-[ "$(curl -sS -o /dev/null -w '%{http_code}' -r 0-0 "$U?media=$media")" = 206 ] || check "session: ?media= does not seek a cut"
+{ [ "$(curl -sS -o "$OUT/media-range.bin" -w '%{http_code}' -r 1000-1999 "$U?media=$media")" = 206 ] && cmp -s "$OUT/media-range.bin" "$OUT/range.bin"; } || check "session: ?media= does not seek a cut"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$U")" = 401 ] || check "session: a cut answered with no credential, as to another site's <img>"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "$U?media=$token")" = 401 ] || check "session: its token works as its media secret"
 [ "$(stat -c %a "$sessions")" = 600 ] || check "session: sessions.json is $(stat -c %a "$sessions")"
 ! grep -qE "$token|$media" "$sessions" || check "session: sessions.json holds a secret, not its digest"
@@ -1721,9 +1722,8 @@ token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.jso
 # What a run wrote can't be script in Calcifer's origin: sandboxed, and a page is a download. The browser opens them too.
 hostile_outputs() {
 step "a project: a run's page and drawing are served sandboxed"
-local H=$OUT/hostile-project output
-cozy project new "$H" > /dev/null || check "hostile outputs: project new"
-(cd "$H" && cell hostile "$here/project/hostile.py/hostile" "prompt=hostile $RANDOM") || true
+local output
+cell hostile "$here/project/hostile.py/hostile" "prompt=hostile $RANDOM" || true
 HOSTILE=$(cat "$OUT/hostile.number")
 for output in page drawing; do
   api -I "http://$ADDR/v1/runs/$HOSTILE/outputs/$output" > "$OUT/hostile-$output.hdr" || true
@@ -1866,7 +1866,10 @@ CHROME=$CHROME PLAYWRIGHT=$pw/node_modules/playwright-core node "$here/project/b
   "cp '$OUT/recut.yaml' '$P/project.yaml' && '$COZY' project -p '$P' render all --on local" \
   "kill -TERM $pid; while kill -0 $pid 2> /dev/null; do sleep 0.1; done; '$COZY' project ls > /dev/null" > "$OUT/browser.json" 2> "$OUT/browser.err" || code=$?
 kill "$server" 2> /dev/null || true
+local was_token=$TOKEN
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
+{ [ "$(jq -r .pid "$lock")" != "$pid" ] && [ "$TOKEN" != "$was_token" ]; } || check "browser: Calcifer did not restart: pid $pid is $(jq -r .pid "$lock")"
+echo "restarted: pid $pid is now $(jq -r .pid "$lock"), at $ADDR"
 [ "$ADDR" = "$was_addr" ] || check "browser: a restart moved Calcifer from $was_addr to $ADDR"
 [ "$code" = 0 ] || { check "the browser failed: $(tail -c 400 "$OUT/browser.err")"; return; }
 J '.session.status == 200 and .session.token and .session.media and .session.again == 400 and .session.again_code == "session_code_invalid"' "$OUT/browser.json" \
@@ -1884,7 +1887,7 @@ J '(.hostile.drawing.download | not) and .hostile.drawing.status == 200 and (.ho
 tail -c +$((seen + 1)) "$log" | grep 'refused ' > "$OUT/browser-refused.txt" || true
 { grep -qE 'refused GET /v1/projects code="origin_not_allowed"' "$OUT/browser-refused.txt" \
   && [ "$(grep -cE "refused POST /v1/projects/$ID/runs code=\"origin_not_allowed\"" "$OUT/browser-refused.txt")" -ge 4 ] \
-  && J '(.other_pages | all(.results.fetch_get | startswith("not readable"))) and (.other_pages | all(.kept == 0)) and (.others_at_calcifer | all(.credential | not))' "$OUT/browser.json"; } \
+  && J '.other_pages | length == 2 and all(.results.fetch_get | startswith("not readable")) and all(.kept == 0) and all(.asked | length == 4 and all(.credential == false))' "$OUT/browser.json"; } \
   || check "browser: another origin was not refused by Calcifer: $(cat "$OUT/browser-refused.txt" | cut -c1-200 | paste -sd' '); pages $(jq -c .other_pages "$OUT/browser.json")"
 J '(.pending // {}) | length == 0' "$P/project.lock" && ! grep -q nothing "$P/project.lock" || check "another origin's POST started a render"
 }
