@@ -1,5 +1,6 @@
 //! Output export: each output item of a run lands at `<out_dir>/<number>-<name>[-<i>]` with its
-//! media type's extension, rewritten in place as revisions arrive. A revision's bytes are read
+//! media type's extension, rewritten in place as revisions arrive; a project's run keeps it in the
+//! project's `files/` too, by hash, which is the file it names from then on. A revision's bytes are read
 //! from the run's machine into a `.part` beside the file (ranged and side by side when big) and
 //! replace the file whole once they match the revision's digest; a tree output is a directory
 //! replaced the same way. One exporter works per run with something to export, started by the
@@ -448,7 +449,18 @@ impl Calcifer {
             let directory_sync_ms = sync_began.elapsed().as_secs_f64() * 1000.0;
             let (id, name, index, rev) = (run.id.as_str(), &item.name, item.index, item.rev);
             let store_began = Instant::now();
-            let events = self.store.exported(id, name, index, rev, dest)?;
+            let kept = match crate::project::of_landing(&run.out_dir).filter(|_| item.media_type != tree::MEDIA) {
+                Some(project) => {
+                    let made = crate::project::Landed { run: run.number, target: &run.target, output: name, index, digest: &item.digest, done: item.done };
+                    // The file stands where it landed if its project can't take it.
+                    crate::project::landed(project, &made, dest).unwrap_or_else(|why| {
+                        warn!(run = %run.id, output = %name, "not kept in its project: {why}");
+                        dest.to_owned()
+                    })
+                }
+                None => dest.to_owned(),
+            };
+            let events = self.store.exported(id, name, index, rev, &kept)?;
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
             self.publish(&run.id, events);

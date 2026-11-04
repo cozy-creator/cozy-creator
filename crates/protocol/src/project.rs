@@ -72,6 +72,9 @@ pub struct State {
     /// How many files project.lock names are not on this computer (`POST /v1/projects/{id}/pull`).
     #[serde(default)]
     pub absent: u64,
+    /// How many files `cozy run`s left here, that belong to no asset.
+    #[serde(default)]
+    pub run_files: u64,
     /// What its `cozy/cut` assets made.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuts: Vec<Cut>,
@@ -268,17 +271,22 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/approve`: version `version` (1 first) of `name` pinned, in project.lock.
+/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to its version `version` (1 first), or to `files`, hash prefixes
+/// of any files in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approve {
     pub name: String,
-    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approved {
     pub name: String,
     pub noun: String,
+    /// The version it is; 0 for a file that is none of its versions.
     pub number: u32,
     pub files: BTreeMap<String, File>,
     /// The file people mean by it.

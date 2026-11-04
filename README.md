@@ -69,7 +69,8 @@ First-party packages have no owner (`sdxl/generate`); everyone else's are `owner
 `cozy login` signs you up on first use, with a code it emails. On Linux, runs go to this computer's
 machine, which starts when used and stops after 15 minutes idle; without an NVIDIA GPU here, add
 `--on new` to run on a rented one. macOS and Windows don't run models locally yet: add `--on new` to
-rent a Linux GPU, or `--on <machine>` for one you have. Outputs land in `~/.cozy/outputs`.
+rent a Linux GPU, or `--on <machine>` for one you have. A run belongs to a project, as a commit to a
+repository, and its outputs land in that project's `files/`.
 
 `cozy --help` and `cozy <verb> --help` are the reference.
 

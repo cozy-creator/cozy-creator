@@ -53,7 +53,7 @@ pub struct SubmitRun {
     /// (`object://sha256:<hex>/<file>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<StagedInput>,
-    /// Where outputs land; absent: `~/.cozy/outputs`.
+    /// Where its outputs land: its project's `.runs`, from which each is kept in `files/`. Absent for what is no person's run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<PathBuf>,
     /// What the CLI noticed while binding the run (fields it dropped, …), kept with the run.
@@ -167,9 +167,9 @@ pub struct RunRequest {
     /// Keep the function at this level instead of running it (`off` takes it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warm: Option<crate::machine::WarmLevel>,
-    /// Where outputs land; absent: `~/.cozy/outputs`.
+    /// The project it belongs to: a folder in it, whose nearest with a project.yaml up from it is the project. A run needs one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub out: Option<PathBuf>,
+    pub project: Option<PathBuf>,
     /// Calls a package's `quantize`, which `cozy run` refuses: `cozy model quantize` runs it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recipes: bool,
@@ -302,6 +302,9 @@ pub struct Run {
     pub target: String,
     pub hub: String,
     pub machine: Option<String>,
+    /// The project folder its outputs land in; none for what is no person's run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<PathBuf>,
     pub status: Status,
     #[serde(default)]
     pub cancel_requested: bool,

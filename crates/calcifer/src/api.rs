@@ -460,6 +460,8 @@ struct Listing {
     package: Option<String>,
     /// A machine's name, former name or rental id, as a run's `--on` names it.
     machine: Option<String>,
+    /// A folder: the runs of the project holding it; in none, all of them.
+    project: Option<std::path::PathBuf>,
     before: Option<u64>,
     limit: Option<u64>,
 }
@@ -484,6 +486,7 @@ async fn list(
         status: listing.status,
         target: listing.package,
         machine: machine.clone(),
+        out_dir: listing.project.as_deref().and_then(crate::project::landing_within),
         before: listing.before,
         limit: listing.limit.unwrap_or(50).clamp(1, 1000),
     })?;

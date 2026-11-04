@@ -99,12 +99,12 @@ A run is asked for unbound (`RunRequest`); Calcifer resolves its target, binds i
 interface, cuts and stages its files and builds the machine's spec (`crates/calcifer/src/runs`). No client builds
 a spec.
 
-- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. Answers `202` (`200` when the key had made it) with
+- `POST /v1/runs` (`Idempotency-Key`): a `RunRequest`. A run needs a `project`, a folder in or holding one: without it `400 not_in_a_project`, and its outputs land in that project's `files/` and `project.lock`'s `runs`. Answers `202` (`200` when the key had made it) with
   `Submitted {run, replay, notes, preparing}`:
   - `target`: `[org/]pkg/fn[@release]` (no `@`: the newest release its machine holds that isn't yanked, else the
     Hub's newest, which it installs; a yanked one moves to the newest with a warning; `x/y` is root package x's function y, else account x's package y), or local code `./dir[/fn]`,
     `./script.py[/fn]`.
-  - `on` (`local`, a machine, `any`, `new[:sku]`), `hub`, `gpus`, `lane`, `attention_kernel`, `out`, `warm`
+  - `on` (`local`, a machine, `any`, `new[:sku]`), `hub`, `gpus`, `lane`, `attention_kernel`, `project`, `warm`
     (a level, instead of running), `agreed` (a `new` run's quote).
   - The payload: `input` (an object) or `input_file` (a JSON or YAML file here; files it names are relative to
     it); then `terms` override it (`key=value` typed as declared, `key:=<json>`, `model.<slot>=<ref>`, one
@@ -132,7 +132,8 @@ a spec.
   it.
 - `PUT /v1/files/sha256:<hex>`: a file's bytes, which must hash to its name: `201`, or `200` when held, with
   `{digest, length, media_type}`. `HEAD` asks whether it is held. A held file unnamed for a day is dropped.
-- `GET /v1/runs` (`status`, `package`, `machine`, `before`, `limit`): `{runs, older, machine?, unreadable?}`.
+- `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is a folder:
+  the runs of the project holding it; in none, all of them. Each run names its `project`.
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
   `done_fraction`, `bytes_per_s` and `eta_s`. `?detail=full` adds `measurements`, `calls` and `report` (each
   executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
@@ -333,14 +334,14 @@ and left as it is. `design/project-graph.md` in the tracker is the model.
 
 An asset's state is the hash in project.yaml (`image`, `video`, `audio`; a hash of a version's main file brings its whole file set), else its
 newest version whose `inputs` match now, else none. `inputs` is a digest of `with` (no release, no `_/`), `models`, `lora`, `options`, `kind`,
-every other field after defaults, each asset it mentions (name, kind, fields, a state's `parent_fields`, files by sha256) and the scenes it writes: exactly what its
+every other field after defaults, each asset it mentions (name, kind, fields, files by sha256) and the world states it writes: exactly what its
 adapter is given. A tool's holds only what it reads of its fields, and the files. Calcifer knows no kind's meaning and no field's shape.
 
 An operation is a package (`with`, `[org/]package[@release]`, or local code) and a `kind`. Calcifer runs the package's `project-adapter-<kind>` on
 the render machine, on `{version: 2, asset, kind, fields, options, reads, writes, keep}`, and runs the `invocations` it answers in order as one version: a
 string in `input` that is exactly `$0.video` is that field of call 0's result, as its digest. `[]` is no run: the asset's files are what it
 reads. A failed call stops the list and makes no version; a function taking `seed` gets the one Calcifer drew, kept for the next try when the
-run failed. `models` and `lora` go on the first call. `options`, an unstructured map from `defaults.<kind>` and the asset, the asset's values over the defaults', goes only to the adapter. The version records each call as `invocations`, and
+run failed. `models` and `lora` go on the first call. `options`, every key of `render` but `with`, `prompt`, `models` and `lora`, from `defaults` and the asset, the asset's values over the defaults', goes only to the adapter, and `prompt` reaches it as `fields.instructions`. The version records each call as `invocations`, and
 each file by its output's name, later over earlier. `written`, a list, is a function's frames for `op.writes`, in order; a write with none is
 cut from the landed video. The package `cozy` is reserved: `kind: edit` and `kind: frame` run here, free, with no machine, once what they
 read settles and on `approve`, reading each asset's state, else its newest version, which they say. A tool keeps one version and its pinned one.
@@ -365,7 +366,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`); the adapter gets it as `keep`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its events.
-- `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, files, path, stale, warnings?}`. Writes the version's main file's hash into
+- `POST /v1/projects/{id}/approve` `{name, version?, files?}`: `{name, noun, number, files, path, stale, warnings?}`. `files`, hash prefixes, in place of `version`, pin any files of the project; `number` is 0 when they are no version's. Writes the version's main file's hash into
   that asset's lines in project.yaml, editing that one line, re-read just before it writes, and checks what it wrote reads as the same project with that one change (`400 project_edit` otherwise, saying what to write by hand). A line holding an input keeps it, `video: <hash>  # was <clash>`.
   Makes any tool whose reads settled, with no machine.
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Removes that line, or restores the input it was over. A constant, nothing but its file, keeps it (`400 project_edit`).

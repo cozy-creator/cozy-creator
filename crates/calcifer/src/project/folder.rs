@@ -28,6 +28,8 @@ pub const PROJECT: &str = "project.yaml";
 pub const LOCK: &str = "project.lock";
 /// Where every file the project uses is kept, by content: `files/<sha256>.<ext>`.
 pub const FILES: &str = "files";
+/// Where a run's outputs land before they are kept in `files/`.
+pub const RUNS: &str = ".runs";
 /// The lock's format.
 const FORMAT: u32 = 2;
 
@@ -80,6 +82,15 @@ impl File {
         VIDEOS.contains(&self.extension().as_str())
     }
 
+    /// The role that pins it, by what it is.
+    pub fn field(&self) -> &'static str {
+        match self.extension().as_str() {
+            _ if self.is_video() => "video",
+            "wav" | "mp3" | "flac" | "ogg" | "m4a" | "aac" => "audio",
+            _ => "image",
+        }
+    }
+
     /// Not measured yet, and one that can be.
     fn unmeasured(&self) -> bool {
         self.width == 0 && (self.is_video() || PICTURES.contains(&self.extension().as_str()))
@@ -110,7 +121,7 @@ pub struct Version {
     pub kept: Option<protocol::project::Kept>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: Files,
-    /// The frames it wrote, by the name key of the scene each is.
+    /// The frames it wrote, by the name key of the world_state each is.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub writes: BTreeMap<String, Files>,
     /// A digest per field of its record, to say which changed.
@@ -161,6 +172,19 @@ impl Version {
     pub fn main(&self) -> Option<&String> {
         main_of(&self.files)
     }
+
+    /// Its main file and the rest of the list it came in, in order: what a pin of it names.
+    pub fn listed(&self) -> Vec<&String> {
+        let Some(main) = self.main() else { return vec![] };
+        let role = self.files.iter().find(|(_, sha256)| *sha256 == main).map_or("", |(name, _)| name.as_str());
+        let place = |name: &str| match name.strip_prefix(role)? {
+            "" => Some(1),
+            rest => rest.strip_prefix('-')?.parse::<u64>().ok(),
+        };
+        let mut list: Vec<(u64, &String)> = self.files.iter().filter_map(|(name, sha256)| Some((place(name)?, sha256))).collect();
+        list.sort_by_key(|(place, _)| *place);
+        list.into_iter().map(|(_, sha256)| sha256).collect()
+    }
 }
 
 /// The file people mean by a set of files.
@@ -182,7 +206,7 @@ pub struct Pending {
     /// Pinned in project.yaml when it lands (`--approve`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// The scenes it was asked to write, in order, each with where: its result's `written` in that order.
+    /// The world_states it was asked to write, in order, each with where: its result's `written` in that order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writes: Vec<Written>,
     /// Where it goes, and each call after this one of the operation's list.
@@ -202,7 +226,7 @@ pub struct Invocation {
     pub input: Map<String, Value>,
 }
 
-/// A scene a run writes: its name, and where in the video if the function doesn't.
+/// A world_state a run writes: its name, and where in the video if the function doesn't.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Written {
     pub name: String,
@@ -252,13 +276,25 @@ pub struct Lock {
     /// By idempotency key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, Pending>,
+    /// What `cozy run`s left here: they belong to no asset, and no memo holds them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<RunFile>,
     #[serde(default, skip_serializing_if = "Owed::is_empty")]
     pub walk: Owed,
 }
 
+/// One file a `cozy run` left in the project.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunFile {
+    pub run: u64,
+    pub function: String,
+    pub output: String,
+    pub sha256: String,
+}
+
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), walk: Owed::default() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], walk: Owed::default() }
     }
 }
 
@@ -369,17 +405,23 @@ impl Lock {
     }
 }
 
+/// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
+static WRITING: Mutex<()> = Mutex::new(());
+/// Held while a file is kept and while files are deleted, so one isn't deleted between.
+static COLLECTING: Mutex<()> = Mutex::new(());
+
 pub struct Folder {
     pub dir: PathBuf,
     /// cozy's tools folder, where its ffprobe is (else PATH's).
     pub tools: PathBuf,
-    /// Held across each write's read and swap, so no two of this Calcifer's writes lose one.
-    writing: Mutex<()>,
-    /// Held while a file is kept and while files are deleted, so one isn't deleted between.
-    collecting: Mutex<()>,
 }
 
 impl Folder {
+    /// The project in `dir`, whichever part of Calcifer has it open: for what lands from outside a walk.
+    pub fn at(dir: &Path) -> Self {
+        Self { dir: dir.to_owned(), tools: PathBuf::new() }
+    }
+
     /// The project in `dir`, its files measured with the ffprobe in `home`'s tools (else PATH's).
     pub fn open(dir: &Path, home: &Home) -> Result<Self, Error> {
         if !dir.join(PROJECT).is_file() {
@@ -390,7 +432,7 @@ impl Folder {
             )
             .next("cozy project new <path>"));
         }
-        Ok(Self { dir: dir.to_owned(), tools: home.tools(), writing: Mutex::default(), collecting: Mutex::default() })
+        Ok(Self { dir: dir.to_owned(), tools: home.tools() })
     }
 
     pub fn project(&self) -> PathBuf {
@@ -429,7 +471,7 @@ impl Folder {
 
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
     pub fn keep(&self, source: &Path) -> Result<String, Error> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
         self.store(&path, |part| std::fs::copy(source, part).map(drop))?;
@@ -439,7 +481,7 @@ impl Folder {
 
     /// `source`, a file Calcifer made beside the project, moved into `files/` under its hash, and in the lock's table.
     pub fn take(&self, source: &Path) -> Result<String, Error> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let sha256 = hash(source)?;
         let path = file_of(&sha256, source);
         if !self.store(&path, |part| std::fs::rename(source, part))? {
@@ -447,6 +489,35 @@ impl Folder {
         }
         self.tabled(path, &sha256)?;
         Ok(sha256)
+    }
+
+    /// What a run landed at `dest`, of `digest`, kept in `files/` by hash: a hard link where the filesystem allows. Listed as
+    /// that run's, in place of what an earlier revision of that output was, which goes if nothing else names it. Answers its path.
+    pub fn adopt(&self, dest: &Path, digest: &str, made: RunFile) -> Result<PathBuf, Error> {
+        let (path, old) = {
+            let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
+            let path = file_of(digest, dest);
+            let at = self.dir.join(&path);
+            if !at.is_file() {
+                let dir = self.dir.join(FILES);
+                std::fs::create_dir_all(&dir).map_err(|e| io_at(&dir, e))?;
+                if std::fs::hard_link(dest, &at).is_err() {
+                    self.store(&path, |part| std::fs::copy(dest, part).map(drop))?;
+                }
+            }
+            self.tabled(path.clone(), digest)?;
+            let old = std::cell::RefCell::new(vec![]);
+            self.update_lock(|lock| {
+                let earlier = lock.runs.iter().position(|row| row.run == made.run && row.output == made.output);
+                match earlier {
+                    Some(at) => *old.borrow_mut() = vec![std::mem::replace(&mut lock.runs[at], made.clone()).sha256],
+                    None => lock.runs.push(made.clone()),
+                }
+            })?;
+            (self.path(&path), old.into_inner())
+        };
+        self.drop_unused(&old)?;
+        Ok(path)
     }
 
     /// The file at `path` in the lock's table, unless it is there.
@@ -490,7 +561,7 @@ impl Folder {
         field: &'static str,
         write: impl Fn(&Path) -> std::io::Result<()>,
     ) -> Result<Kept, String> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let already = !self.store(&path, write).map_err(|e| e.message)?;
         self.tabled(path.clone(), &sha256).map_err(|e| e.message)?;
         Ok(Kept { file: File { path, sha256, ..Default::default() }, field, already })
@@ -545,13 +616,13 @@ impl Folder {
     /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, and
     /// their bytes. With `delete` they go, from disk and from the table: what `reclaim --yes` frees.
     pub fn sweep(&self, named: &BTreeSet<String>, delete: bool) -> Result<(u64, u64), Error> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
         let (mut files, mut bytes) = (0, 0);
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
             let path = format!("{FILES}/{}", entry.file_name().to_string_lossy());
             let used = lock.files.values().any(|file| file.path == path && named.contains(&file.sha256));
-            if path.contains("/.") || used {
+            if path.contains("/.") || used || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
             bytes += entry.metadata().map_or(0, |meta| meta.len());
@@ -560,8 +631,16 @@ impl Folder {
                 std::fs::remove_file(entry.path()).map_err(|e| io_at(&entry.path(), e))?;
             }
         }
+        // What runs left where they land: a folder they made, or a file still there.
+        let left = walked(&self.dir.join(RUNS));
+        files += left.0;
+        bytes += left.1;
         if delete {
-            self.update_lock(|lock| lock.files.retain(|sha256, _| named.contains(sha256)))?;
+            self.update_lock(|lock| {
+                lock.files.retain(|sha256, _| named.contains(sha256));
+                lock.runs.retain(|row| named.contains(&row.sha256));
+            })?;
+            let _ = std::fs::remove_dir_all(self.dir.join(RUNS));
         }
         Ok((files, bytes))
     }
@@ -573,9 +652,10 @@ impl Folder {
 
     /// Deletes those of `sha256s` nothing in the lock names any more: a tool's old version, free to make again.
     pub fn drop_unused(&self, sha256s: &[String]) -> Result<(), Error> {
-        let _held = self.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
-        let named = lock.named(|_| true);
+        let mut named = lock.named(|_| true);
+        named.extend(lock.runs.iter().map(|row| row.sha256.as_str()));
         for sha256 in sha256s.iter().filter(|sha256| !named.contains(sha256.as_str())) {
             let Some(file) = lock.files.get(sha256) else { continue };
             let at = self.path(&file.path);
@@ -670,7 +750,7 @@ impl Folder {
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-        let _held = self.writing.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             let before = match path.exists() {
                 true => read(path)?,
@@ -689,6 +769,26 @@ impl Folder {
             }
         }
     }
+}
+
+/// How many files are under `dir`, and their bytes.
+fn walked(dir: &Path) -> (u64, u64) {
+    let (mut files, mut bytes) = (0, 0);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => {
+                let below = walked(&entry.path());
+                files += below.0;
+                bytes += below.1;
+            }
+            Ok(meta) => {
+                files += 1;
+                bytes += meta.len();
+            }
+            Err(_) => {}
+        }
+    }
+    (files, bytes)
 }
 
 fn read(path: &Path) -> Result<String, Error> {

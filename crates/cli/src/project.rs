@@ -75,12 +75,13 @@ enum Verb {
     Import(ImportFile),
     Render(Render),
     /// Pin a take or version: its hash goes on the asset's line in project.yaml.
-    #[command(after_help = "Example:\n  cozy project approve fight 2\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
+    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash; several write a list\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
     Approve {
         /// The asset: `theo`, `dock b`, `fight`, `fight upscale`, …
         name: String,
-        /// Its take or version, 1 first.
-        version: u32,
+        /// Its take or version, 1 first, or hash prefixes of any files in the project's `files/`.
+        #[arg(required = true)]
+        version: Vec<String>,
     },
     /// Take an asset's pin out of project.yaml: its state follows its inputs again.
     #[command(after_help = "Example:\n  cozy project unpin fight")]
@@ -193,15 +194,24 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/approve", opened.id);
+            // One short run of digits is a version; anything else, files by hash.
+            let number = match version.as_slice() {
+                [one] if one.len() <= 6 => one.parse::<u32>().ok(),
+                _ => None,
+            };
+            let files = if number.is_none() { version } else { vec![] };
             let approved: Approved =
-                ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version }, None).await?;
+                ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version: number, files }, None).await?;
             approved.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
                 output::json(&approved);
             } else {
                 let (name, noun, number) = (&approved.name, &approved.noun, approved.number);
                 let path = output::link(ctx, &opened.path.join(&approved.path));
-                output::say(ctx, &format!("{name}: {noun} {number} pinned in project.yaml ({path})"));
+                match number {
+                    0 => output::say(ctx, &format!("{name}: pinned in project.yaml ({path})")),
+                    number => output::say(ctx, &format!("{name}: {noun} {number} pinned in project.yaml ({path})")),
+                }
                 if !approved.stale.is_empty() {
                     output::say(ctx, &format!("out of date now: {}", approved.stale.join(", ")));
                 }
@@ -445,6 +455,9 @@ fn summary(ctx: &Context, state: &State) {
                 output::say(ctx, &kept.said(&asset.name, made.number));
             }
         }
+    }
+    if state.run_files > 0 {
+        output::say(ctx, &format!("{} files from `cozy run` here, belonging to no asset: approve one, or `cozy project reclaim` once nothing names them", state.run_files));
     }
     if !state.missing.is_empty() {
         output::say(ctx, &format!("missing: {}", state.missing.join(", ")));

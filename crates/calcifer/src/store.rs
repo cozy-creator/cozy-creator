@@ -187,6 +187,8 @@ pub struct RunFilter {
     /// A prefix of the run's target (`org/pkg`).
     pub target: Option<String>,
     pub machine: Option<String>,
+    /// Only the runs landing here: a project's.
+    pub out_dir: Option<String>,
     /// Only runs numbered below this.
     pub before: Option<u64>,
     pub limit: u64,
@@ -675,7 +677,8 @@ impl Store {
             AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status
                 ELSE 'queued' END = ?2)
             AND (?3 IS NULL OR substr(target, 1, length(?3)) = ?3)
-            AND (?4 IS NULL OR machine = ?4)";
+            AND (?4 IS NULL OR machine = ?4)
+            AND (?5 IS NULL OR out_dir = ?5)";
         self.read(|conn| {
             let status = filter.status.map(|status| match status {
                 Status::Queued => "queued",
@@ -685,16 +688,16 @@ impl Store {
                 Status::Canceled => "canceled",
             });
             let before = filter.before.map_or(i64::MAX, |n| n as i64);
-            let matching = params![before, status, filter.target, filter.machine];
+            let matching = params![before, status, filter.target, filter.machine, filter.out_dir];
             let total: i64 =
                 conn.query_row(&format!("SELECT COUNT(*) {MATCHING}"), matching, |r| {
                     r.get(0)
                 })?;
             let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?5"
+                "SELECT {RUN_COLUMNS} {MATCHING} ORDER BY number DESC LIMIT ?6"
             ))?;
             let read = statement.query_map(
-                params![before, status, filter.target, filter.machine, filter.limit as i64],
+                params![before, status, filter.target, filter.machine, filter.out_dir, filter.limit as i64],
                 |r| Ok((r.get::<_, i64>(1)?, run_row(r))),
             )?;
             let (mut rows, mut unreadable) = (vec![], vec![]);
@@ -1829,6 +1832,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         kind: row.kind,
         target: row.target.clone(),
         hub: row.hub.clone().map(String::from).unwrap_or_default(),
+        project: None,
         machine: row.machine.clone(),
         status: match (row.state, row.status) {
             (State::Settled, Some(status)) => status,

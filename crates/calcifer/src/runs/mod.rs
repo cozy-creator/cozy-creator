@@ -283,11 +283,18 @@ async fn call(
     }
     let home = api.machines.hubs.home().root().to_path_buf();
     let mut notes = vec![];
+    // A person's run belongs to a project, as a commit to a repository. Keeping a function warm and `cozy model quantize` are no one's run.
+    let project = ask.project.as_deref().and_then(crate::project::holding_folder);
+    if project.is_none() && ask.warm.is_none() && !ask.recipes {
+        return Err(crate::project::not_in_one());
+    }
+    // `--file image=65b436d4f9a3` names a file of the project's by its hash.
+    let files = ask.files.iter().map(|term| crate::project::file_term(project.as_deref(), term)).collect::<Result<Vec<_>, _>>()?;
     let terms = Terms {
         input: ask.input.clone(),
         inputs: ask.terms.clone(),
         input_file: ask.input_file.clone(),
-        assets: ask.files.clone(),
+        assets: files,
         fidelities: ask.fidelities.clone(),
         loras: ask.loras.clone(),
         key: key.to_owned(),
@@ -331,7 +338,7 @@ async fn call(
             if let Some(warning) = gpuless(api, &code.on, code.interface, callable, &target).await {
                 notes.push(Note { level: NoteLevel::Warning, message: warning });
             }
-            let out = ask.out.as_ref().map(|dir| terms.place(dir)).transpose()?;
+            let out = project.as_deref().map(crate::project::landing);
             (call.spec(&bound)?, Some(bound), out)
         }
     };

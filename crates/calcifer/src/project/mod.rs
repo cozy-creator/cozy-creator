@@ -33,7 +33,7 @@ use axum::{
 };
 use futures_util::{Stream, StreamExt as _, stream::FuturesUnordered};
 use protocol::{
-    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    calcifer::{FileTerm, Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
@@ -157,6 +157,70 @@ impl Projects {
         }
         Ok(id)
     }
+}
+
+/// The words a run hears outside a project, as `git` says it of a repository.
+pub(crate) fn not_in_one() -> Error {
+    Error::new(Kind::Usage, "not_in_a_project", "not in a project: cd into one, or cozy project new <name>")
+}
+
+/// Where a run of the project in `dir` lands its outputs.
+pub(crate) fn landing(dir: &FsPath) -> PathBuf {
+    dir.join(folder::RUNS)
+}
+
+/// The project a run's landing folder is in, if it's one.
+pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
+    out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
+}
+
+/// The project holding `path`, if one does.
+pub(crate) fn holding_folder(path: &FsPath) -> Option<PathBuf> {
+    holding(path).ok()
+}
+
+/// The landing folder of the project holding `path`, as a run's record has it.
+pub(crate) fn landing_within(path: &FsPath) -> Option<String> {
+    Some(landing(&holding_folder(path)?).to_string_lossy().into_owned())
+}
+
+/// `--file`'s term in `project`: six or more hex digits that start one of its files' hash are that file.
+pub(crate) fn file_term(project: Option<&FsPath>, term: &FileTerm) -> Result<FileTerm, Error> {
+    let written = term.file.as_str();
+    let hashlike = written.len() >= 6 && written.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let Some(project) = project.filter(|_| hashlike) else { return Ok(term.clone()) };
+    let folder = Folder::at(project);
+    let lock = folder.lock()?;
+    match lock.matching(&written.to_ascii_lowercase()).as_slice() {
+        [] => Ok(term.clone()),
+        [file] => Ok(FileTerm { name: term.name.clone(), file: folder.path(&file.path).to_string_lossy().into_owned() }),
+        several => Err(Error::new(Kind::Usage, "file_ambiguous", format!("{written} fits {} files of this project: write more of its hash", several.len()))),
+    }
+}
+
+/// What a project's run landed: which run, of what, and its bytes' digest.
+pub(crate) struct Landed<'a> {
+    pub run: u64,
+    pub target: &'a str,
+    pub output: &'a str,
+    pub index: u32,
+    pub digest: &'a str,
+    pub done: bool,
+}
+
+/// A run's output, landed at `dest`, kept in its project's `files/` and listed there. An operation's run takes its files off the
+/// list when it lands them on its version. Answers the file's path.
+pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<PathBuf, String> {
+    let output = match made.index {
+        0 => made.output.to_owned(),
+        n => format!("{}-{n}", made.output),
+    };
+    let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
+    let kept = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
+    if made.done {
+        let _ = std::fs::remove_file(dest);
+    }
+    Ok(kept)
 }
 
 /// One folder's id, the same for as long as it is there.
@@ -358,7 +422,9 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let moving = project.moving.try_lock().is_err();
     let absent = lock.files.values().filter(|file| !folder.path(&file.path).is_file()).count() as u64;
     let orphans = orphans(&doc, folder, &lock);
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, missing, stale, orphans, busy, moving, absent, cuts, warnings }))
+    let kept = kept_files(&doc, &lock);
+    let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, missing, stale, orphans, busy, moving, absent, run_files, cuts, warnings }))
 }
 
 /// Each asset whose published package, as this computer knows it or can ask at once, has no adapter for its kind. Local code is
@@ -541,7 +607,7 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
 /// Every file something the file names uses: its assets' versions, what is on its way, and its file pins.
 fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
     let mut kept: BTreeSet<String> = lock.named(|key| doc.find(key).is_some()).into_iter().map(str::to_owned).collect();
-    kept.extend(doc.assets.iter().flat_map(|asset| asset.pin.iter().map(|(_, sha256)| sha256).chain(asset.also.values()).cloned()));
+    kept.extend(doc.assets.iter().flat_map(|asset| asset.pin.iter().flat_map(|(_, hashes)| hashes).chain(asset.also.values()).cloned()));
     kept
 }
 
@@ -555,7 +621,16 @@ async fn reclaim(
     let asked: Reclaim = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    if asked.yes && *project.walking.lock().expect("walking lock") {
+    let filter = crate::store::RunFilter {
+        status: None,
+        target: None,
+        machine: None,
+        out_dir: Some(landing(&folder.dir).to_string_lossy().into_owned()),
+        before: None,
+        limit: 100,
+    };
+    let going = (api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
+    if asked.yes && (going || *project.walking.lock().expect("walking lock")) {
         let said = "the project is rendering: reclaim once its runs land";
         return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
     }
@@ -781,20 +856,10 @@ async fn import(
     Ok(Json(Imported { path: file.path, sha256: file.sha256, prefix, line, already }))
 }
 
-/// The field that pins a version: what its main file is.
-fn pin_field(version: &Version) -> &'static str {
-    match (version.files.contains_key("video"), version.files.contains_key("image"), version.files.contains_key("audio")) {
-        (true, ..) => "video",
-        (false, false, true) => "audio",
-        _ => "image",
-    }
-}
-
-/// `name` pinned to `version` in project.yaml: one line, a pin in another field gone first, written over what the file holds this
-/// moment. An approved asset is the same as any pinned one.
-fn pin_in_file(folder: &Folder, name: &str, version: &Version, other: Option<&'static str>) -> Result<(), Error> {
-    let sha256 = version.main().ok_or_else(|| Error::new(Kind::Usage, "version_unknown", format!("{name}'s version {} holds no file", version.number)))?;
-    let (field, value) = (pin_field(version), format::yaml_scalar(folder::prefix_of(sha256)));
+/// `name` pinned to files in project.yaml: one line in `field`, a pin in another field gone first, written over what the file holds
+/// this moment. An approved asset is the same as any pinned one.
+fn pin_in_file(folder: &Folder, name: &str, field: &str, hashes: &[String], other: Option<&'static str>) -> Result<(), Error> {
+    let value = format::pin_value(hashes);
     folder.edit_project(|text| {
         let clear = other.filter(|other| *other != field);
         let text = match clear {
@@ -803,6 +868,11 @@ fn pin_in_file(folder: &Folder, name: &str, version: &Version, other: Option<&'s
         };
         format::pinned(&text, name, field, &value)
     })
+}
+
+/// The field that pins a version, by what its main file is.
+fn pin_field(lock: &Lock, version: &Version) -> &'static str {
+    version.main().and_then(|sha256| lock.files.get(sha256)).map_or("image", folder::File::field)
 }
 
 /// `POST /v1/projects/{id}/approve`: the version's main file, by hash, in the asset's line of project.yaml: its whole file set is the
@@ -824,24 +894,51 @@ async fn approve(
     }
     let noun = noun(&doc, &lock, i);
     let versions: Vec<&Version> = lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions).collect();
-    let Some(chosen) = versions.iter().find(|version| version.number == asked.version) else {
-        let numbers: Vec<String> = versions.iter().map(|version| version.number.to_string()).collect();
-        let said = match numbers.as_slice() {
-            [] => format!("{} has no {noun} yet", asset.name),
-            numbers => format!("{} has no {noun} {}: it has {}", asset.name, asked.version, numbers.join(", ")),
+    // Files of the project's, by hash: any picture can be what this asset is.
+    let mut chosen: Vec<String> = vec![];
+    for prefix in &asked.files {
+        match lock.matching(&prefix.to_ascii_lowercase()).as_slice() {
+            [file] => chosen.push(file.sha256.clone()),
+            [] => {
+                let said = format!("no file of this project's starts with {prefix}");
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
+            }
+            several => {
+                let said = format!("{prefix} fits {} files of this project: write more of its hash", several.len());
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said)));
+            }
+        }
+    }
+    if asked.files.is_empty() {
+        let found = versions.iter().find(|version| Some(version.number) == asked.version).map(|version| version.listed());
+        let Some(listed) = found.filter(|listed| !listed.is_empty()) else {
+            let numbers: Vec<String> = versions.iter().map(|version| version.number.to_string()).collect();
+            let said = match numbers.as_slice() {
+                [] => format!("{} has no {noun} yet", asset.name),
+                numbers => format!("{} has no {noun} {}: it has {}", asset.name, asked.version.unwrap_or_default(), numbers.join(", ")),
+            };
+            return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
         };
-        return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
-    };
+        chosen = listed.into_iter().cloned().collect();
+    }
+    let field_of = |sha256: &String| lock.files.get(sha256).map_or("image", folder::File::field);
+    let field = field_of(&chosen[0]);
+    if chosen.iter().any(|sha256| field_of(sha256) != field) {
+        let said = format!("those are not all one role: {} pins one of {field}, or another, at a time", asset.name);
+        return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said)));
+    }
+    let version = versions.iter().find(|version| version.main() == chosen.first());
     if !doc.declared(i) {
-        let line = chosen.main().map_or(String::new(), |sha256| format!("{}: {}", pin_field(chosen), format::yaml_scalar(folder::prefix_of(sha256))));
         let said = format!("{} is a frame its writer's beat names, with no lines of its own in {}", asset.name, folder::PROJECT);
-        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).remedy(format!("add it under assets: with `{line}`"))));
+        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).remedy(format!("add it under assets: with `{field}: {}`", format::pin_value(&chosen)))));
     }
     let before = stale_names(&doc, &doc.stand(&lock));
-    let (name, number) = (asset.name.clone(), asked.version);
-    pin_in_file(folder, &name, chosen, asset.pin.as_ref().map(|(field, _)| *field)).map_err(Refusal)?;
+    let name = asset.name.clone();
+    pin_in_file(folder, &name, field, &chosen, asset.pin.as_ref().map(|(field, _)| *field)).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
-    let (files, path) = (listed(&lock, &chosen.files), main_path(&lock, &chosen.files).unwrap_or_default());
+    let files = version.map_or_else(|| format::role_files(field, &chosen), |version| version.files.clone());
+    let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
+    let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings }))
 }
@@ -1345,7 +1442,8 @@ impl Walk {
             payload: Some(v1::Json::parse(operation.to_string()).expect("an operation is JSON")),
             ..Default::default()
         };
-        let submit = SubmitRun { on: placed, hub: hub.to_owned(), kind: RunKind::Call, target: adapter.target(), spec, inputs, out: None, warnings: vec![], agreed: None };
+        let out = Some(landing(&self.folder().dir));
+        let submit = SubmitRun { on: placed, hub: hub.to_owned(), kind: RunKind::Call, target: adapter.target(), spec, inputs, out, warnings: vec![], agreed: None };
         let run = self.send_run(&new_key(), submit).await?;
         let run = self.host.wait(&run.id).await?;
         if run.status != RunStatus::Completed {
@@ -1431,7 +1529,7 @@ impl Walk {
             target: renderer.target(),
             spec,
             inputs: staged,
-            out: None,
+            out: Some(landing(&self.folder().dir)),
             warnings,
             agreed: None,
         };
@@ -1478,6 +1576,8 @@ impl Walk {
         let folder = self.folder();
         let Some(pending) = folder.lock()?.pending.remove(key) else { return Ok(()) };
         let name = pending.asset.clone();
+        // What this run landed is its version's, not a loose file of the project's.
+        folder.update_lock(|lock| lock.runs.retain(|row| row.run != run.number))?;
         if run.status != RunStatus::Completed {
             let status = format!("{:?}", run.status).to_lowercase();
             let said = match &run.reason {
@@ -1510,8 +1610,9 @@ impl Walk {
                 }
                 continue;
             }
+            // The first of a list goes by its name, so a reader that takes one takes it.
             let file = match output.index {
-                0 => output.name.clone(),
+                0 | 1 => output.name.clone(),
                 n => format!("{}-{n}", output.name),
             };
             saved.insert(file, folder.keep(path)?);
@@ -1549,7 +1650,7 @@ impl Walk {
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})
     }
 
-    /// A scene its function didn't write, cut from its landed video.
+    /// A world_state its function didn't write, cut from its landed video.
     async fn cut_write(&self, name: &str, version: &Version, write: &Written) -> Result<String, Error> {
         let lock = self.folder().lock()?;
         let video = version.files.get("video").and_then(|sha256| lock.files.get(sha256)).map(|file| self.folder().path(&file.path));
@@ -1674,7 +1775,7 @@ impl Walk {
         let number = version.number;
         let old = std::cell::RefCell::new(vec![]);
         let doc = Doc::load(self.folder())?;
-        let pin = doc.find(name).and_then(|i| doc.assets[i].pin.as_ref().map(|(_, sha256)| sha256.clone()));
+        let pin = doc.find(name).and_then(|i| doc.assets[i].pin.as_ref()?.1.first().cloned());
         self.folder().update_lock(|lock| {
             let held = lock.asset_mut(name, kind);
             let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| version.main() == pin.as_ref());
@@ -1711,7 +1812,11 @@ impl Walk {
         if approve {
             let doc = Doc::load(self.folder())?;
             let pinned = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.0));
-            if let Err(error) = pin_in_file(self.folder(), name, &version, pinned) {
+            let lock = self.folder().lock()?;
+            let hashes: Vec<String> = version.listed().into_iter().cloned().collect();
+            if !hashes.is_empty()
+                && let Err(error) = pin_in_file(self.folder(), name, pin_field(&lock, &version), &hashes, pinned)
+            {
                 self.say(Event::Warning { message: error.message });
             }
         }

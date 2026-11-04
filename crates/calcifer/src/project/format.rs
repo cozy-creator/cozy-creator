@@ -1,6 +1,6 @@
 //! project.yaml, format 2 (design/project-graph.md): assets, the operation that makes each (a package, by `with`, and a `kind`,
-//! which its adapter turns into calls), the memo key, and what each asset's state is. The platform reads `with`, `kind`, `models`,
-//! `lora`, `options`, a hash in `image`, `video` or `audio`, a beat's `writes` and `duration`, and `<name>` in any text. It knows
+//! which its adapter turns into calls), the memo key, and what each asset's state is. The platform reads `kind`, `render` (`with`, `prompt`,
+//! `models`, `lora`), a hash in `image`, `video`, `audio` or `voice`, a beat's `writes` and `duration`, and `<name>` in any text. It knows
 //! no kind's meaning and no field's shape, but for the reserved package `cozy`, which it runs itself. Every other field passes through to the adapter and counts in the
 //! key. Nothing refuses a project but a file of no format: what one line gets wrong is said, and that line does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -11,14 +11,19 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{self, Files, Folder, Keeps, Lock},
-    graph::{Graph, mentions, mentions_in, name_key},
+    graph::{Graph, mentions_in, name_key},
 };
 
 /// The name `cozy project render all` means.
 pub const ALL: &str = "all";
 const FORMAT: u64 = 2;
-const PINS: [&str; 3] = ["image", "video", "audio"];
-const RESERVED: [&str; 10] = ["with", "kind", "models", "lora", "options", "image", "video", "audio", "writes", "states"];
+/// What `render` unfolds to: how to make it, never at an asset's root.
+const RENDERED: [&str; 5] = ["with", "instructions", "options", "models", "lora"];
+/// The fields that name an asset's files by role. A hash there, or a list of them, pins that file; a `<mention>` is an input.
+const PINS: [&str; 4] = ["image", "video", "audio", "voice"];
+/// The role that only attaches a file: a voice doesn't stop the image being made.
+const ATTACHED: &str = "voice";
+const RESERVED: [&str; 11] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio", "voice", "writes"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
@@ -37,29 +42,29 @@ defaults:
     style: High-quality Unreal Engine graphics in a bright, hand-painted, cel-shaded anime style.
     aspect_ratio: "16:9"
   character:
-    with: qwen-image-2
+    render: {with: qwen-image-2}
   environment:
-    with: qwen-image-2
+    render: {with: qwen-image-2}
   setup:
-    with: qwen-image-2
+    render: {with: qwen-image-2}
   shot:
-    with: minimax-h3
+    render: {with: minimax-h3}
   edit:
-    with: cozy
+    render: {with: cozy}
 
 assets:
   kyogre:
     kind: character
     description: |
       Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
-    instructions: |
+    render: |
       The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
   groudon:
     kind: character
     description: |
       Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
-    instructions: |
+    render: |
       The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
   coast:
@@ -123,16 +128,15 @@ pub struct Asset {
     pub fields: Map<String, Value>,
     /// The fields it wrote itself.
     pub own: BTreeSet<String>,
-    /// A pin, the line `approve` writes: its field and sha256. Its `with` and text stay in the file, ignored while it stands.
-    pub pin: Option<(&'static str, String)>,
-    /// A constant's other hashes (a character's `image` and `audio`): its files with the pin's, when the pin is no version's.
+    /// A pin, the line `approve` writes: its field and each sha256, in the order written. Its `with` and text stay in the file,
+    /// ignored while it stands.
+    pub pin: Option<(&'static str, Vec<String>)>,
+    /// Its files in other roles (a character's `voice`), which go with whatever its state is.
     pub also: Files,
     /// It has no operation: no `with`, of its own or from defaults, or no `kind` for its package's adapter.
     pub hollow: bool,
     /// A free frame a beat names: `cozy` makes it, and it stays the world state it is to what reads it.
     pub frame: bool,
-    /// The asset this is a state of (`kyogre` of `kyogre.primal`), which it always reads.
-    pub state_of: Option<usize>,
     /// What it reads, in the order its text mentions them.
     pub reads: Vec<usize>,
     /// The revisions it sends to its function.
@@ -173,7 +177,7 @@ pub struct Doc {
     pub order: Vec<usize>,
     pub warnings: Vec<String>,
     index: HashMap<String, usize>,
-    /// How many the file declares, in order, their states with them; those after them are scenes only a beat names.
+    /// How many the file declares, in order, and those after them are world_states only a beat names.
     declared: usize,
 }
 
@@ -259,35 +263,31 @@ impl Doc {
         }
         warnings.extend(top.keys().filter(|key| !SECTIONS.contains(&key.as_str())).map(|key| format!("{}: cozy reads no section {key}; it is ignored", folder::PROJECT)));
         let empty = Map::new();
-        let defaults = top.get("defaults").and_then(Value::as_object).unwrap_or(&empty);
+        let sections = top.get("defaults").and_then(Value::as_object).unwrap_or(&empty).iter();
+        let defaults: Map<String, Value> = sections
+            .map(|(section, value)| {
+                let value = value.as_object().cloned().unwrap_or_default();
+                (section.clone(), Value::Object(unfolded(&format!("defaults.{section}"), value, &mut warnings)))
+            })
+            .collect();
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
-            let Some(parent) = doc.declare(text, &name, written, defaults, folder, &lock) else { continue };
-            for state in protocol::yaml::keys(text, &["assets", &name, "states"]) {
-                let full = format!("{name}.{state}");
-                if written["states"][&state].get("states").is_some() {
-                    doc.warnings.push(format!("{full}'s states: states don't nest: these are ignored"));
-                }
-                let body = state_body(written, &written["states"][&state]);
-                if let Some(i) = doc.declare(text, &full, &body, defaults, folder, &lock) {
-                    doc.assets[i].state_of = Some(parent);
-                }
-            }
+            doc.declare(text, &name, written, &defaults, folder, &lock);
         }
         doc.declared = doc.assets.len();
         for i in 0..doc.declared {
             if doc.assets[i].body.contains_key("writes") {
-                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `scene` with an `at` into that beat: these are ignored", doc.assets[i].name));
+                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `world_state` with an `at` into that beat: these are ignored", doc.assets[i].name));
             }
             let mut said = vec![];
             let writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
             doc.warnings.append(&mut said);
-            for (beat, scene, at) in writes {
-                doc.write(i, beat, &scene, at);
+            for (beat, world_state, at) in writes {
+                doc.write(i, beat, &world_state, at);
             }
         }
         for i in 0..doc.assets.len() {
@@ -318,22 +318,30 @@ impl Doc {
                 Map::new()
             }
         };
+        let body = unfolded(name, body, &mut self.warnings);
         let own: BTreeSet<String> = body.keys().cloned().collect();
-        // An asset with an operation and no kind is an image. A constant, a hash and nothing to make, needs none.
-        let constant = PINS.iter().any(|field| matches!(body.get(*field), Some(Value::Number(_))) || body.get(*field).and_then(Value::as_str).is_some_and(|text| mentions(text).is_empty()));
+        // Every asset has a kind: what it writes, else the role of the file it holds, else `image`.
+        let hash = |field: &&str| match body.get(*field) {
+            Some(value @ (Value::Number(_) | Value::String(_) | Value::Array(_))) => mentions_in(value).is_empty(),
+            _ => false,
+        };
+        let held = PINS.iter().copied().filter(|field| *field != ATTACHED).find(hash);
         let kind = match text_of(body.get("kind")) {
-            kind if kind.is_empty() && !constant => "image".to_owned(),
+            kind if kind.is_empty() => held.unwrap_or("image").to_owned(),
             kind => kind,
         };
-        // An asset naming its own function takes nothing from defaults, so a clean doesn't re-run over a style edit.
+        // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind.
+        let constant = held.is_some() && body.keys().all(|key| key == "kind" || PINS.contains(&key.as_str()));
+        // `defaults` fills what an asset doesn't write, but one naming its own `with` takes no way of making it from there.
         let (mut merged, mut options) = (Map::new(), Map::new());
-        if !body.contains_key("with") {
-            for section in ["all", kind.as_str()] {
-                if let Some(section) = defaults.get(section).and_then(Value::as_object) {
-                    options.extend(section.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
-                    merged.extend(section.clone());
-                }
+        for section in ["all", kind.as_str()].into_iter().take(if constant { 1 } else { 2 }) {
+            let Some(section) = defaults.get(section).and_then(Value::as_object) else { continue };
+            let mut section = section.clone();
+            if body.contains_key("with") {
+                section.retain(|field, _| !RENDERED.contains(&field.as_str()));
             }
+            options.extend(section.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
+            merged.extend(section);
         }
         // `options` is the adapter's own map: the asset's values over its defaults', key by key.
         options.extend(body.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
@@ -344,21 +352,29 @@ impl Doc {
         let (mut pin, mut also) = (None, Files::new());
         for field in PINS {
             let Some(value) = merged.get(field) else { continue };
-            let written = match value {
-                Value::String(text) if !mentions(text).is_empty() => continue,
+            if !mentions_in(value).is_empty() {
+                continue;
+            }
+            let one = |value: &Value| match value {
                 Value::String(text) => text.clone(),
                 Value::Number(number) => number.to_string(),
+                _ => String::new(),
+            };
+            let written: Vec<String> = match value {
+                Value::Array(items) => items.iter().map(one).collect(),
+                Value::String(_) | Value::Number(_) => vec![one(value)],
                 _ => continue,
             };
-            match file_named(&written, lock) {
-                Ok(sha256) => {
-                    let here = lock.files.get(&sha256).is_some_and(|file| folder.path(&file.path).is_file());
-                    if !here {
-                        self.warnings.push(format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
+            match written.iter().map(|hash| file_named(hash, lock)).collect::<Result<Vec<String>, String>>() {
+                Ok(hashes) => {
+                    for sha256 in &hashes {
+                        if !lock.files.get(sha256).is_some_and(|file| folder.path(&file.path).is_file()) {
+                            self.warnings.push(format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(sha256)));
+                        }
                     }
                     match pin {
-                        None => pin = Some((field, sha256)),
-                        Some(_) => drop(also.insert(field.to_owned(), sha256)),
+                        None if field != ATTACHED => pin = Some((field, hashes)),
+                        _ => also.extend(role_files(field, &hashes)),
                     }
                 }
                 Err(why) => {
@@ -372,28 +388,28 @@ impl Doc {
         if let Some((field, _)) = &pin
             && let Some(was) = pinned_over(text, name, field)
         {
-            fields.insert((*field).to_owned(), json!(was));
+            fields.insert((*field).to_owned(), protocol::yaml::to_json(&was).unwrap_or_else(|_| json!(was)));
         }
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
-        let hollow = with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
+        let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, also, hollow, frame: false, state_of: None, reads: vec![], writes: vec![], writer: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, also, hollow, frame: false, reads: vec![], writes: vec![], writer: None });
         Some(self.assets.len() - 1)
     }
 
-    /// `scene`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
+    /// `world_state`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
     /// after that beat, in a later beat or in text every segment holds, its function takes it, in its one take; otherwise it is a
-    /// free frame, outside its key. A pinned scene is read, never written. Two assets writing one name: the first stands.
-    fn write(&mut self, i: usize, beat: usize, scene: &str, at: f64) {
-        let key = name_key(scene);
+    /// free frame, outside its key. A pinned world_state is read, never written. Two assets writing one name: the first stands.
+    fn write(&mut self, i: usize, beat: usize, world_state: &str, at: f64) {
+        let key = name_key(world_state);
         let writer_name = self.assets[i].name.clone();
         let revision = match self.index.get(&key).copied() {
             Some(revision) => revision,
             None => {
                 self.index.insert(key.clone(), self.assets.len());
                 self.assets.push(Asset {
-                    name: scene.to_owned(),
-                    kind: "scene".into(),
+                    name: world_state.to_owned(),
+                    kind: "world_state".into(),
                     body: Map::new(),
                     fields: Map::new(),
                     own: BTreeSet::new(),
@@ -401,7 +417,6 @@ impl Doc {
                     also: Files::new(),
                     hollow: false,
                     frame: false,
-                    state_of: None,
                     reads: vec![],
                     writes: vec![],
                     writer: None,
@@ -411,7 +426,7 @@ impl Doc {
         };
         let own = &mut self.assets[revision];
         if own.writer.is_some() || own.frame {
-            self.warnings.push(format!("{writer_name} writes {scene}, which is written above: the first stands"));
+            self.warnings.push(format!("{writer_name} writes {world_state}, which is written above: the first stands"));
             return;
         }
         own.hollow = false;
@@ -448,12 +463,6 @@ impl Doc {
                 upstream[i].push(writer);
                 fixed[i].push(writer);
                 continue;
-            }
-            // A state always reads what it is a state of, mentioned or not.
-            if let Some(parent) = asset.state_of {
-                upstream[i].push(parent);
-                fixed[i].push(parent);
-                reads[i].push(parent);
             }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
             for mention in mentions_in(&Value::Object(asset.fields.clone())) {
@@ -510,7 +519,7 @@ impl Doc {
         let asset = &self.assets[i];
         match asset.body.contains_key("with") {
             true => format!("{}: the package {COZY} makes `edit` and `frame`, not {}: it has nothing to make", asset.name, asset.kind),
-            false => format!("{} has no `with`, and no `defaults.{}.with`: it has nothing to make", asset.name, asset.kind),
+            false => format!("{} has no `render.with`, and no `defaults.{}.render.with`: it has nothing to make", asset.name, asset.kind),
         }
     }
 
@@ -548,10 +557,16 @@ impl Doc {
             None => (None, BTreeMap::new()),
         };
         let reads = reads.unwrap_or_default();
-        let stand = |state, files| Standing { state, files, inputs: inputs.clone(), digests: digests.clone(), reads: reads.clone() };
+        let stand = |state, files: Option<Files>| {
+            let files = files.map(|mut files| {
+                files.extend(asset.also.clone());
+                files
+            });
+            Standing { state, files, inputs: inputs.clone(), digests: digests.clone(), reads: reads.clone() }
+        };
         let versions = held.map(|held| held.versions.as_slice()).unwrap_or_default();
-        if let Some((field, sha256)) = &asset.pin {
-            return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
+        if let Some((field, hashes)) = &asset.pin {
+            return match versions.iter().rev().find(|version| version.main() == hashes.first()) {
                 Some(version) => {
                     let changed = match &inputs {
                         Some(now) if !version.inputs.is_empty() && *now != version.inputs => changed(&version.digests, &digests),
@@ -559,11 +574,7 @@ impl Doc {
                     };
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
                 }
-                None => {
-                    let mut files = asset.also.clone();
-                    files.insert((*field).to_owned(), sha256.clone());
-                    stand(State::Pinned { version: None, changed: vec![] }, Some(files))
-                }
+                None => stand(State::Pinned { version: None, changed: vec![] }, Some(role_files(field, hashes))),
             };
         }
         if let Some(writer) = asset.writer {
@@ -636,13 +647,10 @@ impl Doc {
             .map(|read| {
                 let of = &self.assets[read.asset];
                 // A tool's key holds only files: same takes, same key, whatever their text says.
-                let mut record = match tool {
+                let record = match tool {
                     true => json!({"name": read.name, "files": read.files}),
                     false => json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": read.files}),
                 };
-                if let (false, Some(parent)) = (tool, of.state_of) {
-                    record["parent_fields"] = json!(self.assets[parent].fields);
-                }
                 digests.insert(format!("<{}>", read.name), digest(&record));
                 record
             })
@@ -667,11 +675,7 @@ impl Doc {
                 let files: Map<String, Value> = read.files.iter().map(|(name, sha256)| (name.clone(), file(sha256))).collect();
                 let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
                 let made_by = made.and_then(|made| made.made_by.as_ref()).map_or("", |by| by.with.as_str());
-                let mut record = json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by});
-                // A shot reading a state doesn't mention its parent: what the file says of it comes along.
-                if let Some(parent) = of.state_of {
-                    record["parent_fields"] = json!(self.assets[parent].fields);
-                }
+                let record = json!({"name": read.name, "kind": of.kind, "fields": of.fields, "files": files, "made_by": made_by});
                 record
             })
             .collect();
@@ -691,7 +695,7 @@ impl Doc {
     }
 }
 
-/// What each beat writes, soonest first: the beat, the scene, and when on the shot's timeline. A write is `{scene, at}`: `at` is
+/// What each beat writes, soonest first: the beat, the world_state, and when on the shot's timeline. A write is `{world_state, at}`: `at` is
 /// seconds into its beat, else its end; past the beat it clamps, which is said, as is any other field.
 fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) -> Vec<(usize, String, f64)> {
     let (mut start, mut found) = (0.0, vec![]);
@@ -703,22 +707,22 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) ->
             one => vec![one.clone()],
         };
         for item in listed {
-            let (scene, at) = match &item {
-                Value::String(scene) => (scene.clone(), None),
-                item => (text_of(item.get("scene")), item["at"].as_f64()),
+            let (world_state, at) = match &item {
+                Value::String(world_state) => (world_state.clone(), None),
+                item => (text_of(item.get("world_state")), item["at"].as_f64()),
             };
-            if scene.is_empty() {
-                said.push(format!("{name}'s beat {} writes nothing: each write names a `scene`", n + 1));
+            if world_state.is_empty() {
+                said.push(format!("{name}'s beat {} writes nothing: each write names a `world_state`", n + 1));
                 continue;
             }
-            for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["scene", "at"].contains(&field.as_str())) {
-                said.push(format!("{name}'s write of {scene}: cozy reads no field {field}; it is ignored"));
+            for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["world_state", "at"].contains(&field.as_str())) {
+                said.push(format!("{name}'s write of {world_state}: cozy reads no field {field}; it is ignored"));
             }
             let within = at.unwrap_or(length).clamp(0.0, length);
             if let Some(at) = at.filter(|at| *at != within) {
-                said.push(format!("{name} writes {scene} at {at} s into a beat {length} s long: it is taken at {within} s"));
+                said.push(format!("{name} writes {world_state} at {at} s into a beat {length} s long: it is taken at {within} s"));
             }
-            found.push((n, scene, start + within));
+            found.push((n, world_state, start + within));
         }
         start += length;
     }
@@ -760,22 +764,49 @@ fn text_of(value: Option<&Value>) -> String {
     }
 }
 
-/// What a state's lines come to, as an asset: its parent's `kind` and `with` unless it writes its own, its `options` over the
-/// parent's, and nothing else of the parent's.
-fn state_body(parent: &Value, state: &Value) -> Value {
-    let mut body = Map::new();
-    for field in ["kind", "with"] {
-        if let Some(value) = parent.get(field) {
-            body.insert(field.into(), value.clone());
+/// An asset's lines, or a section of `defaults`, as the platform reads them: at its root what it is, in `render` how to make it.
+/// `render` is its text, or a map where `with`, `prompt`, `models` and `lora` are the platform's and every other key is the adapter's
+/// (`op.options`). On the wire the text is `instructions`, as it always was.
+fn unfolded(name: &str, mut body: Map<String, Value>, warnings: &mut Vec<String>) -> Map<String, Value> {
+    for field in RENDERED {
+        if body.remove(field).is_some() {
+            warnings.push(format!("{name}'s {field}: it goes under `render:`; it is ignored"));
         }
     }
-    let mut options = parent.get("options").and_then(Value::as_object).cloned().unwrap_or_default();
-    options.extend(state.get("options").and_then(Value::as_object).cloned().unwrap_or_default());
-    body.extend(state.as_object().cloned().unwrap_or_default());
-    if !options.is_empty() {
-        body.insert("options".into(), Value::Object(options));
+    match body.remove("render") {
+        Some(Value::Object(render)) => {
+            let mut options = Map::new();
+            for (field, value) in render {
+                match field.as_str() {
+                    "prompt" => drop(body.insert("instructions".into(), value)),
+                    "with" | "models" | "lora" => drop(body.insert(field, value)),
+                    _ => drop(options.insert(field, value)),
+                }
+            }
+            if !options.is_empty() {
+                body.insert("options".into(), Value::Object(options));
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(text) => drop(body.insert("instructions".into(), text)),
     }
-    Value::Object(body)
+    body
+}
+
+/// Files in one role: one is the role itself; several are `<role>`, `<role>-2`, …, as a function's list lands, so a reader that
+/// takes one takes the first.
+pub fn role_files(role: &str, hashes: &[String]) -> Files {
+    let named = |(n, sha256): (usize, &String)| (if n == 0 { role.to_owned() } else { format!("{role}-{}", n + 1) }, sha256.clone());
+    hashes.iter().enumerate().map(named).collect()
+}
+
+/// What a pin of these files writes: one hash, or a list of them.
+pub fn pin_value(hashes: &[String]) -> String {
+    let each: Vec<String> = hashes.iter().map(|sha256| yaml_scalar(folder::prefix_of(sha256))).collect();
+    match each.as_slice() {
+        [one] => one.clone(),
+        each => format!("[{}]", each.join(", ")),
+    }
 }
 
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
@@ -853,7 +884,7 @@ pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String
                 if written.is_empty() || written.starts_with(['|', '>']) {
                     return Err(by_hand(format!("its {field} runs over several lines")));
                 }
-                let line = match written.starts_with('<') {
+                let line = match written.contains('<') {
                     true => format!("{indent}{field}: {value}  # was {}\n", rest.trim()),
                     false => format!("{indent}{field}: {value}{}\n", comment.map_or(String::new(), |comment| format!("  {comment}"))),
                 };
@@ -915,21 +946,13 @@ fn same_but(text: &str, edited: &str, name: &str, field: &str, value: Option<&st
     (before == after).then_some(()).ok_or_else(|| "the edit would change something else".into())
 }
 
-/// The value asset `name` is in a project's JSON: under `assets:`, or a state under its parent's `states:`.
+/// The value asset `name` is in a project's JSON.
 fn slot<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
     let key_in = |map: &Value, name: &str| map.as_object()?.keys().find(|key| name_key(key) == name_key(name)).cloned();
     if let Some(key) = key_in(&doc["assets"], name) {
         return doc["assets"].get_mut(&key);
     }
-    let (parent, state) = split_state(name).into_iter().find(|(parent, state)| key_in(&doc["assets"], parent).is_some_and(|key| key_in(&doc["assets"][&key]["states"], state).is_some()))?;
-    let parent = key_in(&doc["assets"], parent)?;
-    let state = key_in(&doc["assets"][&parent]["states"], state)?;
-    doc["assets"][&parent]["states"].get_mut(&state)
-}
-
-/// Each way `name` could be a parent and its state, at each `.`.
-fn split_state(name: &str) -> Vec<(&str, &str)> {
-    name.match_indices('.').map(|(at, _)| (&name[..at], &name[at + 1..])).collect()
+    None
 }
 
 /// The input a pin in `field` keeps in a comment on its line.
@@ -954,20 +977,12 @@ struct Place<'a> {
 }
 
 impl<'a> Place<'a> {
-    /// Asset `name`'s lines: under `assets:`, or a state's under its parent's `states:`.
+    /// Asset `name`'s lines under `assets:`.
     fn find(text: &'a str, name: &str) -> Option<Self> {
         let lines: Vec<&str> = text.split_inclusive('\n').collect();
         let start = lines.iter().position(|line| spaces(line) == 0 && split_comment(line).0 == "assets:")? + 1;
         let end = (start..lines.len()).find(|&n| significant(lines[n]) && spaces(lines[n]) == 0).unwrap_or(lines.len());
-        if let Some((key, body, child, flow)) = block(&lines, start..end, name) {
-            return Some(Self { lines, key, body, child, flow });
-        }
-        let found = split_state(name).into_iter().find_map(|(parent, state)| {
-            let (_, parent, ..) = block(&lines, start..end, parent)?;
-            let (_, states, ..) = block(&lines, parent, "states")?;
-            block(&lines, states, state)
-        })?;
-        let (key, body, child, flow) = found;
+        let (key, body, child, flow) = block(&lines, start..end, name)?;
         Some(Self { lines, key, body, child, flow })
     }
 
@@ -1051,7 +1066,7 @@ fn flow_field(inner: &str, field: &str) -> Option<usize> {
 
 /// Whether what starts at `field:` holds a hash, not an input.
 fn hex_value(at_field: &str) -> bool {
-    let value = at_field.split_once(':').map_or("", |(_, rest)| rest).split(',').next().unwrap_or_default().trim().trim_matches('"');
+    let value = at_field.split_once(':').map_or("", |(_, rest)| rest).split(',').next().unwrap_or_default().trim().trim_start_matches('[').trim_matches('"');
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -1059,7 +1074,10 @@ fn hex_value(at_field: &str) -> bool {
 fn strip_flow_field(inner: &str, field: &str) -> String {
     let Some(at) = flow_field(inner, field) else { return inner.to_owned() };
     let rest = &inner[at..];
-    let end = rest.find(',').map_or(rest.len(), |comma| comma + 1);
+    // A list's commas are its own.
+    let first = rest.find(',').unwrap_or(rest.len());
+    let close = rest.find('[').filter(|open| *open < first).and_then(|_| rest.find(']')).unwrap_or(0);
+    let end = rest[close..].find(',').map_or(rest.len(), |comma| close + comma + 1);
     format!("{}{}", &inner[..at], rest[end..].trim_start()).trim_end().trim_end_matches(',').to_owned()
 }
 
