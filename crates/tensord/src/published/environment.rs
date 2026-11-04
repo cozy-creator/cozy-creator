@@ -182,7 +182,7 @@ impl Publisher {
                     if let Err(failure) = self.uv(&args, &[], job) {
                         // A floor only a GitHub prerelease meets: uv's index can't resolve the project.
                         let declared = declared_pair(project.dir);
-                        if failure.0 == super::CANCELED || declared.is_empty() {
+                        if failure.0 == super::CANCELED || failure.0 == super::UNREACHABLE || declared.is_empty() {
                             return Err(failure);
                         }
                         self.published_pair(env, &declared, &BTreeMap::new(), project.label, job)?;
