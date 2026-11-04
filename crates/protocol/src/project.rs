@@ -122,12 +122,12 @@ pub struct Known {
     pub busy: bool,
 }
 
-/// `GET /v1/projects/{id}`: its assets in order, and what reading the project said.
+/// `GET /v1/projects/{id}`: its nodes in order, and what reading the project said.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
     pub path: PathBuf,
-    pub assets: Vec<Asset>,
+    pub nodes: Vec<Node>,
     /// Identity and links, no work: they make nothing and hold no version.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<Entity>,
@@ -375,7 +375,7 @@ pub enum Standing {
 
 /// An asset: a stable name holding a set of files.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Asset {
+pub struct Node {
     pub name: String,
     #[serde(default)]
     pub standing: Standing,
@@ -386,9 +386,9 @@ pub struct Asset {
     pub kind: String,
     /// What its alternatives are called: `take` (one that holds a video) or `version`.
     pub noun: String,
-    /// The function that makes it, as project.yaml or its defaults name it. None for a file pin.
+    /// The tool that makes it. None for a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub with: Option<String>,
+    pub tool: Option<String>,
     /// How many it has.
     pub versions: u32,
     /// Each one's hash prefix, to name it in project.yaml.
@@ -443,9 +443,12 @@ pub struct Asset {
     /// The shot whose beat writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub written_by: Option<String>,
-    /// Its words as the file writes them: its own fields, with no platform field, and `render`'s text as `prompt`.
+    /// Its inputs, flat, each by a control's `field`: what `PATCH /v1/projects/{id}/nodes/{name}` sets, as it applies now.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
-    pub text: Map<String, Value>,
+    pub fields: Map<String, Value>,
+    /// Names what a write of its fields read: `If-Match` on `PATCH`. An edit of another node doesn't move it. None for what has no lines of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
     /// What stopped its last try: until a version lands, it's tried again, or its inputs change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<Error>,
@@ -458,11 +461,70 @@ pub struct Asset {
     pub missing: Vec<String>,
 }
 
-/// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
+/// `GET /v1/projects/{id}/nodes/{name}`: a node and each of its versions, 1 first.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AssetVersions {
-    pub asset: Asset,
+pub struct NodeVersions {
+    pub node: Node,
     pub versions: Vec<Version>,
+}
+
+/// `POST /v1/projects/{id}/nodes`: a tool dropped on the canvas. Under an `Idempotency-Key`, a retry makes no `_2`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewNode {
+    /// A tool's `id`, from `GET /v1/tools`.
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+    /// What to call it, through `as_name` with `.` as `_`; a taken name gets `_2`. Absent: the tool's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub fields: Map<String, Value>,
+}
+
+/// What a write of a node answers: its name, and what `If-Match` names from here on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeMade {
+    pub name: String,
+    pub etag: String,
+}
+
+/// `PATCH /v1/projects/{id}/nodes/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
+/// `tool` changes what makes it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodePatch {
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub fields: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+}
+
+/// What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodePatched {
+    pub name: String,
+    pub etag: String,
+    pub was: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// What `DELETE /v1/projects/{id}/nodes/{name}` took: `PUT` on the same name with `text` and `at` puts it back, and its versions with it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeDeleted {
+    pub name: String,
+    /// Opaque to a client.
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+}
+
+/// `PUT /v1/projects/{id}/nodes/{name}`: a deleted node back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeBack {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
 }
 
 /// One version (a take, if it holds a video).
@@ -492,9 +554,9 @@ pub struct Version {
     pub execution_ms: Option<u64>,
 }
 
-/// `POST /v1/projects/{id}/runs`: for each of `names`, or `all`, and what it reads, if it has no state, run its operation.
-/// Nothing else runs. `new`, or `n` over 1, also draws `n` new seeds for those named. It joins the project's walk, which sends
-/// each once what it reads is settled; `on` lists the machines they may go to.
+/// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
+/// only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
+/// is settled; `on` lists the machines they may go to.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
     #[serde(default)]

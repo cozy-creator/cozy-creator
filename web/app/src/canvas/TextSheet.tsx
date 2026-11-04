@@ -114,9 +114,9 @@ function Sheet({ name, at }: { name: string; at?: string }) {
           </p>
         ))}
         {view?.asset?.failure && <p className="failed-line">{noHash(view.asset.failure.message)}</p>}
-        {view?.asset && <AssetWords text={view.asset.text ?? {}} />}
+        {view?.asset && <AssetWords text={view.asset.fields ?? {}} />}
         {view?.entity && <EntityWords entity={view.entity} />}
-        {view?.asset && !Object.keys(view.asset.text ?? {}).length && <p className="muted">It has no words of its own.</p>}
+        {view?.asset && !Object.keys(view.asset.fields ?? {}).length && <p className="muted">It has no words of its own.</p>}
       </div>
     </aside>
   )

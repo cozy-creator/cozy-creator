@@ -177,7 +177,7 @@ function summary(frames) {
   const yamlAt = join(folder, 'project.yaml');
   await page.evaluate(() => { window.notReloaded = true; });
   const notReloaded = () => page.evaluate(() => window.notReloaded === true);
-  const asset = async (name) => (await state()).assets.find((held) => held.name === name);
+  const asset = async (name) => (await state()).nodes.find((held) => held.name === name);
 
   // Files from a terminal: each an element in this page, with nothing asked of it.
   const scratch = mkdtempSync(join(tmpdir(), 'web-see-'));
@@ -266,12 +266,12 @@ entities:
 
   // Its fields, on the wire.
   const read = await state();
-  const of = (name) => read.assets.find((held) => held.name === name);
+  const of = (name) => read.nodes.find((held) => held.name === name);
   const shotReads = Object.fromEntries((of('shot').reads ?? []).map((held) => [held.name, held.at]));
   check('wire_reads', shotReads.hero?.includes('summary') && shotReads.clip?.includes('summary') && shotReads['hero.older']?.includes('beats.0.description') && !shotReads['still.1'], of('shot').reads);
   check('wire_written_by', of('still.1').written_by === 'shot' && of('still.2').written_by === 'shot', [of('still.1').written_by, of('still.2').written_by]);
-  check('wire_text', of('shot').text?.summary?.includes('looks hard') && of('shot').text?.beats?.[0]?.writes?.[0]?.image === 'still.1', of('shot').text);
-  check('wire_text_no_platform_field', !('render' in (of('shot').text ?? {})) && !('with' in (of('shot').text ?? {})) && !('style' in (of('shot').text ?? {})), of('shot').text);
+  check('wire_fields', of('shot').fields?.summary?.includes('looks hard') && of('shot').fields?.beats?.[0]?.writes?.[0]?.image === 'still.1', of('shot').fields);
+  check('wire_fields_no_platform_field', !('render' in (of('shot').fields ?? {})) && !('with' in (of('shot').fields ?? {})), of('shot').fields);
   check('wire_warning_named', read.warnings?.some((said) => said.name === 'odd' && said.message.includes('kind')) && read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
   check('wire_entity', read.entities?.[0]?.links?.image === 'hero_art' && read.entities?.[0]?.subs?.[0]?.links?.image === 'older_art', read.entities);
 
@@ -428,7 +428,7 @@ entities:
   check('file_back_with_no_reload', await notReloaded());
 
   // Moving one: its row, no input of anything, and only its own edges.
-  const inputs = async () => JSON.stringify((await state()).assets.map((held) => [held.name, held.inputs]));
+  const inputs = async () => JSON.stringify((await state()).nodes.map((held) => [held.name, held.inputs]));
   const inputsBefore = await inputs();
   const wasAt = (await cards()).hero_art;
   const touched = await redrawn(page, () => drag(page, element(page, 'hero_art').locator('.nm'), 90, 70));
@@ -485,7 +485,7 @@ entities:
     const began = Date.now();
     const answered = await state();
     seen.hub_down_read_ms = Date.now() - began;
-    check('reads_with_no_hub', answered.assets?.length === read.assets.length, answered.assets?.length);
+    check('reads_with_no_hub', answered.nodes?.length === read.nodes.length, answered.nodes?.length);
     check('read_with_no_hub_is_quick', seen.hub_down_read_ms < 2000, seen.hub_down_read_ms);
     await page.reload();
     await until('the page with no Hub', () => element(page, 'shot').count(), (n) => n === 1);
@@ -502,7 +502,7 @@ entities:
     const big = made.path;
     for (const [name, file] of [['a_picture', 'older.png'], ['a_video', 'clip.mp4']]) execFileSync(COZY, ['project', '-p', big, 'import', join(scratch, file), name]);
     const held = await api(`/v1/projects/${made.id}`);
-    const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
+    const hash = (name) => held.nodes.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
     let text = 'version: 2\nassets:\n';
@@ -519,7 +519,7 @@ entities:
     const began = Date.now();
     const bigState = await api(`/v1/projects/${made.id}`);
     const read_ms = Date.now() - began;
-    check('scale_state', bigState.assets.length === COUNT, bigState.assets?.length);
+    check('scale_state', bigState.nodes.length === COUNT, bigState.nodes?.length);
     const open = async (zoom, x) => {
       const tab = await context.newPage();
       watch(tab);

@@ -7,7 +7,7 @@ function keepAssets(old: unknown, next: unknown): unknown {
   const before = old as ProjectState | undefined
   const after = next as ProjectState
   if (!before) return after
-  return { ...after, assets: kept(before.assets, after.assets), entities: kept(before.entities ?? [], after.entities ?? []) }
+  return { ...after, nodes: kept(before.nodes, after.nodes), entities: kept(before.entities ?? [], after.entities ?? []) }
 }
 
 function kept<T extends { name: string }>(before: T[], after: T[]): T[] {
@@ -23,6 +23,12 @@ export const projectQuery = (client: Client, id: string) =>
     queryKey: ["project", id],
     queryFn: ({ signal }) => client.project(id, signal),
     structuralSharing: keepAssets,
+  })
+
+export const toolsQuery = (client: Client, q: string, on: string | null) =>
+  queryOptions({
+    queryKey: ["tools", q, on],
+    queryFn: ({ signal }) => client.tools(q, on, signal),
   })
 
 export const canvasQuery = (client: Client, id: string) =>

@@ -47,7 +47,7 @@ export function aspectOf(view: ElementView): number {
   return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
-const hasBar = (view: ElementView) => beatsOf(view.asset?.text).length > 0 || piecesOf(view.asset?.text).length > 0
+const hasBar = (view: ElementView) => beatsOf(view.asset?.fields).length > 0 || piecesOf(view.asset?.fields).length > 0
 
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0
 

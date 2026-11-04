@@ -358,6 +358,9 @@ pub struct Lock {
     /// What each import under an `Idempotency-Key` answered, for its retries, by that key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imported: BTreeMap<String, Keyed>,
+    /// The name each `Idempotency-Key` a new node was asked under took, kept as `imported` is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nodes_made: BTreeMap<String, KeyedNode>,
 }
 
 /// An import's answer, and the digest of what asked it.
@@ -366,6 +369,14 @@ pub struct Keyed {
     pub digest: String,
     pub at_ms: i64,
     pub answer: protocol::project::Imported,
+}
+
+/// The name a new node took, and the digest of what asked it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyedNode {
+    pub digest: String,
+    pub at_ms: i64,
+    pub name: String,
 }
 
 /// One file a `cozy run` left in the project.
@@ -379,7 +390,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new(), nodes_made: BTreeMap::new() }
     }
 }
 

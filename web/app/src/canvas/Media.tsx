@@ -281,7 +281,7 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const source = sourceOf(view, shown)
   const fraction = asset?.standing === "making" ? view.run?.progress?.done_fraction : undefined
   const here = shown && !shown.absent ? shown : null
-  const words = lineOf(asset?.text)
+  const words = lineOf(asset?.fields)
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
 
   return (

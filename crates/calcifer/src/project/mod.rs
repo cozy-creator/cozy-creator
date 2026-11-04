@@ -11,6 +11,8 @@ mod folder;
 mod format;
 mod graph;
 pub(crate) mod host;
+mod nodefile;
+mod nodes;
 mod remote;
 mod thumbs;
 mod tools;
@@ -43,9 +45,9 @@ use protocol::{
     ids::Digest,
     machine as v1,
     project::{
-        Approve, Approved, Asked, Asset as Row, AssetVersions, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Kept, Known, MainFile, Open, Opened,
+        Approve, Approved, Asked, Cancel, Cancelled, Cut, Event, File as Listing, Import, Imported, Kept, Known, MainFile, Node as Row, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
-        Version as VersionRow, VersionPrefix, Warning as ProjectWarning,
+        VersionPrefix, Warning as ProjectWarning,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -131,7 +133,8 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/pull", post(remote::pulled))
         .route("/v1/projects/{id}/events", get(events))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
-        .route("/v1/projects/{id}/assets/{name}", get(asset))
+        .route("/v1/projects/{id}/nodes", post(nodes::create))
+        .route("/v1/projects/{id}/nodes/{name}", get(nodes::read).patch(nodes::patch).delete(nodes::delete).put(nodes::put_back))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/archive", get(archive::archive))
@@ -563,7 +566,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let lock = folder.lock().map_err(Refusal)?;
-    let doc = match Doc::load(folder) {
+    let text = folder.text().map_err(Refusal)?;
+    let doc = match Doc::read(folder, &text) {
         Ok(doc) => doc,
         Err(error) if !lock.owes() => return Err(Refusal(error)),
         // A render going has its own text: what it owes, and what's wrong with the file, are the answer.
@@ -572,7 +576,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![] }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), nodes: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![] }));
         }
     };
     let stand = doc.stand(&lock);
@@ -587,10 +591,12 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
     let entities = (0..doc.assets.len()).filter(|&i| doc.assets[i].links.as_ref().is_some_and(|links| links.parent.is_none())).map(|i| entity_row(&doc, i)).collect();
-    let assets: Vec<Row> = (0..doc.assets.len())
+    let etags = nodefile::etags(&text);
+    let nodes: Vec<Row> = (0..doc.assets.len())
         .filter(|&i| doc.assets[i].links.is_none())
         .map(|i| {
-            let row = row(&api, &doc, folder, &lock, &stand, i);
+            let mut row = row(&api, &doc, folder, &lock, &stand, i);
+            row.etag = etags.get(&name_key(&row.name)).cloned();
             match &stand[i].state {
                 Stand::Stale(why) => stale.push(Stale { name: row.name.clone(), why: why.clone() }),
                 Stand::Missing | Stand::Waits if doc.makes(i) => missing.push(row.name.clone()),
@@ -608,9 +614,9 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
     let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
-    let kept: BTreeSet<&str> = assets.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
+    let kept: BTreeSet<&str> = nodes.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !kept.contains(warning.message.as_str()));
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next }))
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), nodes, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next }))
 }
 
 /// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
@@ -833,7 +839,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         making,
         kind: asset.kind.clone(),
         noun: noun.into(),
-        with: doc.makes(i).then(|| doc.target(i)),
+        tool: doc.makes(i).then(|| doc.target(i)),
         versions: held.map_or(0, |held| held.versions.len() as u32),
         prefixes: (held.into_iter().flat_map(|held| &held.versions))
             .filter_map(|version| {
@@ -865,39 +871,12 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         status,
         reads: doc.reads_of(i),
         written_by: doc.written_by(i).map(str::to_owned),
-        text: doc.text(i),
+        fields: doc.flat_fields(i),
+        etag: None,
         failure,
         changed,
         missing: tags_now(api, doc, i).map_or_else(Vec::new, |tags| doc.missing_names(i, &tags)),
     }
-}
-
-/// `GET /v1/projects/{id}/assets/{name}`: the asset and each of its versions.
-async fn asset(
-    State(api): State<Arc<Api>>,
-    Path((id, name)): Path<(String, String)>,
-) -> Result<Json<AssetVersions>, Refusal> {
-    let project = api.projects.get(&api, &id)?;
-    let folder = &project.folder;
-    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
-    let i = find(&doc, &name).map_err(Refusal)?;
-    let row = row(&api, &doc, folder, &lock, &doc.stand(&lock), i);
-    let held = lock.asset(&row.name);
-    let pinned = row.approved;
-    let versions = (held.into_iter().flat_map(|held| &held.versions))
-        .map(|version| VersionRow {
-            number: version.number,
-            files: listed(folder, &lock, &version.files),
-            made_by: version.made_by.as_ref().map(|by| by.with.clone()),
-            seed: version.seed,
-            runs: version.runs.clone(),
-            approved: Some(version.number) == pinned,
-            warnings: version.warnings.clone(),
-            kept: version.kept,
-            execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
-        })
-        .collect();
-    Ok(Json(AssetVersions { asset: row, versions }))
 }
 
 /// The assets project.lock keeps versions of that project.yaml no longer names, each with the one new asset of its kind with no
