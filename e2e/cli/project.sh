@@ -960,7 +960,7 @@ local was=$(row "$T" 'long_take' .inputs)
 sed -i '/image: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
 [ "$(row "$T" 'long_take' .inputs)" = "$was" ] || check "series: moving a free write moved its shot's key"
 render "$T" 'harbor.1' || check "series: render a free frame: $(tail -c 300 "$OUT/render.txt")"
-says series "made here, free"
+says series "harbor.1: version"
 J '.assets["harbor.1"].versions | length == 1' "$T/project.lock" || check "series: a tool kept its old version: $(jq -c '.assets["harbor.1"].versions | length' "$T/project.lock")"
 J '.assets["harbor.1"].versions[-1].digests.at != null' "$T/project.lock" || check "series: a frame's key does not hold its time"
 [ "$(runs "$T")" = "$frames" ] || check "series: moving a free frame ran something"
@@ -1163,6 +1163,7 @@ version: 2
 assets:
   a: {video: $a}
   b: {video: $b}
+  short_film: {video: $short}
   edit:
     kind: video
     render: {with: cozy}
@@ -1174,11 +1175,13 @@ render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 short=$(jq -r --arg p "$short" '.files | keys[] | select(contains($p))' "$T/project.lock")
 jq --arg s "$short" '.assets.edit.versions[-1].files.video = $s' "$T/project.lock" > "$T/lock.tmp" && mv "$T/lock.tmp" "$T/project.lock"
-cp "$T/short.mp4" "$T/edit.mp4"
+# Not through the root file, a hard link into files/: cp would write the film in the store.
+rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: not whole after a render: $(status "$T" | jq -c .cuts)"
 [ "$(row "$T" edit .standing)" = '"current"' ] || check "healing: not current: $(row "$T" edit .status)"
+n=$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$T/edit.mp4"); [ "$n" = 288 ] || check "healing: edit.mp4 is really $n frames"
 version=$(jq '.assets.edit.versions[-1].number' "$T/project.lock")
 render "$T" edit || check "healing: naming it: $(tail -c 400 "$OUT/render.txt")"
 says healing "(unchanged)"
