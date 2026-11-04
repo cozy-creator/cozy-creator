@@ -75,13 +75,13 @@ assets:
     kind: character
     render:                    # at the root what it is; here how to make it
       prompt: |
-        <kyogre>, from <kyogre_art>, front and back on one sheet, no text.
+        Kyogre, the colossal blue whale-like legendary Pokémon, from <kyogre_art>, front and back on one sheet, no text.
       aspect_ratio: "3:2"
       megapixels: 2
 
   kyogre_primordial_sheet:
     kind: character
-    render: <kyogre.primordial>, from <kyogre_sheet>, in the same pose.
+    render: Kyogre in its ancient form, with glowing blue veins, from <kyogre_sheet>, in the same pose.
 
   coast:
     kind: environment
@@ -196,7 +196,7 @@ Assets can link into hashes, whereas entities link into asset-names. An entity h
 | `<kyogre_sheet>` | The asset itself. |
 
 - **Sub-entities:** a key whose value is a map, one level deep. A map inside one warns and is ignored.
-- **An asset mentioning an entity that links back to it** gets words only, with no file and no cycle: `kyogre_sheet` can say `<kyogre>` for the description.
+- **An asset an entity links to, directly or through a sub-entity, can't read that entity.** A mention of it stays plain text, with one warning: write the words in its prompt, even if the thing is then described in two places. Shots and storyboards read entities normally, because nothing links back to them.
 - **Memo:** a read's description and file hashes count, so editing an entity's description puts what reads it out of date.
 - **Names** are shared across both sections. A clash warns, and the asset stands.
 - **`status`** lists entities apart with their links, and a link to nothing warns with the fix. **`render <entity>`** renders its linked assets and its sub-entities'.

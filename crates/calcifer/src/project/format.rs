@@ -69,12 +69,12 @@ assets:
   kyogre_sheet:
     kind: character
     render: |
-      <kyogre>. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+      Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
   groudon_sheet:
     kind: character
     render: |
-      <groudon>. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+      Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
   coast:
     kind: environment
@@ -149,8 +149,6 @@ pub struct Asset {
     pub writes: Vec<Write>,
     /// The asset whose function sends this revision: its state comes with that one's take.
     pub writer: Option<usize>,
-    /// What it reads for the words alone: an entity that links back to it, whose files would be its own.
-    pub words: BTreeSet<usize>,
     /// It is no asset but an entity, a sub-entity or a link of one: no work and no versions, its files what its links hold now.
     pub links: Option<Links>,
 }
@@ -433,7 +431,7 @@ impl Doc {
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
         let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, words: BTreeSet::new(), links: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, links: None });
         Some(self.assets.len() - 1)
     }
 
@@ -516,7 +514,6 @@ impl Doc {
             reads: vec![],
             writes: vec![],
             writer: None,
-            words: BTreeSet::new(),
             links: Some(links),
         });
         true
@@ -544,7 +541,6 @@ impl Doc {
                     reads: vec![],
                     writes: vec![],
                     writer: None,
-                    words: BTreeSet::new(),
                     links: None,
                 });
                 self.assets.len() - 1
@@ -583,7 +579,6 @@ impl Doc {
         let n = self.assets.len();
         let (mut upstream, mut fixed, mut said) = (vec![vec![]; n], vec![vec![]; n], vec![]);
         let mut reads = vec![vec![]; n];
-        let mut words = vec![BTreeSet::new(); n];
         // A link of an entity says what the asset says of itself, else what the entity says.
         for i in 0..n {
             let target = self.assets[i].links.as_ref().and_then(|links| self.find(links.roles.get("")?));
@@ -626,11 +621,11 @@ impl Doc {
                     continue;
                 };
                 let key = name_key(&self.assets[j].name);
-                // An entity that links back to what reads it gives it words: its file would be the one being made.
-                if self.assets[j].links.as_ref().is_some_and(|links| links.roles.values().any(|target| self.find(target) == Some(i))) {
-                    if !reads[i].contains(&j) {
-                        reads[i].push(j);
-                        words[i].insert(j);
+                // What an entity links to can't read it: it would be made from itself. The words go in its own prompt.
+                if self.links_to(j, i) {
+                    let said_of = format!("{} mentions <{mention}>, and that entity links to it, so it can't read it: the mention stays plain text; write the words in its prompt", asset.name);
+                    if !said.contains(&said_of) {
+                        said.push(said_of);
                     }
                     continue;
                 }
@@ -646,9 +641,8 @@ impl Doc {
             reads[reader].retain(|j| *j != read);
             said.push(format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name));
         }
-        for ((asset, reads), words) in self.assets.iter_mut().zip(reads).zip(words) {
+        for (asset, reads) in self.assets.iter_mut().zip(reads) {
             asset.reads = reads;
-            asset.words = words;
         }
         self.order = graph.order;
         self.upstream = graph.upstream;
@@ -657,6 +651,14 @@ impl Doc {
 
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
+    }
+
+    /// Whether asset `i` is what node `j`'s entity links to, directly or through a sub-entity.
+    fn links_to(&self, j: usize, i: usize) -> bool {
+        let Some(links) = &self.assets[j].links else { return false };
+        let root = links.parent.as_deref().and_then(|parent| self.find(parent)).and_then(|root| self.assets[root].links.as_ref()).unwrap_or(links);
+        let subs = root.subs.iter().filter_map(|sub| self.assets[self.find(sub)?].links.as_ref());
+        root.own.values().chain(subs.flat_map(|sub| sub.own.values())).any(|target| self.find(target) == Some(i))
     }
 
     /// The asset named `name`: what can hold versions, as an entity can't.
@@ -792,10 +794,6 @@ impl Doc {
         let mut reads = vec![];
         for &j in &self.assets[i].reads {
             let name = self.assets[j].name.clone();
-            if self.assets[i].words.contains(&j) {
-                reads.push(ReadNow { name, asset: j, files: Files::new(), newest: None });
-                continue;
-            }
             match &done[j].files {
                 Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), newest: None }),
                 None if tool => {
