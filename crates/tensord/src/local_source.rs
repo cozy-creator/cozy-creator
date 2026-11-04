@@ -244,8 +244,9 @@ impl LocalSources {
 
     /// The identity of the environment a live manifest runs in (`env-<identity[..16]>`): one per
     /// lock, project metadata, local path dependencies, carried wheels and this machine's
-    /// interpreter, SDK pair and client. Remote environments live beside their immutable source;
-    /// direct paths remain live.
+    /// interpreter, SDK pair and client, and per path read in place: its editable install names that
+    /// path, so the same package at another path is another environment. Remote environments live
+    /// beside their immutable source; direct paths remain live.
     fn environment(&self, manifest: &Manifest) -> String {
         let own = manifest.own();
         let held = |name: &str| {
@@ -256,6 +257,7 @@ impl LocalSources {
         let carried: Vec<_> = manifest.wheels.iter().map(|w| (&w.name, &w.digest)).collect();
         let key = serde_json::json!({
             "lock": held("uv.lock"), "project": held("pyproject.toml"), "beside": beside, "wheels": carried,
+            "path": manifest.path, "own": manifest.project,
             "indexes": manifest.indexes, "sdk": self.publisher.sdk.requirements,
             "links": self.publisher.sdk.find_links, "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),

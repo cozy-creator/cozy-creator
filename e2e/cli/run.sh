@@ -197,13 +197,48 @@ update() { step update; update_to_newest; }
 logs() { step logs; (cd ~/.cozy && find . -name '*.log' -size -20M | tar -czf - -T - > "$OUT/cozy-logs.tgz") || true; }
 remove() { logs; step "remove cozy"; remove_cozy; }
 
+# Local code of one name at two paths, each saying which it is, run in turn: each runs its own, not the first's install (cl-733).
+one_name_two_paths() {
+step "one name at two paths"
+local words at turn=0
+words=$(cd "$(dirname "$0")/script" && pwd)/words.py
+for at in 1 2; do
+  mkdir -p "$OUT/paths/$at/one-name"
+  sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/one-name/one_name.py"
+  cat > "$OUT/paths/$at/one-name/pyproject.toml" <<'TOML'
+[project]
+name = "one-name"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.30", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "one_name:app"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["one_name.py"]
+TOML
+done
+for at in 1 2 1; do
+  turn=$((turn + 1))
+  if cell "folder-$turn" "$OUT/paths/$at/one-name" "text=turn $turn $RANDOM"; then
+    grep -q "\"words\": *$at\b" "$OUT/folder-$turn.ndjson" || check "one package name at two paths: path $at ran another's code"
+  fi
+done
+cozy --json package remove local/one-name --on local > /dev/null || check "package remove local/one-name failed"
+}
+
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="weightless script_package image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
   commands) parts="catalog basics yaml_requests run_filters projects bound_runs logs" ;;
-  follow) parts="script_package image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
+  follow) parts="script_package one_name_two_paths image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 [ -n "$LOCAL" ] || parts="catalog refusals completions homebrew calcifer_faults update remove"
