@@ -83,7 +83,7 @@ assets:
       - duration: 4
         description: |
           <hero> steps back from <wall.1>, where the orange letters read OPEN, and says "Done."
-  mural upscale:
+  mural_upscale:
     kind: upscale
     video: <mural>
     resolution: 1080p
@@ -91,7 +91,7 @@ assets:
     kind: edit
     resolution: 1080p
     pieces:
-      - <mural upscale>
+      - <mural_upscale>
 YAML
 )
   imported "$P" hero.png place.png
@@ -107,7 +107,7 @@ YAML
     expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
   fi
   if want project-upscale && [ -n "$f" ]; then
-    render project-upscale "$P" "mural upscale" || expect project-upscale FAIL "render mural upscale: $(tail -c 300 project-upscale.log)"
+    render project-upscale "$P" mural_upscale || expect project-upscale FAIL "render mural upscale: $(tail -c 300 project-upscale.log)"
     u=$(made "$P" "mural upscale")
     if [ -z "$u" ]; then expect project-upscale FAIL "no upscale: $(tail -c 300 project-upscale.log)"
     else
@@ -184,7 +184,7 @@ assets:
     kind: environment
     image: plate.png
     description: a synthetic broadcast test pattern
-  take one:
+  take_one:
     video: plate.mp4
   follow:
     kind: shot
@@ -194,7 +194,7 @@ assets:
     beats:
       - duration: 5
     plate:
-      video: <take one>
+      video: <take_one>
 YAML
 )
   nice -n 19 ffmpeg -v error -y -f lavfi -i testsrc2=size=1344x768:rate=24:duration=5 -c:v libx264 -pix_fmt yuv420p "$P/plate.mp4"
@@ -219,13 +219,13 @@ entities:
   host:
     kind: character
     description: "$CHAR"
-    image: <host sheet>
-    voice: <host voice>
+    image: <host_sheet>
+    voice: <host_voice>
 assets:
-  host sheet:
+  host_sheet:
     kind: character
     image: hero.png
-  host voice:
+  host_voice:
     kind: voice
     audio: voice.wav
   yard:
@@ -278,7 +278,7 @@ assets:
     description: "$SCENE"
     render:
       seed: $((R + 304))
-  kitchen door:
+  kitchen_door:
     kind: setup
     camera: "<kitchen> wide from the door: the nearest objects large on the left, the window small on the right"
 YAML

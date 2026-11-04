@@ -354,13 +354,13 @@ assets:
     description: It renders without that.
   nothing:
     image: ./path.png
-  no package:
+  no_package:
     kind: picture
     description: Nothing makes me.
-  no kind:
+  no_kind:
     render: {with: $here/project/draw.py}
     description: An image, then.
-  no adapter:
+  no_adapter:
     render: {with: $here/project/draw.py}
     kind: unheard
     description: Nor me either.
@@ -377,11 +377,11 @@ render "$C" wrong || check "pins: wrong's bad pin stopped it: $(tail -c 300 "$OU
 [ "$(made "$C" wrong)" = 1 ] || check "pins: wrong was not made without its bad pin"
 
 step "a project: an asset with no package, no kind, or no adapter says so, and the rest goes on"
-J '.warnings | any(contains("no package has no `with`, and no `defaults.picture.with`"))' <<< "$(status "$C")" || check "pins: an asset with nothing to make is not said: $(status "$C" | jq -c .warnings)"
-J '.assets[] | select(.name == "no kind") | .kind == "image"' <<< "$(status "$C")" || check "pins: an operation with no kind is not an image: $(row "$C" 'no kind' .)"
+J '.warnings | any(contains("no_package has no `render.with`, and no `defaults.picture.render.with`"))' <<< "$(status "$C")" || check "pins: an asset with nothing to make is not said: $(status "$C" | jq -c .warnings)"
+J '.assets[] | select(.name == "no_kind") | .kind == "image"' <<< "$(status "$C")" || check "pins: an operation with no kind is not an image: $(row "$C" 'no_kind' .)"
 sed -i 's/It renders without that\./Rendered again./' "$C/project.yaml"
 render "$C" all || check "pins: render all with what can't be made: $(tail -c 400 "$OUT/render.txt")"
-says pins "no adapter: "
+says pins "no_adapter: "
 says pins "has no adapter for kind unheard: it can't be made"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
 }
@@ -404,31 +404,31 @@ entities:
   hero:
     kind: character
     description: A brave hero.
-    image: <hero sheet>
-    voice: <hero voice>
-    pose: <hero pose>
+    image: <hero_sheet>
+    voice: <hero_voice>
+    pose: <hero_pose>
     render: {with: nothing}
     badge: $pic
-    lost: <no such asset>
+    lost: <no_such_asset>
     primordial:
       description: The hero of old.
-      image: <old sheet>
-      deeper: {image: <hero sheet>}
-  hero voice:
+      image: <old_sheet>
+      deeper: {image: <hero_sheet>}
+  hero_voice:
     description: A name both sections use.
 assets:
-  hero sheet:
+  hero_sheet:
     kind: picture
     description: <hero>, on one sheet.
-  hero voice:
+  hero_voice:
     kind: voice
     audio: $voice
-  hero pose:
+  hero_pose:
     kind: picture
     description: A pose of its own.
-  old sheet:
+  old_sheet:
     kind: picture
-    description: <hero.primordial>, from <hero sheet>.
+    description: <hero.primordial>, from <hero_sheet>.
   meeting:
     kind: picture
     description: <hero> meets <hero.primordial>, in <hero.pose>.
@@ -436,18 +436,32 @@ YAML
 said() { J --arg s "$1" '.warnings | any(contains($s))' <<< "$(status "$E")" || check "entities: no warning of '$1': $(status "$E" | jq -c .warnings)"; }
 said "hero's render: an entity holds no way of making anything"
 said "hero's badge: an entity links to an asset's name: make an asset for it"
-said "hero's lost: <no such asset> is nothing in the project: add an asset"
+said "hero's lost: <no_such_asset> is nothing in the project: add an asset"
 said "hero.primordial's deeper: sub-entities go one level"
-said "hero voice is an asset and an entity"
+said "hero_voice is an asset and an entity"
 J '(.entities | map(.name)) == ["hero"] and (.entities[0] | .kind == "character" and (.links | keys) == ["image", "pose", "voice"] and (.subs | map(.name)) == ["hero.primordial"])' <<< "$(status "$E")" || check "entities: status lists $(status "$E" | jq -c .entities)"
 J '[.assets[].name] | index("hero") == null and index("hero.primordial") == null' <<< "$(status "$E")" || check "entities: an entity is listed as an asset"
 render "$E" hero || check "entities: render hero: $(tail -c 400 "$OUT/render.txt")"
 J '[.assets | keys[]] | sort == ["hero pose", "hero sheet", "old sheet"]' "$E/project.lock" || check "entities: render hero made $(jq -c '.assets | keys' "$E/project.lock")"
 J '.assets["hero sheet"].versions[0].reads | map(select(.name == "hero")) | length == 1 and .[0].files == {}' "$E/project.lock" || check "entities: an asset its entity links back to reads words: $(jq -c '.assets["hero sheet"].versions[0].reads' "$E/project.lock")"
-J '.assets["old sheet"].versions[0].reads | map({(.name): (.files | length)}) | add == {"hero.primordial": 0, "hero sheet": 1}' "$E/project.lock" || check "entities: old sheet reads $(jq -c '.assets["old sheet"].versions[0].reads' "$E/project.lock")"
+J '.assets["old sheet"].versions[0].reads | map({(.name): (.files | length)}) | add == {"hero.primordial": 0, "hero_sheet": 1}' "$E/project.lock" || check "entities: old sheet reads $(jq -c '.assets["old sheet"].versions[0].reads' "$E/project.lock")"
 render "$E" meeting || check "entities: render meeting: $(tail -c 400 "$OUT/render.txt")"
 J '.assets.meeting.versions[0].reads | map({(.name): (.files | keys)}) | add == {"hero": ["image", "voice"], "hero.primordial": ["image", "voice"], "hero.pose": ["image"]}' "$E/project.lock" || check "entities: meeting reads $(jq -c '.assets.meeting.versions[0].reads' "$E/project.lock")"
 J '.assets.meeting.versions[0].reads | map(select(.name == "hero")) | .[0].files.image != null' "$E/project.lock" || check "entities: <hero> has no picture"
+
+step "a project: a name can't hold spaces or commas, and <a b> is no mention"
+local N=$OUT/names
+mkdir -p "$N"
+printf 'version: 2\nassets:\n  kyogre sheet:\n    kind: image\n' > "$N/project.yaml"
+code=0; cozy project -p "$N" status > "$OUT/name.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -qF "\`kyogre sheet\`: names can't hold spaces or commas; use \`kyogre_sheet\`" "$OUT/name.txt"; } || check "names: a space in a name: exit $code: $(tail -c 300 "$OUT/name.txt")"
+printf 'version: 2\nentities:\n  a,b:\n    kind: image\n' > "$N/project.yaml"
+code=0; cozy project -p "$N" status > "$OUT/name.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -qF "use \`a_b\`" "$OUT/name.txt"; } || check "names: a comma in a name: exit $code: $(tail -c 300 "$OUT/name.txt")"
+printf 'version: 2\nassets:\n  a:\n    kind: image\n    description: Prose <a b> here.\n' > "$N/project.yaml"
+J '.warnings | any(contains("<a b> is no mention"))' <<< "$(status "$N")" || check "names: <a b> was not said: $(status "$N" | jq -c .warnings)"
+code=0; cozy project -p "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q "names can't hold" "$OUT/name.txt"; } || check "names: rename took a space: exit $code: $(tail -c 300 "$OUT/name.txt")"
 
 step "a project: an entity's words are in what reads it, and an entity holds no version"
 sed -i 's/description: A brave hero\./description: A braver hero./' "$E/project.yaml"
@@ -587,7 +601,7 @@ assets:
     render: {with: $here/project/shots.py}
     kind: shot
     summary: Dusk on <look> and <coast>.
-  long take:
+  long_take:
     render: {with: $here/project/shots.py}
     kind: shot
     summary: Walking on <look>.
@@ -621,7 +635,7 @@ J '.prompt | contains("coast.2=") and contains("look=")' <<< "$(given next)" || 
 take=$(jq -c '.assets["long take"].versions[-1].writes | keys' "$T/project.lock")
 [ "$take" = '["coast.1","coast.2"]' ] || check "series: long take's take holds $take"
 [ "$(made "$T" coast.1)" = null ] || [ "$(made "$T" coast.1)" = 0 ] || check "series: a sent revision has versions of its own"
-[ "$(row "$T" coast.1 .status)" = '"written by long take 1"' ] || check "series: coast.1 is $(row "$T" coast.1 .status)"
+[ "$(row "$T" coast.1 .status)" = '"written by long_take 1"' ] || check "series: coast.1 is $(row "$T" coast.1 .status)"
 J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.2"].image' "$T/project.lock")" '.assets["next"].versions[-1].reads[] | select(.name == "coast.2") | .files.image == $want' "$T/project.lock" \
   || check "series: next's <coast.2> is not what long take wrote: $(jq -c '.assets["next"].versions[-1].reads' "$T/project.lock")"
 J --arg want "$(jq -r '.assets["long take"].versions[-1].writes["coast.1"].image' "$T/project.lock")" '.assets.poster.versions[-1].reads[] | select(.name == "coast.1") | .files.image == $want' "$T/project.lock" \
@@ -632,9 +646,9 @@ J '.assets["first"].versions[-1].reads | map(.name) | index("coast")' "$T/projec
 step "a project: a free frame, moved, re-renders nothing"
 J '.assets["harbor.1"].versions[-1] | .made_by.with == "cozy/frame" and (.files.image != null)' "$T/project.lock" || check "series: harbor.1 is not a free frame: $(jq -c '.assets["harbor.1"].versions[-1].made_by' "$T/project.lock")"
 frames=$(runs "$T")
-local was=$(row "$T" 'long take' .inputs)
+local was=$(row "$T" 'long_take' .inputs)
 sed -i '/world_state: harbor.1/{n;s/at: 1/at: 2/}' "$T/project.yaml"
-[ "$(row "$T" 'long take' .inputs)" = "$was" ] || check "series: moving a free write moved its shot's key"
+[ "$(row "$T" 'long_take' .inputs)" = "$was" ] || check "series: moving a free write moved its shot's key"
 render "$T" 'harbor.1' || check "series: render a free frame: $(tail -c 300 "$OUT/render.txt")"
 says series "made here, free"
 J '.assets["harbor.1"].versions | length == 1' "$T/project.lock" || check "series: a tool kept its old version: $(jq -c '.assets["harbor.1"].versions | length' "$T/project.lock")"
@@ -644,7 +658,7 @@ J '.assets["harbor.1"].versions[-1].digests.at != null' "$T/project.lock" || che
 step "a project: pinning a sent write puts its shot out of date; a write past its beat warns"
 local pic; still "$T/pic.png" navy; pic=$(prefix "$T" "$T/pic.png")
 sed -i "/^  poster:\$/i\\  coast.2:\\n    image: $pic" "$T/project.yaml"
-case "$(row "$T" 'long take' .status)" in *'out of date'*) ;; *) check "series: a pinned sent write did not put its shot out of date: $(row "$T" 'long take' .status)" ;; esac
+case "$(row "$T" 'long_take' .status)" in *'out of date'*) ;; *) check "series: a pinned sent write did not put its shot out of date: $(row "$T" 'long_take' .status)" ;; esac
 J '.assets[] | select(.name == "coast.2") | .pinned' <<< "$(status "$T")" || check "series: coast.2 is not pinned"
 sed -i '/^  coast.2:$/,+1d' "$T/project.yaml"
 sed -i '0,/at: 1$/s//at: 40/' "$T/project.yaml"
@@ -719,7 +733,7 @@ assets:
     render:
       b: its own
       c: 3
-  told alone:
+  told_alone:
     render:
       with: $here/project/shots.py
       c: 3
@@ -734,7 +748,7 @@ says adapters "has nothing to make"
 render "$T" checked || check "adapters: typed: $(tail -c 400 "$OUT/render.txt")"
 says adapters "reads no field no_such_field"
 step "a project: options go to the adapter, the asset's over its defaults', and one naming its own with takes none"
-render "$T" told "told alone" || check "adapters: options: $(tail -c 400 "$OUT/render.txt")"
+render "$T" told told_alone || check "adapters: options: $(tail -c 400 "$OUT/render.txt")"
 heard() { cat "$T/$(jq -r --arg s "$1" '.files[.assets[$s].versions[-1].files.given].path' "$T/project.lock")"; }
 [ "$(heard told | jq -c .)" = '{"a":1,"b":"its own","c":3}' ] || check "adapters: told's options: $(heard told)"
 [ "$(heard 'told alone' | jq -c .)" = '{"c":3}' ] || check "adapters: told alone took options from defaults: $(heard 'told alone')"

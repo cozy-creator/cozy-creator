@@ -21,7 +21,7 @@ Calcifer owns all of this. It knows no kinds and no packages by name. A package 
 | `project.yaml` | You, and cozy for pins | What should exist |
 | `project.lock` | Cozy only | Every version: its key, seed, files, what it read |
 | `files/` | Cozy only | Every file, by hash |
-| `<edit name>.mp4`, `.otio` | Cozy | Each cut |
+| `<edit_name>.mp4`, `.otio` | Cozy | Each cut |
 | `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and any folder a run made |
 
 ## The file
@@ -175,7 +175,9 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 
 ## Mentions
 
-`<name>` in any text makes that asset an input. Write names with underscores or dots, such as `kyogre_sheet` or `coast.1`: spaces get confusing. Names match in any case, with `_`, `-` and space alike, so nothing refuses a space.
+`<name>` in any text makes that asset an input.
+
+**Names** of assets, entities and sub-entities hold only letters, digits, `_`, `-` and `.`, such as `kyogre_sheet` or `coast.1`. Anything else is refused when the file is read, in one line with the fix, and nothing renders: `` `kyogre sheet`: names can't hold spaces or commas; use `kyogre_sheet` ``. `rename` takes the same rule. Names match in any case, with `_` and `-` alike. A `<…>` holding a space or comma isn't a mention: it stays plain text, with a warning.
 
 - **In a shot's `summary`:** reaches every segment.
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
@@ -184,7 +186,7 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 
 ## Entities
 
-Assets can link into hashes, whereas entities link into asset-names. An entity holds `kind`, `description`, and links: any other key whose value is `<an asset>`. A hash there warns and is ignored: make an asset for it. It has no `render`, versions or pins; a `render` warns and is ignored. It isn't a node of work: nothing renders it.
+Assets can link into hashes, whereas entities link into asset-names. An entity holds `kind`, `description`, and links: any other key whose value is `<asset_name>`. A hash there warns and is ignored: make an asset for it. It has no `render`, versions or pins; a `render` warns and is ignored. It isn't a node of work: nothing renders it.
 
 | Mention | What the adapter gets |
 |---|---|

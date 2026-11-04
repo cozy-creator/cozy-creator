@@ -687,6 +687,7 @@ async fn rename(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<Renamed>, Refusal> {
     let asked: Rename = parse(&body?)?;
+    format::named(&asked.to).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));

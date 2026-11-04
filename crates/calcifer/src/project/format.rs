@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{self, Files, Folder, Keeps, Lock},
-    graph::{Graph, mentions, mentions_in, name_key},
+    graph::{Graph, as_name, is_name, mentions, mentions_in, name_key, no_mentions_in},
 };
 
 /// The name `cozy project render all` means.
@@ -57,21 +57,21 @@ entities:
     kind: character
     description: |
       Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
-    image: <kyogre sheet>
+    image: <kyogre_sheet>
 
   groudon:
     kind: character
     description: |
       Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
-    image: <groudon sheet>
+    image: <groudon_sheet>
 
 assets:
-  kyogre sheet:
+  kyogre_sheet:
     kind: character
     render: |
       <kyogre>. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
-  groudon sheet:
+  groudon_sheet:
     kind: character
     render: |
       <groudon>. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
@@ -80,7 +80,7 @@ assets:
     kind: environment
     description: A volcanic coast under a storm sky, with a dark sea on the left, lava cliffs on the right, and a small white crater city far away at the center.
 
-  coast wide:
+  coast_wide:
     kind: setup
     camera: <coast>. The camera stands high and far back, with the sea on the left, the cliffs on the right, and the crater city small at the center.
 
@@ -107,7 +107,7 @@ assets:
   clash:
     kind: shot
     summary: |
-      <kyogre> and <groudon> fight on <coast wide> in one continuous shot with no cuts.
+      <kyogre> and <groudon> fight on <coast_wide> in one continuous shot with no cuts.
     soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
     beats:
       - duration: 14
@@ -298,6 +298,17 @@ impl Doc {
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
+        let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
+        for name in protocol::yaml::keys(text, &["assets"]) {
+            named(&name)?;
+        }
+        for name in protocol::yaml::keys(text, &["entities"]) {
+            named(&name)?;
+            let fields = entities.get(&name).and_then(Value::as_object).into_iter().flat_map(|body| body.keys());
+            for field in fields.filter(|field| !["kind", "description", "render"].contains(&field.as_str())) {
+                named(&format!("{name}.{field}"))?;
+            }
+        }
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), declared: 0 };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
@@ -312,10 +323,10 @@ impl Doc {
             let writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
             doc.warnings.append(&mut said);
             for (beat, world_state, at) in writes {
+                named(&world_state)?;
                 doc.write(i, beat, &world_state, at);
             }
         }
-        let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
         for name in protocol::yaml::keys(text, &["entities"]) {
             let Some(written) = entities.get(&name) else { continue };
             doc.entity(&name, written);
@@ -478,7 +489,7 @@ impl Doc {
                 (_, Value::String(text)) if matches!(mentions(text).as_slice(), [one] if text.trim() == format!("<{one}>")) => {
                     links.insert(field.clone(), mentions(text)[0].to_owned());
                 }
-                _ => self.warnings.push(format!("{name}'s {field}: an entity links to an asset's name: make an asset for it, and write `{field}: <that asset>`; it is ignored")),
+                _ => self.warnings.push(format!("{name}'s {field}: an entity links to an asset's name: make an asset for it, and write `{field}: <its_name>`; it is ignored")),
             }
         }
         (links, subs)
@@ -586,6 +597,11 @@ impl Doc {
                 upstream[i].push(writer);
                 fixed[i].push(writer);
                 continue;
+            }
+            if asset.links.as_ref().is_none_or(|links| !links.roles.contains_key("")) {
+                for text in no_mentions_in(&Value::Object(asset.fields.clone())) {
+                    said.push(format!("{}: <{text}> is no mention, since names can't hold spaces or commas: it stays plain text; write <{}> if it means one", asset.name, as_name(&text)));
+                }
             }
             if let Some(links) = &asset.links {
                 for (field, target) in &links.own {
@@ -936,6 +952,18 @@ fn text_of(value: Option<&Value>) -> String {
         Some(Value::Number(number)) => number.to_string(),
         _ => String::new(),
     }
+}
+
+/// `name`, refused unless it can be a name: the file is wrong, and nothing is rendered from it.
+pub fn named(name: &str) -> Result<(), Error> {
+    if is_name(name) {
+        return Ok(());
+    }
+    let why = match name.contains([' ', ',']) {
+        true => "names can't hold spaces or commas",
+        false => "names hold only letters, digits, `_`, `-` and `.`",
+    };
+    Err(invalid("project_name", format!("`{name}`: {why}; use `{}`", as_name(name))))
 }
 
 /// An asset's lines, or a section of `defaults`, as the platform reads them: at its root what it is, in `render` how to make it.

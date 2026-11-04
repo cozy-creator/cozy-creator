@@ -1,14 +1,29 @@
 //! What reads what, over any assets: names, `<mentions>`, and topological order.
 use serde_json::Value;
 
-/// How a name matches a mention: any case, with `_`, `-` and space alike (xs-135).
+/// How a name matches a mention: any case, with `_` and `-` alike. Space folds with them, so a lock from before names lost theirs
+/// still finds its versions.
 pub fn name_key(name: &str) -> String {
     name.replace(['_', '-'], " ").split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
-/// Every `<…>` in `text`, as written between its brackets, in order: no brackets or line break
-/// inside.
-pub fn mentions(text: &str) -> Vec<&str> {
+fn in_a_name(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+/// Whether `text` can be a name: only letters, digits, `_`, `-` and `.`.
+pub fn is_name(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(in_a_name)
+}
+
+/// `text` as it could be a name: what a name can't hold becomes `_`.
+pub fn as_name(text: &str) -> String {
+    let parts = text.split(|c| !in_a_name(c)).filter(|part| !part.is_empty());
+    parts.collect::<Vec<_>>().join("_")
+}
+
+/// Every `<…>` in `text`, as written between its brackets, in order: no brackets or line break inside.
+fn bracketed(text: &str) -> Vec<&str> {
     let mut found = vec![];
     let mut rest = text;
     while let Some(open) = rest.find('<') {
@@ -25,12 +40,27 @@ pub fn mentions(text: &str) -> Vec<&str> {
     found
 }
 
-/// Every `<…>` in any text under `value`.
+/// Every mention in `text`: a `<…>` holding a name.
+pub fn mentions(text: &str) -> Vec<&str> {
+    bracketed(text).into_iter().filter(|text| is_name(text)).collect()
+}
+
+/// Every mention in any text under `value`.
 pub fn mentions_in(value: &Value) -> Vec<String> {
     match value {
         Value::String(text) => mentions(text).into_iter().map(str::to_owned).collect(),
         Value::Array(items) => items.iter().flat_map(mentions_in).collect(),
         Value::Object(fields) => fields.values().flat_map(mentions_in).collect(),
+        _ => vec![],
+    }
+}
+
+/// Every `<…>` under `value` that holds no name, so stays plain text.
+pub fn no_mentions_in(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => bracketed(text).into_iter().filter(|text| !is_name(text)).map(str::to_owned).collect(),
+        Value::Array(items) => items.iter().flat_map(no_mentions_in).collect(),
+        Value::Object(fields) => fields.values().flat_map(no_mentions_in).collect(),
         _ => vec![],
     }
 }

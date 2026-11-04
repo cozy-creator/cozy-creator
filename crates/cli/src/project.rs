@@ -77,7 +77,7 @@ enum Verb {
     /// Pin a take or version: its hash goes on the asset's line in project.yaml.
     #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
     Approve {
-        /// The asset: `theo`, `dock b`, `fight`, `fight upscale`, …
+        /// The asset: `theo`, `dock_b`, `fight`, `fight_upscale`, …
         name: String,
         /// Its take or version, 1 first, or a hash prefix of any file in the project's `files/`.
         version: String,
@@ -131,7 +131,7 @@ struct ImportFile {
 #[derive(clap::Args, Debug)]
 #[command(after_help = RENDER_EXAMPLES)]
 struct Render {
-    /// The assets (`theo`, `dock b`, `fight`, `fight upscale`, …), with what they read, or `all`: every asset.
+    /// The assets (`theo`, `dock_b`, `fight`, `fight_upscale`, …), with what they read, or `all`: every asset.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
