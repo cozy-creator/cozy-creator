@@ -30,12 +30,16 @@ and the seal's names, over this machine's uv cache and Pythons):
   (`sdk: own`): the version its lock names when that meets the floor, else the newest that does on uv's
   index, else among the GitHub prereleases `cozy machine update` also fetches. The machine, its pair and
   its other environments stay as they are, with no update and no restart. `runtime_floor_unmet` says
-  what it needs when none is published. A development Runtime runs regardless, as its owner chose. Other
-  `uv pip check` findings are the run's warning.
+  what it needs and what to do when none is published; a network that can't answer is waited for, visibly.
+  A development Runtime (a wheel file sent with `--runtime`, never a numbered prerelease) runs regardless,
+  as its owner chose. If the package then doesn't import, the reason names the floor and the update that
+  meets it. Other `uv pip check` findings are the run's warning.
 - The last step compiles the environment's bytecode.
 - Described inside the env by its own Runtime with `python -I -S` (no `.pth` execution): the
   environment's callees and digest, and local code's interface from its source.
-- `Service::installed`: its kernels compile and a call's imports start, for both kinds.
+- `Service::installed`: its kernels compile and a call's imports start, for both kinds. A warm install
+  waits for those imports: one that fails is the install's warning, and its failure when a floor its
+  development Runtime missed explains it.
 
 Nothing assumes one Runtime per machine. Kernels compile under the environment's own Runtime and seal.
 The describe step asks that Runtime. The executor seam is tolerant in both directions, and a room is

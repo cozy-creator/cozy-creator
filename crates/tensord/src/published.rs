@@ -240,7 +240,7 @@ const TICK: Duration = Duration::from_millis(100);
 /// its run lives: its cancel ends the wait, and the run shows what it waits for. Nothing has
 /// executed, so asking again re-executes nothing, and what an earlier ask resolved is held. A
 /// hint (no run to stop) is asked once.
-fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
+pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
     let Some(stop) = &job.stop else { return prepare() };
     let (mut wait, mut waited) = (FIRST_WAIT, false);
     loop {

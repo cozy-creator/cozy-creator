@@ -371,7 +371,7 @@ impl LocalSources {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => return Err(error.into()),
             };
-            let built = self.publisher.build(&environment, &environment::Project {
+            let built = published::patiently(job, || self.publisher.build(&environment, &environment::Project {
                 dir: &project,
                 python: &self.publisher.sdk.python,
                 locked: locked.as_ref(),
@@ -382,7 +382,7 @@ impl LocalSources {
                 label: &label,
                 stage: &stage,
                 fetch: None,
-            }, job).map_err(failed)?;
+            }, job)).map_err(failed)?;
             let _ = fs::remove_dir_all(&carried);
             fs::write(&ready, serde_json::to_vec(&built).map_err(std::io::Error::other)?)?;
         }
