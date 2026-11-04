@@ -74,7 +74,8 @@ for people; `remedy`, `next` (commands to run) and `cause` (a peer's own code, s
 A run's or machine's outcome carries the same typed reason.
 
 **Events.** A stream is `GET …/events` (`text/event-stream`). Each event's `data:` is one JSON object tagged by
-`"type"` (snake_case); there is no `event:` field, so an `EventSource`'s `onmessage` sees every event. A
+`"type"` (snake_case), with no `event:` field. A browser reads a stream from `fetch`'s body, as `EventSource` can't send
+`Authorization`. A
 resumable stream gives each durable event an `id:` and resumes after `Last-Event-ID` or `?starting_after=`
 (the same cursor). A comment keeps the connection alive every 15 s. A stream ends when what it follows has
 ended, or when Calcifer stops; a client reconnects from its last `id:`.
@@ -446,6 +447,9 @@ ffmpeg (cuts, frames, clips) and uv (local code). No route asks for them.
 
 | Verb | Calls |
 |---|---|
+| `cozy status` | `GET /v1/status`, `GET /v1/machines`, `GET /v1/runs?status=…` |
+| `cozy web [--no-open]` | `GET /`, `POST /v1/session-codes` |
+| `cozy project open [path] [--no-open]` | `POST /v1/projects {path}`, then as `cozy web` |
 | `cozy project new <path>` | `POST /v1/projects {path, create: true}` |
 | `cozy project ls` | `GET /v1/projects` |
 | `cozy project render …` | `POST /v1/projects {path}`, `GET /v1/projects/{id}/events`, `POST /v1/projects/{id}/runs`; each `started` run followed on `GET /v1/runs/{id}/events` |
