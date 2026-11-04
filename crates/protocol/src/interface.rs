@@ -184,6 +184,8 @@ pub struct Interface {
 
 /// The entrypoint a package with recipes runs them through (`cozy model quantize`).
 pub const RECIPES: &str = "quantize";
+/// A project adapter's function is named this and the kind it adapts (`App.project_adapter`): `cozy project`'s own, never offered to run by hand.
+pub const ADAPTER: &str = "project-adapter-";
 
 /// One declared recipe: the lane it writes and the model it reads.
 #[derive(Debug, Deserialize)]
@@ -396,10 +398,11 @@ impl Interface {
         Ok(out)
     }
 
-    /// The package's functions, GPU before CPU, each group sorted: never an internal callable or
-    /// the recipes' `quantize`, which `cozy model quantize` runs.
+    /// The package's functions, GPU before CPU, each group sorted: never an internal callable, a
+    /// project adapter, or the recipes' `quantize`, which `cozy model quantize` runs.
     pub fn public(&self) -> Vec<&str> {
-        let mut public: Vec<&Callable> = self.callables.iter().filter(|c| !c.internal && !self.runs_recipes(c)).collect();
+        let mut public: Vec<&Callable> =
+            self.callables.iter().filter(|c| !c.internal && !c.name.starts_with(ADAPTER) && !self.runs_recipes(c)).collect();
         public.sort_unstable_by_key(|c| (c.accelerator == Some(false), c.name.as_str()));
         public.into_iter().map(|c| c.name.as_str()).collect()
     }

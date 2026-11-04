@@ -1911,6 +1911,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         measurements: None,
         stalled: None,
         calls: vec![],
+        adapter: row.target.contains(&format!("/{}", protocol::interface::ADAPTER)),
     })
 }
 

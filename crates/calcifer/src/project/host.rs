@@ -12,7 +12,7 @@ use protocol::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
-    interface::{self, Slot},
+    interface::{self, ADAPTER, Slot},
     model_ref::ModelRef,
 };
 use serde_json::Value;
@@ -39,8 +39,6 @@ pub struct Package {
     document: Value,
 }
 
-/// A project adapter's function is named this and the kind it adapts (`App.project_adapter`).
-pub const ADAPTER: &str = "project-adapter-";
 /// The project format its record is.
 const FORMAT: u64 = 2;
 

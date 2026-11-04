@@ -229,6 +229,26 @@ pub struct Target {
     pub summary: String,
     /// The package's interface document (`cozy.package.interface/1`).
     pub interface: serde_json::Value,
+    /// What a person runs of it, in the order offered: no internal function, recipe or project adapter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<TargetFunction>,
+    /// The named function's contract as people read it (`cozy run … --describe`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<String>,
+    /// The named function's request schema (`--describe --json`), with the release and why when it is a published one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<serde_json::Value>,
+    /// Commands to run next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+}
+
+/// One function a person runs of a package, and what it does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetFunction {
+    pub function: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// Why a run binds and runs the release it does.
@@ -362,6 +382,9 @@ pub struct Run {
     /// With `?detail=full`: its measurements and its calls', worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::Report>,
+    /// A project adapter's run: `cozy project`'s own, which a list people read leaves out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adapter: bool,
 }
 
 /// One request field a run's executor served other than as sent (`Outcome.adjustments`).

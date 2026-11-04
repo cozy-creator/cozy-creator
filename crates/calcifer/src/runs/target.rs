@@ -10,7 +10,7 @@ use std::{
 
 use hub_client::cards::{self, Card};
 use protocol::{
-    calcifer::{On, ReleaseFrom, Target},
+    calcifer::{On, ReleaseFrom, Target, TargetFunction},
     config::Origin,
     error::{Error, Kind},
     interface::Interface,
@@ -83,14 +83,7 @@ pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<
             Some(function) => Some(super::callable(&package, &interface, &function)?.name.clone()),
             None => None,
         };
-        return Ok(Target {
-            package,
-            function,
-            release: "local".into(),
-            release_from: ReleaseFrom::Local,
-            summary: String::new(),
-            interface: document,
-        });
+        return Ok(answer(package, function, "local".into(), ReleaseFrom::Local, String::new(), document, &interface));
     }
     let Resolved::Release { package, function, card, from, .. } = published(api, hub, text, Some(on)).await? else {
         unreachable!("a published target resolves to a release");
@@ -105,14 +98,46 @@ pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<
         }
         None => None,
     };
-    Ok(Target {
-        function,
-        release: card.release.clone(),
-        release_from: from,
-        summary: card.summary().to_owned(),
-        interface: card.interface_document().clone(),
-        package,
-    })
+    let (summary, document) = (card.summary().to_owned(), card.interface_document().clone());
+    Ok(answer(package, function, card.release.clone(), from, summary, document, &card.interface))
+}
+
+/// What `GET /v1/targets` says of a package's `function`, or of the package: what a person runs of it, and a function's contract.
+fn answer(
+    package: String,
+    function: Option<String>,
+    release: String,
+    release_from: ReleaseFrom,
+    summary: String,
+    document: serde_json::Value,
+    interface: &Interface,
+) -> Target {
+    let public = interface.public();
+    let described = |name: &str| interface.callables.iter().find(|c| c.name == name).map_or("", |c| c.description.as_str());
+    let functions = public.iter().map(|name| TargetFunction { function: (*name).to_owned(), description: described(name).to_owned() }).collect();
+    let published = release_from != ReleaseFrom::Local;
+    let callable = function.as_deref().and_then(|name| interface.callables.iter().find(|c| c.name == name));
+    let contract = callable.map(|callable| {
+        let text = protocol::contract::contract(&format!("{package}/{}", callable.name), interface, callable);
+        let text = match published {
+            true => text.replacen('\n', &format!("\n  release: {release} ({release_from})\n"), 1),
+            false => text,
+        };
+        protocol::names::shown(&text)
+    });
+    let request = callable.map(|callable| {
+        let mut request = protocol::interface::request(&document, &callable.name);
+        if published {
+            request["release"] = release.clone().into();
+            request["release_from"] = release_from.to_string().into();
+        }
+        request
+    });
+    let next = match function {
+        Some(_) => vec![],
+        None => public.iter().take(2).map(|name| format!("cozy run {package}/{name} --describe")).collect(),
+    };
+    Target { package, function, release, release_from, summary, interface: document, functions, contract, request, next }
 }
 
 /// The function local code's run calls: the one named, else its only public one.
@@ -120,9 +145,9 @@ fn chosen(interface: &Interface, function: Option<String>) -> Option<String> {
     function.or_else(|| only_function(interface).map(str::to_owned))
 }
 
-/// A package's one public function, when it has just one (a project adapter is `cozy project`'s).
+/// A package's one public function, when it has just one.
 pub(crate) fn only_function(interface: &Interface) -> Option<&str> {
-    let mut public = interface.public().into_iter().filter(|name| !name.starts_with("project-adapter-"));
+    let mut public = interface.public().into_iter();
     public.next().filter(|_| public.next().is_none())
 }
 

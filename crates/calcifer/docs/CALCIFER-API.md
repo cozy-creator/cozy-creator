@@ -138,9 +138,10 @@ a spec.
 - `POST /v1/run-quotes`: a `RunRequest` whose `on` is `new[:sku]`: what it would rent and its price
   (`RunQuote`). Nothing is rented or recorded.
 - `GET /v1/targets?target=&cwd=&hub=&on=`: what a run of `target` on that machine calls, resolved as `POST /v1/runs` resolves it:
-  `{package, function?, release, release_from: asked|installed|latest|local, summary, interface}` (the package's interface
-  document; local code's read from its source, installing nothing). A named function is checked as a run checks
-  it.
+  `{package, function?, release, release_from: asked|installed|latest|local, summary, interface, functions, contract?, request?, next?}`:
+  `interface` is the package's interface document (local code's read from its source, installing nothing); `functions` `[{function, description}]` is what a
+  person runs of it, with no internal function, recipe or project adapter. A named function is checked as a run checks it, and `contract` is its contract as people
+  read it, `request` its schema. `next` names the functions to describe.
 - `PUT /v1/files/sha256:<hex>`: a file's bytes, which must hash to its name: `201`, or `200` when held, with
   `{digest, length, media_type}`. `HEAD` asks whether it is held. A held file unnamed for a day is dropped.
 - `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is a folder:
