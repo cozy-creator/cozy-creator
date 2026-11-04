@@ -119,6 +119,8 @@ struct Machine {
 
 /// How often a wait for a machine's answer says again how long it has lasted.
 const RESAID: Duration = Duration::from_secs(5);
+/// How long a machine answering an internal failure about a run is asked again before the run ends saying so.
+const BROKEN_FOR: Duration = Duration::from_secs(120);
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 
@@ -128,6 +130,8 @@ enum Stop {
     Unreachable(String),
     /// Connected, but the machine's answer broke off or was not one: it is busy, not unreachable.
     Unanswered(String),
+    /// The machine answers an internal failure of its own.
+    Broken(String, String),
     /// The machine refuses this controller's key; `cozy machine authorize` there admits it.
     Unauthorized(String),
     /// Something besides the machine holds the run (its Hub, Calcifer's store), said as it is.
@@ -152,6 +156,7 @@ impl From<LinkError> for Stop {
             LinkError::Unreachable(message) => Stop::Unreachable(message),
             LinkError::Unauthorized(message) => Stop::Unauthorized(message),
             e @ LinkError::Unanswered(_) => Stop::Unanswered(e.to_string()),
+            LinkError::Broken { code, message } => Stop::Broken(code, message),
         }
     }
 }
@@ -766,6 +771,24 @@ impl Calcifer {
                         let age = protocol::calcifer::clock(age.as_millis() as i64);
                         self.waiting(id, format!("no answer from {name} yet ({age}): {message}"));
                         pause.wait(wake, Some(&mut changed)).await;
+                    }
+                }
+                // Its own bug, not its being busy: said in its words, logged, asked again for a while, and then the run
+                // ends saying so. A cancel doesn't wait for it. Nothing runs again either way.
+                Err(Stop::Broken(code, message)) => {
+                    let age = pause.failed();
+                    if age.is_none() {
+                        warn!(run = %id, machine = %name, "{code}: {message}");
+                    }
+                    match age {
+                        Some(age) if run.cancel_requested || age >= BROKEN_FOR => match self.store.gave_up(id.as_str(), &name, &code, &message) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        },
+                        _ => {
+                            self.waiting(id, format!("{name} fails when asked about this run, and is asked again for {}: {code}: {message}", protocol::calcifer::clock(BROKEN_FOR.as_millis() as i64)));
+                            pause.wait(wake, Some(&mut changed)).await;
+                        }
                     }
                 }
                 Err(Stop::Waiting(message)) => {
