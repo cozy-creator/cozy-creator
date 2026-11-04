@@ -48,7 +48,7 @@ accept() {
   step "approve-$1" project -p "$P" approve "$1" "$n" || fail "approve $1: $(tail -c 300 "$OUT/approve-$1.txt")"
   J --arg n "$1" '.assets[] | select(.name == $n) | .pinned' <<< "$(cozy --json project -p "$P" status)" || fail "$1 isn't accepted"
 }
-call() { cozy --json run show "$(jq -r --arg a "$(tr '_-' '  ' <<< "$1")" '.assets[$a].versions[-1].run' "$P/project.lock")" --once 2> /dev/null | jq -c .request; }
+call() { cozy --json run show "$(jq -r --arg a "$(tr '_-' '  ' <<< "$1")" '.assets[$a].versions[-1].run' "$P/project.lock")" --once | jq -c .request; }
 file_of() { jq -r --arg a "$(tr '_-' '  ' <<< "$1")" --arg f "$2" '. as $l | $P + "/" + $l.files[$l.assets[$a].versions[-1].files[$f]].path' --arg P "$P" "$P/project.lock"; }
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$1"; }
 seconds() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }

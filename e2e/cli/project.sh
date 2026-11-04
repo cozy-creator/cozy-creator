@@ -48,7 +48,14 @@ ask() {
 # ended <number>: the run at its end with its outputs landed, whole.
 ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
-status() { cozy --json project -p "$1" status 2> /dev/null; }
+# status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
+status() {
+  cozy --json project -p "$1" status 2> "$OUT/status.err" && return 0
+  local code=$?
+  echo "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
+  grep -q answer_unreadable "$OUT/status.err" && check "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
+  return "$code"
+}
 # row <project> <asset> <jq>: that of its row in status.
 row() { status "$1" | jq -c --arg n "$2" ".assets[] | select(.name == \$n) | $3"; }
 # made <project> <asset>: how many versions the lock keeps.
@@ -56,7 +63,7 @@ made() { jq --arg n "$2" '.assets[$n | gsub("[_-]"; " ") | ascii_downcase].versi
 # runs <project>: every version's last run its lock records.
 runs() { jq '[.assets[].versions[].run // empty] | length' "$1/project.lock"; }
 # asked <project> <asset> [version index]: what that version's last run was asked.
-asked() { cozy --json run show "$(jq -r --arg n "$2" --argjson v "${3:--1}" '.assets[$n | gsub("[_-]"; " ") | ascii_downcase].versions[$v].run' "$1/project.lock")" --once 2> /dev/null | jq -c .request; }
+asked() { cozy --json run show "$(jq -r --arg n "$2" --argjson v "${3:--1}" '.assets[$n | gsub("[_-]"; " ") | ascii_downcase].versions[$v].run' "$1/project.lock")" --once | jq -c .request; }
 # read_of <project> <asset>: the names what it reads go by, as status says.
 read_of() { row "$1" "$2" '[.reads[]?.name]'; }
 # file_at <project> <sha256>: where that file is.
@@ -101,7 +108,7 @@ grep -q 'cozy project render all' "$OUT/project-new.txt" || check "project new d
 cozy project -p "$P" status > "$OUT/project-new-status.txt" 2>&1 || check "status of a new project failed: $(tail -c 300 "$OUT/project-new-status.txt")"
 for name in kyogre groudon coast awaken erupt clash edit; do grep -q "$name" "$OUT/project-new-status.txt" || check "a new project's status names no $name"; done
 mkdir -p "$P/sub"
-(cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> /dev/null || check "status from a subfolder failed"
+(cd "$P/sub" && cozy --json project status) > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status from a subfolder failed: $(tail -c 300 "$OUT/project-status.err")"
 (cd / && cozy --json project -p "$P" status) > /dev/null 2>&1 || check "status by -p from / failed"
 ID=$(jq -r '.id // empty' "$OUT/project-status.json")
 [ -n "$ID" ] || check "project status --json names no id"
@@ -512,7 +519,7 @@ step "a project: a run with no path sent"
 local R=$OUT/path-free lock=$HOME/.cozy/calcifer/calcifer.lock.holder id real pic hex other n asked input code w h url
 cozy project new "$R" > /dev/null || check "path-free: project new"
 real=$(cd "$R" && pwd -P)
-id=$(cozy --json project -p "$R" status 2> /dev/null | jq -r .id)
+id=$(status "$R" | jq -r .id)
 ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 asked=$(ask "$(jq -n --arg t "$here/project/draw.py" --arg p "$id" '{target: $t, project: $p, on: "local", input_text: "prompt: with no path\nseed: 7\n"}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
@@ -1494,7 +1501,7 @@ refuses "no row" "cozy project -p $T open" canvas red_art
 
 [ "$(cozy project -p "$T" add "$tool/still" made_nothing)" = made_nothing ] || check "by the CLI: add made_nothing"
 render "$T" drawn || check "by the CLI: render drawn: $(tail -c 300 "$OUT/render.txt")"
-line=$(cozy project -p "$T" delete drawn 2> /dev/null) || check "by the CLI: delete"
+line=$(cozy project -p "$T" delete drawn) || check "by the CLI: delete"
 J '.assets | all(.name != "drawn")' <<< "$(status "$T")" || check "by the CLI: delete left it"
 case $line in "cozy project -p $T restore drawn "*) ;; *) check "by the CLI: delete did not print what restores it: $line" ;; esac
 refuses "not what delete printed" "cozy project status" restore drawn nonsense
@@ -1714,9 +1721,8 @@ assets:
 YAML
 render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.txt")"
 sed -i "s#tool: .*shots.py/shoot#tool: $(cd "$PACKAGES" && pwd)/minimax-h3/generate_turbo#" "$H/project.yaml"
-# Bounded: past the refusal it's H3 itself, and its weights.
-code=0; timeout 120 cozy project -p "$H" render clash --take 1 --in 5 --on local > "$OUT/render.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && [ "$code" != 124 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
+code=0; render "$H" clash --take 1 --in 5 || code=$?
+{ [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
 }
 
 # A film short of its pieces, as a lock from 0.18.5 can hold one, isn't its state: any render cuts it whole, with its pieces as written.

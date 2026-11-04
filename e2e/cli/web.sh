@@ -39,7 +39,7 @@ chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "web-serves: no Google Chrome on this runner (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web-serves: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
 cozy project new "$P" > "$OUT/web-new.txt" 2>&1 || { check "web-serves: project new failed: $(tail -c 300 "$OUT/web-new.txt")"; return; }
-id=$(cozy --json project -p "$P" status 2> /dev/null | jq -r '.id // empty')
+id=$(status "$P" | jq -r '.id // empty')
 [ -n "$id" ] || { check "web-serves: the project has no id"; return; }
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock") base=http://$addr
 # One red pixel.
