@@ -14,7 +14,6 @@ import argparse
 import ctypes
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -139,10 +138,8 @@ class Context:
         self.env = {"FAULT_DIR": str(self.dir)}
 
     def ledger(self) -> None:
-        path = Path("/dev/shm/varena-faults") / self.cell
-        shutil.rmtree(path, ignore_errors=True)
-        path.mkdir(parents=True, mode=0o700)
-        self.env["FAULT_LEDGER"] = str(path)
+        """The machine's default ledger, as executors use; a dead row from an earlier cell is part of the test."""
+        self.env["FAULT_LEDGER"] = f"/dev/shm/cozy-varena-{os.getuid()}"
 
     def problem(self, text: str) -> None:
         self.problems.append(text)
@@ -211,6 +208,24 @@ def killed_during(delay: float = 0.0, **env: str):
     return cell
 
 
+def donor_answers(ctx: Context) -> None:
+    """The control for kill_donor_trim: with no kill the asker gets its memory from the donor."""
+    ctx.ledger()
+    idle = str(8192 << 20)
+    donor = ctx.child("donor", FAULT_IDLE=idle)
+    if donor.step("ready", stall=120) is None:
+        return
+    asker = ctx.child("asker", FAULT_IDLE=idle)
+    if asker.step("ready") is None:
+        donor.kill()
+        return
+    ctx.touch("go")
+    result = ctx.judged(asker, stall=60)
+    donor.kill()
+    if result and result["outcome"] != "correct":
+        ctx.problem(f"a live idle donor did not cover the asker: {result['outcome']}")
+
+
 def kill_donor(ctx: Context) -> None:
     """Kill the donor while the asker's allocation has it unmapping, seen in the driver's used bytes."""
     ctx.ledger()
@@ -264,6 +279,7 @@ CELLS = {
     "kill_fill": killed_during(delay=0.2),
     "kill_fill_gated": killed_during(),
     "kill_donor_trim": kill_donor,
+    "donor_answers": donor_answers,
     "source_partial": main_only,
     "source_prepare_error": main_only,
     "capture_oom_pool": main_only,
@@ -272,6 +288,7 @@ CELLS = {
     "evict_fill_gated": main_only,
     "evict_fill_stress": main_only,
     "raw_graph": main_only,
+    "raw_graph_prepared": main_only,
     "fork": main_only,
     "foreign_grab": foreign_grab,
     "unmap_under_kernel": main_only,

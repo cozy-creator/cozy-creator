@@ -60,7 +60,8 @@ def classify(error: BaseException) -> str:
         return "device_fault"
     if isinstance(error, (api.Error, torch.OutOfMemoryError, varena.CooperationDeferredError)):
         return "typed"
-    if any(mark in text for mark in ("invalid residency operation", "after fork", "install tensorfs.varena.torch")):
+    if any(mark in text for mark in ("invalid residency operation", "after fork", "install tensorfs.varena.torch",
+                                     "Cannot re-initialize CUDA in forked subprocess")):
         return "typed"
     return "untyped"
 
@@ -174,9 +175,9 @@ def retry(operation):
 
 
 def setup(priority: int | None = None):
-    """A fresh process's device, a stream, warm kernels, and a ledger row when the cell has one."""
-    if LEDGER:
-        varena.CooperationOwner.initialize()
+    """A fresh process's device, a stream, warm kernels. Install joins the machine's default ledger,
+    as an executor does; a cell that reads rows or sets a priority also holds a lease on that service."""
+    varena.CooperationOwner.initialize()
     vt.install(DEVICE)
     torch.cuda.set_device(DEVICE)
     stream = torch.cuda.Stream(device=DEVICE)
@@ -185,7 +186,9 @@ def setup(priority: int | None = None):
     if LEDGER:
         uuid = str(torch.cuda.get_device_properties(DEVICE).uuid)
         uuid = uuid if uuid.startswith(("GPU-", "MIG-")) else "GPU-" + uuid
-        owner = retry(lambda: varena.CooperationOwner(DEVICE, uuid, LEDGER, shared=True, priority=priority or 0))
+        owner = retry(lambda: varena.CooperationOwner(DEVICE, uuid, LEDGER, shared=True, priority=0))
+        if priority is not None:
+            retry(lambda: owner.configure(shared=True, priority=priority))
     with torch.inference_mode():
         warm = model(depth=1)
         warm(sample(0))
@@ -377,6 +380,12 @@ def evict_fill_gated() -> None:
     stream, _ = setup()
     gpu = api.open(DEVICE)
     nbytes = 64 * MIB
+    # Warm first: CUDA's lazy kernel load can wait on the whole context, gated producer included.
+    warm = torch.empty(2 * MIB, dtype=torch.uint8, device=device)
+    warm.fill_(1)
+    bool((warm == 1).all())
+    stream.synchronize()
+    del warm
     fixture = Provider(os.environ["FAULT_PROVIDER"]).create(gpu, nbytes, mode="ordering")
     use = gpu.use([fixture.region], stream.cuda_stream)
     say("fill_pending", pending=fixture.source_pending())
@@ -386,10 +395,12 @@ def evict_fill_gated() -> None:
     vt.set_limit(DEVICE, 16 * MIB)
     say("limited", resident=gpu.stats()["weights_resident"], pending=fixture.source_pending())
     vt.set_limit(DEVICE, None)
-    pressure = torch.empty(1024 * MIB, dtype=torch.uint8, device=device)
-    pressure.fill_(1)
-    stream.synchronize()
-    del pressure
+    side = torch.cuda.Stream(device=DEVICE)  # `stream` itself waits behind the gated producer
+    with torch.cuda.stream(side):
+        pressure = torch.empty(1024 * MIB, dtype=torch.uint8, device=device)
+        pressure.fill_(1)
+        side.synchronize()
+        del pressure
     fixture.gate_set(1)
     with gpu.use([fixture.region], stream.cuda_stream) as again:
         again.wait_ready()
@@ -505,7 +516,7 @@ def fit_pool_rng_late() -> None:
 
 # ---- Raw Torch, fork, foreign memory ----
 
-def raw_graph() -> None:
+def raw_graph(prepared: bool = False) -> None:
     """Stock torch.cuda.graph with none of Varena's hooks, then work that must not be stuck."""
     stream, _ = setup()
     net = model(seed=13)
@@ -515,8 +526,11 @@ def raw_graph() -> None:
     stream.synchronize()
     graph = torch.cuda.CUDAGraph()
     output = None
+    pool = tuple(torch.cuda.graph_pool_handle())
+    if prepared:
+        vt.prepare_pool(pool, 256 * MIB, DEVICE)
     try:
-        with torch.cuda.graph(graph):
+        with torch.cuda.graph(graph, pool=pool):
             output = net(static)
         say("raw_captured")
     except BaseException as error:  # noqa: BLE001 - the measurement
@@ -549,9 +563,17 @@ def raw_graph() -> None:
             raw_replay_after_trim=trimmed, vt_graph_after=follow)
 
 
+def raw_graph_prepared() -> None:
+    """The same with a mapped pool, so the capture itself succeeds and only its hooks are missing."""
+    raw_graph(prepared=True)
+
+
 def forked_child(write: int, tensor: torch.Tensor, graph: Graph) -> None:
     results = {}
+    holder = [tensor]
     gpu_ops = {
+        "free": holder.clear,
+        "open": lambda: api.open(DEVICE),
         "alloc": lambda: torch.empty(8, device=device),
         "stats": lambda: vt.stats(DEVICE),
         "trim": lambda: vt.trim(DEVICE),
@@ -586,6 +608,7 @@ def fork() -> None:
     thread.start()
     hung = 0
     seen: dict[str, int] = {}
+    messages: dict[str, str] = {}
     for n in range(20):
         read, write = os.pipe()
         pid = os.fork()
@@ -601,15 +624,16 @@ def fork() -> None:
             for key, value in json.loads(os.read(read, 65536).decode()).items():
                 label = f"{key}={value.split(':')[0]}"
                 seen[label] = seen.get(label, 0) + 1
+                messages.setdefault(label, value)
         os.waitpid(pid, 0)
         os.close(read)
         say("forked", n=n, hung=hung)
     run.clear()
     thread.join()
     same = graph.run(sample(7)) == control
-    returned = [k for k in seen if k.endswith("=returned") and not k.startswith(("stats", "trim"))]
+    returned = [k for k in seen if k.endswith("=returned") and not k.startswith(("free", "stats", "trim"))]
     outcome = "corrupt" if not same or returned else "device_fault" if hung else "typed"
-    verdict(outcome, forks=20, hung=hung, child_results=seen, parent_correct=same)
+    verdict(outcome, forks=20, hung=hung, child_results=seen, messages=messages, parent_correct=same)
 
 
 def worker() -> None:
@@ -628,6 +652,8 @@ def worker() -> None:
             stream.synchronize()
             bad += int(block[-1]) != 5
             del block
+            stream.synchronize()
+            vt.trim(DEVICE)  # back to the driver, where the other program can take it
             last_ok = True
         except torch.OutOfMemoryError:
             refused += 1
@@ -652,8 +678,13 @@ def foreign() -> None:
         except torch.OutOfMemoryError:
             break
     say("grabbed", grabbed=grabbed, free=torch.cuda.mem_get_info(DEVICE)[0])
-    while not (DIR / "foreign-leave").exists():
-        time.sleep(0.05)
+    while not (DIR / "foreign-leave").exists():  # keeps taking what the other side gives back
+        try:
+            chunks.append(torch.empty(64 * MIB, dtype=torch.uint8, device=device).fill_(9))
+            grabbed += 64 * MIB
+        except torch.OutOfMemoryError:
+            torch.cuda.empty_cache()
+        time.sleep(0.01)
     verdict("correct", grabbed=grabbed)
 
 
@@ -701,6 +732,8 @@ def unmap_under_kernel() -> None:
     stream.synchronize()
     eager_same = raw(c) == expected
     say("freed_under_eager", identical=eager_same, **facts)
+    if primitive:  # the pool was truly idle under that eager work
+        vt.prepare_pool(graph.pool, 0, DEVICE)
 
     out = torch.empty_like(graph.output)
     graph.input.copy_(value)
