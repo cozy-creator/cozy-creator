@@ -66,7 +66,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
-use folder::{Ask, Failed, Files, Folder, Invocation, Keeps, Lock, Pending, Take, Target, Tried, Version};
+use folder::{Ask, Coming, Failed, Files, Folder, Invocation, Keeps, Lock, Pending, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Maker, Package, Renderer};
@@ -2202,12 +2202,6 @@ struct Missed {
 const OFFLINE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// A version listed with files on their way here.
-struct Coming {
-    name: String,
-    number: u32,
-    take: bool,
-}
-
 /// A run followed to its end: its key, the asset, inputs and number it was a try at if it was still owed, and what landing it came to.
 struct Followed {
     key: String,
@@ -2469,6 +2463,16 @@ impl Walk {
         // An edit by hand says nothing, so the file's stamp is looked at. One stat a second, and nothing more if it's the same.
         let mut edits = tokio::time::interval(std::time::Duration::from_secs(1));
         edits.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A walk before this one's versions whose files are on their way: it isn't over until they're here, or never come.
+        let walk = self.folder().walk_now()?;
+        for (number, coming) in walk.walk.runs {
+            if walk.pending.values().any(|pending| pending.run == number) {
+                continue;
+            }
+            let Some(run) = self.host.numbered(number) else { continue };
+            let name = coming.as_ref().map(|coming| coming.name.clone());
+            work.push(async move { Done::Arrived { name, result: self.host.wait(&run.id).await.and_then(|run| self.arrived(&run, coming)) } }.boxed());
+        }
         loop {
             self.deletions()?;
             self.joined(&mut first).await?;
@@ -3141,6 +3145,11 @@ impl Walk {
             })?;
         }
         if !*walking {
+            self.folder().update_walk(|walk| {
+                walk.walk.runs.clear();
+                walk.walk.landing.clear();
+                walk.walk.numbered.clear();
+            })?;
             *self.project.walker.lock().expect("walker lock") = Walker::default();
             self.folder().drop_texts();
         }
@@ -3644,7 +3653,7 @@ impl Walk {
             if let Some(pending) = walk.pending.get_mut(key) {
                 pending.run = run.number;
             }
-            walk.walk.runs.insert(run.number);
+            walk.walk.runs.insert(run.number, None);
         })?;
         self.say(Event::Started { name, run: run.id.to_string(), number: run.number });
         Ok(())
@@ -3677,12 +3686,11 @@ impl Walk {
     fn arrived(&self, run: &Run, version: Option<Coming>) -> Result<(), Error> {
         let folder = self.folder();
         let lost = run.output.iter().find(|output| !output.stays && output.export_error.is_some());
-        folder.update_walk(|walk| {
-            walk.walk.runs.remove(&run.number);
-            walk.walk.landing.retain(|row| row.run != run.number);
-        })?;
+        // One write, the project first: killed between, what never came is gone and a restart hears of this run again, which changes nothing.
         folder.update_lock(|lock| {
             lock.runs.retain(|row| row.run != run.number);
+            lock.walk.runs.remove(&run.number);
+            lock.walk.landing.retain(|row| row.run != run.number);
             if let (Some(coming), true) = (&version, lost.is_some()) {
                 lock.asset_mut(&coming.name, "").versions.retain(|version| version.number != coming.number);
             }
@@ -3692,8 +3700,8 @@ impl Walk {
         let Some(output) = lost else { return Ok(()) };
         let mut tally = self.tally.lock().expect("tally lock");
         match take {
-            true => tally.takes -= 1,
-            false => tally.versions -= 1,
+            true => tally.takes = tally.takes.saturating_sub(1),
+            false => tally.versions = tally.versions.saturating_sub(1),
         }
         let said = format!("{name}: run {} made its file, and it can't be brought here: {}", run.number, output.export_error.clone().unwrap_or_default());
         Err(Error::new(Kind::Unavailable, "version_unsaved", said).next(format!("cozy run show {}", run.number)))
@@ -3786,7 +3794,14 @@ impl Walk {
         }
         saved.append(&mut stayed);
         version.files.extend(saved.clone());
-        let list_away = |lock: &mut Lock| away.iter().for_each(|(sha256, machine, length, name)| lock.away(sha256, machine, *length, name.as_deref()));
+        // On its way, its version is listed: a restart follows it from here.
+        let on_its_way = coming.then(|| Coming { name: name.clone(), number: version.number, take: version.files.contains_key("video") });
+        let list_away = |lock: &mut Lock| {
+            away.iter().for_each(|(sha256, machine, length, name)| lock.away(sha256, machine, *length, name.as_deref()));
+            if let (Some(row), Some(coming)) = (lock.walk.runs.get_mut(&run.number), &on_its_way) {
+                *row = Some(coming.clone());
+            }
+        };
         // Its next call, if the adapter answered several: one version, whichever call makes what.
         if !pending.rest.is_empty() {
             let doc = self.doc_of(&pending.ask)?;

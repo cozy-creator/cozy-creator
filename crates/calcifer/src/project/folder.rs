@@ -437,9 +437,9 @@ pub struct Owed {
     /// The last number each asset's jobs took, by name key: taking one rewrites nothing of the project, and one that never lands is free again.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub numbered: BTreeMap<String, u32>,
-    /// This walk's runs not over: what they land is their version's.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub runs: BTreeSet<u64>,
+    /// This walk's runs not over: what they land is their version's. With the version listed whose file is on its way, which a restart follows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runs: BTreeMap<u64, Option<Coming>>,
     /// What those landed so far, each output's newest: what its next revision takes the place of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub landing: Vec<RunFile>,
@@ -533,8 +533,16 @@ fn is_zero_f(n: &f64) -> bool {
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        self.asks.is_empty() && self.asked.is_empty() && self.renames.is_empty()
+        self.asks.is_empty() && self.asked.is_empty() && self.renames.is_empty() && self.runs.is_empty()
     }
+}
+
+/// A version listed before its files have landed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Coming {
+    pub name: String,
+    pub number: u32,
+    pub take: bool,
 }
 
 /// The machines a version may be made on, and the Hub its function is read from.
@@ -578,7 +586,7 @@ impl Lock {
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
     pub fn owes(&self) -> bool {
-        !self.walk.asks.is_empty() || !self.pending.is_empty() || !self.walk.renames.is_empty()
+        !self.walk.asks.is_empty() || !self.pending.is_empty() || !self.walk.renames.is_empty() || !self.walk.runs.is_empty()
     }
 
     /// The number the next version of `name` would take, as far as what's listed says.
@@ -792,7 +800,9 @@ impl Folder {
 
     /// Applies `change` to project.lock as it is now, what the walk owes among it.
     pub fn update_lock(&self, change: impl Fn(&mut Lock)) -> Result<(), Error> {
-        self.rewrite(&self.dir.join(LOCK), |text| {
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let moved = std::cell::RefCell::new(None);
+        self.rewrite_held(&self.dir.join(LOCK), |text| {
             let mut lock: Lock = match text {
                 "" => Lock::default(),
                 text => parse_lock(text)?,
@@ -804,14 +814,18 @@ impl Folder {
                 (lock.pending, lock.walk) = (walk.pending, walk.walk);
             }
             change(&mut lock);
-            let mut walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
+            let walk = WalkFile { bound: None, pending: std::mem::take(&mut lock.pending), walk: std::mem::take(&mut lock.walk) };
             let after = (serde_json::to_string(&walk.pending).expect("a walk serializes"), serde_json::to_string(&walk.walk).expect("a walk serializes"));
-            // Under the lock's writer: asked again after a save that lands first, it writes what that one holds. Unchanged, it isn't written.
-            if before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty()) {
-                self.keep_walk(&mut walk)?;
-            }
+            // Unchanged, it isn't written.
+            *moved.borrow_mut() = (before.as_ref() != Some(&after) && (before.is_some() || !walk.is_empty())).then_some(walk);
             Ok(lock.written())
-        })
+        })?;
+        // The project first. Killed between, a version is listed and the run that made it is still owed, so it lands again, the same. The
+        // other way round, its take would be listed nowhere and its run owed by no one.
+        match moved.into_inner() {
+            Some(mut walk) => self.keep_walk(&mut walk),
+            None => Ok(()),
+        }
     }
 
     /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
@@ -894,7 +908,7 @@ impl Folder {
                 }
             };
             // A walk's run lands on its version: nothing of the project moves until then.
-            match self.walk_kept()?.is_some_and(|walk| walk.walk.runs.contains(&made.run)) {
+            match self.walk_kept()?.is_some_and(|walk| walk.walk.runs.contains_key(&made.run)) {
                 true => self.update_walk(|walk| listed(&mut walk.walk.landing))?,
                 false => self.update_lock(|lock| listed(&mut lock.runs))?,
             }
@@ -1181,6 +1195,11 @@ impl Folder {
     /// so that edit stands.
     fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
         let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        self.rewrite_held(path, change)
+    }
+
+    /// As `rewrite`, with `WRITING` held.
+    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
         loop {
             let before = match path.exists() {
                 true => read(path)?,
