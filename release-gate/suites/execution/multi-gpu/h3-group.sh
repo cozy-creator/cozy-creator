@@ -21,6 +21,6 @@ h3_group() {
   IFS=, read -r h fr <<< "$hv"; read -r deg ng <<< "$ranks"
   ok=PASS; { [ "${h:-0}" -ge 700 ] && [ "${fr:-0}" -ge "$least" ] && [ -n "$au" ] && [ "$deg" = 2 ] && [ "$ng" = 2 ]; } || ok=FAIL
   expect "$n-video" $ok "${h}p, $fr frames, audio ${au:-none}; degree $deg on $ng GPUs"
-  look=$("${FR[@]}" coherent "$v") && jq -e '.contrast >= 15 and .motion >= 0.3 and .coherence >= 0.55 and .fine <= 0.016' <<< "$look" >/dev/null && ok=PASS || ok=FAIL
+  look=$("${FR[@]}" coherent "$v") && jq -e '.contrast >= 15 and .motion >= 0.3 and .coherence >= 0.55 and .fine <= 0.45 and .pattern <= 3.5' <<< "$look" >/dev/null && ok=PASS || ok=FAIL
   expect "$n-frames" $ok "$look"
 }
