@@ -1183,7 +1183,7 @@ ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 [ "$(jq -r .pid "$lock")" != "$pid" ] || check "restarted: Calcifer is still pid $pid"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5; done
 { [ "$(made "$R" first)" = 1 ] && [ "$(made "$R" second)" = 1 ] && [ "$(made "$R" reader)" = 1 ]; } || check "restarted: made $(jq -c '.assets | map_values(.versions | length)' "$R/project.lock")"
-local sent; sent=$(cozy --json run ls --limit 0 | jq -c '[.runs[] | select((.project // "" | endswith("/walk-restarted")) and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] | select(.project == $r and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
 J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
 [ ! -e "$R/.runs/walk.json" ] || check "restarted: .runs/walk.json outlived the render"
 }

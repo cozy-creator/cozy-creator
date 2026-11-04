@@ -126,6 +126,9 @@ pub struct File {
     /// A file too big for one object at the Hub: the objects it goes as, in order. Its first push lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<tensorfs::format::ObjectRef>,
+    /// What its name will end in, while it isn't here to say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ext: String,
     /// The machine that keeps it, an output not brought here (`OutputItem::stays`): nothing is in `files/` until something needs it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine: String,
@@ -631,12 +634,12 @@ impl Folder {
     pub(super) fn fill(&self, lock: &mut Lock) {
         for (sha256, file) in &mut lock.files {
             file.sha256.clone_from(sha256);
-            file.path = format!("{FILES}/{}", hex_of(sha256));
+            file.path = format!("{FILES}/{}{}", hex_of(sha256), file.ext);
         }
         let named: Vec<String> = lock.named(|_| true).into_iter().map(str::to_owned).chain(lock.runs.iter().map(|row| row.sha256.clone())).collect();
         for sha256 in named {
             let file = lock.files.entry(sha256.clone()).or_default();
-            file.path = format!("{FILES}/{}", hex_of(&sha256));
+            file.path = format!("{FILES}/{}{}", hex_of(&sha256), file.ext);
             file.sha256 = sha256;
         }
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
@@ -841,7 +844,9 @@ impl Folder {
 
     /// An output on its way here, in the lock's table: the file `name` makes it, and the machine that holds it meanwhile.
     pub fn coming(&self, sha256: &str, machine: &str, length: u64, name: &str) -> Result<(), Error> {
-        let file = File { path: file_of(sha256, Path::new(name)), sha256: sha256.to_owned(), machine: machine.to_owned(), length, ..Default::default() };
+        let path = file_of(sha256, Path::new(name));
+        let ext = path.rsplit_once('.').map(|(_, ext)| format!(".{ext}")).unwrap_or_default();
+        let file = File { path, sha256: sha256.to_owned(), ext, machine: machine.to_owned(), length, ..Default::default() };
         self.update_lock(|lock| {
             lock.files.entry(sha256.to_owned()).or_insert_with(|| file.clone());
         })
@@ -852,6 +857,7 @@ impl Folder {
         self.update_lock(|lock| {
             if let Some(row) = lock.files.get_mut(sha256).filter(|row| row.stays()) {
                 row.machine.clear();
+                row.ext.clear();
                 row.length = 0;
             }
         })
