@@ -16,7 +16,6 @@ function mediaOf(file: File): MediaKind {
 export interface Hooks {
   /** The first import on an empty canvas made this project. */
   adopt(id: string): void
-  refresh(id: string): void
 }
 
 /**
@@ -66,7 +65,6 @@ export class Placer {
       const id = await this.project()
       const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.local ? undefined : tool.label, fields: startingFields(tool) })
       this.store.expect(made.name, at)
-      this.hooks.refresh(id)
     } catch (error) {
       say(`Couldn't place ${tool.label}`, error)
     }
@@ -81,7 +79,6 @@ export class Placer {
       this.store.expect(made.name, at)
       this.store.focusing = null
       if (file.description) await this.client.patchAsset(id, made.name, { fields: { description: file.description } })
-      this.hooks.refresh(id)
     } catch (error) {
       say(`Couldn't take out ${file.name}`, error)
     }
@@ -117,7 +114,6 @@ export class Placer {
       const answer = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: digest, name, at }, tried)
       this.store.land(key, answer, at)
       if (answer.note) say(answer.note)
-      this.hooks.refresh(id)
     } finally {
       this.store.endAdding()
     }

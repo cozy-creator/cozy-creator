@@ -3,8 +3,8 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js), and
-# a package's own UI (web/package_ui.js).
+# models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js),
+# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), and a package's own UI (web/package_ui.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -65,6 +65,12 @@ step "web-timeline: real clips and a still in an Edit, trims and a reorder, rend
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
 local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
 PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
+step "web-live: the real CLI and a hand's saves on an open canvas: each within a second, what's typed kept, 200 edits, the stream fallen behind"
+web_proof live "$chrome" "$pw" ''
+jq -c '{times: .seen.times_ms, burst: .seen.burst, behind: .seen.behind}' "$OUT/web-live.json" 2> /dev/null || true
+step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
+web_proof scale "$chrome" "$pw" ''
+jq -c '{scale: .seen.scale}' "$OUT/web-scale.json" 2> /dev/null || true
 step "web-package-ui: a package's component drawn, its field saved and read back; what can't draw falls back; a release held to its hash"
 local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
@@ -93,7 +99,7 @@ web_link() {
 web_proof() {
   local name=$1 chrome=$2 pw=$3 restart=$4 json=$OUT/web-$1.json link code=0 id folder lock addr token
   web_link || return
-  ALONE=${WEB_ALONE:-} RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+  HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$name.err" || code=$?
   [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
   # What died on another Hub doesn't leave the next proof on it.

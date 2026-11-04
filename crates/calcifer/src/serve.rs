@@ -213,6 +213,7 @@ pub async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
+    crate::events::tell(api.clone());
     crate::project::resume(&api);
 
     api.stopped().await;

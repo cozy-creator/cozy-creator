@@ -40,7 +40,7 @@ pub(super) async fn caption(
     let name = doc.assets[i].name.clone();
     let files = doc.stand(&lock)[i].files.clone().or_else(|| lock.asset(&name)?.versions.last().map(|version| version.files.clone()));
     let Some(files) = files.filter(|files| ["image", "video"].iter().any(|kind| files.contains_key(*kind))) else {
-        return Err(Refusal(Error::new(Kind::Conflict, "caption_no_file", format!("{name} has no picture or video yet to describe"))));
+        return Err(Refusal(Error::new(Kind::Conflict, "caption_no_file", format!("{name} has no picture or video yet to describe")).next(format!("cozy project render {name} --on <machine>"))));
     };
     let on = asked.on.map_or_else(|| runs::default_on(&api), On::from);
     if on == On::Machine("local".into()) {

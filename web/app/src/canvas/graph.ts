@@ -97,9 +97,10 @@ const overlaps = (a: Box, b: Box) => a.x < b.x + b.w + GAP_X / 2 && b.x < a.x + 
 
 /**
  * A home for each name with none, once: right of what it reads, else by graph depth, each below what's already there. `boxes` is
- * what's already placed, and grows.
+ * what's already placed, and grows. With `on`, what's on screen as more arrive, what reads nothing takes the first free place there:
+ * down a column, then the next, then wherever's free.
  */
-export function homesFor(names: string[], edges: ReadEdge[], boxes: Map<string, Box>, size: (name: string) => { w: number; h: number }): Map<string, Row> {
+export function homesFor(names: string[], edges: ReadEdge[], boxes: Map<string, Box>, size: (name: string) => { w: number; h: number }, on?: Box): Map<string, Row> {
   const depth = depths(names, edges)
   const order = names.map((name, at) => ({ name, at })).sort((a, b) => (depth.get(a.name) ?? 0) - (depth.get(b.name) ?? 0) || a.at - b.at)
   const placed = [...boxes.values()]
@@ -115,9 +116,16 @@ export function homesFor(names: string[], edges: ReadEdge[], boxes: Map<string, 
     if (reads.length) {
       box.x = Math.max(...reads.map((read) => read.x + read.w)) + GAP_X
       box.y = reads[0].y
+    } else if (on) {
+      box.x = on.x
+      box.y = on.y
     }
     for (let bump = placed.find((other) => overlaps(box, other)); bump; bump = placed.find((other) => overlaps(box, other))) {
       box.y = bump.y + bump.h + GAP_Y
+      if (on && !reads.length && box.y + h > on.y + on.h && box.x + widest + GAP_X + w <= on.x + on.w) {
+        box.x += widest + GAP_X
+        box.y = on.y
+      }
     }
     placed.push(box)
     boxes.set(name, box)

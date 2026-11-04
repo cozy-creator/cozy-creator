@@ -95,7 +95,7 @@ Every other key is an **input**: it passes through to the function and counts in
 
 ## Defaults
 
-`defaults` holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool makes: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
+`defaults` holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
 
 ## First-party inputs
 
@@ -125,12 +125,12 @@ Every other key is an **input**: it passes through to the function and counts in
 **An asset's state** is the first of these that applies:
 1. `approved`: that file, and with it the whole file set of the version it is. Naming one with a tool makes a version to look at, its state unmoved.
 2. Its newest version whose key matches now.
-3. A version whose own half of the key matches when a read no longer exists: that is no change, as nothing could make it again.
+3. A version whose key differs only by a read that no longer exists: that is no change, as nothing could make it again.
 4. Nothing: it's missing or out of date.
 
 An asset that is only a `description`, with no tool and no file, stands as words: what mentions it reads them.
 
-**The key** is 16 hex: eight of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, and eight of each read's `name`, `asset_type`, `description` and `files`. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
+**The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, so a read gone hides no change in the others. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
 **Not in the key:** its own `description`, `asset_type` and `voice`; package, adapter and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
@@ -140,7 +140,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 
 | Command | Does |
 |---|---|
-| `render all [--on <machine>]` | A new version, with a new seed, of every asset with a tool, each reading the new ones before it. Approved assets are skipped, and said |
+| `render all [--on <machine>]` | A new version, with a new seed, of every asset with a tool, each reading the new ones before it. Approved assets are skipped, and said. One of each: `-n` is for an asset you name, and with `all` it warns and makes one |
 | `render <name>`, `-n 4` | A new version of it, or four, and of what it reads only if that has no state. Naming an approved asset makes a version to look at, and what it holds stays |
 | `render <names\|all> --missing` | Only what has no state: continues a render that half failed without paying twice |
 | `render all --outdated` | As `render all`, and each approved asset out of date when its turn comes. What it approved goes when the new version lands, and the version it held stays, to approve again. If it can't be made, it stands |
@@ -149,13 +149,23 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `render clash --take 2 --in 15` | Keeps take 2 up to 15 s and regenerates the rest |
 | `approve <name> <version>` | Writes that version's hash as its `approved` |
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
-| `unpin <name>` | Takes `approved` away. A dropped file keeps it: it's all it is |
+| `unapprove <name>` | Takes `approved` away. A dropped file keeps it: it's all it is |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
-| `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
+| `import <file\|hash> [name] [--description <words>] [--at x,y[,w]]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
 | `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
+| `tools [words] [--on <machine>]` | What can make an asset. `--json` gives each one's fields, their types and limits |
+| `add <tool> [name] [field=value…] [--input <file>] [--at x,y[,w]]` | An asset of that tool, as dropping it on the canvas, and prints its name. With no place the page gives it one, free and on screen |
+| `set <name> field=value… [--input <file>] [--if-match <etag>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, and `tool=` is what makes it. An Edit's tracks and clips are its `timeline`, in a file |
+| `show <name>` | Its fields, the `etag` `--if-match` takes, and each take or version |
+| `delete <name>…` | As the X on its box: its work stops and it goes, and this prints the `restore` line that brings it back |
+| `restore <name> <kept>` | That line: back as it was, where it was, with what it made |
+| `canvas [name [x y [w]]] [--input <file>]` | Where boxes sit: prints them, or moves one as a drag does, or several from a file |
+| `caption <name> [--on <machine>]` | Prints what a run says it shows. It writes nothing: `set` it into `description` |
 | `upgrade [--status <file>]` | A format 2 folder to format 3, here, with no Calcifer. See below |
+
+Everything the page does has a command here, each the same route with the same fields, and what either does shows on the other within a second: a hand's save of `project.yaml` too.
 
 ## Queueing
 

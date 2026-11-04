@@ -16,7 +16,7 @@ use protocol::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Doc, IMPORT_KEPT_MS, canvas, find, folder, format, graph::name_key, listed, assetfile, now_ms, row};
+use super::{Doc, IMPORT_KEPT_MS, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, assetfile, model, now_ms};
 use crate::api::{Api, Refusal, parse};
 
 /// What to call an asset with no name asked: the tool's last word, with no release.
@@ -25,7 +25,7 @@ fn tool_name(tool: &str) -> Option<String> {
 }
 
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("{name} isn't under `assets:` in {}", folder::PROJECT))
+    Error::new(Kind::Usage, "project_edit", format!("{name} isn't under `assets:` in {}", folder::PROJECT)).next("cozy project status")
 }
 
 /// `POST /v1/projects/{id}/assets`: an asset from a tool, and with `at` its row, in one call. The name goes in the lock first, so a retry
@@ -65,6 +65,10 @@ pub(super) async fn create(
         }))
         .map_err(Refusal)?;
     }
+    // Its row before its lines: a page that reads the name has somewhere to put it, and places nothing of its own.
+    if let Some(card) = asked.at {
+        canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
+    }
     (folder.edit_project(|text| match assetfile::etag(text, &name) {
         Some(_) => Ok(text.to_owned()),
         None => assetfile::added(text, &name, &asked.tool, &asked.fields).map(|(edited, _)| edited),
@@ -73,9 +77,6 @@ pub(super) async fn create(
     // What it outputs: what `defaults` fill of it before it has a version.
     let plain = format::plain_tool(&asked.tool, folder);
     folder.update_lock(|lock| drop(lock.makes.insert(plain.clone(), kind.clone()))).map_err(Refusal)?;
-    if let Some(card) = asked.at {
-        canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
-    }
     let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok((StatusCode::CREATED, Json(AssetMade { name, etag })))
 }
@@ -84,16 +85,15 @@ pub(super) async fn create(
 pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetVersions>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let text = folder.text().map_err(Refusal)?;
-    let (doc, lock) = (Doc::read(folder, &text).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
-    let i = find(&doc, &name).map_err(Refusal)?;
-    let mut asset = row(&api, &doc, folder, &lock, &doc.stand(&lock), i);
-    asset.etag = assetfile::etag(&text, &asset.name);
+    let model = model::of(&api, &project).await.map_err(Refusal)?;
+    let (doc, lock) = (&model.doc, &model.lock);
+    let i = find(doc, &name).map_err(Refusal)?;
+    let asset = model.row(&project, i);
     let pinned = asset.approved;
     let versions = (lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions))
         .map(|version| VersionRow {
             number: version.number,
-            files: listed(folder, &lock, &version.files),
+            files: listed(folder, lock, &version.files),
             made_by: version.tool.clone().or_else(|| asset.tool.clone()),
             seed: version.seed,
             runs: version.run.into_iter().collect(),
@@ -123,13 +123,14 @@ pub(super) async fn patch(
     }
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
     let told = RefCell::new((String::new(), vec![]));
+    let lock = folder.lock().map_err(Refusal)?;
     (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
         if read.is_some_and(|read| read != was) {
-            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds"));
+            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds").next(format!("cozy project show {name}")));
         }
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
-        Doc::read(folder, &edited)?;
+        Doc::of(folder, &edited, &lock)?;
         *told.borrow_mut() = (was, warnings);
         Ok(edited)
     }))
@@ -148,12 +149,12 @@ struct Deleted {
 }
 
 /// `DELETE /v1/projects/{id}/assets/{name}`: it, its versions and its row gone, at once, and what it made stands. Its files wait, unnamed, for
-/// `reclaim`, and what this answers puts it all back. A render going still makes what it was asked.
+/// `reclaim`, and what this answers puts it all back. Its queued work is dropped and its runs canceled first.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let doc = Doc::load(folder).map_err(Refusal)?;
-    let i = doc.find(&name).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}"))))?;
+    let i = doc.find(&name).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")))?;
     let name = doc.assets[i].name.clone();
     let at = canvas::row(folder, &name).map_err(Refusal)?;
     let lines = RefCell::new(String::new());
@@ -163,6 +164,8 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
         Ok(edited)
     }))
     .map_err(Refusal)?;
+    // Refused, nothing stops. Gone from the file, what lands of it lands nothing.
+    cancelled(&api, &project, std::slice::from_ref(&name), &deleted_why)?;
     let held = RefCell::new(None);
     folder.update_lock(|lock| *held.borrow_mut() = lock.assets.remove(&name_key(&name))).map_err(Refusal)?;
     canvas::set(folder, &id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
@@ -170,6 +173,10 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     project.asked.notify_one();
     let text = serde_json::to_string(&Deleted { lines: lines.into_inner(), held: held.into_inner() }).expect("what's deleted serializes");
     Ok(Json(AssetDeleted { name, text, at }))
+}
+
+fn taken(name: &str) -> Error {
+    Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy(format!("rename that one, then put this one back, or edit {}", folder::PROJECT)).next(format!("cozy project rename {name} <another name>"))
 }
 
 /// `PUT /v1/projects/{id}/assets/{name}`: what `DELETE` answered, back under its name, its versions with it. Taken since by a hand in the file,
@@ -183,9 +190,16 @@ pub(super) async fn put_back(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let back: Deleted = serde_json::from_str(&asked.text).map_err(|_| Refusal(Error::new(Kind::Validation, "asset_text", format!("that isn't what deleting {name} answered"))))?;
+    if Doc::load(folder).map_err(Refusal)?.find(&name).is_some() {
+        return Err(Refusal(taken(&name)));
+    }
+    // Its row before its lines, as a new asset's.
+    if let Some(card) = asked.at {
+        canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
+    }
     (folder.edit_project(|text| {
         if Doc::read(folder, text)?.find(&name).is_some() {
-            return Err(Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy(format!("rename that one, then undo, or edit {}", folder::PROJECT)));
+            return Err(taken(&name));
         }
         assetfile::restored(text, &name, &back.lines)
     }))
@@ -193,9 +207,6 @@ pub(super) async fn put_back(
     if let Some(held) = &back.held {
         folder.update_lock(|lock| drop(lock.assets.insert(name_key(&name), held.clone()))).map_err(Refusal)?;
         project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
-    }
-    if let Some(card) = asked.at {
-        canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
     let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetMade { name, etag }))

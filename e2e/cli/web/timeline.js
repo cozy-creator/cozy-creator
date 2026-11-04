@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, drop, lastLook, lookAt, until } = require('./page');
+const { STEP_MS, drop, lastLook, lookAt, until, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -95,10 +95,10 @@ function plate(path, color, seconds, hz) {
   // At rest it's its picture, or what it's for: on a hover, its filmstrip, in the same place, and still no video.
   const away = () => page.mouse.move(2, 500);
   const openEdit = async () => {
-    await card('Edit').locator('.head').hover();
+    await pointAt(page, card('Edit').locator('.head'));
     await page.waitForSelector('.tl-clips');
   };
-  await card('Edit').locator('.head').hover();
+  await pointAt(page, card('Edit').locator('.head'));
   await away();
   await until('an Edit at rest', () => card('Edit').locator('.tl').count(), (n) => n === 0);
   check('at_rest_says_what_it_is_for', (await card('Edit').locator('.media-note').textContent()) === 'Drag videos and stills here');
@@ -171,7 +171,7 @@ function plate(path, color, seconds, hz) {
   await pull('blue', 'in', 40);
   // A press holds it open wherever the pointer goes: this one lets go well off the box.
   check('a_press_holds_it_open', /^\d\d:\d\d:\d\d:\d\d, \d+ f$/.test(await pull('title', 'out', -60, 300)));
-  await until('three trims saved', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => (text.match(/frames:|start:|end:/g) ?? []).length >= 3);
+  await until('three trims saved', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => (text.match(/\b(frames|in|out):/g) ?? []).length >= 3);
   // Reorder: blue goes first.
   const first = await strip();
   const body = await page.locator('.tl-clip[data-name="blue"]').boundingBox();
@@ -214,7 +214,7 @@ function plate(path, color, seconds, hz) {
 
   // Render: free, with no machine, showing how far it is, and a version like any other.
   const render = async () => {
-    await card('Edit').locator('.head').hover();
+    await pointAt(page, card('Edit').locator('.head'));
     await card('Edit').locator('button[aria-label="Render"]').click();
   };
   await page.evaluate(() => { window.rendering = 0; new MutationObserver(() => { if (document.querySelector('.tl-rendering')) window.rendering += 1; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
@@ -263,7 +263,7 @@ function plate(path, color, seconds, hz) {
   check('second_frames_exact', countFrames(film) === second.reduce((sum, clip) => sum + clip.frames, 0), { film: countFrames(film), second });
 
   // Back to the first: its arrangement shows, and an edit carries on from there.
-  await card('Edit').locator('.head').hover();
+  await pointAt(page, card('Edit').locator('.head'));
   await card('Edit').locator('.take').first().click();
   await until('version 1\'s clips', clips, (now) => now[0].out === placed[0].out);
   await pull('blue', 'in', 10);
@@ -271,18 +271,18 @@ function plate(path, color, seconds, hz) {
   check('carried_on', (await edit()).fields.timeline.tracks[0].clips[0].in > placed[0].in, (await edit()).fields.timeline);
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
-  await card('Edit').locator('.head').hover();
+  await pointAt(page, card('Edit').locator('.head'));
   await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.stage'), { targetPosition: { x: 508, y: 744 } });
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
   // Approved, that version is what the Edit is, and its film follows.
-  await card('Edit').locator('.head').hover();
+  await pointAt(page, card('Edit').locator('.head'));
   await card('Edit').locator('.take').nth(1).click();
   await card('Edit').locator('button:text-is("Approve")').click();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
-  await card('Edit').locator('.head').hover();
+  await pointAt(page, card('Edit').locator('.head'));
   // Unapproved, it has no film of what it holds now, so it's cut there and then, and the call answers when that's done: what's counted below is what's asked below.
   await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Edit').locator('button:text-is("Unapprove")').click()]);
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
@@ -315,7 +315,7 @@ function plate(path, color, seconds, hz) {
   await openEdit();
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
-  await card('red').locator('.head').hover();
+  await pointAt(page, card('red').locator('.head'));
   await card('red').locator('button[aria-label="Delete"]').click();
   await openEdit();
   await until('the clip says it\'s offline', clips, (now) => now.some((clip) => clip.name === 'red' && clip.missing === 'no longer in the project'));

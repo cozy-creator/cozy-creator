@@ -186,6 +186,11 @@ export interface Cut {
   without?: string[]
 }
 
+/** `GET /v1/projects/{id}/assets/{name}`; what a card needs is `asset`. */
+export interface AssetVersions {
+  asset: Asset
+}
+
 export interface ProjectState {
   id: string
   path: string
@@ -932,7 +937,7 @@ export type ServerEvent =
   | { type: "run.updated"; run: Run }
   | { type: "machine.updated"; machine: Machine }
   | { type: "machine.removed"; name: string }
-  | { type: "project.changed"; id: string; rev: string }
+  | { type: "project.changed"; id: string; rev: string; assets?: string[]; gone?: string[]; head?: boolean }
   | { type: "canvas"; id: string; etag: string; cards: Record<string, Row | null> }
   | { type: "resync" }
 

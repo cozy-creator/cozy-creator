@@ -21,7 +21,7 @@ use super::{
     assetfile::mentions_renamed,
     canvas,
     folder::{self, Folder, Lock, MEASURED},
-    format::{Doc, FORMAT, State, canonical, invalid, made_here, names_a_file, other_than, plain_tool, yaml_key},
+    format::{Doc, FORMAT, State, canonical, invalid, made_here, names_a_file, plain_tool, yaml_key},
     graph::{mentions, mentions_in, name_key},
     holding,
 };
@@ -747,11 +747,6 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         })
         .collect();
     doc.stamped(&mut lock, &current);
-    for asset in &doc.assets {
-        for version in lock.assets.get_mut(&name_key(&asset.name)).into_iter().flat_map(|held| &mut held.versions) {
-            version.tool = version.tool.take().and_then(|made| other_than(&made, asset.tool.as_deref()));
-        }
-    }
 
     // Old files aside, then the lock and the file, each whole: a move cut short starts again from the old lock.
     let yaml_at = dir.join(folder::PROJECT);

@@ -275,7 +275,6 @@ export function TimelineControl({ name }: { name: string }) {
         (etag) => {
           awaited.current = etag
           if (!etag && !gesture.current) setDraft(null)
-          store.refresh()
         },
       ),
   )

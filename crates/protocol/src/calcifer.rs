@@ -729,7 +729,19 @@ pub enum StreamEvent {
     MachineRemoved { name: String },
     /// `rev` is opaque, and changes whenever project.yaml or project.lock does.
     #[serde(rename = "project.changed")]
-    ProjectChanged { id: String, rev: String },
+    ProjectChanged {
+        id: String,
+        rev: String,
+        /// The assets whose row is another now, each to read by `GET /v1/projects/{id}/assets/{name}`. Absent: read the whole project.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assets: Option<Vec<String>>,
+        /// Those gone from it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        gone: Vec<String>,
+        /// What's said of the project besides its assets changed: `GET /v1/projects/{id}?assets=false`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        head: bool,
+    },
     /// The rows of a project's canvas that changed; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, etag: String, cards: BTreeMap<String, Option<crate::project::Card>> },

@@ -140,7 +140,7 @@ pub struct Asset {
     /// What its file is: what it holds or last made, else what its tool's interface last said, else a picture. No more than what to call it.
     pub kind: String,
     /// Whether anything said that.
-    pub kind_known: bool,
+    pub tool_makes: bool,
     /// What makes it, as the memo holds it: no release, no root namespace, and local code by its directory's name.
     pub tool: Option<String>,
     /// What makes it, as the file writes it.
@@ -261,7 +261,7 @@ impl Doc {
 
     /// The project `text` says, of the files and tags `lock` holds.
     pub(super) fn of(folder: &Folder, text: &str, lock: &Lock) -> Result<Self, Error> {
-        let value = protocol::yaml::to_json_keeping(text, names_a_file).map_err(|why| {
+        let (value, listed) = protocol::yaml::to_json_and_keys(text, &["assets"], names_a_file).map_err(|why| {
             let (line, written) = at_line(text, &why);
             let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
             match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
@@ -300,13 +300,13 @@ impl Doc {
             defaults.insert(section.clone(), Value::Object(filled));
         }
         let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
-        for name in protocol::yaml::keys(text, &["assets"]) {
-            named(&name)?;
+        for name in &listed {
+            named(name)?;
         }
         let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), makes: lock.makes.clone(), unread: vec![], dir: folder.dir.clone() };
-        for name in protocol::yaml::keys(text, &["assets"]) {
-            let Some(written) = declared.get(&name) else { continue };
-            doc.declare(&name, written, &defaults, folder, lock);
+        for name in &listed {
+            let Some(written) = declared.get(name) else { continue };
+            doc.declare(name, written, &defaults, folder, lock);
         }
         for i in 0..doc.assets.len() {
             if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() {
@@ -358,7 +358,7 @@ impl Doc {
         let of_file = pin.as_ref().and_then(|sha256| lock.files.get(sha256)).and_then(folder::File::media);
         let makes = tool.as_ref().and_then(|tool| lock.makes.get(tool)).and_then(|kind| KINDS.iter().copied().find(|known| known == kind));
         let said = tool.as_deref().and_then(kind_made_here).or(of_file).or(made).or(makes);
-        let (kind, kind_known) = (said.unwrap_or("image").to_owned(), said.is_some());
+        let kind = said.unwrap_or("image").to_owned();
         let mut asset_type = text_of(body.get("asset_type"));
         if !asset_type.is_empty() && !ASSET_TYPES.contains(&asset_type.as_str()) {
             self.warn(name, format!("{name}'s asset_type: {asset_type} isn't {}: it is ignored", ASSET_TYPES.join(", ")));
@@ -384,8 +384,9 @@ impl Doc {
         let own: BTreeSet<String> = body.keys().filter(|key| !PLATFORM.contains(&key.as_str()) && *key != NOT_READ).cloned().collect();
         let (mut made, mut inputs) = (Map::new(), Map::new());
         // What Calcifer makes reads no style, and an edit's shape is its own to say.
-        if tool.as_deref().is_some_and(|tool| !made_here(tool)) && kind_known {
-            for (field, value) in defaults.get(&kind).and_then(Value::as_object).unwrap_or(&Map::new()) {
+        // By what its tool makes, never by what a version or an approved file is, or its key would move when it had one.
+        if let Some(makes) = makes.filter(|_| tool.as_deref().is_some_and(|tool| !made_here(tool))) {
+            for (field, value) in defaults.get(makes).and_then(Value::as_object).unwrap_or(&Map::new()) {
                 match MADE.contains(&field.as_str()) {
                     true => drop(made.insert(field.clone(), value.clone())),
                     false => drop(inputs.insert(field.clone(), value.clone())),
@@ -407,7 +408,7 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, kind_known, tool, target, made, inputs, own, description, asset_type, voice, pin, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), kind, tool_makes: makes.is_some(), tool, target, made, inputs, own, description, asset_type, voice, pin, hollow, reads: vec![] });
     }
 
     /// Each asset's reads, and the order. A mention of nothing stays text; one that closes a cycle too.
@@ -543,11 +544,6 @@ impl Doc {
         names
     }
 
-    /// The name keys of what asset `i` read that is gone.
-    fn reads_gone(&self, i: usize) -> BTreeSet<String> {
-        self.unread.iter().filter(|(asset, _)| *asset == i).map(|(_, mention)| name_key(mention)).collect()
-    }
-
     fn mentions_of_nothing<'a>(&'a self, i: usize, tags: &'a [String]) -> impl Iterator<Item = &'a str> {
         self.unread.iter().filter(move |(asset, mention)| *asset == i && !is_tag(tags, mention)).map(|(_, mention)| mention.as_str())
     }
@@ -641,14 +637,12 @@ impl Doc {
         let reads = reads.unwrap_or_default();
         let stand = |state, files| Standing { state, files, inputs: inputs.clone(), reads: reads.clone() };
         let versions = held.map(|held| held.versions.as_slice()).unwrap_or_default();
-        // What is gone from the project is no change: nothing could make it again, and what stands stands. So its reads' half of the key says nothing.
-        let gone = !self.reads_gone(i).is_empty();
-        let stands = |version: &Version, now: &str| !version.inputs.is_empty() && (version.inputs == now || (gone && own_half(&version.inputs) == own_half(now)));
+        let stands = |version: &Version, now: &str| !version.inputs.is_empty() && self.moved(i, &version.inputs, now, &reads).is_empty();
         if let Some(sha256) = &asset.pin {
             return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
                 Some(version) => {
                     let changed = match &inputs {
-                        Some(now) if !version.inputs.is_empty() && !stands(version, now) => vec!["its inputs".to_owned()],
+                        Some(now) if !version.inputs.is_empty() => self.moved(i, &version.inputs, now, &reads),
                         _ => vec![],
                     };
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
@@ -715,8 +709,8 @@ impl Doc {
         (!tool || !reads.is_empty()).then_some(reads)
     }
 
-    /// Its key, 16 hex digits: half what makes it and its inputs, half what it reads, of which only what reaches a reader counts, so editing an
-    /// approved asset's instructions leaves what reads it as it is.
+    /// Its key: eight hex digits of what makes it and its inputs, then twelve for each thing it reads (`read_part`), in name order, so that a
+    /// read gone hides no change in the others.
     fn key(&self, i: usize, reads: &[ReadNow]) -> String {
         let asset = &self.assets[i];
         let tool = self.tool(i).is_some();
@@ -732,18 +726,34 @@ impl Doc {
         own.insert("inputs".into(), Value::Object(inputs));
         let mut sorted: Vec<&ReadNow> = reads.iter().collect();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
-        let reads: Vec<Value> = sorted
-            .into_iter()
-            .map(|read| {
-                let of = &self.assets[read.asset];
-                // A tool's key holds only files: same takes, same key, whatever their text says.
-                match tool {
-                    true => json!({"name": read.name, "files": read.files.values().collect::<Vec<_>>()}),
-                    false => json!({"name": read.name, "asset_type": of.asset_type, "description": of.description, "files": read.files.values().collect::<Vec<_>>()}),
-                }
-            })
-            .collect();
-        format!("{}{}", &digest(&Value::Object(own))[..8], &digest(&json!(reads))[..8])
+        let reads: String = sorted.into_iter().map(|read| self.read_part(tool, read)).collect();
+        format!("{}{reads}", &digest(&Value::Object(own))[..8])
+    }
+
+    /// A read in a key: four hex digits of its name and eight of what reaches a reader, so editing an approved asset's instructions leaves what
+    /// reads it as it is. A tool's holds only files: same takes, same key, whatever their text says.
+    fn read_part(&self, tool: bool, read: &ReadNow) -> String {
+        let of = &self.assets[read.asset];
+        let files: Vec<_> = read.files.values().collect();
+        let held = match tool {
+            true => json!({"files": files}),
+            false => json!({"asset_type": of.asset_type, "description": of.description, "files": files}),
+        };
+        format!("{}{}", &digest(&json!(name_key(&read.name)))[..4], &digest(&held)[..8])
+    }
+
+    /// What moved since a version was made at key `then`: its inputs, or each read that changed. A read `then` holds that's gone is no change, as
+    /// nothing could make it again.
+    fn moved(&self, i: usize, then: &str, now: &str, reads: &[ReadNow]) -> Vec<String> {
+        if then == now {
+            return vec![];
+        }
+        if own_part(then) != own_part(now) {
+            return vec!["its inputs".to_owned()];
+        }
+        let tool = self.tool(i).is_some();
+        let held: Vec<&[u8]> = then.as_bytes().get(OWN_PART..).unwrap_or_default().chunks_exact(READ_PART).collect();
+        reads.iter().filter(|read| !held.contains(&self.read_part(tool, read).as_bytes())).map(|read| format!("<{}>", read.name)).collect()
     }
 
     /// The operation asset `i` is, as its adapter takes it: the function its tool names, its inputs, and what it reads with what is known of
@@ -911,16 +921,12 @@ fn digest(value: &Value) -> String {
     hex::encode(Sha256::digest(canonical(value).to_string().as_bytes()))
 }
 
-/// A key's half that holds what makes it and its inputs.
-fn own_half(key: &str) -> &str {
-    key.get(..8).unwrap_or(key)
-}
+/// How much of a key says what makes it and its inputs, and how much says each read.
+const OWN_PART: usize = 8;
+const READ_PART: usize = 12;
 
-/// `made` as an asset's tool writes it: no root namespace, nothing of this computer, no release. None: it's `tool`, so nothing need be said.
-pub(super) fn other_than(made: &str, tool: Option<&str>) -> Option<String> {
-    let plain = made.split('@').next().unwrap_or(made);
-    let plain = plain.strip_prefix("_/").or_else(|| plain.strip_prefix("local/")).unwrap_or(plain);
-    (Some(plain) != tool).then(|| made.to_owned())
+fn own_part(key: &str) -> &str {
+    key.get(..OWN_PART).unwrap_or(key)
 }
 
 pub(super) fn invalid(code: &str, message: String) -> Error {

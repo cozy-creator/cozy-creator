@@ -32,6 +32,7 @@ import type {
   PackageSearch,
   ProjectList,
   ProjectState,
+  AssetVersions,
   Renamed,
   Row,
   Play,
@@ -249,6 +250,16 @@ export class Client {
 
   project(id: string, signal?: AbortSignal): Promise<ProjectState> {
     return this.json(project(id), { signal })
+  }
+
+  /** One asset as it is now: what a change of it costs, whatever else the project holds. */
+  asset(id: string, name: string): Promise<AssetVersions> {
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`)
+  }
+
+  /** What's said of the project besides its assets. */
+  projectHead(id: string): Promise<ProjectState> {
+    return this.json(`${project(id)}?assets=false`)
   }
 
   async yaml(id: string, signal?: AbortSignal): Promise<string> {

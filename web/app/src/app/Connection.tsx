@@ -1,55 +1,119 @@
 import { QueryClient } from "@tanstack/react-query"
 import { createContext, useContext } from "react"
-import { Client, type RunFilter } from "../api/client"
+import { ApiError, Client, type RunFilter } from "../api/client"
 import { EventStream } from "../api/events"
-import { runsAfter } from "../api/queries"
+import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
-import type { Machine, MachineList, Run, RunList, ServerEvent, Status } from "../types"
+import type { Machine, MachineList, ProjectState, Run, RunList, ServerEvent, Status } from "../types"
 import { signal } from "../ui/signal"
 import { readSession } from "./session"
+
+const READ_GAP_MS = 250
+/** More than this changing at once is read whole. */
+const MOST_ASSETS = 64
+
+/** What's to read of a project, and when it last was. */
+interface Owed {
+  timer?: ReturnType<typeof setTimeout>
+  read: number
+  flying: boolean
+  names: Set<string>
+  gone: Set<string>
+  head: boolean
+  whole: boolean
+}
 
 /** Stream events into the query cache. The stream invalidates, so nothing goes stale by itself. */
 class Bridge {
   /** Calcifer came back as another version: the page offers Reload. */
   readonly newVersion = signal<string | null>(null)
   private queries: QueryClient
+  private client: Client
   private version: string | null = null
   private revs = new Map<string, string>()
-  private refreshes = new Map<string, { timer?: ReturnType<typeof setTimeout>; flying: boolean; again: boolean }>()
+  private owed = new Map<string, Owed>()
   private runs = new Map<number, Run>()
   private runListeners = new Set<(run: Run) => void>()
   private flushing = false
 
-  constructor(queries: QueryClient) {
+  constructor(queries: QueryClient, client: Client) {
     this.queries = queries
+    this.client = client
   }
 
   setVersion(version: string) {
     this.version = version
   }
 
-  /** New state wanted: 200 ms of quiet, one read at a time, and one more if it changed during that read. */
-  refresh(id: string) {
-    let slot = this.refreshes.get(id)
-    if (!slot) this.refreshes.set(id, (slot = { flying: false, again: false }))
-    const held = slot
-    clearTimeout(held.timer)
+  /**
+   * What the stream said changed of a project: at once if none was read lately, else one read per `READ_GAP_MS`, so a burst shows as it goes,
+   * in few reads. One at a time, and one more if it changed during that read. Only what changed is read, whatever else the project holds.
+   */
+  changed(id: string, change: { assets?: string[]; gone?: string[]; head?: boolean }) {
+    let slot = this.owed.get(id)
+    if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false }))
+    for (const name of change.assets ?? []) slot.names.add(name)
+    for (const name of change.gone ?? []) slot.gone.add(name)
+    slot.head ||= Boolean(change.head)
+    slot.whole ||= !change.assets
+    this.go(id, slot)
+  }
+
+  private go(id: string, held: Owed) {
+    if (held.flying || held.timer !== undefined) return
     held.timer = setTimeout(async () => {
-      if (held.flying) {
-        held.again = true
-        return
-      }
+      held.timer = undefined
       held.flying = true
-      await Promise.all([
-        this.queries.refetchQueries({ queryKey: ["project", id] }),
-        this.queries.invalidateQueries({ queryKey: ["yaml", id] }),
-      ])
+      held.read = performance.now()
+      await this.read(id, held)
       held.flying = false
-      if (held.again) {
-        held.again = false
-        this.refresh(id)
-      }
-    }, 200)
+      if (held.whole || held.head || held.names.size || held.gone.size) this.go(id, held)
+    }, Math.max(0, held.read + READ_GAP_MS - performance.now()))
+  }
+
+  private async read(id: string, held: Owed) {
+    const key = ["project", id]
+    const whole = held.whole || held.names.size > MOST_ASSETS
+    const [names, gone, head] = [[...held.names], [...held.gone], held.head]
+    held.names.clear()
+    held.gone.clear()
+    Object.assign(held, { head: false, whole: false })
+    void this.queries.invalidateQueries({ queryKey: ["yaml", id] })
+    const query = this.queries.getQueryCache().find({ queryKey: key })
+    // No one's looking: what's held is read when someone is.
+    if (!query?.getObserversCount()) return void query?.invalidate()
+    // A first read still going may be older than this: this waits for it, and then what changed is read over it.
+    await query.promise?.catch(() => {})
+    if (whole || this.queries.getQueryData(key) === undefined) {
+      await this.queries.refetchQueries({ queryKey: key })
+      return
+    }
+    try {
+      const [rows, said] = await Promise.all([
+        Promise.all(names.map((name) => this.client.asset(id, name).then(({ asset }) => asset, (error) => {
+          if (error instanceof ApiError && error.status === 404) return null
+          throw error
+        }))),
+        head ? this.client.projectHead(id) : undefined,
+      ])
+      const asked = rows.flatMap((row) => row ?? [])
+      const left = [...gone, ...names.filter((_, at) => !rows[at])]
+      this.queries.setQueryData<ProjectState>(key, (state) => state && withAssets(state, asked, left, said && { ...said, assets: state.assets }))
+    } catch {
+      // Whatever kept it from reading those, the next says why, of all of it.
+      held.whole = true
+    }
+  }
+
+  /** Everything held is read again, a project's whole, or when it's next looked at. With `behind`, what the stream lost may be newer than any read going, so that goes too. */
+  private readAll(behind: boolean) {
+    for (const query of this.queries.getQueryCache().findAll({ queryKey: ["project"] })) {
+      const id = query.queryKey[1]
+      if (typeof id !== "string" || !id) continue
+      if (!query.getObserversCount()) query.invalidate()
+      else if (behind || query.state.fetchStatus !== "fetching") this.changed(id, {})
+    }
+    void this.queries.invalidateQueries({ predicate: ({ queryKey }) => queryKey[0] !== "project" }, { cancelRefetch: behind })
   }
 
   onRun(listener: (run: Run) => void): () => void {
@@ -82,10 +146,10 @@ class Bridge {
     switch (event.type) {
       case "hello":
         if (this.version && event.version !== this.version) this.newVersion.set(event.version)
-        void this.queries.invalidateQueries(undefined, { cancelRefetch: false })
+        this.readAll(false)
         break
       case "resync":
-        void this.queries.invalidateQueries()
+        this.readAll(true)
         break
       case "run.updated":
         this.runs.set(event.run.number, event.run)
@@ -106,7 +170,7 @@ class Bridge {
       case "project.changed":
         if (this.revs.get(event.id) !== event.rev) {
           this.revs.set(event.id, event.rev)
-          this.refresh(event.id)
+          this.changed(event.id, event)
         }
         break
     }
@@ -183,7 +247,7 @@ export async function connect(): Promise<Boot> {
   })
   const scope = remote ?? "here"
   const stream = new EventStream(client, scope, Boolean(remote))
-  const bridge = new Bridge(queries)
+  const bridge = new Bridge(queries, client)
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
   stream.start()

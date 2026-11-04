@@ -1,4 +1,6 @@
 //! What reads what, over any assets: names, `<mentions>`, and topological order.
+use std::{cmp::Reverse, collections::BinaryHeap};
+
 use serde_json::Value;
 
 /// How a name matches a mention: any case, with `_` and `-` alike. Space folds with them, so a lock from before names lost theirs
@@ -104,9 +106,23 @@ impl Graph {
 fn topological(upstream: &[Vec<usize>]) -> Result<Vec<usize>, Vec<usize>> {
     let mut placed = vec![false; upstream.len()];
     let mut order = vec![];
-    while let Some(i) = (0..upstream.len()).find(|&i| !placed[i] && upstream[i].iter().all(|&edge| placed[edge])) {
+    let mut readers = vec![vec![]; upstream.len()];
+    let mut waits: Vec<usize> = upstream.iter().map(Vec::len).collect();
+    for (i, reads) in upstream.iter().enumerate() {
+        for &read in reads {
+            readers[read].push(i);
+        }
+    }
+    let mut ready: BinaryHeap<Reverse<usize>> = (0..upstream.len()).filter(|&i| waits[i] == 0).map(Reverse).collect();
+    while let Some(Reverse(i)) = ready.pop() {
         placed[i] = true;
         order.push(i);
+        for &reader in &readers[i] {
+            waits[reader] -= 1;
+            if waits[reader] == 0 {
+                ready.push(Reverse(reader));
+            }
+        }
     }
     let Some(start) = (0..upstream.len()).find(|&i| !placed[i]) else {
         return Ok(order);

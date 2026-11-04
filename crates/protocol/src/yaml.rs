@@ -33,6 +33,11 @@ pub fn to_json(text: &str) -> Result<Value, String> {
 /// `to_json`, where a number `as_written` says of its path, the mapping keys above it, is its text: `007`, `12345678e012` and
 /// `80644e452548` are three hashes' prefixes there, and three numbers anywhere else.
 pub fn to_json_keeping(text: &str, as_written: impl Fn(&[&str]) -> bool) -> Result<Value, String> {
+    Ok(to_json_and_keys(text, &[], as_written)?.0)
+}
+
+/// `to_json_keeping`, and what `keys` says of `path`, of the one read of `text` that both come from.
+pub fn to_json_and_keys(text: &str, path: &[&str], as_written: impl Fn(&[&str]) -> bool) -> Result<(Value, Vec<String>), String> {
     fn json<'n>(node: &'n Yaml<'_>, path: &mut Vec<&'n str>, as_written: &dyn Fn(&[&str]) -> bool) -> Result<Value, String> {
         Ok(match node {
             Yaml::Representation(text, style, tag) => {
@@ -62,8 +67,8 @@ pub fn to_json_keeping(text: &str, as_written: impl Fn(&[&str]) -> bool) -> Resu
         })
     }
     match documents(text)?.as_slice() {
-        [document] => json(document, &mut vec![], &as_written),
-        [] => Ok(Value::Null),
+        [document] => Ok((json(document, &mut vec![], &as_written)?, keys_of(document, path))),
+        [] => Ok((Value::Null, vec![])),
         _ => Err("more than one YAML document".into()),
     }
 }
@@ -75,8 +80,15 @@ pub fn keys(text: &str, path: &[&str]) -> Vec<String> {
 
 /// The keys of the mapping at `path`, none for one left bare; no answer if the text doesn't read or has nothing there, which a half-made save may not.
 pub fn keys_at(text: &str, path: &[&str]) -> Option<Vec<String>> {
-    let documents = documents(text).ok()?;
-    let mut at = documents.first()?;
+    keys_in(documents(text).ok()?.first()?, path)
+}
+
+fn keys_of(document: &Yaml<'_>, path: &[&str]) -> Vec<String> {
+    keys_in(document, path).unwrap_or_default()
+}
+
+fn keys_in(document: &Yaml<'_>, path: &[&str]) -> Option<Vec<String>> {
+    let mut at = document;
     for part in path {
         let Yaml::Mapping(map) = at else { return None };
         at = map.iter().find(|(key, _)| written(key) == Some(*part)).map(|(_, value)| value)?;

@@ -13,7 +13,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, STEP_MS, lastLook, lookAt, png, until, wav } = require('./page');
+const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -33,7 +33,7 @@ const element = (page, name) => page.locator('.react-flow__node').filter({ has: 
 const away = (page) => page.mouse.move(2, 500);
 async function open(page, name) {
   await away(page);
-  await element(page, name).locator('.nm').hover();
+  await pointAt(page, element(page, name).locator('.nm'));
 }
 async function tag(page, name) {
   await open(page, name);
@@ -103,6 +103,7 @@ function summary(frames) {
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
   lookAt(page);
+  await watchBoxes(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const thumbs = [];
@@ -236,7 +237,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_asset_type', of('hero').fields?.asset_type === 'character' && of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
   // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'edit' };
+  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', picture: 'frame', edit: 'edit' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   await away(page);
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
@@ -280,7 +281,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await picture.locator('.take.add').click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
-  await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1);
+  await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
+    // Which of them is behind: the page, or what Calcifer says is still to do.
+    const now = await state();
+    seen.at_its_dot = { dot: await picture.locator('.dot').getAttribute('class'), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
+    throw error;
+  });
   check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
   check('landed_with_no_reload', await notReloaded());
   // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it.
@@ -296,14 +302,18 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
 
   // Playing: a file here over Range with ?media=, two at most, and the third stops the first.
   await open(page, 'clip');
+  // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
+  const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));
   await clip.locator('.play').click();
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
+  await held();
   await until('over Range with ?media=', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && answer.media));
   check('plays_by_range_and_media', true);
   await open(page, 'clip_b');
   await element(page, 'clip_b').locator('.play').click();
   await until('two videos', () => page.locator('video').count(), (n) => n === 2);
+  await held();
   await open(page, 'edit');
   await element(page, 'edit').locator('.tl-play').click();
   await until('still two, the first stopped', () => clip.locator('video').count(), (n) => n === 0);
@@ -318,10 +328,17 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // A failure is named and stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
   await open(page, 'needs');
+  // Its controls open under it, and it sits low: the canvas goes up as far as they need, as a person would take it.
+  const under = await needs.locator('.take.add').boundingBox();
+  await page.mouse.wheel(0, Math.max(0, under.y + under.height + 40 - page.viewportSize().height));
+  await page.waitForTimeout(200);
+  await open(page, 'needs');
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
-  // Under the pointer: a box says why when it's looked at, and this one sits low enough for the click to have moved things.
+  // Its reason shows on the box the pointer is still on. On Windows (41909619528) it had closed, and its neighbour opened.
+  await page.waitForTimeout(300);
+  check('a_box_stays_open_under_the_pointer', await needs.locator('.card').evaluate((el) => el.classList.contains('active')), await boxLog(page));
   await until('its reason shows', async () => {
     await open(page, 'needs');
     return needs.locator('.status.bad').count();
@@ -343,11 +360,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
   await until('and from the card', () => needs.locator('.status.bad').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
 
   // A file that leaves is on another computer, and when it comes back it shows, with no reload: a pull writes neither file.
   const older = await asset('older_art');
   const olderAt = join(folder, older.path);
-  renameSync(olderAt, `${olderAt}.away`);
+  // Out of files/, where any name starting with its hash is it.
+  const olderAway = join(folder, 'older_art.away');
+  renameSync(olderAt, olderAway);
   const absent = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
   await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
@@ -355,7 +376,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('pull_offered', (await element(page, 'older_art').locator('.status .act').textContent()) === 'Pull');
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
   await shot('absent');
-  renameSync(`${olderAt}.away`, olderAt);
+  renameSync(olderAway, olderAt);
   await until('back', () => element(page, 'older_art').locator('.media-note').count(), (n) => n === 0);
   check('file_back_with_no_reload', await notReloaded());
 

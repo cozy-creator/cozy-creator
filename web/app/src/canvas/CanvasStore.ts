@@ -96,6 +96,7 @@ export const CARD_WIDTH = 240
 
 type Flow = ReactFlowInstance<ElementNode, Edge>
 const UNDO_MS = 5 * 60_000
+const SHOWS_FROM = { x: 240, y: 72 }
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
 
@@ -151,8 +152,6 @@ export class CanvasStore {
   focusing: string | null = null
   /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
   machines: () => string[] = () => []
-  /** The first thing a take asked for after this needs no reload to show. */
-  refresh: () => void = () => {}
   private ids = new Map<string, string>()
   private nextId = 0
   private state: ProjectState | null = null
@@ -293,9 +292,10 @@ export class CanvasStore {
     if (row.w) this.reshape(name)
   }
 
-  /** Fell behind: what the stream would have told us is about to be read again. */
-  clearMasks() {
+  /** Fell behind: what the stream would have told us is about to be read again, and what a run says now is asked again. */
+  fellBehind() {
     this.masks.clear()
+    this.asked.clear()
   }
 
   /** Tools the list didn't have, as they're found. */
@@ -324,6 +324,13 @@ export class CanvasStore {
     for (const [from, to] of this.renames) if (present.has(to)) this.renames.delete(from)
     const becoming = new Set(this.renames.values())
     const fresh: Placed[] = []
+    // A row written first, as a rename's is: the same box under a new name, where it was, with whatever's typed in it.
+    for (const { name } of state.assets) {
+      const row = rows.get(name)
+      if (this.views.has(name) || !row) continue
+      const was = [...this.views.keys()].find((held) => !present.has(held) && !this.views.get(held)?.placing && !becoming.has(held) && samePlace(this.position(held) ?? { x: NaN, y: NaN }, row))
+      if (was) this.moveName(was, name)
+    }
     const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
     const warnings = warningsOf(state).byElement
     this.owners.clear()
@@ -349,7 +356,7 @@ export class CanvasStore {
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
-            Object.assign(change, { sent: undefined, known: undefined, ...(view.drafts ? {} : { base: undefined }) })
+            Object.assign(change, { sent: undefined, known: undefined, ...this.typedUnder(view, asset) })
             this.own.delete(asset.name)
           }
           // Pinned where it was being looked: there's nothing left to look at.
@@ -380,6 +387,8 @@ export class CanvasStore {
     for (const [name, view] of this.views) {
       if (!present.has(name) && !view.placing && !view.landed && !becoming.has(name)) this.removeNode(name)
     }
+    // What comes after the first read arrived while this was open, from a dropped tool, a command or a hand.
+    for (const element of this.seen ? fresh : []) this.landings.add(element.name)
     this.addNodes(fresh.filter((element) => rows.has(element.name)).map((element) => ({ element, row: rows.get(element.name)! })))
     const homeless = fresh.filter((element) => !rows.has(element.name))
     if (homeless.length) void this.findHomes(homeless)
@@ -388,6 +397,14 @@ export class CanvasStore {
       this.seen = true
       this.onFirstRead?.(present.size > 0)
     }
+  }
+
+  /** Someone wrote this asset, and what that means for what's typed in it: a field typed in is now a conflict, any other only moves what it began from. */
+  private typedUnder(view: ElementView, asset: Asset): Partial<ElementView> {
+    if (!view.drafts) return { base: undefined }
+    if (asset.etag === view.base) return {}
+    const same = (field: string) => JSON.stringify(asset.fields?.[field]) === JSON.stringify(view.asset?.fields?.[field])
+    return Object.keys(view.drafts).every(same) ? { base: asset.etag } : { conflict: true }
   }
 
   /** A run this page hasn't heard of: its progress comes on the stream, but what it says now has to be read. */
@@ -415,21 +432,25 @@ export class CanvasStore {
     this.addNodes(found.map((element) => ({ element, row: cards[element.name] })))
     const left = wanted.filter(({ name }) => !cards[name])
     if (!left.length) return
+    // Opened here for the first time, with nothing placed yet: its whole new layout is what to look at. Anything after that arrives where someone's looking.
+    const nothingYet = !this.ids.size
     const homes = this.homes(left)
+    for (const [name, row] of homes) rows.set(name, row)
     this.addNodes(left.map((element) => ({ element, row: homes.get(element.name)! })))
     for (const [name, row] of homes) this.move(name, row)
-    // Opened here for the first time, with nothing placed yet: its whole new layout is what to look at.
-    this.onPlaced?.()
+    if (nothingYet) this.onPlaced?.()
   }
 
   private homes(left: Placed[]): Map<string, Row> {
     const boxes = new Map<string, Box>()
     for (const [name, id] of this.ids) {
+      // A node just added isn't in the flow until it next draws; its row is.
       const node = this.flow?.getNode(id)
+      const row = this.rows?.get(name)
       const view = this.views.get(name)
-      if (!node || !view) continue
-      const w = node.width ?? widthFor(view)
-      boxes.set(name, { x: node.position.x, y: node.position.y, w, h: node.measured?.height ?? heightFor(view, w) })
+      if ((!node && !row) || !view) continue
+      const w = node?.width ?? row?.w ?? widthFor(view)
+      boxes.set(name, { x: node?.position.x ?? row!.x, y: node?.position.y ?? row!.y, w, h: node?.measured?.height ?? heightFor(view, w) })
     }
     const sizes = new Map(left.map((element) => {
       const view = viewOf(element)
@@ -437,7 +458,15 @@ export class CanvasStore {
       return [element.name, { w, h: heightFor(view, w) }]
     }))
     const names = left.map((element) => element.name)
-    return homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!)
+    return homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
+  }
+
+  /** The canvas as far as it shows, clear of the top bar and the tools. */
+  private onScreen(): Box | undefined {
+    const seen = this.flow?.getViewport()
+    if (!seen) return undefined
+    const [left, top] = [SHOWS_FROM.x, SHOWS_FROM.y]
+    return { x: (left - seen.x) / seen.zoom, y: (top - seen.y) / seen.zoom, w: (innerWidth - left) / seen.zoom, h: (innerHeight - top) / seen.zoom }
   }
 
   private addNodes(items: { element: Placed; row: Row }[]) {
@@ -520,7 +549,6 @@ export class CanvasStore {
     this.patch(name, { waiting: undefined, scrub: undefined })
     try {
       await this.client.render(this.projectId, [asset.name], on, `take-${crypto.randomUUID()}`, keep)
-      this.refresh()
     } catch (error) {
       say(`Couldn't render ${name}`, error)
     }
@@ -539,7 +567,6 @@ export class CanvasStore {
     for (const name of this.views.keys()) if (!(await this.save(name))) return
     try {
       await this.client.render(this.projectId, ["all"], on, `all-${crypto.randomUUID()}`, outdated ? { outdated } : {})
-      this.refresh()
     } catch (error) {
       say("Couldn't render them", error)
     }
@@ -553,7 +580,6 @@ export class CanvasStore {
       if (pinned.stale.length) say(`That puts ${pinned.stale.join(", ")} out of date`)
       // It turns into that file, and can flip back.
       this.patch(name, { face: undefined })
-      this.refresh()
     } catch (error) {
       say(`Couldn't approve ${name}`, error)
     }
@@ -564,7 +590,6 @@ export class CanvasStore {
     try {
       const unpinned = await this.client.unpin(this.projectId, this.get(name)?.asset?.name ?? name)
       if (unpinned.stale.length) say(`That puts ${unpinned.stale.join(", ")} out of date`)
-      this.refresh()
     } catch (error) {
       say(`Couldn't unapprove ${name}`, error)
     }
@@ -583,7 +608,6 @@ export class CanvasStore {
     if (!this.projectId) return
     try {
       await this.client.pull(this.projectId)
-      this.refresh()
     } catch (error) {
       say("Couldn't pull this project's files", error)
     }
@@ -669,13 +693,14 @@ export class CanvasStore {
   private async write(key: string, force = false): Promise<boolean> {
     const view = this.views.get(key)
     if (!view?.drafts || !view.asset || !this.projectId) return true
+    // The person says which: leaving the text doesn't.
+    if (view.conflict && !force) return false
     const drafts = view.drafts
     this.patch(key, { drafts: undefined, sent: { ...view.sent, ...drafts }, conflict: undefined })
     try {
       const answer = await this.client.patchAsset(this.projectId, view.asset.name, { fields: drafts }, force ? undefined : view.base)
       this.wrote(key, answer)
       this.patch(key, { base: this.views.get(key)?.drafts ? this.views.get(key)?.base : undefined })
-      this.refresh()
       return true
     } catch (error) {
       const now = this.views.get(key)
@@ -720,7 +745,6 @@ export class CanvasStore {
     this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields } })
     try {
       this.wrote(key, await this.client.patchAsset(this.projectId, view.asset.name, { fields }))
-      this.refresh()
     } catch (error) {
       say(`Couldn't set ${name}'s ${Object.keys(fields).join(", ")}`, error)
     }
@@ -762,7 +786,6 @@ export class CanvasStore {
     if (!view?.asset || !this.projectId) return
     try {
       this.wrote(key, await this.client.patchAsset(this.projectId, view.asset.name, { tool }))
-      this.refresh()
     } catch (error) {
       say(`Couldn't change what makes ${name}`, error)
     }
@@ -824,8 +847,6 @@ export class CanvasStore {
     const going = names.map((name) => this.resolveName(name)).filter((name) => this.views.get(name)?.asset && !this.views.get(name)?.placing)
     if (!id || !going.length) return
     const rows = new Map(going.map((name) => [name, this.position(name) ?? undefined]))
-    const running = going.filter((name) => this.views.get(name)?.asset?.making?.length || this.views.get(name)?.queued)
-    if (running.length) await this.client.cancelRender(id, running).catch(() => {})
     const readers = this.readers(going)
     for (const name of going) {
       this.deleting.add(name)
@@ -839,7 +860,6 @@ export class CanvasStore {
       this.deleting.delete(going[i])
       say(`Couldn't delete ${going[i]}`, answer.reason)
     })
-    this.refresh()
     if (!taken.length) return
     const what = taken.length === 1 ? taken[0].name : `${taken.length} assets`
     const said = readers.length ? ` ${readers.join(", ")} ${readers.length === 1 ? "reads" : "read"} this and ${readers.length === 1 ? "isn't" : "aren't"} approved yet.` : ""
@@ -865,7 +885,6 @@ export class CanvasStore {
         say(`Couldn't put ${node.name} back`, error)
       }
     }
-    this.refresh()
   }
 
   // An import

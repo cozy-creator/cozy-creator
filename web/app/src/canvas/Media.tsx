@@ -303,7 +303,8 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const fraction = making ? view.run?.progress?.done_fraction : undefined
+  // A run that ended says no more of how far: it's all there, on its way here.
+  const fraction = making ? (view.run?.status === "completed" ? 1 : view.run?.progress?.done_fraction) : undefined
   const here = shown && !shown.absent ? shown : null
   const words = lineOf(asset?.fields)
   const setAspect = (aspect: number) => store.setAspect(name, aspect)

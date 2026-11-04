@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, drop, lastLook, lookAt, png, until } = require('./page');
+const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -47,6 +47,7 @@ function linesOf(text, name) {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
   lookAt(page);
+  await watchBoxes(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   const refused = [];
@@ -94,7 +95,7 @@ function linesOf(text, name) {
   const away = () => page.mouse.move(2, 500);
   const open = async (name) => {
     await away();
-    await box(name).locator('.nm').hover();
+    await pointAt(page, box(name).locator('.nm'));
     await box(name).locator('.head [aria-label=Delete]').waitFor();
   };
   // Behind its More, opened if it isn't.
@@ -238,7 +239,7 @@ function linesOf(text, name) {
   await shot('dragging');
   await page.mouse.up();
   const said = await until('its name in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('<source-b>'));
-  check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && /prompt: \|/.test(said), said);
+  check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && /instructions: \|/.test(said), said);
   check('drop_is_no_move', (await rows())['source-b'].x === rowsBefore['source-b'].x && (await rows())['source-b'].y === rowsBefore['source-b'].y, await rows());
   await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
@@ -275,6 +276,10 @@ function linesOf(text, name) {
   await knobs.locator('input[aria-label=megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
+  // Nothing has moved the pointer since it opened More. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
+  await page.waitForTimeout(300);
+  check('a_box_in_use_stays_open', (await knobs.locator('.edit-more').count()) === 1, await boxLog(page));
+  await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field(/turbo: (\S+)/), (value) => value === 'false');
   check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
@@ -469,7 +474,7 @@ function linesOf(text, name) {
 
     // Approve: it becomes that file, and flips back.
     await box('Sheet').locator('button:has-text("Approve")').click();
-    await until('approved in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => /image: "?[0-9a-f]{6,}/.test(lines));
+    await until('approved in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => /approved: "?[0-9a-f]{6,}/.test(lines));
     const approved = await of('Sheet');
     check('approved_is_that_version', approved.approved === 1 && approved.pinned, approved.approved);
     await open('Sheet');
