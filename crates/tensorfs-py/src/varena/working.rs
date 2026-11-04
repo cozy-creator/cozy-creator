@@ -783,10 +783,15 @@ fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool
         .map_err(|e| super::raise(py, e))
 }
 
+unsafe extern "C" {
+    // Not in pyo3's limited API bindings; every CPython this wheel loads into exports it.
+    fn PyGILState_Check() -> std::ffi::c_int;
+}
+
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Owner callbacks need the GIL, so an allocation holding it must not wait for them.
     // SAFETY: callable from any thread; it only reads this thread's state.
-    varena::set_host_lock_probe(|| unsafe { pyo3::ffi::PyGILState_Check() != 0 });
+    varena::set_host_lock_probe(|| unsafe { PyGILState_Check() != 0 });
     module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
