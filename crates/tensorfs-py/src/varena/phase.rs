@@ -76,8 +76,6 @@ struct Phase {
     policy: Arc<Policy>,
     key: Option<String>,
     execution_key: Option<String>,
-    observe_replay: bool,
-    footprints: Vec<Arc<varena::working::GraphFootprint>>,
     observer_id: u64,
     observation: Arc<Mutex<Option<u64>>>,
     regions: Vec<Arc<varena::Region>>,
@@ -121,11 +119,11 @@ impl Phase {
             if let Some(key) = &self.key {
                 self.policy.enter(key, &self.regions)?;
             }
-            if self.observe_replay {
-                let token = varena::working::phase_enter_replay(
+            if self.execution_key.is_some() {
+                let token = varena::working::phase_enter(
                     self.policy.arena.device(),
                     self.execution_key.clone(),
-                    self.footprints.clone(),
+                    varena::working::PhaseMode::Replay,
                 )?;
                 *self.observation.lock().unwrap_or_else(|e| e.into_inner()) = Some(token);
                 self.policy
@@ -242,7 +240,6 @@ struct Retire(
         Vec<Arc<varena::Region>>,
         Arc<Py<PyAny>>,
         Arc<Mutex<Option<u64>>>,
-        Vec<Arc<varena::working::GraphFootprint>>,
     )>,
 );
 impl Drop for Retire {
@@ -267,7 +264,6 @@ impl Drop for Phase {
             self.regions.clone(),
             self.module.clone(),
             self.observation.clone(),
-            self.footprints.clone(),
         );
         if self.pid != std::process::id() {
             std::mem::forget(owners);
@@ -373,14 +369,13 @@ impl PhaseController {
             pid: std::process::id(),
         })
     }
-    #[pyo3(signature = (capsule, key, regions, *, footprints = None, execution_key = None))]
+    #[pyo3(signature = (capsule, key, regions, *, execution_key = None))]
     fn wrap(
         &self,
         py: Python<'_>,
         capsule: &Bound<'_, PyAny>,
         key: Option<String>,
         regions: Vec<Py<PyRegion>>,
-        footprints: Option<Vec<Py<super::working::PyGraphFootprint>>>,
         execution_key: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         if self.pid != std::process::id()
@@ -423,20 +418,6 @@ impl PhaseController {
                 definitions.insert(key.clone(), ids);
             }
         }
-        let observe_replay = footprints.is_some();
-        let footprints: Vec<_> = footprints
-            .unwrap_or_default()
-            .into_iter()
-            .map(|value| value.borrow(py).footprint.clone())
-            .collect();
-        if footprints
-            .iter()
-            .any(|footprint| footprint.device() != self.policy.arena.device())
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "graph footprints cross devices",
-            ));
-        }
         let module = Arc::new(py.import("tensorfs._ext")?.into_any().unbind());
         let inner = Arc::new(Continuation::import(capsule, self.policy.arena.device())?);
         let (status, progress) = py.detach(|| inner.observe(false));
@@ -462,8 +443,6 @@ impl PhaseController {
             policy: self.policy.clone(),
             key,
             execution_key,
-            observe_replay,
-            footprints,
             observer_id: self.policy.next_observer.fetch_add(1, Ordering::Relaxed),
             observation: Arc::new(Mutex::new(None)),
             regions,

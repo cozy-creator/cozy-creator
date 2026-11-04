@@ -460,7 +460,7 @@ impl CacheOwner {
             return Err(Error::Busy);
         }
         loop {
-            if crate::is_recovery_blocked(self.control.device)? {
+            if crate::is_capturing(self.control.device)? {
                 return Err(Error::CaptureActive);
             }
             let facts = self.facts()?;

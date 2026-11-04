@@ -82,20 +82,18 @@ pub struct SplitContext {
 
 /// Scope eligibility only. No driver initialization/query and no byte policy crosses to Python.
 pub fn split_context(device: i32) -> Result<SplitContext> {
-    let captures = crate::capture_counts()?;
-    if let Some(activity) = captures.get(&device) {
-        if activity.captures.load(Ordering::Acquire) != 0 {
-            return Ok(SplitContext {
-                eligible: false,
-                reason: "capture_active",
-            });
-        }
-        if activity.replays.load(Ordering::Acquire) != 0 {
-            return Ok(SplitContext {
-                eligible: false,
-                reason: "replay_active",
-            });
-        }
+    let activity = crate::activity(device)?;
+    if activity.captures.load(Ordering::Acquire) != 0 {
+        return Ok(SplitContext {
+            eligible: false,
+            reason: "capture_active",
+        });
+    }
+    if activity.replays.load(Ordering::Acquire) != 0 {
+        return Ok(SplitContext {
+            eligible: false,
+            reason: "replay_active",
+        });
     }
     if let Some(owner) = existing(device)? {
         let state = owner.lock()?;
@@ -138,22 +136,14 @@ pub struct SplitSelection {
     pub allocation_backing_bytes: usize,
     pub measured_backing_peak_bytes: Option<usize>,
     pub reused_capacity_bytes: usize,
-    pub preserved_backing_bytes: usize,
-    pub reclaimable_working_bytes: usize,
-    pub reclaimable_cache_bytes: usize,
     pub choice_id: String,
     pub eligible: Vec<String>,
     pub required_bytes: usize,
     pub available_bytes: usize,
     pub basis: &'static str,
-    pub reclaimed_working_bytes: usize,
-    pub reclaimed_weight_bytes: usize,
     pub plan_generation: u64,
     pub phase: Option<String>,
     pub phase_weight_bytes: usize,
-    pub phase_missing_bytes: usize,
-    pub phase_outside_reclaimable_bytes: usize,
-    pub preserves_phase_weights: bool,
 }
 #[derive(Clone, Debug)]
 pub struct SplitObservation {
@@ -254,9 +244,6 @@ struct Fit {
     missing: usize,
     reused: usize,
     preserve: BTreeSet<u64>,
-    preserved_bytes: usize,
-    reclaimable: usize,
-    reclaimable_cache: usize,
     now: usize,
     after_idle: usize,
     generation: u64,
@@ -271,6 +258,12 @@ impl Fit {
     fn preserves_phase(&self) -> bool {
         self.phase_available
             .is_some_and(|available| self.missing <= available)
+    }
+    fn usable(&self) -> bool {
+        self.fits() || self.preserves_phase()
+    }
+    fn short(&self) -> Error {
+        Error::Exhausted { requested_bytes: self.missing, available_bytes: self.after_idle }
     }
 }
 
@@ -349,7 +342,6 @@ fn fits(
                 }
             }
             let missing = backing(owner, &missing)?;
-            let preserved_bytes = preserve.iter().map(|base| state.segments[base].bytes).sum();
             let reclaimable: usize = state
                 .segments
                 .iter()
@@ -384,9 +376,6 @@ fn fits(
                 missing,
                 reused,
                 preserve,
-                preserved_bytes,
-                reclaimable,
-                reclaimable_cache,
                 now: headroom(owner, free, 0),
                 after_idle: headroom(owner, free, reclaimable.saturating_add(reclaimable_cache)),
                 generation,
@@ -398,100 +387,64 @@ fn fits(
         .collect()
 }
 
-fn snapshot(device: i32, owner: &Working, key: &str, stream: u64) -> Result<Vec<Fit>> {
+struct Menu {
+    plans: Vec<Fit>,
+    capacity: usize,
+}
+
+/// Settle completions, then fit each choice. Holds nothing on return.
+fn snapshot(device: i32, owner: &Working, key: &str, stream: u64) -> Result<Menu> {
     // GPU-owning leases precede every guard, including on a rejected generation.
     let lease = crate::plan::Lease::acquire(device)?;
-    let captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
-    let generation = lease.validate()?;
-    let phase = crate::plan::snapshot(&lease)?;
-    let state = owner.lock()?;
-    let _context = owner.driver.enter()?;
-    let (free, _) = owner.driver.memory_info()?;
-    fits(owner, &state, key, stream, free, generation, phase.as_ref())
-}
-
-fn decision(
-    plans: &[Fit],
-    stream: u64,
-    preferred: Option<&str>,
-    working: usize,
-    weights: usize,
-) -> Option<SplitSelection> {
-    let eligible: Vec<_> = plans
-        .iter()
-        .filter(|plan| plan.fits() || plan.preserves_phase())
-        .collect();
-    // Menu order is largest to smallest. Phase residency wins before a streaming
-    // preference; when no choice can preserve it, the existing actual-capacity
-    // selection remains. No efficient chunk is invented by this memory layer.
-    let selected = eligible
-        .iter()
-        .find(|plan| plan.preserves_phase())
-        .copied()
-        .or_else(|| preferred.and_then(|id| eligible.iter().find(|plan| plan.id == id).copied()))
-        .or_else(|| eligible.first().copied())?;
-    Some(SplitSelection {
-        stream,
-        choice_id: selected.id.clone(),
-        eligible: eligible.iter().map(|plan| plan.id.clone()).collect(),
-        required_bytes: selected.missing,
-        available_bytes: if selected.preserves_phase() {
-            selected.after_outside
-        } else {
-            selected.after_idle
-        },
-        allocation_backing_bytes: selected.full,
-        measured_backing_peak_bytes: selected.measured,
-        reused_capacity_bytes: selected.reused,
-        preserved_backing_bytes: selected.preserved_bytes,
-        reclaimable_working_bytes: selected.reclaimable,
-        reclaimable_cache_bytes: selected.reclaimable_cache,
-        basis: selected.basis,
-        reclaimed_working_bytes: working,
-        reclaimed_weight_bytes: weights,
-        plan_generation: selected.generation,
-        phase: selected.phase.as_ref().map(|p| p.name.clone()),
-        phase_weight_bytes: selected.phase.as_ref().map_or(0, |p| p.bytes),
-        phase_missing_bytes: selected.phase.as_ref().map_or(0, |p| p.missing),
-        phase_outside_reclaimable_bytes: selected
-            .phase
-            .as_ref()
-            .map_or(0, |p| p.outside_reclaimable),
-        preserves_phase_weights: selected.preserves_phase(),
-    })
-}
-
-fn trim_for(device: i32, owner: &Working, key: &str, choice: &str, stream: u64) -> Result<usize> {
-    let lease = crate::plan::Lease::acquire(device)?;
-    let captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
     let generation = lease.validate()?;
     let phase = crate::plan::snapshot(&lease)?;
     let mut state = owner.lock()?;
     let _context = owner.driver.enter()?;
-    let result = (|| {
-        owner.poll(&mut state)?;
-        let (free, _) = owner.driver.memory_info()?;
-        let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
-        let plan = plans
-            .iter()
-            .find(|plan| plan.id == choice)
-            .ok_or(Error::Invalid("split choice is not declared"))?;
-        let needed = plan.missing.saturating_sub(plan.now);
-        owner.trim_ready(&mut state, needed, None, &plan.preserve)
-    })();
-    result.map_err(|error| owner.fail(&mut state, error))
+    let polled = owner.poll(&mut state);
+    polled.map_err(|error| owner.fail(&mut state, error))?;
+    let (free, total) = owner.driver.memory_info()?;
+    let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
+    Ok(Menu { plans, capacity: total.min(owner.room.limit.load(Ordering::Acquire)).min(owner.room.ceiling.load(Ordering::Acquire)) })
 }
 
-fn exhausted(plans: &[Fit]) -> Error {
-    let plan = plans
-        .iter()
-        .min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle))
-        .expect("copied menu");
-    Error::Exhausted {
-        requested_bytes: plan.missing,
-        available_bytes: plan.after_idle,
+impl Menu {
+    /// The choice this operation should run at: not whatever free memory allows. A card that
+    /// holds the phase's weights beside an operation gives it the rest; a smaller one streams
+    /// them anyway and gives each operation a fifth. Otherwise a level that follows free memory
+    /// evicts weights whenever it can, and reads them back.
+    fn target(&self, preferred: &str) -> usize {
+        let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
+        let cap = self.capacity.saturating_sub(weights).max(self.capacity / 5);
+        if let Some(keeps) = self.plans.iter().position(|plan| plan.full <= cap && plan.preserves_phase()) {
+            return keeps;
+        }
+        let under = |plan: &Fit| plan.full <= cap;
+        self.plans.iter().position(|plan| under(plan) && plan.id == preferred)
+            .or_else(|| self.plans.iter().position(under))
+            .unwrap_or(self.plans.len() - 1)
+    }
+
+    fn selection(&self, selected: &Fit, target: usize, stream: u64) -> SplitSelection {
+        SplitSelection {
+            stream,
+            choice_id: selected.id.clone(),
+            eligible: self.plans[target..].iter().filter(|plan| plan.usable()).map(|plan| plan.id.clone()).collect(),
+            required_bytes: selected.missing,
+            available_bytes: if selected.preserves_phase() {
+                selected.after_outside
+            } else {
+                selected.after_idle
+            },
+            allocation_backing_bytes: selected.full,
+            measured_backing_peak_bytes: selected.measured,
+            reused_capacity_bytes: selected.reused,
+            basis: selected.basis,
+            plan_generation: selected.generation,
+            phase: selected.phase.as_ref().map(|p| p.name.clone()),
+            phase_weight_bytes: selected.phase.as_ref().map_or(0, |p| p.bytes),
+        }
     }
 }
 
@@ -524,26 +477,35 @@ fn split_select_inner(
     if owner.lock()?.phases.active.as_ref().is_some_and(|phase| phase.committed_site.is_some()) {
         return Err(Error::Invalid("a committed execution cannot select another choice"));
     }
-    register(&owner, key, choices, preferred)?;
-    let plans = snapshot(device, &owner, key, stream)?;
-    if let Some(choice) = decision(&plans, stream, None, 0, 0) {
-        return Ok(choice);
+    register(owner, key, choices, preferred)?;
+    // A split's fit already counts completed working pages; split_begin trims what it needs.
+    let keep = Protect { keep_working: true, ..Default::default() };
+    // Make room for the target with memory this process can give up by itself.
+    let at_target = reclaim::acquire(device, 0, Wait::Local, keep, || {
+        let menu = snapshot(device, owner, key, stream)?;
+        let target = menu.target(preferred);
+        let selected = &menu.plans[target];
+        if !selected.usable() {
+            return Err(selected.short().into());
+        }
+        Ok(menu.selection(selected, target, stream))
+    });
+    match at_target {
+        Err(Error::Exhausted { .. }) => {}
+        other => return other,
     }
-    let working = trim_for(device, &owner, key, preferred, stream)?;
-    let plans = snapshot(device, &owner, key, stream)?;
-    if let Some(choice) = decision(&plans, stream, None, working, 0) {
-        return Ok(choice);
-    }
-    let preferred_plan = plans
-        .iter()
-        .find(|plan| plan.id == preferred)
-        .expect("copied preferred");
-    let needed = preferred_plan
-        .missing
-        .saturating_sub(preferred_plan.after_idle);
-    let weights = crate::reclaim(device, needed)?.reclaimed_bytes;
-    let plans = snapshot(device, &owner, key, stream)?;
-    decision(&plans, stream, Some(preferred), working, weights).ok_or_else(|| exhausted(&plans))
+    // Only now a smaller legal choice, or what other threads and processes can give up.
+    reclaim::acquire(device, 0, Wait::Yes, keep, || {
+        let menu = snapshot(device, owner, key, stream)?;
+        let target = menu.target(preferred);
+        let choices = &menu.plans[target..];
+        if let Some(selected) = choices.iter().find(|plan| plan.usable()) {
+            return Ok(menu.selection(selected, target, stream));
+        }
+        let least = choices.iter().min_by_key(|plan| plan.missing.saturating_sub(plan.after_idle))
+            .expect("copied menu");
+        Err(least.short().into())
+    })
 }
 
 /// Re-evaluate the exact agreed geometry and stream immediately before opening the leaf.
@@ -606,61 +568,51 @@ fn split_begin_inner(
             }
         }
     }
-    let plans = snapshot(device, &owner, key, stream)?;
-    let plan = plans
-        .iter()
-        .find(|plan| plan.id == choice_id)
-        .ok_or(Error::Invalid("split choice is not declared"))?;
-    selected_generation(plan_generation, plan.generation)?;
-    if plan.missing > plan.now {
-        trim_for(device, &owner, key, choice_id, stream)?;
-        let plans = snapshot(device, &owner, key, stream)?;
-        let plan = plans
-            .iter()
-            .find(|plan| plan.id == choice_id)
-            .expect("copied choice");
-        if plan.missing > plan.now && plan.preserves_phase() {
-            crate::plan::reclaim_outside(device, plan.missing - plan.now)?;
-        }
-        let plans = snapshot(device, &owner, key, stream)?;
-        let plan = plans
-            .iter()
-            .find(|plan| plan.id == choice_id)
-            .expect("copied choice");
-        if plan.missing > plan.now {
-            crate::reclaim(device, plan.missing - plan.now)?;
-        }
-    }
-    // Keep GPU-owning leases outside and longer-lived than every exclusion guard.
-    let lease = crate::plan::Lease::acquire(device)?;
-    let captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
-    let generation = lease.validate()?;
-    let phase = crate::plan::snapshot(&lease)?;
-    let mut state = owner.lock()?;
-    committed_operation(&state, key, choice_id, completion_owner)?;
-    selected_generation(plan_generation, generation)?;
-    let _context = owner.driver.enter()?;
-    let (free, _) = owner.driver.memory_info()?;
-    let plans = fits(
-        &owner,
-        &state,
-        key,
-        stream,
-        free,
-        generation,
-        phase.as_ref(),
-    )?;
-    let plan = plans
-        .iter()
-        .find(|plan| plan.id == choice_id)
-        .ok_or(Error::Invalid("split choice is not declared"))?;
-    if plan.missing > plan.now {
-        return Err(Error::Exhausted {
-            requested_bytes: plan.missing,
-            available_bytes: plan.now,
-        });
-    }
+    let keep = Protect { keep_working: true, ..Default::default() };
+    reclaim::acquire(device, 0, Wait::Yes, keep, || {
+        // Keep GPU-owning leases outside and longer-lived than every exclusion guard.
+        let lease = crate::plan::Lease::acquire(device)?;
+        let gate = crate::gate(device)?;
+        gate.not_capturing()?;
+        let generation = lease.validate()?;
+        let phase = crate::plan::snapshot(&lease)?;
+        let mut state = owner.lock()?;
+        committed_operation(&state, key, choice_id, completion_owner)?;
+        selected_generation(plan_generation, generation)?;
+        let _context = owner.driver.enter()?;
+        let result = (|| -> Result<u64> {
+            owner.poll(&mut state)?;
+            let (free, _) = owner.driver.memory_info()?;
+            let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
+            let plan = plans.iter().find(|plan| plan.id == choice_id)
+                .ok_or(Error::Invalid("split choice is not declared"))?;
+            if plan.missing > plan.now {
+                // Matched compatible slots stay mapped; only unmatched completed backing goes.
+                owner.trim_ready(&mut state, plan.missing - plan.now, None, &plan.preserve, usize::MAX)?;
+                let (free, _) = owner.driver.memory_info()?;
+                let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
+                let plan = plans.iter().find(|plan| plan.id == choice_id).expect("copied choice");
+                if plan.missing > plan.now {
+                    return Err(Error::Exhausted {
+                        requested_bytes: plan.missing,
+                        available_bytes: plan.now,
+                    });
+                }
+            }
+            open_leaf(&mut state, key, choice_id, completion_owner, stream, gate.epoch())
+        })();
+        result.map_err(|error| owner.fail(&mut state, error).into())
+    })
+}
+
+fn open_leaf(
+    state: &mut State,
+    key: &str,
+    choice_id: &str,
+    completion_owner: Option<u64>,
+    stream: u64,
+    epoch: u64,
+) -> Result<u64> {
     if state.splits.active.is_some() {
         return Err(Error::Invalid("native split sites cannot nest"));
     }
@@ -688,9 +640,7 @@ fn split_begin_inner(
         choice: choice_id.to_owned(),
         owner: completion_owner,
         stream,
-        epoch: captures
-            .get(&device)
-            .map_or(0, |activity| activity.activity_epoch),
+        epoch,
         allocations: BTreeSet::new(),
         peak: 0,
         backing: 0,
@@ -755,7 +705,6 @@ pub(super) fn invalidate(state: &mut State, reason: &str) {
 /// owner; phase_leave's already-proven completion publishes them without a per-leaf sync.
 pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<SplitObservation> {
     let owner = owner(device)?;
-    let captures = crate::capture_counts()?;
     let mut state = owner
         .state
         .lock()
@@ -786,11 +735,7 @@ pub fn split_end(device: i32, observation_id: u64, submitted: bool) -> Result<Sp
             "operation_not_submitted".into()
         } else if state.poison.is_some() {
             "allocator_poisoned".into()
-        } else if active.epoch
-            != captures
-                .get(&device)
-                .map_or(0, |activity| activity.activity_epoch)
-        {
+        } else if active.epoch != owner.activity.epoch() {
             "capture_or_replay_attempt".into()
         } else if parent.is_none() {
             "completion_owner_missing".into()

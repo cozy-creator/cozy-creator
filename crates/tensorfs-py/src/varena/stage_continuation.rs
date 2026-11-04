@@ -61,7 +61,7 @@ struct Stage {
     canceled: AtomicBool,
     retained_unsafe: AtomicBool,
     reads: Mutex<ReadLedger>,
-    next: Mutex<Option<(Weak<Stage>, varena::working::ReplayPrefetch)>>,
+    next: Mutex<Option<Weak<Stage>>>,
     prefetch: Mutex<Prefetch>,
     prefetch_changed: Condvar,
     prefetch_control: Arc<tensorfs::io::ReadControl>,
@@ -131,7 +131,7 @@ fn failure(error: &Failure) -> Status {
 }
 
 impl Stage {
-    fn start_prefetch(&self, capability: &varena::working::ReplayPrefetch) {
+    fn start_prefetch(&self) {
         if self.canceled.load(Ordering::Acquire)
             || self.finished.load(Ordering::Acquire)
             || self.prefetch_control.canceled()
@@ -172,7 +172,7 @@ impl Stage {
             if self.canceled.load(Ordering::Acquire) {
                 return Ok(None);
             }
-            let Some(work) = self.source.prepare_speculative(capability)? else {
+            let Some(work) = self.source.prepare_speculative()? else {
                 return Ok(None);
             };
             let read = Arc::new(PreparedRead::read_only(
@@ -355,12 +355,10 @@ impl Stage {
         if prefetched != 0 && work.missing_bytes() == 0 {
             self.prefetch_used.fetch_add(1, Ordering::Relaxed);
         }
-        if let Some((next, capability)) =
-            self.next.lock().unwrap_or_else(|e| e.into_inner()).clone()
-        {
+        if let Some(next) = self.next.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             work.set_lookahead(Arc::new(move || {
                 if let Some(next) = next.upgrade() {
-                    next.start_prefetch(&capability);
+                    next.start_prefetch();
                 }
             }));
         }
@@ -750,14 +748,7 @@ impl StageJob {
         self.owner.source.reservation_bytes()
     }
 
-    #[pyo3(signature = (next_job, *, execution_key, footprints))]
-    fn link_next(
-        &self,
-        py: Python<'_>,
-        next_job: PyRef<'_, StageJob>,
-        execution_key: Option<String>,
-        footprints: Vec<Py<super::working::PyGraphFootprint>>,
-    ) -> PyResult<bool> {
+    fn link_next(&self, next_job: PyRef<'_, StageJob>) -> PyResult<bool> {
         let current = &self.owner;
         let next = &next_job.owner;
         if current.pid != std::process::id() || next.pid != current.pid {
@@ -774,23 +765,13 @@ impl StageJob {
                 "lookahead needs distinct unstarted source jobs on one device",
             ));
         }
-        let footprints = footprints
-            .into_iter()
-            .map(|item| item.borrow(py).footprint.clone())
-            .collect();
-        let capability = varena::working::ReplayPrefetch::new(
-            current.source.device(),
-            execution_key,
-            footprints,
-        )
-        .map_err(|error| super::raise(py, error))?;
         let mut link = current.next.lock().unwrap_or_else(|e| e.into_inner());
         if link.is_some() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "source job already has lookahead",
             ));
         }
-        *link = Some((Arc::downgrade(next), capability));
+        *link = Some(Arc::downgrade(next));
         Ok(true)
     }
 

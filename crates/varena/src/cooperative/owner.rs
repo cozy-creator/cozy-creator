@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 const CADENCE: Duration = Duration::from_millis(500);
-const COORDINATION_BUDGET: Duration = crate::RECOVERY_BUDGET;
+const COORDINATION_BUDGET: Duration = crate::reclaim::RECOVERY_BUDGET;
 
 #[derive(Clone, Copy, Debug)]
 pub enum RecoveryOutcome {
@@ -472,10 +472,7 @@ pub(crate) fn recover(
     participation: &mut Option<Participation>,
     local_release: Option<u64>,
 ) -> crate::Result<crate::PeerProgress> {
-    {
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, device)?;
-    }
+    crate::gate(device)?.not_capturing()?;
     let control = registered(device).map_err(native)?;
     let Some(control) = control else {
         return Ok(crate::PeerProgress::Unavailable);
@@ -1035,10 +1032,7 @@ impl Owner {
             return Err(crate::Error::Busy.into());
         }
         loop {
-            {
-                let captures = crate::capture_counts()?;
-                crate::ensure_recovery_allowed(&captures, self.device)?;
-            }
+            crate::gate(self.device)?.not_capturing()?;
             let state = self.control.lock()?;
             if let Some(error) = &state.facts.failed {
                 return Err(crate::Error::Poisoned(error.clone()).into());

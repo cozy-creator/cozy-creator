@@ -353,24 +353,6 @@ impl PyArena {
             ),
         })
     }
-    fn set_streaming_limit(&self, py: Python<'_>, bytes: usize) -> PyResult<()> {
-        let arena = self.owner()?;
-        py.detach(|| arena.set_streaming_limit(bytes))
-            .map_err(|e| raise(py, e))
-    }
-
-    fn clear_streaming_limit(&self, py: Python<'_>) -> PyResult<()> {
-        let arena = self.owner()?;
-        py.detach(|| arena.clear_streaming_limit())
-            .map_err(|e| raise(py, e))
-    }
-
-    #[getter]
-    fn streaming_limit_bytes(&self, py: Python<'_>) -> PyResult<usize> {
-        let arena = self.owner()?;
-        py.detach(|| arena.streaming_limit())
-            .map_err(|e| raise(py, e))
-    }
     fn reclaim(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
         let arena = self.owner()?;
         py.detach(|| arena.reclaim(bytes))
@@ -382,21 +364,10 @@ impl PyArena {
         py.detach(|| arena.reset_preferences())
             .map_err(|e| raise(py, e))
     }
-    fn reclaim_unpreferred(&self, py: Python<'_>, bytes: usize) -> PyResult<usize> {
-        let arena = self.owner()?;
-        py.detach(|| arena.reclaim_unpreferred(bytes))
-            .map(|r| r.reclaimed_bytes)
-            .map_err(|e| raise(py, e))
-    }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let arena = self.owner()?;
         let stats = py.detach(|| arena.stats()).map_err(|e| raise(py, e))?;
         let output = PyDict::new(py);
-        output.set_item(
-            "streaming_limit_bytes",
-            py.detach(|| arena.streaming_limit())
-                .map_err(|e| raise(py, e))?,
-        )?;
         for (name, value) in [
             ("reserved_bytes", stats.reserved_bytes as u64),
             ("resident_bytes", stats.resident_bytes as u64),
@@ -412,6 +383,7 @@ impl PyArena {
             ("hits", stats.hits),
             ("evictions", stats.evictions),
             ("reclaimed_bytes", stats.reclaimed_bytes),
+            ("prefetch_unused_bytes", stats.prefetch_unused_bytes),
             ("context_joins", stats.context_joins),
             ("driver_physical_ooms", stats.driver_physical_ooms),
             ("event_waits", stats.event_waits),
@@ -421,11 +393,6 @@ impl PyArena {
         let reasons = PyDict::new(py);
         for (name, value) in [
             ("requested", stats.reclaimed_by_reason.requested),
-            ("streaming_limit", stats.reclaimed_by_reason.streaming_limit),
-            (
-                "weight_allocation",
-                stats.reclaimed_by_reason.weight_allocation,
-            ),
             ("allocator", stats.reclaimed_by_reason.allocator),
             ("room", stats.reclaimed_by_reason.room),
         ] {
@@ -527,16 +494,13 @@ impl PyRegion {
             .map_err(|e| raise(py, e))
     }
     /// A fill (or the resident contents): `reclaim` may evict anything Varena would; without it,
-    /// `evict_completed` may evict only idle streamed regions whose consumers completed, and
-    /// neither refuses rather than wait.
-    #[pyo3(signature = (reclaim = true, evict_completed = false))]
-    fn prepare(&self, py: Python<'_>, reclaim: bool, evict_completed: bool) -> PyResult<PyUse> {
+    /// this refuses rather than evict or wait.
+    #[pyo3(signature = (reclaim = true))]
+    fn prepare(&self, py: Python<'_>, reclaim: bool) -> PyResult<PyUse> {
         let preparation = py
             .detach(|| {
                 if reclaim {
                     self.region.prepare()
-                } else if evict_completed {
-                    self.region.prepare_evicting_completed()
                 } else {
                     self.region.prepare_without_reclaim()
                 }

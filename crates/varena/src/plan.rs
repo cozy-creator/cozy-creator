@@ -1,11 +1,11 @@
 //! Immutable device-wide region intent, independent of execution fingerprints.
-//! Strong lifetime leases precede capture -> arena -> working guards. Arena locks
+//! Strong lifetime leases precede gate -> arena -> working guards. Arena locks
 //! are visited one at a time in stable identity order, never with an owning drop.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::{Arena, Completion, Contents, Error, ReclaimReason, ReclaimReport, Region, Result};
+use crate::{Arena, Completion, Contents, Error, Region, Result};
 
 struct Phase {
     name: String,
@@ -34,45 +34,18 @@ struct Active {
 struct Device {
     generation: u64,
     inventory_generation: u64,
-    unusable: bool,
     active: Option<Active>,
 }
 
 impl Device {
-    fn check(&self) -> Result<()> {
-        if self.unusable {
-            Err(Error::Invalid("phase-plan inventory epoch exhausted"))
-        } else {
-            Ok(())
-        }
-    }
-
     fn advance(&mut self, inventory: bool) -> Result<()> {
-        self.check()?;
-        let generation = self
-            .generation
-            .checked_add(1)
-            .filter(|value| *value != u64::MAX);
-        let next_inventory = if inventory {
-            self.inventory_generation
-                .checked_add(1)
-                .filter(|value| *value != u64::MAX)
+        // An unrelated region's birth or death changes no plan: it never fails a selection.
+        if inventory {
+            self.inventory_generation += 1;
         } else {
-            Some(self.inventory_generation)
-        };
-        match (generation, next_inventory) {
-            (Some(generation), Some(inventory_generation)) => {
-                self.generation = generation;
-                self.inventory_generation = inventory_generation;
-                Ok(())
-            }
-            _ => {
-                // Destructor callers cannot return this error. Latch it so an old
-                // lease cannot remain valid after an unrepresentable retirement.
-                self.unusable = true;
-                Err(Error::Invalid("phase-plan inventory epoch exhausted"))
-            }
+            self.generation += 1;
         }
+        Ok(())
     }
 }
 
@@ -103,11 +76,8 @@ fn registry() -> Result<std::sync::MutexGuard<'static, BTreeMap<i32, Device>>> {
         .map_err(|_| Error::Poisoned("phase-plan registry mutex".into()))
 }
 
-fn arenas(device:i32) -> Result<Vec<Arc<Arena>>> { Ok(crate::arena_inventory(device)?.arenas) }
 
-/// Called under capture exclusion, or the registration mutex for an accepted final
-/// last-Arc handoff that no live owning snapshot can concurrently reference.
-/// An epoch can conservatively advance before a failed publication; it grants no bytes.
+/// Device inventory metadata for diagnostics; it grants no bytes and fails no selection.
 pub(crate) fn inventory_changed(device: i32) -> Result<()> {
     registry()?.entry(device).or_default().advance(true)
 }
@@ -115,7 +85,6 @@ pub(crate) fn inventory_changed(device: i32) -> Result<()> {
 fn epochs(device: i32) -> Result<(u64, u64)> {
     let mut registry = registry()?;
     let entry = registry.entry(device).or_default();
-    entry.check()?;
     Ok((entry.generation, entry.inventory_generation))
 }
 
@@ -128,7 +97,7 @@ pub fn inventory_generation(device: i32) -> Result<u64> {
     Ok(epochs(device)?.1)
 }
 
-/// Own every referenced GPU owner before acquiring capture/arena/working guards.
+/// Own every referenced GPU owner before acquiring gate/arena/working guards.
 /// Callers declare this first so every later guard drops first, including error paths.
 pub(crate) struct Lease {
     device: i32,
@@ -139,7 +108,6 @@ pub(crate) struct Lease {
 }
 
 impl Lease {
-    pub(crate) fn arenas(&self) -> &[Arc<Arena>] { &self.arenas }
     pub(crate) fn identity(&self) -> (u64, u64, Option<(u64, usize)>) {
         (self.generation, self.inventory_generation,
             self.active.as_ref().map(|(plan, phase)| (plan.id, *phase)))
@@ -156,14 +124,13 @@ impl Lease {
         let (generation, inventory_generation, active) = {
             let mut registry = registry()?;
             let entry = registry.entry(device).or_default();
-            entry.check()?;
             let active = match &entry.active {
-                Some(active) => Some((active.plan.upgrade().ok_or(Error::Busy)?, active.phase)),
+                Some(active) => active.plan.upgrade().map(|plan| (plan, active.phase)),
                 None => None,
             };
             (entry.generation, entry.inventory_generation, active)
         };
-        let arenas = arenas(device)?;
+        let arenas = crate::reclaim_arenas(device)?;
         Ok(Self {
             device,
             generation,
@@ -174,10 +141,8 @@ impl Lease {
     }
 
     pub(crate) fn validate(&self) -> Result<u64> {
-        if epochs(self.device)? != (self.generation, self.inventory_generation) {
-            return Err(Error::Invalid(
-                "phase-region intent or inventory changed before admission",
-            ));
+        if generation(self.device)? != self.generation {
+            return Err(Error::Invalid("phase-region intent changed before admission"));
         }
         Ok(self.generation)
     }
@@ -274,8 +239,7 @@ impl Plan {
     /// Activate one device-wide phase. No allocation, Pin, fill or sample is performed.
     pub fn activate(self: &Arc<Self>, name: &str) -> Result<()> {
         let lease = Lease::acquire(self.device)?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device)?;
+        crate::gate(self.device)?.not_capturing()?;
         lease.validate()?;
         self.validate_arenas(&lease.arenas)?;
         let phase = self
@@ -303,7 +267,6 @@ impl Plan {
     }
 
     pub fn deactivate(self: &Arc<Self>) -> Result<()> {
-        let _captures = crate::capture_counts()?;
         self.retire()
     }
 
@@ -328,15 +291,12 @@ impl Drop for Plan {
         if self.pid != std::process::id() {
             return;
         }
-        // Owning fields are destroyed only after this body's capture guard releases.
-        if let Ok(_captures) = crate::capture_counts() {
-            let _ = self.retire();
-        }
+        let _ = self.retire();
     }
 }
 
-/// Caller holds capture exclusion; Working has not yet been locked. Visit every
-/// arena once, with no simultaneous arena mutexes and no owning Arc temporaries.
+/// Caller holds the gate; Working has not yet been locked. Visit every arena once,
+/// with no simultaneous arena mutexes and no owning Arc temporaries.
 pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
     let Some((plan, index)) = lease.planned()? else {
         return Ok(None);
@@ -346,8 +306,7 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
     let mut outside_reclaimable = 0usize;
     let mut found = BTreeSet::new();
     for arena in &lease.arenas {
-        let mut state = arena.lock()?;
-        let _context = arena.driver.enter()?;
+        let state = arena.lock()?;
         for id in &phase.ids {
             if let Some(entry) = state.entries.get(id) {
                 if entry.uses.state() == Contents::Retired {
@@ -373,7 +332,7 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
             .map(|(id, entry)| (*id, entry.bytes))
             .collect();
         for (id, bytes) in candidates {
-            if arena.completion(&mut state, id)? == Completion::Done {
+            if arena.completion(&state, id) == Completion::Done {
                 outside_reclaimable = outside_reclaimable
                     .checked_add(bytes)
                     .ok_or(Error::Invalid("outside phase bytes overflow"))?;
@@ -391,49 +350,37 @@ pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
     }))
 }
 
-/// Native outside-phase order: stable Arena ID, then that arena's existing eviction
-/// key. Independent per-arena clocks are NOT compared as a fictitious global LRU.
-pub(crate) fn reclaim_outside(device: i32, bytes: usize) -> Result<usize> {
-    if bytes == 0 {
-        return Ok(0);
+/// Next use of each planned region: phases ahead of the active one, then position within it.
+/// Plain data, so nothing here can run a final Region or Arena drop under a gate.
+#[derive(Default)]
+pub(crate) struct Order {
+    next: BTreeMap<u64, (u64, u64)>,
+}
+
+impl Order {
+    pub(crate) fn next_use(&self, id: u64) -> Option<(u64, u64)> {
+        self.next.get(&id).copied()
     }
-    let lease = Lease::acquire(device)?;
-    let captures = crate::capture_counts()?;
-    crate::ensure_recovery_allowed(&captures, device)?;
-    let Some((plan, index)) = lease.planned()? else {
-        return Ok(0);
+    pub(crate) fn planned(&self) -> bool {
+        !self.next.is_empty()
+    }
+}
+
+/// One active plan's order. Call before taking the gate: a Plan's last drop reaches Regions.
+pub(crate) fn order(device: i32) -> Result<Order> {
+    let active = {
+        let registry = registry()?;
+        registry.get(&device).and_then(|entry| entry.active.as_ref())
+            .and_then(|active| Some((active.plan.upgrade()?, active.phase)))
     };
-    let phase = &plan.phases[index];
-    let mut report = ReclaimReport {
-        requested_bytes: bytes,
-        ..ReclaimReport::default()
-    };
-    for arena in &lease.arenas {
-        if report.reclaimed_bytes >= bytes {
-            break;
-        }
-        let mut state = arena.lock()?;
-        let _context = arena.driver.enter()?;
-        let mut candidates: Vec<_> = state
-            .entries
-            .iter()
-            .filter(|(id, entry)| {
-                !phase.ids.contains(id)
-                    && entry.handle.is_some()
-                    && entry.uses.pins() == 0
-                    && !matches!(entry.uses.state(), Contents::Loading | Contents::Published)
-            })
-            .map(|(id, entry)| (*id, state.eviction_key(entry)))
-            .collect();
-        candidates.sort_by_key(|(id, key)| (*key, *id));
-        for (id, _) in candidates {
-            if report.reclaimed_bytes >= bytes {
-                break;
-            }
-            if arena.completion(&mut state, id)? == Completion::Done {
-                arena.evict(&mut state, id, ReclaimReason::Allocator, &mut report)?;
+    let mut order = Order::default();
+    if let Some((plan, active)) = active {
+        for ahead in 0..plan.phases.len() {
+            let phase = &plan.phases[(active + ahead) % plan.phases.len()];
+            for (position, region) in phase.regions.iter().enumerate() {
+                order.next.entry(region.id()).or_insert((ahead as u64, position as u64));
             }
         }
     }
-    Ok(report.reclaimed_bytes)
+    Ok(order)
 }

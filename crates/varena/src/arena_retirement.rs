@@ -398,6 +398,7 @@ impl Resources {
         let Some(state) = self.state.as_mut() else {
             return Ok(true);
         };
+        let activity = crate::activity(self.metadata.device)?;
         if let Some(reason) = &state.poison {
             return Err(Error::Poisoned(reason.clone()));
         }
@@ -409,7 +410,7 @@ impl Resources {
                     entry.uses.state(),
                     Contents::Cold | Contents::Ready | Contents::Retired
                 )
-                || entry.uses.unjoined.load(Ordering::Acquire)
+                || !activity.joined(entry.uses.unjoined.load(Ordering::Acquire))
         }) {
             return Err(Error::Invalid(UNPROVEN));
         }
@@ -419,13 +420,11 @@ impl Resources {
             Err(error) => return Err(error),
         };
         let _context = self.driver.enter()?;
-        // Event snapshots own only integer handles; no event mutex crosses a driver call.
-        for entry in state.entries.values() {
-            let fences = entry.uses.fences().clone();
-            for fence in fences {
-                if !self.driver.query(fence.event)? {
-                    return Ok(false);
-                }
+        {
+            let mut fences = activity.fences();
+            fences.poll(&self.driver)?;
+            if state.entries.values().any(|entry| !fences.complete(&entry.uses.waits())) {
+                return Ok(false);
             }
         }
         let ids = state.entries.keys().copied().collect::<Vec<_>>();
@@ -434,14 +433,6 @@ impl Resources {
                 .entries
                 .get_mut(&id)
                 .expect("exclusive final resource entry");
-            loop {
-                let fence = entry.uses.fences().last().copied();
-                let Some(fence) = fence else {
-                    break;
-                };
-                self.driver.destroy_event(fence.event)?;
-                entry.uses.fences().pop();
-            }
             if let Some(handle) = entry.handle {
                 self.driver.unmap(entry.ptr, entry.bytes)?;
                 self.driver.release(handle)?;

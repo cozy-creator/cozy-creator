@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Duration;
 
 use crate::{
-    Contents, Error, Fill, Pin, Preparation, ProducerGuard, Region, Result, capture_counts,
-    ensure_not_capturing, enter_producer, enter_retirement,
+    Contents, Error, Fill, Pin, Preparation, ProducerGuard, Region, Result, gate,
+    enter_producer, enter_retirement,
 };
 
 /// Outcome of checked native fill-resource retirement. Neither variant grants capacity.
@@ -428,8 +428,8 @@ impl FillSession {
         }
         let region = payload.region();
         let result = (|| {
-            let captures = capture_counts()?;
-            ensure_not_capturing(&captures, region.device())?;
+            let gate = gate(region.device())?;
+            gate.not_capturing()?;
             let _arena = region.arena.lock()?;
             let _context = region.arena.driver.enter()?;
             let owners = payload.owners.as_ref().expect("session owners");
@@ -589,8 +589,8 @@ impl Payload {
         self.control.check()?;
         let region = self.region(); // lease is acquired before capture exclusion and outlives it
         if !self.completed {
-            let captures = capture_counts()?;
-            if ensure_not_capturing(&captures, region.device()).is_err() {
+            let gate = gate(region.device())?;
+            if gate.not_capturing().is_err() {
                 return Ok(false);
             }
             let mut arena = region.arena.lock()?;
@@ -806,10 +806,10 @@ impl Region {
             return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
         }
         {
-            let captures = capture_counts()?;
+            let gate = gate(self.device())?;
             let mut state = self.arena.lock()?;
             if self.uses.state() == Contents::Published {
-                ensure_not_capturing(&captures, self.device())?;
+                gate.not_capturing()?;
                 let control = self
                     .uses
                     .submission
@@ -838,11 +838,11 @@ impl Pin {
         if region.arena.pid != std::process::id() {
             return Err(Error::Invalid("CUDA arenas cannot be used after fork"));
         }
-        let captures = capture_counts()?;
+        let gate = gate(region.device())?;
         let _state = region.arena.lock()?;
         if let Some(control) = &self.submission {
             if !control.lock()?.facts.completed {
-                ensure_not_capturing(&captures, region.device())?;
+                gate.not_capturing()?;
             }
             order(region, control, consumer_stream)
         } else {

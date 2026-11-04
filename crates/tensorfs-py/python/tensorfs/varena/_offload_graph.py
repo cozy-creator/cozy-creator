@@ -212,7 +212,7 @@ class _Definition:
     leased_versions: tuple = ()
     static_tree: object = None
     outputs: object = None
-    footprint: object = None
+    reset: list = field(default_factory=list)
     resources: object = None
 
 
@@ -232,7 +232,6 @@ class _Resources:
     plan: object
     pool: tuple | None
     working: tuple
-    footprint: object
     streams: list
     tail: object = None
 
@@ -252,7 +251,6 @@ def _retained_payload(definition):
             )[0]
             if type(tensor) is torch.Tensor
         ),
-        definition.footprint,
         definition.streams,
     )
     definition.resources = resources
@@ -548,16 +546,15 @@ class GraphSegment:
                         module(*definition.static_tree[0], **definition.static_tree[1])
                     self._validate_model()
                     stream.synchronize()  # Checked preparation, never capture completion.
-                    definition.footprint = vt.capture_footprint(
-                        owner._owner.device, pool
-                    )
+                    # Metadata only: makes no CUDA call on reset or finalization.
+                    reset = definition.reset
+                    graph.register_destroy_callback(lambda: reset.append(True))
                     with (
                         vt.graph(
                             graph,
                             pool=pool,
                             stream=stream,
                             reserve_bytes=reserve_bytes,
-                            footprint=definition.footprint,
                         ),
                         binding.scope(),
                     ):
@@ -759,7 +756,7 @@ class GraphSegment:
         self._validate_model()
         if any(not region._handle for region in definition.regions):
             raise GraphInvalidated("graph Region handle was explicitly closed")
-        if definition.footprint.facts()["retired"]:
+        if definition.reset:
             raise GraphInvalidated("graph definition was reset")
         if _tree_signature(tree) != definition.signature:
             raise GraphInvalidated("graph input structure/metadata/scalars changed")
@@ -998,7 +995,6 @@ class GraphSegment:
         definition.leased_versions = ()
         definition.parameter_state = definition.buffer_state = ()
         definition.owner = definition.module = None
-        definition.footprint = None
         definition.streams.clear()
         definition.resources = None
         self._definition = self._graph = self._tail = None

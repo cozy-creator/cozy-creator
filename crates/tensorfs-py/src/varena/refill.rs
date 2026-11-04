@@ -256,10 +256,7 @@ impl StageSource {
 
     /// At the predecessor's actual graph-running point, admit one complete raw source group.
     /// Identity and measured demand are native decisions; no caller byte window is accepted.
-    pub(super) fn prepare_speculative(
-        &self,
-        capability: &varena::working::ReplayPrefetch,
-    ) -> Result<Option<Work>, Failure> {
+    pub(super) fn prepare_speculative(&self) -> Result<Option<Work>, Failure> {
         let producer = match varena::enter_producer(self.device()) {
             Ok(producer) => producer,
             Err(varena::Error::CaptureActive) => return Ok(None),
@@ -270,7 +267,7 @@ impl StageSource {
             .iter()
             .map(|(region, _)| region.clone())
             .collect();
-        let Some(prepared) = varena::Region::prepare_replay_prefetch(&regions, capability)
+        let Some(prepared) = varena::Region::prepare_prefetch(&regions)
             .map_err(Failure::Native)?
         else {
             return Ok(None);
@@ -1053,7 +1050,7 @@ pub(super) fn prepare_encoded(
     let encoding = encoding.clone();
     let parts = parts.iter().cloned().zip(offsets).collect();
     let region = arena.reserve(bytes).map_err(Failure::Native)?;
-    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true, false, true)?
+    let mut work = prepare_work(&region, checkpoint, Vec::new(), threads, true, true)?
         .ok_or_else(|| invalid("fresh encoded load slot was already resident"))?;
     // Final zero initialization has already completed. This fresh scratch has no
     // pending GPU work if allocation fails; later submission keeps it inside Work.
@@ -1078,15 +1075,12 @@ pub(super) fn prepare_work(
     parts: Vec<(String, usize, usize)>,
     threads: usize,
     reclaim: bool,
-    evict_completed: bool,
     initialize: bool,
 ) -> Result<Option<Work>, Failure> {
     let items = prepare_items(&checkpoint, parts, region.len())?;
     let producer = varena::enter_producer(region.device()).map_err(Failure::Native)?;
     let preparation = if reclaim {
         region.prepare()
-    } else if evict_completed {
-        region.prepare_evicting_completed()
     } else {
         region.prepare_without_reclaim()
     }
@@ -1183,8 +1177,10 @@ fn prepare_raw_prefetch(
         Err(varena::Error::CaptureActive) => return Ok(None),
         Err(error) => return Err(Failure::Native(error)),
     };
-    let prepared = region.prepare_prefetch().map_err(Failure::Native)?;
-    let Some(varena::Preparation::Fill(fill)) = prepared else { return Ok(None) };
+    let prepared = varena::Region::prepare_prefetch(std::slice::from_ref(region)).map_err(Failure::Native)?;
+    let Some(varena::Preparation::Fill(fill)) = prepared.and_then(|mut prepared| prepared.pop()) else {
+        return Ok(None);
+    };
     // Admission has released every allocator lock. Reuse source/producer ownership directly;
     // never call prepare_work recursively beneath an already admitted Fill.
     prepare_fill(region, checkpoint, items, threads, fill, producer, false).map(Some)
@@ -1963,7 +1959,7 @@ impl PreparedRead {
     }
 
     #[new]
-    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, evict_completed = false, host = None))]
+    #[pyo3(signature = (region, checkpoint, parts, threads = 2, reclaim = true, host = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -1972,7 +1968,6 @@ impl PreparedRead {
         parts: Vec<(String, usize, usize)>,
         threads: usize,
         reclaim: bool,
-        evict_completed: bool,
         host: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let region = region.region.clone();
@@ -1997,7 +1992,6 @@ impl PreparedRead {
                     parts,
                     threads,
                     reclaim,
-                    evict_completed,
                     false,
                 )
             })

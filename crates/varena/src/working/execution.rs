@@ -164,7 +164,6 @@ impl Execution {
                 PhaseMode::Eager,
                 Some((self.site.clone(), self.selected.choice_id.clone())),
                 Some(self.selected.plan_generation),
-                false,
             )?;
             Ok(Active {
                 phase,

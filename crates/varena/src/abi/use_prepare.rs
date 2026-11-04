@@ -1,6 +1,6 @@
 //! Explicit pre-body cache service. Allocation recovery and ordinary Use never await it.
 use super::{Gpu, Weight};
-use crate::{Error, Result, cache_owner, plan, working};
+use crate::{Error, Result, cache_owner, plan, reclaim};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::Arc;
@@ -230,8 +230,7 @@ impl Admission {
     }
 
     fn read_snapshot(&self) -> Result<Snapshot> {
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.gpu.device())?;
+        crate::gate(self.gpu.device())?.not_capturing()?;
         self.lease.validate_use(&self.ids)?;
         let mut missing = 0usize;
         let mut seen = BTreeSet::new();
@@ -277,29 +276,11 @@ impl Admission {
     }
 
     fn collect(&self, wanted: usize) -> Result<usize> {
-        if wanted == 0 {
-            return Ok(0);
-        }
         self.lease.validate_use(&self.ids)?;
-        let mut completed = working::reclaim_completed(self.gpu.device(), wanted)?;
-        if completed < wanted {
-            let captures = crate::capture_counts()?;
-            crate::ensure_recovery_allowed(&captures, self.gpu.device())?;
-            self.lease.validate_use(&self.ids)?;
-            for arena in self.lease.arenas() {
-                if completed >= wanted {
-                    break;
-                }
-                arena.reclaim_ready_excluding_counted(
-                    &captures,
-                    wanted - completed,
-                    usize::MAX,
-                    crate::ReclaimReason::Allocator,
-                    &mut completed,
-                    &self.ids,
-                )?;
-            }
-        }
+        let protect = reclaim::Protect { regions: Some(&self.ids), ..Default::default() };
+        let mut completed = 0;
+        reclaim::release(self.gpu.device(), wanted, usize::MAX, reclaim::Wait::Local, protect,
+            crate::ReclaimReason::Allocator, &mut completed)?;
         Ok(completed)
     }
 
@@ -374,7 +355,6 @@ impl Admission {
     // Gather scalar metadata under native guards, then release them before writing.
     fn report_regions(&self, sample: &str) -> Result<()> {
         let rows = {
-            let _captures = crate::capture_counts()?;
             self.lease.validate_use(&self.ids)?;
             let mut rows = Vec::with_capacity(self.ids.len());
             let mut seen = BTreeSet::new();
@@ -408,7 +388,7 @@ impl Admission {
                     entry.uses.pins(),
                     contents,
                     entry.uses.generation.load(Ordering::Acquire),
-                    entry.uses.unjoined.load(Ordering::Acquire),
+                    !region.arena.activity.joined(entry.uses.unjoined.load(Ordering::Acquire)),
                 ));
             }
             rows

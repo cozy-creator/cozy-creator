@@ -1,12 +1,13 @@
 //! Page-addressed owner storage. No callback, eviction decision or future release promise.
 //! Released pages become reclaimable only after their actual submitted stream fence.
 use super::*;
+use crate::reclaim::{self, Protect, Wait};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PageLife {
     Preparing,
     Live,
-    Pending(usize),
+    Pending(u64, u64),
     Ready,
 }
 
@@ -19,7 +20,6 @@ pub(super) struct Storage {
     base: u64,
     bytes: usize,
     pages: BTreeMap<usize, Page>,
-    pub(super) events: BTreeSet<usize>,
     abandoned: bool,
 }
 
@@ -42,7 +42,7 @@ impl Storage {
             stats.mapped_bytes += page;
             match held.life {
                 PageLife::Live | PageLife::Preparing => stats.live_bytes += page,
-                PageLife::Pending(_) => stats.pending_bytes += page,
+                PageLife::Pending(..) => stats.pending_bytes += page,
                 PageLife::Ready => stats.ready_bytes += page,
             }
         }
@@ -74,8 +74,7 @@ impl Cache {
             return Err(Error::Invalid("cache reservation must be nonempty"));
         }
         let owner = initialize_owner(device)?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, device)?;
+        crate::gate(device)?.not_capturing()?;
         let mut state = owner.lock()?;
         let bytes = rounded(reserve, owner.page)?;
         let id = state
@@ -90,7 +89,6 @@ impl Cache {
                 base,
                 bytes,
                 pages: BTreeMap::new(),
-                events: BTreeSet::new(),
                 abandoned: false,
             },
         );
@@ -145,127 +143,83 @@ impl Cache {
     /// the Working owner with its exact handles/reservation retained.
     pub fn commit(&self, offset: usize, bytes: usize) -> Result<()> {
         let range = self.range(offset, bytes)?;
-        let mut recovery = crate::Recovery::default();
-        loop {
-            let mut physical = None;
-            let result = self.commit_local(range.clone(), &mut physical);
-            if let Err(Error::OutOfMemory { requested_bytes }) = &result
-                && recovery.next(
-                    self.device,
-                    physical.unwrap_or(*requested_bytes),
-                    physical.is_some(),
-                )?
-            {
-                continue;
-            }
-            return result;
-        }
+        reclaim::acquire(self.device, bytes, Wait::Yes, Protect::default(), || {
+            self.commit_local(range.clone())
+        })
     }
 
-    fn commit_local(
-        &self,
-        range: std::ops::Range<usize>,
-        physical: &mut Option<usize>,
-    ) -> Result<()> {
+    fn commit_local(&self, range: std::ops::Range<usize>) -> crate::AllocationResult<()> {
         let bytes = range.end - range.start;
         let owner = owner(self.device)?;
-        for attempt in 0..3 {
-            *physical = None;
-            let result = {
-                let captures = crate::capture_counts()?;
-                crate::ensure_recovery_allowed(&captures, self.device)?;
-                let mut state = owner.lock()?;
-                self.check()?;
-                let _context = owner.driver.enter()?;
-                let result = (|| -> crate::AllocationResult<()> {
-                    poll(&owner, &mut state)?;
-                    trim_ready(
-                        &owner,
-                        &mut state,
-                        usize::MAX,
-                        usize::MAX,
-                        &mut 0,
-                        Some(self.id),
-                    )?;
-                    let held = state
-                        .caches
-                        .get(&self.id)
-                        .ok_or(Error::Invalid("cache is closed"))?;
-                    if range
-                        .clone()
-                        .step_by(self.page)
-                        .any(|at| held.pages.contains_key(&at))
-                    {
-                        return Err(Error::Invalid(
-                            "cache commit overlaps committed or pending pages",
-                        )
-                        .into());
-                    }
-                    if attempt == 2 {
-                        owner.wait_reclaimable(&mut state, bytes, None)?;
-                    } else if attempt != 0 {
-                        owner.trim(&mut state, bytes, None)?;
-                    }
-                    if owner.room.over(bytes) != 0 {
-                        return Err(Error::OutOfMemory {
-                            requested_bytes: bytes,
-                        }
-                        .into());
-                    }
-                    for at in range.clone().step_by(self.page) {
-                        let handle = match owner.driver.create(self.page) {
-                            Ok(handle) => handle,
-                            Err(failure) => {
-                                // Every earlier page reached a successful map/access operation.
-                                // Roll back before the allocator may request any outside help.
-                                rollback(&owner, &mut state, self.id, range.start..at)?;
-                                return Err(match failure {
-                                    crate::AllocationFailure::DriverOutOfMemory(_) => {
-                                        crate::AllocationFailure::DriverOutOfMemory(bytes)
-                                    }
-                                    other => other,
-                                });
-                            }
-                        };
-                        // Record physical ownership before map, exactly as ordinary Working.
-                        state
-                            .caches
-                            .get_mut(&self.id)
-                            .expect("cache held under working lock")
-                            .pages
-                            .insert(
-                                at,
-                                Page {
-                                    handle,
-                                    life: PageLife::Preparing,
-                                },
-                            );
-                        owner.room.working.fetch_add(self.page, Ordering::AcqRel);
-                        owner.driver.map(self.base + at as u64, self.page, handle)?;
-                    }
-                    let held = state
-                        .caches
-                        .get_mut(&self.id)
-                        .expect("cache held under working lock");
-                    for at in range.clone().step_by(self.page) {
-                        held.pages.get_mut(&at).expect("committed page").life = PageLife::Live;
-                    }
-                    Ok(())
-                })();
-                result.map_err(|failure| {
-                    *physical = failure.physical_bytes();
-                    owner.fail(&mut state, failure.into())
-                })
-            };
-            match result {
-                Err(Error::OutOfMemory { .. }) if attempt == 0 => {}
-                Err(Error::OutOfMemory { .. }) if attempt == 1 => {
-                    crate::reclaim(self.device, bytes)?;
-                }
-                other => return other,
+        let gate = crate::gate(self.device)?;
+        gate.not_capturing()?;
+        let mut state = owner.lock()?;
+        self.check()?;
+        let _context = owner.driver.enter()?;
+        let result = (|| -> crate::AllocationResult<()> {
+            owner.poll(&mut state)?;
+            trim_ready(owner, &mut state, usize::MAX, usize::MAX, Some(self.id))?;
+            let held = state
+                .caches
+                .get(&self.id)
+                .ok_or(Error::Invalid("cache is closed"))?;
+            if range
+                .clone()
+                .step_by(self.page)
+                .any(|at| held.pages.contains_key(&at))
+            {
+                return Err(Error::Invalid(
+                    "cache commit overlaps committed or pending pages",
+                )
+                .into());
             }
-        }
-        unreachable!("finite cache commit attempts")
+            if owner.room.over(bytes) != 0 {
+                return Err(Error::OutOfMemory {
+                    requested_bytes: bytes,
+                }
+                .into());
+            }
+            for at in range.clone().step_by(self.page) {
+                let handle = match owner.driver.create(self.page) {
+                    Ok(handle) => handle,
+                    Err(failure) => {
+                        // Every earlier page reached a successful map/access operation.
+                        // Roll back before the allocator may request any outside help.
+                        rollback(owner, &mut state, self.id, range.start..at)?;
+                        return Err(match failure {
+                            crate::AllocationFailure::DriverOutOfMemory(_) => {
+                                crate::AllocationFailure::DriverOutOfMemory(bytes)
+                            }
+                            other => other,
+                        });
+                    }
+                };
+                // Record physical ownership before map, exactly as ordinary Working.
+                state
+                    .caches
+                    .get_mut(&self.id)
+                    .expect("cache held under working lock")
+                    .pages
+                    .insert(
+                        at,
+                        Page {
+                            handle,
+                            life: PageLife::Preparing,
+                        },
+                    );
+                owner.room.working.fetch_add(self.page, Ordering::AcqRel);
+                owner.driver.map(self.base + at as u64, self.page, handle)?;
+            }
+            let held = state
+                .caches
+                .get_mut(&self.id)
+                .expect("cache held under working lock");
+            for at in range.clone().step_by(self.page) {
+                held.pages.get_mut(&at).expect("committed page").life = PageLife::Live;
+            }
+            Ok(())
+        })();
+        result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     }
 
     /// The owner has stopped using these pages and joined every consumer into `stream`.
@@ -273,8 +227,9 @@ impl Cache {
         let range = self.range(offset, bytes)?;
         valid_stream(stream)?;
         let owner = owner(self.device)?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device)?;
+        if owner.activity.captures.load(Ordering::Acquire) != 0 {
+            return Err(Error::CaptureActive);
+        }
         let mut state = owner.lock()?;
         self.check()?;
         let held = state
@@ -290,18 +245,14 @@ impl Cache {
                 "cache release requires entirely live committed pages",
             ));
         }
-        let _context = owner.driver.enter()?;
-        let result = (|| {
-            let event = owner.driver.create_event()?;
-            held.events.insert(event); // retain even if recording fails; no early backing release
-            owner.driver.record(event, stream as usize)?;
-            for at in range.step_by(self.page) {
-                held.pages.get_mut(&at).expect("validated cache page").life =
-                    PageLife::Pending(event);
-            }
-            Ok(())
-        })();
-        result.map_err(|error| owner.fail(&mut state, error))
+        let mut stamp = Waits::new();
+        owner.activity.fences().stamp(stream, &mut stamp);
+        let (id, sequence) = stamp[0];
+        for at in range.step_by(self.page) {
+            held.pages.get_mut(&at).expect("validated cache page").life =
+                PageLife::Pending(id, sequence);
+        }
+        Ok(())
     }
 
     /// Nonblocking completion collection. This is the only explicit release progress call;
@@ -309,21 +260,14 @@ impl Cache {
     pub fn poll(&self) -> Result<CacheStats> {
         self.check()?;
         let owner = owner(self.device)?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device)?;
+        let gate = crate::gate(self.device)?;
+        gate.not_capturing()?;
         let mut state = owner.lock()?;
         self.check()?;
         let _context = owner.driver.enter()?;
         let result = (|| {
-            poll(&owner, &mut state)?;
-            trim_ready(
-                &owner,
-                &mut state,
-                usize::MAX,
-                usize::MAX,
-                &mut 0,
-                Some(self.id),
-            )?;
+            owner.poll(&mut state)?;
+            trim_ready(owner, &mut state, usize::MAX, usize::MAX, Some(self.id))?;
             Ok(state
                 .caches
                 .get(&self.id)
@@ -364,7 +308,7 @@ impl Cache {
             .caches
             .get(&self.id)
             .ok_or(Error::Invalid("cache is closed"))?;
-        if !held.pages.is_empty() || !held.events.is_empty() {
+        if !held.pages.is_empty() {
             return Err(Error::Busy);
         }
         let held = state
@@ -418,47 +362,39 @@ fn rollback(
     Ok(())
 }
 
-pub(super) fn poll(owner: &Working, state: &mut State) -> Result<()> {
+pub(super) fn poll(state: &mut State, fences: &crate::fence::Fences) {
     for held in state.caches.values_mut() {
-        for event in held.events.iter().copied().collect::<Vec<_>>() {
-            if owner.driver.query(event)? {
-                owner.driver.destroy_event(event)?;
-                held.events.remove(&event);
-                for page in held.pages.values_mut() {
-                    if page.life == PageLife::Pending(event) {
-                        page.life = PageLife::Ready;
-                    }
-                }
+        for page in held.pages.values_mut() {
+            if let PageLife::Pending(id, sequence) = page.life
+                && fences.complete(&[(id, sequence)])
+            {
+                page.life = PageLife::Ready;
             }
         }
     }
     retire_empty(state);
-    Ok(())
 }
 
-/// Only already-submitted owner release events, never a callback or future preemption.
-pub(super) fn wait_pending(owner: &Working, state: &State, wanted: usize) -> Result<()> {
+/// Only already-submitted owner releases, never a callback or future preemption.
+pub(super) fn pending_events(
+    state: &State,
+    fences: &crate::fence::Fences,
+    page: usize,
+    wanted: usize,
+    events: &mut Vec<usize>,
+) {
     let mut selected = 0usize;
     for held in state.caches.values() {
-        for event in &held.events {
+        for held_page in held.pages.values() {
             if selected >= wanted {
-                return Ok(());
+                return;
             }
-            let bytes = held
-                .pages
-                .values()
-                .filter(|page| page.life == PageLife::Pending(*event))
-                .count()
-                .saturating_mul(owner.page);
-            if bytes != 0 {
-                if !owner.driver.query(*event)? {
-                    owner.driver.wait_event(*event)?;
-                }
-                selected = selected.saturating_add(bytes);
+            if let PageLife::Pending(id, sequence) = held_page.life {
+                fences.events(&[(id, sequence)], events);
+                selected += page;
             }
         }
     }
-    Ok(())
 }
 
 pub(super) fn trim_ready(
@@ -466,7 +402,6 @@ pub(super) fn trim_ready(
     state: &mut State,
     wanted: usize,
     maximum: usize,
-    completed: &mut usize,
     only: Option<u64>,
 ) -> Result<usize> {
     let mut released = 0;
@@ -493,7 +428,6 @@ pub(super) fn trim_ready(
                 .released
                 .fetch_add(owner.page as u64, Ordering::AcqRel);
             released += owner.page;
-            *completed += owner.page;
         }
     }
     retire_empty(state);
@@ -504,7 +438,7 @@ fn retire_empty(state: &mut State) {
     let retired = state
         .caches
         .iter()
-        .filter(|(_, held)| held.abandoned && held.pages.is_empty() && held.events.is_empty())
+        .filter(|(_, held)| held.abandoned && held.pages.is_empty())
         .map(|(id, _)| *id)
         .collect::<Vec<_>>();
     for id in retired {

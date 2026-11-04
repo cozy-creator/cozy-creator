@@ -49,7 +49,7 @@ pub struct Snapshot {
     pub region_handles: Vec<RegionHandle>,
 }
 
-fn entries(state: &State) -> Vec<RegionEntry> {
+fn entries(state: &State, activity: &crate::DeviceActivity) -> Vec<RegionEntry> {
     state
         .entries
         .iter()
@@ -70,7 +70,7 @@ fn entries(state: &State) -> Vec<RegionEntry> {
                 Contents::Retired => "retired",
             },
             pins: entry.uses.pins.load(Ordering::Acquire),
-            unjoined: entry.uses.unjoined.load(Ordering::Acquire),
+            unjoined: !activity.joined(entry.uses.unjoined.load(Ordering::Acquire)),
         })
         .collect()
 }
@@ -87,7 +87,7 @@ pub(crate) fn snapshot(device: i32, anchor_arena_id: u64) -> Result<Snapshot> {
         let arena_before = plan::inventory_generation(device)?;
         let (fills, hits, evictions, entries) = {
             let state = arena.lock()?;
-            (state.fills, state.hits, state.evictions, entries(&state))
+            (state.fills, state.hits, state.evictions, entries(&state, arena.activity))
         };
         arenas.push(ArenaSnapshot {
             id: arena.id(),

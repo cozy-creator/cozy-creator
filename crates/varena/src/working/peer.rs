@@ -40,7 +40,7 @@ pub(crate) fn prefetch_suppressed(device: i32) -> Result<Option<bool>> {
 }
 
 /// Keep working ownership frozen while the caller also snapshots its weight arenas.
-/// Refresh only queries/records already submitted consumers; it never joins unknown ones.
+/// Refresh only polls fences; it never waits and never joins unknown consumers.
 pub(crate) fn with_snapshot<T>(
     device: i32,
     refresh: bool,
@@ -51,7 +51,7 @@ pub(crate) fn with_snapshot<T>(
     let result = (|| {
         let _context = refresh.then(|| owner.driver.enter()).transpose()?;
         if refresh {
-            owner.poll_mode(&mut state, false)?;
+            owner.poll(&mut state)?;
         }
         let mut reading = Accounting {
             refreshed: refresh,
@@ -63,14 +63,9 @@ pub(crate) fn with_snapshot<T>(
                 None => (false, false),
                 Some(id) => {
                     let pool = &state.pools[&id];
-                    let pending = if refresh {
-                        !owner.pool_completed(pool)?
-                    } else {
-                        !pool.events.is_empty() || !pool.retired_events.is_empty()
-                    };
                     (
                         pool.prepared || pool.references != 0 || pool.capture.is_some(),
-                        pending,
+                        !owner.pool_completed(pool),
                     )
                 }
             };
@@ -91,8 +86,7 @@ pub(crate) fn with_snapshot<T>(
                 } else if block.life != Life::Ready || block.reusable_on.is_some() || pool_pending {
                     class.pending += block.capacity as u64;
                     pending = true;
-                    unknown |=
-                        matches!(block.life, Life::Unjoined | Life::Deferred | Life::Captured);
+                    unknown |= matches!(block.life, Life::Unjoined(_) | Life::Captured);
                 } else {
                     class.idle += block.capacity as u64;
                 }
@@ -112,32 +106,6 @@ pub(crate) fn with_snapshot<T>(
             }
         }
         operation(reading)
-    })();
-    result.map_err(|error| owner.fail(&mut state, error))
-}
-
-/// Release only proven complete whole mappings. The cap keeps a cumulative donation within
-/// its ask snapshot even if the owner allocated a larger mapping after that snapshot.
-pub(crate) fn release(
-    device: i32,
-    wanted: usize,
-    maximum: usize,
-    completed: &mut usize,
-) -> Result<()> {
-    let owner = owner(device)?;
-    let mut state = owner.lock()?;
-    let result = (|| {
-        let _context = owner.driver.enter()?;
-        owner.poll_mode(&mut state, false)?;
-        owner.trim_ready_capped(
-            &mut state,
-            wanted,
-            None,
-            &BTreeSet::new(),
-            maximum,
-            completed,
-        )?;
-        Ok(())
     })();
     result.map_err(|error| owner.fail(&mut state, error))
 }

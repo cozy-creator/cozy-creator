@@ -591,14 +591,11 @@ class _Selection:
 class _Observation:
     """One owned native phase; an uncertain close is never blindly retried."""
 
-    def __init__(self, device, key, mode, *, cold=False):
+    def __init__(self, device, key, mode):
         from . import torch as vt
 
         self.device = device
-        self.token = (
-            vt._phase_enter_cold(device, key)
-            if cold else vt.phase_enter(device, key, mode=mode)
-        )
+        self.token = vt.phase_enter(device, key, mode=mode)
         self.close_started = self.closed = False
         self.error = None
 
@@ -663,12 +660,12 @@ class _AutomaticGraphs:
         )
 
     @contextmanager
-    def _observe(self, key, mode, *, cold=False):
+    def _observe(self, key, mode):
         from . import torch as vt
 
         owner = self._owner_ref()
         try:
-            observation = _Observation(owner._owner.device.index, key, mode, cold=cold)
+            observation = _Observation(owner._owner.device.index, key, mode)
         except vt.PhaseOverlapError:
             # Only the structured native entry refusal leaves another owned
             # token/sample untouched. Never classify a body error or its text.
@@ -795,7 +792,7 @@ class _AutomaticGraphs:
         }
         try:
             if state.peak is None:
-                with self._observe(state.native_key, "eager", cold=True) as observation:
+                with self._observe(state.native_key, "eager") as observation:
                     if observation is None:
                         state.reason = "parent_observation_active"
                         state.eager_calls += 1

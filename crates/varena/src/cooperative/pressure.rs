@@ -170,7 +170,7 @@ impl Pressure {
                     {
                         if self.pending_processes.insert(pid) {
                             self.facts.process_signals += 1;
-                            self.signal_deadline.get_or_insert_with(|| std::time::Instant::now() + crate::RECOVERY_BUDGET);
+                            self.signal_deadline.get_or_insert_with(|| std::time::Instant::now() + crate::reclaim::RECOVERY_BUDGET);
                         }
                     }
                 }

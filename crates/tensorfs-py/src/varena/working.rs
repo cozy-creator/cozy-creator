@@ -527,25 +527,14 @@ fn selection<'py>(
         selected.measured_backing_peak_bytes,
     )?;
     row.set_item("reused_capacity_bytes", selected.reused_capacity_bytes)?;
-    row.set_item("preserved_backing_bytes", selected.preserved_backing_bytes)?;
-    row.set_item(
-        "reclaimable_working_bytes",
-        selected.reclaimable_working_bytes,
-    )?;
-    row.set_item("reclaimable_cache_bytes", selected.reclaimable_cache_bytes)?;
     row.set_item("choice_id", &selected.choice_id)?;
     row.set_item("eligible", &selected.eligible)?;
     row.set_item("required_bytes", selected.required_bytes)?;
     row.set_item("available_bytes", selected.available_bytes)?;
     row.set_item("basis", selected.basis)?;
-    row.set_item("reclaimed_working_bytes", selected.reclaimed_working_bytes)?;
-    row.set_item("reclaimed_weight_bytes", selected.reclaimed_weight_bytes)?;
     row.set_item("plan_generation", selected.plan_generation)?;
     row.set_item("phase", &selected.phase)?;
     row.set_item("phase_weight_bytes", selected.phase_weight_bytes)?;
-    row.set_item("phase_missing_bytes", selected.phase_missing_bytes)?;
-    row.set_item("phase_outside_reclaimable_bytes", selected.phase_outside_reclaimable_bytes)?;
-    row.set_item("preserves_phase_weights", selected.preserves_phase_weights)?;
     Ok(row)
 }
 
@@ -689,65 +678,6 @@ impl CallbackScope {
     }
 }
 
-#[pyclass(name = "_VarenaGraphFootprint", module = "tensorfs._ext", frozen)]
-pub(super) struct PyGraphFootprint {
-    pub(super) footprint: Arc<varena::working::GraphFootprint>,
-}
-#[pymethods]
-impl PyGraphFootprint {
-    #[new]
-    fn new(py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<Self> {
-        check().map_err(|error| super::raise(py, error))?;
-        Ok(Self {
-            footprint: varena::working::GraphFootprint::new(device, pool)
-                .map_err(|error| super::raise(py, error))?,
-        })
-    }
-    fn _begin(&self, py: Python<'_>, device: i32, pool: (u64, u64)) -> PyResult<()> {
-        py.detach(|| self.footprint.begin(device, pool))
-            .map_err(|error| super::raise(py, error))
-    }
-    fn _finish(&self, py: Python<'_>, completed: bool) -> PyResult<()> {
-        py.detach(|| self.footprint.finish(completed))
-            .map_err(|error| super::raise(py, error))
-    }
-    fn retire(&self) {
-        self.footprint.retire();
-    }
-    fn facts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let facts = self
-            .footprint
-            .facts()
-            .map_err(|error| super::raise(py, error))?;
-        let row = PyDict::new(py);
-        row.set_item("definition", facts.definition)?;
-        row.set_item("device", facts.device)?;
-        row.set_item("pool", facts.pool)?;
-        row.set_item("sealed", facts.sealed)?;
-        row.set_item("retired", facts.retired)?;
-        row.set_item("traced_bytes", facts.traced_bytes)?;
-        row.set_item("backing_bytes", facts.backing_bytes)?;
-        row.set_item("allocations", facts.allocations)?;
-        Ok(row)
-    }
-}
-impl Drop for PyGraphFootprint {
-    fn drop(&mut self) {
-        self.footprint.retire();
-        // An abandoned recorder owns metadata only. Cleanup must not issue CUDA operations.
-        let _ = self.footprint.finish(false);
-    }
-}
-
-#[pyfunction]
-fn _varena_phase_enter_cold(py: Python<'_>, device: i32, key: String) -> PyResult<u64> {
-    py.detach(|| {
-        check()?;
-        varena::working::phase_enter_cold(device, key)
-    })
-    .map_err(|e| super::raise(py, e))
-}
-
 #[pyfunction]
 #[pyo3(signature = (device, key = None, *, mode = "eager"))]
 fn _varena_phase_enter(
@@ -802,7 +732,6 @@ pub(super) fn observation<'py>(
         .map(|item| split_observation(py, item))
         .collect::<PyResult<Vec<_>>>()?;
     row.set_item("split_observations", splits)?;
-    row.set_item("definitions", &observed.definitions)?;
     row.set_item("observation_id", observed.token)?;
     row.set_item("mode", observed.mode.name())?;
     row.set_item("key", observed.key.as_deref())?;
@@ -814,10 +743,6 @@ pub(super) fn observation<'py>(
     row.set_item("reason", &observed.reason)?;
     row.set_item("successful_peak_bytes", observed.successful_peak_bytes)?;
     row.set_item("successful_capture_pool_bytes", observed.successful_capture_pool_bytes)?;
-    row.set_item(
-        "successful_backing_peak_bytes",
-        observed.successful_backing_peak_bytes,
-    )?;
     row.set_item("successful_passes", observed.successful_passes)?;
     Ok(row)
 }
@@ -849,12 +774,6 @@ fn _varena_phase_stats<'py>(
     row.set_item("capture_pool_bytes", sample.capture_pool_bytes)?;
     row.set_item("successful_passes", sample.successful_passes)?;
     row.set_item("aborted_passes", sample.aborted_passes)?;
-    row.set_item("aborted_peak_bytes", sample.aborted_peak_bytes)?;
-    row.set_item("aborted_total_peak_bytes", sample.aborted_total_peak_bytes)?;
-    row.set_item(
-        "aborted_backing_peak_bytes",
-        sample.aborted_backing_peak_bytes,
-    )?;
     Ok(row)
 }
 
@@ -865,16 +784,17 @@ fn _varena_phase_forget(py: Python<'_>, device: i32, key: &str) -> PyResult<bool
 }
 
 pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Owner callbacks need the GIL, so an allocation holding it must not wait for them.
+    // SAFETY: callable from any thread; it only reads this thread's state.
+    varena::set_host_lock_probe(|| unsafe { pyo3::ffi::PyGILState_Check() != 0 });
     module.add_function(wrap_pyfunction!(_varena_process_guard_status, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_context, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_select, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_begin, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_split_end, module)?)?;
-    module.add_class::<PyGraphFootprint>()?;
     module.add_class::<CallbackScope>()?;
     module.add_class::<PyExecution>()?;
     module.add_function(wrap_pyfunction!(_varena_phase_enter, module)?)?;
-    module.add_function(wrap_pyfunction!(_varena_phase_enter_cold, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_leave, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_invalidate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_phase_stats, module)?)?;

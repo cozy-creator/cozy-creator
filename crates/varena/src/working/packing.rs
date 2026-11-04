@@ -1,7 +1,7 @@
 //! Measure empty capture-pool packing from an eager allocation lifetime sequence.
 
 use super::{Block, Error, Life, Pool, Result, Segment, State, Working, rounded};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
 enum Reuse {
@@ -92,25 +92,10 @@ impl Trace {
                 size_class: 0,
                 handle: 0,
                 pool: Some(pool),
-                charged_blocks: 0,
                 phase_blocks: 0,
             },
         );
-        state.blocks.insert(
-            0,
-            Block {
-                segment: 0,
-                capacity,
-                requested: 0,
-                stream: 0,
-                origin_retired: false,
-                phase: None,
-                streams: BTreeSet::new(),
-                events: BTreeMap::new(),
-                life: Life::Ready,
-                reusable_on: None,
-            },
-        );
+        state.blocks.insert(0, Block::free(0, capacity));
         state
             .free
             .entry((Some(pool), capacity, None))

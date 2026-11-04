@@ -1,7 +1,7 @@
 """Whole-process Torch working allocator. Install before CUDA initialization in the executor child.
 
-Use this module's graph/replay owners, or explicitly complete capture and record every replay
-and output consumer stream. Raw Torch graph calls alone do not supply these lifetime signals.
+Capture with this module's graph/replay owners. A raw torch.cuda.graph supplies none of the
+lifetime signals the allocator needs, so its capture is refused.
 """
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import sys
 import threading
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Iterator, Literal, Sequence, TypeAlias, cast
@@ -256,12 +255,6 @@ def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["ea
     return _ext._varena_phase_enter(_device(device), key, mode=mode)
 
 
-def _phase_enter_cold(device: DeviceLike, key: str) -> int:
-    """Opt this unknown observation into bounded native allocation recovery."""
-    _installed()
-    return _ext._varena_phase_enter_cold(_device(device), key)
-
-
 def phase_leave(device: DeviceLike, token: int, *, completed: bool, key: str | None = None) -> dict[str, Any]:
     """End after checked execution completion, supplying an actually observed key if needed.
 
@@ -343,14 +336,8 @@ def external_callback(device: DeviceLike) -> Iterator[None]:
         scope.close()
 
 
-def capture_footprint(device: DeviceLike, pool: PoolId) -> _ext._VarenaGraphFootprint:
-    """Create inert graph-definition metadata; pass it to graph(..., footprint=...)."""
-    _installed()
-    return _ext._VarenaGraphFootprint(_device(device), pool)
-
-
 @contextmanager
-def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None, footprint: _ext._VarenaGraphFootprint | None = None) -> Iterator[Any]:
+def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None = None, reserve_bytes: int | None = None) -> Iterator[Any]:
     """Prepare and finish capture, joining only its explicit stream and the caller.
 
     Other producer streams must already be joined by the caller. Native capture
@@ -376,45 +363,34 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
         raise
     started = False
     error = None
-    tracing = False
-    try:
-        with torch.cuda.device(device), torch.cuda.stream(stream):
-            try:
-                if footprint is not None:
-                    # Binding is to this capture cycle, not merely the shared pool. The callback
-                    # references only metadata and makes no CUDA call on reset or finalization.
-                    footprint._begin(device, pool)
-                    tracing = True
-                    cuda_graph.register_destroy_callback(footprint.retire)
-                cuda_graph.capture_begin(pool=pool)
-                started = True
-                yield cuda_graph
-            except BaseException as caught:
-                error = caught
-            finally:
-                # A capture-start Python hook may throw after CUDA capture already began.
-                with torch.cuda.stream(stream):
-                    ending = started or torch.cuda.is_current_stream_capturing()
-                    if ending:
-                        try:
-                            cuda_graph.capture_end()
-                        except BaseException as caught:
-                            if error is None:
-                                error = caught
-                    if torch.cuda.is_current_stream_capturing():
-                        raise RuntimeError("CUDA capture did not end; Varena capture exclusion is retained") from error
-                    routed = cast(ctypes.CDLL, _library).varena_torch_abort_routing(device, *pool)
-                    if routed < 0:
-                        raise RuntimeError("failed to end Varena capture routing") from error
-                    if ending or routed:
-                        capture_complete(pool, stream=stream, device=device)
-                        if error is not None:
-                            cuda_graph.reset()
-                    elif error is not None:
-                        cancel_preparation(pool, device)
-    finally:
-        if tracing and footprint is not None:
-            footprint._finish(error is None and sys.exc_info()[0] is None)
+    with torch.cuda.device(device), torch.cuda.stream(stream):
+        try:
+            cuda_graph.capture_begin(pool=pool)
+            started = True
+            yield cuda_graph
+        except BaseException as caught:
+            error = caught
+        finally:
+            # A capture-start Python hook may throw after CUDA capture already began.
+            with torch.cuda.stream(stream):
+                ending = started or torch.cuda.is_current_stream_capturing()
+                if ending:
+                    try:
+                        cuda_graph.capture_end()
+                    except BaseException as caught:
+                        if error is None:
+                            error = caught
+                if torch.cuda.is_current_stream_capturing():
+                    raise RuntimeError("CUDA capture did not end; Varena capture exclusion is retained") from error
+                routed = cast(ctypes.CDLL, _library).varena_torch_abort_routing(device, *pool)
+                if routed < 0:
+                    raise RuntimeError("failed to end Varena capture routing") from error
+                if ending or routed:
+                    capture_complete(pool, stream=stream, device=device)
+                    if error is not None:
+                        cuda_graph.reset()
+                elif error is not None:
+                    cancel_preparation(pool, device)
     if error is not None:
         # This private c10::Error escapes cuDNN's engine-fallback catches. Publish OOM only
         # after actual capture completion and graph reset; cleanup failures take precedence.

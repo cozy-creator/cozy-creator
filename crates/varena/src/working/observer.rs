@@ -1,5 +1,5 @@
 //! Physical Working backing observation. No allocation or reclamation decisions live here.
-use super::{Life, PoolId, Working, devices};
+use super::{INITIALIZE, Life, PoolId, Working, devices};
 use crate::{Error, Result};
 use std::sync::{Arc, OnceLock};
 
@@ -39,15 +39,16 @@ static OBSERVER: OnceLock<Arc<dyn WorkingObserver>> = OnceLock::new();
 /// Install one process-lifetime observer with an atomic existing/future handoff.
 /// The registry prevents new devices; all existing state locks prevent maps/frees.
 pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
+    let _initializing = INITIALIZE.lock().map_err(|_| Error::Poisoned("working initialization".into()))?;
     let owners = devices()?;
     if OBSERVER.get().is_some() {
         return Err(Error::Invalid("working observer already installed"));
     }
-    let states = owners.values().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
+    let states = owners.iter().map(|owner| owner.lock()).collect::<Result<Vec<_>>>()?;
     let mut segments = Vec::new();
-    for ((device, _), state) in owners.iter().zip(&states) {
+    for (owner, state) in owners.iter().zip(&states) {
         segments.extend(state.segments.iter().map(|(address, segment)| WorkingSegment {
-            device: *device, address: *address, bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool,
+            device: owner.device, address: *address, bytes: segment.bytes, size_class: segment.size_class, pool: segment.pool,
         }));
     }
     observer.initialize(&segments)?;
@@ -57,7 +58,7 @@ pub fn observe_working(observer: Arc<dyn WorkingObserver>) -> Result<()> {
 /// A coherent per-device inventory of actual backing and live/pending block state.
 /// This visits existing devices only and performs no CUDA initialization or collection.
 pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
-    let owners = devices()?.values().cloned().collect::<Vec<_>>();
+    let owners = devices()?;
     let mut out = Vec::new();
     for owner in owners {
         let state = owner.lock()?;

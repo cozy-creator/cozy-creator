@@ -162,12 +162,9 @@ impl Peer {
         ledger::initialize()?;
         working::initialize(device)?;
         {
-            let captures = crate::capture_counts()?;
-            crate::ensure_recovery_allowed(&captures, device)?;
-            if captures
-                .get(&device)
-                .is_some_and(|activity| activity.retirements.load(Ordering::Acquire) != 0)
-            {
+            let gate = crate::gate(device)?;
+            gate.not_capturing()?;
+            if gate.retiring() {
                 return Err(crate::Error::Busy.into());
             }
             if working::peer::uuid(device)? != descriptor.uuid {
@@ -255,8 +252,8 @@ impl Peer {
         self.ledger.reap_dead()?;
         let expected = self.ledger.snapshot()?.generation;
         let (free, total) = {
-            let captures = crate::capture_counts()?;
-            crate::ensure_recovery_allowed(&captures, self.device)?;
+            let _gate = crate::gate(self.device)?;
+            _gate.not_capturing()?;
             working::peer::memory_info(self.device)?
         };
         let used = total.checked_sub(free).ok_or(crate::Error::Invalid(
@@ -465,9 +462,9 @@ impl Peer {
 
     fn observation<T>(&self, operation: impl FnOnce() -> T) -> Result<T> {
         self.check()?;
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device)?;
-        if captures.get(&self.device).is_some_and(|entry| entry.retirements.load(Ordering::Acquire)!=0) {
+        let gate = crate::gate(self.device)?;
+        gate.not_capturing()?;
+        if gate.retiring() {
             return Err(crate::Error::Busy.into());
         }
         Ok(operation())
@@ -490,30 +487,24 @@ impl Peer {
         maximum: usize,
         released: &mut usize,
     ) -> crate::Result<Accounting> {
-        let captures = crate::capture_counts()?;
-        let refresh = crate::ensure_recovery_allowed(&captures, self.device).is_ok();
-        if refresh && wanted != 0 {
-            working::peer::release(self.device, wanted, maximum, released)?;
-            for arena in &inventory.arenas {
-                if *released >= wanted {
-                    break;
-                }
-                arena.reclaim_ready_counted(&captures, wanted - *released, maximum - *released,
-                    ReclaimReason::Room, released)?;
-            }
+        if wanted != 0 && !crate::is_capturing(self.device)? {
+            crate::reclaim::release(self.device, wanted, maximum, crate::reclaim::Wait::No,
+                crate::reclaim::Protect::default(), ReclaimReason::Room, released)?;
+        }
+        let gate = crate::gate(self.device)?;
+        let refresh = gate.not_capturing().is_ok();
+        if refresh && let Some(arena) = inventory.arenas.first() {
+            let mut state = arena.lock()?;
+            arena.poll_fences(&mut state)?;
         }
         let reading = working::peer::with_snapshot(self.device, refresh, |mut reading| {
-            // Lock order: capture registry → working state → arena states in registration order.
+            // Lock order: gate → working state → arena states in registration order.
             let mut states = inventory
                 .arenas
                 .iter()
                 .map(|arena| arena.lock())
                 .collect::<crate::Result<Vec<_>>>()?;
             for (arena, held) in inventory.arenas.iter().zip(&mut states) {
-                let _context = refresh
-                    .then(|| arena.driver.enter())
-                    .transpose()
-                    .map_err(|error| crate::poison(held, error))?;
                 let ids: Vec<_> = held.entries.keys().copied().collect();
                 for id in ids {
                     let entry = &held.entries[&id];
@@ -525,16 +516,7 @@ impl Peer {
                         reading.physical.weights.live += bytes;
                         continue;
                     }
-                    let completion = if refresh {
-                        arena.completion(held, id)?
-                    } else if entry.uses.unjoined.load(Ordering::Acquire) {
-                        Completion::Unjoined
-                    } else if entry.uses.fences().is_empty() {
-                        Completion::Done
-                    } else {
-                        Completion::Pending
-                    };
-                    match completion {
+                    match arena.completion(held, id) {
                         Completion::Done => {
                             reading.physical.weights.idle += bytes;
                             reading.reclaimable += bytes;
@@ -556,7 +538,7 @@ impl Peer {
                 .physical
                 .total()
                 .map_err(|_| crate::Error::Invalid("physical snapshot overflow"))?;
-            let room = &captures.get(&self.device).expect("initialized device").room;
+            let room = crate::room(self.device)?;
             if physical
                 != (room.pages.load(Ordering::Acquire) + room.working.load(Ordering::Acquire))
                     as u64
@@ -568,6 +550,7 @@ impl Peer {
             }
             Ok(reading)
         })?;
+        drop(gate);
         Ok(reading)
     }
 }

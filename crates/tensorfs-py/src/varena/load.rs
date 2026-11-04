@@ -66,7 +66,7 @@ impl LoadSlot {
             .detach(|| {
                 let region = arena.reserve(bytes).map_err(refill::Failure::Native)?;
                 let work =
-                    refill::prepare_work(&region, checkpoint, parts, threads, true, false, true)?
+                    refill::prepare_work(&region, checkpoint, parts, threads, true, true)?
                         .ok_or(refill::Failure::Native(varena::Error::Invalid(
                         "fresh load slot was already resident",
                     )))?;

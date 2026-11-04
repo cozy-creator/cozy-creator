@@ -134,27 +134,12 @@ class Arena:
     def reserve(self, bytes: int) -> Region:
         return Region(self._native.reserve(bytes))
 
-    def set_streaming_limit(self, bytes: int) -> None:
-        self._native.set_streaming_limit(bytes)
-
-    def clear_streaming_limit(self) -> None:
-        """Clear the legacy idle-cache window without reclaim or changing capacity limits."""
-        self._native.clear_streaming_limit()
-
-    @property
-    def streaming_limit_bytes(self) -> int:
-        return self._native.streaming_limit_bytes
-
     def reclaim(self, bytes: int) -> int:
         return self._native.reclaim(bytes)
 
     def reset_preferences(self) -> None:
         """Begin an explicit execution phase without changing pins, mappings or VA."""
         self._native.reset_preferences()
-
-    def reclaim_unpreferred(self, bytes: int) -> int:
-        """Reclaim only idle nonpreferred backing; every physical pin still wins."""
-        return self._native.reclaim_unpreferred(bytes)
 
     def stats(self) -> dict[str, int]:
         return self._native.stats()
@@ -199,11 +184,9 @@ class PhaseController:
     def __init__(self, arena: Arena) -> None:
         self._native = _ext._VarenaPhaseController(arena._native)
 
-    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *,
-             footprints: Sequence[_ext._VarenaGraphFootprint] | None = None, execution_key: str | None = None):
+    def wrap(self, capsule, key: str | None, regions: Sequence[Region], *, execution_key: str | None = None):
         """Decorate native completion; key=None observes without changing weight preferences."""
-        return self._native.wrap(capsule, key, [region._native for region in regions],
-                                 footprints=None if footprints is None else list(footprints), execution_key=execution_key)
+        return self._native.wrap(capsule, key, [region._native for region in regions], execution_key=execution_key)
 
     def facts(self) -> dict[str, object]:
         return self._native.facts()
@@ -232,12 +215,10 @@ class Region:
     def set_preferred(self, preferred: bool) -> None:
         self._native.set_preferred(preferred)
 
-    def prepare(self, *, reclaim: bool = True, evict_completed: bool = False) -> Use:
+    def prepare(self, *, reclaim: bool = True) -> Use:
         """A fill, or the resident contents. reclaim=False refuses (OutOfMemory) rather than
-        evict or wait; evict_completed then still evicts idle streamed regions (other
-        phases' oldest first, then the running phase's most recently used first), completed
-        ones first, then ones after their own last-consumer events; it never joins."""
-        return Use(self._native.prepare(reclaim, evict_completed))
+        evict or wait."""
+        return Use(self._native.prepare(reclaim))
 
     def pin(self) -> Use | None:
         """Pin existing ready contents atomically, or return None for a residency miss.
@@ -256,12 +237,11 @@ class Region:
         *,
         threads: int = 2,
     ) -> PreparedRead | None:
-        """Opt into native no-reclaim admission for an immutable raw source.
+        """Offer an immutable raw source to native prefetch admission.
 
-        None means no fill was admitted (unknown/unqualified key, insufficient room, or
-        already resident). An admitted read retains its source and Fill but starts no IO.
-        Existing production prefetch callers remain on prepare_read until a committed
-        execution key is available. Encoded decode/scratch is outside this first slice.
+        None means no fill was admitted (phase not measured yet, no room for its bytes and the
+        phase's remaining working peak, or already resident). An admitted read retains its
+        source and Fill but starts no IO. Encoded decode/scratch is outside this path.
         """
         native = _ext._VarenaPreparedRead.prefetch(self._native, checkpoint, list(parts), threads)
         return None if native is None else PreparedRead(native)
@@ -273,7 +253,6 @@ class Region:
         *,
         threads: int = 2,
         reclaim: bool = True,
-        evict_completed: bool = False,
         host: Buffer | None = None,
     ) -> PreparedRead:
         """Admit a fill and warm bounded staging, without starting source I/O.
@@ -281,8 +260,7 @@ class Region:
         Each part is (component/key#role, destination byte offset, exact stored length).
         This region must be dedicated to that immutable source recipe. Native prefetch
         uses local available sources only; it never calls a Python transformer/fetcher.
-        reclaim=False refuses admission when eviction or a prior-writer join is needed;
-        with evict_completed it may still evict idle streamed regions as `prepare` does.
+        reclaim=False refuses admission when eviction or a prior-writer join is needed.
         host, a writable C-contiguous buffer covering every part and at most the region's
         length, receives the one store read; one copy then fills the region from it (zeroes
         past it). The read row's
@@ -295,7 +273,7 @@ class Region:
             )
         return PreparedRead(
             native(
-                self._native, checkpoint, list(parts), threads, reclaim, evict_completed, host
+                self._native, checkpoint, list(parts), threads, reclaim, host
             )
         )
 

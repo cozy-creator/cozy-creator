@@ -164,8 +164,7 @@ impl Gpu {
         if stream <= 2 {
             return Err(invalid("use an explicit CUDA stream handle, not a default-stream sentinel"));
         }
-        let captures = crate::capture_counts()?;
-        crate::ensure_recovery_allowed(&captures, self.device())?;
+        crate::gate(self.device())?.not_capturing()?;
         let _context = self.arena.driver.enter()?;
         if self.arena.driver.is_capturing(size(stream)?)? {
             return Err(Error::CaptureActive.into());
@@ -234,11 +233,9 @@ fn insert(value: Handle) -> Result<u64> {
 // including an operation racing a checked close from another caller.
 struct HandleLease {
     value: Handle,
-    guard: Arc<crate::GlobalCaptureGuard>,
 }
 struct Lease<T> {
     value: Arc<T>,
-    _guard: Arc<crate::GlobalCaptureGuard>,
 }
 impl<T> std::ops::Deref for Lease<T> {
     type Target = Arc<T>;
@@ -275,10 +272,8 @@ fn get_access(id: u64, access: Access) -> Result<HandleLease> {
     if !allowed {
         return Err(invalid("handle ownership has transferred"));
     }
-    let guard = Arc::new(crate::enter_retirement(entry.value.device())?);
     Ok(HandleLease {
         value: entry.value.clone(),
-        guard,
     })
 }
 fn get(id: u64, deferred: bool) -> Result<HandleLease> {
@@ -305,7 +300,6 @@ macro_rules! getter {
             match &held.value {
                 Handle::$variant(v) => Ok(Lease {
                     value: v.clone(),
-                    _guard: held.guard.clone(),
                 }),
                 _ => Err(invalid("wrong handle type")),
             }
@@ -323,7 +317,6 @@ fn cache_borrow(id: u64) -> Result<Lease<Cache>> {
     match &held.value {
         Handle::Cache(cache) => Ok(Lease {
             value: cache.clone(),
-            _guard: held.guard.clone(),
         }),
         _ => Err(invalid("wrong handle type")),
     }
@@ -493,8 +486,6 @@ pub unsafe extern "C" fn vr_v1_region_from_host_parts(
             return Err(invalid("null host parts output"));
         }
         let parts = unsafe { slice(parts, count)? };
-        // The handle lease refuses active capture and excludes new capture through
-        // snapshot/reservation, before reading any caller payload bytes.
         let gpu = gpu(g)?;
         let (bytes, layout) = unsafe { host_parts::snapshot(parts)? };
         let region = gpu.arena.reserve(bytes.len())?;
