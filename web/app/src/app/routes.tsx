@@ -1,7 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { createHashRouter, Navigate, type RouteObject } from "react-router-dom"
 import { projectsQuery } from "../api/queries"
+import { MachineDrawer } from "../panels/machines/MachineDrawer"
+import { Machines } from "../panels/machines/Machines"
+import { NewRun } from "../panels/newrun/NewRun"
 import { Projects } from "../panels/Projects"
+import { RunDrawer } from "../panels/runs/RunDrawer"
+import { Runs } from "../panels/runs/Runs"
 import { Stub } from "../panels/Stub"
 import { Yaml } from "../panels/Yaml"
 import { useConnection } from "./Connection"
@@ -22,10 +27,10 @@ const drawer = (path: string, element: React.ReactNode, kind: "normal" | "wide" 
 })
 
 const drawers: RouteObject[] = [
-  drawer("runs", <Stub title="Runs" />),
-  drawer("runs/:number", <Stub title="Run" />),
-  drawer("machines", <Stub title="Machines" />),
-  drawer("machines/:name", <Stub title="Machine" />),
+  drawer("runs", <Runs />),
+  drawer("runs/:number", <RunDrawer />),
+  drawer("machines", <Machines />),
+  drawer("machines/:name", <MachineDrawer />),
   drawer("packages", <Stub title="Packages" />, "wide"),
   drawer("packages/:name", <Stub title="Package" />, "wide"),
   drawer("models", <Stub title="Models" />, "wide"),
@@ -46,7 +51,7 @@ export const router = createHashRouter([
         children: [
           { index: true, element: null },
           ...drawers,
-          drawer("new", <Stub title="New run" />),
+          drawer("new", <NewRun />),
           drawer("files", <Stub title="Files" />),
           drawer("yaml", <Yaml />),
         ],

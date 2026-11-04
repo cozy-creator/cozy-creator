@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { holdMedia } from "../api/events"
+import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
 import { useCanvasStore } from "./context"
@@ -89,12 +89,9 @@ function Thumb({ sha256, cardWidth, name }: { sha256: string; cardWidth: number;
   )
 }
 
-/** Files with a name in this tab that are playing, oldest first: a third stops the first. */
-const playingHere: (() => void)[] = []
-
-function Player({ field, path }: { field: string; path: string }) {
+/** A file Calcifer serves, playing on a real URL with Range: one of the two live ones across tabs. */
+export function Player({ field, path }: { field: string; path: string }) {
   const { client, stream } = useConnection()
-  const store = useCanvasStore()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const element = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const stopRef = useRef<() => void>(() => {})
@@ -135,14 +132,13 @@ function Player({ field, path }: { field: string; path: string }) {
       .then((held) => {
         release = held
         const el = element.current
-        const id = store.projectId
-        if (!el || !id) return stop()
-        playback = client.transport.play(client.file(id, path), el)
+        if (!el) return stop()
+        playback = client.transport.play(path, el)
         setState("playing")
         el.play().catch(() => {})
       })
       .catch(() => {})
-  }, [state, client, store, path])
+  }, [state, client, path])
 
   if (state === "unplayable") return <span className="media-note">This browser can't play it</span>
   if (state === "idle") {
@@ -175,6 +171,7 @@ function Player({ field, path }: { field: string; path: string }) {
 }
 
 export function Media({ view, name, cardWidth }: { view: ElementView; name: string; cardWidth: number }) {
+  const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, landed, preview } = view
   const sha256 = asset?.sha256 ?? landed?.sha256
@@ -205,7 +202,7 @@ export function Media({ view, name, cardWidth }: { view: ElementView; name: stri
         </div>
       )}
       {!placing && sha256 && path && (field === "video" || field === "audio") && (
-        <Player field={field} path={path} />
+        <Player field={field} path={client.file(store.projectId!, path)} />
       )}
     </div>
   )

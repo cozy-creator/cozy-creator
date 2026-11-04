@@ -1,7 +1,8 @@
 import { QueryClient } from "@tanstack/react-query"
 import { createContext, useContext } from "react"
-import { Client } from "../api/client"
+import { Client, type RunFilter } from "../api/client"
 import { EventStream } from "../api/events"
+import { runsAfter } from "../api/queries"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, Run, RunList, ServerEvent, Status } from "../types"
 import { signal } from "../ui/signal"
@@ -67,10 +68,9 @@ class Bridge {
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
     for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["runs"] })) {
       if (!list) continue
-      const held = new Set(list.runs.map((run) => run.number))
-      const changed = new Map(batch.map((run) => [run.number, run]))
-      this.queries.setQueryData<RunList>(key, { ...list, runs: list.runs.map((run) => changed.get(run.number) ?? run) })
-      if (batch.some((run) => !held.has(run.number))) void this.queries.invalidateQueries({ queryKey: key, exact: true })
+      const after = runsAfter(list, key[1] as RunFilter, batch)
+      this.queries.setQueryData<RunList>(key, after.list)
+      if (after.again) void this.queries.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
     }
   }
 
@@ -117,6 +117,10 @@ export interface Connection {
   /** Which Calcifer: names the stream's lock and what's kept in the browser. */
   scope: string
   client: Client
+  /** This computer's Calcifer, whichever one this tab looks at: a pod's End and its list stay here. */
+  here: Client
+  /** The machine whose Calcifer this tab looks at through this one; null for this computer's. */
+  remote: string | null
   queries: QueryClient
   stream: EventStream
   bridge: Bridge
@@ -183,7 +187,7 @@ export async function connect(): Promise<Boot> {
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
   stream.start()
-  return { connection: { scope, client, queries, stream, bridge, attempt, signedOut, status } }
+  return { connection: { scope, client, here, remote, queries, stream, bridge, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

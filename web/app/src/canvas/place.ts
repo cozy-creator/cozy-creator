@@ -1,49 +1,10 @@
-import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
 import { ApiError, type Client } from "../api/client"
+import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
 import { stemName } from "./names"
 
-// Small enough that hashing a chunk fits between frames, on a page that may be panning.
-const READ_BYTES = 512 * 1024
-const PART_BYTES = 8 * 1024 * 1024
 const GAP = 32
-
-/** Lets the page paint and take input. A message, not a timer: a hidden tab throttles timers to a crawl. */
-function yieldToPage(): Promise<void> {
-  return new Promise((done) => {
-    const { port1, port2 } = new MessageChannel()
-    port1.onmessage = () => {
-      port1.close()
-      done()
-    }
-    port2.postMessage(0)
-  })
-}
-
-async function hash(file: File, signal: AbortSignal, onDone: (done: number) => void): Promise<string> {
-  const digest = sha256.create()
-  for (let at = 0; at < file.size; at += READ_BYTES) {
-    signal.throwIfAborted()
-    digest.update(new Uint8Array(await file.slice(at, at + READ_BYTES).arrayBuffer()))
-    onDone(Math.min(1, (at + READ_BYTES) / file.size))
-    await yieldToPage()
-  }
-  return `sha256:${bytesToHex(digest.digest())}`
-}
-
-/** What `held` lacks of `size` bytes, as half-open ranges. */
-function gaps(held: [number, number][], size: number): [number, number][] {
-  const missing: [number, number][] = []
-  let at = 0
-  for (const [first, last] of [...held].sort((a, b) => a[0] - b[0])) {
-    if (first > at) missing.push([at, first])
-    at = Math.max(at, last + 1)
-  }
-  if (at < size) missing.push([at, size])
-  return missing
-}
 
 function mediaOf(file: File): MediaKind {
   const [type] = file.type.split("/")
@@ -64,7 +25,6 @@ export class Placer {
   private store: CanvasStore
   private client: Client
   private hooks: Hooks
-  private line: Promise<unknown> = Promise.resolve()
   private made?: Promise<string>
   private nextKey = 0
 
@@ -99,14 +59,14 @@ export class Placer {
 
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }) {
     try {
-      const digest = await this.inLine(() => this.hashAndSend(key, file, signal))
+      const digest = await inLine(() => this.hashAndSend(key, file, signal))
       await this.store.whenNamed(key, signal)
       try {
         await this.ask(key, digest, dropped)
       } catch (error) {
         // What it held went since it looked: moved by another import, or dropped after a day. Send it again.
         if (!(error instanceof ApiError && error.body.code === "file_not_held")) throw error
-        await this.inLine(() => this.send(key, file, digest, signal))
+        await inLine(() => this.send(key, file, digest, signal))
         await this.ask(key, digest, dropped)
       }
     } catch (error) {
@@ -133,13 +93,6 @@ export class Placer {
     }
   }
 
-  /** Bytes move one file at a time, on one connection: the page has few to spare. */
-  private inLine<T>(work: () => Promise<T>): Promise<T> {
-    const turn = this.line.then(work, work)
-    this.line = turn.catch(() => {})
-    return turn
-  }
-
   private stage(key: string, stage: Stage, done: number) {
     this.store.patchPlacing(key, { stage, done, attempt: undefined })
   }
@@ -148,7 +101,7 @@ export class Placer {
     signal.throwIfAborted()
     this.stage(key, "reading", 0)
     let shown = 0
-    const digest = await hash(file, signal, (done) => {
+    const digest = await hashFile(file, signal, (done) => {
       if (done - shown < 0.01 && done < 1) return
       shown = done
       this.stage(key, "reading", done)
@@ -158,32 +111,16 @@ export class Placer {
     return digest
   }
 
-  private async send(key: string, file: File, digest: string, signal: AbortSignal) {
-    signal.throwIfAborted()
+  private send(key: string, file: File, digest: string, signal: AbortSignal) {
     this.stage(key, "sending", 0)
-    const tried = (attempt: number) => this.store.patchPlacing(key, { attempt: attempt || undefined })
-    if (file.size === 0) {
-      await this.client.put(digest, file, 0, 0, signal, tried)
-      return
-    }
-    // Sent whole and still not whole means what it held expired under it, so ask again; a third time isn't chance.
-    for (let pass = 0; pass < 3; pass++) {
-      const held = await this.client.held(digest, signal, tried)
-      if (held === true) return
-      const missing = gaps(held, file.size)
-      let sent = file.size - missing.reduce((sum, [from, to]) => sum + to - from, 0)
-      this.stage(key, "sending", sent / file.size)
-      for (const [from, to] of missing) {
-        for (let at = from; at < to; at += PART_BYTES) {
-          const end = Math.min(to, at + PART_BYTES)
-          const whole = await this.client.put(digest, file.slice(at, end), at, file.size, signal, tried)
-          sent += end - at
-          this.stage(key, "sending", sent / file.size)
-          if (whole) return
-        }
-      }
-    }
-    throw new Error("Calcifer took every part and doesn't hold the file")
+    return sendFile(
+      this.client,
+      file,
+      digest,
+      signal,
+      (done) => this.stage(key, "sending", done),
+      (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
+    )
   }
 
   private project(): Promise<string> {

@@ -1,17 +1,39 @@
 import type {
+  Agreed,
+  Approved,
   Canvas,
+  Ended,
   ErrorBody,
   Held,
   Import,
   Imported,
+  Keepalive,
+  Machine,
   MachineList,
+  MachineLogName,
+  MachineModels,
+  MachinePackages,
+  MachineUpdate,
   Opened,
+  PackageSearch,
   ProjectList,
   ProjectState,
   Renamed,
   Row,
+  Play,
+  Quote,
+  Rent,
+  Rented,
+  RentalSku,
+  Run,
+  RunList,
+  RunQuote,
+  RunRequest,
   Session,
   Status,
+  Submitted,
+  Target,
+  Updating,
 } from "../types"
 import type { Transport } from "./transport"
 
@@ -40,7 +62,7 @@ async function refusal(response: Response): Promise<ApiError> {
 
 const aborted = (error: unknown) => error instanceof DOMException && error.name === "AbortError"
 
-function pause(ms: number, signal?: AbortSignal | null): Promise<void> {
+export function pause(ms: number, signal?: AbortSignal | null): Promise<void> {
   return new Promise((done, fail) => {
     signal?.throwIfAborted()
     const timer = setTimeout(done, ms)
@@ -64,6 +86,14 @@ export interface Hooks {
 }
 
 const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
+const run = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
+const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
+
+export interface RunFilter {
+  project?: string
+  status?: string
+  machine?: string
+}
 
 export class Client {
   readonly transport: Transport
@@ -118,6 +148,14 @@ export class Client {
 
   private async json<T>(path: string, init?: RequestInit, options?: Options): Promise<T> {
     return (await this.send(path, init, options)).json()
+  }
+
+  /** A stream, opened once: its reader does its own reconnecting. */
+  private async opened(path: string, signal: AbortSignal): Promise<Response> {
+    const response = await this.transport.fetch(path, { signal, headers: { Accept: "text/event-stream" } })
+    if (response.ok) return response
+    if (response.status === 401) this.unauthorized()
+    throw await refusal(response)
   }
 
   private write<T>(method: string, path: string, body: unknown, key?: string, options?: Options): Promise<T> {
@@ -197,6 +235,11 @@ export class Client {
     return this.write("POST", `${project(id)}/imports`, body, key, { onAttempt })
   }
 
+  /** Pins `name` to `version`: a short run of digits is its version, anything else a hash prefix of a file of the project. */
+  approve(id: string, name: string, version: string): Promise<Approved> {
+    return this.write("POST", `${project(id)}/approve`, { name, version })
+  }
+
   rename(id: string, from: string, to: string): Promise<Renamed> {
     return this.write("POST", `${project(id)}/rename`, { from, to })
   }
@@ -218,9 +261,113 @@ export class Client {
     return `${project(id)}/${file.split("/").map(encodeURIComponent).join("/")}`
   }
 
+  // Runs
+
+  runs(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
+    const query = new URLSearchParams({ limit: String(limit) })
+    for (const [name, value] of Object.entries(filter)) if (value) query.set(name, value)
+    return this.json(`/v1/runs?${query}`, { signal })
+  }
+
+  run(id: string | number, signal?: AbortSignal): Promise<Run> {
+    return this.json(run(id), { signal })
+  }
+
+  /** With its measurements, calls, report and what it was asked. */
+  runFull(id: string | number, signal?: AbortSignal): Promise<Run> {
+    return this.json(`${run(id)}?detail=full`, { signal })
+  }
+
+  cancelRun(id: string): Promise<Run> {
+    return this.write("POST", `${run(id)}/cancel`, {})
+  }
+
+  /** A run's log and events after a place in them, opened once: its reader resumes it. */
+  runEvents(id: string, after: number, signal: AbortSignal): Promise<Response> {
+    return this.opened(`${run(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
+  }
+
+  /** Where an output's bytes are served, once they landed here. */
+  output(id: string, name: string, index: number): string {
+    return `${run(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
+  }
+
+  /** How to play an output straight from its machine. */
+  play(id: string, name: string, index: number): Promise<Play> {
+    const output = encodeURIComponent(index ? `${name}/${index}` : name)
+    return this.json(`${run(id)}/play?output=${output}`)
+  }
+
+  /** What a run of `target` would call: a package's functions, and a named function's request. Runs nothing. */
+  target(target: string, signal?: AbortSignal): Promise<Target> {
+    return this.json(`/v1/targets?target=${encodeURIComponent(target)}`, { signal })
+  }
+
+  runQuote(request: RunRequest): Promise<RunQuote> {
+    return this.write("POST", "/v1/run-quotes", request)
+  }
+
+  submit(request: RunRequest, key: string): Promise<Submitted> {
+    return this.write("POST", "/v1/runs", request, key)
+  }
+
   // Machines
 
-  machines(): Promise<MachineList> {
-    return this.json("/v1/machines")
+  /** `refresh` lists every Hub again first, which takes as long as they do. */
+  machines(refresh = false): Promise<MachineList> {
+    return this.json(`/v1/machines${refresh ? "?refresh=true" : ""}`)
+  }
+
+  machine(name: string, signal?: AbortSignal): Promise<Machine> {
+    return this.json(machine(name), { signal })
+  }
+
+  addMachine(name: string, address: string, fingerprint: string): Promise<Machine> {
+    return this.write("POST", "/v1/machines", { kind: "add", name, address, fingerprint })
+  }
+
+  endMachine(name: string, force: boolean): Promise<Ended> {
+    return this.json(`${machine(name)}${force ? "?force=true" : ""}`, { method: "DELETE" })
+  }
+
+  keepAlive(name: string): Promise<Keepalive> {
+    return this.write("POST", `${machine(name)}/keepalive`, {})
+  }
+
+  updateMachine(name: string, update: MachineUpdate, key: string): Promise<Updating> {
+    return this.write("POST", `${machine(name)}/update`, update, key)
+  }
+
+  machineLogEvents(name: string, log: MachineLogName, lines: number, after: string | null, signal: AbortSignal): Promise<Response> {
+    const place = after ? `&after=${encodeURIComponent(after)}` : ""
+    return this.opened(`${machine(name)}/logs/${log}?lines=${lines}${place}`, signal)
+  }
+
+  machinePackages(name: string, signal?: AbortSignal): Promise<MachinePackages> {
+    return this.json(`${machine(name)}/packages`, { signal })
+  }
+
+  machineModels(name: string, signal?: AbortSignal): Promise<MachineModels> {
+    return this.json(`${machine(name)}/models`, { signal })
+  }
+
+  // Packages
+
+  packages(q: string, limit: number, signal?: AbortSignal): Promise<PackageSearch> {
+    return this.json(`/v1/packages?limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`, { signal })
+  }
+
+  // Rentals: nothing here rents but `rent`, under a key that names one order forever.
+
+  async rentalSkus(signal?: AbortSignal): Promise<RentalSku[]> {
+    return (await this.json<{ rental_skus: RentalSku[] }>("/v1/rental-skus", { signal })).rental_skus
+  }
+
+  rentalQuote(order: Rent): Promise<Quote> {
+    return this.write("POST", "/v1/rental-quotes", { kind: "rent", ...order })
+  }
+
+  rent(order: Rent, agreed: Agreed, key: string): Promise<Rented> {
+    return this.write("POST", "/v1/machines", { kind: "rent", ...order, agreed }, key)
   }
 }

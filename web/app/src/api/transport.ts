@@ -6,6 +6,8 @@ export interface Playback {
 
 /** How the page reaches a Calcifer. `sameOrigin` now; `channel` when a page runs with none here. */
 export interface Transport {
+  /** Reached over a link that names any address, so it may be a fake pod: no secret is entered here (web-ui.md §6). */
+  readonly channel: boolean
   fetch(path: string, init?: RequestInit): Promise<Response>
   /** For `<img>`: a URL, or a blob URL. */
   src(path: string): Promise<string>
@@ -30,6 +32,7 @@ export function sameOrigin(session: () => Session | null, base = ""): Transport 
     return url.pathname + url.search
   }
   return {
+    channel: false,
     fetch(path, init = {}) {
       const headers = new Headers(init.headers)
       const token = session()?.token

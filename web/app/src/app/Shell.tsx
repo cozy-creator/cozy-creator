@@ -4,6 +4,7 @@ import { Link, Outlet, useLocation, useMatch, useMatches, useNavigate } from "re
 import { TRIES } from "../api/client"
 import { projectQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
+import { RunsLink } from "../panels/runs/RunsLink"
 import { Notes } from "../ui/Notes"
 import { useSignal } from "../ui/signal"
 import { useConnection } from "./Connection"
@@ -57,6 +58,7 @@ function ProjectName({ id }: { id: string | null }) {
 }
 
 export function Shell() {
+  const { client, remote } = useConnection()
   const id = useProjectId()
   const to = useTo()
   const navigate = useNavigate()
@@ -95,6 +97,11 @@ export function Shell() {
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
         <ProjectName id={id} />
+        {remote && (
+          <Link className="pill warn" to={to("machines")}>
+            On {remote}
+          </Link>
+        )}
         <Connectivity />
         <span className="gap" />
         <span className="canvas-controls" ref={setSlot} />
@@ -103,18 +110,18 @@ export function Shell() {
             project.yaml
           </Link>
         )}
-        <Link className="tb" to={to("runs")}>
-          Runs
-        </Link>
+        <RunsLink to={to("runs")} />
         <Link className="tb" to={to("machines")}>
           Machines
         </Link>
         <Link className="tb" to={to("packages")}>
           Library
         </Link>
-        <Link className="tb" to={to("account")}>
-          Account
-        </Link>
+        {!client.transport.channel && (
+          <Link className="tb" to={to("account")}>
+            Account
+          </Link>
+        )}
       </header>
       <CanvasHost key={hostKey} projectId={id} slot={slot} onAdopt={adopt} />
       {handle?.drawer && (

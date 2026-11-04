@@ -566,3 +566,517 @@ code {
 .note .copyable {
   order: 3;
 }
+
+/* Panels */
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.tb.danger {
+  border-color: #f0625d66;
+  color: var(--bad);
+}
+.tb.danger:hover:not(:disabled) {
+  border-color: var(--bad);
+}
+.more {
+  color: var(--ember2);
+}
+.more:hover {
+  text-decoration: underline;
+}
+.warn {
+  color: var(--ood);
+}
+.row.end {
+  justify-content: flex-end;
+}
+.row.filters {
+  align-items: center;
+  margin-bottom: 8px;
+}
+.row.filters .field {
+  flex: none;
+  max-width: 150px;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mute);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 8px 0;
+  padding: 7px 9px;
+  border: 1px solid #f0625d55;
+  border-radius: 6px;
+  background: #f0625d10;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.failure .remedy {
+  color: var(--mute);
+}
+.failure details {
+  width: 100%;
+}
+.dot.s-bad {
+  background: var(--bad);
+}
+.dot.s-queued {
+  background: var(--faint);
+}
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.runrow a {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 5px;
+}
+.runrow a:hover {
+  background: #ffffff0a;
+}
+.runrow .line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.runrow b {
+  font: 500 12px var(--mono);
+}
+.runrow small,
+.outputs small {
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.runrow .under {
+  display: block;
+  margin: 2px 0 0 16px;
+  color: var(--mute);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.runrow .under.warn {
+  color: var(--ood);
+}
+.runrow .bar {
+  margin: 4px 0 0 16px;
+}
+.bar {
+  height: 3px;
+  background: #ffffff12;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--mak);
+}
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.run-head b {
+  font-weight: 500;
+}
+.run-head small {
+  color: var(--mute);
+}
+.kv {
+  margin: 8px 0;
+  display: grid;
+  gap: 3px;
+}
+.kv div {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+}
+.kv dt {
+  color: var(--faint);
+  font-size: 12px;
+}
+.kv dd {
+  margin: 0;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sect {
+  margin: 14px 0;
+}
+.sect h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--mute);
+}
+.sect summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--mute);
+}
+.sect[open] summary {
+  margin-bottom: 6px;
+}
+.log {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #0d0e10;
+  font: 11px/1.45 var(--mono);
+  color: #b6b8bf;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.outputs {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+.output {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--card);
+  overflow: hidden;
+}
+.output img,
+.output video {
+  display: block;
+  width: 100%;
+  max-height: 340px;
+  object-fit: contain;
+  background: #0a0a0b;
+}
+.output audio {
+  display: block;
+  width: 100%;
+}
+.output .unseen {
+  display: none;
+}
+.output > p,
+.output > .tb {
+  margin: 8px;
+}
+.output figcaption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.stillframe {
+  position: relative;
+  min-height: 42px;
+  background: #0a0a0b;
+}
+.confirm {
+  width: min(420px, calc(100vw - 32px));
+  padding: 14px;
+  border: 1px solid var(--line2);
+  border-radius: 9px;
+  background: var(--card2);
+  color: var(--ink);
+}
+.confirm::backdrop {
+  background: #0008;
+}
+.confirm .says {
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+.scrollx {
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.grid th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--faint);
+  padding: 2px 8px 2px 0;
+}
+.grid td {
+  padding: 2px 8px 2px 0;
+  color: #c4c6cc;
+  vertical-align: top;
+}
+.measured h4 {
+  margin: 8px 0 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--mute);
+}
+.row.center {
+  align-items: center;
+}
+.field.small {
+  flex: none;
+  height: 22px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+.field.wide {
+  width: 100%;
+}
+.sect h3 span {
+  flex: 1;
+}
+.sku {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+.sku:hover {
+  background: #ffffff06;
+}
+.sku b {
+  font: 500 12px var(--mono);
+  white-space: nowrap;
+}
+.sku small {
+  color: var(--faint);
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sku .field {
+  flex: none;
+  width: 54px;
+  height: 24px;
+}
+.price {
+  font: 12px var(--mono);
+  white-space: nowrap;
+}
+.order {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line2);
+  border-radius: 7px;
+  background: var(--card);
+}
+.order p {
+  margin: 0 0 8px;
+}
+.ending {
+  margin: 8px 0;
+}
+.ending p {
+  margin: 0 0 6px;
+}
+.stack {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.stack label {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.heldrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+}
+.heldrow small {
+  color: var(--faint);
+  font-size: 11px;
+}
+.heldrow small.warn {
+  flex-basis: 100%;
+  color: var(--ood);
+}
+.runrow.trying {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.runrow.trying a {
+  flex: 1;
+  min-width: 0;
+}
+.rowend {
+  flex: none;
+  padding-top: 5px;
+}
+.field.logs {
+  margin-bottom: 6px;
+}
+.onmachine {
+  margin: 12px 0;
+}
+.onmachine .check .field {
+  max-width: 230px;
+}
+.onmachine p {
+  margin: 6px 0 0;
+}
+.quoted {
+  margin-top: 6px;
+}
+.alt {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  text-align: left;
+}
+.dropzone {
+  padding: 10px;
+  border: 1px dashed var(--line2);
+  border-radius: 6px;
+  text-align: center;
+  font-size: 12px;
+}
+.dropzone.over {
+  border-color: var(--ember);
+  background: #ff8a3d0d;
+}
+.filefield {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.filerow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 12px;
+}
+.filerow small {
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.filerow.bad small {
+  color: var(--bad);
+  white-space: normal;
+}
+.runform {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+.runform label {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.fname {
+  padding-top: 5px;
+  font: 12px var(--mono);
+  color: var(--mute);
+  overflow-wrap: anywhere;
+}
+.fname i {
+  color: var(--ember);
+  font-style: normal;
+}
+.field.area {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 5px 8px;
+  resize: vertical;
+}
+.field.area.code {
+  font: 12px/1.45 var(--mono);
+  margin: 8px 0;
+}
+.tabs {
+  gap: 4px;
+  margin: 10px 0 6px;
+}
+.tab {
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--mute);
+  font: 12px var(--mono);
+}
+.tab.on {
+  background: #ffffff10;
+  color: var(--ink);
+}
+.choose {
+  margin-top: 8px;
+}
+.choose button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 5px;
+  text-align: left;
+}
+.choose button:hover {
+  background: #ffffff0a;
+}
+.choose small {
+  color: var(--faint);
+  font-size: 11px;
+  min-width: 0;
+}
+.topback {
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.switcher {
+  margin-bottom: 8px;
+}
+.switcher .field {
+  max-width: 200px;
+}
+.switcher p {
+  margin: 6px 0 0;
+}
+.tb .count {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--mak);
+  color: #071320;
+  font-size: 11px;
+  font-weight: 600;
+}

@@ -89,6 +89,8 @@ function calcifer(): Plugin {
 export default defineConfig({
   base: "./",
   plugins: [react(), calcifer()],
+  // The app imports `web/player`, which stays public beside it.
+  server: { fs: { allow: [".", "../player"] } },
   build: {
     outDir: "dist",
     emptyOutDir: true,

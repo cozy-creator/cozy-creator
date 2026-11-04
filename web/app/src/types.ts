@@ -143,6 +143,17 @@ export interface Opened {
   name?: string
 }
 
+export interface Approved {
+  name: string
+  noun: string
+  /** The version it is; 0 for a file that is none of its versions. */
+  number: number
+  files: Record<string, ProjectFile>
+  path: string
+  stale: string[]
+  warnings?: string[]
+}
+
 export interface Renamed {
   from: string
   to: string
@@ -234,8 +245,109 @@ export interface OutputItem {
   status: ItemStatus
   sha256?: string
   path?: string
+  url?: string
+  width?: number
+  height?: number
+  duration_ms?: number
   export_error?: string
+  checkpoint?: unknown
   stays?: boolean
+}
+
+export interface Adjustment {
+  field: string
+  kind: string
+  requested: string
+  applied: string
+  reason: string
+  source: string
+}
+
+export interface Call {
+  run: string
+  index: number
+  function: string
+  label?: string
+  status: string
+  called_at_ms: number
+  finished_at_ms: number
+  reason?: Reason
+  memoized?: boolean
+}
+
+/** What a run was asked, as it was bound: `target` and `input`, under a new key, ask it again. */
+export interface RunAsked {
+  target: string
+  input: Record<string, unknown>
+  seed?: number
+}
+
+export interface ReportStage {
+  name: string
+  ms: number
+  legs?: { name: string; ms: number }[]
+  steps?: { count: number; each_ms: number }
+  unaccounted?: boolean
+}
+
+export interface ReportModel {
+  slot: string
+  repository: string
+  release: string
+  lane: string
+  precision: string
+  adapters: { model: string; strength: number }[]
+}
+
+export interface ReportComponent {
+  component: string
+  attention: string[]
+  gemm: { kernel: string; format: string; fallback?: { served: string; wanted: string; reason: string } }[]
+}
+
+export interface ReportKernel {
+  gpu?: number
+  arch: string
+  kernel: string
+  state: string
+  served: boolean
+  progress?: number
+  compile_ms: number
+  detail: string
+}
+
+export interface Moved {
+  bytes: number
+  gbps?: number
+  ceiling_share?: number
+}
+
+export interface ReportMemory {
+  gpu: number
+  scope: string
+  kept: Moved
+  leased: Moved
+  store: Moved
+  derived: Moved
+  stall_ms: number
+  peak?: number
+  torch_peak?: number
+  compute?: number
+  leftover?: number
+}
+
+export interface Measured {
+  by: string
+  stages: ReportStage[]
+  models: ReportModel[]
+  components: ReportComponent[]
+  kernels: ReportKernel[]
+  memory: ReportMemory[]
+}
+
+export interface Report {
+  attention_pins?: string[]
+  measured?: Measured[]
 }
 
 export interface Run {
@@ -246,6 +358,7 @@ export interface Run {
   hub: string
   machine: string | null
   project?: string
+  project_id?: string
   status: RunStatus
   cancel_requested?: boolean
   machine_state?: string
@@ -259,8 +372,38 @@ export interface Run {
   progress?: Progress
   queue_position?: number
   warnings?: Warning[]
+  adjustments?: Adjustment[]
+  result?: unknown
   execution_ms?: number
   stalled?: Stalled
+  calls?: Call[]
+  report?: Report
+  adapter?: boolean
+  request?: RunAsked
+}
+
+export interface RunList {
+  runs: Run[]
+  older?: number
+  machine?: string
+  unreadable?: string[]
+}
+
+/** One event of `GET /v1/runs/{id}/events`, as far as the page reads them; it skips the rest. */
+export type RunEvent =
+  | { type: "run.log"; sequence_number: number; at_ms: number; level: string; text: string }
+  | { type: "run.call"; sequence_number: number; call: Call }
+  | { type: "output_item.done" | "output_item.landed"; sequence_number: number; item: OutputItem }
+  | { type: "run.created" | "run.queued" | "run.in_progress" | "run.completed" | "run.failed" | "run.canceled"; sequence_number: number; run: Run }
+  | { type: "output_item.added" | "output_item.delta"; sequence_number: number }
+  | { type: "run.progress" | "run.waiting" }
+
+export interface Play {
+  address: string
+  fingerprint: string
+  token: string
+  url: string
+  expires_s: number
 }
 
 export interface RunList {
@@ -268,10 +411,142 @@ export interface RunList {
   older?: number
 }
 
+// Packages
+
+export interface FoundPackage {
+  package: string
+  latest_release?: string
+  created_at?: string
+}
+
+export interface PackageSearch {
+  packages: FoundPackage[]
+  total?: number
+  older?: number
+}
+
+export interface RunRequest {
+  target: string
+  project?: string
+  on?: string
+  input?: Record<string, unknown>
+  input_text?: string
+  terms?: string[]
+  files?: { name?: string; file: string }[]
+  loras?: string[]
+  gpus?: number
+  lane?: string
+  agreed?: Agreed
+}
+
+export interface Submitted {
+  run: Run
+  replay: boolean
+  notes?: { level: string; message: string }[]
+  preparing?: boolean
+}
+
+/** A field of a function's request, as its interface renders it. */
+export type FieldType =
+  | string
+  | { literal: unknown[] }
+  | { union: FieldType[]; tag_field?: string }
+  | { list: FieldType }
+  | { map: { key?: FieldType; value: FieldType } }
+  | { fields: RequestField[] }
+  | { asset: string }
+  | { input: string }
+
+export interface RequestField {
+  name: string
+  type: FieldType
+  wire?: string
+  default?: unknown
+  constraints?: { min_length?: number; max_length?: number; gt?: number; ge?: number; lt?: number; le?: number; multiple_of?: number }
+  asset_bound?: { max_bytes?: number; media_types?: string[] }
+}
+
+export interface Target {
+  package: string
+  function?: string
+  release: string
+  release_from: string
+  summary?: string
+  interface: {
+    entrypoints?: {
+      name: string
+      description?: string
+      models?: { path: string; default?: string }[]
+      assets?: { parameter: string; kinds?: { kind: string; media_types?: string[]; max_count?: number }[] }
+    }[]
+  }
+  functions?: { function: string; description?: string }[]
+  contract?: string
+  request?: { fields?: RequestField[] }
+  next?: string[]
+}
+
 // Machines
 
 export type MachineKind = "local" | "rental" | "added"
 export type MachineState = "booting" | "ready" | "ending" | "ended" | "stopped" | "unknown"
+
+export interface Rental {
+  sku: string
+  accelerator: string
+  gpus: number
+  usd_micros_per_hour: number
+  spend_usd_micros?: number
+  spend_basis?: string
+  rented_at_ms: number
+  ended_at_ms?: number
+  disk_gb: number
+  failure?: string
+  placement_note?: string
+  unreachable_since_ms?: number
+  ssh?: string
+}
+
+export interface Gpu {
+  index: number
+  name: string
+  memory_bytes: number
+  driver?: string
+  family?: string
+  memory_class?: string
+}
+
+export interface LiveRun {
+  id: string
+  state: string
+  waiting?: string
+  run?: Run
+}
+
+export interface MachineStatus {
+  worker_id: string
+  version: string
+  dev?: boolean
+  platform: string
+  phase: string
+  update?: string
+  runtime?: string
+  tensorfs?: string
+  torch?: string
+  started_at_ms: number
+  idle_deadline_ms?: number
+  gpus?: Gpu[]
+  disk_total_bytes?: number
+  disk_free_bytes?: number
+  runs?: LiveRun[]
+  gpu_problems?: string[]
+}
+
+export interface Attempt {
+  number: number
+  state: string
+  replaced?: { number: number; failure: string; ended_at_ms: number }
+}
 
 export interface Machine {
   name: string
@@ -281,16 +556,144 @@ export interface Machine {
   rental_id?: string
   alias?: string
   address?: string
+  fingerprint?: string
   reason?: string
   offline?: string
+  rental?: Rental
+  ssh?: { args: string[]; line: string }
+  status?: MachineStatus
   unreachable?: string
+  unreachable_since_ms?: number
+  boot?: string
+  attempt?: Attempt
   running?: number
   queued?: number
   recorded?: boolean
+  unverified?: boolean
+  reach?: string
+  ending?: string
 }
 
 export interface MachineList {
   machines: Machine[]
+  hubs?: { hub: string; listed_at_ms: number }[]
+  unanswered?: { hub: string; code: string; message: string }[]
+  signed_out?: string[]
+}
+
+export interface RentalSkuWidth {
+  accelerator_count: number
+  price_usd_micros_per_hour: number
+  vcpu_count?: number
+  memory_gb?: number
+}
+
+export interface RentalSku {
+  name: string
+  accelerator_model: string
+  vram_gb: number
+  widths: RentalSkuWidth[]
+}
+
+/** The Hub's price for one exact order. A person is shown `gpu_usd_micros_per_hour`, what we charge; `agreed` goes back with the order as it came. */
+export interface Quote {
+  gpu_usd_micros_per_hour: number
+  agreed?: Agreed
+  warnings?: string[]
+}
+
+export interface Agreed {
+  usd_micros_per_hour: number
+  usd_micros_per_gb: number
+}
+
+export interface Alternative {
+  sku: string
+  gpus: number
+  label?: string
+  time: number
+  usd_micros_per_hour: number
+}
+
+/** What a `new` run would rent, its price, and why. */
+export interface RunQuote {
+  sku: string
+  gpus?: number
+  quote: Quote
+  why?: string
+  alternatives?: Alternative[]
+  warnings?: string[]
+}
+
+export interface Rent {
+  sku: string
+  gpus?: number
+  ssh_key?: string
+}
+
+export interface Rented {
+  machine: Machine
+  quote: Quote
+  replay: boolean
+}
+
+export interface Ended {
+  machine: Machine
+  changed: boolean
+  abandoned?: string[]
+}
+
+export interface Keepalive {
+  acknowledged_at_ms: number
+  idle_deadline_ms?: number
+}
+
+export type Component = { version: string }
+
+export interface MachineUpdate {
+  runtime?: Component
+  tensorfs?: Component
+  tensord?: Component
+}
+
+export interface Updating {
+  machine: Machine
+  run?: Run
+  target: string
+  warnings?: string[]
+}
+
+export type MachineLogName = "tensord" | "tensorfs" | "memory" | "calcifer"
+
+export interface HeldPackage {
+  package: string
+  release: string
+  runtime: string
+  level: string
+  source: string
+  warning?: string
+}
+
+export interface MachinePackages {
+  machine: string
+  packages: HeldPackage[]
+}
+
+export interface HeldModel {
+  model: string
+  release: string
+  lane: string
+  precision: string
+  bytes: number
+  shared_bytes: number
+}
+
+export interface MachineModels {
+  machine: string
+  models: HeldModel[]
+  silent?: boolean
+  repositories?: number
+  bytes?: number
 }
 
 // The one stream

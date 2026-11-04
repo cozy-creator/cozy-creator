@@ -178,6 +178,9 @@ async function ration(names: string[], signal: AbortSignal): Promise<() => void>
   return first
 }
 
+/** What's playing in this tab, oldest first: a third stops the first. */
+export const playingHere: (() => void)[] = []
+
 /** One of the two live `<video>`s or `<audio>`s, across tabs. Resolves when it is ours; abort to stop waiting. */
 export const holdMedia = (signal: AbortSignal) => ration(["cozy-media-0", "cozy-media-1"], signal)
 

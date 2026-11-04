@@ -2,14 +2,20 @@ import type { ReactNode } from "react"
 import { Link } from "react-router-dom"
 import { useTo } from "../app/Shell"
 
-/** A drawer's frame: a title, and closing it, which leaves the canvas as it was. */
-export function DrawerFrame({ title, children }: { title: string; children: ReactNode }) {
+/** A drawer's frame: a title, and closing it, which leaves the canvas as it was. `back` is the list a detail came from. */
+export function DrawerFrame({ title, children, back, actions }: { title: string; children: ReactNode; back?: string; actions?: ReactNode }) {
   const to = useTo()
   return (
     <>
       <div className="drawer-head">
+        {back && (
+          <Link className="iconb" to={back} aria-label="Back">
+            ←
+          </Link>
+        )}
         <b>{title}</b>
         <span className="sp" />
+        {actions}
         <Link className="iconb" to={to()} aria-label="Close">
           ×
         </Link>
