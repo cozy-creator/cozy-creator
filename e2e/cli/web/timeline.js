@@ -171,7 +171,7 @@ function plate(path, color, seconds, hz) {
   await pull('blue', 'in', 40);
   // A press holds it open wherever the pointer goes: this one lets go well off the box.
   check('a_press_holds_it_open', /^\d\d:\d\d:\d\d:\d\d, \d+ f$/.test(await pull('title', 'out', -60, 300)));
-  await until('three trims saved', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => (text.match(/frames:|start:|end:/g) ?? []).length >= 3);
+  await until('three trims saved', () => readFileSync(join(folder, 'project.yaml'), 'utf8'), (text) => (text.match(/\b(frames|in|out):/g) ?? []).length >= 3);
   // Reorder: blue goes first.
   const first = await strip();
   const body = await page.locator('.tl-clip[data-name="blue"]').boundingBox();

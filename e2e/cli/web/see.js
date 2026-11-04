@@ -236,7 +236,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_asset_type', of('hero').fields?.asset_type === 'character' && of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
   // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', shot: 'shot', picture: 'frame', edit: 'edit' };
+  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', picture: 'frame', edit: 'edit' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   await away(page);
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));

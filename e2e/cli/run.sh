@@ -25,6 +25,8 @@ step status; cozy --json status | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
 [ "$SHARD" != commands ] || version_skew
 step candidates; candidates
+# What `install`'s release made, for what reads it from here on.
+! grep -q '^version: 2' "$OUT/project/project.yaml" || cozy project -p "$OUT/project" upgrade > "$OUT/upgrade.txt" 2>&1 || check "a release's project didn't upgrade: $(tail -c 300 "$OUT/upgrade.txt")"
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
 

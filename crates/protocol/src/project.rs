@@ -327,8 +327,6 @@ pub struct ClipNow {
     pub field: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
     /// How many frames a video holds at the Edit's rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holds: Option<u64>,

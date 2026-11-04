@@ -238,7 +238,7 @@ function linesOf(text, name) {
   await shot('dragging');
   await page.mouse.up();
   const said = await until('its name in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('<source-b>'));
-  check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && /prompt: \|/.test(said), said);
+  check('file_holds_plain_text', said.includes('A sheet of <source-a> and <source-b>') && /instructions: \|/.test(said), said);
   check('drop_is_no_move', (await rows())['source-b'].x === rowsBefore['source-b'].x && (await rows())['source-b'].y === rowsBefore['source-b'].y, await rows());
   await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
@@ -470,7 +470,7 @@ function linesOf(text, name) {
 
     // Approve: it becomes that file, and flips back.
     await box('Sheet').locator('button:has-text("Approve")').click();
-    await until('approved in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => /image: "?[0-9a-f]{6,}/.test(lines));
+    await until('approved in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => /approved: "?[0-9a-f]{6,}/.test(lines));
     const approved = await of('Sheet');
     check('approved_is_that_version', approved.approved === 1 && approved.pinned, approved.approved);
     await open('Sheet');

@@ -370,7 +370,7 @@ pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<f
     let now = |clip: Clip| {
         let name = mentions_in(&json!(clip.clip)).into_iter().next().unwrap_or_else(|| clip.clip.clone());
         let file = files(&name).and_then(|files| folder::main_of(&files).and_then(|sha256| lock.files.get(sha256)).cloned().ok_or_else(|| "no version yet".to_owned()));
-        let mut row = ClipNow { clip, name, field: None, path: None, sha256: None, holds: None, width: None, height: None, missing: None };
+        let mut row = ClipNow { clip, name, field: None, path: None, holds: None, width: None, height: None, missing: None };
         match file {
             Err(why) => row.missing = Some(why),
             Ok(file) => {
@@ -381,7 +381,7 @@ pub fn timeline_now(clips: Vec<Clip>, fps: f64, files: impl Fn(&str) -> Result<f
                 row.field = Some(file.field().to_owned());
                 row.missing = (!folder.path(&file.path).is_file()).then(|| "not on this computer".to_owned());
                 row.path = Some(file.path);
-                row.sha256 = Some(file.sha256);
+                row.clip.sha256 = Some(file.sha256);
             }
         }
         row
