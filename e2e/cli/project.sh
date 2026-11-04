@@ -1293,7 +1293,8 @@ cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-1.txt" 2>&
 sed -i 's/Text one/Text two/' "$Q/project.yaml"
 cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-2.txt" 2>&1 || check "two: second: $(tail -c 300 "$OUT/queue-two-2.txt")"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$Q")" && break; sleep 0.5; done
-{ grep -q '^Text one' <<< "$(asked "$Q" note 0 | jq -r .input.prompt)" && grep -q '^Text two' <<< "$(asked "$Q" note 1 | jq -r .input.prompt)"; } || check "two: note was made from $(jq -c '[.assets.note.versions[].invocations[0].input.prompt]' "$Q/project.lock")"
+# They go side by side, so either may be the lower number.
+[ "$(for v in 0 1; do asked "$Q" note "$v" | jq -r .input.prompt | cut -c1-8; done | sort | paste -sd,)" = "Text one,Text two" ] || check "two: note was made from $(jq -c '[.assets.note.versions[].invocations[0].input.prompt]' "$Q/project.lock")"
 J '.walk | not' "$Q/project.lock" || check "two: a finished render left its text in the lock: $(jq -c '.walk | keys' "$Q/project.lock")"
 
 [ -n "${ALONE:-}" ] && return 0
