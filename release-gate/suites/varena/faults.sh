@@ -5,7 +5,7 @@ faults_run() {
   fpod() { timeout 120 "$CLI" machine ssh "$M" -- "$@"; }
   mkdir -p "$D"
   cap off  # the core and offload cells' executors: run.py needs the card free
-  tar -C "$V" -cz core/faults native-tensor-export ledger/table.py -C "$HERE/../crates/varena" include |
+  tar -C "$V" -cz core/faults native-tensor-export public-source ledger/table.py -C "$HERE/../crates/varena" include |
     fpod "rm -rf $F && mkdir -p $F && tar -xz -C $F" || { expect faults FAIL "could not copy the suite to $M"; return; }
   fpod "cat > $F/start.sh" <<'POD' || { expect faults FAIL "could not copy start.sh to $M"; return; }
 py=$(dirname "$(ls -t /var/lib/cozy/tensord/generations/*/env/pyvenv.cfg | head -1)")/bin/python
