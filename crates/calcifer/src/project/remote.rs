@@ -352,6 +352,7 @@ fn ended(project: &Project, done: Result<Transferred, Error>) {
         Err(error) => (None, Some(error)),
     };
     let _ = project.events.send(Event::Transferred { done, error });
+    crate::events::project_settled(&project.folder.dir);
 }
 
 /// `POST /v1/projects/{id}/push`.

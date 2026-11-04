@@ -58,6 +58,12 @@ pub(crate) fn project_changed(dir: &Path) {
     }
 }
 
+/// Tells every stream to read `dir`'s project again though neither file changed: `moving` ended, say. A new text, so a client that keeps the last hears it.
+pub(crate) fn project_settled(dir: &Path) {
+    let rev = format!("{}+{}", project::revision(dir), crate::store::now_ms());
+    let _ = PROJECTS.said.send(StreamEvent::ProjectChanged { id: project::project_id(dir), rev });
+}
+
 /// `dir`'s project opens, before anything reads it: only a change from here on is news.
 pub(crate) fn project_opened(dir: &Path) {
     let mut revs = PROJECTS.revs.lock().expect("revs lock");

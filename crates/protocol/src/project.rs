@@ -5,6 +5,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
@@ -157,7 +158,7 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuts: Vec<Cut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
     /// Commands to run next, given what it holds and lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
@@ -167,6 +168,33 @@ pub struct State {
 pub struct Stale {
     pub name: String,
     pub why: String,
+}
+
+/// What reading a project said: of the asset or entity `name`, or of the file as a whole.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Warning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub message: String,
+}
+
+impl Warning {
+    pub fn of(name: &str, message: String) -> Self {
+        Self { name: Some(name.to_owned()), message }
+    }
+
+    pub fn of_file(message: String) -> Self {
+        Self { name: None, message }
+    }
+}
+
+/// A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Read {
+    pub name: String,
+    /// Where its text says so: `summary`, `beats.0.description`, `pieces.1`, `style` for what defaults gave it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub at: Vec<String>,
 }
 
 /// An asset project.lock keeps versions of that project.yaml no longer names: the bytes `reclaim`
@@ -189,6 +217,12 @@ pub struct Orphan {
 pub struct File {
     pub path: String,
     pub sha256: String,
+    /// Its bytes aren't on this computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// The machine that keeps them, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
@@ -253,6 +287,41 @@ pub struct VersionPrefix {
     /// What it keeps of another take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// How long its runs took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_ms: Option<u64>,
+    /// The last run that made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+    /// Its main file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main: Option<MainFile>,
+}
+
+/// The file people mean by a version, and what is measured of it so far.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MainFile {
+    /// Its output's name in the version, which `GET /v1/runs/{id}/play` takes.
+    pub output: String,
+    pub path: String,
+    pub sha256: String,
+    /// The field that names one of its type: `image`, `video`, `audio`.
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Part of it is fully transparent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha: bool,
+    /// Its bytes aren't on this computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// The machine that keeps them, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
 }
 
 /// The start of another take that a take keeps (`render --take --in`): which, and up to where. What follows is new.
@@ -325,6 +394,9 @@ pub struct Asset {
     /// Each one's hash prefix, to name it in project.yaml.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefixes: Vec<VersionPrefix>,
+    /// The version that is its state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
     /// The number (1 first, never reused) of the version `approve` or `--approve` pinned. Its state until `unpin`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<u32>,
@@ -351,11 +423,32 @@ pub struct Asset {
     pub height: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Part of that file is fully transparent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha: bool,
+    /// That file's bytes aren't on this computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+    /// The machine that keeps them, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<String>,
     /// The function that made its state, `org/package/function@release`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<String>,
     /// For people, in its own noun: current, no take yet, out of date and why, making (run N), …
     pub status: String,
+    /// What it reads by a mention, in the order its text says them. A shot's own write isn't among them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<Read>,
+    /// The shot whose beat writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_by: Option<String>,
+    /// Its words as the file writes them: its own fields, with no platform field, and `render`'s text as `prompt`.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub text: Map<String, Value>,
+    /// What stopped its last try: until a version lands, it's tried again, or its inputs change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Error>,
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
@@ -387,6 +480,9 @@ pub struct Version {
     /// What it keeps of another take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kept: Option<Kept>,
+    /// How long its runs took.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_ms: Option<u64>,
 }
 
 /// `POST /v1/projects/{id}/runs`: for each of `names`, or `all`, and what it reads, if it has no state, run its operation.
@@ -575,8 +671,10 @@ pub enum Event {
         message: String,
     },
     /// Something asked could not be made, said as it happens; the walk goes on with what does not
-    /// read it.
+    /// read it. `name` is the asset it is of, when it is of one: its row's `failure` holds this for later readers.
     Failed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         error: Error,
     },
     /// A push or pull landed `file` (None: it is under way), `bytes` moved so far.

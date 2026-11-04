@@ -306,6 +306,16 @@ pub struct Asset {
     pub numbered: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tried: Option<Tried>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<Failed>,
+}
+
+/// What stopped the last try at it, on `inputs`: kept until a version lands or it's tried again, so a reader who wasn't watching hears it too.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Failed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<String>,
+    pub error: Error,
 }
 
 /// The seed last sent for `inputs`.

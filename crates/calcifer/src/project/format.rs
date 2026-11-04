@@ -5,7 +5,10 @@
 //! key. Nothing refuses a project but a file of no format: what one line gets wrong is said, and that line does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use protocol::error::{Error, Kind};
+use protocol::{
+    error::{Error, Kind},
+    project::{Read, Warning},
+};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -192,7 +195,7 @@ pub struct Doc {
     pub upstream: Vec<Vec<usize>>,
     /// Each asset after what it reads.
     pub order: Vec<usize>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
     index: HashMap<String, usize>,
     /// Each package's own tags, as project.lock last read them. A package not here hasn't been read yet.
     reserved: BTreeMap<String, Vec<String>>,
@@ -282,14 +285,14 @@ impl Doc {
         }
         let mut warnings = vec![];
         if top.get("version").and_then(Value::as_u64) != Some(FORMAT) {
-            warnings.push(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT));
+            warnings.push(Warning::of_file(format!("{} has no `version: {FORMAT}`, so it reads as version {FORMAT}: add it", folder::PROJECT)));
         }
-        warnings.extend(top.keys().filter(|key| !SECTIONS.contains(&key.as_str())).map(|key| format!("{}: cozy reads no section {key}; it is ignored", folder::PROJECT)));
+        warnings.extend(top.keys().filter(|key| !SECTIONS.contains(&key.as_str())).map(|key| Warning::of_file(format!("{}: cozy reads no section {key}; it is ignored", folder::PROJECT))));
         let empty = Map::new();
         let mut defaults = Map::new();
         for (section, value) in top.get("defaults").and_then(Value::as_object).unwrap_or(&empty) {
             if !PINS.contains(&section.as_str()) {
-                warnings.push(format!("defaults.{section}: the only keys are image, video and audio; it is ignored"));
+                warnings.push(Warning::of_file(format!("defaults.{section}: the only keys are image, video and audio; it is ignored")));
                 continue;
             }
             // Each is a default `render` block.
@@ -320,13 +323,15 @@ impl Doc {
         doc.declared = doc.assets.len();
         for i in 0..doc.declared {
             if doc.assets[i].body.contains_key("writes") {
-                doc.warnings.push(format!("{}'s writes: go on the beat that writes them, each `image` with an `at` into that beat: these are ignored", doc.assets[i].name));
+                let name = doc.assets[i].name.clone();
+                doc.warn(&name, format!("{name}'s writes: go on the beat that writes them, each `image` with an `at` into that beat: these are ignored"));
             }
             let mut said = vec![];
             let mut writes = beat_writes(&doc.assets[i].name, &doc.assets[i].body, &mut said);
             doc.warnings.append(&mut said);
             if !writes.is_empty() && doc.assets[i].kind != "video" {
-                doc.warnings.push(format!("{}'s writes: only a video writes images: these are ignored", doc.assets[i].name));
+                let name = doc.assets[i].name.clone();
+                doc.warn(&name, format!("{name}'s writes: only a video writes images: these are ignored"));
                 writes.clear();
             }
             for (beat, image, at) in writes {
@@ -340,8 +345,8 @@ impl Doc {
         }
         for i in 0..doc.assets.len() {
             if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].links.is_none() {
-                let said = doc.nothing_to_make(i);
-                doc.warnings.push(said);
+                let (name, said) = (doc.assets[i].name.clone(), doc.nothing_to_make(i));
+                doc.warn(&name, said);
             }
         }
         doc.resolve();
@@ -352,17 +357,17 @@ impl Doc {
     fn declare(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) -> Option<usize> {
         let key = name_key(name);
         if self.index.contains_key(&key) {
-            self.warnings.push(format!("two assets are named {name}: the first stands"));
+            self.warn(name, format!("two assets are named {name}: the first stands"));
             return None;
         }
         if key == ALL {
-            self.warnings.push(format!("{name} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest"));
+            self.warn(name, format!("{name} is named `{ALL}`: `cozy project render {ALL}` means everything, and makes it with the rest"));
         }
         let body = match written {
             Value::Object(body) => body.clone(),
             Value::Null => Map::new(),
             _ => {
-                self.warnings.push(format!("{name} is no mapping of fields: it is empty"));
+                self.warn(name, format!("{name} is no mapping of fields: it is empty"));
                 Map::new()
             }
         };
@@ -378,7 +383,7 @@ impl Doc {
         let written_kind = text_of(body.get("kind"));
         let kind = if PINS.contains(&written_kind.as_str()) { written_kind.clone() } else { held.unwrap_or("image").to_owned() };
         if !written_kind.is_empty() && written_kind != kind {
-            self.warnings.push(format!("{name}'s kind: an asset is an image, a video or audio, and anything else belongs on an entity: {written_kind} is ignored"));
+            self.warn(name, format!("{name}'s kind: an asset is an image, a video or audio, and anything else belongs on an entity: {written_kind} is ignored"));
         }
         // A hash and nothing to make it from: a constant, which no operation or adapter makes, whatever its kind.
         let constant = held.is_some() && body.keys().all(|key| key == "kind" || PINS.contains(&key.as_str()));
@@ -402,26 +407,26 @@ impl Doc {
                 Value::String(text) => text.clone(),
                 Value::Number(number) => number.to_string(),
                 Value::Array(_) if mentions_in(value).is_empty() => {
-                    self.warnings.push(format!("{name}'s {field}: a list pins nothing: an asset has one main file, so make an asset for each; it is ignored"));
+                    self.warn(name, format!("{name}'s {field}: a list pins nothing: an asset has one main file, so make an asset for each; it is ignored"));
                     merged.remove(field);
                     continue;
                 }
                 _ => continue,
             };
             if field != kind {
-                self.warnings.push(format!("{name}'s {field}: an asset has one main file, its {kind}: make an asset for this one, and link both from an entity; it is ignored"));
+                self.warn(name, format!("{name}'s {field}: an asset has one main file, its {kind}: make an asset for this one, and link both from an entity; it is ignored"));
                 merged.remove(field);
                 continue;
             }
             match file_named(&written, lock) {
                 Ok(sha256) => {
                     if !lock.files.get(&sha256).is_some_and(|file| folder.path(&file.path).is_file()) {
-                        self.warnings.push(format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
+                        self.warn(name, format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
                     }
                     pin = Some((field, sha256));
                 }
                 Err(why) => {
-                    self.warnings.push(format!("{name}'s {field}{why}"));
+                    self.warn(name, format!("{name}'s {field}{why}"));
                     merged.remove(field);
                 }
             }
@@ -444,7 +449,7 @@ impl Doc {
     /// `<groudon.primordial>` and `<kyogre.primordial>` read like any mention. A sub-entity takes from its parent what it doesn't have.
     fn entity(&mut self, text: &str, name: &str, written: &Value, defaults: &Map<String, Value>, folder: &Folder, lock: &Lock) {
         let Some(body) = written.as_object() else {
-            self.warnings.push(format!("{name} is no mapping of fields: it is ignored"));
+            self.warn(name, format!("{name} is no mapping of fields: it is ignored"));
             return;
         };
         let (own, subs) = self.links_of(text, name, body, true, defaults, folder, lock);
@@ -491,9 +496,9 @@ impl Doc {
         for (field, value) in body {
             match (field.as_str(), value) {
                 ("kind" | "description", _) => {}
-                ("render", _) => self.warnings.push(format!("{name}'s render: an entity holds no way of making anything: put it on an asset it links; it is ignored")),
+                ("render", _) => self.warn(name, format!("{name}'s render: an entity holds no way of making anything: put it on an asset it links; it is ignored")),
                 (_, Value::Object(sub)) if nests => subs.push((field.clone(), sub.clone())),
-                (_, Value::Object(_)) => self.warnings.push(format!("{name}'s {field}: sub-entities go one level; it is ignored")),
+                (_, Value::Object(_)) => self.warn(name, format!("{name}'s {field}: sub-entities go one level; it is ignored")),
                 (_, Value::String(said)) if matches!(mentions(said).as_slice(), [one] if said.trim() == format!("<{one}>")) => {
                     links.insert(field.clone(), mentions(said)[0].to_owned());
                 }
@@ -509,10 +514,10 @@ impl Doc {
                                 links.insert(field.clone(), full);
                             }
                         }
-                        Err(why) => self.warnings.push(format!("{name}'s {field}{why}")),
+                        Err(why) => self.warn(name, format!("{name}'s {field}{why}")),
                     }
                 }
-                _ => self.warnings.push(format!("{name}'s {field}: an entity links to an asset, as `{field}: <its_name>`, or a file's hash; it is ignored")),
+                _ => self.warn(name, format!("{name}'s {field}: an entity links to an asset, as `{field}: <its_name>`, or a file's hash; it is ignored")),
             }
         }
         (links, subs)
@@ -522,7 +527,7 @@ impl Doc {
     fn node(&mut self, name: &str, kind: String, description: Option<Value>, links: Links) -> bool {
         let key = name_key(name);
         if self.index.contains_key(&key) {
-            self.warnings.push(format!("{name} is an asset and an entity, and they share names: the asset stands, so rename one"));
+            self.warn(name, format!("{name} is an asset and an entity, and they share names: the asset stands, so rename one"));
             return false;
         }
         let fields: Map<String, Value> = description.into_iter().map(|text| ("description".to_owned(), text)).collect();
@@ -575,7 +580,7 @@ impl Doc {
         };
         let own = &mut self.assets[revision];
         if own.writer.is_some() || own.frame {
-            self.warnings.push(format!("{writer_name} writes {image}, which is written above: the first stands"));
+            self.warn(&writer_name, format!("{writer_name} writes {image}, which is written above: the first stands"));
             return;
         }
         own.hollow = false;
@@ -624,8 +629,8 @@ impl Doc {
             if let Some(links) = &asset.links {
                 for (field, target) in &links.own {
                     match self.find(target) {
-                        None => said.push(format!("{}'s {field}: <{target}> is nothing in the project: add an asset named {target}", asset.name)),
-                        Some(j) if self.assets[j].links.is_some() => said.push(format!("{}'s {field}: <{target}> is an entity, and an entity links to assets: it is ignored", asset.name)),
+                        None => said.push(Warning::of(&asset.name, format!("{}'s {field}: <{target}> is nothing in the project: add an asset named {target}", asset.name))),
+                        Some(j) if self.assets[j].links.is_some() => said.push(Warning::of(&asset.name, format!("{}'s {field}: <{target}> is an entity, and an entity links to assets: it is ignored", asset.name))),
                         Some(_) => {}
                     }
                 }
@@ -639,7 +644,7 @@ impl Doc {
             }
             let tags = self.tags(i);
             for tag in tags.into_iter().flatten().filter(|tag| self.find(tag).is_some()) {
-                let line = format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this, so rename it", self.target(i));
+                let line = Warning::of(&asset.name, format!("{tag} is also a tag of {}: <{tag}> in its text is that tag, not this, so rename it", self.target(i)));
                 if !said.contains(&line) {
                     said.push(line);
                 }
@@ -653,7 +658,7 @@ impl Doc {
                 let Some(j) = self.find(&mention) else {
                     match tags {
                         Some(_) => {
-                            let line = self.names_nothing(&asset.name, &mention);
+                            let line = Warning::of(&asset.name, self.names_nothing(&asset.name, &mention));
                             if !said.contains(&line) {
                                 said.push(line);
                             }
@@ -665,7 +670,7 @@ impl Doc {
                 let key = name_key(&self.assets[j].name);
                 // An entity's links are edges too, through its sub-entities as well, so what it links to can't read it.
                 if self.links_to(j, i) {
-                    let line = format!("{} mentions {}, which is made from it: that mention stays plain text", asset.name, self.assets[j].name);
+                    let line = Warning::of(&asset.name, format!("{} mentions {}, which is made from it: that mention stays plain text", asset.name, self.assets[j].name));
                     if !said.contains(&line) {
                         said.push(line);
                     }
@@ -681,7 +686,7 @@ impl Doc {
         let graph = Graph::new(upstream, &fixed);
         for &(reader, read) in &graph.closing {
             reads[reader].retain(|j| *j != read);
-            said.push(format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name));
+            said.push(Warning::of(&self.assets[reader].name, format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name)));
         }
         for (asset, reads) in self.assets.iter_mut().zip(reads) {
             asset.reads = reads;
@@ -694,6 +699,42 @@ impl Doc {
 
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
+    }
+
+    fn warn(&mut self, name: &str, message: String) {
+        self.warnings.push(Warning::of(name, message));
+    }
+
+    /// Asset `i`'s words as the file writes them: its own fields, with no platform field but a file field holding a mention, and `render`'s text as `prompt`.
+    pub fn text(&self, i: usize) -> Map<String, Value> {
+        let asset = &self.assets[i];
+        let written = |(field, value): &(&String, &Value)| asset.own.contains(field.as_str()) && (!RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty()));
+        asset.body.iter().filter(written).map(|(field, value)| (said_as(field).to_owned(), value.clone())).collect()
+    }
+
+    /// The shot whose beat writes asset `i`: its take's frame, or a free frame cut from its video.
+    pub fn written_by(&self, i: usize) -> Option<&str> {
+        let asset = &self.assets[i];
+        let writer = asset.writer.or_else(|| asset.frame.then(|| asset.reads.first().copied()).flatten())?;
+        Some(&self.assets[writer].name)
+    }
+
+    /// What asset `i` reads by a mention, each with the places its text says so. A frame's only read is the shot that writes it.
+    pub fn reads_of(&self, i: usize) -> Vec<Read> {
+        let asset = &self.assets[i];
+        if asset.frame {
+            return vec![];
+        }
+        let mut said = vec![];
+        for (field, value) in &asset.fields {
+            said_in(value, said_as(field).to_owned(), &mut said);
+        }
+        let read = |&j: &usize| {
+            let key = name_key(&self.assets[j].name);
+            let at = said.iter().filter(|(mention, _)| name_key(mention) == key).map(|(_, place)| place.clone());
+            Read { name: self.assets[j].name.clone(), at: at.collect() }
+        };
+        asset.reads.iter().map(read).collect()
     }
 
     /// Whether asset `i` is what node `j`'s entity links to, directly or through a sub-entity.
@@ -718,9 +759,9 @@ impl Doc {
     }
 
     /// What is said of asset `i`'s mentions naming nothing, now its package's `tags` are read.
-    pub fn said_once_read(&self, i: usize, tags: &[String]) -> Vec<String> {
+    pub fn said_once_read(&self, i: usize, tags: &[String]) -> Vec<Warning> {
         let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !tags.contains(mention));
-        let mut said: Vec<String> = mine.map(|(_, mention)| self.names_nothing(&self.assets[i].name, mention)).collect();
+        let mut said: Vec<Warning> = mine.map(|(_, mention)| Warning::of(&self.assets[i].name, self.names_nothing(&self.assets[i].name, mention))).collect();
         said.dedup();
         said
     }
@@ -965,7 +1006,7 @@ impl Doc {
 
 /// What each beat writes, soonest first: the beat, the image, and when on the shot's timeline. A write is `{image, at}`: `at` is
 /// seconds into its beat, else its end; past the beat it clamps, which is said, as is any other field.
-fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) -> Vec<(usize, String, f64)> {
+fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<Warning>) -> Vec<(usize, String, f64)> {
     let (mut start, mut found) = (0.0, vec![]);
     for (n, beat) in body.get("beats").and_then(Value::as_array).into_iter().flatten().enumerate() {
         let length = beat["duration"].as_f64().filter(|duration| *duration > 0.0).unwrap_or(BEAT_S);
@@ -980,15 +1021,15 @@ fn beat_writes(name: &str, body: &Map<String, Value>, said: &mut Vec<String>) ->
                 item => (text_of(item.get("image")), item["at"].as_f64()),
             };
             if image.is_empty() {
-                said.push(format!("{name}'s beat {} writes nothing: each write names an `image`", n + 1));
+                said.push(Warning::of(name, format!("{name}'s beat {} writes nothing: each write names an `image`", n + 1)));
                 continue;
             }
             for field in item.as_object().into_iter().flat_map(|write| write.keys()).filter(|field| !["image", "at"].contains(&field.as_str())) {
-                said.push(format!("{name}'s write of {image}: cozy reads no field {field}; it is ignored"));
+                said.push(Warning::of(name, format!("{name}'s write of {image}: cozy reads no field {field}; it is ignored")));
             }
             let within = at.unwrap_or(length).clamp(0.0, length);
             if let Some(at) = at.filter(|at| *at != within) {
-                said.push(format!("{name} writes {image} at {at} s into a beat {length} s long: it is taken at {within} s"));
+                said.push(Warning::of(name, format!("{name} writes {image} at {at} s into a beat {length} s long: it is taken at {within} s")));
             }
             found.push((n, image, start + within));
         }
@@ -1011,6 +1052,24 @@ pub fn plain_with(with: &str) -> String {
 }
 
 /// What passes to the adapter. A beat's `writes` doesn't: a write goes by `Operation.writes`, or is a free frame outside the key.
+/// A field as a person who writes `render: text` knows it.
+fn said_as(field: &str) -> &str {
+    match field {
+        "instructions" => "prompt",
+        field => field,
+    }
+}
+
+/// Each mention under `value`, with where: `summary`, `beats.0.description`, `pieces.1`.
+fn said_in(value: &Value, place: String, found: &mut Vec<(String, String)>) {
+    match value {
+        Value::String(text) => found.extend(mentions(text).into_iter().map(|mention| (mention.to_owned(), place.clone()))),
+        Value::Array(items) => items.iter().enumerate().for_each(|(n, item)| said_in(item, format!("{place}.{n}"), found)),
+        Value::Object(fields) => fields.iter().for_each(|(field, item)| said_in(item, format!("{place}.{field}"), found)),
+        _ => {}
+    }
+}
+
 fn fields_of(body: &Map<String, Value>) -> Map<String, Value> {
     let mut fields: Map<String, Value> = (body.iter())
         .filter(|(field, value)| !RESERVED.contains(&field.as_str()) || (PINS.contains(&field.as_str()) && !mentions_in(value).is_empty()))
@@ -1047,10 +1106,10 @@ pub fn named(name: &str) -> Result<(), Error> {
 /// An asset's lines, or a section of `defaults`, as the platform reads them: at its root what it is, in `render` how to make it.
 /// `render` is its text, or a map where `with`, `prompt`, `models` and `lora` are the platform's and every other key is the adapter's
 /// (`op.options`). On the wire the text is `instructions`, as it always was.
-fn unfolded(name: &str, mut body: Map<String, Value>, warnings: &mut Vec<String>) -> Map<String, Value> {
+fn unfolded(name: &str, mut body: Map<String, Value>, warnings: &mut Vec<Warning>) -> Map<String, Value> {
     for field in RENDERED {
         if body.remove(field).is_some() {
-            warnings.push(format!("{name}'s {field}: it goes under `render:`; it is ignored"));
+            warnings.push(Warning::of(name, format!("{name}'s {field}: it goes under `render:`; it is ignored")));
         }
     }
     match body.remove("render") {

@@ -294,7 +294,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Status => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let state: State = ctx.calcifer().await?.get(&format!("/v1/projects/{}", opened.id)).await?;
-            state.warnings.iter().for_each(|warning| output::warn(warning));
+            state.warnings.iter().for_each(|warning| output::warn(&warning.message));
             if ctx.json {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
@@ -502,7 +502,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                     output::warn(&message);
                 }
             }
-            Event::Failed { error } => {
+            Event::Failed { error, .. } => {
                 output::failure(ctx, &error.message, &error.next);
                 failed.insert(error.message);
             }
@@ -563,6 +563,11 @@ fn summary(ctx: &Context, state: &State) {
             if let Some(kept) = made.kept {
                 output::say(ctx, &kept.said(&asset.name, made.number));
             }
+        }
+    }
+    for asset in &state.assets {
+        if let Some(failure) = &asset.failure {
+            output::failure(ctx, &failure.message, &failure.next);
         }
     }
     if state.run_files > 0 {
