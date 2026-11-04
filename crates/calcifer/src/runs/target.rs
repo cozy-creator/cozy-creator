@@ -128,7 +128,7 @@ pub(crate) fn only_function(interface: &Interface) -> Option<&str> {
 
 fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
     Interface::parse(document).map_err(|why| {
-        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}"))
+        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}")).next("cozy update")
     })
 }
 
@@ -320,7 +320,7 @@ impl Releases {
             }
             None => match tokio::time::timeout(LATE, self.now(api, hub, package)).await {
                 Ok(read) => read,
-                Err(_) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("{package}'s releases: no answer in {}s", LATE.as_secs()))),
+                Err(_) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("{package}'s releases: no answer in {}s", LATE.as_secs())).remedy("run it again, or name a release: <package>@<release>")),
             },
         }
     }

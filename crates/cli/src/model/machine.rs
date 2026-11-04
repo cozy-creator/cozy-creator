@@ -146,6 +146,7 @@ async fn recorded(ctx: &Context, args: Upload, to: &Repo) -> Result<ExitCode, Er
     };
     let at = path(&["v1", "models", &to.org, &to.name, "commits"]);
     let made: RecordedCommit = ctx.calcifer().await?.post(&at, &ask, None).await?;
+    made.warnings.iter().for_each(|warning| output::warn(warning));
     if let Some(mirrored) = &made.mirrored {
         mirror(ctx, mirrored);
     }

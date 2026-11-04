@@ -320,7 +320,7 @@ async fn describe(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Res
     };
     let Some(callable) = interface.callables.iter().find(|c| &c.name == function) else {
         let said = format!("{} has no function {function:?} this cozy reads", target.package);
-        return Err(Error::new(Kind::Unavailable, "callable_unreadable", said).remedy("update cozy"));
+        return Err(Error::new(Kind::Unavailable, "callable_unreadable", said).next("cozy update"));
     };
     if ctx.json {
         let mut request = protocol::interface::request(&target.interface, function);
@@ -357,7 +357,7 @@ async fn target(ctx: &Context, raw: &str, cwd: &Path, on: Option<&str>) -> Resul
 
 fn parsed(target: &Target) -> Result<Interface, Error> {
     Interface::parse(&target.interface).map_err(|why| {
-        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}"))
+        Error::new(Kind::Unavailable, "package_interface_invalid", format!("the package interface is unreadable: {why}")).next("cozy update")
     })
 }
 

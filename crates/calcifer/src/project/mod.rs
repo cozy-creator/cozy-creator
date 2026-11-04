@@ -163,7 +163,9 @@ const OPAQUE_BELOW: f64 = 0.05;
 
 /// The words a run hears outside a project, as `git` says it of a repository.
 pub(crate) fn not_in_one() -> Error {
-    Error::new(Kind::Usage, "not_in_a_project", "not in a project: cd into one, or cozy project new <name>")
+    Error::new(Kind::Usage, "not_in_a_project", "not in a project: cd into one, or make one")
+        .next("cozy project ls")
+        .next("cozy project new my-project && cd my-project")
 }
 
 /// Where a run of the project in `dir` lands its outputs.
@@ -320,7 +322,7 @@ async fn open(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) 
             let project = open.path.join(folder::PROJECT);
             if project.exists() {
                 let said = format!("{} is a project already", open.path.display());
-                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said)));
+                return Err(Refusal(Error::new(Kind::Conflict, "project_exists", said).next(format!("cozy project -p {} status", open.path.display()))));
             }
             std::fs::create_dir_all(&open.path).map_err(io)?;
             platform::durable::replace(&project, format::starter().as_bytes(), 0o644)
@@ -392,7 +394,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 async fn forget(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<StatusCode, Refusal> {
     let mut open = api.projects.open.lock().expect("projects lock");
     if open.get(&id).is_some_and(|project| *project.walking.lock().expect("walking lock")) {
-        let said = format!("{id} is rendering: it is forgotten once its runs land");
+        let said = format!("{id} is rendering: forget it once its runs land");
         return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy project status")));
     }
     open.remove(&id);
@@ -730,7 +732,8 @@ async fn rename(
     }
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let Some(old) = lock.asset(&asked.from).filter(|held| !held.versions.is_empty()) else {
-        return Err(refuse(Kind::NotFound, "asset_unknown", format!("project.lock keeps no version of {}", asked.from)));
+        let said = format!("project.lock keeps no version of {}", asked.from);
+        return Err(Refusal(Error::new(Kind::NotFound, "asset_unknown", said).next("cozy project status")));
     };
     let Some(i) = doc.holds(&asked.to) else {
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
@@ -776,8 +779,8 @@ async fn runs(
     let body = body?;
     let asked: Runs = parse(&body)?;
     if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
-        let said = "a project's runs go to machines: rent one first (`cozy machine rent`)";
-        return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said)));
+        let said = "a project's runs go to machines: rent one first, then name it with --on";
+        return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
     }
     if asked.approve && asked.n > 1 {
         let said = format!("--approve approves the one new version; -n {} makes {}", asked.n, asked.n);
@@ -1645,8 +1648,9 @@ impl Walk {
                 && let Some(file) = keep["latents"]["sha256"].as_str().and_then(|sha256| lock.files.get(sha256))
                 && matches!(self.reach(file, &target.on).await, Reach::Gone)
             {
-                let said = format!("{name}: take {}'s latents went with its machine: `cozy project render {name}` renders the whole shot", keep["take"]);
-                return Err(Error::new(Kind::NotFound, "take_latents_gone", said));
+                let said = format!("{name}: take {}'s latents went with its machine: rendering again renders the whole shot", keep["take"]);
+                let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+                return Err(Error::new(Kind::NotFound, "take_latents_gone", said).next(format!("cozy project render {name} --on {on}")));
             }
             // What stays on a machine that's gone isn't read: an adapter does without it.
             let mut reads = standing.reads.clone();
@@ -1792,7 +1796,8 @@ impl Walk {
         let run = self.send_run(&new_key(), submit).await?;
         let run = self.host.wait(&run.id).await?;
         if run.status != RunStatus::Completed {
-            return Err(failed(run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone())));
+            let why = run.reason.as_ref().map_or_else(|| format!("{:?}", run.status).to_lowercase(), |r| r.message.clone());
+            return Err(failed(why).next(format!("cozy run show {}", run.number)));
         }
         Ok(answered(run.result.as_ref()))
     }

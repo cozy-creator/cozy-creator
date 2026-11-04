@@ -507,6 +507,8 @@ pub struct RecordedCommit {
     pub mirrored: Option<Mirrored>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<Displayed>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A destination recorded as a mirror of its author's model, before anything uploads.

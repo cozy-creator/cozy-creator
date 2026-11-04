@@ -265,8 +265,12 @@ impl Doc {
     /// The project `text` says. Only a file of no format, or an older one, is refused.
     pub fn read(folder: &Folder, text: &str) -> Result<Self, Error> {
         let value = protocol::yaml::to_json(text).map_err(|why| {
-            invalid("project_yaml", format!("{}: {why}", folder::PROJECT))
-                .remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`")
+            let (line, written) = at_line(text, &why);
+            let refused = invalid("project_yaml", format!("{}: {why}{line}", folder::PROJECT));
+            match written.trim_start().split_once(':').is_some_and(|(_, value)| value.trim_start().starts_with('[')) {
+                true => refused.remedy("text that starts with `[` goes on the lines under `summary: |` or `description: |`"),
+                false => refused,
+            }
         })?;
         let top = match value {
             Value::Object(top) => top,
@@ -1374,4 +1378,11 @@ fn insert_line(lines: &[&str], after: usize, line: &str) -> String {
 
 fn invalid(code: &str, message: String) -> Error {
     Error::new(Kind::Validation, code, message)
+}
+
+/// The line a YAML error names (`… line 4 column 4 …`) as it is written: said after the error, and alone.
+fn at_line<'a>(text: &'a str, why: &str) -> (String, &'a str) {
+    let number = why.split("line ").nth(1).and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse::<usize>().ok());
+    let Some(written) = number.and_then(|number| text.lines().nth(number.saturating_sub(1))) else { return (String::new(), "") };
+    (format!(": `{}`", written.trim()), written)
 }

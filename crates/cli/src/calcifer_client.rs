@@ -514,7 +514,7 @@ impl Client {
         let installed = installed(home)?;
         let spec = self.spec(installed.clone());
         let failed = |e: platform::Error| {
-            Error::new(Kind::Unavailable, "calcifer_start_failed", e.to_string())
+            Error::new(Kind::Unavailable, "calcifer_start_failed", e.to_string()).next("cozy doctor")
         };
         home.open().map_err(failed)?;
         platform::durable::private_dir(&home.calcifer()).map_err(failed)?;

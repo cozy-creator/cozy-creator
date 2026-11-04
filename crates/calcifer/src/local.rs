@@ -102,7 +102,7 @@ impl Local {
         let log = self.start_log();
         let failed = |why: String| {
             let message = format!("this computer's machine did not start: {why} (its log: {})", log.display());
-            Error::new(Kind::Unavailable, "machine_start_failed", message)
+            Error::new(Kind::Unavailable, "machine_start_failed", message).next("cozy doctor")
         };
         let program = self.home.launcher().ok_or_else(|| {
             failed(format!("no cozy is installed in {}", self.home.root().display()))

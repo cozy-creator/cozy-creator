@@ -317,7 +317,8 @@ impl Machines {
                     Kind::Conflict,
                     "rental_refused",
                     ask.reason.unwrap_or_default(),
-                ));
+                )
+                .next("cozy machine rent"));
             }
             // Asked apart from this call: a caller that stops waiting leaves the ask asked.
             AskState::Pending => {
@@ -549,7 +550,7 @@ impl Machines {
                             };
                             self.calcifer.fail(run, reason).map_err(internal)?;
                         }
-                        let refused = Err(Error::new(Kind::Conflict, code, reason));
+                        let refused = Err(Error::new(Kind::Conflict, code, reason).next("cozy machine rent"));
                         tell(&refused);
                         return refused;
                     }
@@ -744,7 +745,8 @@ impl Machines {
                         Kind::Conflict,
                         "rental_refused",
                         ask.reason.unwrap_or_default(),
-                    )),
+                    )
+                    .next("cozy machine rent")),
                 },
                 Err(error) => Err(error),
             };
@@ -807,7 +809,8 @@ impl Machines {
                 "placement_needs_release",
                 "the Hub places a published release: run local code with --on <machine> or \
                  --on new:<sku>",
-            ));
+            )
+            .next("cozy machine rent"));
         };
         let request = types::RentalPlacementRequest {
             package: release.package.clone(),
@@ -832,7 +835,8 @@ impl Machines {
                     "no product the Hub sells now holds this run: {}",
                     why.join("; ")
                 ),
-            ));
+            )
+            .next("cozy machine rent"));
         };
         let fast = placement.machines.iter().filter(|m| m.fast == Some(true)).count();
         let rule = match (top.fast, top.speed) {

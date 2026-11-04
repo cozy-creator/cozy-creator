@@ -558,12 +558,12 @@ pub async fn serve(
         let item = api.calcifer.store().output(row.id.as_str(), &name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
-            api::refuse(Kind::NotFound, "output_not_found", message)
+            Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run show {number}")))
         })?;
         let file = match (&item.checkpoint, &item.path, item.exported_rev) {
             (None, Some(path), Some(_)) => Some(std::fs::File::open(path).map_err(|e| {
                 let message = format!("its file {} is gone: {e}", path.display());
-                api::refuse(Kind::NotFound, "output_file_missing", message)
+                Refusal(api::refuse(Kind::NotFound, "output_file_missing", message).0.next(format!("cozy run show {number}")))
             })?),
             _ => None,
         };
@@ -589,15 +589,11 @@ pub async fn serve(
         if record.output.iter().any(|kept| kept.stays && kept.name == name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
             let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
-            return Err(api::refuse(Kind::Conflict, "output_on_its_machine", message));
+            return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run show {number}"))));
         }
         if let Some(reason) = item.export_error {
             let message = format!("output {name} of run {number} will not land: {reason}");
-            return Err(api::refuse(
-                Kind::Unavailable,
-                "output_not_exported",
-                message,
-            ));
+            return Err(Refusal(api::refuse(Kind::Unavailable, "output_not_exported", message).0.next(format!("cozy run show {number}"))));
         }
         let state = match row.state {
             RunState::Settled => "has ended",

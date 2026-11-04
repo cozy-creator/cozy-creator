@@ -59,7 +59,8 @@ pub async fn play(
             format!("run {} has no output {:?}", row.number, ask.output),
         ));
     }
-    let unavailable = |message| refuse(Kind::Unavailable, "machine_unavailable", message);
+    let number = row.number;
+    let unavailable = |message| Refusal(Error::new(Kind::Unavailable, "machine_unavailable", message).next(format!("cozy run show {number}")));
     let name = row
         .machine
         .clone()
@@ -77,7 +78,7 @@ pub async fn play(
             reason if reason.is_empty() => format!("{name} does not listen for players"),
             reason => reason,
         };
-        return Err(refuse(Kind::Unavailable, "webrtc_unavailable", reason));
+        return Err(Refusal(Error::new(Kind::Unavailable, "webrtc_unavailable", reason).next(format!("cozy machine show {name}"))));
     };
     let signer = std::fs::read_to_string(&machine.key)
         .ok()
