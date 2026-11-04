@@ -32,6 +32,59 @@ fn layout(parts: &[HostPart]) -> Result<(Vec<u64>, usize)> {
     Ok((offsets, end))
 }
 
+/// Host ranges a Region fills from without copying them. They stay readable and unchanged until
+/// `drop`, which runs once on whichever thread lets go last, in-flight fills included.
+pub(super) struct Borrowed {
+    parts: Vec<(usize, usize, usize)>,
+    bytes: usize,
+    drop: DropFn,
+    context: *mut c_void,
+}
+// SAFETY: the caller's contract above: immutable bytes, and a drop callable from any thread.
+unsafe impl Send for Borrowed {}
+unsafe impl Sync for Borrowed {}
+
+impl Drop for Borrowed {
+    fn drop(&mut self) {
+        // SAFETY: called exactly once, as the caller's contract asks.
+        unsafe { (self.drop)(self.context) }
+    }
+}
+
+impl Borrowed {
+    /// Takes custody of `context` even on failure, so the caller never has two paths.
+    pub(super) unsafe fn new(parts: &[HostPart], drop: DropFn, context: *mut c_void) -> Result<(Arc<Self>, Vec<u64>)> {
+        let mut borrowed = Self { parts: Vec::with_capacity(parts.len()), bytes: 0, drop, context };
+        let (offsets, bytes) = layout(parts)?;
+        borrowed.bytes = bytes;
+        for (part, offset) in parts.iter().zip(&offsets) {
+            if part.bytes != 0 {
+                borrowed.parts.push((*offset as usize, part.data as usize, part.bytes));
+            }
+        }
+        Ok((Arc::new(borrowed), offsets))
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.bytes
+    }
+
+    /// Copy what lies in `[at, at + len)` to `to`. Gaps stay as they were: nothing reads them.
+    pub(super) unsafe fn read(&self, at: usize, to: *mut u8, len: usize) {
+        let first = self.parts.partition_point(|(offset, _, bytes)| offset + bytes <= at);
+        for &(offset, address, bytes) in &self.parts[first..] {
+            if offset >= at + len {
+                break;
+            }
+            let (from, end) = (offset.max(at), (offset + bytes).min(at + len));
+            // SAFETY: the caller's contract keeps the part readable; `to` holds `len` bytes.
+            unsafe {
+                std::ptr::copy_nonoverlapping((address + from - offset) as *const u8, to.add(from - at), end - from);
+            }
+        }
+    }
+}
+
 /// Every nonempty descriptor must name readable bytes, stable until this returns.
 pub(super) unsafe fn snapshot(parts: &[HostPart]) -> Result<(Arc<[u8]>, Vec<u64>)> {
     let (offsets, bytes) = layout(parts)?;

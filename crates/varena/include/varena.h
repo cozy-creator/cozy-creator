@@ -105,6 +105,12 @@ typedef struct { const uint8_t *data; size_t bytes; } vr_host_part_v1;
  * writable uint64_t entries and must not overlap out. No partial Region is published. */
 VR_API vr_status vr_v1_region_from_host_parts(vr_handle gpu,
     const vr_host_part_v1 *parts, size_t count, uint64_t *offsets, vr_handle *out);
+/* The same layout filled from the caller's ranges without copying them. They stay readable and
+ * unchanged until drop(context), which runs once from any thread when the last fill and handle let
+ * go, and also if this call fails. */
+VR_API vr_status vr_v1_region_borrow_host_parts(vr_handle gpu,
+    const vr_host_part_v1 *parts, size_t count, uint64_t *offsets,
+    void (*drop)(void *), void *context, vr_handle *out);
 VR_API vr_status vr_v1_region_ptr(vr_handle, uint64_t *out); /* VA only, never a pin */
 VR_API vr_status vr_v1_region_close(vr_handle);
 /* Success orders consumer stream work after Published producers. It is not host GPU

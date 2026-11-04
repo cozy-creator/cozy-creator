@@ -153,7 +153,7 @@ for _name, _args in {
     "gpu_open": [C.c_int32, _h],
     "gpu_close": [_u],
     "region_from_host": [_u, C.c_void_p, C.c_size_t, _h],
-    "region_from_host_parts": [_u, C.POINTER(_HostPart), C.c_size_t, _h, _h],
+    "region_borrow_host_parts": [_u, C.POINTER(_HostPart), C.c_size_t, _h, C.c_void_p, C.c_void_p, _h],
     "region_ptr": [_u, _h],
     "region_close": [_u],
     "use": [_u, _h, C.c_size_t, _u, _h],
@@ -275,15 +275,15 @@ class Gpu(_Owned):
         region.nbytes = len(data)
         return region
 
-    def region_parts(self, parts: Sequence[tuple[int, int]]) -> tuple[Region, tuple[int, ...]]:
-        """Copy host ranges, each (address, bytes), into one Region at 256-byte-aligned offsets.
-
-        Empty members are allowed, but the aggregate must contain bytes. Capture refuses before
-        copying. Nothing of the caller's is retained after this returns.
+    def region_parts(self, parts: Sequence[tuple[int, int]], keep: object) -> tuple[Region, tuple[int, ...]]:
+        """One Region over host ranges, each (address, bytes), at 256-byte-aligned offsets, filled
+        from them with no host copy. Native holds `keep` until its last fill and handle let go;
+        the ranges must stay valid and unchanged while it does.
         """
         hosts = (_HostPart * len(parts))(*(_HostPart(address, size) for address, size in parts))
         offsets = (_u * len(parts))()
-        region = Region(_new("region_from_host_parts", self._handle, hosts, len(hosts), offsets), self)
+        drop, context = _ext._varena_public_keep(keep)
+        region = Region(_new("region_borrow_host_parts", self._handle, hosts, len(hosts), offsets, drop, context), self)
         region.nbytes = max(offset + size for offset, (_, size) in zip(offsets, parts))
         return region, tuple(offsets)
 

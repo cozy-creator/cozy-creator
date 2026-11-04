@@ -2,8 +2,34 @@
 use super::*;
 
 const STAGING: usize = 2 << 20;
+
+#[derive(Clone)]
+pub(super) enum Payload {
+    Copied(Arc<[u8]>),
+    Borrowed(Arc<host_parts::Borrowed>),
+}
+
+impl Payload {
+    fn len(&self) -> usize {
+        match self {
+            Self::Copied(bytes) => bytes.len(),
+            Self::Borrowed(borrowed) => borrowed.len(),
+        }
+    }
+
+    /// `to` holds `len` bytes, and `[at, at + len)` lies within this payload.
+    unsafe fn read(&self, at: usize, to: *mut u8, len: usize) {
+        match self {
+            // SAFETY: the bounds above.
+            Self::Copied(bytes) => unsafe { std::ptr::copy_nonoverlapping(bytes[at..at + len].as_ptr(), to, len) },
+            // SAFETY: the bounds above.
+            Self::Borrowed(borrowed) => unsafe { borrowed.read(at, to, len) },
+        }
+    }
+}
+
 struct State {
-    bytes: Arc<[u8]>,
+    bytes: Payload,
     stream: usize,
     host: crate::cuda::HostAllocation,
     capacity: usize,
@@ -56,17 +82,16 @@ impl Host {
         let driver = self.weight.gpu.core.driver();
         let _context = driver.enter()?;
         let mut recorded = false;
-        for (index, bytes) in state.bytes.chunks(state.capacity).enumerate() {
+        let total = state.bytes.len();
+        for offset in (0..total).step_by(state.capacity) {
+            let len = state.capacity.min(total - offset);
             if recorded {
                 driver.wait_event(state.reuse)?;
             } // Only this stage's prior DMA.
             // SAFETY: the previous DMA completed, and the one HOST VMM stage owns capacity.
             unsafe {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), state.host.pointer() as *mut u8, bytes.len());
+                state.bytes.read(offset, state.host.pointer() as *mut u8, len);
             }
-            let offset = index
-                .checked_mul(state.capacity)
-                .ok_or(Error::Invalid("host Source offset overflow"))?;
             let pointer = destination
                 .ptr
                 .checked_add(offset as u64)
@@ -74,7 +99,7 @@ impl Host {
             // SAFETY: Source retains the immutable host bytes, HOST VMM stage and exclusive
             // Fill. Its native session retains the fixed stream through actual completion.
             unsafe {
-                driver.copy_pinned_async(pointer, state.host.pointer(), bytes.len(), state.stream)?;
+                driver.copy_pinned_async(pointer, state.host.pointer(), len, state.stream)?;
             }
             driver.record(state.reuse, state.stream)?;
             recorded = true;
@@ -121,7 +146,7 @@ unsafe impl crate::FillResource for Resource {
 
 pub(super) fn acquire(
     weight: &Arc<Weight>,
-    bytes: Arc<[u8]>,
+    bytes: Payload,
     fill: crate::Fill,
     consumer: u64,
 ) -> Result<Pin> {

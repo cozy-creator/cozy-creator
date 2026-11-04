@@ -423,7 +423,7 @@ pub extern "C" fn vr_v1_gpu_close(id: u64) -> i32 {
 
 pub type DropFn = unsafe extern "C" fn(*mut c_void);
 enum Bytes {
-    Host(Arc<[u8]>),
+    Host(host_source::Payload),
     Foreign(Arc<source::Owner>),
 }
 pub(crate) struct Weight {
@@ -468,7 +468,7 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
             out.write(insert(Handle::Region(Arc::new(Weight {
                 gpu: gpu.clone(),
                 region,
-                bytes: Bytes::Host(bytes),
+                bytes: Bytes::Host(host_source::Payload::Copied(bytes)),
             })))?);
         }
         Ok(())
@@ -494,10 +494,43 @@ pub unsafe extern "C" fn vr_v1_region_from_host_parts(
         let handle = insert(Handle::Region(Arc::new(Weight {
             gpu: gpu.clone(),
             region,
-            bytes: Bytes::Host(bytes),
+            bytes: Bytes::Host(host_source::Payload::Copied(bytes)),
         })))?;
         // SAFETY: caller provides disjoint writable outputs; every fallible step is
         // complete. The snapshots no longer depend on any caller input allocation.
+        unsafe {
+            std::ptr::copy_nonoverlapping(layout.as_ptr(), offsets, count);
+            out.write(handle);
+        }
+        Ok(())
+    })
+}
+/// One Region filled from the caller's host ranges without copying them; `drop(context)` runs
+/// once when the last fill and handle let go, from any thread, also if this call fails.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vr_v1_region_borrow_host_parts(
+    g: u64,
+    parts: *const host_parts::HostPart,
+    count: usize,
+    offsets: *mut u64,
+    drop: DropFn,
+    context: *mut c_void,
+    out: *mut u64,
+) -> i32 {
+    boundary(|| {
+        let parts = unsafe { slice(parts, count) };
+        let (borrowed, layout) = unsafe { host_parts::Borrowed::new(parts?, drop, context)? };
+        if out.is_null() || offsets.is_null() {
+            return Err(invalid("null host parts output"));
+        }
+        let gpu = gpu(g)?;
+        let region = gpu.core.reserve(borrowed.len())?;
+        let handle = insert(Handle::Region(Arc::new(Weight {
+            gpu: gpu.clone(),
+            region,
+            bytes: Bytes::Host(host_source::Payload::Borrowed(borrowed)),
+        })))?;
+        // SAFETY: caller provides disjoint writable outputs; every fallible step is complete.
         unsafe {
             std::ptr::copy_nonoverlapping(layout.as_ptr(), offsets, count);
             out.write(handle);

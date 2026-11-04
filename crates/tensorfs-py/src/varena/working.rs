@@ -304,6 +304,17 @@ fn _varena_poisoned(py: Python<'_>) -> PyResult<Option<String>> {
     py.detach(varena::working::poisoned).map_err(|e| super::raise(py, e))
 }
 
+unsafe extern "C" fn release_kept(context: *mut std::ffi::c_void) {
+    // SAFETY: from `_varena_public_keep`, once. Off the GIL, PyO3 queues the decref: nothing waits.
+    drop(unsafe { Box::from_raw(context.cast::<Py<PyAny>>()) });
+}
+
+/// A drop function and context holding `object` for native code to let go of from any thread.
+#[pyfunction]
+fn _varena_public_keep(object: Py<PyAny>) -> (usize, usize) {
+    (release_kept as *const () as usize, Box::into_raw(Box::new(object)) as usize)
+}
+
 #[pyfunction]
 fn _varena_activate(py: Python<'_>, device: i32, shared: bool) -> PyResult<()> {
     py.detach(|| {
@@ -854,6 +865,7 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_activate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_poisoned, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_request_boundary, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_check, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_working_stats, module)?)?;

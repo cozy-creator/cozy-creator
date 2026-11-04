@@ -53,14 +53,14 @@ class _Owner:
         return self.stream
 
     def place(self, versions):
-        """Native takes its one host copy. Sources stay until a Use proves the Region fits."""
+        """A Region fills from its sources, which stay: there is no second host copy."""
         for version in versions:
             if version.source is None:
                 root, whole = version.root, (version.root.nbytes // version.root.dtype.itemsize,)
-                # A placed root's only host copy is native's, so it is read through the GPU.
-                values = root.read(whole, (1,), 0, self.current()) if root.source is None else torch.empty(0, dtype=root.dtype).set_(root.source, 0, whole)
-                version.source = values.to(version.dtype).cpu().untyped_storage()
-        region, offsets = self.gpu.region_parts([(v.source.data_ptr(), v.nbytes) for v in versions])
+                values = torch.empty(0, dtype=root.dtype).set_(root.source, 0, whole)
+                version.source = values.to(version.dtype).untyped_storage()
+        sources = [version.source for version in versions]
+        region, offsets = self.gpu.region_parts([(source.data_ptr(), v.nbytes) for source, v in zip(sources, versions)], sources)
         for version, offset in zip(versions, offsets):
             version.region, version.offset = region, offset
 
@@ -93,7 +93,6 @@ class _Version:
                                         byte_offset=self.offset + offset * self.dtype.itemsize, stream=stream.cuda_stream)
         except api.Exhausted as error:
             raise torch.OutOfMemoryError(str(error)) from error
-        self.source = None
         return tensor
 
 
@@ -196,11 +195,11 @@ class _Weight(torch.Tensor):
 class _Unit:
     """One module's weights, bound together for its forward: its subtree's, or only its own."""
 
-    __slots__ = ("module", "whole", "bound", "split", "regions", "bases", "views", "weights", "fresh")
+    __slots__ = ("module", "whole", "bound", "split", "regions", "bases", "views", "weights")
 
     def __init__(self, module, whole):
         self.module, self.whole, self.bound, self.split = module, whole, False, False
-        self.regions, self.bases, self.views, self.weights, self.fresh = (), (), None, frozenset(), ()
+        self.regions, self.bases, self.views, self.weights = (), (), None, frozenset()
 
 
 def _blocks(root):
@@ -353,9 +352,9 @@ class Offload:
                 if 0 not in weight._shape:
                     found.setdefault(id(weight), (weight, []))[1].append((module._parameters, name, weight))
         versions = list(dict.fromkeys(weight._managed for weight, _ in found.values()))
-        unit.fresh = [version for version in versions if version.region is None]
-        if unit.fresh:
-            self.owner.place(unit.fresh)
+        fresh = [version for version in versions if version.region is None]
+        if fresh:
+            self.owner.place(fresh)
         unit.regions = list(dict.fromkeys(version.region for version in versions))
         bases, views = {}, []
         for weight, slots in found.values():
@@ -380,9 +379,6 @@ class Offload:
                 view = bases[base].as_strided(shape, strides, offset)
                 for parameters, name, _ in slots:
                     parameters[name] = view
-        for version in unit.fresh:
-            version.source = None
-        unit.fresh = ()
         return bases
 
     def unbind(self, unit, bases):
@@ -396,7 +392,7 @@ class Offload:
         """Native refused this much pinned at once, so its children bind instead."""
         versions = {weight._managed for weight in unit.module.parameters()}
         children = [child for child in unit.module._modules.values() if child is not None and any(True for _ in child.parameters())]
-        if not unit.whole or not children or any(version.source is None for version in versions):
+        if not unit.whole or not children:
             return False
         for version in versions:
             version.region = None
