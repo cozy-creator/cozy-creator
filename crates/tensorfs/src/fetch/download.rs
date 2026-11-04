@@ -711,14 +711,15 @@ struct Part {
 }
 
 impl Part {
-    /// `data` onto the file, as it arrives: a kill costs nothing that landed.
-    async fn write(&mut self, shared: &Shared, flight: &Flight, data: &[u8]) -> Result<()> {
+    /// `data` onto the file, as it arrives: a kill costs nothing that landed. It takes no place among
+    /// `writes`: a part's future isn't polled while its object joins parts up in order, which waits for
+    /// one, so places held here are never given back (a whole download hung so, gate 41823522538).
+    async fn write(&mut self, flight: &Flight, data: &[u8]) -> Result<()> {
         let Some(mut file) = self.file.take() else {
             return refuse(Code::IO_FAILED, "the part's file is gone");
         };
         let data = data.to_vec();
         flight.local.store(true, Ordering::Release);
-        let _writing = shared.writes.acquire().await;
         let written = tokio::task::spawn_blocking(move || {
             let written = file.write_all(&data);
             (file, written)
@@ -767,7 +768,7 @@ impl Target<'_, '_> {
                         format!("{}: the origin sent more than the range asked", task.object.sha256),
                     );
                 }
-                part.write(shared, flight, data).await?;
+                part.write(flight, data).await?;
                 part.reached += data.len() as u64;
                 shared.gained(task, data.len() as u64);
                 Ok(())
