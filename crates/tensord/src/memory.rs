@@ -1,7 +1,6 @@
-//! Executor-owned GPU memory: TensorD records measurements and offloads whole idle executors.
-//! It creates no CUDA context, GPU allocation, lease listener or page-reclamation thread.
-//! GPU permits schedule calls; observed GPU peaks are telemetry, never byte-admission gates.
-//! Host RAM uses the existing pressure watcher and per-process growth accounting.
+//! TensorD decides no GPU bytes: varena's core does, and TensorD ends an idle executor only when
+//! a core's ask went unanswered (`gpu_service`). What is here is GPU status, and host RAM, which
+//! no core owns: the pressure watcher and each call's measured anonymous peak.
 use crate::machine::receipt;
 use platform::contain::host_memory;
 use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
@@ -87,7 +86,7 @@ struct Book {
     dispatched: BTreeMap<String, String>,
 }
 
-/// Request-to-key association and observed high-water values, with no allocator policy.
+/// Each `<package>|<shape>`'s measured anonymous host high-water.
 pub struct Figures {
     book: Mutex<Book>,
     changed: Signal,
@@ -101,103 +100,54 @@ impl Figures {
     pub fn undispatch(&self, request: &str) {
         self.book.lock().unwrap_or_else(|e| e.into_inner()).dispatched.remove(request);
     }
-    pub fn record_request(&self, request: &str, peak: Option<u64>, compute: Option<u64>, host: Option<u64>) {
+    pub fn record_request(&self, request: &str, host: u64) {
         let mut book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let Some(key) = book.dispatched.get(request).cloned() else { return };
-        if let Some(peak) = peak { larger(&mut book.values, format!("peak/{key}"), peak); }
-        if let Some(compute) = compute { larger(&mut book.values, format!("compute/{key}"), compute); }
-        if let Some(host) = host { larger(&mut book.values, format!("host/{key}"), host); }
+        larger(&mut book.values, key, host);
         self.changed.set();
     }
-    pub fn host_peak(&self, package: &str, shape: &str) -> Option<u64> { self.figure("host", &format!("{package}|{shape}")) }
-    fn figure(&self, kind: &str, key: &str) -> Option<u64> {
+    pub fn host_peak(&self, package: &str, shape: &str) -> Option<u64> {
         let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
-        let full = format!("{kind}/{key}");
-        if key.ends_with('|') {
-            book.values.range(full.clone()..).take_while(|(k, _)| k.starts_with(&full)).map(|(_, v)| *v).max()
-        } else { book.values.get(&full).copied() }
+        let key = format!("{package}|{shape}");
+        if shape.is_empty() {
+            book.values.range(key.clone()..).take_while(|(k, _)| k.starts_with(&key)).map(|(_, v)| *v).max()
+        } else { book.values.get(&key).copied() }
     }
     fn restore(&self, peaks: &[Peak]) {
         let mut book = self.book.lock().unwrap_or_else(|e| e.into_inner());
-        for peak in peaks { let (key, bytes) = peak.figure(); larger(&mut book.values, key, bytes); }
+        for peak in peaks { larger(&mut book.values, peak.key.clone(), peak.bytes); }
     }
-    fn peaks(&self) -> Vec<Peak> { self.book.lock().unwrap_or_else(|e| e.into_inner()).values.iter().filter_map(Peak::of).collect() }
+    fn peaks(&self) -> Vec<Peak> {
+        let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
+        book.values.iter().map(|(key, bytes)| Peak { key: key.clone(), bytes: *bytes }).collect()
+    }
 }
 fn larger(figures: &mut BTreeMap<String, u64>, key: String, bytes: u64) {
     let value = figures.entry(key).or_insert(bytes); *value = (*value).max(bytes);
 }
 
-/// A measured peak, as TensorD persists it per GPU model: the largest of each kind and key.
+/// A request's anonymous host high-water at `<package>|<shape>`, as TensorD persists it per GPU
+/// model.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Peak {
-    /// A request's largest working set at `<package>|<shape>`.
-    Request { key: String, bytes: u64 },
-    /// A request's largest allocations beside its weights at `<package>|<shape>`: what placement
-    /// keeps free on GPU 0.
-    Compute { key: String, bytes: u64 },
-    /// A set's resident bytes, by set name.
-    Set { key: String, bytes: u64 },
-    /// A request's anonymous host high-water at `<package>|<shape>`.
-    Host { key: String, bytes: u64 },
+pub struct Peak {
+    key: String,
+    bytes: u64,
 }
 
 impl Peak {
-    /// Its figure: `<kind>/<key>` and its bytes.
-    fn figure(&self) -> (String, u64) {
-        match self {
-            Peak::Request { key, bytes } => (format!("peak/{key}"), *bytes),
-            Peak::Compute { key, bytes } => (format!("compute/{key}"), *bytes),
-            Peak::Set { key, bytes } => (format!("set/{key}"), *bytes),
-            Peak::Host { key, bytes } => (format!("host/{key}"), *bytes),
-        }
-    }
-
-    fn of((figure, &bytes): (&String, &u64)) -> Option<Peak> {
-        let (kind, key) = figure.split_once('/')?;
-        let key = key.to_string();
-        Some(match kind {
-            "peak" => Peak::Request { key, bytes },
-            "compute" => Peak::Compute { key, bytes },
-            "set" => Peak::Set { key, bytes },
-            "host" => Peak::Host { key, bytes },
-            _ => return None,
-        })
-    }
-
-    /// The largest of each kind and key, in key order: what every GPU of one model persists.
+    /// The largest of each key, in key order: what every GPU of one model persists.
     pub fn merge(peaks: impl IntoIterator<Item = Peak>) -> Vec<Peak> {
         let mut figures = BTreeMap::new();
         for peak in peaks {
-            let (figure, bytes) = peak.figure();
-            larger(&mut figures, figure, bytes);
+            larger(&mut figures, peak.key, peak.bytes);
         }
-        figures.iter().filter_map(Peak::of).collect()
+        figures.into_iter().map(|(key, bytes)| Peak { key, bytes }).collect()
     }
 }
 
-/// Place component sets from available bytes and observed set sizes; this is a hint, not admission.
-pub fn homes(gpus: &[&Gpu], package: &str, shape: &str, sets: &[&str]) -> Vec<u32> {
-    let mut room: Vec<u64> = gpus.iter().enumerate().map(|(rank, gpu)| {
-        gpu.free().unwrap_or(0).saturating_sub(if rank == 0 { gpu.figures.figure("compute", &format!("{package}|{shape}")).unwrap_or(0) } else { 0 })
-    }).collect();
-    let sizes: Vec<_> = sets.iter().map(|name| gpus.iter().filter_map(|gpu| gpu.figures.figure("set", name)).max()).collect();
-    let mut order: Vec<_> = (0..sets.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(sizes[i]));
-    let mut homes = vec![0; sets.len()];
-    for index in order {
-        let size = sizes[index];
-        let target = if size.is_some_and(|size| room.first().is_some_and(|free| *free >= size)) { 0 }
-            else { room.iter().enumerate().max_by_key(|(rank, free)| (**free, std::cmp::Reverse(*rank))).map_or(0, |(rank, _)| rank) };
-        homes[index] = target as u32;
-        if let (Some(free), Some(size)) = (room.get_mut(target), size) { *free = free.saturating_sub(size); }
-    }
-    homes
-}
-
-/// Measured peaks, persisted per GPU model as `<dir>/<model>.json`: the
-/// largest of each kind and key across every GPU of the model. A key names its package release
-/// (`<construction>|<shape>`, or a set's `<package>@<release>/<component>|…`), so one file holds
-/// every release's. Each restore and each saved change is a memory-log note.
+/// Measured peaks, persisted per GPU model as `<dir>/<model>.json`: the largest of each key across
+/// every GPU of the model. A key names its package release (`<construction>|<shape>`), so one file
+/// holds every release's. Each restore and each saved change is a memory-log note.
 pub struct Peaks {
     dir: PathBuf,
     saved: Mutex<BTreeMap<String, Vec<Peak>>>,

@@ -1,7 +1,7 @@
 //! The pool runs every call on a retained executor of its environment, App and degree: deviceless
 //! (degree 0), on one GPU, or on a group of K (rank 0 forms followers), which loads each
 //! construction it serves once. Runtime owns allocations and model residency in each executor.
-//! TensorD schedules calls with GPU permits, offloads idle executors, and observes exact process
+//! TensorD schedules calls with GPU permits, ends idle executors, and observes exact process
 //! exit. Engine owns acceptance and run custody.
 use platform::contain::{host_memory, host_pressure::HostMode};
 use platform::process::{Birth, Exact};
@@ -802,7 +802,7 @@ pub struct Pool {
     /// Each root's lane and each GPU's call (`gpu_allocation`).
     allocations: Arc<crate::gpu_allocation::Allocations>,
     /// Idle GPU executors by `session_key` of their `env`: a call takes its own out for its run.
-    /// One per environment, App, degree and lane; idle offload changes which retain GPU weights.
+    /// One per environment, App, degree and lane.
     sessions: Mutex<BTreeMap<String, Session>>,
     /// Idle deviceless executors, least recently used first: any number per `env`, as many as
     /// ran at once. They end with their generation.
@@ -3314,7 +3314,7 @@ impl Pool {
                 })),
                 Some(first) => {
                     let store = self.store.root().to_string_lossy().into_owned();
-                    let homes = self.homes(&plan, gpus);
+                    let homes = Self::homes(&plan, gpus);
                     let load = |slot: &PlanSlot| {
                         let mut binding = slot.binding.clone();
                         binding.package_interface = interface_path.to_string_lossy().into();
@@ -3587,27 +3587,15 @@ impl Pool {
         Ok(None)
     }
 
-    /// For a group, each slot's placeable components and the GPU of the group that keeps each
-    /// (`memory::homes`), by slot path. Missing figures keep the component on GPU 0.
-    fn homes(&self, plan: &Plan, gpus: &[Device]) -> BTreeMap<String, BTreeMap<String, u32>> {
-        let placeable: Vec<(&str, &str, String)> = plan.slots.iter()
-            .flat_map(|slot| slot.placeable.iter().map(move |c| (slot.binding.model_binding_path.as_str(), c.as_str(), format!("{}/{c}", slot.binding.release))))
-            .collect();
-        if gpus.len() < 2 || placeable.is_empty() {
+    /// For a group, each slot's placeable components and the GPU that keeps them: the group's second,
+    /// which leaves GPU 0 for what only it does. No bytes in this: memory is varena's.
+    fn homes(plan: &Plan, gpus: &[Device]) -> BTreeMap<String, BTreeMap<String, u32>> {
+        if gpus.len() < 2 {
             return BTreeMap::new();
         }
-        let measured: Option<Vec<&memory::Gpu>> = gpus.iter().map(|d| d.memory.as_deref()).collect();
-        let sets: Vec<&str> = placeable.iter().map(|(_, _, set)| set.as_str()).collect();
-        let gpu = match measured {
-            Some(measured) => memory::homes(&measured, &plan.construction, "", &sets),
-            None => vec![0; sets.len()],
-        };
-        let mut homes: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
-        for ((path, component, _), gpu) in placeable.iter().zip(gpu) {
-            homes.entry((*path).into()).or_default().insert((*component).into(), gpu);
-        }
-        self.notes.note(serde_json::json!({"event": "homes", "plan": plan.construction, "homes": homes}));
-        homes
+        plan.slots.iter().filter(|slot| !slot.placeable.is_empty())
+            .map(|slot| (slot.binding.model_binding_path.clone(), slot.placeable.iter().map(|component| (component.clone(), 1)).collect()))
+            .collect()
     }
 
     /// Followers whose process has ended, as people name their GPUs ("GPU 1's process 3224
@@ -3755,8 +3743,6 @@ struct GpuMeasurement {
 #[serde(default)]
 struct RequestFigures {
     request: String,
-    peak: Option<u64>,
-    compute: Option<u64>,
     host: Option<u64>,
 }
 
@@ -3777,8 +3763,8 @@ impl<'a> Dispatched<'a> {
         for gpu in self.gpus {
             let Some(memory) = &gpu.memory else { continue };
             let Some(index) = memory::row(&gpu.entry, inventory).map(|row| i64::from(row.device_index)) else { continue };
-            if let Some(RequestFigures { peak, compute, host, .. }) = rows.iter().find(|row| row.gpu == index && row.stats.request == self.id).map(|row| &row.stats) {
-                memory.figures.record_request(&self.id, *peak, *compute, *host);
+            if let Some(host) = rows.iter().find(|row| row.gpu == index && row.stats.request == self.id).and_then(|row| row.stats.host) {
+                memory.figures.record_request(&self.id, host);
             }
         }
     }
