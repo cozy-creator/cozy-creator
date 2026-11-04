@@ -17,7 +17,7 @@ serde_path_to_error.workspace = true
 executor-protocol = { workspace = true, features = ["python"] }
 varena.workspace = true
 libc.workspace = true
-tensorfs.workspace = true
+tensorfs = { workspace = true, features = ["cuda"] }
 pyo3 = "0.29.2"
 tracing.workspace = true
 tracing-subscriber.workspace = true

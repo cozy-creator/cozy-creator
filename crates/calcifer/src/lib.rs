@@ -283,18 +283,6 @@ impl Calcifer {
         digest: &str,
         submit: SubmitRun,
     ) -> Result<Submitted, Error> {
-        self.submit_with_input_owners(key, digest, submit, vec![]).await
-    }
-
-    /// Temporary input producers remain owned by the actual blocking stager through
-    /// durable CAS/journal custody, even when the HTTP caller drops its future.
-    pub(crate) async fn submit_with_input_owners(
-        self: &Arc<Self>,
-        key: &str,
-        digest: &str,
-        submit: SubmitRun,
-        input_owners: Vec<tempfile::TempDir>,
-    ) -> Result<Submitted, Error> {
         if submit
             .spec
             .tensorfs
@@ -339,7 +327,6 @@ impl Calcifer {
         };
         let (me, key, given, held, digest) = (self.clone(), key.to_owned(), submit.inputs, submit.held, digest.to_owned());
         let (row, fresh) = tokio::task::spawn_blocking(move || {
-            let _input_owners = input_owners;
             // Copied first; then, against a settled run's deletion of the same objects, checked
             // again and recorded under one guard.
             stage(&me.inputs, &new.spec, &given, &held)?;

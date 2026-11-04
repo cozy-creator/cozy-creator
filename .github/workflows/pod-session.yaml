@@ -102,7 +102,7 @@ jobs:
             curl -LsSf "https://github.com/cozy-creator/cozy-creator/releases/download/$COZY/cozy-installer.sh" | sh
           else
             gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
-            python3 scripts/install-native.py dev/cozy-*/cozy-linux-x86_64.tar.gz "$bin"
+            install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$bin/cozy"
           fi
           "$bin/cozy" --version
       - name: Sign in

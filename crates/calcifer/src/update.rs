@@ -6,7 +6,6 @@
 //! run holds new runs behind it and waits for those in flight; it succeeds only when the machine
 //! then runs what it asked for (`verified`).
 use std::{path::Path, sync::Arc};
-use sha2::Digest as _;
 
 use axum::{
     Json,
@@ -88,7 +87,6 @@ impl Machines {
         }
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
         let (mut payload, mut inputs, mut staged, mut named) = (serde_json::Map::new(), vec![], vec![], vec![]);
-        let (mut input_owners, mut original_paths) = (vec![], vec![]);
         for (member, distribution, component) in asked {
             let path = match component {
                 Component::Version(version) => {
@@ -113,11 +111,9 @@ impl Machines {
                 }
                 Component::File(path) => path,
             };
-            original_paths.push(path.clone());
-            let Measured { file, input, version, bundle } = tokio::task::spawn_blocking(move || measured(&path, distribution))
+            let (file, input, version) = tokio::task::spawn_blocking(move || measured(&path, distribution))
                 .await
                 .map_err(internal)??;
-            input_owners.extend(bundle);
             named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));
             inputs.push(v1::InputFile {
                 field: member.into(),
@@ -186,11 +182,7 @@ impl Machines {
             out: None,
             warnings: vec![],
         };
-        // Generated bundle directories are custody, not request identity. Keep the
-        // original file names plus actual packed digests stable across same-key retries.
-        let digest = submission_identity(&submit, &original_paths);
-        let submitted = self.calcifer.submit_with_input_owners(key, &digest, submit, input_owners)
-            .await.map_err(|e| Refusal::from(e).0)?;
+        let submitted = self.calcifer.submit(key, submit).await.map_err(|e| Refusal::from(e).0)?;
         let updating = Updating { machine: m, run: Some(submitted.run), target, warnings };
         Ok((updating, !submitted.replay))
     }
@@ -323,27 +315,9 @@ async fn prerelease(distribution: &str, version: &str, platform: &str) -> Result
     Ok(Some((format!("{base}/{file}"), sha256.to_owned())))
 }
 
-fn submission_identity(submit: &SubmitRun, originals: &[std::path::PathBuf]) -> String {
-    let mut identity = submit.clone();
-    assert_eq!(identity.inputs.len(), originals.len());
-    for (input, original) in identity.inputs.iter_mut().zip(originals) {
-        input.path = original.clone();
-    }
-    format!("sha256:{}", hex::encode(sha2::Sha256::digest(
-        serde_json::to_vec(&identity).expect("submission JSON"),
-    )))
-}
-
 /// A local wheel of `distribution` (or, empty, a `cozy` binary), measured once: its file name, what
 /// the run stages, and for a `cozy` binary the release it says it is when it runs here.
-struct Measured {
-    file: String,
-    input: StagedInput,
-    version: Option<String>,
-    bundle: Option<tempfile::TempDir>,
-}
-
-fn measured(path: &Path, distribution: &str) -> Result<Measured, Error> {
+fn measured(path: &Path, distribution: &str) -> Result<(String, StagedInput, Option<String>), Error> {
     let refused = |why: String| Error::new(Kind::Validation, "wheel_refused", why);
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let regular = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
@@ -354,24 +328,13 @@ fn measured(path: &Path, distribution: &str) -> Result<Measured, Error> {
             _ => format!("{} is not a {distribution} wheel file named by its absolute path ({distribution}-<version>-….whl)", path.display()),
         }));
     }
-    // Read the original runnable binary's version, never try to execute its archive.
-    let version = distribution.is_empty().then(|| says(path)).flatten();
-    let mut source = path.to_path_buf();
-    let mut bundle = None;
-    if distribution.is_empty() {
-        let failed = |error: std::io::Error| Error::new(Kind::Validation, "native_bundle_failed", error.to_string());
-        let temporary = tempfile::Builder::new().prefix("cozy-native-").tempdir().map_err(failed)?;
-        if let Some(packed) = platform::native_bundle::pack_binary(path, &temporary.path().join("cozy-native.tar.gz"))
-            .map_err(failed)?
-        {
-            source = packed;
-            bundle = Some(temporary);
-        }
-    }
-    let bytes = std::fs::read(&source).map_err(|e| refused(format!("{}: {e}", source.display())))?;
-    let file = source.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
-    let input = StagedInput { path: source, digest: Digest::of(&bytes), length: bytes.len() as u64 };
-    Ok(Measured { file, input, version, bundle })
+    let bytes = std::fs::read(path).map_err(|e| refused(format!("{}: {e}", path.display())))?;
+    let input = StagedInput { path: path.to_path_buf(), digest: Digest::of(&bytes), length: bytes.len() as u64 };
+    let version = match distribution {
+        "" => says(path),
+        _ => None,
+    };
+    Ok((file.to_owned(), input, version))
 }
 
 /// What a machine that carried out update `spec` reports: each wheel's version (a staged one's

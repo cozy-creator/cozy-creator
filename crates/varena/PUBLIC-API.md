@@ -209,18 +209,7 @@ Target/profile/features, including equals-form options and `-F`, are forwarded t
 CLI prebuild. Windows source builders need file-symlink capability; the unsafe stale
 hard-link fallback is rejected. Windows/macOS execution qualification remains separate.
 
-`scripts/bundle-native.py` packages native cozy/TensorD archives with immutable private
-library names and final dependency receipts before signing. Installers, native release
-extraction and machine update staging carry those libraries before replacing the binary.
-Old library files remain for running owners and rollback. A raw installed private-linked
-binary is automatically packed with its verified adjacent dependencies for a dev update.
-No live installation/update or publication is performed by the P4 qualification scripts.
-
-Rollout must first deliver the library-aware updater changes to an existing static cozy
-cohort, or use the updated installer. Older deployed updaters extract only the executable
-and will refuse a new dynamic binary before replacement; this source change cannot add
-dependency support to an already-running older updater. The updater patch is kept separate
-for coordinator integration. No Runtime version or source SHA equality is required.
+`cozy` links no native core: `varena` is an optional `cuda` feature of `tensorfs`, enabled only by the wheel.
 
 ## Runnable GPU examples
 
