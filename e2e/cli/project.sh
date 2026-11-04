@@ -1479,11 +1479,27 @@ hostile_outputs
 [ "$(api -o "$OUT/calcifer-status.json" -w '%{http_code}' "http://$ADDR/v1/status")" = 200 ] || check "GET /v1/status: $(cat "$OUT/calcifer-status.json")"
 J '(.version | length > 0) and (.os | length > 0) and (.local_usable | type == "boolean") and (.signed_in | type == "boolean")' "$OUT/calcifer-status.json" || check "GET /v1/status: $(cat "$OUT/calcifer-status.json")"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/status")" = 401 ] || check "GET /v1/status answered with no credential"
+page_surface
 session_surface "$ID"
 # As through an SSH -L to another port: any port on a loopback name, and an Origin that matches it.
 [ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61999' "http://$ADDR/v1/projects")" = 200 ] || check "a forwarded port's Host and Origin were refused"
 [ "$(api -o /dev/null -w '%{http_code}' -H 'Host: localhost:61999' -H 'Origin: http://localhost:61998' "http://$ADDR/v1/projects")" = 403 ] || check "an Origin on another port than Host was not refused 403"
 yaml_routes "$P" "$ID"
+}
+
+# The page needs no credential and keeps the guard: its CSP, its hashed assets immutable, a rebinding Host refused.
+page_surface() {
+step "a project: Calcifer serves the page"
+local B=http://$ADDR script
+[ "$(curl -sS -D "$OUT/page.hdr" -o "$OUT/page.html" -w '%{http_code}' "$B/")" = 200 ] || check "GET /: $(head -c 300 "$OUT/page.html")"
+{ grep -qi "^content-security-policy: default-src 'none'; script-src 'self';" "$OUT/page.hdr" && grep -qi '^referrer-policy: no-referrer' "$OUT/page.hdr" && grep -qi '^cache-control: no-store' "$OUT/page.hdr"; } \
+  || check "GET /: its headers: $(tr -d '\r' < "$OUT/page.hdr" | paste -sd' ')"
+script=$(grep -oE 'assets/[^"]+\.js' "$OUT/page.html" | head -1)
+[ -n "$script" ] || check "GET /: names no script: $(head -c 300 "$OUT/page.html")"
+[ "$(curl -sS -D "$OUT/page-asset.hdr" -o /dev/null -w '%{http_code}' "$B/$script")" = 200 ] || check "GET /$script is not 200"
+{ grep -qi '^content-type: text/javascript' "$OUT/page-asset.hdr" && grep -qi '^cache-control: .*immutable' "$OUT/page-asset.hdr"; } || check "GET /$script: its headers: $(tr -d '\r' < "$OUT/page-asset.hdr" | paste -sd' ')"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' "$B/assets/nothing.js")" = 404 ] || check "an asset that isn't there is not 404"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: rebind.example:${ADDR##*:}" "$B/")" = 403 ] || check "a rebinding Host reached the page"
 }
 
 # A browser session by hand: a code once, its token and media secret and what each opens, its end, and a code's 60 s.

@@ -22,6 +22,7 @@ pub mod local_code;
 pub mod tools;
 pub mod machines;
 pub mod outputs;
+mod page;
 pub mod play;
 pub mod project;
 mod rentals;

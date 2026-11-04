@@ -171,6 +171,7 @@ pub fn router(api: Arc<Api>) -> Router {
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .route("/v1/session", post(crate::sessions::start))
+        .merge(crate::page::routes())
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn(guard))

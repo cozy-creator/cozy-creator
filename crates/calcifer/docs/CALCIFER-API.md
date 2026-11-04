@@ -100,6 +100,16 @@ private, max-age=31536000, immutable`; everything else, `outputs/{name}` include
 - `canvas {id, etag, cards: {name: {x, y, w?} | null}}`: the rows of a project's canvas that changed.
 - `resync`: this stream fell behind and goes on: read again what you hold.
 
+### The page
+The web UI, embedded when cozy is built (`crates/calcifer/build.rs`, from `web/app/dist`). It holds no secret, so these
+two routes need no credential; the guard's first three checks still apply.
+- `GET /`: its `index.html`.
+- `GET /assets/{file}`: a file named by its hash, `immutable`; `404 asset_not_found` for any other.
+
+Each answers `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:;
+media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` and
+`Referrer-Policy: no-referrer`. A build without the page answers `503 page_not_built`, with how to build it.
+
 ### Status
 - `GET /v1/status`: `{version, os, local_usable, signed_in}`. `os` is `linux`, `macos` or `windows`; `local_usable` is
   whether this computer runs models itself; `signed_in` is whether it holds a device key for its Hub, which it answers
