@@ -222,7 +222,6 @@ test = "pr: projects: old renamed new, its versions kept, its reader out of date
 
 ["project reclaim"]
 test = "pr: projects: lists, deletes only what nothing else names, refuses while rendering"
-"--yes" = "pr: projects: reclaim --yes"
 
 ["project push"]
 test = "manual: release-gate/sessions/project-remote.sh (pod-session, signed in): nothing moves twice, a killed push goes on"
