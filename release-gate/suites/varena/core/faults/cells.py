@@ -315,7 +315,7 @@ def donor() -> None:
     deadline = time.monotonic() + 30
     while True:
         mine = next(row for row in rows() if row["pid"] == os.getpid())
-        if mine["idle"] >= idle:
+        if mine["idle"] >= idle * 9 // 10:  # The live tensor keeps its segment's pages mapped.
             break
         assert time.monotonic() < deadline, mine
         time.sleep(0.01)
