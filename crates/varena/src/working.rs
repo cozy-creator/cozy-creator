@@ -181,7 +181,7 @@ struct Block {
 
 impl Segment {
     fn new(bytes: usize, size_class: usize, pool: Option<PoolId>) -> Self {
-        let chunk = if pool.is_none() && bytes > SEGMENT { SEGMENT } else { bytes };
+        let chunk = if pool.is_none() { bytes.min(CHUNK) } else { bytes };
         let chunks = (0..bytes).step_by(chunk)
             .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
             .collect();
@@ -249,7 +249,7 @@ struct Chunk {
 struct Segment {
     bytes: usize,
     size_class: usize,
-    // One handle's pages come back only whole, so a segment above SEGMENT has one per SEGMENT.
+    // One handle's pages come back only whole, so an eager segment has one per CHUNK.
     chunks: Vec<Chunk>,
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
@@ -570,8 +570,11 @@ pub fn pool_bytes(peak: usize) -> usize {
 
 // Above this, blocks are runs that split and merge; below it, slabs of one class.
 const LARGE: usize = 1 << 20;
-// Smaller runs share segments of this size. A larger segment has one handle per this many bytes.
+// Smaller runs share segments of this size.
 const SEGMENT: usize = 64 << 20;
+// What a block can hold beyond itself at each end: a handle's pages come back only whole. Against it,
+// mapping 1 GiB of these takes 6 ms and releasing it 6 ms, on an RTX 3060.
+const CHUNK: usize = 16 << 20;
 
 impl Device {
     pub(crate) fn page(&self) -> usize {
@@ -988,6 +991,7 @@ impl Device {
         if self.over(missing) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: missing }.into());
         }
+        // All or nothing here: an eager segment never maps again, and a pool has one handle.
         for chunk in segment.chunks.iter_mut().filter(|chunk| chunk.handle.is_none()) {
             let handle = self.driver().create(chunk.bytes)?;
             // Track ownership before map: a partial mapping failure must retain the VA and handle.
@@ -995,10 +999,10 @@ impl Device {
             self.working.fetch_add(chunk.bytes, Ordering::AcqRel);
             state.stats.mapped_bytes += chunk.bytes;
             state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
-            let at = base + chunk.offset as u64;
-            self.driver().map(at, chunk.bytes, handle)?;
-            observer::mapped(self, at, chunk.bytes, pool, class)?;
+            self.driver().map_only(base + chunk.offset as u64, chunk.bytes, handle)?;
         }
+        self.driver().grant(base, segment.bytes)?;
+        observer::mapped(self, base, segment.bytes, pool, class)?;
         Ok(())
     }
 

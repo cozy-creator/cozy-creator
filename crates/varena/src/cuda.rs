@@ -326,9 +326,19 @@ impl Driver {
     }
 
     pub(crate) fn map(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
+        self.map_only(ptr, bytes, handle)?;
+        self.grant(ptr, bytes)
+    }
+
+    pub(crate) fn map_only(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned, unoccupied reservation and equally-sized owned allocation.
-        status("cuMemMap", self.timed(|| unsafe { (self.map)(ptr, bytes, 0, handle, 0) }))?;
+        status("cuMemMap", self.timed(|| unsafe { (self.map)(ptr, bytes, 0, handle, 0) }))
+    }
+
+    /// One call over a whole mapped range, however many handles back it: per handle it costs
+    /// 1.4 ms for 64 MiB, and over 1 GiB of them 4 ms.
+    pub(crate) fn grant(&self, ptr: u64, bytes: usize) -> Result<()> {
         let access = Access {
             location: Location {
                 kind: 1,

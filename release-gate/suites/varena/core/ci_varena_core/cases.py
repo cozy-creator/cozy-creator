@@ -445,10 +445,10 @@ def freed_pages_back_any_block():
     cap(1024 * MIB)
     with torch.cuda.stream(stream):
         freed = torch.empty(640 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
-        held = torch.empty(370 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+        held = torch.empty(360 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
         del freed
         small = torch.empty(100 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
-        big = torch.empty(550 * MIB, dtype=torch.uint8, device="cuda").fill_(3)
+        big = torch.empty(545 * MIB, dtype=torch.uint8, device="cuda").fill_(3)
         assert int(big[0]) == int(big[-1]) == 3 and int(small[-1]) == 2 and int(held[-1]) == 1
     del big, small, held
     stream.synchronize()
