@@ -221,10 +221,11 @@ PY
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
-  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH (tfs_kill), with this computer's key, or a new one on
-  # a runner. An --only without it rents with no SSH.
+  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH (tfs_kill), and suite varena's faults run there
+  # (faults.sh), with this computer's key, or a new one on a runner. An --only without them rents with no SSH.
   SSH=
-  if [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; then
+  if { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
+     { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
   # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.

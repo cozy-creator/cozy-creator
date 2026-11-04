@@ -11,6 +11,9 @@
 #   (≤ 8 GB card)    cold, co and reload only: the driver's own out-of-memory paths (a capped card never fills)
 #   h3-8gb           (≤ 8 GB card) H3 Turbo 15 s, the 8 GB tier's product shape
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
+#   core             (every GPU card, last) the memory authority's rules, one fresh process per call (core/)
+#   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (torch-offload/)
+#   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
 #
 # check.py judges caps, host RAM, alternation and load/refill bandwidth as a share of `ceiling`; analyze.py, time
 # and peak VRAM against the last pass. A cell named in known-failing.json's `cells` for this SKU or "*" is skipped.
@@ -39,6 +42,19 @@ SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg mini
 H3REF="[{\"name\": \"Lead\", \"kind\": \"character\", \"image\": \"$REF\"}]"
 h3() { vcell "$1" "$H3" references:="$H3REF" prompt="<Lead> $MOTION $4" seed:=$((R + $2)) duration_s:="$3"; }
 ln -sfn "$V/ceiling.py" ceiling.py; ln -sfn "$V/host-cap.py" host-cap.py
+# After every model cell, as a fault may leave the card unusable. A restart first: no executor stays on the card.
+authority() {
+  local mode i=0
+  cap off
+  vcell core "$V/core/core" seed:=$((R + 61)) --gpus=1
+  vcell offload-adapter "$V/torch-offload/adapter" label="$NAME $R" --gpus=1
+  for mode in stock eager graphs; do
+    i=$((i + 1))
+    vcell "offload-$mode" "$V/torch-offload/sdxl" mode="$mode" seed:=$((R + 61 + i)) --gpus=1 \
+      prompts:="$(jq -nc --arg a "$SCENE, photo, take $i" --arg b "$CHAR, film still, take $i" '[$a, $b]')"
+  done
+  . "$V/faults.sh"
+}
 
 if ! grep -q '^GPU 0' machine.txt; then
   vcell host-cap ./host-cap.py
@@ -60,6 +76,7 @@ vcell reload-klein "$KLEIN" prompt="$OBJECT, macro photo, shallow depth of field
 if [ "$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+')" -le 8 ]; then
   # The 8 GB tier's product shape, H3 Turbo 15 s (1344x768 with audio): 0.35.0 ran out of memory in its step 2.
   vcell h3-8gb "$H3" prompt="$MOTION Wide, steady." seed:=$((R + 15)) duration_s:=15
+  authority
   return 0
 fi
 h3 reload-h3 9 5 "A slow pan follows the action."
@@ -76,4 +93,4 @@ done
 cap 3GiB
 vcell s3-sdxl "$SDXL" prompt="$CHAR, oil painting" seed:=$((R + 41))
 vcell s3-klein "$KLEIN" prompt="an aerial photo of $SCENE" seed:=$((R + 42))
-cap off
+authority
