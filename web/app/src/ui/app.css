@@ -229,6 +229,11 @@ code {
   transform: scale(1.03);
 }
 
+/* The canvas never scrolls. What a browser would scroll to reveal something (a focus, say), React Flow scrolls back a moment later, with the pointer left over another box, which opens as this one closes. */
+.stage .react-flow {
+  overflow: clip;
+}
+
 /* A box at rest: a name, and its picture or its text. There's no card around it, so it weighs nothing. */
 .card {
   position: relative;
