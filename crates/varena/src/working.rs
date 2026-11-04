@@ -127,6 +127,11 @@ pub struct WorkingStats {
     pub ooms: u64,
     pub driver_memory_calls: u64,
     pub driver_physical_ooms: u64,
+    pub driver_memory_ns: u64,
+    pub driver_memory_longest_ns: u64,
+    pub reclaim_ns: u64,
+    pub reclaim_longest_ns: u64,
+    pub reclaim_longest_step: u64,
     pub event_queries: u64,
     pub event_records: u64,
     pub event_waits: u64,
@@ -1899,6 +1904,13 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.event_waits,
     ) = owner.driver().calls();
     stats.driver_physical_ooms = owner.driver().physical_ooms();
+    (
+        stats.driver_memory_ns,
+        stats.driver_memory_longest_ns,
+        stats.reclaim_ns,
+        stats.reclaim_longest_ns,
+        stats.reclaim_longest_step,
+    ) = owner.driver().times();
     Ok(stats)
 }
 

@@ -119,7 +119,10 @@ impl<'a> Sequence<'a> {
     /// Run steps until one makes progress. False: every step is exhausted.
     fn advance(&mut self, want: usize, physical: bool) -> Result<bool> {
         while let Some(step) = ORDER.get(self.step).copied() {
-            if self.run(step, want, physical)? {
+            let started = Instant::now();
+            let done = self.run(step, want, physical);
+            self.gpu.driver().note_reclaim(self.step, started.elapsed());
+            if done? {
                 return Ok(true);
             }
             self.step += 1;

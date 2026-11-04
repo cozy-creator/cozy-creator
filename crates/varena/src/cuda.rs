@@ -5,6 +5,7 @@ use crate::{Error, Result};
 use libloading::Library;
 use std::ffi::{c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use std::sync::Arc;
 
 type Status = c_int;
@@ -75,6 +76,11 @@ pub(crate) struct Counters {
     pub(crate) event_records: AtomicU64,
     pub(crate) event_waits: AtomicU64,
     pub(crate) context_joins: AtomicU64,
+    pub(crate) memory_ns: AtomicU64,
+    pub(crate) memory_longest_ns: AtomicU64,
+    pub(crate) reclaim_ns: AtomicU64,
+    pub(crate) reclaim_longest_ns: AtomicU64,
+    pub(crate) reclaim_longest_step: AtomicU64,
 }
 
 /// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
@@ -277,11 +283,40 @@ impl Driver {
         })
     }
 
+    fn timed<T>(&self, call: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let value = call();
+        let ns = started.elapsed().as_nanos() as u64;
+        self.counters.memory_ns.fetch_add(ns, Ordering::Relaxed);
+        self.counters.memory_longest_ns.fetch_max(ns, Ordering::Relaxed);
+        value
+    }
+
+    /// A reclaim step's time, waits included.
+    pub(crate) fn note_reclaim(&self, step: usize, elapsed: Duration) {
+        let ns = elapsed.as_nanos() as u64;
+        self.counters.reclaim_ns.fetch_add(ns, Ordering::Relaxed);
+        if self.counters.reclaim_longest_ns.fetch_max(ns, Ordering::Relaxed) < ns {
+            self.counters.reclaim_longest_step.store(step as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Driver memory call time and longest; reclaim time, longest and that step's place in ORDER.
+    pub(crate) fn times(&self) -> (u64, u64, u64, u64, u64) {
+        (
+            self.counters.memory_ns.load(Ordering::Relaxed),
+            self.counters.memory_longest_ns.load(Ordering::Relaxed),
+            self.counters.reclaim_ns.load(Ordering::Relaxed),
+            self.counters.reclaim_longest_ns.load(Ordering::Relaxed),
+            self.counters.reclaim_longest_step.load(Ordering::Relaxed),
+        )
+    }
+
     pub(crate) fn create(&self, bytes: usize) -> crate::AllocationResult<u64> {
         let mut handle = 0;
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: valid output pointer and properties; bytes satisfy granularity.
-        let code = unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) };
+        let code = self.timed(|| unsafe { (self.create)(&mut handle, bytes, &self.properties(), 0) });
         if code == 2 {
             self.counters.physical_ooms.fetch_add(1, Ordering::Relaxed);
             return Err(crate::AllocationFailure::DriverOutOfMemory(bytes));
@@ -293,7 +328,7 @@ impl Driver {
     pub(crate) fn map(&self, ptr: u64, bytes: usize, handle: u64) -> Result<()> {
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: an owned, unoccupied reservation and equally-sized owned allocation.
-        status("cuMemMap", unsafe { (self.map)(ptr, bytes, 0, handle, 0) })?;
+        status("cuMemMap", self.timed(|| unsafe { (self.map)(ptr, bytes, 0, handle, 0) }))?;
         let access = Access {
             location: Location {
                 kind: 1,
@@ -303,21 +338,19 @@ impl Driver {
         };
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: the entire range just mapped above; one descriptor grants local device access.
-        status("cuMemSetAccess", unsafe {
-            (self.set_access)(ptr, bytes, &access, 1)
-        })
+        status("cuMemSetAccess", self.timed(|| unsafe { (self.set_access)(ptr, bytes, &access, 1) }))
     }
 
     pub(crate) fn unmap(&self, ptr: u64, bytes: usize) -> Result<()> {
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned whole mapping, no pins, and checked completion of all uses before call.
-        status("cuMemUnmap", unsafe { (self.unmap)(ptr, bytes) })
+        status("cuMemUnmap", self.timed(|| unsafe { (self.unmap)(ptr, bytes) }))
     }
 
     pub(crate) fn release(&self, handle: u64) -> Result<()> {
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
-        status("cuMemRelease", unsafe { (self.release)(handle) })
+        status("cuMemRelease", self.timed(|| unsafe { (self.release)(handle) }))
     }
 
     pub(crate) fn create_event(&self) -> Result<usize> {
