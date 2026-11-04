@@ -645,16 +645,17 @@ impl Device {
         if pool.is_some() || bytes <= LARGE {
             return None;
         }
-        Self::split_run(state, bytes, stream)?;
+        Self::split_run(state, bytes, stream, false)?;
         Self::take_class(state, bytes, requested, stream, None)
     }
 
     /// Best fit: cut the smallest free run this stream may use down to `bytes`. The rest stays
     /// free with the same ordering. Each size holding its own pages cost SDXL 560 MB beside 327 live.
-    /// A much larger segment isn't cut: one small block left in it would keep it all mapped.
-    fn split_run(state: &mut State, bytes: usize, stream: u64) -> Option<()> {
+    /// While there's room, a much larger segment isn't cut: one small block left in it would keep
+    /// it all mapped.
+    fn split_run(state: &mut State, bytes: usize, stream: u64, any: bool) -> Option<()> {
         let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..)
-            .take_while(|((pool, class, _), _)| pool.is_none() && (*class <= SEGMENT || *class <= bytes * 4))
+            .take_while(|((pool, class, _), _)| pool.is_none() && (any || *class <= SEGMENT || *class <= bytes * 4))
             .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
             .find_map(|((_, class, origin), slots)| {
                 slots.iter().rev()
@@ -1253,9 +1254,15 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             let ptr = match Device::take(&mut state, class, bytes, stream, None) {
                 Some(ptr) => ptr,
                 None => {
-                    // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
-                    let mapped = if class > LARGE && owner.headroom() >= segment { segment } else { exact };
-                    owner.map(&mut state, mapped, None, class)?;
+                    owner.sample()?;
+                    // With no room for a new block, any free run beats a wait or a weight.
+                    let cut = class > LARGE && owner.over(exact) != 0
+                        && Device::split_run(&mut state, class, stream, true).is_some();
+                    if !cut {
+                        // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
+                        let mapped = if class > LARGE && owner.headroom() >= segment { segment } else { exact };
+                        owner.map(&mut state, mapped, None, class)?;
+                    }
                     Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
                 }
             };
