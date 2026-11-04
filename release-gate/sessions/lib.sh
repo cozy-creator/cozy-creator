@@ -8,6 +8,8 @@
 set +e -uo pipefail
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); R=$OUT/results.txt
 say() { echo "$(date -u +%T) $*" | tee -a "$R"; }
+# Made up, and here so each published session shows its scrub ran (e2e/publish): in its log, results.txt and this file it reads `Bearer [scrubbed]`.
+say 'scrub canary: authorization: Bearer 0000-made-up-0000' | tee "$OUT/canary.err"
 RC=0 RID='' NAME='' WD='' BG='' RENT_ARGS=''  # BG: a session's own background loop, ended with it
 RIDS=()  # every rental this session ordered; $OUT/rental lists them, one a line
 fail() { say "FAIL: $*"; RC=1; exit 1; }
