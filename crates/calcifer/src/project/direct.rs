@@ -1,5 +1,7 @@
-//! An asset of a function no adapter speaks for: its fields are the call, by the function's typed inputs, and each `<mention>` becomes
-//! the file it names. This speaks in a node's flat fields and what it reads, and knows nothing of the file they came from.
+//! An asset of a function no adapter speaks for: its inputs are the call, by the function's typed inputs, and each `<mention>` becomes
+//! the file it names. This speaks in its inputs and what it reads, and knows nothing of the file they came from.
+use std::collections::BTreeSet;
+
 use protocol::{
     error::{Error, Kind},
     interface::{Callable, Constraints, Field, Struct, Type, Wire},
@@ -10,7 +12,7 @@ use serde_json::{Map, Value, json};
 use super::{
     folder::{Files, Lock},
     format::ReadNow,
-    graph::{mentions, mentions_in, name_key},
+    graph::{mentions, name_key},
 };
 
 /// A file in `files` as a function's input takes it: a digest. `image`, then a list's `image-2`, `image-3`, ... .
@@ -20,11 +22,6 @@ pub fn files_of<'a>(files: &'a Files, kind: &str) -> Vec<&'a str> {
         .collect();
     listed.sort_unstable();
     files.get(kind).map(String::as_str).into_iter().chain(listed.into_iter().map(|(_, sha256)| sha256)).collect()
-}
-
-/// A mention's name as a model reads it: `<kyogre.pose>` is `<kyogre pose>`.
-fn spoken(name: &str) -> String {
-    name.replace('.', " ")
 }
 
 struct Filling<'a> {
@@ -101,7 +98,7 @@ impl Filling<'_> {
         for (at, read) in self.reads.iter().enumerate().filter(|(at, _)| !self.taken[*at]).map(|(at, read)| (at, read)).collect::<Vec<_>>() {
             let files = files_of(&read.files, kind);
             self.taken[at] |= !files.is_empty();
-            let name = spoken(&read.name);
+            let name = read.name.clone();
             entries.extend(files.iter().enumerate().map(|(number, sha256)| {
                 let shown = if number > 0 { format!("{name} {}", number + 1) } else { name.clone() };
                 json!({"name": shown, member.name.as_str(): sha256})
@@ -119,7 +116,7 @@ impl Filling<'_> {
                 for kind in &kinds {
                     let files = files_of(&read.files, kind);
                     self.taken[at] |= !files.is_empty();
-                    entries.extend(files.iter().map(|sha256| json!({"asset": sha256, "label": spoken(&read.name)})));
+                    entries.extend(files.iter().map(|sha256| json!({"asset": sha256, "label": read.name})));
                 }
             }
             return (!entries.is_empty()).then_some(Value::Array(entries));
@@ -157,11 +154,11 @@ fn plain(ty: &Type) -> &Type {
     }
 }
 
-/// What `function` of a node `name` makes is called with: its `fields`, flat, by the function's typed inputs. Each `<mention>` in a file
+/// What `function` of an asset `name` makes is called with: its `fields`, flat, by the function's typed inputs. Each `<mention>` in a file
 /// input is the file it names; what's left of `reads` fills what has no value, a list of named pictures or a file input, in the order
-/// the text says them, and a text keeps its mentions as words. Past a bound is clamped and said. Err: it needs what it hasn't got, and
-/// no run is sent.
-pub fn input(name: &str, tool: &str, callable: &Callable, fields: &Map<String, Value>, reads: &[ReadNow], lock: &Lock) -> Result<(Map<String, Value>, Vec<String>), Error> {
+/// the text says them, and a text keeps its mentions as words. Past a bound is clamped and said. What it wrote itself, `own`, and the
+/// function doesn't read is said: what `defaults` gave it isn't. Err: it needs what it hasn't got, and no run is sent.
+pub fn input(name: &str, tool: &str, callable: &Callable, fields: &Map<String, Value>, own: &BTreeSet<String>, reads: &[ReadNow], lock: &Lock) -> Result<(Map<String, Value>, Vec<String>), Error> {
     let mut filling = Filling { reads, lock, taken: vec![false; reads.len()], warnings: vec![], name };
     let mut input = Map::new();
     let declared = &callable.request.fields;
@@ -170,11 +167,7 @@ pub fn input(name: &str, tool: &str, callable: &Callable, fields: &Map<String, V
     for field in declared {
         let named = if is_text(&field.name) { fields.get(tool::TEXT) } else { None };
         let Some(value) = named.or_else(|| fields.get(&field.name)) else { continue };
-        let value = match plain(&field.ty) {
-            Type::Str => spoken_in(value),
-            _ => filling.typed(&field.ty, value),
-        };
-        input.insert(field.name.clone(), value);
+        input.insert(field.name.clone(), filling.typed(&field.ty, value));
     }
     for field in declared {
         if !input.contains_key(&field.name)
@@ -186,8 +179,7 @@ pub fn input(name: &str, tool: &str, callable: &Callable, fields: &Map<String, V
     filling.warnings.extend(conform(name, &callable.request, &mut input));
     let reads_field = |written: &str| declared.iter().any(|field| field.name == written) || (written == tool::TEXT && text.is_some());
     let mut warnings = filling.warnings;
-    // A node's description is for what mentions it, never its own maker.
-    warnings.extend(fields.keys().filter(|field| *field != "description" && !reads_field(field)).map(|field| format!("{name}: {tool} reads no field {field}")));
+    warnings.extend(own.iter().filter(|field| !reads_field(field)).map(|field| format!("{name}: {tool} reads no input {field}")));
     for (read, _) in reads.iter().zip(&filling.taken).filter(|(read, taken)| !**taken && !read.files.is_empty()) {
         warnings.push(format!("{name}: {tool} has nowhere for <{}>'s file, so it isn't sent", read.name));
     }
@@ -200,15 +192,6 @@ pub fn input(name: &str, tool: &str, callable: &Callable, fields: &Map<String, V
         return Err(Error::new(Kind::Usage, "tool_input_missing", said));
     }
     Ok((input, warnings))
-}
-
-fn spoken_in(value: &Value) -> Value {
-    let Value::String(text) = value else { return value.clone() };
-    let mut out = text.clone();
-    for mention in mentions_in(value) {
-        out = out.replace(&format!("<{mention}>"), &format!("<{}>", spoken(&mention)));
-    }
-    Value::String(out)
 }
 
 /// `fields` held to what `declared` allows, with a line for each that moved: a number past its bounds to the nearest, a choice it doesn't

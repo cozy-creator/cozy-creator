@@ -100,9 +100,9 @@ function linesOf(text, name) {
   await page.evaluate(() => { window.notReloaded = true; });
 
   // A file a person wrote: every comment and `|` of it outlasts all of this.
-  const head = '# Mine, and kept.\nversion: 2\n\nassets:\n  # A note on what follows.\n  kept_words:\n    # Inside it.\n    description: |\n      Written\n      by hand.\n';
+  const head = '# Mine, and kept.\nversion: 3\n\nassets:\n  # A note on what follows.\n  kept_words:\n    # Inside it.\n    description: |\n      Written\n      by hand.\n';
   // Local code is a tool once something in the project names it. A real render needs no GPU this way.
-  writeFileSync(yamlAt, local ? `${head}  named_here:\n    render: {with: ${drawer}}\n` : head);
+  writeFileSync(yamlAt, local ? `${head}  named_here:\n    tool: ${drawer}/draw\n` : head);
   await box('kept_words').waitFor();
 
   // The shell: a name, Render all, and a menu holding the rest. No dock, no edges, no path, no zoom, no machine picker.
@@ -177,7 +177,7 @@ function linesOf(text, name) {
     const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
     const second = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
     check('retry_makes_no_second', first.status === 201 && second.status === 201 && second.body.name === first.body.name && !yaml().includes('Twice_2'), { first, second });
-    check('new_asset_has_its_kind', /Twice:\n {4}kind: image\n {4}render:\n/.test(yaml()), linesOf(yaml(), 'Twice'));
+    check('new_asset_has_its_tool', /Twice:\n {4}tool: /.test(yaml()), linesOf(yaml(), 'Twice'));
     await api(`/v1/projects/${id}/assets/Twice`, { method: 'DELETE' });
   }
 
@@ -190,7 +190,7 @@ function linesOf(text, name) {
     await dropBox('Sheet', 500, 600);
     check('dragged_box_is_that_tool', (await of('Sheet')).tool === tool && (await of('Sheet')).kind === 'image', await of('Sheet'));
     await api(`/v1/projects/${id}/assets/named_here`, { method: 'DELETE' });
-  } else replaceFile(yamlAt, `${yaml().trimEnd()}\n  Sheet:\n    kind: image\n    render: {with: ${tool}}\n`);
+  } else replaceFile(yamlAt, `${yaml().trimEnd()}\n  Sheet:\n    tool: ${tool}\n`);
   await box('Sheet').waitFor();
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
@@ -239,7 +239,7 @@ function linesOf(text, name) {
   await until('chips', () => sheetText.locator('.chip').count(), (n) => n === 2);
   await until('its pictures, small', () => box('Sheet').locator('.mention-thumb img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n === 2);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
-  check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('render' in (await of('Sheet')).fields), (await of('Sheet')).fields);
+  check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
 
   // A description, on anything, as text whatever it says.
@@ -247,14 +247,14 @@ function linesOf(text, name) {
   await box('source-a').locator('.desc-line').click();
   await page.keyboard.type('A sea <b>bold</b> <img src=x onerror=window.pwned=1> and more');
   await page.mouse.click(1500, 1000);
-  await until('its description in the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines?.includes('description: |'));
+  await until('its description in the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines?.includes('description: '));
   await open('source-a');
   check('text_is_only_text', (await page.evaluate(() => window.pwned === undefined && !document.querySelector('.card b') && !document.querySelector('.card img[src="x"]'))));
   check('description_on_the_wire', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
   // Controls from what it holds: a slider, a toggle, a shape, beats. Each writes one field and moves nothing else.
-  replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    kind: video\n    summary: |\n      <source-b> walks.\n    render: {with: no-such-package-here, aspect_ratio: "3:2", megapixels: 1, turbo: true}  # how\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
+  replaceFile(yamlAt, `${yaml().trimEnd()}\n  knobs:\n    # Stays.\n    summary: |\n      <source-b> walks.\n    tool: no-such-package-here/shoot  # how\n    aspect_ratio: "3:2"\n    megapixels: 1\n    turbo: true\n    beats:\n      - duration: 4\n        description: |\n          First.\n        camera: low\n`);
   await box('knobs').waitFor();
   await open('knobs');
   const knobs = box('knobs');
@@ -409,8 +409,16 @@ function linesOf(text, name) {
 
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  asker:\n    kind: image\n    render: {with: ${asker}}\n`);
+    replaceFile(yamlAt, `${yaml().trimEnd()}\n  asker:\n    tool: ${asker}/told\n`);
     await box('asker').waitFor();
+    // A toggle shows its adapter's own default, on, with nothing in the file, and off is what's written.
+    await open('asker');
+    const bright = box('asker').locator('label:has-text("Bright") input');
+    await bright.waitFor();
+    check('a_toggle_shows_its_default', await bright.isChecked(), linesOf(yaml(), 'asker'));
+    check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
+    await bright.click();
+    await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
     await open('source-b');
     const beforeCaption = yaml();
     await box('source-b').locator('button:text-is("Caption")').click();
@@ -516,7 +524,7 @@ function linesOf(text, name) {
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    kind: video\n    summary: |\n      On <look>.\n    render: {with: ${shots}}\n`);
+    replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);
     await box('Clip').waitFor();
     await render('Clip', 1);
     await until('its length measured', () => of('Clip'), (held) => held.prefixes?.[0]?.main?.duration_ms > 0);
@@ -558,7 +566,7 @@ function linesOf(text, name) {
   check('delete_and_undo', Boolean(linesOf(yaml(), 'source-b')), yaml());
 
   check('comments_and_text_kept', yaml().includes('# Mine, and kept.') && yaml().includes('  # A note on what follows.') && yaml().includes('    # Inside it.') && yaml().includes('      by hand.'), yaml());
-  const hashes = [...yaml().matchAll(/(?:image|video): "?([0-9a-f]{12})/g)].map((m) => m[1]);
+  const hashes = [...yaml().matchAll(/approved: "?([0-9a-f]{12})/g)].map((m) => m[1]);
   const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((node) => node.title + node.ariaLabel).join(' '));
   check('hash_not_shown', hashes.every((hash) => !shown.includes(hash)), hashes.filter((hash) => shown.includes(hash)));
   check('no_word_says_node', !/\bnodes?\b/i.test(shown), shown.match(/[\s\S]{0,40}\bnodes?\b[\s\S]{0,40}/i)?.[0]);

@@ -3,7 +3,7 @@
 # dependencies = ["cozy-runtime>=0.38", "msgspec>=0.19"]
 # ///
 """The project suite's local renderer (xs-139): a weightless still at the canvas the request asks for, one colour from
-the prompt, so a project renders an asset `with: ./still.py` from code on this computer. With `keep`, it answers no run, so a
+the prompt, so a project renders an asset `tool: ./still.py/draw` from code on this computer. With `keep`, it answers no run, so a
 picture counts as this package's without being drawn again."""
 
 import hashlib
@@ -22,9 +22,9 @@ def draw(payload: ImageRequest, adj: Adjustments, out: Outputs) -> ImageResult:
     return ImageResult(image, width, height, payload.seed or 0, payload.prompt)
 
 
-@app.project_adapter("image")
+@app.project_adapter("draw")
 def adapt(op: Operation) -> list[Invocation]:
     # `keep`: no call, so the asset's file is the picture it reads, made by this package.
-    if op.fields.get("keep"):
+    if op.inputs.get("keep"):
         return []
-    return [Invocation(function="draw", input={"prompt": str(op.fields.get("description", op.asset)), "aspect_ratio": str(op.fields.get("aspect_ratio", "16:9"))})]
+    return [Invocation(function="draw", input={"prompt": str(op.inputs.get("instructions", op.asset)), "aspect_ratio": str(op.inputs.get("aspect_ratio", "16:9"))})]

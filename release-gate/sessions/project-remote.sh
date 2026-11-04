@@ -37,30 +37,29 @@ ffmpeg -v error -y -f lavfi -i "color=c=teal:size=832x480" -frames:v 1 -metadata
 hash_of() { cozy --json project -p "$P" import "$1" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]' | sed 's/.*/"&"/'; }
 {
   cat <<YAML
-version: 2
+version: 3
 assets:
   coast:
-    kind: image
     description: |
       A grey coast.
-    image: $(hash_of "$F/coast.png")
+    approved: $(hash_of "$F/coast.png")
 YAML
   # Bulk that moves for seconds, so a kill lands mid-way; never seen before, so it moves at all.
   for i in $(seq 1 12); do
     { printf 'RIFF\0\0\0\0WAVE'; head -c 32M /dev/urandom; } > "$P/refs/r$i.wav"
-    printf '  r%s:\n    audio: %s\n' "$i" "$(hash_of "$P/refs/r$i.wav")"
+    printf '  r%s:\n    approved: %s\n' "$i" "$(hash_of "$P/refs/r$i.wav")"
   done
   cat <<YAML
   a:
-    video: $(hash_of "$P/plates/a.mp4")
+    approved: $(hash_of "$P/plates/a.mp4")
   b:
-    video: $(hash_of "$P/plates/b.mp4")
+    approved: $(hash_of "$P/plates/b.mp4")
   edit:
-    render: {with: cozy}
-    kind: video
-    pieces:
-      - {video: <a>, start: 0, end: 120}
-      - {video: <b>, start: 24, end: 120}
+    tool: cozy/edit
+    tracks:
+      - clips:
+          - {video: <a>, in: 0, out: 120}
+          - {video: <b>, in: 24, out: 120}
 YAML
 } > "$P/project.yaml" || fail "project.yaml"
 step render project -p "$P" render all --on local || fail "render all: $(tail -5 "$OUT/render.txt")"

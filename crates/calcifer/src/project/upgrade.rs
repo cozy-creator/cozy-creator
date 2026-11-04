@@ -1,0 +1,794 @@
+//! One way, once: a project folder of format 2 to format 3 (design/project-format-ui.md), in this process, with no Calcifer, for a Calcifer of
+//! this format can't read it yet. Each asset's current version comes from what `cozy project status --json` said under the cozy that reads
+//! format 2; the new key is stamped on those versions, so nothing goes out of date and nothing runs. Each entity folds into its sheet, which takes
+//! its name, `description` and `asset_type`; each form becomes an asset of its dotted name; a written still a file. Comments come along. The
+//! old files stay beside the new. It writes the file whole, the one place anything does, as nothing of the old lines can stand.
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    path::Path,
+};
+
+use protocol::{
+    error::{Error, Kind},
+    target::written_as_path,
+    tool::EDIT,
+    yaml::{keys, to_json, to_json_keeping},
+};
+use serde::Serialize;
+use serde_json::{Map, Value, json};
+
+use super::{
+    assetfile::mentions_renamed,
+    canvas,
+    folder::{self, Folder, Lock, MEASURED},
+    format::{Doc, FORMAT, State, canonical, invalid, made_here, names_a_file, other_than, plain_tool, yaml_key},
+    graph::{mentions, mentions_in, name_key},
+    holding,
+};
+
+const KINDS: [&str; 3] = ["image", "video", "audio"];
+const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
+const WAS_YAML: &str = "project.yaml.v2";
+const WAS_LOCK: &str = "project.lock.v2";
+/// An asset's keys in the order they're written, then any other by name, then what's said of it.
+const FIRST: [&str; 14] = ["tool", "models", "lora", "instructions", "summary", "soundscape", "music", "style", "aspect_ratio", "resolution", "video", "beats", "fps", "tracks"];
+const LAST: [&str; 4] = ["approved", "description", "asset_type", "voice"];
+/// A beat's, a clip's, a LoRA's.
+const INSIDE: [&str; 10] = ["duration", "description", "video", "image", "in", "out", "frames", "clips", "ref", "strength"];
+
+/// What became of a project.
+#[derive(Serialize)]
+pub struct Upgraded {
+    pub assets: Vec<Row>,
+    /// What it couldn't carry over by itself, and what the file says now.
+    pub said: Vec<String>,
+}
+
+/// An asset before and after: `current`, `out_of_date`, `missing`; `new` for what had no row.
+#[derive(Serialize)]
+pub struct Row {
+    pub name: String,
+    pub was: String,
+    pub before: String,
+    pub after: String,
+    pub version: Option<u32>,
+}
+
+fn refused(code: &str, said: String) -> Error {
+    Error::new(Kind::Usage, code, said)
+}
+
+fn io(at: &Path, why: impl std::fmt::Display) -> Error {
+    Error::new(Kind::Unavailable, "project_io", format!("{}: {why}", at.display()))
+}
+
+/// What an entity link holds.
+#[derive(Clone)]
+enum Link {
+    Asset(String),
+    Hash(String),
+}
+
+fn link_of(value: &Value) -> Option<Link> {
+    let text = match value {
+        Value::String(text) => text.trim(),
+        _ => return None,
+    };
+    match mentions(text).as_slice() {
+        [one] if text == format!("<{one}>") => Some(Link::Asset((*one).to_owned())),
+        _ if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_hexdigit()) => Some(Link::Hash(text.to_owned())),
+        _ => None,
+    }
+}
+
+fn text_of(value: Option<&Value>) -> String {
+    value.and_then(Value::as_str).unwrap_or_default().trim().to_owned()
+}
+
+/// What an entity or form says of the asset it folds into.
+#[derive(Clone, Default)]
+struct Said {
+    description: String,
+    asset_type: String,
+    voice: Option<Link>,
+}
+
+/// What the file's old parts turn into.
+#[derive(Default)]
+struct Folding {
+    /// Old name key to new name.
+    renames: BTreeMap<String, String>,
+    /// What each entity says of its sheet, by the sheet's old name key.
+    said_of: BTreeMap<String, Said>,
+    /// Assets that are nothing but what an entity held.
+    made: Vec<(String, Map<String, Value>)>,
+    notes: Vec<String>,
+}
+
+fn said_body(said: &Said) -> Map<String, Value> {
+    let mut body = Map::new();
+    if !said.description.is_empty() {
+        body.insert("description".into(), json!(said.description));
+    }
+    if !said.asset_type.is_empty() {
+        body.insert("asset_type".into(), json!(said.asset_type));
+    }
+    body
+}
+
+impl Folding {
+    /// `name`, an entity or form, onto `sheet`: the name its mentions read from now on is `new`.
+    fn fold(&mut self, name: &str, new: &str, sheet: Option<(&str, Link)>, said: Said, declared: &BTreeSet<String>) {
+        self.renames.insert(name_key(name), new.to_owned());
+        match sheet {
+            Some((_, Link::Asset(target))) if declared.contains(&name_key(&target)) && !self.said_of.contains_key(&name_key(&target)) => {
+                // An asset goes by that name already, and stands: the sheet keeps its own.
+                let new = if declared.contains(&name_key(new)) && name_key(new) != name_key(&target) { target.as_str() } else { new };
+                self.renames.insert(name_key(name), new.to_owned());
+                self.renames.insert(name_key(&target), new.to_owned());
+                self.said_of.insert(name_key(&target), said);
+            }
+            Some((_, Link::Asset(target))) => {
+                self.notes.push(format!("{name}: its picture <{target}> is another's, or nothing in the project, so it now reads that"));
+                let there = self.renames.get(&name_key(&target)).cloned().unwrap_or(target);
+                self.renames.insert(name_key(name), there);
+            }
+            Some((_, Link::Hash(hash))) => {
+                let mut body = said_body(&said);
+                body.insert("approved".into(), json!(hash));
+                self.made.push((new.to_owned(), body));
+                self.said_of.insert(format!("\0{}", name_key(new)), said);
+            }
+            None => {
+                self.made.push((new.to_owned(), said_body(&said)));
+                self.said_of.insert(format!("\0{}", name_key(new)), said);
+            }
+        }
+    }
+
+    /// An entity or form's links: the sheet, its voice, and any other link's name.
+    fn links(&mut self, name: &str, new: &str, body: &Map<String, Value>, parent: &Said, declared: &BTreeSet<String>) {
+        let word = |field: &str| text_of(body.get(field));
+        let said = Said {
+            description: Some(word("description")).filter(|text| !text.is_empty()).unwrap_or_else(|| parent.description.clone()),
+            asset_type: Some(word("kind")).filter(|kind| ASSET_TYPES.contains(&kind.as_str())).unwrap_or_else(|| parent.asset_type.clone()),
+            voice: body.get("voice").and_then(link_of).or_else(|| parent.voice.clone()),
+        };
+        let role = KINDS.iter().find_map(|role| Some((*role, link_of(body.get(*role)?)?)));
+        if role.is_none() && !parent.description.is_empty() {
+            self.notes.push(format!("{name} had its parent's picture, and is now only words: give it `approved`"));
+        }
+        self.fold(name, new, role, said.clone(), declared);
+        for (form, inner) in body.iter().filter_map(|(field, value)| Some((field, value.as_object()?))) {
+            self.links(&format!("{name}.{form}"), &format!("{new}.{form}"), inner, &said, declared);
+        }
+        for (field, value) in body.iter().filter(|(field, _)| !["kind", "description", "render", "voice"].contains(&field.as_str())) {
+            let full = name_key(&format!("{name}.{field}"));
+            match link_of(value) {
+                Some(Link::Asset(target)) => {
+                    let there = self.renames.get(&name_key(&target)).cloned().unwrap_or(target);
+                    self.renames.insert(full, there);
+                }
+                Some(Link::Hash(_)) if KINDS.contains(&field.as_str()) && self.made.iter().any(|(there, _)| there == new) => {
+                    self.renames.insert(full, new.to_owned());
+                }
+                Some(Link::Hash(hash)) => {
+                    let named = format!("{new}.{field}");
+                    self.made.push((named.clone(), Map::from_iter([("approved".to_owned(), json!(hash))])));
+                    self.renames.insert(full, named);
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+/// The function a tool naming `with` means, for what the file says of the asset. A package alone was the adapter's to pick, and now it's said.
+#[allow(clippy::too_many_arguments)]
+fn tool_of(with: &str, kind: &str, inputs: &Map<String, Value>, turbo: Option<bool>, made_by: Option<&str>, folder: &Folder, notes: &mut Vec<String>, name: &str) -> String {
+    let with = with.trim();
+    if made_here(with) {
+        return if kind == "video" { EDIT.to_owned() } else { "cozy/frame".to_owned() };
+    }
+    let is_path = written_as_path(with) || with.ends_with(".py");
+    let named = match is_path {
+        true => {
+            let home = platform::paths::login_home().unwrap_or_default();
+            matches!(crate::local_code::target(with, &folder.dir, &home), Some(Ok((_, Some(_)))))
+        }
+        false => with.split('@').next().unwrap_or(with).trim_start_matches("_/").contains('/'),
+    };
+    if named {
+        return with.to_owned();
+    }
+    let (path, release) = match is_path {
+        true => (with.trim_end_matches('/'), None),
+        false => with.split_once('@').map_or((with, None), |(path, release)| (path, Some(release))),
+    };
+    let package = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let said = |field: &str| inputs.get(field).is_some_and(|value| !value.is_null());
+    let function = if kind == "video" && !said("summary") && !said("beats") && !said("instructions") && (said("video") || said("resolution")) {
+        "upscale"
+    } else {
+        match (turbo, package, made_by) {
+            // Its `generate` takes `turbo`, on unless the file said off: what it was called with.
+            (_, "minimax-h3", _) => "generate",
+            (Some(true), ..) => "generate_turbo",
+            (Some(false), ..) => "generate",
+            (None, _, Some(by)) => by.rsplit('/').next().unwrap_or(by).split('@').next().unwrap_or(by),
+            (None, _, None) => {
+                notes.push(format!("{name}: {with} names a package, and it's taken as {path}/generate: if that's wrong, write its `tool`"));
+                "generate"
+            }
+        }
+    };
+    match release {
+        Some(release) => format!("{path}/{function}@{release}"),
+        None => format!("{path}/{function}"),
+    }
+}
+
+/// `<name>` a line of the file left in a comment when a pin went over it: `video: <hash>  # was <clash>`.
+fn pinned_over(text: &str, field: &str, hash: &str) -> Option<String> {
+    let start = format!("{field}: ");
+    let line = text.lines().find(|line| line.trim_start().starts_with(&start) && line.contains(hash) && line.contains("# was "))?;
+    let was = line.split_once("# was ")?.1.trim();
+    (!mentions(was).is_empty()).then(|| was.to_owned())
+}
+
+/// `pieces` as `tracks`.
+fn tracks_of(pieces: &Value) -> Value {
+    let clip = |piece: &Value| match piece.as_object() {
+        None => piece.clone(),
+        Some(fields) => {
+            let renamed = fields.iter().map(|(field, value)| {
+                let field = match field.as_str() {
+                    "start" => "in",
+                    "end" => "out",
+                    field => field,
+                };
+                (field.to_owned(), value.clone())
+            });
+            Value::Object(renamed.collect())
+        }
+    };
+    json!([{"clips": pieces.as_array().into_iter().flatten().map(clip).collect::<Vec<_>>()}])
+}
+
+/// One asset of format 2 as format 3 writes it, under its old name, and what it was.
+#[allow(clippy::too_many_arguments)]
+fn asset_of(name: &str, body: &Map<String, Value>, defaults: &Map<String, Value>, text: &str, old: &Value, folder: &Folder, notes: &mut Vec<String>) -> (Map<String, Value>, String) {
+    let mut render = match body.get("render") {
+        Some(Value::Object(render)) => render.clone(),
+        Some(Value::String(prompt)) => Map::from_iter([("prompt".to_owned(), json!(prompt))]),
+        _ => Map::new(),
+    };
+    let hash = |field: &&str| body.get(*field).and_then(Value::as_str).is_some_and(|said| !said.is_empty() && mentions(said).is_empty());
+    let held = KINDS.iter().copied().find(hash);
+    let written = text_of(body.get("kind"));
+    let kind = KINDS.iter().copied().find(|kind| *kind == written).or(held).unwrap_or("image");
+    let versions = old["assets"][name_key(name)]["versions"].as_array();
+    // With versions of its own it was made, by `defaults`, and its hash is its approval.
+    let made = versions.is_some_and(|versions| !versions.is_empty());
+    let is_constant = !made && held.is_some() && body.keys().all(|key| ["kind", "description", "image", "video", "audio"].contains(&key.as_str()));
+    let section = defaults.get(kind).and_then(Value::as_object).filter(|_| !is_constant);
+    let own_with = render.remove("with");
+    let with = text_of(own_with.as_ref().or_else(|| section?.get("with")));
+    let turbo = render.remove("turbo").as_ref().and_then(Value::as_bool).or_else(|| section.filter(|_| own_with.is_none())?.get("turbo")?.as_bool());
+    let mut out = Map::new();
+    for field in ["models", "lora"] {
+        if let Some(value) = render.remove(field).or_else(|| section.filter(|_| own_with.is_none())?.get(field).cloned()) {
+            out.insert(field.to_owned(), value);
+        }
+    }
+    let mut inputs = Map::new();
+    if let Some(prompt) = render.remove("prompt") {
+        inputs.insert("instructions".to_owned(), prompt);
+    }
+    inputs.extend(render);
+    for (field, value) in body {
+        match field.as_str() {
+            "kind" | "render" | "description" | "writes" | "with" | "options" | "models" | "lora" | "instructions" => {}
+            "image" | "video" | "audio" if value.as_str().is_some_and(|said| mentions(said).is_empty()) || mentions_in(value).is_empty() => {}
+            "pieces" => drop(inputs.insert("tracks".to_owned(), tracks_of(value))),
+            "beats" => {
+                let mut beats = value.clone();
+                beats.as_array_mut().into_iter().flatten().filter_map(Value::as_object_mut).for_each(|beat| drop(beat.remove("writes")));
+                inputs.insert("beats".to_owned(), beats);
+            }
+            field => drop(inputs.insert(field.to_owned(), value.clone())),
+        }
+    }
+    if let Some(field) = held {
+        let hash = text_of(body.get(field));
+        // A pin over an input left that in a comment, and now it's the input.
+        if let Some(was) = pinned_over(text, field, &hash) {
+            inputs.insert(field.to_owned(), json!(was));
+        }
+        out.insert("approved".to_owned(), json!(hash));
+    }
+    let description = text_of(body.get("description"));
+    if !with.is_empty() && !description.is_empty() && !["instructions", "summary", "beats", "video"].iter().any(|field| inputs.contains_key(*field)) {
+        // Named alone, a package could take these words for what to draw.
+        inputs.insert("instructions".to_owned(), json!(description));
+    }
+    if !description.is_empty() {
+        let said = versions.and_then(|versions| versions.last()?["invocations"][0]["input"]["prompt"].as_str());
+        if !inputs.values().any(|value| value == description.as_str()) && said.is_some_and(|prompt| prompt.contains(description.trim())) {
+            notes.push(format!("{name}: its description was in its prompt, and now goes only to what mentions it: move those words to its `instructions` to keep them there"));
+        }
+        out.insert("description".to_owned(), json!(description));
+    }
+    if !with.is_empty() {
+        let made_by = versions.and_then(|versions| versions.last()?["made_by"]["with"].as_str());
+        let h3 = with.split('@').next().unwrap_or(&with).trim_end_matches('/').rsplit(['/', '\\']).take(2).any(|part| part == "minimax-h3");
+        if h3 && (turbo == Some(false) || (turbo.is_none() && inputs.get("steps").is_some_and(|steps| !steps.is_null()))) {
+            inputs.insert("turbo".to_owned(), json!(false));
+        }
+        out.insert("tool".to_owned(), json!(tool_of(&with, kind, &inputs, turbo, made_by, folder, notes, name)));
+    }
+    out.extend(inputs);
+    (out, kind.to_owned())
+}
+
+/// Each comment of the old file by the asset it sits on or before, under its old name key, those before anything, and those after everything.
+/// A `#` in a `|` text is its text.
+fn comments_of(text: &str) -> (Vec<String>, HashMap<String, Vec<String>>, Vec<String>) {
+    let (mut head, mut before, mut pending): (Vec<String>, HashMap<String, Vec<String>>, Vec<String>) = (vec![], HashMap::new(), vec![]);
+    let (mut section, mut current, mut block): (String, Option<String>, Option<usize>) = (String::new(), None, None);
+    for line in text.lines() {
+        let at = line.len() - line.trim_start_matches(' ').len();
+        if block.is_some_and(|indent| at > indent || line.trim().is_empty()) {
+            continue;
+        }
+        block = None;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with('#') {
+            match &current {
+                Some(name) if at > 2 => before.entry(name.clone()).or_default().push(trimmed.to_owned()),
+                _ => pending.push(trimmed.to_owned()),
+            }
+            continue;
+        }
+        let (written, comment) = split_comment(trimmed);
+        if written.ends_with(['|', '>']) || written.ends_with("|-") || written.ends_with(">-") || written.ends_with("|+") || written.ends_with(">+") {
+            block = Some(at);
+        }
+        let key = written.split(':').next().unwrap_or(written).trim_matches(['"', '\'']);
+        if at == 0 {
+            if section.is_empty() {
+                head.append(&mut pending);
+            }
+            section = key.to_owned();
+            current = None;
+        } else if at == 2 && (section == "assets" || section == "entities") {
+            let name = name_key(key);
+            before.entry(name.clone()).or_default().append(&mut pending);
+            current = Some(name);
+        }
+        if let (Some(comment), Some(name)) = (comment.filter(|comment| !comment.starts_with("# was ")), &current) {
+            before.entry(name.clone()).or_default().push(comment.to_owned());
+        }
+    }
+    (head, before, pending)
+}
+
+/// What a value writes, and its comment. A `#` in quotes is no comment, and neither is one with no space before it.
+fn split_comment(rest: &str) -> (&str, Option<&str>) {
+    let (mut quote, bytes) = (None, rest.as_bytes());
+    for (n, byte) in bytes.iter().enumerate() {
+        match (quote, *byte) {
+            (Some(open), byte) if byte == open => quote = None,
+            (None, b'"' | b'\'') => quote = Some(*byte),
+            (None, b'#') if n == 0 || bytes[n - 1].is_ascii_whitespace() => return (rest[..n].trim(), Some(rest[n..].trim())),
+            _ => {}
+        }
+    }
+    (rest.trim(), None)
+}
+
+/// The file whole, its comments back. Err: it wouldn't read back as what it says.
+fn written(defaults: &Map<String, Value>, assets: &[(String, Map<String, Value>)], head: &[String], before: &HashMap<String, Vec<String>>, tail: &[String]) -> Result<String, Error> {
+    let mut out = String::new();
+    head.iter().for_each(|line| out.push_str(&format!("{line}\n")));
+    out.push_str(&format!("version: {FORMAT}\n"));
+    if !defaults.is_empty() {
+        out.push_str("\ndefaults:\n");
+        KINDS.iter().filter_map(|kind| Some((kind, defaults.get(*kind)?))).for_each(|(kind, value)| write_field(&mut out, kind, value, 2));
+    }
+    out.push_str("\nassets:\n");
+    for (at, (name, body)) in assets.iter().enumerate() {
+        if at > 0 {
+            out.push('\n');
+        }
+        before.get(&name_key(name)).into_iter().flatten().for_each(|line| out.push_str(&format!("  {line}\n")));
+        match body.is_empty() {
+            true => out.push_str(&format!("  {}: {{}}\n", yaml_key(name))),
+            false => {
+                out.push_str(&format!("  {}:\n", yaml_key(name)));
+                ordered(body, &FIRST, &LAST).into_iter().for_each(|(field, value)| write_field(&mut out, field, value, 4));
+            }
+        }
+    }
+    tail.iter().for_each(|line| out.push_str(&format!("{line}\n")));
+    let mut wanted = Map::from_iter([("version".to_owned(), json!(FORMAT))]);
+    if !defaults.is_empty() {
+        wanted.insert("defaults".to_owned(), Value::Object(defaults.clone()));
+    }
+    wanted.insert("assets".to_owned(), Value::Object(assets.iter().map(|(name, body)| (name.clone(), Value::Object(body.clone()))).collect()));
+    let read = to_json_keeping(&out, names_a_file).map_err(|why| invalid("project_yaml", format!("what it would write: {why}")))?;
+    (canonical(&read) == canonical(&Value::Object(wanted))).then_some(out).ok_or_else(|| invalid("project_edit", format!("{} wouldn't read back as what it says, so it is left as it is", folder::PROJECT)))
+}
+
+/// `fields` in the order they're written: `first`, then any other by name, then `last`.
+fn ordered<'a>(fields: &'a Map<String, Value>, first: &[&str], last: &[&str]) -> Vec<(&'a String, &'a Value)> {
+    let rank = |field: &str| first.iter().position(|named| *named == field).map(|at| (0, at)).or_else(|| last.iter().position(|named| *named == field).map(|at| (2, at))).unwrap_or((1, 0));
+    let mut sorted: Vec<_> = fields.iter().collect();
+    sorted.sort_by(|(a, _), (b, _)| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    sorted
+}
+
+/// `key: value` at `at`, on as many lines as it takes.
+fn write_field(out: &mut String, key: &str, value: &Value, at: usize) {
+    let head = format!("{}{}:", " ".repeat(at), yaml_key(key));
+    match value {
+        Value::Array(items) if !items.is_empty() => {
+            out.push_str(&format!("{head}\n"));
+            items.iter().for_each(|item| write_item(out, item, at + 2));
+        }
+        Value::Object(fields) if !fields.is_empty() => {
+            out.push_str(&format!("{head}\n"));
+            ordered(fields, &INSIDE, &[]).into_iter().for_each(|(field, value)| write_field(out, field, value, at + 2));
+        }
+        Value::String(text) if as_block(text) => {
+            out.push_str(&format!("{head} |\n"));
+            write_text(out, text, at + 2);
+        }
+        value => out.push_str(&format!("{head} {}\n", inline(value))),
+    }
+}
+
+/// A list's item at `at`: a mapping's first key on the dash's line.
+fn write_item(out: &mut String, item: &Value, at: usize) {
+    let pad = " ".repeat(at);
+    match item {
+        Value::Object(fields) if !fields.is_empty() => {
+            let mut inner = String::new();
+            ordered(fields, &INSIDE, &[]).into_iter().for_each(|(field, value)| write_field(&mut inner, field, value, at + 2));
+            out.push_str(&format!("{pad}- {}", &inner[at + 2..]));
+        }
+        Value::String(text) if as_block(text) => {
+            out.push_str(&format!("{pad}- |\n"));
+            write_text(out, text, at + 2);
+        }
+        item => out.push_str(&format!("{pad}- {}\n", inline(item))),
+    }
+}
+
+fn write_text(out: &mut String, text: &str, at: usize) {
+    for line in text.trim().split('\n') {
+        match line.is_empty() {
+            true => out.push('\n'),
+            false => out.push_str(&format!("{}{line}\n", " ".repeat(at))),
+        }
+    }
+}
+
+/// Whether `text` reads as itself with no quotes, on one line. A `:` is quoted, as `3:2` is a number to other YAML readers.
+fn is_plain(text: &str) -> bool {
+    !text.contains([':', '\n']) && to_json(&format!("k: {text}\n")).is_ok_and(|read| read["k"].as_str() == Some(text))
+}
+
+/// Whether `text` goes as `|`: several lines, or words that would need quotes. What YAML couldn't hold in that goes quoted.
+fn as_block(text: &str) -> bool {
+    let text = text.trim();
+    (text.contains('\n') || (text.contains(' ') && !is_plain(text))) && !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+}
+
+/// A value on one line: JSON is YAML.
+fn inline(value: &Value) -> String {
+    match value {
+        Value::String(text) if is_plain(text.trim()) => text.trim().to_owned(),
+        Value::String(text) => json!(text.trim()).to_string(),
+        value => value.to_string(),
+    }
+}
+
+
+/// The old lock's rows as versions now are: what they keep, and an Edit's clips each with the file it cut.
+fn shrunk(lock: &mut Value) {
+    for asset in lock["assets"].as_object_mut().into_iter().flat_map(|assets| assets.values_mut()) {
+        for version in asset["versions"].as_array_mut().into_iter().flatten() {
+            let cut: HashMap<String, Value> = version["reads"].as_array().into_iter().flatten().filter_map(|read| {
+                let files = read["files"].as_object()?;
+                let main = ["video", "image", "audio"].iter().find_map(|role| files.get(*role)).or_else(|| files.values().next())?;
+                Some((name_key(read["name"].as_str()?), main.clone()))
+            }).collect();
+            for clip in version.get_mut("clips").and_then(Value::as_array_mut).into_iter().flatten() {
+                let file = clip["clip"].as_str().and_then(|clip| mentions(clip).first().map(|name| name_key(name))).and_then(|name| cut.get(&name).cloned());
+                if let (Some(file), Some(clip)) = (file, clip.as_object_mut()) {
+                    clip.insert("sha256".to_owned(), file);
+                }
+            }
+            let Some(fields) = version.as_object_mut() else { continue };
+            let run = fields.get("runs").and_then(|runs| runs.as_array()?.last().cloned());
+            let with = fields.get("made_by").and_then(|by| by["with"].as_str()).filter(|with| !with.starts_with("cozy/")).map(str::to_owned);
+            fields.extend(run.map(|run| ("run".to_owned(), run)));
+            fields.extend(with.map(|with| ("tool".to_owned(), json!(with))));
+            if let Some(Value::String(inputs)) = fields.get_mut("inputs") {
+                inputs.truncate(16);
+            }
+        }
+    }
+}
+
+/// The version `status` says is asset `name`'s state, if it stands.
+fn current_of(row: Option<&Value>, name: &str, lock: &Lock, pin: Option<&str>, old: &HashMap<String, (u32, String)>) -> Option<u32> {
+    let versions = lock.asset(name).map(|held| held.versions.as_slice()).unwrap_or_default();
+    let Some(row) = row else {
+        // With nothing said: what it approved, else its newest.
+        return match pin {
+            Some(pin) => versions.iter().rev().find(|version| version.main().is_some_and(|main| folder::hex_of(main).starts_with(pin))).map(|version| version.number),
+            None => versions.last().map(|version| version.number),
+        };
+    };
+    if row["standing"] != "current" {
+        return None;
+    }
+    if let Some(number) = row["approved"].as_u64().or(row["version"].as_u64()) {
+        return Some(number as u32);
+    }
+    let inputs = row["inputs"].as_str()?;
+    old.get(inputs).map(|(number, _)| *number).filter(|number| versions.iter().any(|version| version.number == *number))
+}
+
+fn word_of(state: &State) -> &'static str {
+    match state {
+        State::Pinned { changed, .. } if !changed.is_empty() => "out_of_date",
+        State::Stale(_) => "out_of_date",
+        State::Missing | State::Waits => "missing",
+        _ => "current",
+    }
+}
+
+/// `dir`'s project, format 2, as format 3. `status`: what `cozy project status --json` said.
+pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
+    let dir = holding(dir)?;
+    let folder = Folder::at(&dir);
+    let text = folder.text()?;
+    let names_a_file_then = |path: &[&str]| matches!(path, ["entities", ..]) || matches!(path, ["assets", .., "image" | "video" | "audio"]);
+    let top = to_json_keeping(&text, names_a_file_then).map_err(|why| refused("project_yaml", format!("{}: {why}", folder::PROJECT)))?;
+    let Some(top) = top.as_object() else { return Err(refused("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))) };
+    match top.get("version").and_then(Value::as_u64) {
+        Some(FORMAT) => return Err(refused("project_format", format!("{} is format {FORMAT} already", folder::PROJECT))),
+        Some(2) | None => {}
+        Some(other) => return Err(refused("project_format", format!("{} is format {other}, and this moves format 2", folder::PROJECT)).next("cozy project new")),
+    }
+    // A move cut short left the old lock beside the new: it starts from that.
+    let lock_at = [dir.join(WAS_LOCK), dir.join(folder::LOCK)].into_iter().find(|at| at.is_file());
+    let mut old: Value = match &lock_at {
+        Some(at) => {
+            let read = std::fs::read_to_string(at).map_err(|e| io(at, e))?;
+            serde_json::from_str(&read).map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{}: {e}", at.display())))?
+        }
+        None => json!({"format": 2}),
+    };
+    if old["pending"].as_object().is_some_and(|pending| !pending.is_empty()) || old["walk"]["asks"].as_array().is_some_and(|asks| !asks.is_empty()) {
+        return Err(Error::new(Kind::Conflict, "project_busy", "it has runs on their way: let them land first").next("cozy project status"));
+    }
+    let status: Option<Value> = status.map(serde_json::from_str).transpose().map_err(|e| refused("status_unreadable", format!("that isn't what `cozy project status --json` says: {e}")))?;
+    let rows: BTreeMap<String, Value> = (status.iter().flat_map(|status| status["assets"].as_array().into_iter().flatten()))
+        .filter_map(|row| Some((name_key(row["name"].as_str()?), row.clone())))
+        .collect();
+    let mut said = vec![];
+    if status.is_none() {
+        said.push("no --status: each asset's approved version, else its newest, is taken as current, so what was out of date no longer shows it".to_owned());
+    }
+
+    let empty = Map::new();
+    let old_defaults = top.get("defaults").and_then(Value::as_object).unwrap_or(&empty);
+    let declared = top.get("assets").and_then(Value::as_object).unwrap_or(&empty);
+    let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
+    let written_names = keys(&text, &["assets"]);
+    let with_body: BTreeSet<String> = written_names.iter().filter(|name| declared.get(*name).is_some_and(|body| body.as_object().is_some_and(|body| !body.is_empty()))).map(|name| name_key(name)).collect();
+
+    // Entities and forms fold into their sheets, and take their names.
+    let mut folding = Folding::default();
+    for name in keys(&text, &["entities"]) {
+        let Some(body) = entities.get(&name).and_then(Value::as_object) else { continue };
+        folding.links(&name, &name, body, &Said::default(), &with_body);
+    }
+    // What a shot wrote and something reads is a file now.
+    let said_anywhere: BTreeSet<String> = mentions_in(&json!(declared)).iter().chain(mentions_in(&json!(old_defaults)).iter()).map(|name| name_key(name)).collect();
+    let mut stills = vec![];
+    for (key, held) in old["assets"].as_object().into_iter().flatten() {
+        let newest = held["versions"].as_array().and_then(|versions| versions.last());
+        let is_still = newest.is_some_and(|newest| newest["made_by"]["with"] == "cozy/frame");
+        let Some(main) = newest.and_then(|newest| newest["files"]["image"].as_str()).filter(|_| is_still && !with_body.contains(key)) else { continue };
+        if !written_names.iter().any(|name| name_key(name) == *key) && !said_anywhere.contains(key) {
+            continue;
+        }
+        let shown = held["name"].as_str().filter(|name| !name.is_empty()).unwrap_or(key).to_owned();
+        stills.push((key.clone(), shown, folder::prefix_of(main).to_owned()));
+    }
+
+    let mut defaults = Map::new();
+    for (kind, section) in old_defaults {
+        let mut section = section.as_object().cloned().unwrap_or_default();
+        section.remove("with");
+        section.remove("turbo");
+        if !section.is_empty() {
+            defaults.insert(kind.clone(), Value::Object(section));
+        }
+    }
+    let renames = folding.renames.clone();
+    let renamed = |name: &str| renames.get(&name_key(name)).cloned();
+    let mut assets: Vec<(String, Map<String, Value>)> = std::mem::take(&mut folding.made);
+    let mut notes = std::mem::take(&mut folding.notes);
+    for (_, new, hash) in &stills {
+        assets.push((new.clone(), Map::from_iter([("approved".to_owned(), json!(hash))])));
+    }
+    let mut kinds: Vec<(String, String)> = vec![];
+    for name in &written_names {
+        let key = name_key(name);
+        if !with_body.contains(&key) {
+            // Saying nothing, it had nothing to make, and a still's is written above.
+            if !stills.iter().any(|(still, ..)| *still == key) {
+                notes.push(format!("{name} said nothing: it is gone from the file"));
+            }
+            continue;
+        }
+        let Some(body) = declared.get(name).and_then(Value::as_object) else { continue };
+        let (mut asset, kind) = asset_of(name, body, old_defaults, &text, &old, &folder, &mut notes);
+        if let Some(tool) = asset.get("tool").and_then(Value::as_str) {
+            kinds.push((plain_tool(tool, &folder), kind));
+        }
+        if let Some(held) = folding.said_of.get(&key) {
+            if !held.description.is_empty() {
+                asset.insert("description".to_owned(), json!(held.description));
+            }
+            if !held.asset_type.is_empty() {
+                asset.insert("asset_type".to_owned(), json!(held.asset_type));
+            }
+        }
+        assets.push((renamed(name).unwrap_or_else(|| name.clone()), asset));
+    }
+    // Voices, once every name is known. A voice by its hash is a file of its own.
+    let mut voices = vec![];
+    for (key, held) in &folding.said_of {
+        let Some(voice) = &held.voice else { continue };
+        let owner = key.strip_prefix('\0').map_or_else(|| renamed(key).unwrap_or_else(|| key.clone()), str::to_owned);
+        let target = match voice {
+            Link::Asset(asset) => renamed(asset).unwrap_or_else(|| asset.clone()),
+            Link::Hash(hash) => {
+                let made = format!("{owner}.voice");
+                voices.push((made.clone(), Map::from_iter([("approved".to_owned(), json!(hash))])));
+                made
+            }
+        };
+        if let Some((_, body)) = assets.iter_mut().find(|(name, _)| name_key(name) == name_key(&owner)) {
+            body.insert("voice".to_owned(), json!(format!("<{target}>")));
+        }
+    }
+    assets.extend(voices);
+    for (_, body) in &mut assets {
+        // A voice is under its new name already.
+        let voice = body.remove("voice");
+        body.values_mut().for_each(|value| mentions_renamed(value, &renamed));
+        body.extend(voice.map(|voice| ("voice".to_owned(), voice)));
+    }
+    // Comments come along, each on the asset it sat on, whatever that is called now.
+    let (head, mut before, tail) = comments_of(&text);
+    for (from, to) in &renames {
+        if let Some(lines) = before.remove(from) {
+            before.entry(name_key(to)).or_default().extend(lines);
+        }
+    }
+    let new_text = written(&defaults, &assets, &head, &before, &tail)?;
+
+    // The lock under the new names, in what a version keeps. Only the versions that stand get the new key.
+    let was_key: HashMap<String, (u32, String)> = old["assets"].as_object().into_iter().flatten().flat_map(|(key, held)| {
+        let key = key.clone();
+        held["versions"].as_array().cloned().unwrap_or_default().into_iter().filter_map(move |version| Some((version["inputs"].as_str()?.to_owned(), (version["number"].as_u64()? as u32, key.clone()))))
+    }).collect();
+    let measured: Map<String, Value> = old["files"].as_object().into_iter().flatten().filter_map(|(sha256, file)| {
+        let keep = ["width", "height", "fps", "frames", "alpha", "duration_ms"].iter().filter_map(|field| Some(((*field).to_owned(), file.get(*field)?.clone()))).collect::<Map<_, _>>();
+        (!keep.is_empty()).then(|| (sha256.clone(), Value::Object(keep)))
+    }).collect();
+    let paths: BTreeMap<String, String> = old["files"].as_object().into_iter().flatten().filter_map(|(sha256, file)| Some((sha256.clone(), file["path"].as_str()?.to_owned()))).collect();
+    shrunk(&mut old);
+    old["format"] = json!(folder::FORMAT);
+    let mut lock: Lock = serde_json::from_value(old).map_err(|e| Error::new(Kind::Validation, "lock_unreadable", format!("{}: {e}", folder::LOCK)))?;
+    for (key, mut held) in std::mem::take(&mut lock.assets) {
+        let shown = renamed(&key).or_else(|| renamed(&held.name)).unwrap_or_else(|| if held.name.is_empty() { key.clone() } else { held.name.clone() });
+        for version in &mut held.versions {
+            for left in &mut version.without {
+                if let Some(to) = renamed(&left.piece) {
+                    left.piece = to;
+                }
+            }
+            for clip in &mut version.clips {
+                let mut value = json!(clip.clip);
+                mentions_renamed(&mut value, &renamed);
+                clip.clip = value.as_str().unwrap_or_default().to_owned();
+            }
+        }
+        held.name = shown.clone();
+        lock.assets.insert(name_key(&shown), held);
+    }
+    folder.fill(&mut lock);
+    // What each is, while this reads with nothing here to say.
+    for (sha256, path) in &paths {
+        if let Some(file) = lock.files.get_mut(sha256) {
+            file.path.clone_from(path);
+        }
+    }
+    lock.makes.extend(kinds);
+    let old_reserved = std::mem::take(&mut lock.reserved);
+    let doc = Doc::of(&folder, &new_text, &lock)?;
+    for asset in &doc.assets {
+        let Some(tool) = &asset.tool else { continue };
+        let package = tool.split('/').next().unwrap_or(tool);
+        if let Some(tags) = old_reserved.get(package) {
+            lock.reserved.insert(tool.clone(), tags.clone());
+        }
+    }
+    let doc = Doc::of(&folder, &new_text, &lock)?;
+    // What its status said, under whichever name it had.
+    let was_of = |name: &str| renames.iter().filter(|(_, new)| name_key(new) == name_key(name)).map(|(old, _)| old).find(|old| rows.contains_key(*old)).cloned();
+    let row_of = |name: &str| rows.get(&was_of(name).unwrap_or_else(|| name_key(name)));
+    let current: BTreeMap<String, u32> = (doc.assets.iter())
+        .filter_map(|asset| {
+            let pin = asset.pin.as_deref().map(|pin| &folder::hex_of(pin)[..12]);
+            Some((name_key(&asset.name), current_of(row_of(&asset.name), &asset.name, &lock, pin, &was_key)?))
+        })
+        .collect();
+    doc.stamped(&mut lock, &current);
+    for asset in &doc.assets {
+        for version in lock.assets.get_mut(&name_key(&asset.name)).into_iter().flat_map(|held| &mut held.versions) {
+            version.tool = version.tool.take().and_then(|made| other_than(&made, asset.tool.as_deref()));
+        }
+    }
+
+    // Old files aside, then the lock and the file, each whole: a move cut short starts again from the old lock.
+    let yaml_at = dir.join(folder::PROJECT);
+    if !dir.join(WAS_YAML).is_file() {
+        platform::durable::replace(&dir.join(WAS_YAML), text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+    }
+    if let Some(at) = lock_at.filter(|at| !at.ends_with(WAS_LOCK)) {
+        std::fs::copy(&at, dir.join(WAS_LOCK)).map_err(|e| io(&at, e))?;
+    }
+    platform::durable::replace(&dir.join(MEASURED), json!(measured).to_string().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+    platform::durable::replace(&dir.join(folder::LOCK), lock.written().as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+    platform::durable::replace(&yaml_at, new_text.as_bytes(), 0o644).map_err(|e| io(&dir, e))?;
+    canvas::all_renamed(&folder, &renamed)?;
+
+    // As a status would read it now, from what is on disk.
+    let (doc, lock) = (Doc::load(&folder)?, folder.lock()?);
+    let stood = doc.stand(&lock);
+    said.extend(notes);
+    for i in 0..doc.assets.len() {
+        let tags = doc.tags(i).cloned().unwrap_or_default();
+        let gone = doc.missing_names(i, &tags);
+        if !gone.is_empty() {
+            said.push(format!("{} mentions {}, which no version wrote and nothing makes: edit its text", doc.assets[i].name, gone.iter().map(|name| format!("<{name}>")).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    said.extend(doc.warnings.iter().map(|warning| warning.message.clone()));
+    let assets = (0..doc.assets.len())
+        .map(|i| {
+            let name = doc.assets[i].name.clone();
+            Row {
+                was: was_of(&name).unwrap_or_default(),
+                before: row_of(&name).and_then(|row| row["standing"].as_str()).unwrap_or("new").to_owned(),
+                after: word_of(&stood[i].state).to_owned(),
+                version: stood[i].version(),
+                name,
+            }
+        })
+        .collect();
+    Ok(Upgraded { assets, said })
+}

@@ -130,9 +130,6 @@ pub struct State {
     pub id: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
-    /// Identity and links, no work: they make nothing and hold no version.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entities: Vec<Entity>,
     /// What is running and what is queued, in the order it goes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queue: Vec<Queued>,
@@ -197,7 +194,7 @@ impl Warning {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Read {
     pub name: String,
-    /// Where its text says so: `summary`, `beats.0.description`, `pieces.1`, `style` for what defaults gave it.
+    /// Where its text says so: `summary`, `beats.0.description`, `tracks.0.clips.1`, `style` for what defaults gave it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at: Vec<String>,
 }
@@ -240,12 +237,9 @@ pub struct Import {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Card>,
-    /// Runs `birefnet/remove_background` on it as a run of the project: its output is what to import.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub remove_background: bool,
-    /// The machine that run goes to; absent: this computer if it can run models, else a machine you have up.
+    /// The words for whatever mentions it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<crate::calcifer::On>,
+    pub description: Option<String>,
 }
 
 /// What an import made: the element's name, its file's hash, the field that names one of its type (`image`, `video`, `audio`), and its path in the project.
@@ -258,12 +252,6 @@ pub struct Imported {
     /// Its bytes were in `files/` already, so nothing was copied.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub already: bool,
-    /// The run removing its background, to follow. No element yet, and `name` is what to call its output: `sha256`, `field` and `path` are empty.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<Box<crate::calcifer::Run>>,
-    /// Why its background wasn't removed: a plain copy stands.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
 }
 
 /// `GET /v1/projects/{id}/canvas`: each element's row, by name. A name with no row isn't listed, and the page places it.
@@ -311,6 +299,9 @@ pub struct Clip {
     /// A still's duration. None: 3 s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames: Option<u64>,
+    /// On a version's clip: the file it cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// An Edit's clips as they read now, or as they read when a version of it was rendered.
@@ -465,7 +456,7 @@ pub struct Asset {
     /// The runs making a version of it now (`GET /v1/runs/{id}` says how far).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub making: Vec<u64>,
-    /// Free text from project.yaml.
+    /// Its file's type: `image`, `video` or `audio`.
     pub kind: String,
     /// What its alternatives are called: `take` (one that holds a video) or `version`.
     pub noun: String,
@@ -673,20 +664,6 @@ pub struct Runs {
 
 fn one() -> u32 {
     1
-}
-
-/// An entity, with its links (field to asset) and sub-entities.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Entity {
-    pub name: String,
-    pub kind: String,
-    /// What it is, as the file says; a sub-entity with none has its parent's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub links: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subs: Vec<Entity>,
 }
 
 /// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),

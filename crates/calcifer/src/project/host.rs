@@ -23,6 +23,8 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::broadcast;
 
+use super::format::FORMAT;
+
 use crate::{
     api::{Api, Refusal},
     local_code,
@@ -40,38 +42,26 @@ pub struct Package {
     pub local: Option<PathBuf>,
     /// A yanked release this walk moved off, said once.
     pub moved: Option<String>,
-    /// The function its tool names; none: the package alone, whose adapter picks.
+    /// The function its tool names; none: the package alone.
     pub named: Option<String>,
     document: Value,
 }
 
-/// How a node of a package gets made.
+/// How an asset of a package gets made.
 pub enum Maker {
-    /// Told the function, if one is named, it answers the calls.
-    Adapter(Renderer),
-    /// No adapter speaks for this function: it's called with the node's fields.
+    /// Told the function, it answers the calls.
+    Adapter(Renderer, String),
+    /// No adapter speaks for this function: it's called with the asset's inputs.
     Direct(Renderer),
 }
 
-/// The project format its record is.
-const FORMAT: u64 = 2;
-
 impl Package {
-    /// How a node of `kind` gets made: the adapter that speaks for its function, else that function directly. With the package alone, the
-    /// adapter that picks for itself, else its one public function that makes `kind`. None: this package can't make it.
-    pub fn maker(&self, kind: &str) -> Result<Option<Maker>, Error> {
-        if let Some(adapter) = self.adapter(kind, self.named.as_deref()) {
-            return Ok(Some(Maker::Adapter(adapter)));
-        }
-        if let Some(function) = &self.named {
-            return self.function(function).map(|renderer| Some(Maker::Direct(renderer)));
-        }
-        let interface = self.interface();
-        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
-        let mut public = interface.public().into_iter().filter(makes);
-        match (public.next(), public.next()) {
-            (Some(only), None) => self.function(only).map(|renderer| Some(Maker::Direct(renderer))),
-            _ => Ok(None),
+    /// How its tool's asset gets made: the adapter that speaks for the function it names, else that function directly. None: it names none.
+    pub fn maker(&self) -> Result<Option<Maker>, Error> {
+        let Some(function) = self.named.clone() else { return Ok(None) };
+        match self.adapter(&function) {
+            Some(adapter) => Ok(Some(Maker::Adapter(adapter, function))),
+            None => self.function(&function).map(|renderer| Some(Maker::Direct(renderer))),
         }
     }
 
@@ -91,9 +81,9 @@ impl Package {
         Interface::parse(&self.document).unwrap_or_default()
     }
 
-    /// The function of its package that turns an operation of `kind` told `function` into calls, if it reads this format.
-    pub fn adapter(&self, kind: &str, function: Option<&str>) -> Option<Renderer> {
-        let name = adapter_name(kind, function);
+    /// The function of its package that turns an asset of `function` into calls, if it reads this format.
+    pub fn adapter(&self, function: &str) -> Option<Renderer> {
+        let name = adapter_name(function);
         let entry = interface::entrypoints(&self.document).find(|entry| interface::name(entry) == Some(name.as_str()))?;
         let version = entry["request"]["fields"].as_array()?.iter().find(|field| field["name"] == "version")?;
         let reads = version["type"]["literal"].as_array()?.iter().any(|value| value.as_u64() == Some(FORMAT));
@@ -126,7 +116,7 @@ pub struct Renderer {
     pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
     pub accepts: BTreeSet<String>,
-    /// An adapter's typed `fields`, if it types them: a field the asset wrote that isn't one is warned of.
+    /// An adapter's typed `inputs`, if it types them: one the asset wrote that isn't one is warned of.
     pub signature: Option<BTreeSet<String>>,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
@@ -152,7 +142,7 @@ impl Renderer {
             .filter(|field| field["constraints"]["max_length"].as_u64() != Some(0))
             .filter_map(|field| field["name"].as_str().map(str::to_owned))
             .collect();
-        let typed = fields.and_then(|fields| fields.iter().find(|field| field["name"] == "fields"));
+        let typed = fields.and_then(|fields| fields.iter().find(|field| field["name"] == "inputs"));
         let signature = typed.and_then(|field| Some(field["type"]["fields"].as_array()?.iter().filter_map(|field| field["name"].as_str().map(str::to_owned)).collect()));
         Ok(Self {
             package: package.into(),

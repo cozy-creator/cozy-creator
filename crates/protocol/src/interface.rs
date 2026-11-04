@@ -184,15 +184,12 @@ pub struct Interface {
 
 /// The entrypoint a package with recipes runs them through (`cozy model quantize`).
 pub const RECIPES: &str = "quantize";
-/// A project adapter's function is named this and the kind it adapts (`App.project_adapter`): `cozy project`'s own, never offered to run by hand.
+/// A project adapter's function is named this and the function it speaks for (`App.project_adapter`): `cozy project`'s own, never offered to run by hand.
 pub const ADAPTER: &str = "project-adapter-";
 
-/// The name of the adapter of `kind` that speaks for `function`, or with none the one that picks for itself.
-pub fn adapter_name(kind: &str, function: Option<&str>) -> String {
-    match function {
-        Some(function) => format!("{ADAPTER}{kind}-{function}"),
-        None => format!("{ADAPTER}{kind}"),
-    }
+/// The name of the adapter that speaks for `function`.
+pub fn adapter_name(function: &str) -> String {
+    format!("{ADAPTER}{function}")
 }
 
 /// One declared recipe: the lane it writes and the model it reads.
@@ -426,9 +423,9 @@ impl Interface {
 }
 
 impl Interface {
-    /// The project adapter of `kind` told `function`, or, with none, the one that picks for itself.
-    pub fn adapter(&self, kind: &str, function: Option<&str>) -> Option<&Callable> {
-        let name = adapter_name(kind, function);
+    /// The project adapter that speaks for `function`.
+    pub fn adapter(&self, function: &str) -> Option<&Callable> {
+        let name = adapter_name(function);
         self.callables.iter().find(|callable| callable.name == name)
     }
 
@@ -484,8 +481,8 @@ impl Callable {
     }
 
     /// An adapter's typed `fields`, what a box of it shows; none for one that takes them as they come.
-    pub fn typed_fields(&self) -> Option<&Struct> {
-        match &self.field("fields")?.ty {
+    pub fn typed_inputs(&self) -> Option<&Struct> {
+        match &self.field("inputs")?.ty {
             Type::Struct(fields) => Some(fields),
             _ => None,
         }

@@ -1,8 +1,8 @@
 //! Projects (xs-151, cl-758): a folder of assets, each a stable name holding a set of files. Calcifer opens a project by its path
 //! (and keeps every folder it opened in its index) and walks it: an operation makes an asset only when it has no state, and is an
 //! ordinary run, sent as soon as what it reads has settled, so independent ones run at once and the machines' schedulers place
-//! them. Its package's adapter for its kind turns it into calls, and they land as one version of the asset, in `files/` and
-//! project.lock (people write project.yaml; cozy writes one line of it at `approve`, `unpin`, `import` and `rename`). The reserved package `cozy` runs
+//! them. Its function's adapter turns it into calls, and they land as one version of the asset, in `files/` and
+//! project.lock (a person or the page writes project.yaml, and Calcifer writes it whole, `assetfile`). The reserved package `cozy` runs
 //! here, free. One walker per project takes every render asked of it, and what it owes is kept in
 //! project.lock, so a restarted Calcifer goes on with it. Its clients ask and watch; the runs go on without them.
 mod archive;
@@ -19,6 +19,7 @@ mod thumbs;
 mod caption;
 mod direct;
 mod tools;
+mod upgrade;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -44,8 +45,7 @@ use axum::{
 };
 use futures_util::{FutureExt as _, Stream, StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use protocol::{
-    tool::EDIT,
-    calcifer::{FileTerm, Kind as RunKind, On, Run, RunRequest, StagedInput, Status as RunStatus, SubmitRun, Warning},
+    calcifer::{Kind as RunKind, On, Run, StagedInput, Status as RunStatus, SubmitRun, Warning},
     choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
@@ -64,12 +64,13 @@ use tokio::sync::{Notify, broadcast};
 use tracing::warn;
 
 use crate::api::{Api, Refusal, parse};
-use folder::{Ask, Failed, Files, Folder, Invocation, Keeps, Lock, MadeBy, Pending, ReadFrom, Take, Target, Tried, Version};
+use folder::{Ask, Failed, Files, Folder, Invocation, Keeps, Lock, Pending, Take, Target, Tried, Version};
 use format::{ALL, Doc, Standing, State as Stand, Tool};
 use graph::name_key;
 use host::{Host, Maker, Package, Renderer};
 use jobs::{Going, Jobs};
 use tools::Canvas;
+pub use upgrade::{Upgraded, upgrade};
 
 /// The projects this Calcifer knows: those open since it started, by id (one folder is always one
 /// project), and its index of every folder it opened, kept in `projects.json`.
@@ -209,8 +210,6 @@ impl Projects {
 
 /// A run that a person canceled: no version, and no failure of its asset.
 const CANCELED: &str = "version_canceled";
-/// A picture at least this share transparent has its background gone already.
-const OPAQUE_BELOW: f64 = 0.05;
 /// How long what an import under an `Idempotency-Key` answered is kept for its retries: as long as a held file waits.
 const IMPORT_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 /// How long what was heard of a package stands before a read asks again, in the background.
@@ -634,7 +633,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
             let busy = *project.walking.lock().expect("walking lock");
             let moving = project.moving.try_lock().is_err();
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], entities: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![], board: board_of(&project) }));
+            return Ok(Json(ProjectState { id, path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, moving, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning::of_file(warning)], next: vec![], board: board_of(&project) }));
         }
     };
     let stand = doc.stand(&lock);
@@ -648,10 +647,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     }
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
-    let entities = (0..doc.assets.len()).filter(|&i| doc.assets[i].links.as_ref().is_some_and(|links| links.parent.is_none())).map(|i| entity_row(&doc, i)).collect();
     let etags = assetfile::etags(&text);
     let assets: Vec<Row> = (0..doc.assets.len())
-        .filter(|&i| doc.assets[i].links.is_none())
         .map(|i| {
             let mut row = row(&api, &doc, folder, &lock, &stand, i);
             row.etag = etags.get(&name_key(&row.name)).cloned();
@@ -678,7 +675,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let kept: BTreeSet<&str> = assets.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !kept.contains(warning.message.as_str()));
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next, board: board_of(&project) }))
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, cuts, warnings, next, board: board_of(&project) }))
 }
 
 /// What to run next on a project: its orphans' renames and `reclaim`, then a pull of what isn't here, else a render of what is owed.
@@ -701,20 +698,6 @@ fn board_of(project: &Project) -> Option<protocol::project::Board> {
     Some(project.jobs.board()).filter(|board| board.seq > 0)
 }
 
-/// Entity `i` as `GET /v1/projects/{id}` lists it, with its links and sub-entities.
-fn entity_row(doc: &Doc, i: usize) -> protocol::project::Entity {
-    let asset = &doc.assets[i];
-    let links = asset.links.as_ref();
-    let subs = links.into_iter().flat_map(|links| &links.subs).filter_map(|sub| doc.find(sub));
-    protocol::project::Entity {
-        name: asset.name.clone(),
-        kind: asset.kind.clone(),
-        description: asset.fields.get("description").and_then(Value::as_str).map(str::to_owned),
-        links: links.map(|links| links.own.clone()).unwrap_or_default(),
-        subs: subs.map(|sub| entity_row(doc, sub)).collect(),
-    }
-}
-
 /// The local code `id`'s assets name, each once: its path as they write it, and where that is.
 pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, PathBuf)>, Refusal> {
     let project = api.projects.get(api, id)?;
@@ -734,7 +717,7 @@ pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, 
     Ok(named.into_iter().map(|(path, written)| (written, path)).collect())
 }
 
-/// What can be said of each asset whose published package has been heard of: its adapter for its kind, its tags. A read waits on no
+/// What can be said of each asset whose published package has been heard of: what makes it, its tags. A read waits on no
 /// Hub and writes nothing, so what isn't heard of yet is said by a later read, or a render. Local code is described only on a machine, so a render says it.
 fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<ProjectWarning> {
     let mut said = vec![];
@@ -747,8 +730,8 @@ fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<ProjectWarning> {
         if doc.tags(i).is_none() {
             said.extend(doc.said_once_read(i, &package.reserved()));
         }
-        if doc.assets[i].pin.is_none() && !matches!(package.maker(&doc.assets[i].kind), Ok(Some(_))) {
-            said.push(ProjectWarning::of(&doc.assets[i].name, no_adapter(&doc.assets[i].name, &package.name, &doc.assets[i].kind)));
+        if doc.assets[i].pin.is_none() && !matches!(package.maker(), Ok(Some(_))) {
+            said.push(ProjectWarning::of(&doc.assets[i].name, no_function(&doc.assets[i].name, &package.name)));
         }
     }
     said
@@ -785,18 +768,24 @@ fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
     entry.package.clone()
 }
 
-/// Keeps `package`'s tags in project.lock for what reads the file.
-fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) {
-    let (key, tags) = (doc.assets[i].tool.clone().unwrap_or_default(), package.reserved());
-    let same = folder.lock().is_ok_and(|lock| lock.reserved.get(&key) == Some(&tags));
-    if !same && let Err(error) = folder.update_lock(|lock| drop(lock.reserved.insert(key.clone(), tags.clone()))) {
+/// Keeps `package`'s tags, and what its function outputs, in project.lock for what reads the file. Whether that says what asset `i` is for the first time.
+fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) -> bool {
+    let (key, tags, makes) = (doc.assets[i].tool.clone().unwrap_or_default(), package.reserved(), package.named_kind());
+    let same = folder.lock().is_ok_and(|lock| lock.reserved.get(&key) == Some(&tags) && (makes.is_none() || lock.makes.get(&key) == makes.as_ref()));
+    if !same
+        && let Err(error) = folder.update_lock(|lock| {
+            lock.reserved.insert(key.clone(), tags.clone());
+            lock.makes.extend(makes.clone().map(|makes| (key.clone(), makes)));
+        })
+    {
         warn!("{}: {error}", key);
     }
+    !doc.assets[i].kind_known && makes.is_some()
 }
 
-/// The line that says an asset can't be made by what names it.
-fn no_adapter(name: &str, package: &str, kind: &str) -> String {
-    format!("{name}: {package} has no adapter for kind {kind}, and no one function that makes it, so name one: `{package}/<function>`")
+/// The line that says an asset's tool names a package and no function.
+fn no_function(name: &str, package: &str) -> String {
+    format!("{name}: a tool is a function, and {package} has no one function that makes it, so name one: `{package}/<function>`")
 }
 
 /// What a cut of asset `i` is at the root: `<name>.mp4`.
@@ -812,8 +801,8 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
         .and_then(|m| m.modified())
         .ok()
         .map(|at| at.duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_millis() as i64));
-    let canvas = Canvas::of(&asset.fields, &mut vec![]);
-    let (mut pieces, skips) = tools::pieces(&asset.fields, &stand[i].reads, folder, lock);
+    let canvas = Canvas::of(&asset.inputs, &mut vec![]);
+    let (mut pieces, skips) = tools::pieces(&asset.inputs, &stand[i].reads, folder, lock);
     tools::past_end(&mut pieces, canvas.fps);
     let made = tools::measure(&pieces, canvas.fps);
     // The film's own length once one stands, whatever its pieces now add up to. A film the size of its version is that version, whose
@@ -828,16 +817,18 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
     Cut { cut: name, path, fps: canvas.fps, cut_at_ms, frames, retimed, skips, without }
 }
 
-/// What a cut's version was cut from: each piece's asset, and its version when it was one.
+/// What a cut's version was cut from: each clip's asset, once, and its version when it was one.
 fn cut_from(lock: &Lock, version: &Version) -> Vec<String> {
-    if version.made_by.as_ref().is_none_or(|by| by.with != EDIT) {
-        return vec![];
+    let mut from: Vec<String> = vec![];
+    for clip in &version.clips {
+        let name = graph::mentions(&clip.clip).first().map_or_else(|| clip.clip.clone(), |name| (*name).to_owned());
+        let number = clip.sha256.as_ref().and_then(|sha256| lock.asset(&name)?.versions.iter().find(|held| held.main() == Some(sha256)));
+        let said = number.map_or_else(|| name.clone(), |held| format!("{name} {}", held.number));
+        if !from.iter().any(|there| there.split(' ').next() == Some(name.as_str())) {
+            from.push(said);
+        }
     }
-    let took = |read: &ReadFrom| {
-        let number = lock.asset(&read.name)?.versions.iter().find(|held| held.main() == folder::main_of(&read.files))?.number;
-        Some(format!("{} {number}", read.name))
-    };
-    version.reads.iter().map(|read| took(read).unwrap_or_else(|| read.name.clone())).collect()
+    from
 }
 
 /// What its versions are called.
@@ -924,7 +915,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         ([], Stand::Pinned { version: Some(version), changed }) if changed.is_empty() => format!("pinned: {noun} {version}"),
         ([], Stand::Pinned { version: Some(version), changed }) => format!("pinned: {noun} {version}; its inputs changed: {}", changed.join(", ")),
         ([], Stand::Current(_)) => "current".into(),
-        ([], Stand::Linked) => "linked".into(),
+        ([], Stand::Words) => "only words".into(),
         ([], Stand::Waits) => "waits for what it reads".into(),
         ([], Stand::Stale(why)) => format!("out of date: {why}"),
         ([], Stand::Missing) if asset.hollow => "it has nothing to make".into(),
@@ -961,15 +952,15 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
                     prefix: folder::prefix_of(version.main()?).to_owned(),
                     kept: version.kept,
                     execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
-                    run: version.runs.last().copied(),
+                    run: version.run,
                     main: main_file(folder, lock, &version.files),
                     from: cut_from(lock, version),
                     without: version.without.iter().map(folder::Without::said).collect(),
                     timeline: (!version.clips.is_empty()).then(|| {
                         let files = |name: &str| {
-                            let read = version.reads.iter().find(|read| name_key(&read.name) == name_key(name));
+                            let cut = version.clips.iter().find(|clip| clip.sha256.is_some() && graph::mentions(&clip.clip).first().is_some_and(|mention| name_key(mention) == name_key(name)));
                             let why = || version.without.iter().find(|left| name_key(&left.piece) == name_key(name)).map_or_else(|| "no longer in the project".to_owned(), |left| left.why.clone());
-                            read.map(|read| read.files.clone()).ok_or_else(why)
+                            cut.and_then(|clip| Some(Files::from([("file".to_owned(), clip.sha256.clone()?)]))).ok_or_else(why)
                         };
                         tools::timeline_now(version.clips.clone(), version.fps, files, folder, lock)
                     }),
@@ -990,7 +981,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
         alpha: main.is_some_and(|file| file.alpha > 0.0),
         absent,
         machine,
-        made_by: made.and_then(|made| made.made_by.as_ref()).map(|by| by.with.clone()),
+        made_by: made.map(|made| made.tool.clone().unwrap_or_else(|| doc.target(i))).filter(|made_by| !made_by.is_empty()),
         status,
         reads: doc.reads_of(i),
         fields: doc.flat_fields(i),
@@ -1004,7 +995,7 @@ fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standin
                 let why = || if doc.find(name).is_some() { "no version yet" } else { "no longer in the project" }.to_owned();
                 read.map(|read| read.files.clone()).ok_or_else(why)
             };
-            tools::timeline_now(tools::clips(&asset.fields, &standing.reads), Canvas::of(&asset.fields, &mut vec![]).fps, files, folder, lock)
+            tools::timeline_now(tools::clips(&asset.inputs, &standing.reads), Canvas::of(&asset.inputs, &mut vec![]).fps, files, folder, lock)
         }),
         rendering: None,
     }
@@ -1022,7 +1013,7 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
     };
     let mut counted = BTreeSet::new();
     (lock.assets.iter())
-        .filter(|(key, held)| doc.holds(key).is_none() && !held.versions.is_empty())
+        .filter(|(key, held)| doc.find(key).is_none() && !held.versions.is_empty())
         .map(|(key, held)| {
             let files = held.versions.iter().flat_map(|version| version.files.values());
             let freed: Vec<&String> = files.filter(|sha256| !kept.contains(*sha256) && counted.insert((*sha256).clone())).collect();
@@ -1042,8 +1033,8 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
 
 /// Every file something the file names uses: its assets' versions, what is on its way, and its file pins.
 fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
-    let mut kept: BTreeSet<String> = lock.named(|key| doc.holds(key).is_some()).into_iter().map(str::to_owned).collect();
-    kept.extend(doc.assets.iter().filter_map(|asset| Some(asset.pin.as_ref()?.1.clone())));
+    let mut kept: BTreeSet<String> = lock.named(|key| doc.find(key).is_some()).into_iter().map(str::to_owned).collect();
+    kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
     kept
 }
 
@@ -1074,15 +1065,15 @@ async fn reclaim(
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
-        for held in lock.assets.iter().filter(|(key, _)| doc.holds(key).is_none()).map(|(_, held)| held) {
-            let cut = held.versions.iter().any(|version| version.made_by.as_ref().is_some_and(|by| by.with == EDIT));
+        for held in lock.assets.iter().filter(|(key, _)| doc.find(key).is_none()).map(|(_, held)| held) {
+            let cut = held.versions.iter().any(|version| !version.clips.is_empty());
             if cut {
                 let name = cut_name(&held.name);
                 let _ = std::fs::remove_file(folder.dir.join(&name));
                 let _ = std::fs::remove_file(folder.dir.join(FsPath::new(&name).with_extension("otio")));
             }
         }
-        folder.update_lock(|lock| lock.assets.retain(|key, _| doc.holds(key).is_some())).map_err(Refusal)?;
+        folder.update_lock(|lock| lock.assets.retain(|key, _| doc.find(key).is_some())).map_err(Refusal)?;
     }
     let (files, bytes) = folder.sweep(&kept, asked.yes).map_err(Refusal)?;
     if asked.yes {
@@ -1108,21 +1099,17 @@ async fn rename(
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let mut doc = Doc::load(folder).map_err(Refusal)?;
     let free = doc.find(&asked.to).is_none() || name_key(&asked.to) == name_key(&asked.from);
-    if let Some(i) = doc.holds(&asked.from).filter(|_| free) {
-        if !doc.declared(i) {
-            let said = format!("{} is named by another's lines in {}: rename it there", asked.from, folder::PROJECT);
-            return Err(refuse(Kind::Usage, "project_edit", said));
-        }
-        folder.edit_project(|text| format::renamed_in(text, &asked.from, &asked.to)).map_err(Refusal)?;
+    if doc.find(&asked.from).is_some() && free {
+        folder.edit_project(|text| assetfile::renamed(text, &asked.from, &asked.to)).map_err(Refusal)?;
         doc = Doc::load(folder).map_err(Refusal)?;
     }
     let lock = folder.lock().map_err(Refusal)?;
-    let Some(i) = doc.holds(&asked.to) else {
+    let Some(i) = doc.find(&asked.to) else {
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
         return Err(refuse(Kind::NotFound, "asset_unknown", said));
     };
     let old = lock.asset(&asked.from).filter(|held| !held.versions.is_empty());
-    let stands = !free && doc.holds(&asked.from).is_some();
+    let stands = !free && doc.find(&asked.from).is_some();
     if old.is_none() && stands {
         return Err(refuse(Kind::Conflict, "rename_taken", format!("{} is in the project already", asked.to)));
     }
@@ -1240,7 +1227,7 @@ async fn runs(
     }
     let mut named = vec![];
     let mut first = None;
-    // Pinned, and not named: what `all` or an entity's name covers leaves it be. Naming one is what re-renders it.
+    // Pinned, and not named: what `all` covers leaves it be. Naming one is what re-renders it.
     let mut skipped = vec![];
     let mut covering = |i: usize, named: &mut Vec<usize>| match doc.assets[i].pin.is_some() {
         // What this asks of it is judged at its turn.
@@ -1257,10 +1244,6 @@ async fn runs(
         }
     } else {
         for name in &asked.names {
-            if let Some(i) = doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
-                doc.linked(i).into_iter().for_each(|j| covering(j, &mut named));
-                continue;
-            }
             match find(&doc, name) {
                 Ok(i) => named.push(i),
                 Err(error) => {
@@ -1430,21 +1413,9 @@ fn owed(folder: &Folder, lock: &Lock) -> Vec<Owed> {
     items
 }
 
-/// What asset `i` reads that is on its way, an entity's by what it links.
+/// What asset `i` reads that is on its way.
 fn reads_going(doc: &Doc, i: usize, going: &BTreeSet<String>) -> Vec<String> {
-    let mut found: Vec<String> = vec![];
-    for &read in &doc.upstream[i] {
-        let more = match doc.assets[read].links.is_some() {
-            true => reads_going(doc, read, going),
-            false => Vec::from_iter(going.contains(&name_key(&doc.assets[read].name)).then(|| doc.assets[read].name.clone())),
-        };
-        for name in more {
-            if !found.contains(&name) {
-                found.push(name);
-            }
-        }
-    }
-    found
+    doc.upstream[i].iter().map(|&read| &doc.assets[read].name).filter(|name| going.contains(&name_key(name))).cloned().collect()
 }
 
 /// `POST /v1/projects/{id}/cancel`: the names' queued work dropped and their runs canceled, as `cozy run cancel` does. `all` is
@@ -1459,17 +1430,7 @@ async fn cancel(
     let folder = &project.folder;
     let lock = folder.lock().map_err(Refusal)?;
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
-    let mut keys = BTreeSet::new();
-    if !all {
-        // Only an entity's name needs a file: this one, or if it doesn't read, the newest render's.
-        let doc = Doc::load(folder).ok().or_else(|| lock.walk.asks.last().and_then(|ask| Doc::read(folder, &ask.text).ok()));
-        for name in &asked.names {
-            match doc.as_ref().and_then(|doc| Some((doc, doc.find(name).filter(|&i| doc.assets[i].links.is_some())?))) {
-                Some((doc, i)) => keys.extend(doc.linked(i).into_iter().map(|j| name_key(&doc.assets[j].name))),
-                None => drop(keys.insert(name_key(name))),
-            }
-        }
-    }
+    let keys: BTreeSet<String> = asked.names.iter().map(|name| name_key(name)).collect();
     let wanted = |name: &str| all || keys.contains(&name_key(name));
     let (mut dropped, mut owed) = (vec![], vec![]);
     for (item, take) in queue(folder, &lock).into_iter().filter(|(item, _)| !item.running && wanted(&item.name)) {
@@ -1520,6 +1481,12 @@ fn keeps_of(doc: &Doc, lock: &Lock, stand: &[Standing], i: usize, take: Option<u
 
 /// `source` kept as a file of the project, in project.lock.
 async fn keep_file(api: &Api, folder: &Folder, source: &str) -> Result<folder::Kept, Refusal> {
+    // A file of the project's by the start of its hash, as `status` shows it: what lifting a take out of its asset names.
+    let whole = written_hash(source).filter(|_| !FsPath::new(source).exists()).and_then(|hex| match folder.lock().ok()?.matching(&hex).as_slice() {
+        [file] => Some(file.sha256.clone()),
+        _ => None,
+    });
+    let source = whole.as_deref().unwrap_or(source);
     let Some(digest) = held_name(source)? else {
         return folder.import(source).await.map_err(|why| import_failed(source, why));
     };
@@ -1560,43 +1527,30 @@ fn element_name(name: Option<&str>, source: &str) -> String {
     name.and_then(format::plain_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
 }
 
-/// The run that removes the background of the picture at `at`. Err: why there is none, and a plain copy stands. The one place Calcifer names this package.
-async fn removing_background(api: &Arc<Api>, folder: &Folder, at: &FsPath, field: &str, on: Option<On>, key: &str) -> Result<Run, String> {
-    if field != "image" {
-        return Err("--remove-background takes a picture: this is kept as it is".to_owned());
-    }
-    if folder.transparent(at) >= OPAQUE_BELOW {
-        return Err("already transparent, so it is kept as it is".to_owned());
-    }
-    let image = FileTerm { name: Some("image".into()), file: at.to_string_lossy().into_owned() };
-    let ask = RunRequest { target: "birefnet/remove_background".into(), on, files: vec![image], project: Some(folder.dir.clone()), ..Default::default() };
-    match crate::runs::request_keeping_outputs(api, key, ask).await {
-        Ok(submitted) => Ok(submitted.run),
-        Err(error) if error.code == "local_unavailable" => Err(format!("{}: rent one with `cozy machine rent`, or add `--on <machine>`; a plain copy is kept", error.message)),
-        Err(error) => Err(format!("{}; a plain copy is kept", error.message)),
-    }
-}
-
 /// The element a kept file makes: one constant more in project.yaml, under a name nothing has, and with `at`, its row on the canvas.
 /// Its answer is kept for its key.
-fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, kept: folder::Kept, note: Option<String>, key: Option<&(String, String)>) -> Result<Imported, Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::project::Card>, description: Option<&str>, kept: folder::Kept, key: Option<&(String, String)>) -> Result<Imported, Refusal> {
     let folder = &project.folder;
     let _one = project.importing.lock().expect("importing lock");
     if let Some(done) = replayed(folder, key)? {
         return Ok(done);
     }
     let lock = folder.lock().map_err(Refusal)?;
-    let value = format::yaml_scalar(folder::prefix_of(&kept.file.sha256));
     let name = std::cell::RefCell::new(String::new());
     (folder.edit_project(|text| {
         let free = format::free_name(&Doc::read(folder, text)?, &lock, wanted);
-        let edited = format::constant(text, &free, kept.field, &value)?;
+        let edited = assetfile::constant(text, &free, &kept.file.sha256)?;
+        let edited = match description {
+            Some(words) => assetfile::set(&edited, &free, &Map::from_iter([("description".to_owned(), json!(words))]))?.0,
+            None => edited,
+        };
         *name.borrow_mut() = free;
         Ok(edited)
     }))
     .map_err(Refusal)?;
     let name = name.into_inner();
-    let answer = Imported { name: name.clone(), sha256: kept.file.sha256, field: kept.field.to_owned(), path: kept.file.path, already: kept.already, run: None, note };
+    let answer = Imported { name: name.clone(), sha256: kept.file.sha256, field: kept.field.to_owned(), path: kept.file.path, already: kept.already };
     if let Some((key, digest)) = key {
         let at_ms = now_ms();
         (folder.update_lock(|lock| {
@@ -1642,8 +1596,7 @@ fn measure_soon(api: &Arc<Api>, project: &Arc<Project>) {
     });
 }
 
-/// `POST /v1/projects/{id}/imports`: `source` kept in the project as an element, in one call. With `remove_background`, a picture goes
-/// to a run first; the element is what the client then imports of its output, under the `name` answered.
+/// `POST /v1/projects/{id}/imports`: `source` kept in the project as an element, in one call.
 async fn import(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -1659,49 +1612,18 @@ async fn import(
         return Ok(Json(done));
     }
     let wanted = element_name(asked.name.as_deref(), &asked.source);
-    let (mut source, mut note, mut looked_at) = (asked.source.clone(), None, None);
-    if asked.remove_background {
-        let readable = match held_name(&asked.source)? {
-            Some(digest) => (crate::runs::files::held(&api.calcifer, &digest))
-                .or_else(|| folder.own(&digest.to_string()).map(|kept| folder.path(&kept.file.path)))
-                .ok_or_else(|| not_held(&asked.source))?
-                .to_string_lossy()
-                .into_owned(),
-            None => asked.source.clone(),
-        };
-        let (at, field) = folder.source(&readable).await.map_err(|why| import_failed(&asked.source, why))?;
-        let run_key = key.as_ref().map_or_else(new_key, |(key, _)| format!("import-{key}"));
-        match removing_background(&api, folder, &at, field, asked.on.clone(), &run_key).await {
-            Ok(run) => {
-                let run = Some(Box::new(run));
-                return Ok(Json(Imported { name: wanted, sha256: String::new(), field: String::new(), path: String::new(), already: false, run, note: None }));
-            }
-            Err(why) => note = Some(why),
-        }
-        // A URL's bytes are here now, only to look at.
-        if folder::is_url(&asked.source) {
-            source = at.to_string_lossy().into_owned();
-            looked_at = Some(at);
-        }
-    }
-    let kept = keep_file(&api, folder, &source).await?;
-    if let Some(at) = looked_at {
-        let _ = std::fs::remove_file(at);
-    }
-    let answer = element(&project, &id, &wanted, asked.at, kept, note, key.as_ref())?;
+    let kept = keep_file(&api, folder, &asked.source).await?;
+    let answer = element(&project, &id, &wanted, asked.at, asked.description.as_deref(), kept, key.as_ref())?;
     measure_soon(&api, &project);
     Ok(Json(answer))
 }
 
-/// `name` pinned to a file in project.yaml: one line, in the field of its kind, written over what the file holds this moment. An
-/// approved asset is the same as any pinned one.
-fn pin_in_file(folder: &Folder, name: &str, field: &str, sha256: &str) -> Result<(), Error> {
-    let value = format::yaml_scalar(folder::prefix_of(sha256));
-    folder.edit_project(|text| format::pinned(text, name, field, &value))
+/// `name` holding a file in project.yaml, written over what the file holds this moment.
+fn pin_in_file(folder: &Folder, name: &str, sha256: &str) -> Result<(), Error> {
+    folder.edit_project(|text| assetfile::approved(text, name, sha256))
 }
 
-/// `POST /v1/projects/{id}/approve`: the version's main file, by hash, in the asset's line of project.yaml: its whole file set is the
-/// asset's state until `unpin`.
+/// `POST /v1/projects/{id}/approve`: the version's main file, by hash, as the asset's `approved`: its whole file set is its state until `unpin`.
 async fn approve(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -1741,27 +1663,21 @@ async fn approve(
             sha256.clone()
         }
     };
-    let field = asset.kind.as_str();
-    if let Some(is) = lock.files.get(&chosen).map(folder::File::field).filter(|is| wanted.is_none() && *is != field) {
-        let said = format!("{} makes one {field}, and that file is {is}", asset.name);
-        return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).remedy(format!("if it should be {is}, write `kind: {is}` on it"))));
-    }
+    let field = lock.files.get(&chosen).map_or_else(|| asset.kind.clone(), |file| file.field().to_owned());
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    // A hash written in an entity's link is rewritten there.
-    let (owner, written_in) = asset.line.as_ref().map_or((name.as_str(), field), |(owner, link)| (owner.as_str(), link.as_str()));
-    pin_in_file(folder, owner, written_in, &chosen).map_err(Refusal)?;
+    pin_in_file(folder, &name, &chosen).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
-    let files = version.map_or_else(|| Files::from([(field.to_owned(), chosen.clone())]), |version| version.files.clone());
+    let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(folder, &lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings }))
 }
 
-/// `POST /v1/projects/{id}/unpin`: the pin's line gone from project.yaml, so the asset's state follows its inputs again. A constant,
-/// nothing but its file, keeps it: its line is all it is.
+/// `POST /v1/projects/{id}/unpin`: `approved` gone from project.yaml, so the asset's state follows its inputs again. A constant,
+/// nothing but its file, keeps it: it is all it is.
 async fn unpin(
     State(api): State<Arc<Api>>,
     Path(id): Path<String>,
@@ -1777,12 +1693,12 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    if let Some((field, _)) = &asset.pin {
+    if asset.pin.is_some() {
         if asset.hollow {
-            let said = format!("{name} is a constant, nothing but its {field}: to be rid of it, delete it from {}", folder::PROJECT);
+            let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it from {}", folder::PROJECT);
             return Err(Refusal(Error::new(Kind::Usage, "project_edit", said)));
         }
-        folder.edit_project(|text| format::unpinned(text, &name, field)).map_err(Refusal)?;
+        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?;
     }
     for message in settle(&api, &project).await {
         let _ = project.events.send(Event::Warning { message, name: None });
@@ -2456,8 +2372,8 @@ impl Walk {
 
     /// A standing cut's `.otio`, written again from its pieces; one that can't be says so and the walk goes on.
     async fn timeline_again(&self, asset: &format::Asset, standing: &Standing, lock: &Lock, name: &str) {
-        let canvas = Canvas::of(&asset.fields, &mut vec![]);
-        let (mut pieces, _) = tools::pieces(&asset.fields, &standing.reads, self.folder(), lock);
+        let canvas = Canvas::of(&asset.inputs, &mut vec![]);
+        let (mut pieces, _) = tools::pieces(&asset.inputs, &standing.reads, self.folder(), lock);
         if let Some(version) = standing.version().and_then(|number| lock.asset(&asset.name)?.version(number)) {
             pieces.retain(|piece| !version.without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
         }
@@ -2528,20 +2444,19 @@ impl Walk {
             if let Some(moved) = &package.moved {
                 self.say(Event::Warning { message: moved.clone(), name: None });
             }
-            read_tags(doc, self.folder(), i, &package);
+            // What it outputs says what `defaults` fill, and so its key: planned again knowing that.
+            if read_tags(doc, self.folder(), i, &package) {
+                self.project.asked.notify_one();
+                return Ok(());
+            }
             // Before anything that could cost: its adapter's run, or a function's.
             if let Some(why) = doc.missing_inputs(i, &package.reserved()) {
                 return Err(Error::new(Kind::Validation, "input_missing", why).remedy(format!("bring it back, or edit {name}'s text")));
             }
-            let Some(maker) = package.maker(&asset.kind)? else {
-                self.say(Event::Warning { message: no_adapter(&name, &package.name, &asset.kind), name: None });
+            let Some(maker) = package.maker()? else {
+                self.say(Event::Warning { message: no_function(&name, &package.name), name: None });
                 return self.folder().update_lock(settle);
             };
-            if let Some(made) = package.named_kind().filter(|made| *made != asset.kind) {
-                let tool = doc.target(i);
-                self.say(Event::Warning { message: format!("{name} is a {} and {tool} makes a {made}: write `kind: {made}`, and it can be made", asset.kind), name: None });
-                return self.folder().update_lock(settle);
-            }
             let now = self.folder().lock()?;
             let holds = now.asset(&name).and_then(|held| held.versions.iter().rev().find(|version| version.inputs == inputs)).map(|version| version.number);
             let going = now.pending.values().any(|pending| name_key(&pending.asset) == name_key(&name) && pending.version.inputs == inputs);
@@ -2571,23 +2486,21 @@ impl Walk {
             }
             let mut warnings = vec![];
             let (calls, said) = match &maker {
-                Maker::Adapter(adapter) => {
+                Maker::Adapter(adapter, function) => {
                     if let Some(signature) = &adapter.signature {
-                        // Every asset can have a description, for what mentions it, whatever makes it.
-                        let unknown = (asset.own.iter()).filter(|field| *field != "description" && asset.fields.contains_key(*field) && !signature.contains(*field));
-                        warnings.extend(unknown.map(|field| format!("{name}: {} reads no field {field}", adapter.target())));
+                        warnings.extend(asset.own.iter().filter(|field| !signature.contains(*field)).map(|field| format!("{name}: {} reads no input {field}", adapter.target())));
                     }
-                    let mut operation = doc.operation(i, package.named.as_deref(), &reads, lock, keep.clone(), stand);
-                    let typed = package.callable(&adapter.function).and_then(|adapter| adapter.typed_fields().cloned());
-                    if let (Some(typed), Some(fields)) = (typed, operation["fields"].as_object_mut()) {
-                        warnings.extend(direct::conform(&name, &typed, fields));
+                    let mut operation = doc.operation(i, function, &reads, lock, keep.clone(), stand);
+                    let typed = package.callable(&adapter.function).and_then(|adapter| adapter.typed_inputs().cloned());
+                    if let (Some(typed), Some(inputs)) = (typed, operation["inputs"].as_object_mut()) {
+                        warnings.extend(direct::conform(&name, &typed, inputs));
                     }
                     self.adapt(adapter, &operation, &target.hub, &target.on).await?
                 }
                 Maker::Direct(renderer) => {
                     let unknown = || Error::new(Kind::NotFound, "callable_unknown", format!("{} has no function {}", package.name, renderer.function));
                     let callable = package.callable(&renderer.function).ok_or_else(unknown)?;
-                    let (input, said) = direct::input(&name, &doc.target(i), &callable, &doc.node_fields(i), &reads, lock)?;
+                    let (input, said) = direct::input(&name, &doc.target(i), &callable, &doc.inputs_of(i), &asset.own, &reads, lock)?;
                     (vec![Invocation { function: renderer.function.clone(), input }], said)
                 }
             };
@@ -2596,13 +2509,13 @@ impl Walk {
             if calls.is_empty() {
                 warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
                 let Some(number) = holds else {
-                    let mut version = self.version(doc, standing, i, warnings, inputs.clone());
-                    if let Maker::Adapter(adapter) = &maker {
-                        version.made_by = version.made_by.map(|by| MadeBy { with: adapter.target(), ..by });
+                    let mut version = Version { inputs: inputs.clone(), warnings, ..Default::default() };
+                    if let Maker::Adapter(adapter, _) = &maker {
+                        version.tool = format::other_than(&adapter.target(), asset.tool.as_deref());
                     }
                     self.land_read(&name, &asset.kind, version, standing, noun, approve, settle)?;
                     if next.unpin {
-                        self.unpin_landed(&ask.id, &name, &asset.kind);
+                        self.unpin_landed(&ask.id, &name);
                     }
                     return Ok(());
                 };
@@ -2624,7 +2537,7 @@ impl Walk {
                 return self.folder().update_lock(settle);
             }
             warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
-            let mut version = self.version(doc, standing, i, warnings, inputs.clone());
+            let mut version = Version { inputs: inputs.clone(), warnings, ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| !new && tried.inputs == inputs).map(|tried| tried.seed);
@@ -2681,16 +2594,6 @@ impl Walk {
         }
     }
 
-    /// A version of asset `i` as it stands now, its files not yet known.
-    fn version(&self, doc: &Doc, standing: &Standing, i: usize, warnings: Vec<String>, inputs: String) -> Version {
-        let asset = &doc.assets[i];
-        let reads = standing.reads.iter().map(|read| ReadFrom { name: read.name.clone(), files: read.files.clone() }).collect();
-        let body = |field: &str| asset.body.get(field).cloned().unwrap_or(Value::Null);
-        let options = asset.body.get("options").and_then(Value::as_object).cloned().unwrap_or_default();
-        let made_by = MadeBy { with: doc.target(i), models: body("models"), lora: body("lora"), options };
-        Version { inputs, digests: standing.digests.clone(), reads, made_by: Some(made_by), warnings, ..Default::default() }
-    }
-
     /// An adapter's no run: this asset's files are what it reads.
     #[allow(clippy::too_many_arguments)]
     fn land_read(&self, name: &str, kind: &str, mut version: Version, standing: &Standing, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
@@ -2733,20 +2636,19 @@ impl Walk {
 
     /// Sends `call` to its function of `package` on one of the pending's machines, as an ordinary run under `key`, recorded as pending
     /// (with `settle`: what it settles of the walk) in one write before it is sent. The seed, and on the first call the asset's
-    /// `models` and `lora`, as `cozy run --input` takes them, go on top. Its `options` are the adapter's, not added here.
+    /// `models` and `lora`, as `cozy run --input` takes them, go on top.
     async fn submit(&self, key: &str, call: Invocation, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut Lock)) -> Result<(), Error> {
         let renderer = package.function(&call.function)?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
         let first = pending.done.is_empty();
         let name = asset.name.clone();
         let named = |e: Error| Error { message: format!("{name}'s render: {}", e.message), ..e };
-        pending.version.invocations.push(json!({"function": call.function, "input": call.input}));
         let mut payload = call.input;
         if let Some(seed) = pending.version.seed.filter(|_| renderer.accepts.contains("seed")) {
             payload.insert("seed".into(), json!(seed));
         }
         for field in ["models", "lora"] {
-            if let Some(value) = asset.body.get(field).filter(|value| first && !value.is_null()) {
+            if let Some(value) = asset.made.get(field).filter(|_| first) {
                 payload.insert(field.into(), value.clone());
             }
         }
@@ -2754,7 +2656,7 @@ impl Walk {
         let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.calls.iter().collect());
         choices.take(&mut payload).map_err(named)?;
         if first {
-            pending.version.made_by = Some(MadeBy { with: renderer.target(), ..pending.version.made_by.clone().unwrap_or_default() });
+            pending.version.tool = format::other_than(&renderer.target(), asset.tool.as_deref());
         }
         let mut warnings = match choices.dropped.is_empty() {
             true => vec![],
@@ -2917,7 +2819,7 @@ impl Walk {
         if let (Some(kept), Some(until_s)) = (&mut version.kept, run.result.as_ref().and_then(|result| result["kept_s"].as_f64())) {
             kept.until_s = until_s;
         }
-        version.runs.push(run.number);
+        version.run = Some(run.number);
         version.execution_ms += run.execution_ms.unwrap_or(0);
         for said in said_by(run) {
             let message = format!("{name}: {said}");
@@ -2974,20 +2876,20 @@ impl Walk {
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, |_: &mut Lock| {})?;
-        if let Some(field) = &pending.unpin {
-            self.unpin_landed(&pending.ask, &name, field);
+        if pending.unpin.is_some() {
+            self.unpin_landed(&pending.ask, &name);
         }
         Ok(())
     }
 
-    /// `name`'s re-run landed, so its pin goes: from project.yaml, and from the text its render plans on, so what reads it reads this.
-    fn unpin_landed(&self, ask: &str, name: &str, field: &str) {
-        if let Err(error) = self.folder().edit_project(|text| format::unpinned(text, name, field)) {
+    /// `name`'s re-run landed, so what it approved goes: from project.yaml, and from the text its render plans on, so what reads it reads this.
+    fn unpin_landed(&self, ask: &str, name: &str) {
+        if let Err(error) = self.folder().edit_project(|text| assetfile::unapproved(text, name)) {
             self.say(Event::Warning { message: error.message, name: None });
         }
         let planned = self.folder().update_lock(|lock| {
             for mine in lock.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
-                if let Ok(text) = format::unpinned(&mine.text, name, field) {
+                if let Ok(text) = assetfile::unapproved(&mine.text, name) {
                     mine.digest = hex::encode(Sha256::digest(text.as_bytes()));
                     mine.text = text;
                 }
@@ -3027,19 +2929,20 @@ impl Walk {
                 self.say(Event::Warning { message: format!("{name} reads {}'s newest {noun}, {number}, which is out of date", read.name), name: None });
             }
         }
-        let mut version = self.version(doc, standing, i, vec![], inputs);
-        version.made_by = Some(MadeBy { with: match doc.tool(i) {
-            Some(Tool::Cut) => EDIT.into(),
-            _ => "cozy/frame".into(),
-        }, ..Default::default() });
+        let mut version = Version { inputs, ..Default::default() };
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
                 let Some((files, without)) = self.cut_tool(doc, asset, standing, &ask.target, &version.inputs).await? else { return Ok(()) };
                 version.without = without;
-                version.clips = tools::clips(&asset.fields, &standing.reads);
-                version.fps = Canvas::of(&asset.fields, &mut vec![]).fps;
+                version.clips = tools::clips(&asset.inputs, &standing.reads);
+                for clip in &mut version.clips {
+                    let name = graph::mentions(&clip.clip).first().map(|name| name_key(name));
+                    let read = standing.reads.iter().find(|read| Some(name_key(&read.name)) == name);
+                    clip.sha256 = read.and_then(|read| folder::main_of(&read.files).cloned());
+                }
+                version.fps = Canvas::of(&asset.inputs, &mut vec![]).fps;
                 let now = self.folder().lock()?;
                 let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
                 if again {
@@ -3051,7 +2954,7 @@ impl Walk {
                 let Some(read) = standing.reads.first() else { return Ok(()) };
                 let file = folder::main_of(&read.files).and_then(|sha256| lock.files.get(sha256));
                 let Some(file) = file else { return Err(cannot(&name, format!("{} has no file", read.name))) };
-                let at = asset.fields.get("at").and_then(Value::as_f64);
+                let at = asset.inputs.get("at").and_then(Value::as_f64);
                 let frame = self.frame(&name, &self.folder().path(&file.path), at).await?;
                 version.files = Files::from([("image".to_owned(), frame)]);
             }
@@ -3080,17 +2983,17 @@ impl Walk {
     async fn cut_tool(&self, doc: &Doc, asset: &format::Asset, standing: &Standing, target: &Target, inputs: &str) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
         let folder = self.folder();
         let mut said = vec![];
-        let canvas = Canvas::of(&asset.fields, &mut said);
+        let canvas = Canvas::of(&asset.inputs, &mut said);
         // ffprobe first, as this may be its first need here, then every file measured.
         let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
         let lock = folder.lock()?;
-        let (pieces, _) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
+        let (pieces, _) = tools::pieces(&asset.inputs, &standing.reads, folder, &lock);
         let name = cut_name(&asset.name);
         let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
         let mut without = self.bring_pieces(asset, &pieces, &lock, target, &ffprobe, &on).await?;
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
-        let (mut pieces, skips) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
+        let (mut pieces, skips) = tools::pieces(&asset.inputs, &standing.reads, folder, &lock);
         pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
         for piece in skips {
             let (why, said) = match doc.find(&piece) {
@@ -3102,7 +3005,7 @@ impl Walk {
         }
         // The same edit, with everything it took here and its film right, isn't rendered again.
         let film_stands = |old: &Version| old.files.get("video").and_then(|sha256| lock.files.get(sha256)).is_some_and(|film| folder.path(&film.path).is_file());
-        let again = |old: &Version| old.inputs == inputs && old.without.is_empty() && film_stands(old) && tools::film_off(&asset.fields, &standing.reads, &lock, old).is_none();
+        let again = |old: &Version| old.inputs == inputs && old.without.is_empty() && film_stands(old) && tools::film_off(&asset.inputs, &standing.reads, &lock, old).is_none();
         if without.is_empty() && lock.asset(&asset.name).is_some_and(|held| held.versions.iter().any(again)) {
             return Ok(None);
         }
@@ -3251,7 +3154,7 @@ impl Walk {
         // What is pinned now, as a save may have moved it, else as this render read it.
         let now = Doc::load(self.folder());
         let doc = now.as_ref().unwrap_or(doc);
-        let pin = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.1.clone()));
+        let pin = doc.find(name).and_then(|i| doc.assets[i].pin.clone());
         let cut = doc.find(name).is_some_and(|i| doc.tool(i) == Some(Tool::Cut));
         self.folder().update_lock(|lock| {
             let held = lock.asset_mut(name, kind);
@@ -3290,7 +3193,7 @@ impl Walk {
         version.number = number.get();
         if approve
             && let Some(sha256) = version.main()
-            && let Err(error) = pin_in_file(self.folder(), name, kind, sha256)
+            && let Err(error) = pin_in_file(self.folder(), name, sha256)
         {
             self.say(Event::Warning { message: error.message, name: None });
         }
@@ -3456,13 +3359,10 @@ fn stuck(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask) -> Vec<(usize, S
     said.into_iter().map(|i| (i, format!("{} cannot render: {}", doc.assets[i].name, unread(doc, stand, lock, ask, i)))).collect()
 }
 
-/// Why asset `i` can't read what it reads: the first read with no state, through an entity to the asset it links.
+/// Why asset `i` can't read what it reads: the first read with no state.
 fn unread(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask, i: usize) -> String {
     let Some(&j) = doc.upstream[i].iter().find(|&&j| stand[j].files.is_none()) else { return "what it reads has no state".into() };
     let name = &doc.assets[j].name;
-    if doc.assets[j].links.is_some() {
-        return unread(doc, stand, lock, ask, j);
-    }
     match &stand[j].state {
         _ if ask.sent.contains(&name_key(name)) => format!("{name} failed in this render"),
         _ if doc.assets[j].hollow => format!("{name} has nothing to make"),
@@ -3494,11 +3394,6 @@ fn said_by(run: &Run) -> Vec<String> {
 }
 
 fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
-    if let Some(links) = doc.find(name).and_then(|i| doc.assets[i].links.as_ref()) {
-        let linked: Vec<&str> = links.own.values().chain(links.roles.get("")).map(String::as_str).collect();
-        let said = format!("{name} is an entity, with no files of its own: it links {}", linked.join(", "));
-        return Err(Error::new(Kind::Usage, "asset_is_entity", said).remedy("name an asset it links"));
-    }
     doc.find(name).ok_or_else(|| {
         Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")
     })

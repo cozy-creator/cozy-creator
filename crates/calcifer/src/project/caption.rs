@@ -18,7 +18,7 @@ use protocol::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Doc, Host, Package, Renderer, Project, answered, find, folder, landing, local_code_named, media_type, new_key, tools};
+use super::{Doc, Host, Package, Renderer, Project, answered, find, folder, format, landing, local_code_named, media_type, new_key, tools};
 use crate::{
     api::{Api, Refusal, parse},
     runs, toolbox,
@@ -55,10 +55,10 @@ pub(super) async fn caption(
     let Some(package) = describer(&api, &host, &id, &hub, &on, &folder.dir).await else {
         return Err(Refusal(Error::new(Kind::NotFound, "caption_no_tool", "nothing here or on the Hub reads a picture and answers in words")));
     };
-    let adapter = package.adapter("text", None).expect("a describer has a text adapter");
+    let adapter = package.adapter("text").expect("a describer has a text adapter");
     let records: Map<String, Value> = files.iter().map(|(field, sha256)| (field.clone(), lock.files.get(sha256).map_or_else(|| json!({"sha256": sha256}), folder::File::record))).collect();
-    let read = json!({"name": name, "kind": doc.assets[i].kind, "fields": {}, "files": records, "made_by": ""});
-    let operation = json!({"version": 2, "asset": name, "kind": "text", "function": "", "fields": {}, "options": {}, "reads": [read], "writes": [], "keep": null});
+    let read = json!({"name": name, "kind": doc.assets[i].kind, "files": records});
+    let operation = json!({"version": format::FORMAT, "asset": name, "kind": "text", "function": "text", "inputs": {}, "reads": [read], "keep": null});
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map_or_else(new_key, str::to_owned);
     let adapted = send(&host, &project, &adapter, operation, &on, &hub, &format!("{key}-adapter")).await?;
     let (calls, warnings) = answered(adapted.result.as_ref());
@@ -80,14 +80,14 @@ async fn describer(api: &Arc<Api>, host: &Host, id: &str, hub: &str, on: &On, di
     let from = std::slice::from_ref(on);
     for (written, _) in local_code_named(api, id).unwrap_or_default() {
         if let Ok(package) = host.package(hub, &written, dir, from).await
-            && package.adapter("text", None).is_some()
+            && package.adapter("text").is_some()
         {
             return Some(package);
         }
     }
     for (package, release) in toolbox::candidates(api, hub, on).await {
         if let Ok(package) = host.published(hub, &format!("{package}@{release}"), Some(on)).await
-            && package.adapter("text", None).is_some()
+            && package.adapter("text").is_some()
         {
             return Some(package);
         }

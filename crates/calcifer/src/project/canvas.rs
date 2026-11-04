@@ -77,6 +77,14 @@ pub(super) fn moved(folder: &Folder, id: &str, from: &str, to: &str) -> Result<(
     set(folder, id, BTreeMap::from([(from.to_owned(), None), (to.to_owned(), Some(card))])).map(drop)
 }
 
+/// Every row as `renamed` says, with nothing told, for what no Calcifer is running.
+pub(super) fn all_renamed(folder: &Folder, renamed: impl Fn(&str) -> Option<String>) -> Result<(), Error> {
+    folder.edit_canvas(|text| {
+        let cards: BTreeMap<String, Card> = rows(text).into_iter().map(|(name, card)| (renamed(&name).unwrap_or(name), card)).collect();
+        Ok(if cards.is_empty() && text.is_empty() { String::new() } else { written(&cards) })
+    })
+}
+
 /// The rows `named` says nothing names, gone.
 pub(super) fn prune(folder: &Folder, id: &str, named: impl Fn(&str) -> bool) -> Result<(), Error> {
     let gone: BTreeMap<String, Option<Card>> = rows(&folder.canvas_text()?).into_keys().filter(|name| !named(name)).map(|name| (name, None)).collect();

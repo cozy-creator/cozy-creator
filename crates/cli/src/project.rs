@@ -26,8 +26,8 @@ const EXAMPLES: &str = "Examples:
   cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
-  cozy project approve fight 2                 writes its hash into fight's lines in project.yaml: fight is a constant now
-  cozy project unpin fight                     removes that line
+  cozy project approve fight 2                 fight holds that file, as its `approved` in project.yaml
+  cozy project unpin fight                     it follows its inputs again
   cozy project rename theo mara                in project.yaml, its <mentions> and its versions
   cozy project reclaim --yes                   deletes what project.yaml no longer names
   cozy project push                            its files to your Tensorhub account
@@ -131,6 +131,13 @@ enum Verb {
     /// Fetch every file project.lock names that files/ lacks, as real files.
     #[command(after_help = "Example:\n  git clone … && cd garden && cozy project pull\n\nA file not at the Hub is skipped with a warning, everything else comes, and it exits 3.\nCtrl-C stops following, never the transfer.")]
     Pull,
+    /// Move a project of format 2 to format 3: nothing goes out of date and nothing runs.
+    #[command(after_help = "Example:\n  cozy project status --json > status.json    with the cozy that reads format 2\n  cozy project upgrade --status status.json   with this one\n\nThe old files stay beside the new, as project.yaml.v2 and project.lock.v2. Comments stay only there.\nWith no --status, each asset's approved version, else its newest, is taken as current.")]
+    Upgrade {
+        /// What `cozy project status --json` said, with the cozy that reads format 2.
+        #[arg(long, value_name = "FILE")]
+        status: Option<PathBuf>,
+    },
 }
 
 /// Add a picture, video or sound to the project as an element with a name, and print the name it got.
@@ -139,21 +146,18 @@ enum Verb {
   cozy project import ./kyogre.png               prints kyogre
   cozy project import ./kyogre.png kyogre_art    prints kyogre_art
   cozy project import https://example.com/groudon.png
+  cozy project import 65b436d4f9a3 kyogre --description 'The colossal blue whale.'    a file of the project's, as an asset of its own
 
 A name something in the project has takes _2, and the same file twice is two elements and one file: <name> reads it in any text.
 A URL is downloaded here, up to 64 MiB, from a public address.")]
 struct ImportFile {
-    /// A path, or an http(s) URL.
+    /// A path, an http(s) URL, or a file of the project's by the start of its hash, as a take lifted out of what made it.
     source: String,
     /// What to call it. Default: the file's name, lower-cased.
     name: Option<String>,
-    /// Remove a picture's background, by a run of `birefnet/remove_background`, and keep only the result. Without this, import is a
-    /// plain copy and needs no machine.
+    /// The words for whatever mentions it.
     #[arg(long)]
-    remove_background: bool,
-    /// The machine that run goes to (default: this computer if it can run models, else a machine you have up).
-    #[arg(long = "on", value_name = "MACHINE", requires = "remove_background")]
-    on: Option<String>,
+    description: Option<String>,
 }
 
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
@@ -231,6 +235,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             return crate::web::open(ctx, Some(format!("/projects/{}", opened.id)), no_open).await;
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
+        Verb::Upgrade { status } => return upgrade(ctx, args.path.as_ref(), status.as_ref()),
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
@@ -307,14 +312,6 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if ctx.json {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
-            }
-            if !state.entities.is_empty() {
-                let table = output::Table::new(ctx, ["ENTITY", "KIND", "LINKS"]);
-                let linked = |entity: &protocol::project::Entity| {
-                    entity.links.iter().map(|(field, asset)| format!("{field}: {asset}")).collect::<Vec<_>>().join(", ")
-                };
-                let rows = state.entities.iter().flat_map(|entity| std::iter::once(entity).chain(&entity.subs));
-                rows.fold(table, |table, entity| table.row([entity.name.clone(), entity.kind.clone(), linked(entity)])).print();
             }
             let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "PINNED", "MADE BY", "STATUS", "FILE"]);
             let rows = state.assets.iter().map(|a| {
@@ -400,39 +397,48 @@ async fn transfer(ctx: &Context, at: Option<&PathBuf>, verb: &str, moved: &str) 
     Err(Error::new(Kind::Unavailable, "project_events_ended", said).next(format!("cozy project -p {} {verb}", opened.path.display())))
 }
 
-/// `POST /v1/projects/{id}/imports`, and the name it got. With `--remove-background`, what a run makes is what is imported, by the same call.
+/// `POST /v1/projects/{id}/imports`, and the name it got.
 async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let source = match args.source.contains("://") {
+    let hash = args.source.strip_prefix("sha256:").unwrap_or(&args.source);
+    let by_hash = hash.len() >= 6 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) && !cwd.join(&args.source).exists();
+    let source = match args.source.contains("://") || by_hash {
         true => args.source,
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
     let path = format!("/v1/projects/{}/imports", opened.id);
-    let ask = Import { source, name: args.name, at: None, remove_background: args.remove_background, on: args.on.map(On::from) };
-    let mut imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
-    if let Some(run) = imported.run.take() {
-        // The live view alone, where a run's progress goes: its record would be more lines on stdout.
-        let run = watched(ctx, *run).await?;
-        let cleaned = crate::run::kept_files(&run).into_iter().next().filter(|_| run.status == protocol::calcifer::Status::Completed);
-        let Some(source) = cleaned else {
-            output::warn(&format!("run {} hasn't removed its background, and nothing is kept: import it again", run.number));
-            return Ok(crate::run::exit_code(&run));
-        };
-        let ask = Import { source, name: Some(imported.name), at: None, remove_background: false, on: None };
-        imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
-    }
+    let ask = Import { source, name: args.name, at: None, description: args.description };
+    let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);
         return Ok(ExitCode::SUCCESS);
     }
-    // One line on stdout, its name; the rest goes where a run's progress goes.
-    if let Some(note) = &imported.note {
-        output::warn(note);
-    }
     anstream::println!("{}", imported.name);
     Ok(ExitCode::SUCCESS)
+}
+
+/// `cozy project upgrade`: here, in this process, as the files are all it takes and a Calcifer that reads this format can't read them yet.
+fn upgrade(ctx: &Context, at: Option<&PathBuf>, status: Option<&PathBuf>) -> Result<ExitCode, Error> {
+    let dir = match at {
+        Some(at) => at.clone(),
+        None => std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?,
+    };
+    let said = status.map(|file| std::fs::read_to_string(file).map_err(|e| Error::new(Kind::Usage, "status_unreadable", format!("{}: {e}", file.display())))).transpose()?;
+    let done = calcifer::project::upgrade(&dir, said.as_deref())?;
+    if ctx.json {
+        output::json(&done);
+    } else {
+        let table = output::Table::new(ctx, ["NAME", "WAS", "BEFORE", "AFTER", "VERSION"]);
+        let rows = done.assets.iter().map(|row| [row.name.clone(), row.was.clone(), row.before.clone(), row.after.clone(), row.version.map_or("-".to_owned(), |number| number.to_string())]);
+        rows.fold(table, output::Table::row).print();
+        done.said.iter().for_each(|line| output::warn(line));
+        let worse = done.assets.iter().filter(|row| row.before == "current" && row.after != "current").count();
+        output::say(ctx, &format!("{} assets are format 3, and {worse} went out of date. The old files are project.yaml.v2 and project.lock.v2", done.assets.len()));
+    }
+    let worse = done.assets.iter().any(|row| row.before == "current" && row.after != "current");
+    Ok(if worse { ExitCode::from(3) } else { ExitCode::SUCCESS })
 }
 
 async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<ExitCode, Error> {

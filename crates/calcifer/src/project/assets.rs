@@ -8,6 +8,7 @@ use axum::{
     extract::{Path, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
 };
+use serde::{Deserialize, Serialize};
 use protocol::{
     error::{Error, Kind},
     project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Version as VersionRow},
@@ -15,7 +16,7 @@ use protocol::{
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use super::{Doc, IMPORT_KEPT_MS, canvas, find, folder, format, listed, assetfile, now_ms, row};
+use super::{Doc, IMPORT_KEPT_MS, canvas, find, folder, format, graph::name_key, listed, assetfile, now_ms, row};
 use crate::api::{Api, Refusal, parse};
 
 /// What to call an asset with no name asked: the tool's last word, with no release.
@@ -24,7 +25,7 @@ fn tool_name(tool: &str) -> Option<String> {
 }
 
 fn own_lines(name: &str) -> Error {
-    Error::new(Kind::Usage, "project_edit", format!("{name} has no lines of its own in {}", folder::PROJECT))
+    Error::new(Kind::Usage, "project_edit", format!("{name} isn't under `assets:` in {}", folder::PROJECT))
 }
 
 /// `POST /v1/projects/{id}/assets`: an asset from a tool, and with `at` its row, in one call. The name goes in the lock first, so a retry
@@ -66,9 +67,12 @@ pub(super) async fn create(
     }
     (folder.edit_project(|text| match assetfile::etag(text, &name) {
         Some(_) => Ok(text.to_owned()),
-        None => assetfile::added(text, &name, &asked.tool, &kind, &asked.fields).map(|(edited, _)| edited),
+        None => assetfile::added(text, &name, &asked.tool, &asked.fields).map(|(edited, _)| edited),
     }))
     .map_err(Refusal)?;
+    // What it outputs: what `defaults` fill of it before it has a version.
+    let plain = format::plain_tool(&asked.tool, folder);
+    folder.update_lock(|lock| drop(lock.makes.insert(plain.clone(), kind.clone()))).map_err(Refusal)?;
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
@@ -90,9 +94,9 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         .map(|version| VersionRow {
             number: version.number,
             files: listed(folder, &lock, &version.files),
-            made_by: version.made_by.as_ref().map(|by| by.with.clone()),
+            made_by: version.tool.clone().or_else(|| asset.tool.clone()),
             seed: version.seed,
-            runs: version.runs.clone(),
+            runs: version.run.into_iter().collect(),
             approved: Some(version.number) == pinned,
             warnings: version.warnings.clone(),
             kept: version.kept,
@@ -102,8 +106,8 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     Ok(Json(AssetVersions { asset, versions }))
 }
 
-/// `PATCH /v1/projects/{id}/assets/{name}`: its inputs set over what the file holds this moment. With `If-Match`, only if its own lines
-/// are still what that read: an edit of another asset never conflicts. A render going keeps the text it was asked with.
+/// `PATCH /v1/projects/{id}/assets/{name}`: its inputs set over what the file holds this moment. With `If-Match`, only if it is still
+/// what that read: an edit of another asset never conflicts. A render going keeps the text it was asked with.
 pub(super) async fn patch(
     State(api): State<Arc<Api>>,
     Path((id, name)): Path<(String, String)>,
@@ -135,8 +139,16 @@ pub(super) async fn patch(
     Ok(Json(AssetPatched { name, etag, was, warnings }))
 }
 
-/// `DELETE /v1/projects/{id}/assets/{name}`: its lines and its row gone, at once. Its versions and files stay: an orphan keeps them until
-/// `reclaim`, so what this answers puts it all back. A render going still makes what it was asked.
+/// What `DELETE` answers, for `PUT` to put back: its lines and what project.lock held of it.
+#[derive(Serialize, Deserialize)]
+struct Deleted {
+    lines: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<folder::Asset>,
+}
+
+/// `DELETE /v1/projects/{id}/assets/{name}`: it, its versions and its row gone, at once, and what it made stands. Its files wait, unnamed, for
+/// `reclaim`, and what this answers puts it all back. A render going still makes what it was asked.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
@@ -144,19 +156,22 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     let i = doc.find(&name).ok_or_else(|| Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}"))))?;
     let name = doc.assets[i].name.clone();
     let at = canvas::row(folder, &name).map_err(Refusal)?;
-    let back = RefCell::new(String::new());
+    let lines = RefCell::new(String::new());
     (folder.edit_project(|text| {
-        let (edited, text) = assetfile::removed(text, &name)?;
-        *back.borrow_mut() = text;
+        let (edited, back) = assetfile::removed(text, &name)?;
+        *lines.borrow_mut() = back;
         Ok(edited)
     }))
     .map_err(Refusal)?;
+    let held = RefCell::new(None);
+    folder.update_lock(|lock| *held.borrow_mut() = lock.assets.remove(&name_key(&name))).map_err(Refusal)?;
     canvas::set(folder, &id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
-    Ok(Json(AssetDeleted { name, text: back.into_inner(), at }))
+    let text = serde_json::to_string(&Deleted { lines: lines.into_inner(), held: held.into_inner() }).expect("what's deleted serializes");
+    Ok(Json(AssetDeleted { name, text, at }))
 }
 
-/// `PUT /v1/projects/{id}/assets/{name}`: what `DELETE` answered, back under its name: its versions are there waiting. Taken since by a
-/// hand in the file, it's refused and says so.
+/// `PUT /v1/projects/{id}/assets/{name}`: what `DELETE` answered, back under its name, its versions with it. Taken since by a hand in the file,
+/// it's refused and says so.
 pub(super) async fn put_back(
     State(api): State<Arc<Api>>,
     Path((id, name)): Path<(String, String)>,
@@ -165,13 +180,17 @@ pub(super) async fn put_back(
     let asked: AssetBack = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
+    let back: Deleted = serde_json::from_str(&asked.text).map_err(|_| Refusal(Error::new(Kind::Validation, "asset_text", format!("that isn't what deleting {name} answered"))))?;
     (folder.edit_project(|text| {
         if Doc::read(folder, text)?.find(&name).is_some() {
             return Err(Error::new(Kind::Conflict, "asset_exists", format!("the project has a {name} again, so this one stays deleted")).remedy(format!("rename that one, then undo, or edit {}", folder::PROJECT)));
         }
-        assetfile::restored(text, &name, &asked.text)
+        assetfile::restored(text, &name, &back.lines)
     }))
     .map_err(Refusal)?;
+    if let Some(held) = &back.held {
+        folder.update_lock(|lock| drop(lock.assets.insert(name_key(&name), held.clone()))).map_err(Refusal)?;
+    }
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
