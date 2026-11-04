@@ -174,13 +174,14 @@ impl Cas {
         }
     }
 
-    /// Holds whose roots all went unused for `age`, and that `doomed` agrees to for each, least recently used first, until `enough`:
-    /// each goes with what only it kept. The digests removed, with their lengths.
+    /// Holds whose roots all went unused for `age`, and that `doomed` agrees to for each, least recently used first, until `room` bytes
+    /// are free: each goes with what only it kept. Counted, as a filesystem's free space lags a delete. The digests removed, with
+    /// their lengths.
     pub fn evict_held(
         &self,
         age: Duration,
         doomed: &mut dyn FnMut(&str) -> io::Result<bool>,
-        enough: &mut dyn FnMut() -> io::Result<bool>,
+        room: u64,
     ) -> io::Result<Vec<(String, u64)>> {
         let mut holds = vec![];
         let mut named: BTreeMap<String, usize> = BTreeMap::new();
@@ -191,9 +192,9 @@ impl Cas {
             holds.push((used, entry.path(), hold));
         }
         holds.sort_by_key(|(used, ..)| *used);
-        let mut removed = vec![];
+        let (mut removed, mut freed) = (vec![], 0);
         for (_, path, hold) in holds {
-            if enough()? {
+            if freed >= room {
                 break;
             }
             let _gate = GATE.write().unwrap();
@@ -211,6 +212,7 @@ impl Cas {
                 *left -= 1;
                 if *left == 0 && self.path(&root)?.exists() {
                     fs::remove_file(self.path(&root)?)?;
+                    freed += root.length;
                     removed.push((root.sha256, root.length));
                 }
             }
