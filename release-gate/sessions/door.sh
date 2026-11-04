@@ -1,8 +1,9 @@
 # door (cl-749, cl-774 Part D): a machine's own Calcifer, and the door from this computer's Calcifer to it.
 # Before any rental, at $0, whichever `rent` says: a second user on this runner is an added machine, authorized and added, so the
 # real door, TensorD's forward and that user's Calcifer all run here:
-#   the door's refusals; SSE; a run's real outputs; keys not admitted and a play link's; a hostile holder (fixtures/door) in
-#   curl and in a real Chrome, whose control shows the harness can see a script run; no secret of this computer reaching
+#   the door's refusals; SSE; a run's real outputs; keys not admitted and a play link's; a package's component, which the page never asks the
+#   machine for; a hostile holder (fixtures/door) in curl and in a real Chrome, a module from it not running on this origin, whose control
+#   shows the harness can see a script run; no secret of this computer reaching
 #   the machine; a holder that's gone answering 503; a read after a restart's new token; TensorD starting the Calcifer of an
 #   added machine when none runs; the archive; an upload; 1 GiB read through the door by a slow reader, memory flat.
 # Then, with `rent`, one cpu pod with SSH on the session's cozy, sent from this runner with `--tensord`:
@@ -140,23 +141,22 @@ door_runs() {
   answers "a play link's cap on a write there" 403 capability_scope -k -H "Authorization: Cozy-Cap $cap" -X POST -d '{}' "https://$API/v1/calcifer/v1/projects"
 }
 
-# A package's component, looking at the machine's Calcifer through the door: the page asks this computer's, never the machine, so local code
-# there draws nothing here, and the box is the declared one.
+# A package's component, looking at the machine's Calcifer through the door. The machine's word says its tool has one, as its root can make it
+# say (fixtures/door/component.js), and the page asks this computer's Calcifer, never the machine, which has no such code: the box is the declared one.
 door_component() {
   mark "a package's component through the door, $X"
-  local a=$P/boxed id link boxed
-  boxed=$(cd "$FIX/../../../../e2e/cli/project/boxed" && pwd) || { check "no fixture package"; return; }
+  local a=$P/boxed id link
   pod "cozy project new $a > /dev/null" || check "project new"
-  tar -C "$boxed" -cf - . | pod_in "mkdir -p $a/boxed && tar -xf - -C $a/boxed" || check "the fixture package"
-  T=1200 pod "cd $a && cozy --json run ./boxed/plain prompt=primed --on local" > /dev/null || check "a run of the fixture there: $(tail -c 300 "$OUT/pod.err")"
+  put "$FIX/../../../../e2e/cli/project/draw.py" "$a/draw.py"
+  T=1200 pod "cd $a && cozy --json run ./draw.py/draw prompt=primed --on local" > /dev/null || check "a run of the tool there: $(tail -c 300 "$OUT/pod.err")"
   id=$(pod "cozy --json project -p $a status" | jq -r '.id // empty')
   [ -n "$id" ] || { check "the project has no id: $(tail -c 300 "$OUT/pod.err")"; return; }
-  answers "a box of it through the door" 201 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-component-$RANDOM" -d '{"tool":"./boxed/one_field","name":"shaded","at":{"x":0,"y":0,"w":300}}' "$D/v1/projects/$id/assets"
+  answers "a box of it through the door" 201 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-component-$RANDOM" -d '{"tool":"./draw.py/draw","name":"drawn","at":{"x":0,"y":0,"w":300}}' "$D/v1/projects/$id/assets"
   link=$(cozy web --no-open 2>&1 | grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' | head -1)
   [ -n "$link" ] || { check "cozy web --no-open printed no link"; return; }
   CHROME=$(command -v google-chrome) PLAYWRIGHT=$PW/node_modules/playwright-core timeout 300 node "$FIX/component.js" "$link" "$X" "$id" > "$OUT/component.json" 2> "$OUT/component.err" \
     || check "the component's browser: $(tail -c 500 "$OUT/component.err")"
-  J '.declared == 1 and .drawn == 0' "$OUT/component.json" || check "a machine's component drew here: $(jq -c . "$OUT/component.json")"
+  J '.declared == 1' "$OUT/component.json" || check "the box isn't the declared one: $(jq -c . "$OUT/component.json")"
   J '(.tool_ui | length > 0) and (.tool_ui | all(startswith("/v1/tools/")))' "$OUT/component.json" || check "the page asked the machine for a component, or nobody: $(jq -c .tool_ui "$OUT/component.json")"
   J '.violations == []' "$OUT/component.json" || check "the page broke its CSP: $(jq -c .violations "$OUT/component.json")"
 }
