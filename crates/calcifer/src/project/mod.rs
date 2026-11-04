@@ -469,7 +469,7 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
             run: pending.run,
             earlier_ms: pending.version.execution_ms,
             shot: job.is_some_and(|job| job.shot),
-            ends_at_ms: walker.placed.get(id).map(|placed| at_ms(placed.end_s)),
+            ends_at_ms: walker.placed.get(id).map(|placed| at_ms(walker.planned_at_ms, placed.end_s)),
             gpus: walker.placed.get(id).map(|placed| placed.width).filter(|width| *width > 0),
         }
     });
@@ -494,8 +494,8 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
                 needs: waits.iter().map(|name| (*name).to_owned()).collect(),
                 why: Some(why),
                 gpus: placed.map(|placed| placed.width).filter(|width| *width > 0),
-                starts_at_ms: placed.map(|placed| at_ms(placed.start_s)),
-                ends_at_ms: placed.map(|placed| at_ms(placed.end_s)),
+                starts_at_ms: placed.map(|placed| at_ms(walker.planned_at_ms, placed.start_s)),
+                ends_at_ms: placed.map(|placed| at_ms(walker.planned_at_ms, placed.end_s)),
                 ..Job::default()
             };
             (row, job.shot)
@@ -508,9 +508,9 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     Ok(())
 }
 
-/// `seconds` from now, to the nearest 10 s: a guess, and one that doesn't tell a client anything new every time it is worked out again.
-fn at_ms(seconds: f64) -> i64 {
-    (now_ms() + (seconds * 1000.0) as i64) / 10_000 * 10_000
+/// `seconds` after the plan was worked out, to the nearest 10 s: a guess, the same each time it is read.
+fn at_ms(planned_at_ms: i64, seconds: f64) -> i64 {
+    (planned_at_ms + (seconds * 1000.0) as i64) / 10_000 * 10_000
 }
 
 /// What a project's walker needn't read again.
@@ -538,6 +538,8 @@ struct Walker {
     /// Where the last plan put each job, by its key, and the machines it counted them on.
     placed: HashMap<String, sim::Placed>,
     plan_machines: Vec<On>,
+    /// When the plan was worked out: its times are from then.
+    planned_at_ms: i64,
     /// When each job went, and how wide: what is left of it.
     sent_at: HashMap<String, (Instant, String, u32)>,
 }
@@ -2488,8 +2490,9 @@ impl Walk {
         let _ = self.project.events.send(event);
     }
 
-    /// The board as project.lock stands now.
+    /// The board as project.lock stands now, its times worked out again.
     fn sync(&self) {
+        self.plan_now();
         if let Err(error) = sync_jobs(&self.project, |number| self.host.numbered(number)) {
             warn!("the board of {}: {}", self.folder().dir.display(), error.message);
         }
@@ -2662,7 +2665,7 @@ impl Walk {
     fn plan_now(&self) {
         let Ok(walk) = self.folder().walk_now() else { return };
         let mut walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, facts, learned, placed, plan_machines, sent_at, .. } = &mut *walker;
+        let Walker { graph, readings, facts, learned, placed, plan_machines, sent_at, planned_at_ms, .. } = &mut *walker;
         let open = graph.open_jobs();
         let at: HashMap<usize, usize> = open.iter().enumerate().map(|(place, &id)| (id, place)).collect();
         let mut machines: Vec<On> = vec![];
@@ -2707,6 +2710,7 @@ impl Walk {
         let plan = sim::plan(&works, &gpus);
         *placed = open.iter().zip(&plan.placed).map(|(&id, place)| (graph.jobs[id].key.clone(), *place)).collect();
         *plan_machines = machines;
+        *planned_at_ms = now_ms();
     }
 
     /// What `with` calls is known now: how wide this job should go, as the plan stands with that in it. 0: as wide as the machine goes, there being no choice.

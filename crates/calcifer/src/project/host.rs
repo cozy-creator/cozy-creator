@@ -226,7 +226,9 @@ impl Measured {
             }
             width = width.max(measured.pointer("/execution/degree").and_then(Value::as_u64).unwrap_or(0) as u32);
         }
-        (busy > 0.0).then(|| Self { busy_s: busy / 1000.0, width: width.max(1), exchange_share: exchange / busy })
+        // What it took is its run's own time: the stages of an orchestrator and of its calls are the same time, counted twice.
+        let wall = run.execution_ms.map(|ms| ms as f64).filter(|ms| *ms > 0.0).unwrap_or(busy);
+        (busy > 0.0).then(|| Self { busy_s: wall / 1000.0, width: width.max(1), exchange_share: (exchange / busy).min(1.0) })
     }
 }
 
