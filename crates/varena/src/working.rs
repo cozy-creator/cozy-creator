@@ -161,6 +161,7 @@ enum Life {
     Unjoined(u64),
 }
 
+#[derive(Clone)]
 struct Block {
     segment: u64,
     capacity: usize,
@@ -285,6 +286,56 @@ pub(crate) struct State {
 }
 
 impl State {
+    fn unlist(&mut self, key: (Option<PoolId>, usize, Option<u64>), ptr: u64) {
+        if let Some(slots) = self.free.get_mut(&key) {
+            if let Some(index) = slots.iter().rposition(|listed| *listed == ptr) {
+                slots.swap_remove(index);
+            }
+            if slots.is_empty() {
+                self.free.remove(&key);
+            }
+        }
+    }
+
+    /// Adjacent free blocks with the same ordering. A completed block has no phase charge, so its
+    /// tag is stale and doesn't matter; a pending one's charge stays with its tag.
+    fn joinable(&self, left: u64, right: u64) -> bool {
+        let (Some(a), Some(b)) = (self.blocks.get(&left), self.blocks.get(&right)) else { return false };
+        a.segment == b.segment && a.life == Life::Ready && b.life == Life::Ready
+            && a.reusable_on == b.reusable_on && (a.reusable_on.is_none() || a.phase == b.phase)
+    }
+
+    fn join(&mut self, left: u64, right: u64) {
+        let token = self.phases.active.as_ref().map(|active| active.token);
+        let gone = self.blocks.remove(&right).expect("joined block");
+        self.unlist((None, gone.capacity, gone.reusable_on), right);
+        if gone.charge() != 0 && gone.phase.is_some() && gone.phase == token {
+            let segment = self.segments.get_mut(&gone.segment).expect("owned segment");
+            segment.phase_blocks = segment.phase_blocks.saturating_sub(1);
+        }
+        let (capacity, origin) = {
+            let block = &self.blocks[&left];
+            (block.capacity, block.reusable_on)
+        };
+        self.unlist((None, capacity, origin), left);
+        let block = self.blocks.get_mut(&left).expect("joined block");
+        block.capacity += gone.capacity;
+        block.streams.extend(gone.streams);
+        for (id, sequence) in gone.waits {
+            match block.waits.iter_mut().find(|(known, _)| *known == id) {
+                Some(wait) => wait.1 = wait.1.max(sequence),
+                None => block.waits.push((id, sequence)),
+            }
+        }
+        let fence = gone.fenced && !block.fenced;
+        block.fenced |= gone.fenced;
+        let capacity = block.capacity;
+        if fence {
+            self.fenced.push(left);
+        }
+        self.free.entry((None, capacity, origin)).or_default().push(left);
+    }
+
     fn charged(&self) -> usize {
         self.blocks.values().map(Block::charge).sum()
     }
@@ -461,6 +512,10 @@ fn size_class(bytes: usize, page: usize) -> Result<usize> {
 
 // The size class of Torch's small RNG tensors.
 const AUXILIARY_CLASS: usize = 512;
+// Above this, blocks are runs that split and merge; below it, slabs of one class.
+const LARGE: usize = 1 << 20;
+// A new large segment's least size, so large blocks share pages and their runs can merge.
+const SEGMENT: usize = 64 << 20;
 
 impl Device {
     pub(crate) fn page(&self) -> usize {
@@ -539,7 +594,7 @@ impl Device {
         cache::poll(state, &fences);
         let mut ready = Vec::new();
         for ptr in std::mem::take(&mut state.fenced) {
-            let Some(block) = state.blocks.get_mut(&ptr) else {
+            let Some(block) = state.blocks.get_mut(&ptr).filter(|block| block.fenced) else {
                 continue;
             };
             let complete = match block.life {
@@ -561,12 +616,17 @@ impl Device {
             }
         }
         drop(fences);
-        for (ptr, bytes, segment) in ready {
+        for (ptr, bytes, segment) in &ready {
             state
                 .free
-                .entry((state.segments[&segment].pool, bytes, None))
+                .entry((state.segments[segment].pool, *bytes, None))
                 .or_default()
-                .push(ptr);
+                .push(*ptr);
+        }
+        for (ptr, bytes, _) in ready {
+            if bytes > LARGE {
+                Self::merge_run(state, ptr);
+            }
         }
         state.refresh_phase();
         Ok(())
@@ -582,16 +642,62 @@ impl Device {
         if let Some(ptr) = Self::take_class(state, bytes, requested, stream, pool) {
             return Some(ptr);
         }
-        if pool.is_some() || bytes <= 1 << 20 {
+        if pool.is_some() || bytes <= LARGE {
             return None;
         }
-        // Large sizes rarely repeat exactly. A free block up to twice the size beats releasing it
-        // and mapping new pages: each size holding its own pages cost SDXL 1 GB beside 350 MB live.
-        let larger: BTreeSet<usize> = state.free.range((None, bytes + 1, None)..=(None, bytes * 2, Some(u64::MAX)))
-            .filter(|(_, slots)| !slots.is_empty())
-            .map(|((_, class, _), _)| *class)
-            .collect();
-        larger.into_iter().find_map(|class| Self::take_class(state, class, requested, stream, None))
+        Self::split_run(state, bytes, stream)?;
+        Self::take_class(state, bytes, requested, stream, None)
+    }
+
+    /// Best fit: cut the smallest free run this stream may use down to `bytes`. The rest stays
+    /// free with the same ordering. Each size holding its own pages cost SDXL 560 MB beside 327 live.
+    /// A much larger segment isn't cut: one small block left in it would keep it all mapped.
+    fn split_run(state: &mut State, bytes: usize, stream: u64) -> Option<()> {
+        let (ptr, class, origin) = state.free.range((None, bytes + 1, None)..)
+            .take_while(|((pool, class, _), _)| pool.is_none() && (*class <= SEGMENT || *class <= bytes * 4))
+            .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
+            .find_map(|((_, class, origin), slots)| {
+                slots.iter().rev()
+                    .find(|ptr| state.blocks.get(ptr).is_some_and(|block| block.capacity == *class && block.reusable_from(*origin)))
+                    .map(|ptr| (*ptr, *class, *origin))
+            })?;
+        state.unlist((None, class, origin), ptr);
+        let token = state.phases.active.as_ref().map(|active| active.token);
+        let block = state.blocks.get_mut(&ptr).expect("listed free run");
+        let mut tail = block.clone();
+        block.capacity = bytes;
+        tail.capacity = class - bytes;
+        let at = ptr + bytes as u64;
+        if tail.fenced {
+            state.fenced.push(at);
+        }
+        if tail.charge() != 0 && tail.phase.is_some() && tail.phase == token {
+            state.segments.get_mut(&tail.segment).expect("owned segment").phase_blocks += 1;
+        }
+        state.free.entry((None, tail.capacity, origin)).or_default().push(at);
+        state.free.entry((None, bytes, origin)).or_default().push(ptr);
+        state.blocks.insert(at, tail);
+        Some(())
+    }
+
+    /// A free large block joins its free neighbours in the segment, for a later, larger request.
+    fn merge_run(state: &mut State, ptr: u64) {
+        let Some(block) = state.blocks.get(&ptr) else { return };
+        let segment = block.segment;
+        let held = &state.segments[&segment];
+        if held.pool.is_some() || held.size_class <= LARGE {
+            return;
+        }
+        let next = ptr + block.capacity as u64;
+        if state.joinable(ptr, next) {
+            state.join(ptr, next);
+        }
+        if let Some((&left, before)) = state.blocks.range(segment..ptr).next_back()
+            && left + before.capacity as u64 == ptr
+            && state.joinable(left, ptr)
+        {
+            state.join(left, ptr);
+        }
     }
 
     fn take_class(
@@ -712,6 +818,9 @@ impl Device {
         if let Some(pool) = pool {
             state.blocks.insert(ptr, Block::free(ptr, bytes));
             state.free.entry((Some(pool), bytes, None)).or_default().push(ptr);
+        } else if class > LARGE {
+            state.blocks.insert(ptr, Block::free(ptr, bytes));
+            state.free.entry((None, bytes, None)).or_default().push(ptr);
         } else {
             for offset in (0..bytes).step_by(class) {
                 if bytes - offset < class {
@@ -1130,8 +1239,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             });
         }
     }
-    let mapped = if class <= 1 << 20 { owner.page() } else { class };
-    let result = reclaim::acquire(device, mapped, Wait::Yes, Protect::default(), || {
+    let grown = if class <= LARGE { owner.page() } else { rounded(class.max(SEGMENT), owner.page())? };
+    let attempt = |mapped: usize| reclaim::acquire(device, mapped, Wait::Yes, Protect::default(), || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -1152,6 +1261,11 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     });
+    // A whole segment doesn't fit, whatever gave way: the card may still hold just this block.
+    let result = match attempt(grown) {
+        Err(Error::OutOfMemory { .. }) if grown > class && class > LARGE => attempt(class),
+        other => other,
+    };
     if matches!(result, Err(Error::OutOfMemory { .. })) {
         owner.lock()?.stats.ooms += 1;
     }
@@ -1249,6 +1363,9 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         state.phase_changed(class, charge, phase, phase, segment);
         split::refresh(&mut state);
     }
+    if reusable && class > LARGE {
+        Device::merge_run(&mut state, ptr);
+    }
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;
     Ok(())
@@ -1334,6 +1451,9 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     );
     if state.phases.active.is_some() {
         split::refresh(&mut state);
+    }
+    if completed && capacity > LARGE {
+        Device::merge_run(&mut state, ptr);
     }
     state.stats.allocated_bytes -= requested;
     state.stats.frees += 1;

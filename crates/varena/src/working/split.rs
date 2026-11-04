@@ -337,6 +337,26 @@ fn fits(
                     }
                 }
             }
+            // What's left of the large ones can be cut from free runs.
+            let mut runs: Vec<(usize, u64)> = state.free.range((None, LARGE + 1, None)..)
+                .take_while(|((pool, ..), _)| pool.is_none())
+                .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
+                .flat_map(|((_, capacity, origin), slots)| slots.iter().filter_map(|ptr| {
+                    let block = state.blocks.get(ptr).filter(|block| block.capacity == *capacity && block.reusable_from(*origin))?;
+                    (!used.contains(ptr)).then_some((*capacity, block.segment))
+                }))
+                .collect();
+            for (&class, count) in missing.iter_mut().rev().take_while(|(class, _)| **class > LARGE) {
+                while *count != 0 {
+                    let Some(run) = runs.iter_mut().filter(|run| run.0 >= class).min_by_key(|run| run.0) else {
+                        break;
+                    };
+                    run.0 -= class;
+                    preserve.insert(run.1);
+                    reused += class;
+                    *count -= 1;
+                }
+            }
             let missing = backing(owner, &missing)?;
             let missing = if sample.is_none() { scaled(missing) } else { missing };
             let reclaimable: usize = state
