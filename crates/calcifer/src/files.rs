@@ -1,6 +1,8 @@
 //! How Calcifer answers with a file (CALCIFER-API.md, Files): GET and HEAD, `Accept-Ranges`, one
-//! `Range: bytes=…` as `206` (`416` when unsatisfiable), an `ETag` and `If-None-Match` as `304`, so a
-//! `<video>` seeks it and a browser caches it.
+//! `Range: bytes=…` as `206` (`416` when unsatisfiable, the whole when `If-Range` names another
+//! revision), an `ETag` and `If-None-Match` as `304`, so a `<video>` seeks it and a browser caches
+//! it. What a run wrote is never script in Calcifer's origin, where script is code execution as you:
+//! each file is sandboxed, and only a picture, video or sound opens in place.
 use std::io::{Seek as _, SeekFrom};
 
 use axum::{
@@ -19,9 +21,12 @@ pub fn send(
     headers: &HeaderMap,
 ) -> std::io::Result<Response> {
     let octets = HeaderValue::from_static("application/octet-stream");
+    let disposition = if shown_in_place(media_type) { "inline" } else { "attachment" };
     let media_type = HeaderValue::from_str(media_type).ok().filter(|v| !v.is_empty());
     let response = Response::builder()
         .header(header::CONTENT_TYPE, media_type.unwrap_or(octets))
+        .header(header::CONTENT_SECURITY_POLICY, "sandbox")
+        .header(header::CONTENT_DISPOSITION, disposition)
         .header(header::ETAG, etag)
         .header(header::ACCEPT_RANGES, "bytes");
     let matched = (headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()))
@@ -29,7 +34,10 @@ pub fn send(
     if matched {
         return Ok(response.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("a response"));
     }
-    let (response, status, first, count) = match ranged(headers.get(header::RANGE), len) {
+    // A range of another revision would splice two files: the whole of this one instead.
+    let same_revision = headers.get(header::IF_RANGE).is_none_or(|tag| tag.as_bytes() == etag.as_bytes());
+    let range = headers.get(header::RANGE).filter(|_| same_revision);
+    let (response, status, first, count) = match ranged(range, len) {
         Ok(None) => (response, StatusCode::OK, 0, len),
         Ok(Some((first, last))) => {
             let response = response.header(header::CONTENT_RANGE, format!("bytes {first}-{last}/{len}"));
@@ -50,6 +58,11 @@ pub fn send(
         .header(header::CONTENT_LENGTH, count)
         .body(Body::from_stream(tokio_util::io::ReaderStream::new(bytes)))
         .expect("a response"))
+}
+
+fn shown_in_place(media_type: &str) -> bool {
+    let kind = media_type.split('/').next().unwrap_or_default();
+    ["image", "video", "audio"].iter().any(|shown| kind.eq_ignore_ascii_case(shown))
 }
 
 /// The one range a `Range: bytes=…` header asks of `len` bytes, as (first, last): none for the

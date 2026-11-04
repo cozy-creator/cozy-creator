@@ -85,8 +85,10 @@ ended, or when Calcifer stops; a client reconnects from its last `id:`.
 
 **Files.** A file a resource serves answers `GET` and `HEAD` with `Content-Length`, `Content-Type`,
 `Accept-Ranges: bytes` and an `ETag`, a single `Range: bytes=…` with `206` and `Content-Range` (`416` when
-unsatisfiable), and `If-None-Match` naming its ETag with `304`, so a `<video>` seeks it and a browser caches it
-(`files.rs`, one responder for every route).
+unsatisfiable, and `200` with the whole file when `If-Range` names anything but its ETag), and `If-None-Match`
+naming its ETag with `304`, so a `<video>` seeks it and a browser caches it (`files.rs`, one responder for every
+route). Each answers `Content-Security-Policy: sandbox`, and `Content-Disposition: inline` for `image/`, `video/`
+and `audio/`, else `attachment`: what a run wrote never runs as script in Calcifer's origin.
 
 ## Resources
 

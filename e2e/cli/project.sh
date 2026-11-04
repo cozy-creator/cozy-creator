@@ -1462,12 +1462,33 @@ png=$(jq -r '.files | to_entries[0].value.path' "$P/project.lock")
 api -D "$OUT/asset.hdr" -o "$OUT/asset.bin" "http://$ADDR/v1/projects/$ID/$png" || true
 { head -1 "$OUT/asset.hdr" | grep -q ' 200' && cmp -s "$OUT/asset.bin" "$P/$png" && grep -qi "etag: \"$(basename "$png" .mp4)\"" "$OUT/asset.hdr"; } \
   || check "GET $png: $(tr -d '\r' < "$OUT/asset.hdr" | head -4 | paste -sd' ')"
+{ grep -qi '^content-security-policy: sandbox' "$OUT/head.hdr" && grep -qi '^content-disposition: inline' "$OUT/head.hdr"; } \
+  || check "edit.mp4 is not sandboxed and shown in place: $(tr -d '\r' < "$OUT/head.hdr" | paste -sd' ')"
+[ "$(api -o /dev/null -w '%{http_code}' -r 0-9 -H "If-Range: $et" "$U")" = 206 ] || check "a Range under edit.mp4's own If-Range is not 206"
+[ "$(api -o /dev/null -w '%{http_code}' -r 0-9 -H 'If-Range: "another-revision"' "$U")" = 200 ] || check "a Range under another revision's If-Range is not the whole file"
+hostile_outputs
 # A rebinding Host, a foreign Origin, no bearer: each refused before anything is read or done.
 [ "$(api -o /dev/null -w '%{http_code}' -H "Host: rebind.example:${ADDR##*:}" "http://$ADDR/v1/projects")" = 403 ] || check "a rebinding Host was not refused 403"
 [ "$(api -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.example' -H 'Content-Type: application/json' -d '{"names":["all"],"on":["local"]}' "http://$ADDR/v1/projects/$ID/runs")" = 403 ] \
   || check "a POST with a foreign Origin was not refused 403"
 [ "$(curl -sS -o /dev/null -w '%{http_code}' "http://$ADDR/v1/projects")" = 401 ] || check "a request with no bearer was not refused 401"
 yaml_routes "$P" "$ID"
+}
+
+# What a run wrote can't be script in Calcifer's origin: sandboxed, and a page is a download. The browser opens them too.
+hostile_outputs() {
+step "a project: a run's page and drawing are served sandboxed"
+local H=$OUT/hostile-project output
+cozy project new "$H" > /dev/null || check "hostile outputs: project new"
+(cd "$H" && cell hostile "$here/project/hostile.py/hostile" "prompt=hostile $RANDOM") || true
+HOSTILE=$(cat "$OUT/hostile.number")
+for output in page drawing; do
+  api -I "http://$ADDR/v1/runs/$HOSTILE/outputs/$output" > "$OUT/hostile-$output.hdr" || true
+  { head -1 "$OUT/hostile-$output.hdr" | grep -q ' 200' && grep -qi '^content-security-policy: sandbox' "$OUT/hostile-$output.hdr"; } \
+    || check "hostile outputs: $output is not sandboxed: $(tr -d '\r' < "$OUT/hostile-$output.hdr" | paste -sd' ')"
+done
+grep -qi '^content-disposition: attachment' "$OUT/hostile-page.hdr" || check "hostile outputs: an HTML output is not a download: $(tr -d '\r' < "$OUT/hostile-page.hdr" | paste -sd' ')"
+grep -qi '^content-disposition: inline' "$OUT/hostile-drawing.hdr" || check "hostile outputs: an SVG output is not an image: $(tr -d '\r' < "$OUT/hostile-drawing.hdr" | paste -sd' ')"
 }
 
 # project.yaml over HTTP: read it, save over what was read, and never over a save made since.
