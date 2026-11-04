@@ -1,6 +1,6 @@
 //! project.yaml, format 2 (design/project-graph.md): assets, the operation that makes each (a package, by `with`, and a `kind`,
 //! which its adapter turns into calls), the memo key, and what each asset's state is. The platform reads `kind`, `render` (`with`, `prompt`,
-//! `models`, `lora`), a hash in `image`, `video`, `audio` or `voice`, a beat's `writes` and `duration`, and `<name>` in any text. It knows
+//! `models`, `lora`), a hash in `image`, `video` or `audio`, an entity's links, a beat's `writes` and `duration`, and `<name>` in any text. It knows
 //! no kind's meaning and no field's shape, but for the reserved package `cozy`, which it runs itself. Every other field passes through to the adapter and counts in the
 //! key. Nothing refuses a project but a file of no format: what one line gets wrong is said, and that line does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{self, Files, Folder, Keeps, Lock},
-    graph::{Graph, mentions_in, name_key},
+    graph::{Graph, mentions, mentions_in, name_key},
 };
 
 /// The name `cozy project render all` means.
@@ -19,12 +19,12 @@ pub const ALL: &str = "all";
 const FORMAT: u64 = 2;
 /// What `render` unfolds to: how to make it, never at an asset's root.
 const RENDERED: [&str; 5] = ["with", "instructions", "options", "models", "lora"];
-/// The fields that name an asset's files by role. A hash there, or a list of them, pins that file; a `<mention>` is an input.
-const PINS: [&str; 4] = ["image", "video", "audio", "voice"];
-/// The role that only attaches a file: a voice doesn't stop the image being made.
-const ATTACHED: &str = "voice";
-const RESERVED: [&str; 11] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio", "voice", "writes"];
-const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
+/// The fields that name an asset's main file. A hash there pins it; a `<mention>` is an input.
+const PINS: [&str; 3] = ["image", "video", "audio"];
+/// The links of an entity that a read of it gets as files. Its other links go by name, `<kyogre.primordial>`.
+const ROLES: [&str; 4] = ["image", "video", "audio", "voice"];
+const RESERVED: [&str; 10] = ["render", "with", "kind", "models", "lora", "options", "image", "video", "audio", "writes"];
+const SECTIONS: [&str; 4] = ["version", "defaults", "entities", "assets"];
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 /// What `cozy` reads of a cut or a frame.
@@ -52,20 +52,29 @@ defaults:
   edit:
     render: {with: cozy}
 
-assets:
+entities:
   kyogre:
     kind: character
     description: |
       Kyogre, the colossal blue whale-like legendary Pokémon with huge fins, no legs, and glowing red lines.
-    render: |
-      The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+    image: <kyogre sheet>
 
   groudon:
     kind: character
     description: |
       Groudon, the colossal red legendary Pokémon with grey stone plates and huge claws.
+    image: <groudon sheet>
+
+assets:
+  kyogre sheet:
+    kind: character
     render: |
-      The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+      <kyogre>. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
+
+  groudon sheet:
+    kind: character
+    render: |
+      <groudon>. The whole body from the front on the left, with nothing added to the body described and no ground under it. On the right, the same character has been spun a half turn, at the same size, so its back faces the viewer and nothing on its front can be seen. Two separate views, with no text.
 
   coast:
     kind: environment
@@ -128,11 +137,8 @@ pub struct Asset {
     pub fields: Map<String, Value>,
     /// The fields it wrote itself.
     pub own: BTreeSet<String>,
-    /// A pin, the line `approve` writes: its field and each sha256, in the order written. Its `with` and text stay in the file,
-    /// ignored while it stands.
-    pub pin: Option<(&'static str, Vec<String>)>,
-    /// Its files in other roles (a character's `voice`), which go with whatever its state is.
-    pub also: Files,
+    /// A pin, the line `approve` writes: its field and sha256. Its `render` and text stay in the file, ignored while it stands.
+    pub pin: Option<(&'static str, String)>,
     /// It has no operation: no `with`, of its own or from defaults, or no `kind` for its package's adapter.
     pub hollow: bool,
     /// A free frame a beat names: `cozy` makes it, and it stays the world state it is to what reads it.
@@ -143,6 +149,23 @@ pub struct Asset {
     pub writes: Vec<Write>,
     /// The asset whose function sends this revision: its state comes with that one's take.
     pub writer: Option<usize>,
+    /// What it reads for the words alone: an entity that links back to it, whose files would be its own.
+    pub words: BTreeSet<usize>,
+    /// It is no asset but an entity, a sub-entity or a link of one: no work and no versions, its files what its links hold now.
+    pub links: Option<Links>,
+}
+
+/// What an entity, a sub-entity or a link of one points at. Each is a node of the graph, so a read of it is like any read.
+#[derive(Clone, Default)]
+pub struct Links {
+    /// Its files: role to the asset whose main file that is. A link of an entity holds one, under "", and reads that asset's whole set.
+    pub roles: BTreeMap<String, String>,
+    /// Its own links as the file writes them, field to asset. A link of an entity has none.
+    pub own: BTreeMap<String, String>,
+    /// Its sub-entities' names.
+    pub subs: Vec<String>,
+    /// The entity it is a sub-entity or link of.
+    pub parent: Option<String>,
 }
 
 /// A revision of a series an operation's text names.
@@ -190,6 +213,8 @@ pub enum State {
     Current(u32),
     /// This take of its writer wrote it.
     Written { by: String, version: u32 },
+    /// An entity, whose links all stand.
+    Linked,
     Unwritten { by: String },
     /// Something it reads has no state.
     Waits,
@@ -251,7 +276,7 @@ impl Doc {
             _ => return Err(invalid("project_yaml", format!("{} is no mapping of sections", folder::PROJECT))),
         };
         let old = top.get("assets").is_some_and(Value::is_array)
-            || ["entities", "shots", "world_states"].iter().any(|key| top.contains_key(*key))
+            || ["shots", "world_states"].iter().any(|key| top.contains_key(*key))
             || top.get("version").is_some_and(|version| version.as_u64() == Some(1));
         if old {
             let said = format!("{} is format 1, and cozy reads format 2: it is left as it is", folder::PROJECT);
@@ -290,8 +315,13 @@ impl Doc {
                 doc.write(i, beat, &world_state, at);
             }
         }
+        let entities = top.get("entities").and_then(Value::as_object).unwrap_or(&empty);
+        for name in protocol::yaml::keys(text, &["entities"]) {
+            let Some(written) = entities.get(&name) else { continue };
+            doc.entity(&name, written);
+        }
         for i in 0..doc.assets.len() {
-            if doc.assets[i].hollow && doc.assets[i].pin.is_none() {
+            if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].links.is_none() {
                 let said = doc.nothing_to_make(i);
                 doc.warnings.push(said);
             }
@@ -322,10 +352,11 @@ impl Doc {
         let own: BTreeSet<String> = body.keys().cloned().collect();
         // Every asset has a kind: what it writes, else the role of the file it holds, else `image`.
         let hash = |field: &&str| match body.get(*field) {
-            Some(value @ (Value::Number(_) | Value::String(_) | Value::Array(_))) => mentions_in(value).is_empty(),
+            Some(Value::Number(_)) => true,
+            Some(Value::String(text)) => mentions(text).is_empty(),
             _ => false,
         };
-        let held = PINS.iter().copied().filter(|field| *field != ATTACHED).find(hash);
+        let held = PINS.iter().copied().find(hash);
         let kind = match text_of(body.get("kind")) {
             kind if kind.is_empty() => held.unwrap_or("image").to_owned(),
             kind => kind,
@@ -349,33 +380,31 @@ impl Doc {
         if !options.is_empty() {
             merged.insert("options".into(), Value::Object(options));
         }
-        let (mut pin, mut also) = (None, Files::new());
+        let mut pin = None;
         for field in PINS {
             let Some(value) = merged.get(field) else { continue };
-            if !mentions_in(value).is_empty() {
-                continue;
-            }
-            let one = |value: &Value| match value {
+            let written = match value {
+                Value::String(text) if !mentions(text).is_empty() => continue,
                 Value::String(text) => text.clone(),
                 Value::Number(number) => number.to_string(),
-                _ => String::new(),
-            };
-            let written: Vec<String> = match value {
-                Value::Array(items) => items.iter().map(one).collect(),
-                Value::String(_) | Value::Number(_) => vec![one(value)],
+                Value::Array(_) if mentions_in(value).is_empty() => {
+                    self.warnings.push(format!("{name}'s {field}: a list pins nothing: an asset has one main file, so make an asset for each; it is ignored"));
+                    merged.remove(field);
+                    continue;
+                }
                 _ => continue,
             };
-            match written.iter().map(|hash| file_named(hash, lock)).collect::<Result<Vec<String>, String>>() {
-                Ok(hashes) => {
-                    for sha256 in &hashes {
-                        if !lock.files.get(sha256).is_some_and(|file| folder.path(&file.path).is_file()) {
-                            self.warnings.push(format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(sha256)));
-                        }
+            if let Some((first, _)) = &pin {
+                self.warnings.push(format!("{name}'s {field}: an asset has one main file, its {first}: make an asset for this one, and link both from an entity; it is ignored"));
+                merged.remove(field);
+                continue;
+            }
+            match file_named(&written, lock) {
+                Ok(sha256) => {
+                    if !lock.files.get(&sha256).is_some_and(|file| folder.path(&file.path).is_file()) {
+                        self.warnings.push(format!("{name}'s {field}: {} is not on this computer: cozy project pull", folder::prefix_of(&sha256)));
                     }
-                    match pin {
-                        None if field != ATTACHED => pin = Some((field, hashes)),
-                        _ => also.extend(role_files(field, &hashes)),
-                    }
+                    pin = Some((field, sha256));
                 }
                 Err(why) => {
                     self.warnings.push(format!("{name}'s {field}{why}"));
@@ -388,13 +417,98 @@ impl Doc {
         if let Some((field, _)) = &pin
             && let Some(was) = pinned_over(text, name, field)
         {
-            fields.insert((*field).to_owned(), protocol::yaml::to_json(&was).unwrap_or_else(|_| json!(was)));
+            fields.insert((*field).to_owned(), json!(was));
         }
         let with = merged.get("with").and_then(Value::as_str).map(plain_with);
         let hollow = constant || with.is_none() || (with.as_deref() == Some(COZY) && !["edit", "frame"].contains(&kind.as_str()));
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, also, hollow, frame: false, reads: vec![], writes: vec![], writer: None });
+        self.assets.push(Asset { name: name.to_owned(), kind, body: merged, fields, own, pin, hollow, frame: false, reads: vec![], writes: vec![], writer: None, words: BTreeSet::new(), links: None });
         Some(self.assets.len() - 1)
+    }
+
+    /// An entity: identity and links, no work. It, each sub-entity and each link are nodes of the graph, so `<kyogre>`,
+    /// `<groudon.primordial>` and `<kyogre.primordial>` read like any mention. A sub-entity takes from its parent what it doesn't have.
+    fn entity(&mut self, name: &str, written: &Value) {
+        let Some(body) = written.as_object() else {
+            self.warnings.push(format!("{name} is no mapping of fields: it is ignored"));
+            return;
+        };
+        let (own, subs) = self.links_of(name, body, true);
+        let roles = |own: &BTreeMap<String, String>| -> BTreeMap<String, String> {
+            own.iter().filter(|(field, _)| ROLES.contains(&field.as_str())).map(|(field, asset)| (field.clone(), asset.clone())).collect()
+        };
+        let kind = match text_of(body.get("kind")) {
+            kind if kind.is_empty() => "image".to_owned(),
+            kind => kind,
+        };
+        let description = body.get("description").cloned();
+        let mut named = vec![];
+        for (field, sub) in &subs {
+            let full = format!("{name}.{field}");
+            let (mine, _) = self.links_of(&full, sub, false);
+            let mut files = roles(&own);
+            files.extend(roles(&mine));
+            let its_kind = match text_of(sub.get("kind")) {
+                its if its.is_empty() => kind.clone(),
+                its => its,
+            };
+            let its_description = sub.get("description").cloned().or_else(|| description.clone());
+            let links = Links { roles: files, own: mine, subs: vec![], parent: Some(name.to_owned()) };
+            if self.node(&full, its_kind, its_description, links) {
+                named.push(full);
+            }
+        }
+        let links = Links { roles: roles(&own), own: own.clone(), subs: named, parent: None };
+        self.node(name, kind.clone(), description.clone(), links);
+        for (field, asset) in own {
+            let links = Links { roles: BTreeMap::from([(String::new(), asset)]), parent: Some(name.to_owned()), ..Links::default() };
+            self.node(&format!("{name}.{field}"), kind.clone(), description.clone(), links);
+        }
+    }
+
+    /// An entity's links and sub-entities. Assets link into hashes, whereas entities link into asset-names.
+    fn links_of(&mut self, name: &str, body: &Map<String, Value>, nests: bool) -> (BTreeMap<String, String>, Vec<(String, Map<String, Value>)>) {
+        let (mut links, mut subs) = (BTreeMap::new(), vec![]);
+        for (field, value) in body {
+            match (field.as_str(), value) {
+                ("kind" | "description", _) => {}
+                ("render", _) => self.warnings.push(format!("{name}'s render: an entity holds no way of making anything: put it on an asset it links; it is ignored")),
+                (_, Value::Object(sub)) if nests => subs.push((field.clone(), sub.clone())),
+                (_, Value::Object(_)) => self.warnings.push(format!("{name}'s {field}: sub-entities go one level; it is ignored")),
+                (_, Value::String(text)) if matches!(mentions(text).as_slice(), [one] if text.trim() == format!("<{one}>")) => {
+                    links.insert(field.clone(), mentions(text)[0].to_owned());
+                }
+                _ => self.warnings.push(format!("{name}'s {field}: an entity links to an asset's name: make an asset for it, and write `{field}: <that asset>`; it is ignored")),
+            }
+        }
+        (links, subs)
+    }
+
+    /// A node that is no work, unless the name is taken: names are shared across assets and entities, and the asset stands.
+    fn node(&mut self, name: &str, kind: String, description: Option<Value>, links: Links) -> bool {
+        let key = name_key(name);
+        if self.index.contains_key(&key) {
+            self.warnings.push(format!("{name} is an asset and an entity, and they share names: the asset stands, so rename one"));
+            return false;
+        }
+        let fields: Map<String, Value> = description.into_iter().map(|text| ("description".to_owned(), text)).collect();
+        self.index.insert(key, self.assets.len());
+        self.assets.push(Asset {
+            name: name.to_owned(),
+            kind,
+            body: Map::new(),
+            fields,
+            own: BTreeSet::new(),
+            pin: None,
+            hollow: true,
+            frame: false,
+            reads: vec![],
+            writes: vec![],
+            writer: None,
+            words: BTreeSet::new(),
+            links: Some(links),
+        });
+        true
     }
 
     /// `world_state`, an asset beat `beat` of asset `i` writes `at` seconds into its shot: a screenshot, its picture. If the shot reads it
@@ -414,12 +528,13 @@ impl Doc {
                     fields: Map::new(),
                     own: BTreeSet::new(),
                     pin: None,
-                    also: Files::new(),
                     hollow: false,
                     frame: false,
                     reads: vec![],
                     writes: vec![],
                     writer: None,
+                    words: BTreeSet::new(),
+                    links: None,
                 });
                 self.assets.len() - 1
             }
@@ -457,11 +572,35 @@ impl Doc {
         let n = self.assets.len();
         let (mut upstream, mut fixed, mut said) = (vec![vec![]; n], vec![vec![]; n], vec![]);
         let mut reads = vec![vec![]; n];
+        let mut words = vec![BTreeSet::new(); n];
+        // A link of an entity says what the asset says of itself, else what the entity says.
+        for i in 0..n {
+            let target = self.assets[i].links.as_ref().and_then(|links| self.find(links.roles.get("")?));
+            if let Some(description) = target.and_then(|j| self.assets[j].fields.get("description").filter(|_| self.assets[j].links.is_none()).cloned()) {
+                self.assets[i].fields.insert("description".into(), description);
+            }
+        }
         for i in 0..n {
             let asset = &self.assets[i];
             if let Some(writer) = asset.writer {
                 upstream[i].push(writer);
                 fixed[i].push(writer);
+                continue;
+            }
+            if let Some(links) = &asset.links {
+                for (field, target) in &links.own {
+                    match self.find(target) {
+                        None => said.push(format!("{}'s {field}: <{target}> is nothing in the project: add an asset named {target}", asset.name)),
+                        Some(j) if self.assets[j].links.is_some() => said.push(format!("{}'s {field}: <{target}> is an entity, and an entity links to assets: it is ignored", asset.name)),
+                        Some(_) => {}
+                    }
+                }
+                for target in links.roles.values() {
+                    if let Some(j) = self.find(target).filter(|&j| self.assets[j].links.is_none() && !upstream[i].contains(&j)) {
+                        upstream[i].push(j);
+                        fixed[i].push(j);
+                    }
+                }
                 continue;
             }
             let own: BTreeSet<&str> = asset.writes.iter().map(|write| write.key.as_str()).collect();
@@ -471,6 +610,14 @@ impl Doc {
                     continue;
                 };
                 let key = name_key(&self.assets[j].name);
+                // An entity that links back to what reads it gives it words: its file would be the one being made.
+                if self.assets[j].links.as_ref().is_some_and(|links| links.roles.values().any(|target| self.find(target) == Some(i))) {
+                    if !reads[i].contains(&j) {
+                        reads[i].push(j);
+                        words[i].insert(j);
+                    }
+                    continue;
+                }
                 if j != i && !own.contains(key.as_str()) && !upstream[i].contains(&j) {
                     upstream[i].push(j);
                     reads[i].push(j);
@@ -483,8 +630,9 @@ impl Doc {
             reads[reader].retain(|j| *j != read);
             said.push(format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name));
         }
-        for (asset, reads) in self.assets.iter_mut().zip(reads) {
+        for ((asset, reads), words) in self.assets.iter_mut().zip(reads).zip(words) {
             asset.reads = reads;
+            asset.words = words;
         }
         self.order = graph.order;
         self.upstream = graph.upstream;
@@ -493,6 +641,22 @@ impl Doc {
 
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
+    }
+
+    /// The asset named `name`: what can hold versions, as an entity can't.
+    pub fn holds(&self, name: &str) -> Option<usize> {
+        self.find(name).filter(|&i| self.assets[i].links.is_none())
+    }
+
+    /// The assets node `i` links, and its sub-entities': what rendering an entity renders.
+    pub fn linked(&self, i: usize) -> Vec<usize> {
+        let Some(links) = &self.assets[i].links else { return vec![] };
+        let subs = links.subs.iter().filter_map(|sub| self.assets[self.find(sub)?].links.as_ref());
+        let names = links.own.values().chain(links.roles.get("")).chain(subs.flat_map(|sub| sub.own.values()));
+        let mut found: Vec<usize> = names.filter_map(|name| self.holds(name)).collect();
+        found.sort_unstable();
+        found.dedup();
+        found
     }
 
     /// The package that makes asset `i`: its own `with`, else its kind's default. The platform names no package.
@@ -547,6 +711,18 @@ impl Doc {
     /// the version's whole file set; one that is none's is just that file.
     fn standing(&self, i: usize, lock: &Lock, done: &[Standing]) -> Standing {
         let asset = &self.assets[i];
+        if let Some(links) = &asset.links {
+            let mut files = Files::new();
+            for (role, target) in &links.roles {
+                let Some(j) = self.holds(target) else { continue };
+                let Some(held) = &done[j].files else { return Standing { state: State::Waits, ..Standing::default() } };
+                match role.as_str() {
+                    "" => files.extend(held.clone()),
+                    role => files.extend(folder::main_of(held).map(|main| (role.to_owned(), main.clone()))),
+                }
+            }
+            return Standing { state: State::Linked, files: Some(files), ..Standing::default() };
+        }
         let held = lock.asset(&asset.name);
         let reads = self.reading(i, lock, done);
         let (inputs, digests) = match &reads {
@@ -557,16 +733,10 @@ impl Doc {
             None => (None, BTreeMap::new()),
         };
         let reads = reads.unwrap_or_default();
-        let stand = |state, files: Option<Files>| {
-            let files = files.map(|mut files| {
-                files.extend(asset.also.clone());
-                files
-            });
-            Standing { state, files, inputs: inputs.clone(), digests: digests.clone(), reads: reads.clone() }
-        };
+        let stand = |state, files| Standing { state, files, inputs: inputs.clone(), digests: digests.clone(), reads: reads.clone() };
         let versions = held.map(|held| held.versions.as_slice()).unwrap_or_default();
-        if let Some((field, hashes)) = &asset.pin {
-            return match versions.iter().rev().find(|version| version.main() == hashes.first()) {
+        if let Some((field, sha256)) = &asset.pin {
+            return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
                 Some(version) => {
                     let changed = match &inputs {
                         Some(now) if !version.inputs.is_empty() && *now != version.inputs => changed(&version.digests, &digests),
@@ -574,7 +744,7 @@ impl Doc {
                     };
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
                 }
-                None => stand(State::Pinned { version: None, changed: vec![] }, Some(role_files(field, hashes))),
+                None => stand(State::Pinned { version: None, changed: vec![] }, Some(Files::from([((*field).to_owned(), sha256.clone())]))),
             };
         }
         if let Some(writer) = asset.writer {
@@ -606,6 +776,10 @@ impl Doc {
         let mut reads = vec![];
         for &j in &self.assets[i].reads {
             let name = self.assets[j].name.clone();
+            if self.assets[i].words.contains(&j) {
+                reads.push(ReadNow { name, asset: j, files: Files::new(), newest: None });
+                continue;
+            }
             match &done[j].files {
                 Some(files) => reads.push(ReadNow { name, asset: j, files: files.clone(), newest: None }),
                 None if tool => {
@@ -793,22 +967,6 @@ fn unfolded(name: &str, mut body: Map<String, Value>, warnings: &mut Vec<String>
     body
 }
 
-/// Files in one role: one is the role itself; several are `<role>`, `<role>-2`, …, as a function's list lands, so a reader that
-/// takes one takes the first.
-pub fn role_files(role: &str, hashes: &[String]) -> Files {
-    let named = |(n, sha256): (usize, &String)| (if n == 0 { role.to_owned() } else { format!("{role}-{}", n + 1) }, sha256.clone());
-    hashes.iter().enumerate().map(named).collect()
-}
-
-/// What a pin of these files writes: one hash, or a list of them.
-pub fn pin_value(hashes: &[String]) -> String {
-    let each: Vec<String> = hashes.iter().map(|sha256| yaml_scalar(folder::prefix_of(sha256))).collect();
-    match each.as_slice() {
-        [one] => one.clone(),
-        each => format!("[{}]", each.join(", ")),
-    }
-}
-
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -884,7 +1042,7 @@ pub fn pinned(text: &str, name: &str, field: &str, value: &str) -> Result<String
                 if written.is_empty() || written.starts_with(['|', '>']) {
                     return Err(by_hand(format!("its {field} runs over several lines")));
                 }
-                let line = match written.contains('<') {
+                let line = match written.starts_with('<') {
                     true => format!("{indent}{field}: {value}  # was {}\n", rest.trim()),
                     false => format!("{indent}{field}: {value}{}\n", comment.map_or(String::new(), |comment| format!("  {comment}"))),
                 };
@@ -1066,7 +1224,7 @@ fn flow_field(inner: &str, field: &str) -> Option<usize> {
 
 /// Whether what starts at `field:` holds a hash, not an input.
 fn hex_value(at_field: &str) -> bool {
-    let value = at_field.split_once(':').map_or("", |(_, rest)| rest).split(',').next().unwrap_or_default().trim().trim_start_matches('[').trim_matches('"');
+    let value = at_field.split_once(':').map_or("", |(_, rest)| rest).split(',').next().unwrap_or_default().trim().trim_matches('"');
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -1074,10 +1232,7 @@ fn hex_value(at_field: &str) -> bool {
 fn strip_flow_field(inner: &str, field: &str) -> String {
     let Some(at) = flow_field(inner, field) else { return inner.to_owned() };
     let rest = &inner[at..];
-    // A list's commas are its own.
-    let first = rest.find(',').unwrap_or(rest.len());
-    let close = rest.find('[').filter(|open| *open < first).and_then(|_| rest.find(']')).unwrap_or(0);
-    let end = rest[close..].find(',').map_or(rest.len(), |comma| close + comma + 1);
+    let end = rest.find(',').map_or(rest.len(), |comma| comma + 1);
     format!("{}{}", &inner[..at], rest[end..].trim_start()).trim_end().trim_end_matches(',').to_owned()
 }
 

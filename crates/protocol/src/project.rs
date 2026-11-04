@@ -55,6 +55,9 @@ pub struct State {
     pub id: String,
     pub path: PathBuf,
     pub assets: Vec<Asset>,
+    /// Identity and links, no work: they make nothing and hold no version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<Entity>,
     /// Assets with no state and no version yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
@@ -271,15 +274,26 @@ fn one() -> u32 {
     1
 }
 
-/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to its version `version` (1 first), or to `files`, hash prefixes
-/// of any files in the project's `files/`.
+/// An entity, with its links (field to asset) and sub-entities.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entity {
+    pub name: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subs: Vec<Entity>,
+}
+
+/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to its version `version` (1 first), or to `file`, a hash prefix
+/// of any file in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Approve {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

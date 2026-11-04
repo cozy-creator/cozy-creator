@@ -406,7 +406,9 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     }
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
+    let entities = (0..doc.assets.len()).filter(|&i| doc.assets[i].links.as_ref().is_some_and(|links| links.parent.is_none())).map(|i| entity_row(&doc, i)).collect();
     let assets = (0..doc.assets.len())
+        .filter(|&i| doc.assets[i].links.is_none())
         .map(|i| {
             let row = row(&doc, folder, &lock, &stand, i);
             match &stand[i].state {
@@ -424,7 +426,20 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let orphans = orphans(&doc, folder, &lock);
     let kept = kept_files(&doc, &lock);
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
-    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, missing, stale, orphans, busy, moving, absent, run_files, cuts, warnings }))
+    Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings }))
+}
+
+/// Entity `i` as `GET /v1/projects/{id}` lists it, with its links and sub-entities.
+fn entity_row(doc: &Doc, i: usize) -> protocol::project::Entity {
+    let asset = &doc.assets[i];
+    let links = asset.links.as_ref();
+    let subs = links.into_iter().flat_map(|links| &links.subs).filter_map(|sub| doc.find(sub));
+    protocol::project::Entity {
+        name: asset.name.clone(),
+        kind: asset.kind.clone(),
+        links: links.map(|links| links.own.clone()).unwrap_or_default(),
+        subs: subs.map(|sub| entity_row(doc, sub)).collect(),
+    }
 }
 
 /// Each asset whose published package, as this computer knows it or can ask at once, has no adapter for its kind. Local code is
@@ -520,6 +535,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         ([], Stand::Pinned { version: Some(version), changed }) if changed.is_empty() => format!("pinned: {noun} {version}"),
         ([], Stand::Pinned { version: Some(version), changed }) => format!("pinned: {noun} {version}; its inputs changed: {}", changed.join(", ")),
         ([], Stand::Current(_)) => "current".into(),
+        ([], Stand::Linked) => "linked".into(),
         ([], Stand::Written { by, version }) => format!("written by {by} {version}"),
         ([], Stand::Unwritten { by }) => format!("{by} has not written it"),
         ([], Stand::Waits) => "waits for what it reads".into(),
@@ -586,7 +602,7 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
     };
     let mut counted = BTreeSet::new();
     (lock.assets.iter())
-        .filter(|(key, held)| doc.find(key).is_none() && !held.versions.is_empty())
+        .filter(|(key, held)| doc.holds(key).is_none() && !held.versions.is_empty())
         .map(|(key, held)| {
             let files = held.versions.iter().flat_map(|version| version.files.values().chain(version.writes.values().flat_map(BTreeMap::values)));
             let freed: Vec<&String> = files.filter(|sha256| !kept.contains(*sha256) && counted.insert((*sha256).clone())).collect();
@@ -606,8 +622,8 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
 
 /// Every file something the file names uses: its assets' versions, what is on its way, and its file pins.
 fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
-    let mut kept: BTreeSet<String> = lock.named(|key| doc.find(key).is_some()).into_iter().map(str::to_owned).collect();
-    kept.extend(doc.assets.iter().flat_map(|asset| asset.pin.iter().flat_map(|(_, hashes)| hashes).chain(asset.also.values()).cloned()));
+    let mut kept: BTreeSet<String> = lock.named(|key| doc.holds(key).is_some()).into_iter().map(str::to_owned).collect();
+    kept.extend(doc.assets.iter().filter_map(|asset| Some(asset.pin.as_ref()?.1.clone())));
     kept
 }
 
@@ -638,7 +654,7 @@ async fn reclaim(
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
     if asked.yes {
         // An orphaned cut's film at the root goes with it.
-        for held in lock.assets.iter().filter(|(key, _)| doc.find(key).is_none()).map(|(_, held)| held) {
+        for held in lock.assets.iter().filter(|(key, _)| doc.holds(key).is_none()).map(|(_, held)| held) {
             let cut = held.versions.iter().any(|version| version.made_by.as_ref().is_some_and(|by| by.with == "cozy/cut"));
             if cut {
                 let name = cut_name(&held.name);
@@ -646,7 +662,7 @@ async fn reclaim(
                 let _ = std::fs::remove_file(folder.dir.join(FsPath::new(&name).with_extension("otio")));
             }
         }
-        folder.update_lock(|lock| lock.assets.retain(|key, _| doc.find(key).is_some())).map_err(Refusal)?;
+        folder.update_lock(|lock| lock.assets.retain(|key, _| doc.holds(key).is_some())).map_err(Refusal)?;
     }
     let (files, bytes) = folder.sweep(&kept, asked.yes).map_err(Refusal)?;
     Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes }))
@@ -671,7 +687,7 @@ async fn rename(
     let Some(old) = lock.asset(&asked.from).filter(|held| !held.versions.is_empty()) else {
         return Err(refuse(Kind::NotFound, "asset_unknown", format!("project.lock keeps no version of {}", asked.from)));
     };
-    let Some(i) = doc.find(&asked.to) else {
+    let Some(i) = doc.holds(&asked.to) else {
         let said = format!("{} names no {}: rename the asset (and its <mentions>) there first", folder::PROJECT, asked.to);
         return Err(refuse(Kind::NotFound, "asset_unknown", said));
     };
@@ -758,6 +774,13 @@ async fn runs(
         named.extend((0..doc.assets.len()).filter(|&i| new && doc.makes(i) && doc.tool(i).is_none()));
     } else {
         for name in &asked.names {
+            match doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
+                Some(i) => {
+                    named.extend(doc.linked(i));
+                    continue;
+                }
+                None => {}
+            }
             match find(&doc, name) {
                 Ok(i) => named.push(i),
                 Err(error) => {
@@ -768,7 +791,8 @@ async fn runs(
         }
     }
     let mut takes = vec![];
-    let approve = asked.approve && !all && asked.names.len() == 1;
+    let one = !all && asked.names.len() == 1 && named.len() == 1;
+    let approve = asked.approve && one;
     for i in named {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
@@ -788,7 +812,7 @@ async fn runs(
             say(doc.nothing_to_make(i));
             continue;
         }
-        let keeps = match keeping && asked.names.len() == 1 && !all {
+        let keeps = match keeping && one {
             false => None,
             true => keeps_of(&doc, &lock, &stand, i, asked.take, asked.in_s).map_err(Refusal)?,
         };
@@ -856,10 +880,10 @@ async fn import(
     Ok(Json(Imported { path: file.path, sha256: file.sha256, prefix, line, already }))
 }
 
-/// `name` pinned to files in project.yaml: one line in `field`, a pin in another field gone first, written over what the file holds
+/// `name` pinned to a file in project.yaml: one line in `field`, a pin in another field gone first, written over what the file holds
 /// this moment. An approved asset is the same as any pinned one.
-fn pin_in_file(folder: &Folder, name: &str, field: &str, hashes: &[String], other: Option<&'static str>) -> Result<(), Error> {
-    let value = format::pin_value(hashes);
+fn pin_in_file(folder: &Folder, name: &str, field: &str, sha256: &str, other: Option<&'static str>) -> Result<(), Error> {
+    let value = format::yaml_scalar(folder::prefix_of(sha256));
     folder.edit_project(|text| {
         let clear = other.filter(|other| *other != field);
         let text = match clear {
@@ -894,11 +918,10 @@ async fn approve(
     }
     let noun = noun(&doc, &lock, i);
     let versions: Vec<&Version> = lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions).collect();
-    // Files of the project's, by hash: any picture can be what this asset is.
-    let mut chosen: Vec<String> = vec![];
-    for prefix in &asked.files {
-        match lock.matching(&prefix.to_ascii_lowercase()).as_slice() {
-            [file] => chosen.push(file.sha256.clone()),
+    // A file of the project's, by hash: any picture can be what this asset is.
+    let chosen = match (&asked.file, asked.version) {
+        (Some(prefix), _) => match lock.matching(&prefix.to_ascii_lowercase()).as_slice() {
+            [file] => file.sha256.clone(),
             [] => {
                 let said = format!("no file of this project's starts with {prefix}");
                 return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
@@ -907,36 +930,30 @@ async fn approve(
                 let said = format!("{prefix} fits {} files of this project: write more of its hash", several.len());
                 return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said)));
             }
-        }
-    }
-    if asked.files.is_empty() {
-        let found = versions.iter().find(|version| Some(version.number) == asked.version).map(|version| version.listed());
-        let Some(listed) = found.filter(|listed| !listed.is_empty()) else {
-            let numbers: Vec<String> = versions.iter().map(|version| version.number.to_string()).collect();
-            let said = match numbers.as_slice() {
-                [] => format!("{} has no {noun} yet", asset.name),
-                numbers => format!("{} has no {noun} {}: it has {}", asset.name, asked.version.unwrap_or_default(), numbers.join(", ")),
+        },
+        (None, wanted) => {
+            let Some(sha256) = versions.iter().find(|version| Some(version.number) == wanted).and_then(|version| version.main()) else {
+                let numbers: Vec<String> = versions.iter().map(|version| version.number.to_string()).collect();
+                let said = match numbers.as_slice() {
+                    [] => format!("{} has no {noun} yet", asset.name),
+                    numbers => format!("{} has no {noun} {}: it has {}", asset.name, wanted.unwrap_or_default(), numbers.join(", ")),
+                };
+                return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
             };
-            return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said).next("cozy project status")));
-        };
-        chosen = listed.into_iter().cloned().collect();
-    }
-    let field_of = |sha256: &String| lock.files.get(sha256).map_or("image", folder::File::field);
-    let field = field_of(&chosen[0]);
-    if chosen.iter().any(|sha256| field_of(sha256) != field) {
-        let said = format!("those are not all one role: {} pins one of {field}, or another, at a time", asset.name);
-        return Err(Refusal(Error::new(Kind::Usage, "version_unknown", said)));
-    }
-    let version = versions.iter().find(|version| version.main() == chosen.first());
+            sha256.clone()
+        }
+    };
+    let field = lock.files.get(&chosen).map_or("image", folder::File::field);
+    let version = versions.iter().find(|version| version.main() == Some(&chosen));
     if !doc.declared(i) {
         let said = format!("{} is a frame its writer's beat names, with no lines of its own in {}", asset.name, folder::PROJECT);
-        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).remedy(format!("add it under assets: with `{field}: {}`", format::pin_value(&chosen)))));
+        return Err(Refusal(Error::new(Kind::Usage, "project_edit", said).remedy(format!("add it under assets: with `{field}: {}`", format::yaml_scalar(folder::prefix_of(&chosen))))));
     }
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
     pin_in_file(folder, &name, field, &chosen, asset.pin.as_ref().map(|(field, _)| *field)).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
-    let files = version.map_or_else(|| format::role_files(field, &chosen), |version| version.files.clone());
+    let files = version.map_or_else(|| Files::from([(field.to_owned(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
@@ -1775,7 +1792,7 @@ impl Walk {
         let number = version.number;
         let old = std::cell::RefCell::new(vec![]);
         let doc = Doc::load(self.folder())?;
-        let pin = doc.find(name).and_then(|i| doc.assets[i].pin.as_ref()?.1.first().cloned());
+        let pin = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.1.clone()));
         self.folder().update_lock(|lock| {
             let held = lock.asset_mut(name, kind);
             let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| version.main() == pin.as_ref());
@@ -1813,9 +1830,8 @@ impl Walk {
             let doc = Doc::load(self.folder())?;
             let pinned = doc.find(name).and_then(|i| Some(doc.assets[i].pin.as_ref()?.0));
             let lock = self.folder().lock()?;
-            let hashes: Vec<String> = version.listed().into_iter().cloned().collect();
-            if !hashes.is_empty()
-                && let Err(error) = pin_in_file(self.folder(), name, pin_field(&lock, &version), &hashes, pinned)
+            if let Some(sha256) = version.main()
+                && let Err(error) = pin_in_file(self.folder(), name, pin_field(&lock, &version), sha256, pinned)
             {
                 self.say(Event::Warning { message: error.message });
             }
@@ -1966,6 +1982,11 @@ fn said_by(run: &Run) -> Vec<String> {
 }
 
 fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
+    if let Some(links) = doc.find(name).and_then(|i| doc.assets[i].links.as_ref()) {
+        let linked: Vec<&str> = links.own.values().chain(links.roles.get("")).map(String::as_str).collect();
+        let said = format!("{name} is an entity, with no files of its own: it links {}", linked.join(", "));
+        return Err(Error::new(Kind::Usage, "asset_is_entity", said).remedy("name an asset it links"));
+    }
     doc.find(name).ok_or_else(|| {
         Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status")
     })

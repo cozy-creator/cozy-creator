@@ -75,13 +75,12 @@ enum Verb {
     Import(ImportFile),
     Render(Render),
     /// Pin a take or version: its hash goes on the asset's line in project.yaml.
-    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash; several write a list\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
+    #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unpin fight` removes it.")]
     Approve {
         /// The asset: `theo`, `dock b`, `fight`, `fight upscale`, …
         name: String,
-        /// Its take or version, 1 first, or hash prefixes of any files in the project's `files/`.
-        #[arg(required = true)]
-        version: Vec<String>,
+        /// Its take or version, 1 first, or a hash prefix of any file in the project's `files/`.
+        version: String,
     },
     /// Take an asset's pin out of project.yaml: its state follows its inputs again.
     #[command(after_help = "Example:\n  cozy project unpin fight")]
@@ -194,14 +193,11 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/approve", opened.id);
-            // One short run of digits is a version; anything else, files by hash.
-            let number = match version.as_slice() {
-                [one] if one.len() <= 6 => one.parse::<u32>().ok(),
-                _ => None,
-            };
-            let files = if number.is_none() { version } else { vec![] };
+            // A short run of digits is a version; anything else, a file's hash.
+            let number = version.parse::<u32>().ok().filter(|_| version.len() <= 6);
+            let file = number.is_none().then_some(version);
             let approved: Approved =
-                ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version: number, files }, None).await?;
+                ctx.calcifer().await?.post(&path, &Approve { name: name.clone(), version: number, file }, None).await?;
             approved.warnings.iter().for_each(|warning| output::warn(warning));
             if ctx.json {
                 output::json(&approved);
@@ -261,6 +257,14 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if ctx.json {
                 output::json(&state);
                 return Ok(ExitCode::SUCCESS);
+            }
+            if !state.entities.is_empty() {
+                let table = output::Table::new(ctx, ["ENTITY", "KIND", "LINKS"]);
+                let linked = |entity: &protocol::project::Entity| {
+                    entity.links.iter().map(|(field, asset)| format!("{field}: {asset}")).collect::<Vec<_>>().join(", ")
+                };
+                let rows = state.entities.iter().flat_map(|entity| std::iter::once(entity).chain(&entity.subs));
+                rows.fold(table, |table, entity| table.row([entity.name.clone(), entity.kind.clone(), linked(entity)])).print();
             }
             let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "PINNED", "MADE BY", "STATUS", "FILE"]);
             let rows = state.assets.iter().map(|a| {

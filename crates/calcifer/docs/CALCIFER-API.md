@@ -354,7 +354,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   missing?, busy?}], older}`. `missing`: the folder no longer holds project.yaml.
 - `DELETE /v1/projects/{id}`: `204`, forgotten from the index; the folder is untouched. `409 project_busy`
   while it renders.
-- `GET /v1/projects/{id}`: `{id, path, assets, missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
+- `GET /v1/projects/{id}`: `{id, path, assets, entities: [{name, kind, links, subs}], missing, stale: [{name, why}], orphans: [{name, kind, versions, bytes, renamed_to?}], busy, moving,
   absent, cuts: [{cut, path, fps, cut_at_ms?, frames?, retimed?, skips?}], warnings}`. Each asset is `{name, kind, noun, with?, versions, prefixes?,
   approved?, pinned?, inputs?, files, path?, made_by?, status}`: `approved` is the version a pin is, `pinned` that a hash in project.yaml is its state,
   `files` its state by output name, `path` its main file, and `status` is for people, in the asset's noun. An orphan is an asset project.lock keeps
@@ -366,7 +366,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`); the adapter gets it as `keep`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its events.
-- `POST /v1/projects/{id}/approve` `{name, version?, files?}`: `{name, noun, number, files, path, stale, warnings?}`. `files`, hash prefixes, in place of `version`, pin any files of the project; `number` is 0 when they are no version's. Writes the version's main file's hash into
+- `POST /v1/projects/{id}/approve` `{name, version?, file?}`: `{name, noun, number, files, path, stale, warnings?}`. `file`, a hash prefix, in place of `version`, pins any file of the project; `number` is 0 when it is no version's. Writes the version's main file's hash into
   that asset's lines in project.yaml, editing that one line, re-read just before it writes, and checks what it wrote reads as the same project with that one change (`400 project_edit` otherwise, saying what to write by hand). A line holding an input keeps it, `video: <hash>  # was <clash>`.
   Makes any tool whose reads settled, with no machine.
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Removes that line, or restores the input it was over. A constant, nothing but its file, keeps it (`400 project_edit`).

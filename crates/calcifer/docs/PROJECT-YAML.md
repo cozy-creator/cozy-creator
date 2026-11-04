@@ -6,7 +6,8 @@ A file in format 1 (`entities:`, `shots:`), or a lock from one, is refused and l
 
 A project is a folder of files plus a graph that says how each file was made.
 
-- **Asset:** a stable name holding a set of files, like `kyogre` or `clash`. The graph's nodes.
+- **Entity:** a thing in the film, like `kyogre`: its identity, and links to the assets that show it. No work, no versions.
+- **Asset:** a stable name holding one main file, plus what the run that made it left, like `kyogre sheet` or `clash`. The graph's nodes.
 - **Operation:** the work that makes an asset: a package, plus what the YAML says about the asset. The graph's edges. You don't write edges; `<name>` mentions in text create them.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
 - **Version**, or **take** if it has a video: one result of an operation, recorded in `project.lock`.
@@ -49,27 +50,38 @@ defaults:                      # the same shape as an asset: it fills what an as
     render:
       with: cozy
 
+entities:                      # what things are; each links to assets by name
+  kyogre:
+    kind: character
+    description: |
+      Kyogre, the colossal blue whale-like legendary Pokémon.
+    image: <kyogre sheet>
+    voice: <kyogre voice>
+    primordial:                # a sub-entity: what it doesn't have comes from kyogre
+      description: Kyogre in its ancient form, with glowing blue veins.
+      image: <kyogre primordial sheet>
+
 assets:
   kyogre_art:                  # a constant: a file hash, and nothing to make it from
     kind: image
     image: 65b436d4f9a3
 
-  kyogre:                      # approved: `image:` pins it, and `voice:` goes with it
+  kyogre voice:
+    kind: voice
+    audio: 7c1e04a9b2d5
+
+  kyogre sheet:                # approved: `image:` pins it
     image: 2aee8c40753d
-    voice: 7c1e04a9b2d5
     kind: character
-    description: |
-      Kyogre, the colossal blue whale-like legendary Pokémon.
     render:                    # at the root what it is; here how to make it
       prompt: |
-        <kyogre_art> as a realistic creature, front and back on one sheet, no text.
+        <kyogre>, from <kyogre_art>, front and back on one sheet, no text.
       aspect_ratio: "3:2"
       megapixels: 2
 
-  kyogre.primordial:           # another form: a plain asset that mentions what it is made from
+  kyogre primordial sheet:
     kind: character
-    description: Kyogre in its ancient form, with glowing blue veins.
-    render: <kyogre>, the same creature in the same pose.
+    render: <kyogre.primordial>, from <kyogre sheet>, in the same pose.
 
   coast:
     kind: environment
@@ -108,9 +120,9 @@ assets:
 
 ## What the platform reads
 
-Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in `image`, `video`, `audio` or `voice`, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults` and `assets`.
+Names, `kind`, `render` (`with`, `prompt`, `models`, `lora`), a hash in `image`, `video` or `audio`, an entity's links, a beat's `duration` and `writes`, and `<name>` anywhere in any text. At the top, `version`, `defaults`, `entities` and `assets`.
 
-Every other field at the root, such as `summary`, `beats`, `description`, `camera` or `fps`, passes through to the adapter untouched and counts as an input.
+Every other field at an asset's root, such as `summary`, `beats`, `description`, `camera` or `fps`, passes through to the adapter untouched and counts as an input.
 
 ## `render`
 
@@ -157,7 +169,7 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 
 **A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence.
 
-**Every asset has a kind.** With none written, it comes from the file it holds: `image:` is `image`, `video:` is `video`, `audio:` is `audio`. With no file it is `image`. `status` shows it, and a reader's adapter gets it. A constant needs no adapter or operation, whatever its kind.
+**Every asset has a kind.** With none written, it comes from the file it holds: `image:` is `image`, `video:` is `video`, `audio:` is `audio`. With no file it is `image`. `status` shows it, and a reader's adapter gets it. A constant needs no adapter or operation, whatever its kind. Calcifer knows no kinds, so `kind: voice` is just a name for what reads it.
 
 **Two texts, on `character`, `environment` and `storyboard`:** `description` goes to the picture model and the video model. `render.prompt` goes only to the picture model, for how to draw it.
 
@@ -167,7 +179,26 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 
 - **In a shot's `summary`:** reaches every segment.
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
-- **Explicit:** `<coast>` always means the asset `coast`, and `<coast.2>` always means `coast.2`. Nothing resolves to "the newest".
+- **Explicit:** `<coast>` always means what is named `coast`, and `<coast.2>` always means `coast.2`. Nothing resolves to "the newest".
+- **Of an entity:** see below.
+
+## Entities
+
+Assets can link into hashes, whereas entities link into asset-names. An entity holds `kind`, `description`, and links: any other key whose value is `<an asset>`. A hash there warns and is ignored: make an asset for it. It has no `render`, versions or pins; a `render` warns and is ignored. It isn't a node of work: nothing renders it.
+
+| Mention | What the adapter gets |
+|---|---|
+| `<kyogre>` | A read of the entity: its `kind`, `description`, and files from its `image`, `video`, `audio` and `voice` links, each that asset's main file. Other links aren't sent. |
+| `<kyogre.primordial>`, a sub-entity | Its own `description` and files, and what it doesn't have from its parent, such as `kind` and `voice`. |
+| `<kyogre.pose>`, a link | That asset's files, as a read named `kyogre.pose` with the entity's kind, and the asset's own `description` if it has one, else the entity's. |
+| `<kyogre sheet>` | The asset itself. |
+
+- **Sub-entities:** a key whose value is a map, one level deep. A map inside one warns and is ignored.
+- **An asset mentioning an entity that links back to it** gets words only, with no file and no cycle: `kyogre sheet` can say `<kyogre>` for the description.
+- **Memo:** a read's description and file hashes count, so editing an entity's description puts what reads it out of date.
+- **Names** are shared across both sections. A clash warns, and the asset stands.
+- **`status`** lists entities apart with their links, and a link to nothing warns with the fix. **`render <entity>`** renders its linked assets and its sub-entities'.
+- **A voice** is its own asset (`kind: voice`, `audio: <hash>`, or made by a package), linked as `voice:`. Several pictures are several assets.
 
 ## How rendering decides
 
@@ -192,7 +223,7 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 | `render <name> --new`, `-n 4` | Draws new seeds and makes more versions |
 | `render clash --take 2 --in 15` | Keeps take 2 up to 15 s and regenerates the rest |
 | `approve <name> <version>` | Writes that version's hash into `project.yaml`, editing only that line |
-| `approve <name> <hash>...` | The same with any files in `files/`, whatever made them; several write a list |
+| `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
 | `unpin <name>` | Removes that line |
 | `status` | Each asset's state and why, which version a pin is, whether its text changed since, orphans, and how many files `cozy run` left here |
 | `import <file>` | Copies a file or URL into `files/` and prints the line to paste |
@@ -204,11 +235,9 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 
 Approve and pin are the same thing, so reading the file shows what's constant.
 
-An asset is a set of files, each named by its role. A hash in `image`, `video`, `audio` or `voice` pins that file, and a `<mention>` in the same field is an input.
+An asset has one main file, from its one `render` or its one pin; any other files are what the same run left, such as a video's latents, or `image-2` from a function that returned several. A hash in `image`, `video` or `audio` pins it, and a `<mention>` in the same field is an input. A hash in a second file field warns and is ignored, as does a list: make an asset for each.
 
 - **The line:** `approve` writes the role of the version's main file, `video: <hash>` for a take and `image:` for a picture, as that one line, keeping comments, order and formatting, and a save made just before it stands. A line holding an input keeps it, `video: <hash>  # was <clash>`, and `unpin` puts it back.
-- **Several files:** `image: [65b436d4f9a3, f1a83554adab]`, in the order written, all pinned, all in the memo. Approving a version whose function returned several writes the list. A reader's `files` has them as `image`, `image-2`, `image-3`, as a function's list lands, so one that takes one takes the first.
-- **`voice`** only attaches: it doesn't stop the image being made, and goes with whatever the asset's state is.
 - **A shot's pin:** `video: <hash>` brings that take's whole set: latents and any world states it wrote. A hash that matches no version is just that file.
 - **Other fields while pinned:** `render` and the text stay in the file and are ignored for that asset. Delete the line and they apply again.
 - **A pin freezes files, not text:** editing an approved character's `description` doesn't re-render it, but shots that read it go out of date, because H3 receives those words.
@@ -217,19 +246,6 @@ An asset is a set of files, each named by its role. A hash in `image`, `video`, 
 ## Orphans
 
 An asset no longer named in the YAML keeps its versions and files. Editing the graph loses nothing as long as names stay the same. Removing or renaming a name in the file orphans its files, and only `reclaim` deletes them.
-
-## Forms
-
-An asset can have other forms: outfits, a primal form, night and day. A form is a plain asset that says what it's made from by mentioning it. The dot means nothing beyond the name.
-
-```yaml
-kyogre.primordial:
-  kind: character
-  description: Kyogre in its ancient form, with glowing blue veins.
-  render: <kyogre>, the same creature in the same pose.
-```
-
-Its `render.with` and the rest come from `defaults`, like any asset.
 
 ## World states and writes
 
@@ -312,7 +328,7 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 `cozy run` belongs to a project, as a commit does to a repository. The project is the folder you're in or the nearest above it with a `project.yaml`, or `-p <path>`. Elsewhere it refuses: `not in a project: cd into one, or cozy project new <name>`.
 
 - **Outputs** land in the project's `files/` by hash, listed in `project.lock` under `runs`, and the run prints one line per file to paste: `image: 65b436d4f9a3`. There's no memo.
-- **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and `cozy project approve kyogre 65b436d4f9a3` makes it what `kyogre` is. So any model can make the picture of a character.
+- **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and `cozy project approve kyogre 65b436d4f9a3` makes it what `kyogre` is. So any model can make the picture of a character: link that asset from the entity.
 - **`cozy run list`** in a project lists its runs, and elsewhere or with `--all` every run, each with its project.
 - **`reclaim`** lists a run's files once nothing names them.
 

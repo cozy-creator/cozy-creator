@@ -172,19 +172,6 @@ impl Version {
     pub fn main(&self) -> Option<&String> {
         main_of(&self.files)
     }
-
-    /// Its main file and the rest of the list it came in, in order: what a pin of it names.
-    pub fn listed(&self) -> Vec<&String> {
-        let Some(main) = self.main() else { return vec![] };
-        let role = self.files.iter().find(|(_, sha256)| *sha256 == main).map_or("", |(name, _)| name.as_str());
-        let place = |name: &str| match name.strip_prefix(role)? {
-            "" => Some(1),
-            rest => rest.strip_prefix('-')?.parse::<u64>().ok(),
-        };
-        let mut list: Vec<(u64, &String)> = self.files.iter().filter_map(|(name, sha256)| Some((place(name)?, sha256))).collect();
-        list.sort_by_key(|(place, _)| *place);
-        list.into_iter().map(|(_, sha256)| sha256).collect()
-    }
 }
 
 /// The file people mean by a set of files.

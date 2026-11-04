@@ -64,6 +64,7 @@ hard_cut
 memo
 pins
 project_runs
+entities
 orphans
 keeps
 world_states
@@ -365,7 +366,7 @@ assets:
     description: Nor me either.
 YAML
 J '.assets[] | select(.name == "teal") | .pinned and (.with == null) and (.approved == null)' <<< "$(status "$C")" || check "pins: a constant: $(row "$C" teal .)"
-J '.assets[] | select(.name == "singer") | (.files | keys) == ["audio", "image"]' <<< "$(status "$C")" || check "pins: a constant of two files: $(row "$C" singer .files)"
+J '(.assets[] | select(.name == "singer") | (.files | keys) == ["image"]) and (.warnings | any(contains("singer'"'"'s audio: an asset has one main file")))' <<< "$(status "$C")" || check "pins: a second file: $(row "$C" singer .)"
 J '.assets[] | select(.name == "teal") | .kind == "image"' <<< "$(status "$C")" || check "pins: a constant's kind is not its file's: $(row "$C" teal .)"
 J '.warnings | any(contains("no file'"'"'s hash starts with cafe0000")) and any(contains("is not a hash"))' <<< "$(status "$C")" || check "pins: a bad pin is not warned of: $(status "$C" | jq -c .warnings)"
 render "$C" teal || check "pins: render a constant: $(tail -c 300 "$OUT/render.txt")"
@@ -383,6 +384,76 @@ render "$C" all || check "pins: render all with what can't be made: $(tail -c 40
 says pins "no adapter: "
 says pins "has no adapter for kind unheard: it can't be made"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
+}
+
+# An entity is identity and links, no work: assets can link into hashes, whereas entities link into asset-names.
+entities() {
+step "a project: an entity's links and sub-entities, and what a read of each gets"
+local E=$OUT/entities pic voice code
+mkdir -p "$E"; still "$E/teal.png" teal
+printf 'version: 2\nassets: {}\n' > "$E/project.yaml"
+pic=$(prefix "$E" "$E/teal.png")
+ffmpeg -v error -y -f lavfi -i sine=frequency=220:duration=1 "$E/voice.wav"
+voice=$(prefix "$E" "$E/voice.wav")
+cat > "$E/project.yaml" <<YAML
+version: 2
+defaults:
+  picture:
+    render: {with: $here/project/draw.py}
+entities:
+  hero:
+    kind: character
+    description: A brave hero.
+    image: <hero sheet>
+    voice: <hero voice>
+    pose: <hero pose>
+    render: {with: nothing}
+    badge: $pic
+    lost: <no such asset>
+    primordial:
+      description: The hero of old.
+      image: <old sheet>
+      deeper: {image: <hero sheet>}
+  hero voice:
+    description: A name both sections use.
+assets:
+  hero sheet:
+    kind: picture
+    description: <hero>, on one sheet.
+  hero voice:
+    kind: voice
+    audio: $voice
+  hero pose:
+    kind: picture
+    description: A pose of its own.
+  old sheet:
+    kind: picture
+    description: <hero.primordial>, from <hero sheet>.
+  meeting:
+    kind: picture
+    description: <hero> meets <hero.primordial>, in <hero.pose>.
+YAML
+said() { J --arg s "$1" '.warnings | any(contains($s))' <<< "$(status "$E")" || check "entities: no warning of '$1': $(status "$E" | jq -c .warnings)"; }
+said "hero's render: an entity holds no way of making anything"
+said "hero's badge: an entity links to an asset's name: make an asset for it"
+said "hero's lost: <no such asset> is nothing in the project: add an asset"
+said "hero.primordial's deeper: sub-entities go one level"
+said "hero voice is an asset and an entity"
+J '(.entities | map(.name)) == ["hero"] and (.entities[0] | .kind == "character" and (.links | keys) == ["image", "pose", "voice"] and (.subs | map(.name)) == ["hero.primordial"])' <<< "$(status "$E")" || check "entities: status lists $(status "$E" | jq -c .entities)"
+J '[.assets[].name] | index("hero") == null and index("hero.primordial") == null' <<< "$(status "$E")" || check "entities: an entity is listed as an asset"
+render "$E" hero || check "entities: render hero: $(tail -c 400 "$OUT/render.txt")"
+J '[.assets | keys[]] | sort == ["hero pose", "hero sheet", "old sheet"]' "$E/project.lock" || check "entities: render hero made $(jq -c '.assets | keys' "$E/project.lock")"
+J '.assets["hero sheet"].versions[0].reads | map(select(.name == "hero")) | length == 1 and .[0].files == {}' "$E/project.lock" || check "entities: an asset its entity links back to reads words: $(jq -c '.assets["hero sheet"].versions[0].reads' "$E/project.lock")"
+J '.assets["old sheet"].versions[0].reads | map({(.name): (.files | length)}) | add == {"hero.primordial": 0, "hero sheet": 1}' "$E/project.lock" || check "entities: old sheet reads $(jq -c '.assets["old sheet"].versions[0].reads' "$E/project.lock")"
+render "$E" meeting || check "entities: render meeting: $(tail -c 400 "$OUT/render.txt")"
+J '.assets.meeting.versions[0].reads | map({(.name): (.files | keys)}) | add == {"hero": ["image", "voice"], "hero.primordial": ["image", "voice"], "hero.pose": ["image"]}' "$E/project.lock" || check "entities: meeting reads $(jq -c '.assets.meeting.versions[0].reads' "$E/project.lock")"
+J '.assets.meeting.versions[0].reads | map(select(.name == "hero")) | .[0].files.image != null' "$E/project.lock" || check "entities: <hero> has no picture"
+
+step "a project: an entity's words are in what reads it, and an entity holds no version"
+sed -i 's/description: A brave hero\./description: A braver hero./' "$E/project.yaml"
+J '[.stale[]?.name] | index("meeting") != null' <<< "$(status "$E")" || check "entities: a description edit left meeting current: $(status "$E" | jq -c .stale)"
+code=0; cozy project -p "$E" approve hero 1 > "$OUT/approve.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q "is an entity" "$OUT/approve.txt"; } || check "entities: approve of an entity: exit $code: $(tail -c 300 "$OUT/approve.txt")"
 }
 
 # Orphans (cl-761): what the file no longer names keeps its versions and files until `reclaim --yes`.
