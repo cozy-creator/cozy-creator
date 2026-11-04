@@ -284,7 +284,8 @@ impl Publisher {
         let before = self.check(py, job).map_err(failed)?;
         let mut warnings = vec![];
         if let Err((code, detail)) = install(&["--constraints", &constraints]) {
-            if code == super::CANCELED {
+            // Unanswered says nothing of the pins: asked again, not installed without its dependencies.
+            if code == super::CANCELED || code == super::UNREACHABLE {
                 return Err(failed((code, detail)));
             }
             install(&["--no-deps"]).map_err(failed)?;
@@ -330,7 +331,7 @@ impl Publisher {
         let before = self.check(py, job)?;
         let mut warnings = vec![];
         if let Err((code, detail)) = install(&["--constraints", constraints.to_str().unwrap_or_default()]) {
-            if code == super::CANCELED {
+            if code == super::CANCELED || code == super::UNREACHABLE {
                 return Err((code, detail));
             }
             install(&["--no-deps"])?;
@@ -618,8 +619,8 @@ fn platform(failure: Failure, label: &str) -> Failure {
         (code, detail) if code == "package_installation_uv_failed" && OUTSIDE.iter().any(|s| detail.contains(s)) => (
             "release_platform_unsupported",
             format!("{label} is not locked for this machine ({}/{}): {detail}\n{}", std::env::consts::OS, std::env::consts::ARCH, match cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-                true => "Its author adds this platform and locks again; an older or newer release may hold it: `cozy package info <package>`",
-                false => "`--on new` rents a Linux machine, or its author adds this platform and locks again",
+                true => format!("Its author adds this platform and locks again; another release may hold it: `cozy package info {}`", label.split(' ').next().unwrap_or(label)),
+                false => "`--on new` rents a Linux machine, or its author adds this platform and locks again".to_string(),
             }),
         ),
         failure => failure,
