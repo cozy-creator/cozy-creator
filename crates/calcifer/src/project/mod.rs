@@ -1113,10 +1113,16 @@ impl Walk {
                 continue;
             }
             if following.is_empty() {
-                for message in stuck(&doc, &stand, &self.folder().lock()?) {
+                let owed = self.folder().lock()?;
+                for message in stuck(&doc, &stand, &owed) {
                     self.failed(Error::new(Kind::NotFound, "file_missing", message), &mut first);
                 }
-                self.folder().update_lock(|lock| lock.walk = Default::default())?;
+                // What was asked since it read that stays owed.
+                self.folder().update_lock(|lock| {
+                    if lock.walk.takes == owed.walk.takes && lock.walk.all == owed.walk.all {
+                        lock.walk = Default::default();
+                    }
+                })?;
                 self.say_cuts(&doc, &stand)?;
                 if self.over()? {
                     return Ok(first);
