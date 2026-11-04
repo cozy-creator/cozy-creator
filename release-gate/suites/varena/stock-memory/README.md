@@ -44,4 +44,4 @@ artifact run; older receipts do not qualify it. No mocked driver or replacement 
 The extended native cell **17796 passed** with TensorFS9e95ee586/0.15.8 and Runtimef0d25c8e7.
 Ready-only misses, alias protection, side-stream completion, eviction and same-VA refill all
 passed with zero final pins/resident bytes and no poison. Existing allocator/graph assertions
-also passed. [Matched cohort proof and limits](../../execution/native-load-execute/evidence/9e95-f0d-local-21.md).
+also passed. Matched cohort proof and limits.

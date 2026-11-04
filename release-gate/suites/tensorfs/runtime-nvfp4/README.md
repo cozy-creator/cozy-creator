@@ -39,4 +39,4 @@ no production consent rule was relaxed.
 
 ## Final combined candidate controls
 
-[Creator8499 / Runtime7d1 / TensorFS9e95 real controls](../../execution/native-load-execute/evidence/8499-7d1-integrated-controls.md) preserve the exact25October2026 GPU receipts and link the separate recipe proof. This control proof does not claim full-model native29 completion or a performance comparison.
+Creator8499 / Runtime7d1 / TensorFS9e95 real controls preserve the exact25October2026 GPU receipts and link the separate recipe proof. This control proof does not claim full-model native29 completion or a performance comparison.
