@@ -15,7 +15,7 @@ use protocol::{
 };
 
 use crate::{Context, output};
-pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, watched};
+pub(crate) use follow::{exit_code, follow, follow_until, mint_key, settle, settled, stalled_words, watched};
 
 mod follow;
 pub(crate) mod list;

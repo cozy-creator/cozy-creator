@@ -1,13 +1,15 @@
 //! `cozy project`: the CLI's side of Calcifer's projects (xs-151, cl-758). Calcifer finds the
 //! project, makes its assets' takes and versions and keeps their files; these verbs ask it and print,
-//! and `render` follows each run as `cozy run` does. Ctrl-C stops following, never the runs.
+//! and `render` draws what Calcifer says of it (`render.rs`). Ctrl-C stops following, never the runs.
+pub(crate) mod render;
+
 use std::{path::PathBuf, process::ExitCode};
 
 use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -168,6 +170,9 @@ struct Render {
     /// One shot: a new take keeping that take up to about here, and rendering what follows with the shot's current text.
     #[arg(long = "in", value_name = "SECONDS", allow_negative_numbers = true, value_parser = seconds)]
     in_s: Option<f64>,
+    /// One line per event, each starting with its asset's name, rather than the live view. Off a terminal it always is.
+    #[arg(long)]
+    plain: bool,
 }
 
 /// A time in seconds, any finite number: Calcifer says what it comes to.
@@ -422,6 +427,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
     let opened = open(ctx, at, false).await?;
     let calcifer = ctx.calcifer().await?;
     let queued = args.queue;
+    let args_plain = args.plain;
     // Opened before the ask, so nothing it sets going is missed.
     let mut events = match queued {
         true => None,
@@ -447,7 +453,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         [one] => output::say(ctx, &format!("{one} is pinned: skipped. Name it to make a new version, or unpin it")),
         many => output::say(ctx, &format!("{} are pinned: skipped. Name them to make new versions, or unpin them", many.join(", "))),
     }
-    let Some(events) = events.as_mut() else {
+    if events.is_none() {
         if ctx.json {
             output::json(&asked);
             return Ok(ExitCode::SUCCESS);
@@ -463,8 +469,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         }
         output::next(ctx, &[&status]);
         return Ok(ExitCode::SUCCESS);
-    };
-    output::say(ctx, "following the render: Ctrl-C leaves it queued");
+    }
     if asked.joined {
         let name = opened.path.file_name().map_or_else(|| opened.path.display().to_string(), |name| name.to_string_lossy().into_owned());
         output::say(ctx, &match asked.added {
@@ -472,71 +477,41 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
             _ => format!("a render is already going in {name}: joining it"),
         });
     }
-    let (mut failed, mut warned) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let events = events.take().expect("following");
+    if ctx.json {
+        return following_json(ctx, events, &status).await;
+    }
+    render::follow(ctx, render::Rendering::new(opened.path.clone(), asked.board), events, args_plain, &status).await
+}
+
+/// `--json`: each run's own events, as `cozy run` gives them, and the render's refusal as its envelope.
+async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch<Event>, status: &str) -> Result<ExitCode, Error> {
+    let calcifer = ctx.calcifer().await?;
+    let mut warned = std::collections::HashSet::new();
     // `/events` opens with the runs going, and one that began just then can be told twice.
     let mut followed = std::collections::HashSet::new();
-    // Each cut as last said: a render ends on what it holds, not on what it held as a take landed.
-    let mut cuts: Vec<(String, String)> = vec![];
     while let Some(event) = events.next().await {
         match event {
             Event::Started { run, .. } => {
                 if followed.insert(run.clone()) && !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
-                    output::say(ctx, "the project's runs go on in Calcifer");
-                    output::next(ctx, &[&status]);
                     return Ok(ExitCode::SUCCESS);
                 }
             }
-            Event::Landed { name, noun, number, path, execution_ms, .. } => {
-                let path = output::link(ctx, &opened.path.join(path));
-                let took = execution_ms.map(|ms| format!(" in {}", clock(ms))).unwrap_or_default();
-                output::say(ctx, &format!("{name}: {noun} {number}{took}  {path}"));
-            }
-            Event::Said { message } => output::say(ctx, &message),
-            Event::Warning { message } => {
+            Event::Warning { message, .. } => {
                 if warned.insert(message.clone()) {
                     output::warn(&message);
                 }
             }
-            Event::Failed { error } => {
-                if failed.insert(error.message.clone()) {
-                    output::failure(ctx, &error.message, &error.next);
-                }
-            }
-            Event::Moved { .. } | Event::Transferred { .. } => {}
-            Event::Cut { cut, frames, fps, retimed, unchanged, .. } => {
-                let (path, seconds) = (output::link(ctx, &opened.path.join(&cut)), frames as f64 / fps);
-                let (name, left) = (cut.trim_end_matches(".mp4"), if unchanged { " (unchanged)" } else { "" });
-                let line = format!("{name}: {path}, {seconds:.1} s{}{left}", retimes(&retimed, fps));
-                cuts.retain(|(named, _)| *named != cut);
-                cuts.push((cut, line));
-            }
-            Event::Ended { error, rendered } => {
-                cuts.iter().for_each(|(_, line)| output::say(ctx, line));
-                // A render that fell short ends on how far it got, the error's own words.
-                let short = error.as_ref().is_some_and(|error| error.code == "render_incomplete");
-                rendered.iter().filter(|_| !short).for_each(|rendered| output::say(ctx, &finished(rendered)));
+            Event::Ended { error, .. } => {
                 return match error {
-                    Some(error) if !ctx.json && failed.contains(&error.message) => Ok(ExitCode::from(error.exit_code() as u8)),
                     Some(error) => Err(error),
                     None => Ok(ExitCode::SUCCESS),
                 };
             }
+            _ => {}
         }
     }
     Err(Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go").next(status))
-}
-
-/// `3m52s`, or under a minute `38s`.
-fn clock(ms: u64) -> String {
-    output::span(((ms + 500) / 1000) as i64)
-}
-
-/// A render's last line: what it made and how long it took, with the generation time summed when renders ran at once.
-fn finished(rendered: &Rendered) -> String {
-    let count = |n: u32, noun: &str| (n > 0).then(|| format!("{n} {noun}{}", if n == 1 { "" } else { "s" }));
-    let made: Vec<String> = [count(rendered.takes, "take"), count(rendered.versions, "version")].into_iter().flatten().collect();
-    let generation = (rendered.execution_ms > rendered.elapsed_ms).then(|| format!(" ({} of generation)", clock(rendered.execution_ms)));
-    format!("rendered {} in {}{}", made.join(" and "), clock(rendered.elapsed_ms), generation.unwrap_or_default())
 }
 
 /// Under the table: what is missing, what is out of date and why, what the file no longer names, and where the cuts are.
