@@ -397,6 +397,28 @@ def split_waits_and_caps():
 
 
 @case
+def split_sample_is_live():
+    """A split's measured peak counts live bytes only, so how far the host runs ahead of the GPU
+    can't change the level the next call picks (runs 28776 and 29081 chose differently)."""
+    stream = torch.cuda.Stream()
+    key = "core/sample-split"
+    token = vt.phase_enter(0, "core/sample")
+    selected = vt.split_select(0, key, [("only", [16 * MIB])], stream=stream.cuda_stream)
+    opened = vt.split_begin(0, key, "only", stream=stream.cuda_stream, completion_owner=token,
+                            plan_generation=selected["plan_generation"])
+    with torch.cuda.stream(stream):
+        torch.cuda._sleep(SLEEP_S // 4)
+        for mib in (16, 14, 12, 10):  # Distinct classes: none can reuse another's freed block.
+            value = torch.empty(mib * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+            del value
+    row = vt.split_end(0, opened, submitted=True)
+    stream.synchronize()
+    vt.phase_leave(0, token, completed=True)
+    assert row["peak_bytes"] == 16 * MIB, row
+    return {"peak_mib": row["peak_bytes"] // MIB}
+
+
+@case
 def eviction_order():
     """Outside the plan first, then the phase's most recently used; its next use stays."""
     gpu = varena.Device(0)

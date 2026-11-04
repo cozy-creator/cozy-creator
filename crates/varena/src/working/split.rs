@@ -289,7 +289,7 @@ fn fits(
     let mut scale: Option<(usize, usize)> = None;
     for choice in &site.choices {
         if let Some(sample) = site.samples.get(&choice.id).filter(|sample| sample.known) {
-            let measured = backing(owner, &sample.classes)?;
+            let measured = sample.peak;
             if scale.is_none_or(|(m, d)| measured as u128 * d as u128 > m as u128 * choice.backing as u128) {
                 scale = Some((measured, choice.backing.max(1)));
             }
@@ -301,11 +301,7 @@ fn fits(
         .map(|choice| {
             let sample = site.samples.get(&choice.id).filter(|sample| sample.known);
             let classes = sample.map_or(&choice.classes, |sample| &sample.classes);
-            let full = if sample.is_none() {
-                scaled(choice.backing)
-            } else {
-                backing(owner, classes)?
-            };
+            let full = sample.map_or_else(|| scaled(choice.backing), |sample| sample.peak);
             let mut missing = classes.clone();
             let mut used = BTreeSet::new();
             let mut preserve = BTreeSet::new();
@@ -668,7 +664,9 @@ pub(super) fn refresh(state: &mut State) {
     let mut segments = BTreeSet::new();
     let mut classes = BTreeMap::<usize, usize>::new();
     for ptr in &active.allocations {
-        if let Some(block) = state.blocks.get(ptr).filter(|block| block.charge() != 0) {
+        // Live only: a free still running on the GPU would make the sample depend on how far the
+        // host is ahead of it, and the same request would pick a different level next time.
+        if let Some(block) = state.blocks.get(ptr).filter(|block| block.life == Life::Live) {
             bytes += block.capacity;
             *classes.entry(block.capacity).or_default() += 1;
             segments.insert(block.segment);
