@@ -297,8 +297,16 @@ impl Publisher {
         let added: Vec<String> = self.check(py, job).map_err(failed)?.difference(&before).cloned().collect();
         // A development Runtime is its owner's choice: the package runs on it, warned below.
         let floors: Vec<String> = added.iter().filter_map(|line| floor(line)).map(String::from).collect();
-        if !floors.is_empty() && self.sdk.runtime_build.is_empty() {
-            return Err(Pair::Floor(floors));
+        // A pair that can't open a LoRA's view is a floor for every environment, LoRA or not:
+        // choosing per call would flip the environment back and forth.
+        let here = installed(env);
+        let views = super::VIEWS.iter().map(|(name, _, floor)| format!("{name}>={floor}"))
+            .filter(|view| Floor::parse(view).is_some_and(|floor| !here.get(&floor.name).is_some_and(|version| floor.meets(version))));
+        if self.sdk.runtime_build.is_empty() {
+            let wanted: Vec<String> = floors.iter().cloned().chain(views).collect();
+            if !wanted.is_empty() {
+                return Err(Pair::Floor(wanted));
+            }
         }
         if !added.is_empty() {
             warnings.push(format!("uv pip check: {}", added.join("; ")));

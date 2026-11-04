@@ -1522,8 +1522,8 @@ fn held_local(store: &Store, repository: &str) -> Result<storage::Local, Failure
 /// (`tensorfs.view`, cl-683).
 const VIEWS: [(&str, &str, &str); 2] = [("cozy-runtime", "Runtime", "0.35.5"), ("tensorfs", "TensorFS", "0.17.13")];
 
-/// A LoRA'd call runs only where the installation's environment opens adapter views; without
-/// LoRAs, any pair runs as before.
+/// A LoRA'd call runs only where the installation's environment opens adapter views. An environment
+/// built now takes a pair that does (`pair`), so this is one built earlier, or on a development Runtime.
 fn opens_views(service: &Service, installation: &Installation, choice: &domain::ModelChoice) -> Result<(), Failure> {
     if choice.adapters.is_empty() {
         return Ok(());
@@ -1538,7 +1538,7 @@ fn opens_views(service: &Service, installation: &Installation, choice: &domain::
         return Ok(());
     }
     let runs: Vec<String> = pair.iter().map(|(label, _, version)| format!("{label} {}", if version.is_empty() { "none" } else { version })).collect();
-    // The environment is built for the machine's pair: the machine moves, and the run asks again.
+    // An environment already built stays: the machine moves, and the run asks again.
     Err(("model_adapter_refused", format!(
         "LoRAs need Runtime {0} and TensorFS {1} or newer, and {2} runs on {3}: `cozy machine update <machine>` moves it to the current release; then run it again",
         VIEWS[0].2, VIEWS[1].2, installation.package, runs.join(" / "))))
