@@ -440,7 +440,7 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
 
 impl Menu {
     /// The level this operation should run at, whatever is free right now: the largest under
-    /// what the card leaves beside the phase's weights, or a third of it on a card that streams
+    /// what the card leaves beside the phase's weights, or a quarter of it on a card that streams
     /// them anyway. Weights make room for it, but what's live can't: the op gets no more than the
     /// rest of the card. Following free memory instead runs at the finest level whenever weights
     /// fill the card, and makes millions of allocations.
@@ -451,7 +451,7 @@ impl Menu {
 
     fn budget(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        self.capacity.saturating_sub(weights).max(self.capacity / 3)
+        self.capacity.saturating_sub(weights).max(self.capacity / 4)
             .min(self.capacity.saturating_sub(self.live))
     }
 

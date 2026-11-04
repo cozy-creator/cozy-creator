@@ -380,7 +380,7 @@ def split_waits_and_caps():
     assert selected["choice_id"] == "only", selected
     settle()
     torch.cuda.synchronize()
-    # A 96 MiB phase on a 128 MiB limit: each op gets at most a third of it, however much is free.
+    # A 96 MiB phase on a 128 MiB limit: each op gets at most a quarter of it, however much is free.
     weights = [filled(gpu, 24 * MIB, index) for index in range(4)]
     plan = varena.Plan(gpu, [("phase", weights)])
     plan.activate("phase")
