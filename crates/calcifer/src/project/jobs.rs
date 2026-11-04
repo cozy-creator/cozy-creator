@@ -49,8 +49,8 @@ struct Live {
     earlier_ms: u64,
     /// Its run ended: what lands now is its result.
     settled: bool,
-    /// What landed while it ran, shown once it's seen to go on: what lands last is the result.
-    landed: Option<Preview>,
+    /// What landed while it ran and where the run was then, shown once it's seen to go on from there: what lands last is the result.
+    landed: Option<(Preview, (Option<String>, Option<String>))>,
 }
 
 impl Default for Jobs {
@@ -200,7 +200,7 @@ impl Jobs {
                 let path = item.path.as_ref()?;
                 let path = path.strip_prefix(dir).unwrap_or(path).display().to_string();
                 let label = if item.label.is_empty() { item.name.clone() } else { item.label.clone() };
-                live.landed = Some(Preview { label, path });
+                live.landed = Some((Preview { label, path }, (live.job.stage.clone(), live.job.detail.clone())));
                 return None;
             }
             // A stage shows in its row, and an input reused needn't show at all.
@@ -271,7 +271,7 @@ impl Live {
             job.took_ms = Some(self.earlier_ms + run.execution_ms.unwrap_or(0));
             job.why = (run.status == Status::Canceled).then(|| CANCELED.to_owned());
             (job.fraction, job.detail, job.stage) = (None, None, Some("saving its file here".to_owned()));
-            self.landed = None;
+            (self.landed, job.preview) = (None, None);
             return;
         }
         let queued = run.started_at_ms.is_none() || run.machine_state.as_deref() == Some("queued");
@@ -294,7 +294,8 @@ impl Live {
         job.detail = detail(progress);
         job.fraction = progress.done_fraction;
         job.stalled = None;
-        if let Some(landed) = self.landed.take() {
+        let at = (job.stage.clone(), job.detail.clone());
+        if let Some((landed, _)) = self.landed.take_if(|(_, then)| *then != at) {
             job.preview = Some(landed);
         }
     }
