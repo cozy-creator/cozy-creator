@@ -2394,9 +2394,14 @@ impl Walk {
         let Some((piece, _)) = lost.first() else { return Ok(()) };
         let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
         let why = lost.iter().map(|(_, why)| why.as_str()).collect::<Vec<_>>().join("; ");
-        Err(Error::new(Kind::NotFound, "piece_absent", format!("{} cannot render, and the film that stands stays: {why}", asset.name))
-            .next(format!("cozy project render {piece} --on {on}"))
-            .next("cozy project pull"))
+        let (again, pull) = (format!("cozy project render {piece} --on {on}"), "cozy project pull".to_owned());
+        // What the Hub lacks a pull won't bring; what it couldn't be asked for, a pull may.
+        let nexts = match why.contains("not at the Hub") {
+            true => [again, pull],
+            false => [pull, again],
+        };
+        let [first, second] = nexts;
+        Err(Error::new(Kind::NotFound, "piece_absent", format!("{} cannot render, and the film that stands stays: {why}", asset.name)).next(first).next(second))
     }
 
     /// Lists a tool's version, its older ones gone unless pinned, and whatever files only they named.

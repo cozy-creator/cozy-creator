@@ -373,15 +373,15 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   that asset's lines in project.yaml, editing that one line, re-read just before it writes, and checks what it wrote reads as the same project with that one change (`400 project_edit` otherwise, saying what to write by hand). A line holding an input keeps it, `video: <hash>  # was <clash>`.
   Makes any tool whose reads settled, with no machine.
 - `POST /v1/projects/{id}/unpin` `{name}`: `{name, version?, stale}`. Removes that line, or restores the input it was over. A constant, nothing but its file, keeps it (`400 project_edit`).
-- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions}`. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names `400 project_name` when `to` can't be a name.
-  now with no versions (`409 rename_taken`, `409 project_busy` while it renders). Nothing on disk moves. What reads it goes out of date unless pinned.
+- `POST /v1/projects/{id}/rename` `{from, to}`: `{from, to, versions, queued?}`. What project.lock keeps of `from` is kept as `to`, an asset project.yaml names `400 project_name` when `to` can't be a name.
+  now with no versions (`409 rename_taken`). While it renders, `queued`: it happens as that walk ends, unless `to` has versions by then. Nothing on disk moves. What reads it goes out of date unless pinned.
 - `POST /v1/projects/{id}/reclaim` `{yes?}`: `{orphans, files, bytes, deleted?}`. Lists orphans and the files nothing else names; with `yes`, deletes them, an orphaned cut's film at the root too (`409 project_busy` while it renders). Never automatic.
 - `POST /v1/projects/{id}/push` `{hub?}`: `202 {id, path}`, `401 not_logged_in` signed out. Sends every file
   project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
   each its own object, which its first push lists in project.lock under the file's `parts`. `transferred` on the events ends it.
 - `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
 - `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?}`. Drops their queued work and cancels their runs; nothing dropped is sent again. It needs no file but to follow an entity's name, using the newest render's text if project.yaml doesn't read.
-- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice.
+- `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice. `ended`'s `error` is the first failure, or when more than that was asked, `render_incomplete`: `rendered 6 of 15; 9 failed: <the first>`, with the command for the rest in `next`. A second run failing the same way on a machine stops what that render sends there, and cancels what it sent that has not begun.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
 
 ### Tools and Calcifer
