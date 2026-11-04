@@ -86,7 +86,8 @@ const constants = (folder) => {
     { name: 'Clash Take.mp4', type: 'video/mp4', bytes: MP4 },
     { name: 'Sea.Sound.wav', type: 'audio/wav', bytes: wav() },
   ], 500, 300);
-  const atOnce = await names(page);
+  // The entity in the file above can show before or after these.
+  const atOnce = (await names(page)).filter((name) => name !== 'coast');
   check('three_appear_at_once', atOnce.length === 3, atOnce);
   check('none_focused', await page.evaluate(() => document.activeElement?.tagName !== 'INPUT'));
   check('stems_are_names', JSON.stringify(atOnce) === JSON.stringify(['clash_take', 'kyogre_art_1', 'sea_sound']), atOnce);
@@ -191,7 +192,7 @@ const constants = (folder) => {
   check('elements_are_its_files_and_its_entity', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
   // Its text was written with no version line, so that's the one thing said of the file, and the top bar says it.
   check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 2'), await page.getAttribute('.top .sum.ood', 'title'));
-  const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform])));
+  const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform]).sort()));
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));
   const viewportBefore = await viewportNow();
