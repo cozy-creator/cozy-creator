@@ -1855,9 +1855,10 @@ impl Walk {
                     self.finish(&id, &mut first).await?;
                 }
             }
-            self.landed_now(&mut following, &mut followed, &mut first)?;
+            // What lands now was not in this pass's plan: a cut or a reader may be ready, so nothing is over yet.
+            let landed = self.landed_now(&mut following, &mut followed, &mut first)?;
             self.sync();
-            if moved {
+            if moved || landed {
                 continue;
             }
             if following.is_empty() {
@@ -1879,17 +1880,19 @@ impl Walk {
         }
     }
 
-    /// Follows what is newly pending, and lands what has ended by now, waiting for nothing.
-    fn landed_now<'a>(&'a self, following: &mut FuturesUnordered<Following<'a>>, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<(), Error> {
+    /// Follows what is newly pending, and lands what has ended by now, waiting for nothing; whether any did.
+    fn landed_now<'a>(&'a self, following: &mut FuturesUnordered<Following<'a>>, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<bool, Error> {
         for key in self.folder().lock()?.pending.into_keys() {
             if followed.insert(key.clone()) {
                 following.push(self.follow(key).boxed());
             }
         }
+        let mut any = false;
         while let Some(Some(landed)) = following.next().now_or_never() {
             self.landed(landed, followed, first)?;
+            any = true;
         }
-        Ok(())
+        Ok(any)
     }
 
     /// A followed run came to its end: it is followed no more, and what failed is said as its asset's.
