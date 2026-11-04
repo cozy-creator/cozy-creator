@@ -1595,7 +1595,7 @@ real=$(cd "$R" && pwd -P)
 id=$(status "$R" | jq -r .id)
 curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
 soon told "$log" '.type == "hello"' || check "stream: no hello: $(head -c 300 "$log"; cat "$OUT/events.err")"
-sse "$log" | head -1 | J --arg v "$(cozy --json status | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | head -1)"
+sse "$log" | sed -n 1p | J --arg v "$(cozy --json status | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 
 seen=$(revs "$log" "$id" | wc -l)
 printf '\n# an edit from outside\n' >> "$R/project.yaml"
@@ -1603,7 +1603,7 @@ soon told_more "$log" "$id" "$seen" || check "stream: an edit from outside told 
 
 seen=$(revs "$log" "$id" | wc -l) yaml=$(sha "$R/project.yaml")
 (cd "$R" && cozy run "$here/project/draw.py" prompt=stream) > "$OUT/stream-run.txt" 2>&1 || check "stream: a run in the project: $(tail -c 300 "$OUT/stream-run.txt")"
-n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number')
+n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "stream: run ls in the project failed"
 [ "$(sha "$R/project.yaml")" = "$yaml" ] || check "stream: a landing wrote project.yaml, and this was to prove the lock alone reaches the stream"
 soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told nothing"
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project == \"$real\"" \
@@ -1633,28 +1633,30 @@ cozy project new "$R" > /dev/null || check "live: project new"
 python3 "$here/project/terminal.py" "$OUT/runs.screen" "$COZY" run ls --all > /dev/null & term=$!
 soon screen_says "$OUT/runs.screen" 'TARGET' || check "live: cozy run ls drew nothing"
 (cd "$R" && cozy run "$here/project/draw.py" prompt=live) > "$OUT/live-run.txt" 2>&1 || check "live: a run: $(tail -c 300 "$OUT/live-run.txt")"
-n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number')
+n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls in the project failed"
 soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy run ls does not show run $n completed: $(head -5 "$OUT/runs.screen")"
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   step "a project: a live view across a Calcifer restart, the branch resync takes"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
   (cd "$R" && cozy run "$here/project/draw.py" prompt=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
-  n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number')
+  n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
   soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
 fi
-code=0; kill "$term" 2> /dev/null; wait "$term" || code=$?
+code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
 [ "$code" = 0 ] || check "live: cozy run ls exited $code on q"
 
 python3 "$here/project/terminal.py" "$OUT/machines.screen" "$COZY" machine ls > /dev/null & term=$!
 soon screen_says "$OUT/machines.screen" '^ *local ' || check "live: cozy machine ls shows no local: $(head -5 "$OUT/machines.screen")"
 before=$(running "$OUT/machines.screen")
 (cd "$here" && cozy run -p "$R" ./weightless/wait seconds:=8 --on local > "$OUT/live-wait.txt" 2>&1) & follower=$!
-soon running_above "$OUT/machines.screen" "$before" || check "live: cozy machine ls never showed the run on local: $(head -5 "$OUT/machines.screen")"
+# Its first run here may install first: it's judged while its follower lives.
+until running_above "$OUT/machines.screen" "$before" || ! kill -0 "$follower" 2> /dev/null; do sleep 0.2; done
+running_above "$OUT/machines.screen" "$before" || check "live: cozy machine ls never showed the run on local: $(head -5 "$OUT/machines.screen")"
 wait "$follower" || check "live: the run on local failed: $(tail -c 300 "$OUT/live-wait.txt")"
 soon running_back "$OUT/machines.screen" "$before" || check "live: cozy machine ls still shows the ended run: $(head -5 "$OUT/machines.screen")"
-code=0; kill "$term" 2> /dev/null; wait "$term" || code=$?
+code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
 [ "$code" = 0 ] || check "live: cozy machine ls exited $code on q"
 }
 
