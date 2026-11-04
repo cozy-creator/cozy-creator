@@ -522,8 +522,9 @@ struct Walker {
     facts: HashMap<String, (String, Vec<u32>)>,
     /// What runs here took, by machine and function.
     learned: HashMap<(String, String), sim::Learned>,
-    /// Where the last plan put each job, by its key.
+    /// Where the last plan put each job, by its key, and the machines it counted them on.
     placed: HashMap<String, sim::Placed>,
+    plan_machines: Vec<On>,
     /// When each job went, and how wide: what is left of it.
     sent_at: HashMap<String, (Instant, String, u32)>,
 }
@@ -2548,7 +2549,7 @@ impl Walk {
     fn wanted_ahead(&self) -> Vec<Wanted> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
         let mut walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, asked_ahead, .. } = &mut *walker;
+        let Walker { graph, readings, asked_ahead, placed, plan_machines, .. } = &mut *walker;
         let mut wanted = vec![];
         for id in graph.open_jobs() {
             let job = &graph.jobs[id];
@@ -2557,7 +2558,17 @@ impl Walk {
             }
             let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
             let Some(reading) = readings.get(&ask.digest) else { continue };
-            let [machine] = ask.target.on.as_slice() else { continue };
+            // Where it will most likely go: its one machine, or of several the one the plan has it on. With `any` that isn't known.
+            let machine = match ask.target.on.as_slice() {
+                [only] => only,
+                _ => match placed.get(&job.key).and_then(|place| plan_machines.get(place.machine)) {
+                    Some(machine) => machine,
+                    None => continue,
+                },
+            };
+            if !matches!(machine, On::Machine(_)) {
+                continue;
+            }
             let asset = &reading.doc.assets[job.node];
             let (with, kind) = (reading.doc.target(job.node), asset.kind.clone());
             let chosen = serde_json::to_string(&(asset.body.get("models"), asset.body.get("lora"))).unwrap_or_default();
@@ -2612,7 +2623,7 @@ impl Walk {
     fn plan_now(&self) {
         let Ok(walk) = self.folder().walk_now() else { return };
         let mut walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, facts, learned, placed, sent_at, .. } = &mut *walker;
+        let Walker { graph, readings, facts, learned, placed, plan_machines, sent_at, .. } = &mut *walker;
         let open = graph.open_jobs();
         let at: HashMap<usize, usize> = open.iter().enumerate().map(|(place, &id)| (id, place)).collect();
         let mut machines: Vec<On> = vec![];
@@ -2656,6 +2667,7 @@ impl Walk {
         let gpus: Vec<u32> = machines.iter().map(|on| self.host.gpus(on)).collect();
         let plan = sim::plan(&works, &gpus);
         *placed = open.iter().zip(&plan.placed).map(|(&id, place)| (graph.jobs[id].key.clone(), *place)).collect();
+        *plan_machines = machines;
     }
 
     /// What `with` calls is known now: how wide this job should go, as the plan stands with that in it. 0: as wide as the machine goes, there being no choice.
@@ -3546,7 +3558,13 @@ impl Walk {
                 false => staged.push(StagedInput { path, digest, length }),
             }
         }
-        let placed = holder.unwrap_or_else(|| self.host.place(&on, &renderer));
+        // Of several, the machine the plan chose, which has its weights coming.
+        let planned = (on.len() > 1 && first).then(|| {
+            let walker = self.project.walker.lock().expect("walker lock");
+            let place = walker.placed.get(pending.job_of(key))?;
+            walker.plan_machines.get(place.machine).filter(|machine| on.contains(machine)).cloned()
+        });
+        let placed = holder.or(planned.flatten()).unwrap_or_else(|| self.host.place(&on, &renderer));
         if first {
             let with = asset.body.get("with").and_then(Value::as_str).unwrap_or_default().to_owned();
             let function = format!("{}/{}", renderer.package, renderer.function);
