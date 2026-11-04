@@ -55,11 +55,12 @@ step "web-drawers: a real run live to its end and a cancel, one log stream acros
 web_proof drawers "$chrome" "$pw" ''
 }
 
-# A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept.
+# A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
+# reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer.
 web_restart() {
   local kill="kill -9 \$(jq -r .pid < '$1')"
   [ "${RUNNER_OS:-}" != Windows ] || kill="taskkill //F //PID \$(jq -r .pid < '$1') > /dev/null"
-  echo "$kill; sleep 1; '$COZY' status > /dev/null 2>&1"
+  echo "$kill; sleep 1; '$COZY' machine ls > /dev/null 2>&1"
 }
 
 # A fresh sign-in link in $link, or a failed check.

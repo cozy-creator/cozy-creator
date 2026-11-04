@@ -95,7 +95,9 @@ const constants = (folder) => {
   await until('three constants in project.yaml', () => Object.keys(constants(folder)).length, (n) => n === 3);
   const three = constants(folder);
   check('constants_by_kind', three.kyogre_art_1?.field === 'image' && three.clash_take?.field === 'video' && three.sea_sound?.field === 'audio', three);
-  check('rows_written', ['kyogre_art_1', 'clash_take', 'sea_sound'].every((name) => rows(folder)[name]), rows(folder));
+  // An import writes the constant, then the row, so the last row can come a moment after the third constant.
+  await until('three rows in project.canvas.yaml', () => rows(folder), (now) => ['kyogre_art_1', 'clash_take', 'sea_sound'].every((name) => now[name]));
+  check('rows_written', true);
   // Calcifer may fetch its ffmpeg for the first of these.
   const thumbs = await until('thumbnails up', () => page.evaluate(() => ({
     up: [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0 && !img.src.startsWith('blob:')).length,
