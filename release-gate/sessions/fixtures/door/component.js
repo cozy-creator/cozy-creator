@@ -22,10 +22,15 @@ const STEP_MS = 60000;
   });
   // What a pod's root can make its Calcifer say: its tool ships a component.
   await page.route(/\/v1\/machines\/[^/]+\/calcifer\/v1\/tools(\?|$)/, async (route) => {
-    const answer = await route.fetch();
-    const said = await answer.json();
-    for (const tool of said.tools) if (tool.function === 'draw') tool.ui = 'ui/evil.js';
-    await route.fulfill({ response: answer, json: said });
+    // A reload gives up on what it asked: there's nothing then to rewrite.
+    try {
+      const answer = await route.fetch();
+      const said = await answer.json();
+      for (const tool of said.tools) if (tool.function === 'draw') tool.ui = 'ui/evil.js';
+      await route.fulfill({ response: answer, json: said });
+    } catch {
+      await route.abort().catch(() => {});
+    }
   });
   await page.goto(link);
   await page.waitForSelector('.top');
@@ -48,4 +53,8 @@ const STEP_MS = 60000;
   };
   console.log(JSON.stringify(out));
   await browser.close();
-})().catch((error) => { console.error(error); process.exit(1); });
+})().catch((error) => {
+  // Its first line: Playwright's log lists a request's headers, this session's bearer among them, and this lands in a public run.
+  console.error(error.message.split('\n')[0]);
+  process.exit(1);
+});
