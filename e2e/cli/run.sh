@@ -172,7 +172,7 @@ calcifer_restarts() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a run followed across a Calcifer restart"
 local code n
-(cd "$here" && cozy run ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
+(cd "$here" && cozy run -p "$RUN_PROJECT" ./weightless/wait seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
 for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"

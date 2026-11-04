@@ -1144,7 +1144,7 @@ assets:
     video: $look
 YAML
 render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.txt")"
-sed -i "s#with: .*shots.py#with: $PACKAGES/minimax-h3#" "$H/project.yaml"
+sed -i "s#with: .*shots.py#with: $(cd "$PACKAGES" && pwd)/minimax-h3#" "$H/project.yaml"
 code=0; render "$H" clash --take 1 --in 5 || code=$?
 { [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
 }
