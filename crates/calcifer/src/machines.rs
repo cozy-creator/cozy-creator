@@ -1828,6 +1828,9 @@ fn refusal(name: &str, e: LinkError) -> Error {
             format!("{name}: {message}"),
         )
         .next(format!("cozy machine show {name}")),
+        LinkError::Broken { code, message } => Error::new(Kind::Unavailable, "machine_failed", format!("{name}: {message}"))
+            .cause(code)
+            .next(format!("cozy machine logs {name}")),
         LinkError::Unanswered(message) => Error::new(
             Kind::Unavailable,
             "machine_unanswered",

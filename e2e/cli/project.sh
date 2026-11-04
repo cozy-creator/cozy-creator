@@ -1379,10 +1379,12 @@ code=0; render "$T" broken || code=$?
 J '[.board.jobs[] | select(.asset == "broken")] | length == 1 and .[0].number == 2' <<< "$(status "$T")" || check "failed once: asked again, its rows: $(status "$T" | jq -c '.board.jobs | map({asset, state, number})')"
 }
 
-# A piece gone from this computer, and at no machine or Hub: the cut fails with the command to run, and the film stays what it was.
+# A piece gone from this computer, and at no machine or Hub, is left out with a warning (Paul, 11-04): the film says so, the one before stays a
+# version, and once the piece is back the next render cuts it whole. So with a piece that has no version yet.
+frames_of() { ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$1"; }
 absent_piece() {
-step "a project: a piece that can't be had fails its cut, and the film stays"
-local T=$OUT/absent code=0 a b film
+step "a project: a piece that can't be had is left out, said, and cut back in when it's here"
+local T=$OUT/absent a b first stored
 mkdir -p "$T"
 plate "$T/a.mp4" testsrc2 440 800; plate "$T/b.mp4" smptebars 660 800
 printf 'version: 2\nassets: {}\n' > "$T/project.yaml"
@@ -1398,24 +1400,54 @@ assets:
     pieces: [<a>, <b>]
 YAML
 render "$T" film || check "absent: first cut: $(tail -c 400 "$OUT/render.txt")"
-film=$(sha "$T/film.mp4")
+first=$(sha "$T/film.mp4")
 rm -f "$T"/files/"$b"*
 sed -i 's/pieces: \[<a>, <b>\]/pieces: [<a>, <b>, <a>]/' "$T/project.yaml"
-render "$T" film || code=$?
-[ "$code" != 0 ] || check "absent: render exited 0: $(tail -c 400 "$OUT/render.txt")"
-says absent "the film that stands stays"
-says absent "next:"
-[ "$(sha "$T/film.mp4")" = "$film" ] || check "absent: the film changed: $(tail -c 400 "$OUT/render.txt")"
+render "$T" film || check "absent: a missing piece failed the render: $(tail -c 400 "$OUT/render.txt")"
+says absent "film.mp4 is cut without b"
+says absent "(without b: not on this computer)"
+[ "$(frames_of "$T/film.mp4")" = 288 ] || check "absent: the film is $(frames_of "$T/film.mp4") frames, not the 288 of what it could have"
+J '.cuts[0].without == ["b: not on this computer"]' <<< "$(status "$T")" || check "absent: status: $(status "$T" | jq -c .cuts)"
+cozy project -p "$T" status 2>&1 | grep -qF '(without b: not on this computer)' || check "absent: status doesn't say what it went without"
+[ "$(made "$T" film)" = 2 ] || check "absent: the short film is no new version: $(made "$T" film)"
+ls "$T/files/$first"* > /dev/null 2>&1 || check "absent: the longer film went"
+prefix "$T" "$T/b.mp4" > /dev/null
+render "$T" all --missing || check "absent: with it back: $(tail -c 400 "$OUT/render.txt")"
+[ "$(frames_of "$T/film.mp4")" = 432 ] || check "absent: with b back the film is $(frames_of "$T/film.mp4") frames, not 432: $(tail -c 400 "$OUT/render.txt")"
+J '(.cuts[0].without // []) == []' <<< "$(status "$T")" || check "absent: status with it back: $(status "$T" | jq -c .cuts)"
 
-step "a project: a piece whose bytes aren't its hash fails its cut, and the film stays"
-local stored
+step "a project: a piece whose bytes aren't its hash is left out"
 stored=$(jq -r --arg a "$a" '.files | to_entries[] | select(.key | contains($a)) | .value.path' "$T/project.lock")
 chmod u+w "$T/$stored"; printf 'changed' >> "$T/$stored"
-sed -i 's/pieces: \[<a>, <b>, <a>\]/pieces: [<a>]/' "$T/project.yaml"
-code=0; render "$T" film || code=$?
-[ "$code" != 0 ] || check "absent: a changed piece was cut: $(tail -c 400 "$OUT/render.txt")"
-says absent "isn't what project.lock says"
-[ "$(sha "$T/film.mp4")" = "$film" ] || check "absent: a changed piece changed the film"
+render "$T" film || check "absent: a changed piece failed the render: $(tail -c 400 "$OUT/render.txt")"
+says absent "(without a: its bytes changed)"
+[ "$(frames_of "$T/film.mp4")" = 144 ] || check "absent: a changed piece was cut: $(frames_of "$T/film.mp4") frames"
+
+step "a project: a piece with no version yet is left out, and its landing cuts it in"
+local P=$OUT/arriving
+mkdir -p "$P"
+plate "$P/a.mp4" testsrc2 440 800
+printf 'version: 2\nassets: {}\n' > "$P/project.yaml"
+a=$(prefix "$P" "$P/a.mp4")
+cat > "$P/project.yaml" <<YAML
+version: 2
+assets:
+  a: {video: $a}
+  later:
+    kind: video
+    render: {with: $here/project/shots.py}
+    summary: Dusk on <a>.
+  film:
+    kind: video
+    render: {with: cozy}
+    pieces: [<a>, <later>]
+YAML
+render "$P" film || check "arriving: $(tail -c 400 "$OUT/render.txt")"
+says arriving "(without later: no version yet)"
+[ "$(frames_of "$P/film.mp4")" = 144 ] || check "arriving: the film is $(frames_of "$P/film.mp4") frames"
+render "$P" later || check "arriving: later: $(tail -c 400 "$OUT/render.txt")"
+[ "$(frames_of "$P/film.mp4")" = 288 ] || check "arriving: the film didn't cut it in: $(frames_of "$P/film.mp4") frames: $(tail -c 400 "$OUT/render.txt")"
+! grep -qF 'without later' "$OUT/render.txt" || check "arriving: still says without: $(tail -c 400 "$OUT/render.txt")"
 }
 
 # Status and the closing line say what the film holds, not what its pieces add up to; a piece with no version yet is warned of.
@@ -1442,7 +1474,7 @@ assets:
 YAML
 render "$T" film || check "truth: cut: $(tail -c 400 "$OUT/render.txt")"
 says truth "warning"
-says truth "skips later"
+says truth "(without later: no version yet)"
 J '.cuts[0].frames == 144' <<< "$(status "$T")" || check "truth: status of the film: $(status "$T" | jq -c .cuts)"
 [ "$(stat -c %h "$T/film.mp4")" = 1 ] || check "truth: film.mp4 is a hard link: $(stat -c %h "$T/film.mp4") names"
 local stored

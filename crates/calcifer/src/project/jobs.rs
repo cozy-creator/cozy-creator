@@ -141,7 +141,16 @@ impl Jobs {
                 let job = Job { asset: name.clone(), state, noun: job.noun, number: job.number, shot: job.shot, run: job.run, machine: job.machine, took_ms: job.took_ms, error: Some(error.clone()), ..Job::default() };
                 held.ended.push(job);
             }
-            Event::Cut { name, cut, frames, fps, retimed, took_s, unchanged } => {
+            Event::Cut { name, cut, frames, fps, retimed, took_s, unchanged, without } => {
+                let mut why = vec![];
+                match (*unchanged, retimed.as_slice()) {
+                    (true, _) => why.push("(unchanged)".to_owned()),
+                    (false, []) => {}
+                    (false, takes) => why.push(format!("it retimes {} to {fps} fps", takes.join(", "))),
+                }
+                if !without.is_empty() {
+                    why.push(format!("(without {})", without.join("; ")));
+                }
                 let job = Job {
                     asset: name.clone(),
                     state: JobState::Done,
@@ -149,11 +158,7 @@ impl Jobs {
                     path: Some(cut.clone()),
                     seconds: Some(*frames as f64 / fps),
                     took_ms: (*took_s > 0.0).then_some((took_s * 1000.0) as u64),
-                    why: match (*unchanged, retimed.as_slice()) {
-                        (true, _) => Some("(unchanged)".into()),
-                        (false, []) => None,
-                        (false, takes) => Some(format!("it retimes {} to {fps} fps", takes.join(", "))),
-                    },
+                    why: (!why.is_empty()).then(|| why.join(" ")),
                     ..Job::default()
                 };
                 held.cuts.retain(|cut| cut.asset != *name);

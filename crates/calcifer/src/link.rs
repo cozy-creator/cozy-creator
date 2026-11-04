@@ -62,6 +62,9 @@ pub enum LinkError {
     /// machine, not an unreachable one. Ask again.
     #[error("{0}")]
     Unanswered(String),
+    /// It answered with an internal failure of its own: its bug, not its being busy.
+    #[error("{code}: {message}")]
+    Broken { code: String, message: String },
 }
 
 impl From<Error> for LinkError {
@@ -86,6 +89,9 @@ impl From<Error> for LinkError {
                 remedy: error.remedy,
                 next: error.next,
             },
+            Error::Refused { error, .. } if error.kind == protocol::error::Kind::Internal => {
+                LinkError::Broken { code: error.code, message: error.message }
+            }
             Error::Refused { error, .. } => {
                 LinkError::Unanswered(format!("{}: {}", error.code, error.message))
             }

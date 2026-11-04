@@ -4,6 +4,7 @@
 //! no kind's meaning and no field's shape, but for the reserved package `cozy`, which it runs itself. Every other field passes through to the adapter and counts in the
 //! key. Nothing refuses a project but a file of no format: what one line gets wrong is said, and that line does the best it can.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
 
 use protocol::error::{Error, Kind};
 use serde_json::{Map, Value, json};
@@ -200,6 +201,8 @@ pub struct Doc {
     unread: Vec<(usize, String)>,
     /// How many the file declares, in order, and those after them are images only a beat names.
     declared: usize,
+    /// The project's folder, which says what is on this computer.
+    dir: PathBuf,
 }
 
 /// Why an asset has the state it has, or none.
@@ -317,7 +320,7 @@ impl Doc {
                 }
             }
         }
-        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], declared: 0 };
+        let mut doc = Self { assets: vec![], upstream: vec![], order: vec![], warnings, index: HashMap::new(), reserved: lock.reserved.clone(), unread: vec![], declared: 0, dir: folder.dir.clone() };
         for name in protocol::yaml::keys(text, &["assets"]) {
             let Some(written) = declared.get(&name) else { continue };
             doc.declare(text, &name, written, &defaults, folder, &lock);
@@ -853,8 +856,20 @@ impl Doc {
             };
         }
         let Some(now) = &inputs else { return stand(State::Waits, None) };
-        // A film short of its pieces isn't its state, though the memo would say so: it cuts again.
-        let off = |version: &folder::Version| Some(self.tool(i)? == Tool::Cut).filter(|cut| *cut).and_then(|_| super::tools::film_off(&asset.fields, &reads, lock, &version.files));
+        // A film short of its pieces, or that went without one now here, isn't its state, though the memo would say so: it cuts again.
+        let off = |version: &folder::Version| -> Option<String> {
+            if self.tool(i) != Some(Tool::Cut) {
+                return None;
+            }
+            let here = |piece: &str| {
+                let read = reads.iter().find(|read| name_key(&read.name) == name_key(piece));
+                read.and_then(|read| lock.files.get(folder::main_of(&read.files)?)).is_some_and(|file| self.dir.join(&file.path).is_file())
+            };
+            match version.without.iter().find(|left| left.absent && here(&left.piece)) {
+                Some(left) => Some(format!("{} is here now", left.piece)),
+                None => super::tools::film_off(&asset.fields, &reads, lock, version),
+            }
+        };
         let holding = || versions.iter().rev().filter(|version| version.inputs == *now);
         if let Some(why) = holding().next().filter(|_| holding().all(|version| off(version).is_some())).and_then(off) {
             return stand(State::Stale(why), None);

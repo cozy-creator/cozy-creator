@@ -119,6 +119,9 @@ struct Machine {
 
 /// How often a wait for a machine's answer says again how long it has lasted.
 const RESAID: Duration = Duration::from_secs(5);
+/// How long a machine answering an internal failure about a run is asked again before the run ends saying so.
+const BROKEN_FOR: Duration = Duration::from_secs(120);
+const BROKEN_ASKED_EVERY: Duration = Duration::from_secs(5);
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 
@@ -128,6 +131,8 @@ enum Stop {
     Unreachable(String),
     /// Connected, but the machine's answer broke off or was not one: it is busy, not unreachable.
     Unanswered(String),
+    /// The machine answers an internal failure of its own.
+    Broken(String, String),
     /// The machine refuses this controller's key; `cozy machine authorize` there admits it.
     Unauthorized(String),
     /// Something besides the machine holds the run (its Hub, Calcifer's store), said as it is.
@@ -152,6 +157,7 @@ impl From<LinkError> for Stop {
             LinkError::Unreachable(message) => Stop::Unreachable(message),
             LinkError::Unauthorized(message) => Stop::Unauthorized(message),
             e @ LinkError::Unanswered(_) => Stop::Unanswered(e.to_string()),
+            LinkError::Broken { code, message } => Stop::Broken(code, message),
         }
     }
 }
@@ -650,6 +656,8 @@ impl Calcifer {
 
     async fn follow_to_end(self: &Arc<Self>, id: &RunId, wake: &Notify) {
         let mut pause = Pause::default();
+        // When its machine began failing it, which an attach that answers doesn't reset.
+        let mut broken: Option<Instant> = None;
         loop {
             let run = match self.store.run(id.as_str()) {
                 Ok(Some(run)) => run,
@@ -750,7 +758,7 @@ impl Calcifer {
                 .step(&run, &name, &link, &sending, wake, &mut pause)
                 .await
             {
-                Ok(()) => {}
+                Ok(()) => broken = None,
                 Err(Stop::Unreachable(message)) => {
                     let reason = match self.machines() {
                         Some(machines) => machines.unanswered(&name, &message),
@@ -766,6 +774,27 @@ impl Calcifer {
                         let age = protocol::calcifer::clock(age.as_millis() as i64);
                         self.waiting(id, format!("no answer from {name} yet ({age}): {message}"));
                         pause.wait(wake, Some(&mut changed)).await;
+                    }
+                }
+                // Its own bug, not its being busy: said in its words, logged, asked again for a while, and then the run
+                // ends saying so. A cancel doesn't wait for it. Nothing runs again either way.
+                Err(Stop::Broken(code, message)) => {
+                    let since = *broken.get_or_insert_with(|| {
+                        warn!(run = %id, machine = %name, "{code}: {message}");
+                        Instant::now()
+                    });
+                    if run.cancel_requested || since.elapsed() >= BROKEN_FOR {
+                        match self.store.gave_up(id.as_str(), &name, &code, &message) {
+                            Ok(events) => self.publish(id, events),
+                            Err(e) => warn!(run = %id, "{e}"),
+                        }
+                    } else {
+                        self.waiting(id, format!("{name} fails when asked about this run, and is asked again for {}: {code}: {message}", protocol::calcifer::clock(BROKEN_FOR.as_millis() as i64)));
+                        tokio::select! {
+                            () = tokio::time::sleep(BROKEN_ASKED_EVERY) => {}
+                            () = wake.notified() => {}
+                            _ = changed.changed() => {}
+                        }
                     }
                 }
                 Err(Stop::Waiting(message)) => {
@@ -957,13 +986,14 @@ impl Calcifer {
         }
         // Its machine answered: what the run waited on before (its machine's silence) is over,
         // and it waits on what its state says now.
+        let state_now = state.state.clone();
         self.machine_waiting(&run.id, state);
         // A run just sent is accepted by the machine's answer; its events follow from the start.
         let stream = match stream {
             Some(stream) => stream,
             None => link.events(id, 0).await?,
         };
-        self.follow(&run.id, stream, link, wake, canceled).await
+        self.follow(&run.id, stream, link, wake, canceled, state_now).await
     }
 
     /// Sends `run` as `spec`. A machine whose TensorD started again since its workload key was seen
@@ -990,6 +1020,7 @@ impl Calcifer {
         link: &Link,
         wake: &Notify,
         mut canceled: bool,
+        mut state_now: String,
     ) -> Result<(), Stop> {
         use v1::Event as Frame;
         let (mut batch, mut frames) = (Batch::default(), 0u64);
@@ -1020,9 +1051,19 @@ impl Calcifer {
             };
             let frame = match next {
                 Some(Ok(frame)) => frame,
+                // A stream's end with its outcome unread is, to a client, a body that broke off.
+                Some(Err(LinkError::Unanswered(_))) if finished(&state_now) => {
+                    self.record_batch(id, &mut batch)?;
+                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
+                }
                 Some(Err(e)) => {
                     self.record_batch(id, &mut batch)?;
                     return Err(e.into());
+                }
+                // A run its machine calls over with no outcome sent is no stream held open to start another: it can't read that outcome.
+                None if finished(&state_now) => {
+                    self.record_batch(id, &mut batch)?;
+                    return Err(Stop::Broken("outcome_unsent".into(), format!("it says the run {state_now}, and sends no outcome")));
                 }
                 // The machine ends a stream it holds open only to start another: attach again.
                 None if frames > 0 => return self.record_batch(id, &mut batch),
@@ -1098,6 +1139,7 @@ impl Calcifer {
                     continue;
                 }
                 Frame::State(state) => {
+                    state_now.clone_from(&state.state);
                     self.machine_waiting(id, state.clone());
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
@@ -1345,6 +1387,11 @@ fn unstarted(run: &RunRow) -> bool {
     run.state == State::Accepted
         && run.started_at_ms.is_none()
         && matches!(run.machine_state.as_deref(), None | Some("preparing" | "queued"))
+}
+
+/// Whether a machine's word for a run says it is over.
+fn finished(state: &str) -> bool {
+    matches!(state, "succeeded" | "completed" | "failed" | "canceled")
 }
 
 fn queued(run: &Run) -> bool {
