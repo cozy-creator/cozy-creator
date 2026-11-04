@@ -241,7 +241,7 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/script-$turn.ndjson" || check "one script name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package remove local/one-script --on local > /dev/null || check "package remove local/one-script failed"
+cozy --json package remove local/one_script --on local > /dev/null || check "package remove local/one_script failed"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
