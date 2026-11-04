@@ -955,26 +955,45 @@ async fn cancel(
     let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
+    let lock = folder.lock().map_err(Refusal)?;
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let mut keys = BTreeSet::new();
-    if !all {
-        for name in &asked.names {
-            match doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
-                Some(i) => keys.extend(doc.linked(i).into_iter().map(|j| name_key(&doc.assets[j].name))),
-                None => drop(keys.insert(name_key(&doc.assets[find(&doc, name).map_err(Refusal)?].name))),
+    let (mut dropped, mut owed, mut note) = (vec![], vec![], None);
+    match Doc::load(folder) {
+        Ok(doc) => {
+            if !all {
+                for name in &asked.names {
+                    match doc.find(name).filter(|&i| doc.assets[i].links.is_some()) {
+                        Some(i) => keys.extend(doc.linked(i).into_iter().map(|j| name_key(&doc.assets[j].name))),
+                        None => drop(keys.insert(name_key(&doc.assets[find(&doc, name).map_err(Refusal)?].name))),
+                    }
+                }
             }
+            let stand = doc.stand(&lock);
+            for (item, take) in queue(&doc, &stand, &lock) {
+                if !item.running && (all || keys.contains(&name_key(&item.name))) {
+                    if take.is_none() {
+                        owed.push(name_key(&item.name));
+                    }
+                    dropped.push(item.name);
+                }
+            }
+        }
+        // A queue spends money, so it stops with the file broken: project.lock names what is queued and running.
+        Err(error) => {
+            if !all {
+                keys.extend(asked.names.iter().map(|name| name_key(name)));
+                owed.extend(keys.iter().cloned());
+            }
+            let held = |name: &str| lock.walk.takes.iter().any(|take| name_key(&take.asset) == name_key(name)) || lock.pending.values().any(|pending| name_key(&pending.asset) == name_key(name));
+            let unmatched: Vec<&str> = asked.names.iter().map(String::as_str).filter(|name| !all && !held(name)).collect();
+            if !unmatched.is_empty() {
+                note = Some(format!("{}: nothing queued or running goes by {}, and an entity's name can't be followed until {} reads", error.message, unmatched.join(", "), folder::PROJECT));
+            }
+            dropped.extend(lock.walk.takes.iter().filter(|take| all || keys.contains(&name_key(&take.asset))).map(|take| take.asset.clone()));
         }
     }
     let wanted = |name: &str| all || keys.contains(&name_key(name));
-    let stand = doc.stand(&lock);
-    let (mut dropped, mut owed) = (vec![], vec![]);
-    for (item, take) in queue(&doc, &stand, &lock).into_iter().filter(|(item, _)| !item.running && wanted(&item.name)) {
-        if take.is_none() {
-            owed.push(name_key(&item.name));
-        }
-        dropped.push(item.name);
-    }
     folder
         .update_lock(|lock| {
             lock.walk.takes.retain(|take| !wanted(&take.asset));
@@ -992,7 +1011,7 @@ async fn cancel(
         }
     }
     project.asked.notify_one();
-    Ok(Json(Cancelled { dropped, canceled }))
+    Ok(Json(Cancelled { dropped, canceled, note }))
 }
 
 /// What `--take` and `--in` ask of asset `i`: the take a new one keeps the start of, the one that is its state, else its newest, if

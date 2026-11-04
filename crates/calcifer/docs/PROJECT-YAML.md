@@ -216,7 +216,7 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 A project has one walker, and each render adds to it: a second `render all` is a second pass of new versions, joining the first, and `--queue` adds without following. Without `--queue` a render follows until it ends, and its exit code says how it went; Ctrl-C only stops following, and the work stays queued. `status` shows what is running and what is queued, and queued work outlives a Calcifer restart until `cancel` drops it.
 
 - **Text:** the walker reads `project.yaml` again each time round, so a take waiting on something unsettled uses the text as it is when it's sent. One sent at once to its machine has its text fixed then.
-- **A save that can't be read** stops nothing. What is running goes on and lands, what is queued waits, and it says once what is wrong, on the render's events and in `status`. When the file reads again the render goes on by itself, also after a Calcifer restart.
+- **A save that can't be read** stops nothing. What is running goes on and lands, what is queued waits, and it says once what is wrong, on the render's events and in `status`. When the file reads again the render goes on by itself, also after a Calcifer restart. `cancel` still works, by the names in `project.lock`; `render` is refused until it reads, and so is following an entity's name.
 - **`--on`:** each take goes where its own ask said. What the walk owes beyond its takes, such as what a take reads, stays where the ask that began it said.
 
 ## Pins

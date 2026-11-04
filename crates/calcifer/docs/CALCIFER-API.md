@@ -380,7 +380,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   project.lock names that the Hub lacks, then records them as a private commit of `<account>/project-assets`. A file over 5 GiB goes as 1 GiB parts,
   each its own object, which its first push lists in project.lock under the file's `parts`. `transferred` on the events ends it.
 - `POST /v1/projects/{id}/pull` `{hub?}`: the same, fetching every file `files/` lacks, as real files, each held to its digest.
-- `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?}`. Drops their queued work and cancels their runs; nothing dropped is sent again.
+- `POST /v1/projects/{id}/cancel` `{names}` (or `["all"]`): `{dropped?, canceled?, note?}`. Drops their queued work and cancels their runs; nothing dropped is sent again. It works while project.yaml doesn't read, by the names in project.lock, and `note` then says why a name, perhaps an entity's, matched nothing.
 - `GET /v1/projects/{id}/events` (SSE): `started`, `landed`, `said`, `warning`, `failed`, `moved`, `transferred`, `cut`, `ended`. It opens with a `started` for each run already going, so one that comes late hears them at once; one that began just then can be told twice.
 - `GET /v1/projects/{id}/files/{sha256}.{ext}`: a file (Range, ETag its sha256). `GET /v1/projects/{id}/cuts/{cut}`: a cut or its `.otio`, as last made.
 

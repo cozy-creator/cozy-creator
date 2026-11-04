@@ -707,8 +707,10 @@ assets:
     seconds: 6
   after:
     description: From <slow>.
+  also:
+    description: Also from <slow>.
 YAML
-cozy project -p "$B" render after --queue --on local > "$OUT/queue-broken.txt" 2>&1 || check "broken: render after: $(tail -c 300 "$OUT/queue-broken.txt")"
+cozy project -p "$B" render after also --queue --on local > "$OUT/queue-broken.txt" 2>&1 || check "broken: render after: $(tail -c 300 "$OUT/queue-broken.txt")"
 for _ in $(seq 120); do [ "$(status "$B" | jq '[.queue[] | select(.name == "slow" and .run != null)] | length')" = 1 ] && break; sleep 0.5; done
 cp "$B/project.yaml" "$OUT/queue-broken.yaml"
 printf 'assets: [\n' >> "$B/project.yaml"
@@ -716,11 +718,15 @@ for _ in $(seq 40); do J '.warnings // [] | any(contains("what is queued waits u
 J '.busy and ([.queue[].name] | index("after") != null) and (.warnings | any(contains("what is queued waits until it reads")))' <<< "$(status "$B")" || check "broken: status says $(status "$B" | jq -c '{busy, queue, warnings}')"
 cozy project -p "$B" status > "$OUT/queue-broken-status.txt" 2>&1
 ! grep -q 'nothing is walking' "$OUT/queue-broken-status.txt" || check "broken: status says nothing is walking"
+cozy project -p "$B" cancel also > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
+grep -q 'dropped also' "$OUT/queue-broken-cancel.txt" || check "broken: cancel said $(cat "$OUT/queue-broken-cancel.txt")"
+cozy project -p "$B" cancel some_entity > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel of a name in no queue: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
+grep -q "an entity's name can't be followed" "$OUT/queue-broken-cancel.txt" || check "broken: cancel of a name in no queue said $(cat "$OUT/queue-broken-cancel.txt")"
 for _ in $(seq 120); do [ "$(made "$B" slow)" = 1 ] && break; sleep 0.5; done
 { [ "$(made "$B" slow)" = 1 ] && [ "$(made "$B" after)" = 0 ]; } || check "broken: while it can't be read, made $(jq -c '.assets | map_values(.versions | length)' "$B/project.lock")"
 cp "$OUT/queue-broken.yaml" "$B/project.yaml"
 for _ in $(seq 120); do [ "$(made "$B" after)" = 1 ] && J '.busy | not' <<< "$(status "$B")" && break; sleep 0.5; done
-{ [ "$(made "$B" after)" = 1 ] && J '.busy | not' <<< "$(status "$B")"; } || check "broken: it didn't go on when the file read: $(jq -c '.assets | map_values(.versions | length)' "$B/project.lock")"
+{ [ "$(made "$B" after)" = 1 ] && [ "$(made "$B" also)" = 0 ] && J '.busy | not' <<< "$(status "$B")"; } || check "broken: it didn't go on when the file read: $(jq -c '.assets | map_values(.versions | length)' "$B/project.lock")"
 [ -n "${ALONE:-}" ] && return 0
 step "a project: a canceled render all sends nothing again"
 local A=$OUT/queue-all
