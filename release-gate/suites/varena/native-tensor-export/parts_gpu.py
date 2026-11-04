@@ -17,6 +17,10 @@ from tensorfs.varena import Source, api
 from tensorfs.varena import torch as vt
 
 
+def parts(sources):
+    return [(C.cast(C.c_char_p(source.data), C.c_void_p).value or 0, source.nbytes) for source in sources]
+
+
 def run(device: int):
     vt.install(device)
     stream = torch.cuda.Stream(device=device)
@@ -65,10 +69,10 @@ def run(device: int):
         # padding. Its storage must retain the same Pin and a valid DataPtr for
         # record_stream, including after the Region and other exports are closed.
         baseline = gpu.stats()["weights_resident"]
-        tiny, tiny_offsets = gpu.region_parts((
+        tiny, tiny_offsets = gpu.region_parts(parts((
             Source.from_buffer(b"\x49", dtype="uint8", shape=(1,)),
             Source.from_buffer(b"", dtype="uint8", shape=(0,)),
-        ))
+        )))
         assert tiny_offsets == (0, 256)
         whole = tiny.tensor(dtype="uint8", shape=(256,), stream=stream.cuda_stream)
         empty = tiny.tensor(dtype="uint8", shape=(0,), byte_offset=tiny_offsets[1],
@@ -119,7 +123,7 @@ def run(device: int):
             Source.from_tensor(view),
         )
         expected_view = view.clone()
-        region, offsets = gpu.region_parts(sources)
+        region, offsets = gpu.region_parts(parts(sources))
         assert offsets == (0, (2 << 20) + 256, (2 << 20) + 768, (2 << 20) + 768)
         expected = bytearray(offsets[-1] + sources[-1].nbytes)
         for offset, source in zip(offsets, sources):
@@ -147,7 +151,7 @@ def run(device: int):
         escaped = old[1:, ::2].detach()
         old_pointer = old.data_ptr()
         converted = sources[-1].derive("float32")
-        newer, newer_offsets = gpu.region_parts((converted,))
+        newer, newer_offsets = gpu.region_parts(parts((converted,)))
         new = export(newer, converted, newer_offsets[0])
         with torch.cuda.stream(stream):
             old_copy, new_copy = old.clone(), new.clone()
@@ -160,7 +164,7 @@ def run(device: int):
         graph = torch.cuda.CUDAGraph()
         with vt.graph(graph, stream=stream):
             try:
-                gpu.region_parts(sources)
+                gpu.region_parts(parts(sources))
             except api.Capturing:
                 pass
             else:

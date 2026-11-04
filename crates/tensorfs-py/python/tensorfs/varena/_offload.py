@@ -1,1020 +1,439 @@
-"""Immutable eager Torch inference over native Source/Region storage."""
+"""Immutable Torch inference over native Regions. See crates/varena/TORCH-OFFLOAD.md.
+
+Weights are metadata placeholders. Entering a block binds real tensors, whose storage owns a native
+Pin, into its module slots, so its body is stock ATen with no Python per op. Reads outside a block
+take the placeholder's slow path. A thread's work all runs on one explicit stream.
+"""
 
 from __future__ import annotations
 
-import contextvars
 import functools
+import os
 import threading
-import types
 import weakref
-from contextlib import contextmanager, nullcontext, suppress
-from dataclasses import dataclass
 
 import torch
 from torch import nn
 from torch.utils._python_dispatch import return_and_correct_aliasing
 from torch.utils._pytree import tree_flatten, tree_map
 
-from ._offload_inventory import InventoryError, inspect_cpu_roots
-from .sources import Source
+from . import api
+from . import torch as vt
+from ._offload_graphs import Graphs
 
-_REBIND = contextvars.ContextVar("varena_offload_rebind", default=False)
-_GRAPH_BINDING = contextvars.ContextVar("varena_offload_graph_binding", default=None)
+_REFUSED = frozenset(("data_ptr", "untyped_storage", "storage", "_typed_storage", "as_subclass", "__dlpack__", "numpy"))
 
 
 class OffloadError(RuntimeError):
-    """An operation falls outside immutable eager inference."""
+    """An operation falls outside immutable inference."""
 
 
-class _Device:
-    def __init__(self, device):
-        self.device = torch.device(device)
+class _Owner:
+    """What weights need from an adopted model: never the model itself."""
+
+    def __init__(self, index):
+        vt.install(index)
+        self.device = torch.device("cuda", index)
+        self.gpu = api.open(index)
+        self.stream = torch.cuda.Stream(device=self.device)
         self.lock = threading.RLock()
-        self.gpu = None
-        self.stream = None
-        if self.device.type == "cuda":
-            from . import api
-            from . import torch as vt
+        self.converting = False
 
-            index = 0 if self.device.index is None else self.device.index
-            self.device = torch.device("cuda", index)
-            vt.install(index)
-            self.gpu = api.open(index)
-            self.stream = torch.cuda.Stream(device=self.device)
-        elif self.device.type != "cpu":
-            raise ValueError("offload requires a CUDA ordinal/device, or explicit CPU")
+    def current(self):
+        """The thread's explicit stream, or, if it has none, ours from now on."""
+        stream = torch.cuda.current_stream(self.device)
+        if stream.cuda_stream > 2:
+            return stream
+        self.stream.wait_stream(stream)
+        with torch.cuda.device(self.device):
+            torch.cuda.set_stream(self.stream)
+        return self.stream
 
-    @contextmanager
-    def execution(self, values):
-        with self.lock:
-            if torch.compiler.is_compiling() or torch.jit.is_tracing():
-                raise OffloadError("offload currently supports eager inference")
-            if self.stream is None:
-                yield None
-                return
-            caller = torch.cuda.current_stream(self.device)
-            stream = self.stream if caller.cuda_stream in (0, 1) else caller
-            tensors = [
-                v
-                for v in values
-                if isinstance(v, torch.Tensor)
-                and not isinstance(v, _Weight)
-                and v.device.type == "cuda"
-            ]
-            if any(v.device != self.device for v in tensors):
-                raise OffloadError("cross-device operands need an explicit copy")
-            device_matches = torch.cuda.current_device() == self.device.index
-            if device_matches:
-                capturing = torch.cuda.is_current_stream_capturing()
-            else:
-                # Inspect the owner's actual stream, not an unrelated device's
-                # current stream. The safe old context still handles this case.
-                with torch.cuda.device(self.device):
-                    capturing = torch.cuda.is_current_stream_capturing()
-            if capturing:
-                raise OffloadError(
-                    "offload currently supports eager inference outside capture"
-                )
-            from ._offload_stream import reuse
-
-            reusable = reuse(self, caller)  # Observe changed streams even on fallback.
-            if device_matches and reusable:
-                try:
-                    yield caller
-                finally:
-                    # Scope reuse proves context/order, not operand lifetime:
-                    # internal ordinary out/alias operands may not be root inputs.
-                    for tensor in tensors:
-                        tensor.record_stream(caller)
-                return
-            # A stream record protects lifetime only. This wait orders input contents.
-            if stream != caller:
-                stream.wait_stream(caller)
-            with torch.cuda.stream(stream):
-                if torch.cuda.is_current_stream_capturing():
-                    raise OffloadError(
-                        "offload currently supports eager inference outside capture"
-                    )
-                try:
-                    yield stream
-                finally:
-                    for tensor in tensors:
-                        tensor.record_stream(stream)
-                    if stream != caller:
-                        caller.wait_stream(stream)
+    def place(self, versions):
+        """Native takes its one host copy. Sources stay until a Use proves the Region fits."""
+        for version in versions:
+            if version.source is None:
+                root, whole = version.root, (version.root.nbytes // version.root.dtype.itemsize,)
+                # A placed root's only host copy is native's, so it is read through the GPU.
+                values = root.read(whole, (1,), 0, self.current()) if root.source is None else torch.empty(0, dtype=root.dtype).set_(root.source, 0, whole)
+                version.source = values.to(version.dtype).cpu().untyped_storage()
+        region, offsets = self.gpu.region_parts([(v.source.data_ptr(), v.nbytes) for v in versions])
+        for version, offset in zip(versions, offsets):
+            version.region, version.offset = region, offset
 
 
-@dataclass(eq=False)
 class _Version:
-    source: Source
-    owner: _Device
-    region: object = None
-    member_offset: int = 0
+    """One immutable typed storage. Each dtype is derived once from the original bytes."""
 
-    def byte_offset(self, shape, strides, offset):
-        # Native export bounds cover the whole packed Region. Keep alias bounds
-        # local to the original physical storage before adding its pack offset.
-        if (
-            len(shape) != len(strides)
-            or offset < 0
-            or any(size < 0 for size in shape)
-            or any(step < 0 for step in strides)
-        ):
-            raise OffloadError("invalid managed storage view")
-        itemsize = getattr(torch, self.source.dtype).itemsize
-        start = offset * itemsize
-        extent = (
-            0
-            if 0 in shape
-            else (1 + sum((size - 1) * step for size, step in zip(shape, strides)))
-            * itemsize
-        )
-        if start + extent > self.source.nbytes:
-            raise OffloadError("managed tensor view exceeds its original storage")
-        return start
+    __slots__ = ("owner", "dtype", "nbytes", "source", "region", "offset", "root", "derived")
 
-    def reservation(self):
-        if self.region is None:
-            self.region = self.owner.gpu.region(self.source)
-        return self.region
+    def __init__(self, owner, dtype, nbytes, source=None, root=None):
+        self.owner, self.dtype, self.nbytes, self.source = owner, dtype, nbytes, source
+        self.region, self.offset, self.root, self.derived = None, 0, root or self, {}
 
-    def tensor(self, shape, strides, offset, stream):
-        dtype = getattr(torch, self.source.dtype)
-        byte_offset = self.byte_offset(shape, strides, offset)
-        if self.owner.gpu is None:
-            # Real host execution over an immutable snapshot; no simulated allocator.
-            if not self.source.data:
-                return torch.empty_strided(shape, strides, dtype=dtype)
-            storage = torch.frombuffer(bytearray(self.source.data), dtype=dtype)
-            return storage.as_strided(shape, strides, offset)
+    def like(self, dtype):
+        root = self.root
+        if dtype == root.dtype:
+            return root
+        if dtype not in root.derived:
+            root.derived[dtype] = _Version(self.owner, dtype, root.nbytes // root.dtype.itemsize * dtype.itemsize, root=root)
+        return root.derived[dtype]
+
+    def read(self, shape, strides, offset, stream):
+        """A real tensor over these bytes; its storage owns a native Pin."""
         if 0 in shape:
-            return torch.empty_strided(
-                shape, strides, dtype=dtype, device=self.owner.device
-            )
-        return self.reservation().tensor(
-            dtype=dtype,
-            shape=shape,
-            strides=strides,
-            byte_offset=self.member_offset + byte_offset,
-            stream=stream.cuda_stream,
-        )
+            return torch.empty_strided(shape, strides, dtype=self.dtype, device=self.owner.device)
+        if self.region is None:
+            self.owner.place([self])
+        try:
+            tensor = self.region.tensor(dtype=self.dtype, shape=shape, strides=strides,
+                                        byte_offset=self.offset + offset * self.dtype.itemsize, stream=stream.cuda_stream)
+        except api.Exhausted as error:
+            raise torch.OutOfMemoryError(str(error)) from error
+        self.source = None
+        return tensor
 
 
 class _Weight(torch.Tensor):
+    """A metadata placeholder in a module slot. An op on it reads its bytes through a Use."""
+
     @staticmethod
     def __new__(cls, version, shape, strides, offset=0):
-        version.byte_offset(shape, strides, offset)
-        # Alias dispatch shares version counters. Only the immutable metadata
-        # shell needs one; actual computation keeps the caller's inference mode.
         with torch.inference_mode(False):
-            return torch.Tensor._make_wrapper_subclass(
-                cls,
-                shape,
-                strides=strides,
-                storage_offset=offset,
-                dtype=getattr(torch, version.source.dtype),
-                device=version.owner.device,
-                layout=torch.strided,
-                requires_grad=False,
-            )
+            return torch.Tensor._make_wrapper_subclass(cls, shape, strides=strides, storage_offset=offset, dtype=version.dtype,
+                                                       device=version.owner.device, layout=torch.strided, requires_grad=False)
 
     def __init__(self, version, shape, strides, offset=0):
-        self._version_owner = version
-        self._shape, self._strides, self._offset = tuple(shape), tuple(strides), offset
+        self._managed, self._shape, self._strides, self._offset = version, tuple(shape), tuple(strides), offset
 
     def _metadata(self):
-        count = self._version_owner.source.nbytes // self.dtype.itemsize
-        return torch.empty(count, device="meta", dtype=self.dtype).as_strided(
-            self._shape, self._strides, self._offset
-        )
-
-    def data_ptr(self):
-        raise OffloadError(
-            "managed weights do not expose raw pointers; make an explicit copy"
-        )
-
-    def untyped_storage(self):
-        raise OffloadError(
-            "managed weights do not expose storage; make an explicit copy"
-        )
-
-    def storage(self):
-        raise OffloadError(
-            "managed weights do not expose storage; make an explicit copy"
-        )
-
-    def __dlpack__(self, *args, **kwargs):
-        raise OffloadError(
-            "managed weights do not export DLPack; make an explicit copy"
-        )
-
-    def numpy(self, *args, **kwargs):
-        raise OffloadError("make an explicit CPU copy before exporting NumPy storage")
+        count = self._managed.nbytes // self._managed.dtype.itemsize
+        return torch.empty(count, device="meta", dtype=self._managed.dtype).as_strided(self._shape, self._strides, self._offset)
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
-        name, descriptor = (
-            getattr(func, "__name__", ""),
-            getattr(func, "__self__", None),
-        )
-        if name in (
-            "data_ptr",
-            "untyped_storage",
-            "storage",
-            "_typed_storage",
-            "as_subclass",
-            "__dlpack__",
-            "numpy",
-        ):
-            raise OffloadError(
-                "make an explicit copy before accessing unmanaged storage"
-            )
-        if name == "__set__" and descriptor is torch.Tensor.data and not _REBIND.get():
-            raise OffloadError("immutable managed .data assignment")
-        if (
-            name == "__set__"
-            and descriptor is torch.Tensor.requires_grad
-            and bool(args[1])
+        name, descriptor = getattr(func, "__name__", ""), getattr(func, "__self__", None)
+        if name in _REFUSED:
+            raise OffloadError("make an explicit copy before accessing managed storage")
+        if name == "__set__" and descriptor is torch.Tensor.data and not args[0]._managed.owner.converting:
+            raise OffloadError("managed weights are immutable")
+        if (name == "__set__" and descriptor is torch.Tensor.requires_grad and args[1]) or (
+            func is torch.Tensor.requires_grad_ and (args[1] if len(args) > 1 else kwargs.get("requires_grad", True))
         ):
             raise OffloadError("offload supports inference only")
-        if func is torch.Tensor.requires_grad_ and bool(
-            args[1] if len(args) > 1 else kwargs.get("requires_grad", True)
-        ):
-            raise OffloadError("offload supports inference only")
-        if torch.is_grad_enabled() and any(
-            type(v) in (torch.Tensor, nn.Parameter) and v.requires_grad
-            for v in tree_flatten((args, kwargs))[0]
-        ):
-            raise OffloadError(
-                "gradient-bearing requests require an explicit inference context"
-            )
-        weights = [v for v in tree_flatten((args, kwargs))[0] if isinstance(v, cls)]
-        with (
-            weights[0]._version_owner.owner.lock,
-            torch._C.DisableTorchFunctionSubclass(),
-        ):
+        with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        if func is torch.ops.aten._has_compatible_shallow_copy_type.default:
+            with torch._C._DisableTorchDispatch():  # Reads keys, never bytes.
+                return func(*args, **kwargs)
         leaves = tree_flatten((args, kwargs))[0]
         weights = [v for v in leaves if isinstance(v, cls)]
-        if any(
-            isinstance(v, torch.Tensor)
-            and not isinstance(v, cls)
-            and type(v) not in (torch.Tensor, nn.Parameter)
-            for v in leaves
-        ):
+        owner = weights[0]._managed.owner
+        if any(isinstance(v, torch.Tensor) and not isinstance(v, cls) and type(v) not in (torch.Tensor, nn.Parameter) for v in leaves):
             raise OffloadError("operand Tensor subclasses need an explicit adapter")
         if func.namespace != "aten":
             raise OffloadError(f"custom operator needs an offload adapter: {func}")
-        for i, arg in enumerate(func._schema.arguments):
-            value = (
-                args[i] if i < len(args) else kwargs.get(arg.name, arg.default_value)
-            )
-            if (
-                arg.alias_info is not None
-                and arg.alias_info.is_write
-                and any(isinstance(v, cls) for v in tree_flatten(value)[0])
-            ):
-                raise OffloadError(f"immutable managed argument: {func}/{arg.name}")
-            if arg.name in ("training", "train") and value is True:
-                raise OffloadError(f"training operator is unsupported: {func}")
-        if func is torch.ops.aten._has_compatible_shallow_copy_type.default:
-            # Native TensorImpl compatibility inspects existing keys, not bytes.
-            # Preserve its layout/device refusals without materializing either side.
-            with torch._C._DisableTorchDispatch():
-                return func(*args, **kwargs)
-        owner = weights[0]._version_owner.owner
-        if any(w._version_owner.owner is not owner for w in weights):
-            raise OffloadError(
-                "operands from independent offload handles need explicit copies"
-            )
-        # Pure alias operations manipulate descriptors, retaining the exact version.
-        if (
-            not func._schema.is_mutable
-            and func._schema.returns
-            and all(r.alias_info is not None for r in func._schema.returns)
-        ):
+        for i, argument in enumerate(func._schema.arguments):
+            value = args[i] if i < len(args) else kwargs.get(argument.name, argument.default_value)
+            if argument.alias_info is not None and argument.alias_info.is_write and any(isinstance(v, cls) for v in tree_flatten(value)[0]):
+                raise OffloadError(f"managed weights are immutable: {func}/{argument.name}")
+        if owner.converting and func is torch.ops.aten._to_copy.default:
+            device = kwargs.get("device")
+            if device is not None and (device.type != owner.device.type or device.index not in (None, owner.device.index)):
+                raise OffloadError("an offloaded module's device is fixed; copy individual tensors explicitly")
+            if kwargs.get("memory_format") not in (None, torch.preserve_format):
+                raise OffloadError("memory-format conversion needs an explicit adapter")
+            weight = args[0]
+            return cls(weight._managed.like(kwargs.get("dtype") or weight.dtype), weight._shape, weight._strides, weight._offset)
+        # Alias operations only manipulate descriptors of the same bytes.
+        if not func._schema.is_mutable and func._schema.returns and all(r.alias_info is not None for r in func._schema.returns):
             metadata = {id(w): w._metadata() for w in weights}
-            result = func(
-                *tree_map(lambda v: metadata[id(v)] if isinstance(v, cls) else v, args),
-                **tree_map(
-                    lambda v: metadata[id(v)] if isinstance(v, cls) else v, kwargs
-                ),
-            )
+            swap = lambda v: metadata[id(v)] if isinstance(v, cls) else v
+            result = func(*tree_map(swap, args), **tree_map(swap, kwargs))
+            source = lambda v: next((w for w in weights if torch._C._is_alias_of(v, metadata[id(w)])), None)
 
             def alias(v):
                 if not isinstance(v, torch.Tensor):
                     return v
-                matches = [
-                    w for w in weights if torch._C._is_alias_of(v, metadata[id(w)])
-                ]
-                if not matches:
-                    raise OffloadError(f"unrecognized alias result: {func}")
-                if (
-                    v.dtype != getattr(torch, matches[0]._version_owner.source.dtype)
-                    or v.is_conj()
-                    or v.is_neg()
-                ):
-                    raise OffloadError(
-                        "reinterpret/conjugate/negative aliases need an explicit value copy"
-                    )
-                return cls(
-                    matches[0]._version_owner, v.shape, v.stride(), v.storage_offset()
-                )
+                match = source(v)
+                if v.dtype != match.dtype or v.is_conj() or v.is_neg():
+                    raise OffloadError("reinterpret/conjugate/negative aliases need an explicit value copy")
+                return cls(match._managed, v.shape, v.stride(), v.storage_offset())
 
-            return return_and_correct_aliasing(
-                func, args, kwargs, tree_map(alias, result)
-            )
-        binding = _GRAPH_BINDING.get()
-        caller = (
-            torch.cuda.current_stream(owner.device)
-            if owner.stream is not None and binding is None
-            else None
-        )
-        execution = (
-            owner.execution(leaves) if binding is None else binding.execution(owner)
-        )
-        with execution as stream:
-            materialized = {
-                id(w): (
-                    w._version_owner.tensor(w._shape, w._strides, w._offset, stream)
-                    if binding is None
-                    else binding.tensor(w)
-                )
-                for w in weights
-            }
-            try:
-                result = func(
-                    *tree_map(
-                        lambda v: materialized[id(v)] if isinstance(v, cls) else v, args
-                    ),
-                    **tree_map(
-                        lambda v: materialized[id(v)] if isinstance(v, cls) else v,
-                        kwargs,
-                    ),
-                )
+            # Under inference mode `to` arrives whole, and only sometimes returns an alias.
+            if all(source(v) is not None for v in tree_flatten(result)[0] if isinstance(v, torch.Tensor)):
+                return return_and_correct_aliasing(func, args, kwargs, tree_map(alias, result))
+        with owner.lock:
+            stream = owner.current()
+            real = {id(w): w._managed.read(w._shape, w._strides, w._offset, stream) for w in weights}
+            swap = lambda v: real[id(v)] if isinstance(v, cls) else v
+            result = func(*tree_map(swap, args), **tree_map(swap, kwargs))
 
-                # Some ATen operations (notably _unsafe_view) return storage
-                # aliases without declaring them. Never let such storage escape.
-                def retain_alias(value):
-                    if not isinstance(value, torch.Tensor):
-                        return value
-                    for weight in weights:
-                        backing = materialized[id(weight)]
-                        if torch._C._is_alias_of(value, backing):
-                            if (
-                                value.dtype != backing.dtype
-                                or value.is_conj()
-                                or value.is_neg()
-                            ):
-                                raise OffloadError(
-                                    "unmanaged reinterpret alias needs an explicit copy"
-                                )
-                            return cls(
-                                weight._version_owner,
-                                value.shape,
-                                value.stride(),
-                                weight._offset
-                                + value.storage_offset()
-                                - backing.storage_offset(),
-                            )
+            # Some ATen operations (_unsafe_view) return aliases they don't declare. Never let one escape.
+            def retain_alias(value):
+                if not isinstance(value, torch.Tensor):
                     return value
+                for weight in weights:
+                    backing = real[id(weight)]
+                    if torch._C._is_alias_of(value, backing):
+                        if value.dtype != backing.dtype or value.is_conj() or value.is_neg():
+                            raise OffloadError("reinterpret/conjugate/negative aliases need an explicit value copy")
+                        offset = weight._offset + value.storage_offset() - backing.storage_offset()
+                        return cls(weight._managed, value.shape, value.stride(), offset)
+                return value
 
-                result = tree_map(retain_alias, result)
-            finally:
-                if stream is not None and binding is None:
-                    for value in materialized.values():
-                        value.record_stream(stream)
-        if caller is not None:
-            for value in tree_flatten(result)[0]:
-                if type(value) is torch.Tensor and value.device == owner.device:
-                    value.record_stream(caller)
-        return result
-
-
-def _roots(model):
-    if isinstance(model, nn.Module):
-        return {"model": model}
-    components = getattr(model, "components", None)
-    if not isinstance(components, dict):
-        raise TypeError("offload requires a Module or a pipeline exposing components")
-    return {
-        name: value
-        for name, value in components.items()
-        if isinstance(value, nn.Module)
-    }
+            return tree_map(retain_alias, result)
 
 
-def _rebind(parameter, candidate):
-    token = _REBIND.set(True)
-    try:
-        parameter.data = candidate
-        parameter._version_owner = candidate._version_owner
-        parameter._shape, parameter._strides, parameter._offset = (
-            candidate._shape,
-            candidate._strides,
-            candidate._offset,
-        )
-    finally:
-        _REBIND.reset(token)
+class _Unit:
+    """One module's weights, bound together for its forward: its subtree's, or only its own."""
+
+    __slots__ = ("module", "whole", "bound", "split", "regions", "bases", "views", "weights", "fresh")
+
+    def __init__(self, module, whole):
+        self.module, self.whole, self.bound, self.split = module, whole, False, False
+        self.regions, self.bases, self.views, self.weights, self.fresh = (), (), None, frozenset(), ()
 
 
-def _unreserved_groups(definitions):
-    """Group current versions only by identical existing intent memberships.
+def _blocks(root):
+    """Declared _no_split_modules, and members of a repeated layer list."""
+    found, seen = set(), set()
 
-    Missing versions are unclassified: their direct-read reservation stays a
-    singleton. Already reserved versions never participate in a new layout.
-    """
-    memberships = {}
-    for name, versions in definitions.items():
-        for version in versions:
-            if version.region is None:
-                memberships.setdefault(version, set()).add(name)
-    groups = {}
-    for version, names in memberships.items():
-        groups.setdefault(frozenset(names), []).append(version)
-    return list(groups.values())
+    def walk(module, declared):
+        if id(module) in seen:
+            return
+        seen.add(id(module))
+        declared = declared | set(getattr(module, "_no_split_modules", None) or ())
+        if any(kind.__name__ in declared for kind in type(module).__mro__):
+            found.add(id(module))
+        children = [child for child in module._modules.values() if child is not None]
+        if isinstance(module, (nn.ModuleList, nn.Sequential)) and len(children) > 1 and len({type(child) for child in children}) == 1:
+            found.update(id(child) for child in children)
+        for child in children:
+            walk(child, declared)
+
+    walk(root, frozenset())
+    return found
+
+
+def _frontier(module, blocks, seen, descend=False):
+    """Outermost blocks, the block-free subtrees between them, and a composite parent's own weights."""
+    if id(module) in seen:
+        return
+    seen.add(id(module))
+    # A container has no forward of its own to bind around.
+    runs = type(module).forward is not nn.Module.forward
+    if runs and not descend and (id(module) in blocks or not any(id(m) in blocks for m in module.modules())):
+        if any(True for _ in module.parameters()):
+            yield _Unit(module, True)
+        return
+    if any(p is not None for p in module._parameters.values()):
+        yield _Unit(module, False)
+    for child in module._modules.values():
+        if child is not None:
+            yield from _frontier(child, blocks, seen)
+
+
+def _plain(tensor):
+    if tensor.device.type != "cpu" or tensor.layout != torch.strided or tensor.is_quantized or tensor.is_nested:
+        raise OffloadError("offload adopts plain materialized CPU tensors")
+    if tensor.is_conj() or tensor.is_neg():
+        raise OffloadError("resolve conjugate/negative views first")
+
+
+def _preflight(roots):
+    """Refuse before changing anything, so adoption can't stop halfway on the model's state."""
+    modules = list(dict.fromkeys(m for root in roots for m in root.modules()))
+    parameters, buffers, storages, views = {}, {}, {}, {}
+    for module in modules:
+        name = type(module).__name__
+        if module.training:
+            raise OffloadError(f"{name}: call eval() before offload")
+        if getattr(module, "_hf_hook", None) is not None or getattr(getattr(module, "_diffusers_hook", None), "hooks", None):
+            raise OffloadError(f"{name}: remove existing Accelerate or Diffusers hooks first")
+        if "_apply" in module.__dict__:
+            raise OffloadError(f"{name}: already offloaded, or has a custom _apply")
+        parameters.update((id(p), p) for p in module._parameters.values() if p is not None)
+        buffers.update((id(b), b) for b in module._buffers.values() if b is not None)
+    for parameter in parameters.values():
+        _plain(parameter)
+        if type(parameter) is not nn.Parameter:
+            raise OffloadError("Parameter subclasses need an explicit adapter")
+        if parameter.grad is not None or not parameter.is_leaf or weakref.getweakrefs(parameter) or parameter._use_count() != 1:
+            raise OffloadError("a Parameter has gradients, weak references or other owners, so it can't be swapped")
+        if any(step < 0 for step in parameter.stride()):
+            raise OffloadError("negative strides need an explicit adapter")
+        if storages.setdefault(parameter.untyped_storage()._cdata, parameter).dtype != parameter.dtype:
+            raise OffloadError("mixed-dtype views of one storage need an explicit adapter")
+    for buffer in buffers.values():
+        _plain(buffer)
+        key = buffer.untyped_storage()._cdata
+        if key in storages or views.setdefault(key, buffer) is not buffer:
+            raise OffloadError("a buffer sharing storage with a weight or another buffer needs an explicit adapter")
+    return modules, list(parameters.values()), list(buffers.values())
 
 
 class Offload:
-    """Own an adopted model. Retain this handle while calling the model.
+    """An adopted model. Its modules keep this alive, and adoption is permanent."""
 
-    Adoption is permanent; close disables module entry/conversion. Escaped managed
-    aliases retain their immutable Source/device owners and remain readable.
-    """
-
-    def __init__(self, model, device=0, *, source=None, graphs="auto"):
+    def __init__(self, model, device, graphs):
         if graphs not in ("auto", "eager"):
             raise ValueError("graphs must be 'auto' or 'eager'")
-        roots = _roots(model)
-        inventory = inspect_cpu_roots(roots)
-        if source is not None:
-            raise TypeError(
-                "materialized CPU adoption snapshots weights; external Source mappings need an explicit adapter"
-            )
-        snapshots = {}
-        for parameter in inventory.parameters:
-            if parameter.tensor.__dict__.keys() & {
-                "_version_owner",
-                "_shape",
-                "_strides",
-                "_offset",
-            }:
-                raise InventoryError(
-                    "Parameter metadata conflicts with managed tensor fields"
-                )
-        buffer_storages = {}
-        for slot in inventory.buffers:
-            buffer = getattr(slot.module, slot.name)
-            key = buffer.untyped_storage()._cdata
-            if key in buffer_storages and buffer_storages[key] is not buffer:
-                raise InventoryError(
-                    "distinct mutable buffer storage views need an adapter"
-                )
-            buffer_storages[key] = buffer
-        for storage in inventory.storages:
-            first = storage.parameters[0].tensor
-            if any(p.tensor.dtype != first.dtype for p in storage.parameters):
-                raise InventoryError("mixed-dtype views of one storage need an adapter")
-            snapshots[storage.owner._cdata] = Source.from_tensor(first)
-        self.model, self.closed = model, False
-        self._owner = _Device(
-            torch.device("cuda", device) if isinstance(device, int) else device
-        )
-        self._roots = roots
-        self._hooks = []
-        self._overrides = []
-        self._forward_origins = {}
-        self._method_origins = {}
-        self._component_entries = {}
-        self._root_names = {id(module): name for name, module in roots.items()}
-        self._automatic = None
-        self._intent_plan = None
-        self._intent_dirty = True
-        self._intent_failed = False
-        self._intent_frames = []
-        self._intent_regions = {}
-        self._boundary_modules = {}
-        self._boundary_names = {}
-        self._intent_entries = {}
-        for name in inventory.boundaries:
-            root = next(
-                key for key in roots if name == key or name.startswith(key + ".")
-            )
-            module = roots[root].get_submodule(name[len(root) + 1 :])
-            self._boundary_modules[name] = module
-            self._boundary_names.setdefault(id(module), name)
-            self._intent_entries[name] = 0
-        versions = {
-            key: _Version(value, self._owner) for key, value in snapshots.items()
-        }
-        candidates = []
-        for p in inventory.parameters:
-            candidate = nn.Parameter(
-                _Weight(
-                    versions[p.storage_id],
-                    p.shape,
-                    p.stride,
-                    p.byte_offset // p.tensor.element_size(),
-                ),
-                requires_grad=False,
-            )
-            candidate.__dict__.update(p.tensor.__dict__)
-            candidates.append((p.tensor, candidate))
-        buffers, copied = [], {}
-        for slot in inventory.buffers:
-            original = getattr(slot.module, slot.name)
-            if id(original) not in copied:
-                copied[id(original)] = self._copy_buffer(
-                    original, device=self._owner.device
-                )
-            buffers.append((slot, original, copied[id(original)]))
-        swapped = []
-        try:
-            for parameter, candidate in candidates:
-                torch.utils.swap_tensors(parameter, candidate)
-                swapped.append((parameter, candidate))
-            for slot, original, value in buffers:
-                slot.module._buffers[slot.name] = value
-            seen = set()
-            for root in roots.values():
-                for module in root.modules():
-                    if id(module) not in seen:
-                        seen.add(id(module))
-                        self._install(module)
-        except BaseException:
-            for hook in self._hooks:
-                hook.remove()
-            for module, name, existed, original in reversed(self._overrides):
-                if existed:
-                    setattr(module, name, original)
-                else:
-                    delattr(module, name)
-            for slot, original, value in buffers:
-                slot.module._buffers[slot.name] = original
-            for parameter, candidate in reversed(swapped):
-                torch.utils.swap_tensors(parameter, candidate)
-            raise
-        self.facts = inventory.facts()
-        from ._offload_auto import _AutomaticGraphs
+        roots = [model] if isinstance(model, nn.Module) else [m for m in getattr(model, "components", {}).values() if isinstance(m, nn.Module)]
+        if not roots:
+            raise TypeError("offload requires a Module or a pipeline exposing components")
+        modules, parameters, buffers = _preflight(roots)
+        self.owner = owner = _Owner(vt._activation_device(device))
+        owner.current()
+        copies = {id(buffer): buffer.to(owner.device) for buffer in buffers}
+        for module in modules:
+            module._buffers.update((name, copies[id(b)]) for name, b in module._buffers.items() if b is not None)
+        versions = {}
+        for parameter in parameters:
+            storage = parameter.untyped_storage()
+            version = versions.setdefault(storage._cdata, _Version(owner, parameter.dtype, storage.nbytes(), storage))
+            weight = nn.Parameter(_Weight(version, parameter.shape, parameter.stride(), parameter.storage_offset()), requires_grad=False)
+            weight.__dict__.update(parameter.__dict__)
+            torch.utils.swap_tensors(parameter, weight)
+        self.units, self.trace, seen = [], None, set()
+        for root in roots:
+            for unit in _frontier(root, _blocks(root), seen):
+                self._install(unit)
+        self.graphs = Graphs(self, roots) if graphs == "auto" and vt._managed_graph_refusal() is None else None
+        for module in modules:
+            module.__dict__["_apply"] = functools.partial(self._apply, module)
 
-        self._automatic = _AutomaticGraphs(self, graphs)
+    def _install(self, unit):
+        original = unit.module.forward
 
-    def _check(self):
-        if self.closed:
-            raise OffloadError("offload handle is closed")
-        if self._intent_failed:
-            raise OffloadError(
-                "native intent cleanup failed; close/retry the retained handle"
-            )
-        if self._automatic is not None:
-            self._automatic.check()
+        @functools.wraps(original)
+        def forward(*args, **kwargs):
+            if unit.split or unit.bound:
+                return original(*args, **kwargs)
+            if vt._owner != os.getpid():
+                vt._installed()  # Before the lock, which a fork may have inherited held.
+            with self.owner.lock:
+                if self.trace is not None:
+                    self.trace.append(unit)
+                try:
+                    bases = self.bind(unit)
+                except api.Exhausted as error:
+                    if self._split(unit):
+                        return original(*args, **kwargs)
+                    raise torch.OutOfMemoryError(str(error)) from error
+                unit.bound = True
+                try:
+                    return original(*args, **kwargs)
+                finally:
+                    unit.bound = False
+                    self.unbind(unit, bases)
 
-    def _refresh_intent(self):
-        if not self._intent_dirty:
-            return
-        definitions = {}
-        for name, module in self._boundary_modules.items():
-            versions = {}
-            for parameter in module.parameters():
-                if not isinstance(parameter, _Weight):
-                    raise OffloadError("module parameters changed after adoption")
-                version = parameter._version_owner
-                if parameter.numel():
-                    versions[id(version)] = version
-            definitions[name] = list(versions.values())
-        if self._owner.gpu is not None:
-            # Stage every new layout and its Plan before publishing any version.
-            # A failed constructor cannot relocate a subset of the model.
-            staged, placements, plan = [], {}, None
-            try:
-                for group in _unreserved_groups(definitions):
-                    region, offsets = self._owner.gpu.region_parts(
-                        [version.source for version in group]
-                    )
-                    staged.append(region)
-                    placements.update(
-                        (version, (region, offset))
-                        for version, offset in zip(group, offsets, strict=True)
-                    )
-                regions = {
-                    name: list(
-                        dict.fromkeys(
-                            placements[v][0] if v in placements else v.region
-                            for v in versions
-                        )
-                    )
-                    for name, versions in definitions.items()
-                }
-                plan = self._owner.gpu.plan(regions)
-                if self._intent_plan is not None:
-                    self._intent_plan.close()
-            except BaseException:
-                for resource in ([plan] if plan is not None else []) + staged:
-                    with suppress(Exception):
-                        resource.defer_close()
-                raise
-            for version, (region, offset) in placements.items():
-                version.region, version.member_offset = region, offset
-            self._intent_plan = plan
-            definitions = regions
-        self._intent_regions = {
-            name: len(versions) for name, versions in definitions.items()
-        }
-        self._intent_dirty = False
+        unit.module.forward = forward
+        self.units.append(unit)
 
-    @contextmanager
-    def _intent(self, module):
-        with self._owner.lock:
-            self._check()
-            binding = _GRAPH_BINDING.get()
-            if binding is not None:
-                binding.validate_module(self, module)
-                yield
-                return
-            if not self._intent_frames:
-                self._refresh_intent()
-            name = self._boundary_names[id(module)]
-            if self._intent_plan is not None:
-                self._intent_plan.activate(name)
-            self._intent_frames.append(name)
-            self._intent_entries[name] += 1
-            try:
-                yield
-            finally:
-                if not self._intent_failed:
-                    try:
-                        if self._intent_plan is not None:
-                            if len(self._intent_frames) > 1:
-                                self._intent_plan.activate(self._intent_frames[-2])
-                            else:
-                                self._intent_plan.deactivate()
-                    except BaseException:
-                        self._intent_failed = True
-                        raise
-                    else:
-                        self._intent_frames.pop()
+    def _layout(self, unit):
+        found = {}
+        for module in unit.module.modules() if unit.whole else (unit.module,):
+            for name, weight in module._parameters.items():
+                if weight is None:
+                    continue
+                if not isinstance(weight, _Weight):
+                    raise OffloadError("replacing module weights after offload is unsupported")
+                if 0 not in weight._shape:
+                    found.setdefault(id(weight), (weight, []))[1].append((module._parameters, name, weight))
+        versions = list(dict.fromkeys(weight._managed for weight, _ in found.values()))
+        unit.fresh = [version for version in versions if version.region is None]
+        if unit.fresh:
+            self.owner.place(unit.fresh)
+        unit.regions = list(dict.fromkeys(version.region for version in versions))
+        bases, views = {}, []
+        for weight, slots in found.values():
+            version, size = weight._managed, weight._managed.dtype.itemsize
+            key = version.region, version.dtype
+            if key not in bases:
+                bases[key] = len(bases), (unit.regions.index(version.region), version.dtype, version.region.nbytes // size)
+            views.append((bases[key][0], weight._shape, weight._strides, version.offset // size + weight._offset, slots))
+        unit.bases, unit.views, unit.weights = [spec for _, spec in bases.values()], views, frozenset(found)
 
-    def intent_facts(self):
-        """Report declared module intent; CPU entries do not claim native activation."""
-        with self._owner.lock:
-            return {
-                "regions": dict(self._intent_regions),
-                "entries": dict(self._intent_entries),
-                "active": self._intent_frames[-1] if self._intent_frames else None,
-                "native": self._intent_plan is not None,
-                "pending_refresh": self._intent_dirty,
-                "cleanup_failed": self._intent_failed,
-            }
+    def bind(self, unit):
+        if unit.views is None:
+            self._layout(unit)
+        if not unit.regions:
+            return ()
+        stream = self.owner.current().cuda_stream
+        # Outside inference mode, so views share a version counter that can catch a write.
+        with torch.inference_mode(False):
+            with self.owner.gpu.use(unit.regions, stream) as used:
+                bases = [used.tensor(index, dtype=dtype, shape=(count,), stream=stream) for index, dtype, count in unit.bases]
+            for base, shape, strides, offset, slots in unit.views:
+                view = bases[base].as_strided(shape, strides, offset)
+                for parameters, name, _ in slots:
+                    parameters[name] = view
+        for version in unit.fresh:
+            version.source = None
+        unit.fresh = ()
+        return bases
 
-    def _copy_buffer(self, buffer, **kwargs):
-        caller = (
-            torch.cuda.current_stream(self._owner.device)
-            if self._owner.stream is not None
-            else None
-        )
-        with self._owner.execution([buffer]):
-            result = buffer.to(**kwargs)
-        if caller is not None:
-            result.record_stream(caller)
-        return result
+    def unbind(self, unit, bases):
+        for *_, slots in unit.views:
+            for parameters, name, weight in slots:
+                parameters[name] = weight
+        if any(base._version for base in bases):
+            raise OffloadError(f"{type(unit.module).__name__}: weights were written in place")
 
-    def _component_forward(self, module):
-        from ._offload_auto import _REVIEWED_FORWARDS, _function
-        from ._offload_sdxl import reviewed_component_forward, reviewed_forward
-
-        origin = self._forward_origins[id(module)]
-        if _function(module.forward) is not _function(origin.installed):
+    def _split(self, unit):
+        """Native refused this much pinned at once, so its children bind instead."""
+        versions = {weight._managed for weight in unit.module.parameters()}
+        children = [child for child in unit.module._modules.values() if child is not None and any(True for _ in child.parameters())]
+        if not unit.whole or not children or any(version.source is None for version in versions):
             return False
-        if reviewed_component_forward(module, origin.original):
-            return True  # Eager root scope, never a graph-purity claim.
-        reviewed = _REVIEWED_FORWARDS.get(type(module)) or reviewed_forward(module)
-        if reviewed is None or _function(origin.original) is not reviewed:
-            return False
-        if type(module) in (nn.Sequential, nn.ModuleList, nn.ModuleDict):
-            # Unknown callable/output protocols keep the existing per-op path.
-            for child in module.modules():
-                previous = self._forward_origins.get(id(child))
-                if (
-                    previous is None
-                    or type(child) not in _REVIEWED_FORWARDS
-                    or _function(child.forward) is not _function(previous.installed)
-                    or _function(previous.original)
-                    is not _REVIEWED_FORWARDS[type(child)]
-                ):
-                    return False
+        for version in versions:
+            version.region = None
+        unit.split, unit.regions, unit.views = True, (), ()
+        seen = {id(other.module) for other in self.units} - {id(unit.module)}
+        for child in _frontier(unit.module, _blocks(unit.module), seen, descend=True):
+            self._install(child)
         return True
 
-    def component_facts(self):
-        """Host scope-entry counts only; no GPU completion/performance inference."""
-        with self._owner.lock:
-            return {
-                "entries": dict(self._component_entries),
-                "native": self._owner.gpu is not None,
-            }
-
-    def _install(self, module):
-        from ._offload_auto import _ForwardOrigin
-        from ._offload_sdxl import vae_entry_supported
-
-        original_forward = module.forward
-        reference = weakref.ref(self)
-
-        def replace(name, function, *, bind=True):
-            previous = (
-                module,
-                name,
-                name in module.__dict__,
-                module.__dict__.get(name),
-            )
-            setattr(
-                module, name, types.MethodType(function, module) if bind else function
-            )
-            self._overrides.append(previous)
-
-        def handle():
-            owner = reference()
-            if owner is None:
-                raise OffloadError("retain the offload handle while calling this model")
-            owner._check()
-            return owner
-
-        def before(current, args, kwargs):
-            handle()
-            if current.training:
-                raise OffloadError("offload supports eval inference only")
-            if torch.is_grad_enabled() and any(
-                isinstance(v, torch.Tensor) and v.requires_grad
-                for v in tree_flatten((args, kwargs))[0]
-            ):
-                raise OffloadError(
-                    "gradient-bearing input requires an explicit inference context"
-                )
-
-        self._hooks.append(module.register_forward_pre_hook(before, with_kwargs=True))
-
-        boundary = id(module) in self._boundary_names
-        if boundary or id(module) in self._root_names:
-            original = original_forward
-
-            @functools.wraps(original)
-            def forward(*args, **kwargs):
-                before(module, args, kwargs)
-                owner = handle()
-                component = owner._component_forward(module)
-                if not boundary and not component:
-                    return original(*args, **kwargs)
-                with (
-                    owner._owner.lock,
-                    owner._intent(module) if boundary else nullcontext(),
-                ):
-                    owner._check()
-                    if not component:
-                        if owner._automatic is None:
-                            return original(*args, **kwargs)
-                        return owner._automatic.dispatch(
-                            module, original, args, kwargs, None
-                        )
-                    from ._offload_stream import component_scope
-
-                    with component_scope(
-                        owner._owner,
-                        tree_flatten((args, kwargs))[0],
-                        capture_bindings=_GRAPH_BINDING.get(),
-                    ) as scope:
-                        if id(module) in owner._root_names:
-                            name = owner._root_names[id(module)]
-                            owner._component_entries[name] = (
-                                owner._component_entries.get(name, 0) + 1
-                            )
-                        if owner._automatic is None:
-                            result = original(*args, **kwargs)
-                        else:
-                            result = owner._automatic.dispatch(
-                                module, original, args, kwargs, scope
-                            )
-                        return scope.output(result)
-
-            replace("forward", forward, bind=False)
-
-        self._forward_origins[id(module)] = _ForwardOrigin(
-            module.forward, original_forward
-        )
-
-        if id(module) in self._root_names and vae_entry_supported(module):
-            originals = {name: getattr(module, name) for name in ("encode", "decode")}
-
-            def install_entry(name):
-                original = originals[name]
-
-                @functools.wraps(original)
-                def entry(*args, **kwargs):
-                    from ._offload_sdxl import vae_entry_leaves
-                    from ._offload_stream import component_scope
-
-                    owner = handle()
-                    if not vae_entry_supported(module, originals):
-                        return original(*args, **kwargs)
-                    with owner._owner.lock:
-                        owner._check()
-                        with component_scope(
-                            owner._owner,
-                            tree_flatten((args, kwargs))[0],
-                            capture_bindings=_GRAPH_BINDING.get(),
-                        ) as scope:
-                            key = owner._root_names[id(module)] + "." + name
-                            owner._component_entries[key] = (
-                                owner._component_entries.get(key, 0) + 1
-                            )
-                            result = original(*args, **kwargs)
-                            values = vae_entry_leaves(
-                                module, name, result, originals=originals
-                            )
-                            if values is None:
-                                raise OffloadError(
-                                    "reviewed VAE entry returned unsupported owners"
-                                )
-                            return scope.output(result, values=values)
-
-                replace(name, entry, bind=False)
-
-            for name in originals:
-                install_entry(name)
-            self._method_origins[id(module)] = originals
-
-        def convert(current, *args, **kwargs):
-            device, dtype, _nonblocking, memory_format = torch._C._nn._parse_to(
-                *args, **kwargs
-            )
-            if memory_format is not None:
-                raise OffloadError("memory-format conversion needs an explicit adapter")
-            handle()._convert(current, device, dtype)
-            return current
-
-        replace("to", convert)
-        for name, dtype in (
-            ("half", torch.float16),
-            ("float", torch.float32),
-            ("double", torch.float64),
-            ("bfloat16", torch.bfloat16),
-        ):
-
-            def cast(current, target=dtype):
-                handle()._convert(current, None, target, floating_only=True)
-                return current
-
-            replace(name, cast)
-
-        def apply(current, fn, recurse=True):
-            handle()
-            raise OffloadError(
-                "arbitrary Module._apply is unsupported; use to/half/float/bfloat16/double"
-            )
-
-        replace("_apply", apply)
-
-        def train(current, mode=True):
-            handle()
-            if mode:
-                raise OffloadError("offload supports eval inference only")
-            for child in current.modules():
-                child.training = False
-            return current
-
-        replace("train", train)
-
-    def _convert(self, module, device, dtype, *, floating_only=False):
-        self._check()
-        if _GRAPH_BINDING.get() is not None:
-            raise OffloadError(
-                "dtype conversion cannot change a frozen capture binding"
-            )
-        if device is not None:
-            device = torch.device(device)
-            if device.type != self._owner.device.type or (
-                device.index is not None and device.index != self._owner.device.index
-            ):
-                raise OffloadError(
-                    "offloaded module device is fixed; copy individual tensors explicitly"
-                )
-        if dtype is None:
-            return
-        if not (dtype.is_floating_point or dtype.is_complex):
-            raise TypeError("Module.to requires a floating or complex dtype")
-        with self._owner.lock:
-            if self._intent_frames:
-                raise OffloadError("convert outside an active declared module boundary")
-            versions, changes, buffers, copied = {}, [], [], {}
-            for parameter in module.parameters():
-                if not isinstance(parameter, _Weight):
-                    raise OffloadError("module parameters changed after adoption")
-                if parameter.dtype == dtype or not (
-                    parameter.is_floating_point()
-                    or (not floating_only and parameter.is_complex())
-                ):
-                    continue
-                old = parameter._version_owner
-                version = versions.setdefault(id(old), None)
-                if version is None:
-                    version = versions[id(old)] = _Version(
-                        old.source.derive(dtype), old.owner
-                    )
-                changes.append(
-                    (
-                        parameter,
-                        _Weight(
-                            version,
-                            parameter._shape,
-                            parameter._strides,
-                            parameter._offset,
-                        ),
-                        _Weight(
-                            old, parameter._shape, parameter._strides, parameter._offset
-                        ),
-                    )
-                )
-            for child in module.modules():
-                for name, buffer in child._buffers.items():
-                    if buffer is not None and (
-                        buffer.is_floating_point()
-                        or (not floating_only and buffer.is_complex())
-                    ):
-                        if id(buffer) not in copied:
-                            copied[id(buffer)] = self._copy_buffer(buffer, dtype=dtype)
-                        buffers.append((child, name, copied[id(buffer)]))
-            changed = []
+    def _apply(self, module, fn, recurse=True):
+        """Module.to, half, float and cuda all arrive here: a weight's conversion is a new version."""
+        owner = self.owner
+        with owner.lock:
+            if any(unit.bound for unit in self.units):
+                raise OffloadError("convert outside an active forward")
+            owner.current()
+            changes, copies, changed = {}, {}, set()
+            owner.converting = True
             try:
-                for parameter, candidate, previous in changes:
-                    _rebind(parameter, candidate)
-                    changed.append((parameter, previous))
-                # The old Plan owns native Regions even after their Python
-                # Versions disappear. Retire it before committing new versions;
-                # refusal rolls back under the same owner lock.
-                if changes and self._intent_plan is not None:
-                    self._intent_plan.close()
-            except BaseException:
-                for parameter, previous in reversed(changed):
-                    _rebind(parameter, previous)
-                raise
-            for child, name, value in buffers:
-                child._buffers[name] = value
-            if changes:
-                self._intent_plan = None
-                self._intent_dirty = True
-
-    def __call__(self, *args, **kwargs):
-        self._check()
-        return self.model(*args, **kwargs)
-
-    def capture(self, module, args, *, kwargs=None, stream, reserve_bytes, pool=None):
-        """Prepare one immutable module graph outside the application request."""
-        from ._offload_graph import GraphSegment
-
-        return GraphSegment(
-            self,
-            module,
-            args,
-            kwargs=kwargs,
-            stream=stream,
-            reserve_bytes=reserve_bytes,
-            pool=pool,
-        )
-
-    def graph_facts(self):
-        """Passive automatic selection/counter/native-measurement metadata."""
-        self._automatic.check_process()
-        with self._owner.lock:
-            return self._automatic.facts()
-
-    def close(self):
-        # Drain callbacks outside model/entry locks after stopping host admission.
-        self._automatic.check_process()
-        with self._owner.lock:
-            if self._intent_frames and not self._intent_failed:
-                raise OffloadError("close outside an active declared module boundary")
-            self._automatic.stop()
-        self._automatic.close()
-        with self._owner.lock:
-            if self._intent_frames and not self._intent_failed:
-                raise OffloadError("close outside an active declared module boundary")
-            if self._intent_plan is not None:
-                self._intent_plan.deactivate()
-                self._intent_plan.close()
-                self._intent_plan = None
-            self._intent_frames.clear()
-            self._intent_failed = False
-            self.closed = True
+                with torch.inference_mode(False), torch.no_grad():  # So `to` reaches _to_copy.
+                    for child in module.modules() if recurse else (module,):
+                        for weight in child._parameters.values():
+                            if weight is not None and id(weight) not in changes:
+                                changes[id(weight)] = weight, fn(weight)
+                        for name, buffer in child._buffers.items():
+                            if buffer is not None:
+                                child._buffers[name] = copies.setdefault(id(buffer), fn(buffer))
+                if any(not isinstance(new, _Weight) for _, new in changes.values()):
+                    raise OffloadError("arbitrary Module._apply is unsupported; use to, half, float, double or bfloat16")
+                for key, (weight, new) in changes.items():
+                    if new._managed is not weight._managed:
+                        weight.data = new
+                        weight._managed = new._managed
+                        changed.add(key)
+            finally:
+                owner.converting = False
+            for unit in self.units:
+                if unit.weights & changed:
+                    unit.views = None
+            if changed and self.graphs is not None:
+                self.graphs.forget()
+        return module
 
 
-def offload(model_or_pipeline, device=0, *, source=None, graphs="auto"):
-    """Adopt CPU eval weights; automatically graph reviewed immutable boundaries.
-
-    CUDA requires Varena installation before any CUDA initialization. Explicit
-    device='cpu' runs the same Source/alias/conversion frontend on real host tensors
-    for integration and inspection; it exercises no native residency or CUDA path.
-    """
-    return Offload(model_or_pipeline, device, source=source, graphs=graphs)
+def offload(model, device=0, *, graphs="auto"):
+    return Offload(model, device, graphs)

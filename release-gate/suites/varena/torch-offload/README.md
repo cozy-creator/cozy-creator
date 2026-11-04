@@ -1,29 +1,18 @@
-# Torch offload clients
+# vt.offload on a real GPU
 
-Use an installed TensorFS package built from the offload branch. The CPU client needs
-Torch and Diffusers; GPU clients additionally require the matching native Torch shim.
-No client downloads weights. GPU execution belongs to the coordinator.
+The promises in [TORCH-OFFLOAD.md](../../../../crates/varena/TORCH-OFFLOAD.md), through `cozy`. Each function runs a fresh
+process, because stock Torch must have no Varena in it and `vt.install` must come before CUDA.
 
-- `intent.py`: real CPU forwards through repeated/declared nested boundaries,
-  exception cleanup and dtype refresh. `--device 0` additionally observes the actual
-  native phase view on the coordinator GPU; that mode remains unrun in this lane.
-- `packing.py`: real CPU ties, cross-group physical aliases, storage-local bounds,
-  partial casts, public conversion refusals and successful immutable-version refresh.
-  `--device 0` uses the real `Gpu.region_parts` factory to check shared Regions,
-  direct-read singleton stability, grouped version refresh and trim/refill.
-  It requires the matching native factory and is not qualified by CPU results.
-- `plan_retirement_gpu.py --device 0`: prepared actual packed-Plan retirement and
-  escaped native/managed alias controls, existing trim and old/new-version refill.
-  This lane does not execute it or claim physical reclamation from CPU checks.
-- `adapter_gpu.py --device 0`: prepared actual CUDA client for native typed reads,
-  default and explicit streams, later consumers, ties, old aliases and tiny VAE.
-- `sdxl_gpu.py /existing/local/model --device 0`: prepared stock SDXL baseline/adopted
-  comparison with normal `force_upcast`, full image output and Parameter identities.
-  Two steps are smoke only. It requires the existing model and normal pipeline deps.
+```sh
+cozy run release-gate/suites/varena/torch-offload/adapter --on MACHINE --gpus 1
+cozy run release-gate/suites/varena/torch-offload/sdxl --on MACHINE --gpus 1 --input request.yaml
+```
 
-Run CPU clients with `CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
-HF_HUB_OFFLINE=1`, and `nice -n 19` on the shared host. CPU receipts do not qualify
-native residency, Source publication, consumer fences or GPU model behavior.
+`adapter` runs tiny real models: a dropped handle, ties and identities, direct reads and aliases, an alias that escapes a
+block, the VAE's dtype flips, writes, streams, a block too big to pin, a loop's graph and a fork. `in_executor` runs inside the
+Runtime's own process, on its allocator and stream.
 
-[Torch adapter contract](../../../../crates/varena/TORCH-OFFLOAD.md) describes
-supported behavior and refusals. No mocked allocator substitutes for GPU gates.
+`sdxl` makes two full calls of unmodified Diffusers. `mode` is `stock` (`pipe.to("cuda")`), `stock-cpu-offload`, `eager`
+or `graphs`. A capped run sets `limit_bytes` to the machine's `--gpu-memory-limit`, which a fresh process doesn't inherit.
+It reports total, step and first-step times, NVML peak, bytes moved (`weights_filled`) and host memory, and saves the images:
+look at them. Give every run a new prompt and seed.

@@ -1,6 +1,6 @@
 # Native typed export clients
 
-Files `cache-pages/prepare.py` and `torch-offload/prepare_packing.py` read.
+File `cache-pages/prepare.py` reads.
 
 ## Deterministic Source and alias cells
 

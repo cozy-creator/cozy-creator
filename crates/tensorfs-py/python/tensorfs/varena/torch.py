@@ -256,12 +256,6 @@ def phase_enter(device: DeviceLike, key: str | None = None, *, mode: Literal["ea
     return _ext._varena_phase_enter(_device(device), key, mode=mode)
 
 
-def _phase_enter_cold(device: DeviceLike, key: str) -> int:
-    """Opt this unknown observation into bounded native allocation recovery."""
-    _installed()
-    return _ext._varena_phase_enter_cold(_device(device), key)
-
-
 def phase_leave(device: DeviceLike, token: int, *, completed: bool, key: str | None = None) -> dict[str, Any]:
     """End after checked execution completion, supplying an actually observed key if needed.
 
@@ -491,11 +485,11 @@ def _bind_stats(torch: ModuleType) -> None:
             setattr(module, name, function)
 
 
-def offload(model_or_pipeline, device=0, *, source=None, graphs="auto"):
-    """Adopt immutable weights with automatic reviewed graph segments.
+def offload(model_or_pipeline, device=0, *, graphs="auto"):
+    """Adopt immutable CPU weights: blocks bind real tensors, and loops become graphs.
 
-    See crates/varena/TORCH-OFFLOAD.md for inference, alias and stream contracts.
+    The modules keep the handle alive. See crates/varena/TORCH-OFFLOAD.md.
     """
     from ._offload import offload as adopt
 
-    return adopt(model_or_pipeline, device, source=source, graphs=graphs)
+    return adopt(model_or_pipeline, device, graphs=graphs)

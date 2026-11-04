@@ -157,7 +157,6 @@ for _name, _args in {
     "region_ptr": [_u, _h],
     "region_close": [_u],
     "use": [_u, _h, C.c_size_t, _u, _h],
-    "use_prepare": [_u, _h, C.c_size_t, _u, _h],
     "use_ptr": [_u, C.c_size_t, _h],
     "use_wait_ready": [_u],
     "done": [_u],
@@ -273,47 +272,27 @@ class Gpu(_Owned):
 
     def region(self, data: Source | bytes | bytearray | memoryview) -> Region:
         data = data.data if isinstance(data, Source) else bytes(data)
-        return Region(_new("region_from_host", self._handle, data, len(data)), self)
+        region = Region(_new("region_from_host", self._handle, data, len(data)), self)
+        region.nbytes = len(data)
+        return region
 
-    def region_parts(self, sources: Sequence[Source]) -> tuple[Region, tuple[int, ...]]:
-        """Snapshot Sources into one Region with 256-byte-aligned member offsets.
+    def region_parts(self, parts: Sequence[tuple[int, int]]) -> tuple[Region, tuple[int, ...]]:
+        """Copy host ranges, each (address, bytes), into one Region at 256-byte-aligned offsets.
 
-        Empty members are allowed, but the aggregate must contain bytes. Capture
-        refuses before copying. No caller storage is retained after this returns.
-        Typed exports add the returned member offset to their Source byte offset.
+        Empty members are allowed, but the aggregate must contain bytes. Capture refuses before
+        copying. Nothing of the caller's is retained after this returns.
         """
-        sources = tuple(sources)
-        if any(not isinstance(source, Source) for source in sources):
-            raise TypeError("region_parts requires immutable Sources")
-        parts = (_HostPart * len(sources))(
-            *(_HostPart(C.cast(C.c_char_p(source.data), C.c_void_p), source.nbytes)
-              for source in sources)
-        )
-        offsets = (_u * len(sources))()
-        handle = _new("region_from_host_parts", self._handle, parts, len(parts), offsets)
-        return Region(handle, self), tuple(offsets)
+        hosts = (_HostPart * len(parts))(*(_HostPart(address, size) for address, size in parts))
+        offsets = (_u * len(parts))()
+        region = Region(_new("region_from_host_parts", self._handle, hosts, len(hosts), offsets), self)
+        region.nbytes = max(offset + size for offset, (_, size) in zip(offsets, parts))
+        return region, tuple(offsets)
 
     def use(self, regions: Sequence[Region], stream: int) -> Use:
         """Name the actual consumer stream; every other consumer must join it before close."""
         ids = (_u * len(regions))(*(region._handle for region in regions))
         return Use(
             _new("use", self._handle, ids, len(ids), _uint(stream)),
-            self,
-            list(regions),
-            stream,
-        )
-
-    def prepare_use(self, regions: Sequence[Region], stream: int) -> Use:
-        """Prepare before consumer submission, servicing one native cache-owner pass.
-
-        An active Plan must name exactly these Regions. Release callback-needed
-        locks before calling; callbacks must decline unavailable owners rather
-        than await this consumer. CDLL releases the GIL for the native operation.
-        Actual acquisition runs once. Ordinary use/allocation stays nonwaiting.
-        """
-        ids = (_u * len(regions))(*(region._handle for region in regions))
-        return Use(
-            _new("use_prepare", self._handle, ids, len(ids), _uint(stream)),
             self,
             list(regions),
             stream,
