@@ -72,12 +72,12 @@ pub(crate) async fn resolve(
 }
 
 /// `GET /v1/targets`: the package, its release and why for a run `on` its machine, and the function,
-/// checked as a run checks it; local code is read from its source, installing nothing.
+/// checked as a run checks it; local code as its machine read it, else from its source, installing nothing.
 pub(crate) async fn describe(api: &Arc<Api>, hub: &str, text: &str, cwd: Option<&Path>, on: &On) -> Result<Target, Error> {
     let user_home = &api.machines.user_home;
     if let Some(local) = crate::local_code::target(text, cwd.unwrap_or(Path::new("")), user_home) {
         let (path, function) = local?;
-        let (package, document) = crate::local_code::describe(api.machines.hubs.home(), &path).await?;
+        let (package, document) = crate::local_code::describe(api, &path, on, hub).await?;
         let interface = parse(&document)?;
         let function = match chosen(&interface, function) {
             Some(function) => Some(super::callable(&package, &interface, &function)?.name.clone()),

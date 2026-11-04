@@ -162,7 +162,7 @@ a spec.
   (`RunQuote`). Nothing is rented or recorded.
 - `GET /v1/targets?target=&cwd=&hub=&on=`: what a run of `target` on that machine calls, resolved as `POST /v1/runs` resolves it:
   `{package, function?, release, release_from: asked|installed|latest|local, summary, interface, functions, contract?, request?, next?}`:
-  `interface` is the package's interface document (local code's read from its source, installing nothing); `functions` `[{function, description}]` is what a
+  `interface` is the package's interface document. Local code's is what its machine's Runtime said installing this very source, else read from its source by the Runtime release its uv.lock holds or PyPI's newest, installing nothing: `400 describe_failed` when that Runtime can't read it, with `next` the run that reads it with the machine's own; `functions` `[{function, description}]` is what a
   person runs of it, with no internal function, recipe or project adapter. A named function is checked as a run checks it, and `contract` is its contract as people
   read it, `request` its schema. `next` names the functions to describe.
 - `PUT /v1/files/sha256:<hex>`: a file's bytes, which must hash to its name: `201`, or `200` when held, with

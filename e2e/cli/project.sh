@@ -331,11 +331,18 @@ printf x >> "$other"
 [ "$(sha "$R/files/$hex.png")" = "$hex" ] || check "path-free: the project's copy changed with the person's file"
 
 step "a project: GET /v1/targets says what a person runs and a function's contract, and the CLI prints them"
+# A package with adapters, as a run reads it: its machine's Runtime, kept from installing this source, whatever PyPI's newest can read.
+cozy run -p "$R" "$here/project/shots.py" > "$OUT/free-functions.txt" 2>&1 || check "path-free: run of a package names no function: $(tail -c 300 "$OUT/free-functions.txt")"
+{ grep -q shoot "$OUT/free-functions.txt" && ! grep -q project-adapter "$OUT/free-functions.txt"; } || check "path-free: its functions: $(tail -c 300 "$OUT/free-functions.txt")"
 api --get --data-urlencode "target=$here/project/shots.py" "http://$ADDR/v1/targets" > "$OUT/free-target.json"
 J '(.functions | length > 1) and all(.functions[]; .function | startswith("project-adapter-") | not) and (.next | length > 0) and (has("contract") | not)' "$OUT/free-target.json" || check "path-free: targets of a package: $(jq -c '{functions, next}' "$OUT/free-target.json")"
 api --get --data-urlencode "target=$here/project/shots.py/shoot" "http://$ADDR/v1/targets" > "$OUT/free-function.json"
 J '.function == "shoot" and (.contract | contains("/shoot")) and (.request.fields | length > 0)' "$OUT/free-function.json" || check "path-free: targets of a function: $(jq -c '{function, contract}' "$OUT/free-function.json")"
 cozy run "$here/project/shots.py/shoot" --describe > "$OUT/free-describe.txt" 2>&1 && grep -q '/shoot' "$OUT/free-describe.txt" || check "path-free: --describe: $(tail -c 300 "$OUT/free-describe.txt")"
+# The same source no run has read: read from its source by PyPI's newest Runtime, which answers, or says what would read it.
+cp "$here/project/shots.py" "$OUT/free-never-run.py"; printf '\n# never run\n' >> "$OUT/free-never-run.py"
+api --get --data-urlencode "target=$OUT/free-never-run.py" "http://$ADDR/v1/targets" > "$OUT/free-never-run.json"
+J '(.functions | length > 1) or (.error.code == "describe_failed" and (.error.next[0] | startswith("cozy run ")))' "$OUT/free-never-run.json" || check "path-free: targets of a source no run has read: $(head -c 300 "$OUT/free-never-run.json")"
 
 step "a project: what a machine holds, and Calcifer's log, by their routes"
 J '.machine == "local" and (.packages | type == "array")' <<< "$(api "http://$ADDR/v1/machines/local/packages")" || check "path-free: GET /v1/machines/local/packages"

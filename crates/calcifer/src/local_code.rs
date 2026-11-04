@@ -1059,13 +1059,40 @@ pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>)
     Ok((said.trim_end().to_owned(), document))
 }
 
-/// The local code at `path` (a package directory or a script) as Runtime's static describer reads
-/// it, on the Python and Runtime release its project names: `local/<name>` and its interface.
+/// The Runtime the machine `on` last said it runs, asking it nothing: no machine starts for a read.
+fn last_runtime(api: &Api, on: &On) -> Option<String> {
+    let On::Machine(name) = on else { return None };
+    let row = api.machines.here(name).ok()??;
+    let status = api.machines.picture(&row).ok()?.status?;
+    Some(status.runtime).filter(|runtime| !runtime.is_empty())
+}
+
+/// The local code at `path` (a package directory or a script) as a run `on` its machine reads it: `local/<name>` and its
+/// interface. What that machine's Runtime said installing this very source, else Runtime's static describer, on the Python and
+/// Runtime release its project names, or PyPI's newest. That can be older than the machine's, and refuse what the machine runs.
 /// Nothing installs, and no machine is asked.
-pub async fn describe(home: &Home, path: &Path) -> Result<(String, Value), Error> {
+pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result<(String, Value), Error> {
+    let hubs = &api.machines.hubs;
+    let home = hubs.home();
     let project = Project::read(project(home, path)?)?;
+    let runtime = last_runtime(api, on);
+    let read = async {
+        let origin = Origin::parse(hub).ok()?;
+        let reader = hubs.reader(origin.as_str()).ok()?;
+        let code = source(home, path, on, (&reader, &origin)).await.ok()?;
+        Some((code.package.clone(), kept(home, &code, runtime.as_deref()?)?))
+    };
+    if let Some(known) = read.await {
+        return Ok(known);
+    }
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;
-    let (_, document) = describe_with(&uv, &project.root, &python.request, locked_runtime(&project.root).as_deref())?;
-    Ok((format!("local/{}", project.name), document))
+    let locked = locked_runtime(&project.root);
+    let described = describe_with(&uv, &project.root, &python.request, locked.as_deref()).map_err(|error| match (&runtime, &locked, on) {
+        (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" => error
+            .remedy(format!("PyPI's newest Runtime read this, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
+            .next(format!("cozy run {}", path.display())),
+        _ => error,
+    });
+    Ok((format!("local/{}", project.name), described?.1))
 }
