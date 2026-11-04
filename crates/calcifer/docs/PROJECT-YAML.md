@@ -7,7 +7,7 @@ A file in format 1 (`entities:`, `shots:`), or a lock from one, is refused and l
 A project is a folder of files plus a graph that says how each file was made.
 
 - **Entity:** a thing in the film, like `kyogre`: its identity, and links to the assets that show it. No work, no versions.
-- **Asset:** a stable name holding one main file, plus what the run that made it left, like `kyogre sheet` or `clash`. The graph's nodes.
+- **Asset:** a stable name holding one main file, plus what the run that made it left, like `kyogre_sheet` or `clash`. The graph's nodes.
 - **Operation:** the work that makes an asset: a package, plus what the YAML says about the asset. The graph's edges. You don't write edges; `<name>` mentions in text create them.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
 - **Version**, or **take** if it has a video: one result of an operation, recorded in `project.lock`.
@@ -55,22 +55,22 @@ entities:                      # what things are; each links to assets by name
     kind: character
     description: |
       Kyogre, the colossal blue whale-like legendary Pokémon.
-    image: <kyogre sheet>
-    voice: <kyogre voice>
+    image: <kyogre_sheet>
+    voice: <kyogre_voice>
     primordial:                # a sub-entity: what it doesn't have comes from kyogre
       description: Kyogre in its ancient form, with glowing blue veins.
-      image: <kyogre primordial sheet>
+      image: <kyogre_primordial_sheet>
 
 assets:
   kyogre_art:                  # a constant: a file hash, and nothing to make it from
     kind: image
     image: 65b436d4f9a3
 
-  kyogre voice:
+  kyogre_voice:
     kind: voice
     audio: 7c1e04a9b2d5
 
-  kyogre sheet:                # approved: `image:` pins it
+  kyogre_sheet:                # approved: `image:` pins it
     image: 2aee8c40753d
     kind: character
     render:                    # at the root what it is; here how to make it
@@ -79,16 +79,16 @@ assets:
       aspect_ratio: "3:2"
       megapixels: 2
 
-  kyogre primordial sheet:
+  kyogre_primordial_sheet:
     kind: character
-    render: <kyogre.primordial>, from <kyogre sheet>, in the same pose.
+    render: <kyogre.primordial>, from <kyogre_sheet>, in the same pose.
 
   coast:
     kind: environment
     description: |
       A volcanic coast with a dark blue sea on the left and a volcano on the right.
 
-  clash board:                 # a storyboard, drawn ahead of the video
+  clash_board:                 # a storyboard, drawn ahead of the video
     kind: storyboard
     description: |
       <kyogre> in the surf on the left, <groudon> on the rocks on the right.
@@ -102,7 +102,7 @@ assets:
     beats:
       - duration: 14
         description: |
-          Following <clash board>, a wide shot of <coast> shows <kyogre> and <groudon>.
+          Following <clash_board>, a wide shot of <coast> shows <kyogre> and <groudon>.
         writes:                # screenshots saved as world_state assets
           - world_state: coast.1
             at: 14
@@ -175,7 +175,7 @@ Nothing else is a field of these kinds. At render, a typed adapter warns of an u
 
 ## Mentions
 
-`<name>` in any text makes that asset an input. Names match in any case, with `_`, `-` and space alike.
+`<name>` in any text makes that asset an input. Write names with underscores or dots, such as `kyogre_sheet` or `coast.1`: spaces get confusing. Names match in any case, with `_`, `-` and space alike, so nothing refuses a space.
 
 - **In a shot's `summary`:** reaches every segment.
 - **In a beat:** reaches only the segment holding that beat. H3 gets confused by extra references, so mention things only where they're needed.
@@ -191,10 +191,10 @@ Assets can link into hashes, whereas entities link into asset-names. An entity h
 | `<kyogre>` | A read of the entity: its `kind`, `description`, and files from its `image`, `video`, `audio` and `voice` links, each that asset's main file. Other links aren't sent. |
 | `<kyogre.primordial>`, a sub-entity | Its own `description` and files, and what it doesn't have from its parent, such as `kind` and `voice`. |
 | `<kyogre.pose>`, a link | That asset's files, as a read named `kyogre.pose` with the entity's kind, and the asset's own `description` if it has one, else the entity's. |
-| `<kyogre sheet>` | The asset itself. |
+| `<kyogre_sheet>` | The asset itself. |
 
 - **Sub-entities:** a key whose value is a map, one level deep. A map inside one warns and is ignored.
-- **An asset mentioning an entity that links back to it** gets words only, with no file and no cycle: `kyogre sheet` can say `<kyogre>` for the description.
+- **An asset mentioning an entity that links back to it** gets words only, with no file and no cycle: `kyogre_sheet` can say `<kyogre>` for the description.
 - **Memo:** a read's description and file hashes count, so editing an entity's description puts what reads it out of date.
 - **Names** are shared across both sections. A clash warns, and the asset stands.
 - **`status`** lists entities apart with their links, and a link to nothing warns with the fix. **`render <entity>`** renders its linked assets and its sub-entities'.
@@ -267,8 +267,8 @@ A world state and a storyboard behave the same today. A `storyboard` is drawn; a
 A storyboard is drawn before the video exists. Make cheap pictures, choose one, then render the shot:
 
 ```
-cozy project render "clash board" -n 4
-cozy project approve "clash board" 3
+cozy project render clash_board -n 4
+cozy project approve clash_board 3
 cozy project render clash
 ```
 
