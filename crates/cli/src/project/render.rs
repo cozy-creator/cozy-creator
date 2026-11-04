@@ -430,6 +430,10 @@ impl Lines {
     fn board(&mut self, ctx: &Context, rendering: &Rendering) {
         // What is fetched ahead, as it starts a stage or every quarter of the way.
         for ahead in &rendering.board.ahead {
+            // Nothing to say until it has bytes to fetch: what weighs nothing is ready as soon as it's asked.
+            if ahead.total == 0 && ahead.held_back.is_none() {
+                continue;
+            }
             let Some(line) = ahead_line(ahead) else { continue };
             let quarter = if ahead.total > 0 { ahead.done * 4 / ahead.total } else { 0 };
             let at = format!("{:?} {quarter} {:?}", ahead.stage, ahead.held_back);

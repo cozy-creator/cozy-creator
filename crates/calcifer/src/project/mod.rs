@@ -2119,6 +2119,8 @@ struct Walk {
     tally: Mutex<Rendered>,
     /// The cuts it made, which it has said.
     cut: Mutex<BTreeSet<String>>,
+    /// Runs being sent, by key: recorded as owed before they go, and nothing to follow until they have gone.
+    on_the_way: Mutex<HashSet<String>>,
     /// What it did not make, for its last word.
     missed: Mutex<Missed>,
     /// How many runs failed each way on each machine: (machine, code, message).
@@ -2149,6 +2151,22 @@ struct Wanted {
     with: String,
     kind: String,
     made: Map<String, Value>,
+}
+
+/// A run being sent, until it has gone or hasn't.
+struct OnTheWay<'a>(&'a Mutex<HashSet<String>>, String);
+
+impl<'a> OnTheWay<'a> {
+    fn new(held: &'a Mutex<HashSet<String>>, key: &str) -> Self {
+        held.lock().expect("on the way lock").insert(key.to_owned());
+        Self(held, key.to_owned())
+    }
+}
+
+impl Drop for OnTheWay<'_> {
+    fn drop(&mut self) {
+        self.0.lock().expect("on the way lock").remove(&self.1);
+    }
 }
 
 /// What a job's turn came to, done once the graph is let go.
@@ -2203,6 +2221,7 @@ impl Walk {
             began: Instant::now(),
             tally: Mutex::default(),
             cut: Mutex::default(),
+            on_the_way: Mutex::default(),
             missed: Mutex::default(),
             faults: Mutex::default(),
             stopped: Mutex::default(),
@@ -2343,6 +2362,13 @@ impl Walk {
 
     /// A render has nothing more that can go: each cut it ends on is said, and it is done.
     async fn finish(&self, id: &str) -> Result<(), Error> {
+        {
+            let walker = self.project.walker.lock().expect("walker lock");
+            let open: Vec<&str> = walker.graph.open_jobs().into_iter().map(|job| &walker.graph.jobs[job]).filter(|job| job.ask == id).map(|job| job.asset.as_str()).collect();
+            if !open.is_empty() {
+                warn!("a render finishes with {open:?} still open");
+            }
+        }
         let asks = self.folder().walk_now()?.walk.asks;
         if let Some(ask) = asks.iter().find(|ask| ask.id == id)
             && let Ok(doc) = self.folder().text_of(ask).and_then(|text| Doc::read(self.folder(), &text))
@@ -2443,7 +2469,7 @@ impl Walk {
             self.joined(&mut first).await?;
             while self.turns(&mut work, &mut first)? {}
             for (key, pending) in self.folder().walk_now()?.pending {
-                if followed.insert(key.clone()) {
+                if !self.on_the_way.lock().expect("on the way lock").contains(&key) && followed.insert(key.clone()) {
                     let job = pending.job_of(&key).to_owned();
                     work.push(async move { Done::Landed { job, landed: self.follow(key).await } }.boxed());
                 }
@@ -2464,9 +2490,15 @@ impl Walk {
                 {
                     let mut walker = self.project.walker.lock().expect("walker lock");
                     let going: Vec<usize> = (0..walker.graph.jobs.len()).filter(|&id| walker.graph.jobs[id].state == walker::State::Going).collect();
-                    going.into_iter().for_each(|id| walker.graph.end(id, End::Done));
+                    going.into_iter().for_each(|id| {
+                        warn!("{}: it was going with nothing following it", walker.graph.jobs[id].asset);
+                        walker.graph.end(id, End::Done);
+                    });
                     if walker.graph.has_ready() {
                         continue;
+                    }
+                    for id in walker.graph.open_jobs() {
+                        warn!("{}: nothing is going, and it still waits for {:?}", walker.graph.jobs[id].asset, walker.graph.waits_for(id));
                     }
                 }
                 for ask in self.folder().walk_now()?.walk.asks {
@@ -2814,10 +2846,12 @@ impl Walk {
                     asks.insert(ask_id.clone(), Arc::new(ask.clone()));
                 }
                 let Some(ask) = asks.get(&ask_id).cloned() else {
+                    warn!("{asset}: its render {ask_id} is gone from the walk, so it isn't made");
                     graph.end(id, End::Dropped);
                     continue;
                 };
                 let Some(reading) = readings.get_mut(&ask.digest) else {
+                    warn!("{asset}: its render's text is no longer held, so it isn't made");
                     graph.end(id, End::Dropped);
                     continue;
                 };
@@ -3584,6 +3618,7 @@ impl Walk {
             warnings,
             agreed: None,
         };
+        let _on_the_way = OnTheWay::new(&self.on_the_way, key);
         self.folder().update_lock(|lock| {
             lock.pending.insert(key.into(), pending.clone());
             settle(lock);
