@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), and any project as a live graph (web/see.js).
+# models (web/drawers.js), any project as live boxes (web/see.js), and assets as a person works them (web/nodes.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -53,11 +53,13 @@ local restart=''
 web_proof reconnect "$chrome" "$pw" "$restart"
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
-step "web-see: a real project as a live graph: elements, edges, a landed take with no reload, a kept failure, 300 elements measured"
+step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"
 local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" 'COZY_HUB_URL=http://127.0.0.1:9 ')
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
+step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
+web_proof nodes "$chrome" "$pw" ''
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only

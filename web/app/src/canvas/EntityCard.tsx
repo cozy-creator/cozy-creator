@@ -1,11 +1,11 @@
 import type { NodeProps } from "@xyflow/react"
 import { memo } from "react"
 import type { Entity } from "../types"
-import { Anchors, buttonsOnly } from "./Card"
+import { buttonsOnly } from "./Card"
 import type { ElementNode } from "./CanvasStore"
-import { useCanvasStore, useElement } from "./context"
+import { useElement } from "./context"
 import { Thumb } from "./Media"
-import { anchorsFor, shownOf } from "./shown"
+import { shownOf } from "./shown"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
 
@@ -46,15 +46,12 @@ function Sub({ entity }: { entity: Entity }) {
   )
 }
 
-const EntityBody = memo(function EntityBody({ name, width }: { name: string; width: number }) {
-  const store = useCanvasStore()
+const EntityBody = memo(function EntityBody({ name }: { name: string }) {
   const view = useElement(name)
   const entity = view?.entity
   if (!view || !entity) return null
   return (
-    <>
-      <Anchors anchors={anchorsFor(view, width)} />
-      <div className="card entity" onClick={buttonsOnly}>
+    <div className="card entity" onClick={buttonsOnly}>
         <div className="head">
           <span className="nm" title={name}>
             {name}
@@ -62,13 +59,10 @@ const EntityBody = memo(function EntityBody({ name, width }: { name: string; wid
           <span className="tag">{entity.kind}</span>
           <span className="sp" />
           {view.warnings?.length ? (
-            <button type="button" className="iconb warned nodrag" aria-label="Warnings" onClick={() => store.open.set({ name })}>
+            <span className="warned" role="img" aria-label="Warnings" title={view.warnings.join("\n")}>
               !
-            </button>
+            </span>
           ) : null}
-          <button type="button" className="iconb hovered nodrag" aria-label="Its words" title="Its words" onClick={() => store.open.set({ name })}>
-            {"{ }"}
-          </button>
           <span className={`dot ${DOTS[view.linked ?? "current"] ?? "s-missing"}`} />
         </div>
         <p className="desc">{entity.description}</p>
@@ -76,12 +70,11 @@ const EntityBody = memo(function EntityBody({ name, width }: { name: string; wid
         {(entity.subs ?? []).map((sub) => (
           <Sub key={sub.name} entity={sub} />
         ))}
-      </div>
-    </>
+    </div>
   )
 })
 
-/** An entity is a card with slots, not a frame: moving anything never means anything. */
-export function EntityCard({ data, width }: NodeProps<ElementNode>) {
-  return <EntityBody name={data.name} width={width ?? 240} />
+/** What a file's entities say, read only, until the format holds only assets. */
+export function EntityCard({ data }: NodeProps<ElementNode>) {
+  return <EntityBody name={data.name} />
 }

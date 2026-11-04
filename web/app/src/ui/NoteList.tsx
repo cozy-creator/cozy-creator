@@ -14,6 +14,18 @@ export function Notes() {
           {note.next?.map((command) => (
             <Copyable key={command} text={command} />
           ))}
+          {note.action && (
+            <button
+              type="button"
+              className="tb note-act"
+              onClick={() => {
+                dismiss(note.id)
+                note.action?.run()
+              }}
+            >
+              {note.action.label}
+            </button>
+          )}
           <button type="button" className="iconb" aria-label="Dismiss" onClick={() => dismiss(note.id)}>
             ×
           </button>

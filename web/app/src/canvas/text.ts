@@ -10,7 +10,7 @@ const string = (value: unknown): string | null => (typeof value === "string" && 
 const number = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined)
 
 /** How long a beat with no `duration` lasts, as Calcifer reads it. */
-const BEAT_S = 5
+export const BEAT_S = 5
 
 export function beatsOf(text?: Record<string, unknown>): Beat[] {
   const beats = text?.beats
@@ -39,22 +39,6 @@ export function lineOf(text?: Record<string, unknown>): string | null {
   return string(text?.instructions) ?? string(text?.summary) ?? string(text?.description) ?? beatsOf(text)[0]?.description ?? null
 }
 
-/** The text at a place an asset's `reads` names: `summary`, `beats.0.description`. */
-export function textAt(text: Record<string, unknown> | undefined, place: string): string | null {
-  let value: unknown = text
-  for (const part of place.split(".")) {
-    if (typeof value !== "object" || value === null) return null
-    value = (value as Record<string, unknown>)[part]
-  }
-  return string(value)
-}
-
-/** `beats.0.description` as a person says it. */
-export function placeName(place: string): string {
-  const [field, n] = place.split(".")
-  return n !== undefined && /^\d+$/.test(n) ? `${field === "beats" ? "beat" : field} ${Number(n) + 1}` : field
-}
-
 /** Text with its mentions told apart, for showing, never as HTML. */
 export function withMentions(text: string): { text: string; mention: boolean }[] {
   const parts: { text: string; mention: boolean }[] = []
@@ -67,6 +51,9 @@ export function withMentions(text: string): { text: string; mention: boolean }[]
   if (at < text.length) parts.push({ text: text.slice(at), mention: false })
   return parts
 }
+
+/** The names `<like this>` in `text`, once each, in order. */
+export const mentionsIn = (text: string): string[] => [...new Set(withMentions(text).filter((part) => part.mention).map((part) => part.text.slice(1, -1)))]
 
 /** What Calcifer said, for a page that never shows a hash. */
 export const noHash = (said: string) => said.replace(/\b(?:sha256:)?[0-9a-f]{12,64}\b/g, "a file")

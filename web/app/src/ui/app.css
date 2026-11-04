@@ -159,8 +159,11 @@ code {
 /* The canvas */
 .stage {
   position: fixed;
-  inset: var(--top) 0 0 0;
+  inset: var(--top) 0 0 var(--tools, 208px);
   background: var(--bg);
+}
+.stage[data-tools="shut"] {
+  --tools: 30px;
 }
 .picker {
   display: none;
@@ -198,19 +201,11 @@ code {
   position: absolute;
   inset: 0;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   color: var(--mute);
   pointer-events: none;
   z-index: 4;
-}
-.empty-canvas p {
-  margin: 0;
-}
-.empty-canvas button {
-  pointer-events: auto;
 }
 
 /* Elements */
@@ -445,13 +440,6 @@ code {
     0 1px 0 #0006,
     0 8px 24px #0005;
 }
-.anchor {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  visibility: hidden;
-  pointer-events: none;
-}
 
 /* A video's poster, and its frames under the pointer. */
 .scrub {
@@ -638,124 +626,6 @@ code {
   text-overflow: ellipsis;
 }
 
-/* Edges: one attribute on the stage dims them, and only those lit hear of a selection. */
-.ge-line {
-  fill: none;
-  stroke: var(--edge);
-  stroke-width: 1.4;
-  /* The same on screen at any zoom: scaled with the canvas, a line is under a pixel by 55% and the graph stops reading as one. */
-  vector-effect: non-scaling-stroke;
-}
-.ge.link .ge-line {
-  stroke: var(--edge-soft);
-  stroke-dasharray: 2 4;
-}
-.ge-hit {
-  fill: none;
-  stroke: transparent;
-  stroke-width: 14;
-  vector-effect: non-scaling-stroke;
-  pointer-events: stroke;
-  cursor: pointer;
-}
-.ge-hit:hover + .ge-line,
-.ge:hover .ge-line {
-  stroke: var(--ink);
-}
-.stage[data-focus="on"] .ge-line {
-  opacity: 0.25;
-}
-.stage[data-focus="on"] .ge.lit .ge-line {
-  opacity: 1;
-  stroke: var(--ember);
-  stroke-width: 2;
-}
-.stage[data-lod="2"] .ge-line {
-  stroke-dasharray: none;
-}
-.edge-tip {
-  position: fixed;
-  max-width: 360px;
-  padding: 6px 8px;
-  background: #22242a;
-  border: 1px solid var(--line2);
-  border-radius: 6px;
-  font-size: 11.5px;
-  pointer-events: none;
-  z-index: 50;
-}
-.edge-tip b {
-  display: block;
-  font: 500 11px var(--mono);
-  color: var(--ember2);
-}
-.edge-tip span {
-  overflow-wrap: anywhere;
-}
-
-/* An element's words, beside the canvas. */
-.sheet {
-  position: fixed;
-  top: calc(var(--top) + 10px);
-  bottom: 74px;
-  right: calc(var(--drawer) + 10px);
-  width: 400px;
-  max-width: calc(100vw - var(--drawer) - 20px);
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--line2);
-  border-radius: 9px;
-  box-shadow: 0 18px 60px #000c;
-  z-index: 32;
-}
-.sheet header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-  font: 12px var(--mono);
-}
-.sheet-body {
-  flex: 1;
-  overflow: auto;
-  padding: 4px 10px 10px;
-}
-.sheet section {
-  padding: 6px;
-  border-radius: 5px;
-}
-.sheet section.here {
-  background: #ff8a3d14;
-}
-.sheet h3 {
-  margin: 8px 0 0;
-  font: 500 12px var(--mono);
-  color: var(--ember2);
-}
-.sheet h4 {
-  margin: 0 0 2px;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--faint);
-}
-.sheet p {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 12.5px;
-}
-.sheet code {
-  color: var(--ember2);
-}
-.warned-line {
-  color: var(--ood);
-}
-.failed-line {
-  color: var(--bad);
-}
-
 /* Far out */
 .stage[data-lod="1"] .status,
 .stage[data-lod="2"] .status,
@@ -773,33 +643,6 @@ code {
 .stage[data-lod="2"] .dot {
   width: 18px;
   height: 18px;
-}
-
-/* The dock */
-.dock {
-  position: fixed;
-  bottom: 14px;
-  left: calc((100vw - var(--drawer)) / 2);
-  transform: translateX(-50%);
-  width: 680px;
-  max-width: calc(100vw - var(--drawer) - 24px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  background: #1b1c20f7;
-  border: 1px solid var(--line2);
-  border-radius: 11px;
-  box-shadow: 0 18px 60px #000c;
-  z-index: 30;
-}
-.dock-hint {
-  color: var(--faint);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 
 /* Drawers */
@@ -1453,4 +1296,465 @@ a.tab:hover {
 }
 .confirm .says + .row {
   margin-top: 4px;
+}
+
+/* The tools, on the left. */
+.tools {
+  position: fixed;
+  left: 0;
+  top: var(--top);
+  bottom: 0;
+  width: 208px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+  z-index: 20;
+}
+.tools.shut {
+  width: 30px;
+  padding: 4px;
+}
+.tools header {
+  display: flex;
+  align-items: center;
+}
+.tools .field {
+  flex: none;
+}
+.tools ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 6px;
+  cursor: grab;
+  font-size: 12px;
+}
+.tool:hover {
+  background: #ffffff0d;
+}
+.tool b {
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The top bar: a name, Render all, the rest in a menu. */
+.render-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--mute);
+}
+.render-all label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.main-menu {
+  position: relative;
+}
+.main-menu summary {
+  list-style: none;
+  cursor: pointer;
+}
+.main-menu summary::-webkit-details-marker {
+  display: none;
+}
+.main-menu nav {
+  position: absolute;
+  right: 0;
+  top: 32px;
+  min-width: 140px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  z-index: 40;
+}
+.main-menu nav a {
+  border: 0;
+  background: none;
+  justify-content: flex-start;
+}
+
+/* A box at rest is its picture or its text and a name. What's more opens under it, over its neighbours. */
+.react-flow__node:hover,
+.react-flow__node:focus-within,
+.react-flow__node.selected {
+  z-index: 1000 !important;
+}
+.card {
+  overflow: visible;
+}
+.card .media {
+  border-radius: 0 0 8px 8px;
+}
+.card.active .media {
+  border-radius: 0;
+}
+.dot.s-current {
+  display: none;
+}
+.card.active .dot.s-current {
+  display: inline-block;
+}
+.asset-more {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: 100%;
+  padding-bottom: 2px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 9px 9px;
+  box-shadow: 0 10px 24px #0007;
+}
+.react-flow__node.selected .asset-more {
+  border-color: var(--ember);
+}
+.card {
+  position: relative;
+}
+.takes {
+  position: static;
+  padding: 4px;
+}
+.approve-row {
+  gap: 8px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  min-height: 0;
+}
+.approve-row:empty {
+  display: none;
+}
+.from-here {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.from-here input {
+  flex: 1;
+  min-width: 0;
+}
+.tc-inline {
+  font: 10px var(--mono);
+  color: var(--mute);
+}
+.corner {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, #ffffff55 50%);
+  z-index: 3;
+}
+.ratio-shown {
+  position: absolute;
+  right: 18px;
+  bottom: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #000a;
+  font: 11px var(--mono);
+  z-index: 3;
+}
+
+.card.editing .words {
+  display: none;
+}
+.card:not(.active) .play {
+  opacity: 0;
+}
+
+/* Its controls. */
+.edit-face {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.mention-text {
+  min-height: 44px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0003;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+  outline: none;
+}
+.mention-text:focus {
+  border-color: var(--line2);
+}
+.mention-text:empty::before {
+  content: attr(data-placeholder);
+  color: var(--faint);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #ff8a3d22;
+  color: var(--ember2);
+  font: 11px var(--mono);
+  white-space: nowrap;
+}
+.chip.missing {
+  background: #f0625d22;
+  color: var(--bad);
+  text-decoration: line-through;
+}
+.chip button {
+  color: inherit;
+}
+.name-menu {
+  position: fixed;
+  z-index: 60;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  font: 11px var(--mono);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.name-menu li {
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.name-menu li.on,
+.name-menu li:hover {
+  background: #ffffff14;
+}
+.mention-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mention-thumbs:empty {
+  display: none;
+}
+.mention-thumb {
+  position: relative;
+  width: 44px;
+  height: 30px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #0a0a0b;
+}
+.mention-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.slide {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--mute);
+}
+.slide input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+.ctl-name {
+  flex: none;
+}
+.beats-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.beat {
+  position: relative;
+}
+.beat > .iconb {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+}
+.slot-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  min-height: 30px;
+  border: 1px dashed var(--line2);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--mute);
+}
+.card.active [data-drop-target]:hover {
+  border-color: var(--ember);
+}
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.run {
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: var(--ember);
+  color: #1b1006;
+  font-size: 12px;
+  font-weight: 600;
+}
+.run:hover {
+  background: var(--ember2);
+}
+.desc-line {
+  display: block;
+  width: 100%;
+  padding: 3px 8px;
+  text-align: left;
+  font-size: 11px;
+  color: var(--mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.desc-line.empty {
+  color: var(--faint);
+}
+.desc-open {
+  padding: 4px 8px;
+}
+.next-line {
+  color: var(--mute);
+  margin-top: 2px;
+}
+.warned-lines {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--ood);
+}
+.warned-lines p {
+  margin: 2px 0;
+}
+.asset-menu {
+  position: fixed;
+  z-index: 60;
+  width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px #000a;
+}
+.asset-menu > button,
+.menu-list button {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 5px;
+  text-align: left;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asset-menu > button:hover,
+.menu-list button:hover {
+  background: #ffffff14;
+}
+.menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.note-act {
+  flex: none;
+}
+
+/* Alive, and brief. Only what arrives moves, on the compositor, and coming back on screen isn't arriving. */
+.card.landing {
+  animation: land 220ms cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.media img.arrives {
+  animation: arrive 180ms ease-out;
+}
+.media.slid img {
+  animation: slide-in 220ms ease-out;
+}
+.prog {
+  top: 0;
+  height: auto;
+  background: none;
+  pointer-events: none;
+}
+.prog i {
+  background: linear-gradient(90deg, #5aa9ff24, #5aa9ff44);
+  border-right: 2px solid var(--mak);
+  transition: width 300ms linear;
+}
+@keyframes land {
+  0% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes arrive {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes slide-in {
+  from {
+    transform: translateX(14%);
+    opacity: 0.2;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.landing,
+  .media img.arrives,
+  .media.slid img {
+    animation: none;
+  }
 }

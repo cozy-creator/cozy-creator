@@ -1,8 +1,5 @@
-import { Position } from "@xyflow/react"
 import type { MainFile } from "../types"
 import type { ElementView } from "./CanvasStore"
-import { subSource, subTarget } from "./graph"
-import { beatsOf, piecesOf } from "./text"
 
 /** The file a card shows, and where it came from. */
 export interface Shown extends MainFile {
@@ -31,23 +28,34 @@ export function shownOf(view: ElementView): Shown | null {
   return newest?.main ? { ...newest.main, number: newest.number, run: newest.run } : null
 }
 
-/** Where a card's shape comes from: what's measured, unmeasured, so a card culled away still has a size and edges to it still land. */
+/** A card's size, unmeasured, so a card culled away still counts in a fit. */
 export const HEAD = 30
-const STATUS = 27
-const BAR = 18
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
 export const SUB_ROW = 136
 
-export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : 240)
+/** What a tool makes, once it's run, as anything on the canvas is. */
+export const makes = (view: ElementView | undefined) => Boolean(view?.asset?.tool) && view?.asset?.tool !== "cozy"
+
+/** A box that makes something opens on its controls; approved, it's that file, and either way can flip. */
+export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) ? (view.face ?? (view.asset?.pinned ? "media" : "edit")) : "media")
+
+export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
+
+/** `16:9` as a number, if it's one. */
+export function ratioOf(value: unknown): number | undefined {
+  const parts = typeof value === "string" ? value.split(":").map(Number) : []
+  return parts.length === 2 && parts[0] > 0 && parts[1] > 0 ? parts[0] / parts[1] : undefined
+}
 
 export function aspectOf(view: ElementView): number {
   const shown = shownOf(view)
+  // On its controls a box is the shape it will make.
+  const shaped = faceOf(view) === "edit" ? ratioOf(view.shape ?? view.sent?.aspect_ratio ?? view.asset?.fields?.aspect_ratio) : undefined
+  if (shaped) return shaped
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
   return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
-
-const hasBar = (view: ElementView) => beatsOf(view.asset?.fields).length > 0 || piecesOf(view.asset?.fields).length > 0
 
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0
 
@@ -56,34 +64,5 @@ export function heightFor(view: ElementView, width: number): number {
     const subs = view.entity.subs ?? []
     return HEAD + ENTITY_DESC + (hasSlots(view.entity.links) ? ENTITY_SLOTS : 0) + subs.length * SUB_ROW
   }
-  return HEAD + Math.round(width / aspectOf(view)) + (hasBar(view) ? BAR : 0) + STATUS
-}
-
-export interface Anchor {
-  id?: string
-  type: "source" | "target"
-  position: Position
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-/** Each place an edge lands on a card. The first of a type is the one an edge with no handle takes. */
-export function anchorsFor(view: ElementView, width: number): Anchor[] {
-  const side = (type: Anchor["type"], y: number, id?: string): Anchor => ({ id, type, position: type === "target" ? Position.Left : Position.Right, x: type === "target" ? 0 : width - 1, y, width: 1, height: 1 })
-  if (view.entity) {
-    const top = HEAD + ENTITY_DESC + (hasSlots(view.entity.links) ? ENTITY_SLOTS : 0)
-    const subs = (view.entity.subs ?? []).flatMap((sub, i) => {
-      const y = top + i * SUB_ROW + 14
-      return [side("target", y, subTarget(sub.name)), side("source", y, subSource(sub.name))]
-    })
-    return [side("target", HEAD / 2), side("source", HEAD / 2), ...subs]
-  }
-  const media = Math.round(width / aspectOf(view))
-  const middle = HEAD + Math.round(media / 2)
-  return [
-    side("target", middle),
-    side("source", middle),
-  ]
+  return HEAD + Math.round(width / aspectOf(view))
 }

@@ -20,7 +20,7 @@ export function stemName(fileName: string): string {
   return asName(fileName.replace(/(.)\.[^.]*$/, "$1").toLowerCase())
 }
 
-function nameKey(name: string): string {
+export function nameKey(name: string): string {
   return name.replace(/[_-]/g, " ").split(/\s+/).filter(Boolean).join(" ").toLowerCase()
 }
 

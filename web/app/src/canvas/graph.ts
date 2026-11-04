@@ -1,27 +1,11 @@
 import type { Entity, ProjectState, Row } from "../types"
 
-// What the canvas draws of what reads what, from the state alone. An edge goes from what's read to what reads it, so a project reads
-// left to right. Solid is a mention, dotted an entity's link.
+// What reads what, from the state alone. It's never drawn: it says where a new name first sits, right of what it reads.
 
-export type EdgeKind = "mention" | "link"
-
-export interface EdgeSpec {
-  id: string
-  kind: EdgeKind
+export interface ReadEdge {
   source: string
-  sourceHandle?: string
   target: string
-  targetHandle?: string
-  /** Whose words made it. */
-  reader: string
-  /** The name as those words say it. */
-  read: string
-  /** Where: `summary`, `beats.0.description`, an entity's link. */
-  at: string[]
 }
-
-export const subSource = (sub: string) => `from:${sub}`
-export const subTarget = (sub: string) => `to:${sub}`
 
 function subsOf(entities: Entity[]): Map<string, string> {
   const owner = new Map<string, string>()
@@ -56,36 +40,28 @@ export function warningsOf(state: ProjectState): { byElement: Map<string, string
   return { byElement, ofProject }
 }
 
-export function edgesOf(state: ProjectState): EdgeSpec[] {
+export function readsOf(state: ProjectState): ReadEdge[] {
   const anchor = anchors(state)
-  const edges = new Map<string, EdgeSpec>()
-  const add = (spec: Omit<EdgeSpec, "id">) => {
-    if (spec.source === spec.target) return
-    const id = `${spec.kind}:${spec.source}/${spec.sourceHandle ?? ""}>${spec.target}/${spec.targetHandle ?? ""}`
-    const held = edges.get(id)
-    if (held) held.at.push(...spec.at)
-    else edges.set(id, { ...spec, id })
+  const reads = new Map<string, ReadEdge>()
+  const add = (edge: ReadEdge) => {
+    if (edge.source !== edge.target) reads.set(`${edge.source}>${edge.target}`, edge)
   }
   for (const asset of state.assets) {
     for (const read of asset.reads ?? []) {
       const from = anchor(read.name)
-      if (from) add({ kind: "mention", source: from.element, sourceHandle: from.sub && subSource(from.sub), target: asset.name, reader: asset.name, read: read.name, at: [...(read.at ?? [])] })
-    }
-  }
-  const links = (entity: Entity, element: string, sub?: string) => {
-    for (const [field, target] of Object.entries(entity.links ?? {})) {
-      if (anchor(target)) add({ kind: "link", source: target, target: element, targetHandle: sub && subTarget(sub), reader: entity.name, read: target, at: [field] })
+      if (from) add({ source: from.element, target: asset.name })
     }
   }
   for (const entity of state.entities ?? []) {
-    links(entity, entity.name)
-    for (const sub of entity.subs ?? []) links(sub, entity.name, sub.name)
+    for (const held of [entity, ...(entity.subs ?? [])]) {
+      for (const target of Object.values(held.links ?? {})) if (anchor(target)) add({ source: target, target: entity.name })
+    }
   }
-  return [...edges.values()]
+  return [...reads.values()]
 }
 
 /** How many reads lie upstream of each name, along the longest way. */
-function depths(names: string[], edges: EdgeSpec[]): Map<string, number> {
+function depths(names: string[], edges: ReadEdge[]): Map<string, number> {
   const reads = new Map<string, string[]>()
   for (const edge of edges) {
     const held = reads.get(edge.target)
@@ -123,7 +99,7 @@ const overlaps = (a: Box, b: Box) => a.x < b.x + b.w + GAP_X / 2 && b.x < a.x + 
  * A home for each name with none, once: right of what it reads, else by graph depth, each below what's already there. `boxes` is
  * what's already placed, and grows.
  */
-export function homesFor(names: string[], edges: EdgeSpec[], boxes: Map<string, Box>, size: (name: string) => { w: number; h: number }): Map<string, Row> {
+export function homesFor(names: string[], edges: ReadEdge[], boxes: Map<string, Box>, size: (name: string) => { w: number; h: number }): Map<string, Row> {
   const depth = depths(names, edges)
   const order = names.map((name, at) => ({ name, at })).sort((a, b) => (depth.get(a.name) ?? 0) - (depth.get(b.name) ?? 0) || a.at - b.at)
   const placed = [...boxes.values()]

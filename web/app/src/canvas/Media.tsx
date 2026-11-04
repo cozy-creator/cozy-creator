@@ -45,6 +45,8 @@ function line(limit: number) {
 }
 
 const thumbLine = line(2)
+/** What's been up: coming back on screen is no arrival, and fades nothing. */
+const arrived = new Set<string>()
 
 /** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache. */
 function thumbWidth(cardWidth: number): number {
@@ -96,7 +98,7 @@ export function Thumb({
     <img
       src={src}
       alt=""
-      className={className}
+      className={`${className ?? ""} ${arrived.has(`${sha256}:${width}`) ? "" : "arrives"}`}
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
@@ -107,6 +109,7 @@ export function Thumb({
         leaveLine.current()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
+        arrived.add(`${sha256}:${width}`)
         onShown?.()
       }}
     />
@@ -114,9 +117,10 @@ export function Thumb({
 }
 
 /** A video's poster. Hovering scrubs a strip of its frames, one picture from Calcifer, so no `<video>` opens until it's clicked. */
-function Poster({ shown, cardWidth, name }: { shown: Shown; cardWidth: number; name: string }) {
+function Poster({ shown, cardWidth, name, scrubbed }: { shown: Shown; cardWidth: number; name: string; scrubbed?: number }) {
   const store = useCanvasStore()
-  const [at, setAt] = useState<number | null>(null)
+  const [hover, setAt] = useState<number | null>(null)
+  const at = hover ?? (scrubbed !== undefined && shown.duration_ms ? (scrubbed * 1000) / shown.duration_ms : null)
   const frame = at === null ? 0 : Math.min(STRIP_FRAMES - 1, Math.floor(at * STRIP_FRAMES))
   return (
     <div
@@ -284,8 +288,9 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
   const words = lineOf(asset?.fields)
   const setAspect = (aspect: number) => store.setAspect(name, aspect)
 
+  const slid = view.slid !== undefined && view.slid === shown?.number
   return (
-    <div className={`media ${shown?.alpha ? "alpha" : ""}`} style={{ aspectRatio: aspectOf(view) }}>
+    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })}>
       {preview && (
         <img
           src={preview}
@@ -297,10 +302,10 @@ export function Media({ view, name, cardWidth, children }: { view: ElementView; 
           }}
         />
       )}
-      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} />}
+      {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} />}
       {here && field !== "video" && <Thumb sha256={here.sha256} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
       {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
-      {!preview && !shown && (words ? <p className="words">{words}</p> : <span className="media-note">{field === "file" ? "A file" : field}</span>)}
+      {!preview && !shown && (words ? <p className="words">{words}</p> : <span className="media-note">{field === "file" ? "A file" : ""}</span>)}
       {placing && (
         <div className="prog">
           <i style={{ width: `${Math.round(placing.done * 100)}%` }} />

@@ -44,31 +44,64 @@ function ProjectName({ id }: { id: string | null }) {
   const to = useTo()
   const { data } = useQuery({ ...projectQuery(client, id ?? ""), enabled: Boolean(id) })
   const name = data?.path.split(/[/\\]/).filter(Boolean).pop() ?? (id ? "…" : "untitled")
-  const assets = data?.assets ?? []
-  const making = assets.filter((asset) => asset.standing === "making").length
-  const late = assets.filter((asset) => asset.standing === "out_of_date").length
-  const failed = assets.filter((asset) => asset.failure && asset.standing !== "making").length
   const saidOfFile = data ? warningsOf(data).ofProject : []
   return (
     <>
       <Link className="proj" to={to("projects")} title="Projects">
         {name}
       </Link>
-      {data && <span className="path">{data.path}</span>}
-      {making > 0 && <span className="sum mak">{making} making</span>}
-      {late > 0 && <span className="sum ood">{late} out of date</span>}
-      {failed > 0 && <span className="sum bad">{failed} failed</span>}
       {saidOfFile.length > 0 && (
-        <span className="sum ood" title={noHash(saidOfFile.join("\n"))}>
-          {saidOfFile.length} {saidOfFile.length === 1 ? "warning" : "warnings"}
-        </span>
+        <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
+          !
+        </Link>
       )}
     </>
   )
 }
 
+/** All but the canvas, a click away. */
+function MainMenu({ id }: { id: string | null }) {
+  const { client } = useConnection()
+  const to = useTo()
+  const held = useRef<HTMLDetailsElement>(null)
+  const shut = () => held.current?.removeAttribute("open")
+  useEffect(() => {
+    const away = (event: Event) => {
+      if (!held.current?.contains(event.target as globalThis.Node)) shut()
+    }
+    window.addEventListener("pointerdown", away)
+    return () => window.removeEventListener("pointerdown", away)
+  }, [])
+  return (
+    <details className="main-menu" ref={held}>
+      <summary className="tb" aria-label="Menu">
+        ☰
+      </summary>
+      <nav onClick={shut}>
+        <RunsLink to={to("runs")} />
+        <Link className="tb" to={to("machines")}>
+          Machines
+        </Link>
+        <Link className="tb" to={to("packages")}>
+          Library
+        </Link>
+        {!client.transport.channel && (
+          <Link className="tb" to={to("account")}>
+            Account
+          </Link>
+        )}
+        {id && (
+          <Link className="tb" to={to("yaml")}>
+            project.yaml
+          </Link>
+        )}
+      </nav>
+    </details>
+  )
+}
+
 export function Shell() {
-  const { client, remote } = useConnection()
+  const { remote } = useConnection()
   const id = useProjectId()
   const to = useTo()
   const navigate = useNavigate()
@@ -115,23 +148,7 @@ export function Shell() {
         <Connectivity />
         <span className="gap" />
         <span className="canvas-controls" ref={setSlot} />
-        {id && (
-          <Link className="tb" to={to("yaml")}>
-            project.yaml
-          </Link>
-        )}
-        <RunsLink to={to("runs")} />
-        <Link className="tb" to={to("machines")}>
-          Machines
-        </Link>
-        <Link className="tb" to={to("packages")}>
-          Library
-        </Link>
-        {!client.transport.channel && (
-          <Link className="tb" to={to("account")}>
-            Account
-          </Link>
-        )}
+        <MainMenu id={id} />
       </header>
       <CanvasHost key={hostKey} projectId={id} slot={slot} onAdopt={adopt} />
       {handle?.drawer && (

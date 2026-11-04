@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import {
   Background,
   BackgroundVariant,
+  type Edge,
   type OnSelectionChangeParams,
   ReactFlow,
   ReactFlowProvider,
@@ -10,26 +11,29 @@ import {
   useStore,
   type Viewport,
 } from "@xyflow/react"
-import { type ChangeEvent, type DragEvent, useCallback, useEffect, useRef, useState } from "react"
+import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Link, useNavigate } from "react-router-dom"
+import { useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
-import { canvasQuery, machinesQuery, projectQuery } from "../api/queries"
+import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { loadMachine, loadSelection, loadViewport, saveMachine, saveSelection, saveViewport } from "../app/view"
+import { loadSelection, loadToolsShut, loadViewport, saveSelection, saveToolsShut, saveViewport } from "../app/view"
+import type { Tool } from "../types"
 import { say } from "../ui/notes"
-import { signal, useSignal } from "../ui/signal"
-import { CanvasStore, type ElementNode, type GraphEdge } from "./CanvasStore"
+import { AssetMenu } from "./AssetMenu"
+import { CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore } from "./context"
-import { EdgeTip, edgeTypes } from "./Edges"
+import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { Placer } from "./place"
-import { TextSheet } from "./TextSheet"
+import { ToolPanel } from "./ToolPanel"
 
 const nodeTypes = { element: Card, entity: EntityCard }
-// Nothing fitted goes under the dock.
-const FIT = { maxZoom: 1, padding: { top: "24px", right: "24px", bottom: "88px", left: "24px" } } as const
+const FIT = { maxZoom: 1, padding: "24px" } as const
+
+type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
+const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
 
 const ACCEPT = "image/*,video/*,audio/*"
 const MULTI = ["Shift", "Meta", "Control"]
@@ -44,10 +48,17 @@ function ProjectSync({ id }: { id: string }) {
   const navigate = useNavigate()
   const { data: state, error: stateError } = useQuery(projectQuery(client, id))
   const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, id))
+  const asked = useRef(new Set<string>())
 
   useEffect(() => {
     if (state) store.applyState(state)
-  }, [store, state])
+    // A tool an asset names that the list didn't hold, asked for by its name, once.
+    for (const tool of new Set(state?.assets.flatMap((asset) => asset.tool ?? []))) {
+      if (tool === "cozy" || asked.current.has(tool) || store.tools.get().has(tool)) continue
+      asked.current.add(tool)
+      client.tools(tool.split("/").slice(0, -1).join(" "), null).then(({ tools }) => store.addTools(tools), () => {})
+    }
+  }, [store, client, state])
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards)
   }, [store, canvas])
@@ -71,85 +82,51 @@ function ProjectSync({ id }: { id: string }) {
   return null
 }
 
-/** The machine a new take goes to: the last used, else this computer if it runs models, else one that's up. Renting is under Machines. */
-function CurrentMachine({ store, machinesLink }: { store: CanvasStore; machinesLink: string }) {
-  const { client, scope, status } = useConnection()
+/** The machines a render may go to: there's no choosing, the walk places it. With none, Render asks for one under Machines. */
+function useMachines(store: CanvasStore): string[] {
+  const { client, status } = useConnection()
   const { data } = useQuery(machinesQuery(client))
-  const [chosen, choose] = useState(() => loadMachine(scope))
   const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
-  const current = up.find((machine) => machine.name === chosen)?.name ?? up.find((machine) => machine.kind === "local")?.name ?? up[0]?.name ?? null
+  const names = [...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
+  const key = names.join()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
-    store.machine = () => current
-  }, [store, current])
-  if (!current) {
-    return (
-      <Link className="tb" to={machinesLink}>
-        No machine up
-      </Link>
-    )
-  }
+    store.machines = () => names
+    if (names.length) store.machineUp()
+  }, [store, key])
+  return names
+}
+
+/** Render all, and how many that is. Approved assets stay unless it's said. */
+function RenderAll({ id }: { id: string }) {
+  const { client } = useConnection()
+  const store = useCanvasStore()
+  const { data } = useQuery(projectQuery(client, id))
+  const [outdated, setOutdated] = useState(false)
+  const assets = data?.assets ?? []
+  const fresh = assets.filter((asset) => asset.tool && asset.tool !== "cozy" && !asset.pinned).length
+  const late = assets.filter((asset) => asset.pinned && asset.tool && asset.standing === "out_of_date").length
+  const also = outdated && late > 0
+  if (!fresh && !late) return null
   return (
-    <select
-      className="tb"
-      aria-label="The machine new takes go to"
-      value={current}
-      onChange={(event) => {
-        choose(event.target.value)
-        saveMachine(scope, event.target.value)
-      }}
-    >
-      {up.map((machine) => (
-        <option key={machine.name} value={machine.name}>
-          {machine.name}
-        </option>
-      ))}
-    </select>
+    <span className="render-all">
+      <button type="button" className="tb primary" onClick={() => void store.runAll(also)}>
+        Render all {fresh + (also ? late : 0)}
+      </button>
+      {late > 0 && (
+        <label>
+          <input type="checkbox" checked={outdated} onChange={(event) => setOutdated(event.target.checked)} />
+          Also re-render {late} out of date
+        </label>
+      )}
+    </span>
   )
 }
 
-function Controls({ store, fit, choose }: { store: CanvasStore; fit: () => void; choose: () => void }) {
-  const zoom = useStore((state) => Math.round(state.transform[2] * 100))
-  const id = store.projectId
-  return (
-    <>
-      <span className="sum">{zoom}%</span>
-      <button type="button" className="tb" title="Fit everything (F)" onClick={fit}>
-        Fit
-      </button>
-      <CurrentMachine store={store} machinesLink={id ? `/projects/${id}/machines` : "/machines"} />
-      <button type="button" className="tb primary" onClick={choose}>
-        Add file
-      </button>
-    </>
-  )
-}
-
-/** The bottom of the screen. It offers only what's built: placing. */
-function Dock({ choose, selected }: { choose: () => void; selected: ReturnType<typeof signal<number>> }) {
-  const count = useSignal(selected)
-  return (
-    <div className="dock">
-      <button type="button" className="tb" onClick={choose}>
-        Add file
-      </button>
-      <span className="dock-hint">Drop a picture, a video or a sound anywhere on the canvas</span>
-      <span className="sp" />
-      {count > 0 && <span className="sum">{count} selected</span>}
-    </div>
-  )
-}
-
-function Empty({ choose }: { choose: () => void }) {
+function Empty() {
   const empty = useStore((state) => state.nodes.length === 0)
   if (!empty) return null
-  return (
-    <div className="empty-canvas">
-      <p>Drop a picture, a video or a sound here</p>
-      <button type="button" className="tb" onClick={choose}>
-        Choose a file
-      </button>
-    </div>
-  )
+  return <div className="empty-canvas">Drop a file here</div>
 }
 
 function Canvas({
@@ -162,7 +139,8 @@ function Canvas({
   onAdopt: (id: string) => void
 }) {
   const connection = useConnection()
-  const flow = useReactFlow<ElementNode, GraphEdge>()
+  const flow = useReactFlow<ElementNode, Edge>()
+  const navigate = useNavigate()
   const { scope, client, bridge } = connection
   const [saved] = useState(() => loadViewport(scope, projectId))
   const [store] = useState(() => new CanvasStore(client, projectId, loadSelection(scope, projectId)))
@@ -170,11 +148,13 @@ function Canvas({
   adopt.current = onAdopt
   const [placer] = useState(() => new Placer(store, client, { adopt: (id) => adopt.current(id), refresh: (id) => bridge.refresh(id) }))
   const [openedOn] = useState(projectId)
-  const [selected] = useState(() => signal(0))
   const [veil, setVeil] = useState(false)
+  const [shut, setShut] = useState(loadToolsShut)
   const stage = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const machines = useMachines(store)
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machines.at(-1) ?? null), staleTime: 60_000 })
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
@@ -193,9 +173,10 @@ function Canvas({
     store.refresh = () => {
       if (store.projectId) bridge.refresh(store.projectId)
     }
+    store.askMachine = () => navigate(store.projectId ? `/projects/${store.projectId}/machines` : "/machines")
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, scope, openedOn, bridge])
+  }, [store, flow, saved, scope, openedOn, bridge, navigate])
 
   const fit = useCallback(() => void flow.fitView({ ...FIT, duration: 150 }), [flow])
   const choose = useCallback(() => picker.current?.click(), [])
@@ -216,15 +197,27 @@ function Canvas({
     [placer, visibleCentre],
   )
 
+  const placeTool = useCallback((tool: Tool) => void placer.addTool(tool, visibleCentre()), [placer, visibleCentre])
+
   const drop = useCallback(
     (event: DragEvent) => {
+      const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      const tool = event.dataTransfer.getData(DRAGGED_TOOL)
+      const taken = event.dataTransfer.getData(DRAGGED_FILE)
+      if (tool || taken) {
+        event.preventDefault()
+        const named = store.tools.get().get(tool)
+        if (named) void placer.addTool(named, point)
+        if (taken) void placer.addFile(JSON.parse(taken), point)
+        return
+      }
       if (!hasFiles(event)) return
       event.preventDefault()
       setVeil(false)
       const files = [...event.dataTransfer.files]
-      if (files.length) placer.add(files, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }))
+      if (files.length) placer.add(files, point)
     },
-    [placer, flow],
+    [placer, flow, store],
   )
 
   const moved = useCallback(
@@ -235,35 +228,59 @@ function Canvas({
   )
 
   const selectionChanged = useCallback(
-    ({ nodes }: OnSelectionChangeParams<ElementNode, GraphEdge>) => {
-      selected.set(nodes.length)
+    ({ nodes }: OnSelectionChangeParams<ElementNode, Edge>) => {
       store.select(nodes.map((node) => node.data.name))
-      if (stage.current) stage.current.dataset.focus = nodes.length ? "on" : ""
       clearTimeout(settling.current)
       settling.current = setTimeout(() => {
         if (store.projectId) saveSelection(scope, store.projectId, nodes.map((node) => node.data.name))
       }, 200)
     },
-    [selected, store, scope],
+    [store, scope],
   )
 
-  const dragStart = useCallback(
-    (nodes: ElementNode[]) => store.dragStarted(nodes.map((node) => node.data.name)),
+  const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])
+
+  const dragStart = useCallback((nodes: ElementNode[]) => store.dragStarted(nodes), [store])
+  const dragging = useCallback(
+    (event: Pointing, nodes: ElementNode[]) => {
+      const { clientX, clientY } = pointOf(event)
+      store.dropTargetAt(clientX, clientY, draggedEls(nodes))
+    },
     [store],
   )
-  const dragStop = useCallback((nodes: ElementNode[]) => store.dragStopped(nodes), [store])
+  const dragStop = useCallback(
+    (event: Pointing, nodes: ElementNode[]) => {
+      const { clientX, clientY } = pointOf(event)
+      const target = store.dropTargetAt(clientX, clientY, draggedEls(nodes))
+      if (!target) {
+        store.setHot(null)
+        return store.dragStopped(nodes)
+      }
+      store.dragDropped(nodes)
+      target.drop(nodes.map((node) => node.data.name), clientX, clientY)
+      // The box stays open under the pointer until it moves.
+      window.addEventListener("pointermove", () => store.setHot(null), { once: true })
+    },
+    [store],
+  )
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (typing(event.target)) return
       const command = event.metaKey || event.ctrlKey
       if (event.key === "Escape") {
-        store.open.set(null)
+        store.menu.set(null)
         for (const node of flow.getNodes()) {
           const placing = store.get(node.data.name)?.placing
           if (node.selected && placing && placing.stage !== "adding") store.cancel(store.resolveName(node.data.name))
         }
         flow.setNodes((nodes) => nodes.map((node) => (node.selected ? { ...node, selected: false } : node)))
+      } else if (event.key === "Delete" || (event.key === "Backspace" && !command)) {
+        const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
+        if (names.length) {
+          event.preventDefault()
+          void store.remove(names)
+        }
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
         flow.setNodes((nodes) => nodes.map((node) => ({ ...node, selected: true })))
@@ -286,18 +303,35 @@ function Canvas({
 
   // Far out, a card shows its picture, its name and little else.
   const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
+  const accepted = useCallback((event: DragEvent) => event.dataTransfer.types.includes(DRAGGED_TOOL) || event.dataTransfer.types.includes(DRAGGED_FILE), [])
+
+  // The list a box's controls come from, whatever the panel is searching.
+  useEffect(() => {
+    if (listed) store.addTools(listed.tools)
+  }, [store, listed])
 
   return (
     <CanvasStoreProvider value={store}>
+      <ToolPanel
+        machine={machines.at(-1) ?? null}
+        shut={shut}
+        setShut={(next) => {
+          setShut(next)
+          saveToolsShut(next)
+        }}
+        place={placeTool}
+        choose={choose}
+      />
       <div
         ref={stage}
         className="stage"
+        data-tools={shut ? "shut" : "open"}
         data-lod={band}
         onDragEnter={(event) => {
           if (hasFiles(event)) setVeil(true)
         }}
         onDragOver={(event) => {
-          if (!hasFiles(event)) return
+          if (!hasFiles(event) && !accepted(event)) return
           event.preventDefault()
           event.dataTransfer.dropEffect = "copy"
         }}
@@ -306,13 +340,9 @@ function Canvas({
         }}
         onDrop={drop}
       >
-        <ReactFlow<ElementNode, GraphEdge>
+        <ReactFlow<ElementNode, Edge>
           defaultNodes={[]}
-          defaultEdges={[]}
           nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          edgesFocusable={false}
-          edgesReconnectable={false}
           defaultViewport={saved ?? undefined}
           panOnScroll
           panOnScrollSpeed={1}
@@ -331,21 +361,26 @@ function Canvas({
           attributionPosition="bottom-left"
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
+          onNodeContextMenu={(event, node) => {
+            if (node.type !== "element") return
+            event.preventDefault()
+            store.menu.set({ name: node.data.name, x: event.clientX, y: event.clientY })
+          }}
           onNodeDragStart={(_, __, nodes) => dragStart(nodes)}
-          onNodeDragStop={(_, __, nodes) => dragStop(nodes)}
+          onNodeDrag={(event, _, nodes) => dragging(event, nodes)}
+          onNodeDragStop={(event, _, nodes) => dragStop(event, nodes)}
           onSelectionDragStart={(_, nodes) => dragStart(nodes)}
-          onSelectionDragStop={(_, nodes) => dragStop(nodes)}
+          onSelectionDrag={(event, nodes) => dragging(event, nodes)}
+          onSelectionDragStop={(event, nodes) => dragStop(event, nodes)}
         >
           <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
-          <Empty choose={choose} />
+          <Empty />
         </ReactFlow>
-        {veil && <div className="dropveil">Drop to add to this project</div>}
-        <EdgeTip />
+        {veil && <div className="dropveil" />}
       </div>
-      <TextSheet />
+      <AssetMenu />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
-      <Dock choose={choose} selected={selected} />
-      {slot && createPortal(<Controls store={store} fit={fit} choose={choose} />, slot)}
+      {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>
   )
@@ -354,7 +389,7 @@ function Canvas({
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
 export function CanvasHost(props: { projectId: string | null; slot: HTMLElement | null; onAdopt: (id: string) => void }) {
   return (
-    <ReactFlowProvider defaultNodes={[]} defaultEdges={[]}>
+    <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />
     </ReactFlowProvider>
   )

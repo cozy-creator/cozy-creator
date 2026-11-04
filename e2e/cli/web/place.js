@@ -105,8 +105,8 @@ const constants = (folder) => {
   check('thumbnails', thumbs.up === 3, thumbs);
   await page.screenshot({ path: process.env.SHOT ? `${process.env.SHOT}-dropped.png` : undefined });
 
-  // One chosen from the selector, in the top bar's button: its field is focused with the stem selected; a name shows as it will be.
-  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('.top button:has-text("Add file")')]);
+  // One chosen from the selector, in the tools' button: its field is focused with the stem selected; a name shows as it will be.
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.click('.tools button:has-text("Add file")')]);
   check('selector_accepts_media', (await chooser.element().getAttribute('accept')) === 'image/*,video/*,audio/*');
   await chooser.setFiles({ name: 'Hero Shot.png', mimeType: 'image/png', buffer: png(120) });
   await page.waitForSelector('.nm-field');
@@ -172,15 +172,14 @@ const constants = (folder) => {
   const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((el) => el.title + el.ariaLabel).join(' '));
   check('hash_not_shown', hashes.every((hash) => !shown.includes(hash)));
 
-  // A drawer is a route and loses nothing: same viewport, the dock re-centred beside it, and the yaml there holds the hash.
+  // A drawer is a route and loses nothing: same viewport, and the yaml there holds the hash.
   const viewportNow = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-  const dockCentre = () => page.evaluate(() => { const b = document.querySelector('.dock').getBoundingClientRect(); return b.left + b.width / 2; });
-  const [viewportShut, dockShut] = [await viewportNow(), await dockCentre()];
-  await page.click('.top a:has-text("project.yaml")');
+  const viewportShut = await viewportNow();
+  await page.click('.main-menu summary');
+  await page.click('.main-menu a:has-text("project.yaml")');
   await page.waitForSelector('.drawer pre.yaml');
   await until('yaml in the pane', () => page.textContent('pre.yaml'), (text) => text.includes('Hero_Shot_v2'));
   check('drawer_keeps_viewport', (await viewportNow()) === viewportShut);
-  check('dock_recentres', (await dockCentre()) < dockShut - 100, { dockShut, open: await dockCentre() });
   check('yaml_pane_is_the_file', (await page.textContent('pre.yaml')) === yaml(folder));
   await page.click('.drawer a[aria-label=Close]');
 

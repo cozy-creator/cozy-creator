@@ -1,9 +1,9 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy project
-// import` and blocks written straight into project.yaml show with no reload: elements of every kind, edges from reads, each placed once,
-// left to right, its row written. What `GET /v1/projects/{id}` says for it. Scrubbing opens no <video>; playing is Range with ?media=,
+// import` and blocks written straight into project.yaml show with no reload: elements of every kind, with no edges, each placed once, left
+// to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. Scrubbing opens no <video>; playing is Range with ?media=,
 // at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
-// run. With the Hub unreachable it still answers. 300 elements with edges, measured: seen.scale.
+// run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale.
 //   node see.js <sign-in link from `cozy web --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
@@ -30,46 +30,20 @@ const shownUrl = (url) => url.replace(/([?&]media=)[^&]+/, '$1…');
 const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
-const tag = (page, name) => element(page, name).locator('.tag').textContent();
-const edgeIds = (page) => page.evaluate(() => [...document.querySelectorAll('.ge')].map((edge) => edge.dataset.edge));
+const away = (page) => page.mouse.move(2, 500);
+async function open(page, name) {
+  await away(page);
+  await element(page, name).locator('.nm').hover();
+}
+async function tag(page, name) {
+  await open(page, name);
+  return element(page, name).locator('.tag').textContent();
+}
 const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
 
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
   renameSync(`${at}.part`, at);
-}
-
-/** Somewhere along an edge that the pointer really lands on it, or null. */
-const pointOn = (page, id) => page.evaluate((id) => {
-  const hit = [...document.querySelectorAll('.ge')].find((edge) => edge.dataset.edge === id)?.querySelector('.ge-hit');
-  if (!hit) return null;
-  const screen = hit.getScreenCTM();
-  for (let t = 0.05; t < 1; t += 0.05) {
-    const at = hit.getPointAtLength(hit.getTotalLength() * t);
-    const [x, y] = [at.x * screen.a + screen.e, at.y * screen.d + screen.f];
-    if (document.elementFromPoint(x, y)?.closest?.('.ge')?.dataset.edge === id) return { x, y };
-  }
-  return null;
-}, id);
-
-/** Which edges have their path redrawn while `act` goes on. */
-async function redrawn(page, act) {
-  await page.evaluate(() => {
-    window.touched = new Set();
-    window.watching = new MutationObserver((list) => {
-      for (const change of list) {
-        const edge = change.target.closest?.('.ge');
-        if (edge) window.touched.add(edge.dataset.edge);
-      }
-    });
-    window.watching.observe(document.querySelector('.react-flow__viewport').parentElement, { subtree: true, attributes: true, attributeFilter: ['d'] });
-  });
-  await act();
-  await page.waitForTimeout(300);
-  return page.evaluate(() => {
-    window.watching.disconnect();
-    return [...window.touched];
-  });
 }
 
 async function drag(page, handle, dx, dy) {
@@ -251,7 +225,7 @@ entities:
   check('each_placed_and_written', true);
   const left = (read, reader) => rows[reader].x > rows[read].x;
   check('reads_left_to_right', left('hero_art', 'hero') && left('hero', 'shot') && left('clip', 'shot') && left('clip', 'picture') && left('clip', 'edit') && left('older_art', 'hero'), rows);
-  await page.click('.top button:has-text("Fit")');
+  await page.keyboard.press('f');
   await page.waitForTimeout(400);
   await until('every element on screen', () => page.locator('.react-flow__node').count(), (n) => n === named.length);
   await shot('placed');
@@ -271,8 +245,11 @@ entities:
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   check('entity_sub_row', (await element(page, 'hero').locator('.sub-name').textContent()) === 'hero.older');
   check('entity_slots', (await element(page, 'hero').locator('.slot').count()) === 2);
+  await away(page);
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
-  check('beat_bar', (await element(page, 'shot').locator('.beats button').allTextContents()).join() === '4s,3s');
+  await open(page, 'shot');
+  await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
+  await open(page, 'odd');
   check('warned_mark', (await element(page, 'odd').locator('.warned').count()) === 1);
   check('wire_warning_of_a_sub_entity', read.warnings?.some((said) => said.name === 'hero.older'), read.warnings);
   check('warned_mark_of_a_sub_entity', (await element(page, 'hero').locator('.warned').count()) === 1);
@@ -285,46 +262,8 @@ entities:
   check('sound_plays', (await element(page, 'sea_sound').locator('.play').count()) === 1);
   await thumbUp('clip');
 
-  // Edges from reads: solid, dotted.
-  const want = {
-    'mention:hero/>shot/': 'none',
-    'mention:hero/from:hero.older>shot/': 'none',
-    'mention:clip/>shot/': 'none',
-    'mention:clip/>picture/': 'none',
-    'mention:clip/>edit/': 'none',
-    'link:hero_art/>hero/': 'dotted',
-    'link:older_art/>hero/to:hero.older': 'dotted',
-  };
-  const drawn = await until('its edges', () => edgeIds(page), (ids) => Object.keys(want).every((edge) => ids.includes(edge)));
-  const dashes = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.ge')].map((edge) => [edge.dataset.edge, getComputedStyle(edge.querySelector('.ge-line')).strokeDasharray])));
-  const look = (dash) => (dash === 'none' ? 'none' : 'dotted');
-  check('edge_looks', Object.entries(want).every(([edge, style]) => look(dashes[edge]) === style), dashes);
-  check('edge_width_ignores_zoom', await page.evaluate(() => [...document.querySelectorAll('.ge-line')].every((line) => getComputedStyle(line).vectorEffect === 'non-scaling-stroke')));
-
-  // Selecting lights its edges and dims the rest.
-  await element(page, 'shot').locator('.nm').click();
-  await until('the stage focused', () => page.getAttribute('.stage', 'data-focus'), (focus) => focus === 'on');
-  const lit = await page.evaluate(() => [...document.querySelectorAll('.ge.lit')].map((edge) => edge.dataset.edge));
-  const connected = drawn.filter((edge) => { const [from, to] = edge.split(':').slice(1).join(':').split('>'); return from.split('/')[0] === 'shot' || to.split('/')[0] === 'shot'; });
-  check('selected_lights_its_edges', lit.length > 0 && lit.length === connected.length && connected.every((edge) => lit.includes(edge)), { lit, connected });
-  await shot('selected');
-  await page.keyboard.press('Escape');
-
-  // Hovering an edge names the text that made it; clicking opens that text.
-  const point = await pointOn(page, 'mention:hero/from:hero.older>shot/');
-  check('edge_reachable', Boolean(point));
-  if (point) {
-    await page.mouse.move(point.x, point.y);
-    await page.waitForSelector('.edge-tip');
-    const tip = await page.textContent('.edge-tip');
-    check('edge_names_its_text', tip.includes('shot') && tip.includes('beat 1') && tip.includes('waits on the shore'), tip);
-    await page.mouse.click(point.x, point.y);
-    await page.waitForSelector('.sheet');
-    check('edge_opens_its_text', (await page.textContent('.sheet .here')).includes('waits on the shore'), await page.textContent('.sheet'));
-    const onlyText = await page.evaluate(() => [...document.querySelectorAll('.sheet-body *')].every((node) => ['SECTION', 'H3', 'H4', 'P', 'CODE', 'SPAN'].includes(node.tagName)));
-    check('words_are_text', onlyText);
-    await page.keyboard.press('Escape');
-  }
+  // No edges at all: what reads what stays inside Calcifer.
+  check('no_edges', (await page.locator('.react-flow__edge, .ge').count()) === 0);
 
   // A video costs nothing until clicked: hovering scrubs a strip, with a timecode, and opens no <video>.
   await until('clip measured', () => asset('clip'), (held) => held.duration_ms > 0);
@@ -339,34 +278,39 @@ entities:
   check('scrub_moves_the_strip', strip.moved === 'translateX(-50%)', strip);
   check('timecode', /^\d+:\d\d$/.test(await clip.locator('.tc').textContent()), await clip.locator('.tc').textContent());
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
-  await page.mouse.move(5, 300);
+  await away(page);
 
   // A take landing shows with no reload. The strip's + goes to POST runs; what Calcifer makes itself needs no machine.
   const picture = element(page, 'picture');
+  await away(page);
   const numberBefore = Math.max(0, ...((await asset('picture')).prefixes ?? []).map((version) => version.number));
-  await picture.hover();
+  await open(page, 'picture');
   await picture.locator('.take.add').click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1);
-  check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0, await page.getAttribute('.stage', 'data-focus'));
+  check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
   check('landed_with_no_reload', await notReloaded());
   // A walk makes each tool whose reads settled, so the cut landed too: its pieces under it.
   await until('the cut landed', () => asset('edit'), (held) => held.standing === 'current');
   await until('its film shows', () => element(page, 'edit').locator('.media img').count(), (n) => n > 0);
+  await open(page, 'edit');
   check('piece_strip', (await element(page, 'edit').locator('.beats button').allTextContents()).join() === 'clip,clip_b');
   const landedVersion = (await asset('picture')).prefixes?.at(-1);
   check('wire_version_main', landedVersion?.main?.field === 'image' && /^files\//.test(landedVersion?.main?.path ?? '') && landedVersion?.main?.sha256?.startsWith('sha256:'), landedVersion);
   await shot('landed');
 
   // Playing: a file here over Range with ?media=, two at most, and the third stops the first.
+  await open(page, 'clip');
   await clip.locator('.play').click();
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
   await until('over Range with ?media=', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && answer.media));
   check('plays_by_range_and_media', true);
+  await open(page, 'clip_b');
   await element(page, 'clip_b').locator('.play').click();
   await until('two videos', () => page.locator('video').count(), (n) => n === 2);
+  await open(page, 'edit');
   await element(page, 'edit').locator('.play').click();
   await until('still two, the first stopped', () => clip.locator('video').count(), (n) => n === 0);
   await page.waitForTimeout(300);
@@ -378,7 +322,7 @@ entities:
 
   // A failure is named and stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
-  await needs.hover();
+  await open(page, 'needs');
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);
   check('wire_failure', failed.failure.message.includes('cannot render') && Boolean(failed.failure.code), failed.failure);
@@ -390,6 +334,7 @@ entities:
   await page.reload();
   await page.waitForSelector('.react-flow__node');
   await page.evaluate(() => { window.notReloaded = true; });
+  await open(page, 'needs');
   await until('still there after a reload', () => needs.locator('.status.bad').textContent(), (text) => text.includes('cannot render'));
   check('failure_survives_reload', true);
   const afterReload = await cards();
@@ -407,6 +352,7 @@ entities:
   const away = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
   check('wire_absent_per_file', Object.values(away.files).every((file) => file.absent === true) && (await state()).absent > 0, away.files);
   await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
+  await open(page, 'older_art');
   check('pull_offered', (await element(page, 'older_art').locator('.status .act').textContent()) === 'Pull');
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
   await shot('absent');
@@ -414,43 +360,41 @@ entities:
   await until('back', () => element(page, 'older_art').locator('.media-note').count(), (n) => n === 0);
   check('file_back_with_no_reload', await notReloaded());
 
-  // Moving one: its row, no input of anything, and only its own edges.
+  // Moving one: its row, and no input of anything.
   const inputs = async () => JSON.stringify((await state()).assets.map((held) => [held.name, held.inputs]));
   const inputsBefore = await inputs();
   const wasAt = (await cards()).hero_art;
-  const touched = await redrawn(page, () => drag(page, element(page, 'hero_art').locator('.nm'), 90, 70));
+  await drag(page, element(page, 'hero_art').locator('.nm'), 90, 70);
   const movedTo = (await until('the moved row', cards, (now) => now.hero_art.x !== wasAt.x || now.hero_art.y !== wasAt.y)).hero_art;
   check('move_writes_its_row', movedTo.x > wasAt.x, { wasAt, movedTo });
   check('move_touches_no_input', (await inputs()) === inputsBefore);
-  check('move_redraws_only_its_edges', touched.length > 0 && touched.every((edge) => edge.includes('hero_art/')), touched);
 
-  // Versions, on real runs: a strip, looking at one changes only this page, pin writes the line and unpin removes it.
+  // Versions, on real runs: side by side, looking at one changes only this page, Approve writes the line and Unapprove removes it.
   seen.ran = local;
   if (local) {
-    await until('a machine to send it to', () => page.locator('select[aria-label="The machine new takes go to"]').count(), (n) => n === 1);
     const card = element(page, 'card');
     const versions = async () => (await asset('card')).prefixes?.length ?? 0;
     const take = async (count) => {
-      await card.hover();
+      await open(page, 'card');
       await card.locator('.take.add').click();
       await until(`version ${count}`, versions, (n) => n === count, FIRST_RUN_MS);
     };
     await take(1);
     await take(2);
+    await open(page, 'card');
     await until('its count', () => card.locator('.count').textContent(), (text) => text === '2/2');
     const made = await asset('card');
     check('wire_execution_ms', made.prefixes.every((version) => version.execution_ms > 0 && version.run > 0), made.prefixes);
-    await card.hover();
     await card.locator('.take').first().click();
     await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
-    await card.hover();
-    await card.locator('button[aria-label=Pin]').click();
+    await card.locator('button:has-text("Approve")').click();
     // A hash on one of card's own lines: `image: <hero_art>` further down is hero's.
     await until('pinned in the file', () => Promise.resolve(readFileSync(yamlAt, 'utf8')), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}image: "?[0-9a-f]/.test(text));
-    await until('pin lit', () => card.locator('button[aria-label=Unpin]').count(), (n) => n === 1);
-    check('pin_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
-    await card.locator('button[aria-label=Unpin]').click();
+    await open(page, 'card');
+    await until('it can be unapproved', () => card.locator('button:has-text("Unapprove")').count(), (n) => n === 1);
+    check('approved_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
+    await card.locator('button:has-text("Unapprove")').click();
     await until('unpinned', () => asset('card'), (held) => !held.pinned);
     check('landed_real_with_no_reload', await notReloaded());
     await shot('versions');
@@ -482,8 +426,7 @@ entities:
     await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), Boolean);
   }
 
-  // 300 elements with edges, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each
-  // case really happened, and that moving one redraws only its edges.
+  // 300 elements, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.
   const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `see-${Date.now()}` }, body: JSON.stringify({ name: `web-see-scale-${Date.now()}` }) });
   try {
     const big = made.path;
@@ -494,10 +437,8 @@ entities:
     const perRow = Math.ceil(Math.sqrt(COUNT));
     let text = 'version: 2\nassets:\n';
     let rowsText = '# Where cards sit. Only the page reads this. Nothing here is an input.\nversion: 1\ncards:\n';
-    let edges = 0;
     for (let i = 0; i < COUNT; i++) {
       const reads = [1 + (i % 7), perRow + (i % 3)].filter((back) => i - back >= 0).map((back) => `<n${i - back}>`);
-      edges += reads.length;
       text += `  n${i}:\n    ${i % 5 ? `image: "${hash('a_picture')}"` : `video: "${hash('a_video')}"`}\n    render:\n      with: see-no-such-package\n      prompt: from ${reads.join(' and ') || 'nothing'}\n`;
       rowsText += `  n${i}: {x: ${(i % perRow) * 304}, y: ${Math.floor(i / perRow) * 240}, w: 240}\n`;
     }
@@ -521,8 +462,8 @@ entities:
       await tab.waitForTimeout(500);
       return tab;
     };
-    const onScreen = (tab) => tab.evaluate(() => ({ cards: document.querySelectorAll('.react-flow__node').length, edges: document.querySelectorAll('.ge').length }));
-    seen.scale = { elements: COUNT, edges, read_ms };
+    const onScreen = (tab) => tab.evaluate(() => ({ cards: document.querySelectorAll('.react-flow__node').length, edges: document.querySelectorAll('.react-flow__edge').length }));
+    seen.scale = { elements: COUNT, read_ms };
 
     let tab = await open(0.7, 40);
     const near = await panning(tab, 3000);
@@ -536,25 +477,22 @@ entities:
     const far = await panning(tab, 3000);
     seen.scale.pan_11 = { ...(await onScreen(tab)), fewest_cards: far.fewest, ...summary(far.frames) };
     check('scale_far_panned', far.places > 10, far.places);
-    check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === edges, seen.scale.pan_11);
+    check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
     await tab.close();
 
     tab = await open(0.7, 40);
     const name = element(tab, 'n39').locator('.nm');
     const box = await name.boundingBox();
     let frames;
-    const moved = await redrawn(tab, async () => {
-      await tab.mouse.move(box.x + 5, box.y + 5);
-      await tab.mouse.down();
-      await tab.mouse.move(box.x + 9, box.y + 5);
-      const measuring = quiet(tab, 3000);
-      const stopAt = Date.now() + 3000;
-      for (let dx = 0; Date.now() < stopAt; dx = (dx + 7) % 280) await tab.mouse.move(box.x + 9 + dx, box.y + 5 + dx / 3);
-      frames = await measuring;
-      await tab.mouse.up();
-    });
-    seen.scale.move_70 = { ...(await onScreen(tab)), ...summary(frames), edges_redrawn: moved.length };
-    check('scale_move_redraws_only_its_edges', moved.length > 0 && moved.every((edge) => /\bn39\//.test(edge)), moved);
+    await tab.mouse.move(box.x + 5, box.y + 5);
+    await tab.mouse.down();
+    await tab.mouse.move(box.x + 9, box.y + 5);
+    const measuring = quiet(tab, 3000);
+    const stopAt = Date.now() + 3000;
+    for (let dx = 0; Date.now() < stopAt; dx = (dx + 7) % 280) await tab.mouse.move(box.x + 9 + dx, box.y + 5 + dx / 3);
+    frames = await measuring;
+    await tab.mouse.up();
+    seen.scale.move_70 = { ...(await onScreen(tab)), ...summary(frames) };
     await tab.close();
   } finally {
     await api(`/v1/projects/${made.id}`, { method: 'DELETE' }).catch(() => {});

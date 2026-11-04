@@ -22,6 +22,10 @@ const viewKey = (scope: string, id: string) => `cozy.view:${scope}:${id}`
 const selectionKey = (scope: string, id: string) => `cozy.selection:${scope}:${id}`
 
 const machineKey = (scope: string) => `cozy.machine:${scope}`
+const TOOLS_KEY = "cozy.tools-shut"
+
+export const loadToolsShut = () => read<boolean>(TOOLS_KEY) === true
+export const saveToolsShut = (shut: boolean) => write(TOOLS_KEY, shut)
 
 export const loadMachine = (scope: string) => read<string>(machineKey(scope))
 export const saveMachine = (scope: string, name: string) => write(machineKey(scope), name)

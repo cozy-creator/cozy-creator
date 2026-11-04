@@ -102,11 +102,11 @@ fn emitted(field: &str, value: &Value, indent: usize) -> Vec<String> {
     }
 }
 
-/// A list's item at `indent`: a mapping's first field on the dash's line, a beat's `duration` and a write's `image` first.
+/// A list's item at `indent`: a mapping's first field on the dash's line, a beat's `duration` first.
 fn item_lines(item: &Value, indent: usize) -> Vec<String> {
     match item {
         Value::Object(fields) if !fields.is_empty() => {
-            let (first, rest): (Vec<_>, Vec<_>) = fields.iter().partition(|(field, _)| ["duration", "image"].contains(&field.as_str()));
+            let (first, rest): (Vec<_>, Vec<_>) = fields.iter().partition(|(field, _)| field.as_str() == "duration");
             let mut lines: Vec<String> = first.into_iter().chain(rest).flat_map(|(field, value)| emitted(field, value, indent + 2)).collect();
             lines[0] = format!("{}- {}", pad(indent), &lines[0][indent + 2..]);
             lines

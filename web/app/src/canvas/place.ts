@@ -1,6 +1,7 @@
 import { ApiError, type Client } from "../api/client"
 import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
+import type { Tool } from "../types"
 import { CARD_WIDTH, type CanvasStore, type MediaKind, type Stage } from "./CanvasStore"
 import { stemName } from "./names"
 
@@ -55,6 +56,35 @@ export class Placer {
       })
       void this.run(key, file, abort.signal, at)
     })
+  }
+
+  /** A tool dropped at a point: an asset of it, opening on its controls. */
+  async addTool(tool: Tool, point: { x: number; y: number }) {
+    const width = tool.kind === "video" ? 360 : 300
+    const at = { x: Math.round(point.x - width / 2), y: Math.round(point.y - 16), w: width }
+    try {
+      const id = await this.project()
+      const made = await this.client.newAsset(id, `asset-${crypto.randomUUID()}`, { tool: tool.id, at, name: tool.label })
+      this.store.expect(made.name, at)
+      this.hooks.refresh(id)
+    } catch (error) {
+      say(`Couldn't place ${tool.label}`, error)
+    }
+  }
+
+  /** A take or version dragged out: its own asset with the same file and what it says it is, and no new bytes. */
+  async addFile(file: { sha256: string; name: string; description?: string }, point: { x: number; y: number }) {
+    const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16), w: CARD_WIDTH }
+    try {
+      const id = await this.project()
+      const made = await this.client.import(id, `import-${crypto.randomUUID()}`, { source: file.sha256, name: file.name, at })
+      this.store.expect(made.name, at)
+      this.store.focusing = null
+      if (file.description) await this.client.patchAsset(id, made.name, { fields: { description: file.description } })
+      this.hooks.refresh(id)
+    } catch (error) {
+      say(`Couldn't take out ${file.name}`, error)
+    }
   }
 
   private async run(key: string, file: File, signal: AbortSignal, dropped: { x: number; y: number; w: number }) {
