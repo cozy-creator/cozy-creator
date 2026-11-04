@@ -591,6 +591,8 @@ impl Doc {
         for (field, value) in asset.inputs.iter().chain(asset.written.iter().flatten()) {
             said_in(value, field.clone(), &mut said);
         }
+        said.sort();
+        said.dedup();
         let read = |&j: &usize| {
             let key = name_key(&self.assets[j].name);
             let at = said.iter().filter(|(mention, _)| name_key(mention) == key).map(|(_, place)| place.clone());
@@ -1034,7 +1036,9 @@ fn one_name_twice(text: &str, first: &str, second: &str) -> Error {
     let lines = |name: &str| -> Vec<usize> {
         let quoted = format!("\"{name}\"");
         let writes = |line: &str| [name, quoted.as_str()].iter().any(|key| line.trim_start().strip_prefix(*key).is_some_and(|rest| rest.trim_start().starts_with(':')));
-        text.lines().enumerate().filter(|(_, line)| line.starts_with(' ') && writes(line)).map(|(n, _)| n + 1).collect()
+        let at = |line: &str| line.len() - line.trim_start().len();
+        let under = text.lines().skip_while(|line| !line.starts_with("assets:")).skip(1).find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#')).map_or(2, at);
+        text.lines().enumerate().filter(|(_, line)| at(line) == under && writes(line)).map(|(n, _)| n + 1).collect()
     };
     let (at, then) = (lines(first), lines(second));
     let one = at.first().copied().unwrap_or(0);

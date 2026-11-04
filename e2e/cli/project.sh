@@ -1666,8 +1666,8 @@ printf 'instructions: From a file\ncount: 2\n' > "$T/fields.yaml"
 [ "$(cozy project -p "$T" add "$tool/still" drawn --input "$T/fields.yaml" count=3 style=flat soft:=true --at 400,120,360)" = drawn ] || check "by the CLI: add: no name"
 J '.assets[] | select(.name == "drawn") | .tool != null and .fields.instructions == "From a file" and .fields.count == 3 and .fields.style == "flat" and .fields.soft == true' <<< "$(status "$T")" || check "by the CLI: add: $(row "$T" drawn .fields)"
 J '.tools | any(.local and .function == "still")' <<< "$(cozy --json project -p "$T" tools)" || check "by the CLI: tools leaves out the local code the project names"
-[ "$(cozy project -p "$T" add "$tool/still" drawn)" = drawn_2 ] || check "by the CLI: a name taken didn't take _2"
-cozy project -p "$T" delete drawn_2 > /dev/null || check "by the CLI: delete drawn_2"
+code=0; cozy project -p "$T" add "$tool/still" drawn > "$OUT/by-cli-taken.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'drawn is in the project already' "$OUT/by-cli-taken.txt" && grep -q 'cozy project set drawn' "$OUT/by-cli-taken.txt"; } || check "by the CLI: a typed name that's taken (exit $code): $(tail -c 300 "$OUT/by-cli-taken.txt")"
 refuses "two names" "one name, not" add "$tool/still" one two
 refuses "a tool that makes nothing" "makes no picture" add "$tool/words" nothing
 
