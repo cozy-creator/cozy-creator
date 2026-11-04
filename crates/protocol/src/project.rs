@@ -74,9 +74,6 @@ pub struct Cancelled {
     pub dropped: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub canceled: Vec<u64>,
-    /// Why a name matched nothing, while project.yaml doesn't read: it may be an entity, which only the file can expand.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
 }
 
 /// `GET /v1/projects`: the projects this computer's Calcifer has opened, last used first.

@@ -186,6 +186,9 @@ pub fn main_of(files: &Files) -> Option<&String> {
 /// until it lands: whatever stops the walk, the next one follows it and never sends it again.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
+    /// The render it is of, whose text it lands and goes on with.
+    #[serde(default)]
+    pub ask: String,
     /// The asset it makes, as the file names it.
     pub asset: String,
     /// What it makes.
@@ -294,21 +297,33 @@ impl Default for Lock {
 /// What a render asked that the project's walk has not sent yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Owed {
+    /// Each render not done, in the order asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<Ask>,
+    /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asked: BTreeMap<String, String>,
+}
+
+/// One render: project.yaml as it was when asked, and what it owes. It plans on that text alone, so an edit after it touches nothing
+/// of it, and a restart resumes it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ask {
+    pub id: String,
+    pub text: String,
+    /// `text`'s sha256: asks of the same text make the same inputs.
+    pub digest: String,
     /// Where what it brings up goes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<Target>,
-    /// `render all`: every asset with no state.
+    pub target: Target,
+    /// `render all --missing`: every asset with no state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all: bool,
-    /// What it sent or tried this walk, made or failed, by name key: each is tried once.
+    /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
     /// New versions of named assets, one each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub takes: Vec<Take>,
-    /// The `Idempotency-Key`s this walk was asked under, and each ask's digest: a retry across a restart adds nothing.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub asked: BTreeMap<String, String>,
 }
 
 fn is_zero<T: Default + PartialEq>(n: &T) -> bool {
@@ -321,12 +336,12 @@ fn is_zero_f(n: &f64) -> bool {
 
 impl Owed {
     pub fn is_empty(&self) -> bool {
-        !self.all && self.target.is_none() && self.sent.is_empty() && self.takes.is_empty() && self.asked.is_empty()
+        self.asks.is_empty() && self.asked.is_empty()
     }
 }
 
 /// The machines a version may be made on, and the Hub its function is read from.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     pub on: Vec<On>,
     pub hub: String,
@@ -366,7 +381,7 @@ impl Lock {
 
     /// Whether its walk owes anything: asked and not sent, or sent and not landed.
     pub fn owes(&self) -> bool {
-        self.walk.all || !self.walk.takes.is_empty() || !self.pending.is_empty()
+        !self.walk.asks.is_empty() || !self.pending.is_empty()
     }
 
     pub fn asset(&self, name: &str) -> Option<&Asset> {

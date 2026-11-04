@@ -255,10 +255,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
             cancelled.dropped.iter().for_each(|name| output::say(ctx, &format!("dropped {name} from the queue")));
             cancelled.canceled.iter().for_each(|run| output::say(ctx, &format!("canceled run {run}")));
-            match &cancelled.note {
-                Some(note) => output::warn(note),
-                None if cancelled.dropped.is_empty() && cancelled.canceled.is_empty() => output::say(ctx, "nothing of that was queued or running"),
-                None => {}
+            if cancelled.dropped.is_empty() && cancelled.canceled.is_empty() {
+                output::say(ctx, "nothing of that was queued or running");
             }
         }
         Verb::Reclaim { yes } => {

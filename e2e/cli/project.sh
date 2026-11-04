@@ -692,8 +692,8 @@ grep -q 'dropped third' "$OUT/queue-cancel.txt" || check "queue: cancel said $(c
 J '[.queue[].name] | index("third") == null' <<< "$(status "$T")" || check "queue: third is still queued: $(status "$T" | jq -c .queue)"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$T")" && break; sleep 0.5; done
 { [ "$(made "$T" first)" = 1 ] && [ "$(made "$T" second)" = 1 ] && [ "$(made "$T" third)" = 0 ]; } || check "queue: made $(jq -c '.assets | map_values(.versions | length)' "$T/project.lock")"
-step "a project: a save that can't be read stops nothing, and the queue goes on when it reads"
-local B=$OUT/queue-broken
+step "a project: a save that can't be read refuses a new render, and nothing else"
+local B=$OUT/queue-broken code
 mkdir -p "$B"
 cat > "$B/project.yaml" <<YAML
 version: 2
@@ -711,22 +711,72 @@ assets:
     description: Also from <slow>.
 YAML
 cozy project -p "$B" render after also --queue --on local > "$OUT/queue-broken.txt" 2>&1 || check "broken: render after: $(tail -c 300 "$OUT/queue-broken.txt")"
-for _ in $(seq 120); do [ "$(status "$B" | jq '[.queue[] | select(.name == "slow" and .run != null)] | length')" = 1 ] && break; sleep 0.5; done
 cp "$B/project.yaml" "$OUT/queue-broken.yaml"
 printf 'assets: [\n' >> "$B/project.yaml"
-for _ in $(seq 40); do J '.warnings // [] | any(contains("what is queued waits until it reads"))' <<< "$(status "$B")" && break; sleep 0.5; done
-J '.busy and ([.queue[].name] | index("after") != null) and (.warnings | any(contains("what is queued waits until it reads")))' <<< "$(status "$B")" || check "broken: status says $(status "$B" | jq -c '{busy, queue, warnings}')"
-cozy project -p "$B" status > "$OUT/queue-broken-status.txt" 2>&1
-! grep -q 'nothing is walking' "$OUT/queue-broken-status.txt" || check "broken: status says nothing is walking"
+J '.busy and ([.queue[].name] | index("after") != null) and (.warnings | any(contains("a new one is refused until this reads")))' <<< "$(status "$B")" || check "broken: status says $(status "$B" | jq -c '{busy, queue, warnings}')"
+code=0; cozy project -p "$B" render after --on local > "$OUT/queue-broken-refused.txt" 2>&1 || code=$?
+[ "$code" != 0 ] || check "broken: a new render read a file that doesn't"
 cozy project -p "$B" cancel also > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
 grep -q 'dropped also' "$OUT/queue-broken-cancel.txt" || check "broken: cancel said $(cat "$OUT/queue-broken-cancel.txt")"
-cozy project -p "$B" cancel some_entity > "$OUT/queue-broken-cancel.txt" 2>&1 || check "broken: cancel of a name in no queue: $(tail -c 300 "$OUT/queue-broken-cancel.txt")"
-grep -q "an entity's name can't be followed" "$OUT/queue-broken-cancel.txt" || check "broken: cancel of a name in no queue said $(cat "$OUT/queue-broken-cancel.txt")"
-for _ in $(seq 120); do [ "$(made "$B" slow)" = 1 ] && break; sleep 0.5; done
-{ [ "$(made "$B" slow)" = 1 ] && [ "$(made "$B" after)" = 0 ]; } || check "broken: while it can't be read, made $(jq -c '.assets | map_values(.versions | length)' "$B/project.lock")"
+for _ in $(seq 240); do [ "$(made "$B" after)" = 1 ] && J '.busy | not' <<< "$(cozy --json project -p "$B" status 2>/dev/null || echo '{"busy":false}')" && break; sleep 0.5; done
+{ [ "$(made "$B" slow)" = 1 ] && [ "$(made "$B" after)" = 1 ] && [ "$(made "$B" also)" = 0 ]; } || check "broken: with the file broken, made $(jq -c '.assets | map_values(.versions | length)' "$B/project.lock")"
 cp "$OUT/queue-broken.yaml" "$B/project.yaml"
-for _ in $(seq 120); do [ "$(made "$B" after)" = 1 ] && J '.busy | not' <<< "$(status "$B")" && break; sleep 0.5; done
-{ [ "$(made "$B" after)" = 1 ] && [ "$(made "$B" also)" = 0 ] && J '.busy | not' <<< "$(status "$B")"; } || check "broken: it didn't go on when the file read: $(jq -c '.assets | map_values(.versions | length)' "$B/project.lock")"
+
+step "a project: a render uses the file as it was asked, so an edit waits for the next"
+local W=$OUT/queue-edit going prompt
+mkdir -p "$W"
+cat > "$W/project.yaml" <<YAML
+version: 2
+defaults:
+  image:
+    with: $here/project/draw.py
+assets:
+  gate:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 6
+  words:
+    description: Old words.
+  reader:
+    description: From <words> after <gate>.
+YAML
+cozy project -p "$W" render all --on local > "$OUT/queue-edit.txt" 2>&1 &
+going=$!
+for _ in $(seq 120); do [ "$(status "$W" | jq '[.queue[]? | select(.name == "gate" and .run != null)] | length')" = 1 ] && break; sleep 0.25; done
+sed -i 's/description: Old words\./description: New words./' "$W/project.yaml"
+wait "$going" || check "edit: the render: $(tail -c 400 "$OUT/queue-edit.txt")"
+! grep -q 'cannot render' "$OUT/queue-edit.txt" || check "edit: a pass said it couldn't: $(grep 'cannot render' "$OUT/queue-edit.txt")"
+{ [ "$(made "$W" words)" = 1 ] && [ "$(made "$W" reader)" = 1 ]; } || check "edit: the pass made $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
+prompt() { jq -r --arg n "$2" '.assets[$n].versions[-1].invocations[0].input.prompt' "$1/project.lock"; }
+[ "$(prompt "$W" words)" = 'Old words.' ] || check "edit: the pass used $(prompt "$W" words)"
+case "$(row "$W" words .status)" in *'out of date'*) ;; *) check "edit: words is $(row "$W" words .status)" ;; esac
+render "$W" reader || check "edit: the next render: $(tail -c 400 "$OUT/render.txt")"
+{ [ "$(made "$W" words)" = 2 ] && [ "$(made "$W" reader)" = 2 ] && [ "$(prompt "$W" words)" = 'New words.' ]; } || check "edit: the next render made $(jq -c '.assets | map_values(.versions | length)' "$W/project.lock")"
+J --arg w "$(jq -r '.assets.words.versions[-1].files.image' "$W/project.lock")" '.assets.reader.versions[-1].reads[] | select(.name == "words") | .files.image == $w' "$W/project.lock" || check "edit: the reader did not read the new file"
+
+step "a project: two queued renders with an edit between use their own text"
+local Q=$OUT/queue-two
+mkdir -p "$Q"
+cat > "$Q/project.yaml" <<YAML
+version: 2
+defaults:
+  image:
+    with: $here/project/draw.py
+assets:
+  gate:
+    kind: video
+    render: {with: $here/project/shots.py}
+    seconds: 4
+  note:
+    description: Text one, after <gate>.
+YAML
+cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-1.txt" 2>&1 || check "two: first: $(tail -c 300 "$OUT/queue-two-1.txt")"
+sed -i 's/Text one/Text two/' "$Q/project.yaml"
+cozy project -p "$Q" render note --queue --on local > "$OUT/queue-two-2.txt" 2>&1 || check "two: second: $(tail -c 300 "$OUT/queue-two-2.txt")"
+for _ in $(seq 240); do J '.busy | not' <<< "$(status "$Q")" && break; sleep 0.5; done
+J '[.assets.note.versions[].invocations[0].input.prompt] | (length == 2) and any(startswith("Text one")) and any(startswith("Text two"))' "$Q/project.lock" || check "two: note was made from $(jq -c '[.assets.note.versions[].invocations[0].input.prompt]' "$Q/project.lock")"
+J '.walk | not' "$Q/project.lock" || check "two: a finished render left its text in the lock: $(jq -c '.walk | keys' "$Q/project.lock")"
+
 [ -n "${ALONE:-}" ] && return 0
 step "a project: a canceled render all sends nothing again"
 local A=$OUT/queue-all
@@ -1021,7 +1071,7 @@ YAML
 code=0; render "$T" reader || code=$?
 { [ "$code" != 0 ] && says failures "Not this one."; } || check "failures: Refuse (exit $code): $(tail -c 400 "$OUT/render.txt")"
 [ "$(made "$T" no)" = null ] || [ "$(made "$T" no)" = 0 ] || check "failures: a refusal made a version"
-says failures "reader cannot render: what it reads was not made"
+says failures "reader cannot render: no failed in this render"
 [ -d "${PACKAGES:-}/minimax-h3" ] || return 0
 step "a project: H3's adapter refuses to keep another package's take"
 local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
