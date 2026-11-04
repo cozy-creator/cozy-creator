@@ -1201,6 +1201,10 @@ pub struct Play {
     pub fingerprint: String,
     /// A Cozy-Cap for that run output alone.
     pub token: String,
+    /// The hosted player's link, with all of the above in its fragment.
+    pub url: String,
+    /// How long `token` and `url` work, from now.
+    pub expires_s: u64,
 }
 
 /// `POST /v1/machines/{name}/keepalive`, once the machine acknowledged it.

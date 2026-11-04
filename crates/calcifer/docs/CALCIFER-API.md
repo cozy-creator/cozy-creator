@@ -157,7 +157,8 @@ a spec.
   has landed here or failed to.
 - `GET /v1/runs/events`: every run's change as `run.updated`, each run whole. No backlog: subscribe, then list.
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
-- `GET /v1/runs/{id}/outputs/{name}`, `GET /v1/runs/{id}/play`: an output's bytes; a link that plays it. An item with `stays`, untyped bytes of a run that made something else, stays on its machine: no `path`, nothing waits for it, and this answers `409 output_on_its_machine`.
+- `GET /v1/runs/{id}/play?output=&expires=` (`expires`: `90s`, `30m`, `24h`, `7d`, default `1h`): `Play {address, fingerprint, token, url, expires_s}`: how a browser plays that output straight from its machine, and `url`, the hosted player's link. `400 play_expires_invalid`, `400 play_output_invalid`.
+- `GET /v1/runs/{id}/outputs/{name}`: an output's bytes. An item with `stays`, untyped bytes of a run that made something else, stays on its machine: no `path`, nothing waits for it, and this answers `409 output_on_its_machine`.
 
 ### A run that stopped moving
 
