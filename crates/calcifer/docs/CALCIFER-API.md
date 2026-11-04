@@ -118,7 +118,8 @@ media-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'none';
 
 ### Session
 A browser signs in with a single-use code. `cozy web` and `cozy project open` write it into a 0600 redirect file
-(`~/.cozy/calcifer/open.html`) and open that, so it's in no process's arguments, or with `--no-open` print the link. The
+(`~/.cozy/calcifer/open.html`) and open that, so it's in no process's arguments, and print the link, as a snap browser
+can't read that file; `--no-open` only prints it. The
 fragment may add `&to=<route>`, as `cozy project open`'s does (`#code=<code>&to=/projects/<id>`). `~/.cozy/calcifer/sessions.json` (0600) holds sessions' digests; 30 days unused ends one.
 - `POST /v1/session-codes` (the lock record's bearer only, else `403 session_code_needs_bearer`):
   `{code, url, expires_ms}`, 32 random bytes in hex, good for 60 s. `url` is `http://<Host>/#code=<code>`.

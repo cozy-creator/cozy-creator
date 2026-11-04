@@ -1,5 +1,6 @@
 //! `cozy web` and `cozy project open`: this computer's Calcifer in a browser, signed in by a single-use code. The code
-//! goes in a 0600 redirect file and the browser opens the file, so it's in no process's arguments.
+//! goes in a 0600 redirect file and the browser opens the file, so it's in no process's arguments. The link is printed
+//! too: a snap browser can't read that file, and the code is spent at once or dead in 60 s.
 use std::process::{Command, ExitCode, Stdio};
 
 use protocol::{calcifer::SessionCode, error::Error};
@@ -9,9 +10,9 @@ use crate::{Context, output};
 
 /// Open the web UI in your browser.
 #[derive(clap::Args, Debug)]
-#[command(after_help = "Examples:\n  cozy web\n  cozy web --no-open   prints a link instead: over SSH, say")]
+#[command(after_help = "Examples:\n  cozy web\n  cozy web --no-open   only prints the link: over SSH, say")]
 pub struct Args {
-    /// Print a link instead of opening it. It works once, for 60 s.
+    /// Only print the link, which works once, for 60 s.
     #[arg(long)]
     no_open: bool,
 }
@@ -33,22 +34,19 @@ pub(crate) async fn open(ctx: &Context, to: Option<String>, no_open: bool) -> Re
         && match browse(ctx, &link) {
             Ok(()) => true,
             Err(why) => {
-                output::warn(&format!("couldn't open your browser ({why}), so here's a link"));
+                output::warn(&format!("couldn't open your browser: {why}"));
                 false
             }
         };
-    if opened {
-        if ctx.json {
-            output::json(&json!({ "opened": true }));
-        }
-        output::say(ctx, "opened in your browser. If nothing came up, or it can't read the file (a snap or Flatpak browser can't), run this again with --no-open for a link");
-        return Ok(ExitCode::SUCCESS);
-    }
     if ctx.json {
-        output::json(&json!({ "url": link, "expires_ms": code.expires_ms }));
+        output::json(&json!({ "url": link, "expires_ms": code.expires_ms, "opened": opened }));
         return Ok(ExitCode::SUCCESS);
     }
     anstream::println!("{link}");
+    if opened {
+        output::say(ctx, "opened in your browser; if it didn't come up, open this link, which works once, for 60 s");
+        return Ok(ExitCode::SUCCESS);
+    }
     output::say(ctx, "it works once, for 60 s");
     if let Some(holder) = calcifer.holder() {
         let port = holder.address.port();

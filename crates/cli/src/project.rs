@@ -73,11 +73,11 @@ enum Verb {
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
     /// Open the project in your browser.
-    #[command(after_help = "Examples:\n  cozy project open\n  cozy project open ../garden\n  cozy project open --no-open   prints a link instead: over SSH, say")]
+    #[command(after_help = "Examples:\n  cozy project open\n  cozy project open ../garden\n  cozy project open --no-open   only prints the link: over SSH, say")]
     Open {
         /// The project's folder, if not the one you are in.
         path: Option<PathBuf>,
-        /// Print a link instead of opening it. It works once, for 60 s.
+        /// Only print the link, which works once, for 60 s.
         #[arg(long)]
         no_open: bool,
     },
