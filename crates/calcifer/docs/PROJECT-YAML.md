@@ -156,7 +156,7 @@ At render, a typed adapter warns of an unknown field an asset writes itself. **A
 - **Of an entity:** see below.
 - **A package's own tags:** an adapter can declare them, `@app.project_adapter("video", reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that package makes, each stays text, exactly as written, with no warning, and reaches the adapter unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
 - **What can't be a name** is text, with no warning, as `<Picture 1>` and `</d>` are.
-- **A name that names nothing** warns, and stays text: `<kyogee>: did you mean <kyogre>?` when it is within two edits of a real name and at least four letters long, else that it is nothing in the project. Until a package is read, at its first render, its assets' are held back, because they may be its tags.
+- **A name that names nothing** fails that asset before anything runs, at no cost: `<Image-1> is no longer in the project`, with `did you mean <kyogre>?` when it is within two edits of a real name and at least four letters long. Bring it back, or edit the text. The failure stays on the asset until a version lands or its inputs change, what reads it waits, and everything else goes on. `status` says it ahead of a render. Until a package is read, at its first render, its assets' are held back, because they may be its tags. A pinned asset runs nothing, so it doesn't fail, whatever its text says, unless you name it to make another version. A cut leaves out a piece it can't read, as below.
 - **A cycle:** a mention that closes one, A mentioning B and B mentioning A, stays plain text, with a warning, and both still render. An entity's links count: `kyogre_sheet` mentioning `<kyogre>`, which links to it, is a cycle, and so is a sub-entity's asset mentioning its parent.
 
 ## Entities
@@ -173,7 +173,7 @@ An entity holds `kind`, `description`, and links: any other key whose value is `
 - **Sub-entities:** a key whose value is a map, one level deep. A map inside one warns and is ignored.
 - **Memo:** a read's description and file hashes count, so editing an entity's description puts what reads it out of date.
 - **Names** are shared across both sections. A clash warns, and the asset stands.
-- **`status`** lists entities apart with their links, and a link to nothing warns with the fix. **`render <entity>`** renders its linked assets and its sub-entities'.
+- **`status`** lists entities apart with their links, and a link to nothing warns with the fix. What reads an entity whose `image`, `video`, `audio` or `voice` links to nothing fails as a name that names nothing does. **`render <entity>`** renders its linked assets and its sub-entities'.
 - **A voice** is its own asset (`kind: audio`, `audio: <hash>`, or made by a package), linked as `voice:`. Several pictures are several assets.
 
 ## How rendering decides

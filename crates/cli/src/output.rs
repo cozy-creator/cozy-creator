@@ -85,6 +85,15 @@ pub(crate) fn refuse(json: bool, error: &Error) -> ExitCode {
 }
 
 /// A failure in one line and where to read more; `--json` has the record.
+pub fn failure_of(ctx: &Context, error: &Error) {
+    if !ctx.json
+        && let Some(remedy) = &error.remedy
+    {
+        return failure(ctx, &format!("{}\n  {}", error.message, remedy), &error.next);
+    }
+    failure(ctx, &error.message, &error.next);
+}
+
 pub fn failure(ctx: &Context, message: &str, next: &[String]) {
     if ctx.json {
         return;

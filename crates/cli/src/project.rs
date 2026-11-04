@@ -504,7 +504,7 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                 }
             }
             Event::Failed { error, .. } => {
-                output::failure(ctx, &error.message, &error.next);
+                output::failure_of(ctx, &error);
                 failed.insert(error.message);
             }
             Event::Moved { .. } | Event::Transferred { .. } => {}
@@ -568,7 +568,7 @@ fn summary(ctx: &Context, state: &State) {
     }
     for asset in &state.assets {
         if let Some(failure) = &asset.failure {
-            output::failure(ctx, &failure.message, &failure.next);
+            output::failure_of(ctx, failure);
         }
     }
     if state.run_files > 0 {

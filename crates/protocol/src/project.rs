@@ -449,6 +449,10 @@ pub struct Asset {
     /// What stopped its last try: until a version lands, it's tried again, or its inputs change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<Error>,
+    /// The names its text reads that are nothing in the project, as far as its package's tags are known: it can't run until they are.
+    /// A pin lists them too, for its text: it stands, and only fails if it is run again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.

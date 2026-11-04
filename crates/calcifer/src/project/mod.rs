@@ -577,6 +577,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     };
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
+    warnings.extend(doc.said_of_known());
     warnings.extend(unadapted(&api, &doc));
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
@@ -586,10 +587,10 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     warnings.dedup();
     let (mut missing, mut stale) = (vec![], vec![]);
     let entities = (0..doc.assets.len()).filter(|&i| doc.assets[i].links.as_ref().is_some_and(|links| links.parent.is_none())).map(|i| entity_row(&doc, i)).collect();
-    let assets = (0..doc.assets.len())
+    let assets: Vec<Row> = (0..doc.assets.len())
         .filter(|&i| doc.assets[i].links.is_none())
         .map(|i| {
-            let row = row(&doc, folder, &lock, &stand, i);
+            let row = row(&api, &doc, folder, &lock, &stand, i);
             match &stand[i].state {
                 Stand::Stale(why) => stale.push(Stale { name: row.name.clone(), why: why.clone() }),
                 Stand::Missing | Stand::Waits if doc.makes(i) => missing.push(row.name.clone()),
@@ -607,6 +608,8 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Js
     let run_files = lock.runs.iter().filter(|row| !kept.contains(&row.sha256)).count() as u64;
     let queued = queue(folder, &lock).into_iter().map(|(item, _)| item).collect();
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
+    let kept: BTreeSet<&str> = assets.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
+    warnings.retain(|warning| !kept.contains(warning.message.as_str()));
     Ok(Json(ProjectState { id, path: folder.dir.clone(), assets, queue: queued, missing, stale, orphans, busy, moving, absent, run_files, entities, cuts, warnings, next }))
 }
 
@@ -649,12 +652,29 @@ fn unadapted(api: &Arc<Api>, doc: &Doc) -> Vec<ProjectWarning> {
             continue;
         }
         let Some(package) = heard_of(api, &with) else { continue };
-        said.extend(doc.said_once_read(i, &package.reserved()));
+        if doc.tags(i).is_none() {
+            said.extend(doc.said_once_read(i, &package.reserved()));
+        }
         if doc.assets[i].pin.is_none() && package.adapter(&doc.assets[i].kind).is_none() {
             said.push(ProjectWarning::of(&doc.assets[i].name, no_adapter(&doc.assets[i].name, &package.name, &doc.assets[i].kind)));
         }
     }
     said
+}
+
+/// The tags of what makes asset `i`, this moment: none of what Calcifer makes itself. None: they aren't known yet, and its names held back.
+fn tags_now(api: &Arc<Api>, doc: &Doc, i: usize) -> Option<Vec<String>> {
+    if doc.tool(i).is_some() {
+        return Some(vec![]);
+    }
+    if let Some(tags) = doc.tags(i) {
+        return Some(tags.clone());
+    }
+    let with = doc.target(i);
+    if with.is_empty() || protocol::target::written_as_path(&with) || with.ends_with(".py") {
+        return None;
+    }
+    Some(heard_of(api, &with)?.reserved())
 }
 
 /// What was last heard of the package `with`, this moment. If that isn't recent, it is asked again in the background.
@@ -673,14 +693,13 @@ fn heard_of(api: &Arc<Api>, with: &str) -> Option<Package> {
     entry.package.clone()
 }
 
-/// Keeps `package`'s tags in project.lock for what reads the file, and answers what asset `i` couldn't be told until now.
-fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) -> Vec<ProjectWarning> {
+/// Keeps `package`'s tags in project.lock for what reads the file.
+fn read_tags(doc: &Doc, folder: &Folder, i: usize, package: &Package) {
     let (key, tags) = (format::plain_with(&doc.target(i)), package.reserved());
     let same = folder.lock().is_ok_and(|lock| lock.reserved.get(&key) == Some(&tags));
     if !same && let Err(error) = folder.update_lock(|lock| drop(lock.reserved.insert(key.clone(), tags.clone()))) {
         warn!("{}: {error}", key);
     }
-    doc.said_once_read(i, &tags)
 }
 
 /// The line that says an asset can't be made by what names it.
@@ -763,7 +782,7 @@ fn main_path(lock: &Lock, files: &Files) -> Option<String> {
 }
 
 /// Asset `i` as `GET /v1/projects/{id}` lists it.
-fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) -> Row {
+fn row(api: &Arc<Api>, doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) -> Row {
     let (asset, standing) = (&doc.assets[i], &stand[i]);
     let noun = noun(doc, lock, i);
     let held = lock.asset(&asset.name);
@@ -843,6 +862,7 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         written_by: doc.written_by(i).map(str::to_owned),
         text: doc.text(i),
         failure,
+        missing: tags_now(api, doc, i).map_or_else(Vec::new, |tags| doc.missing_names(i, &tags)),
     }
 }
 
@@ -855,7 +875,7 @@ async fn asset(
     let folder = &project.folder;
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let i = find(&doc, &name).map_err(Refusal)?;
-    let row = row(&doc, folder, &lock, &doc.stand(&lock), i);
+    let row = row(&api, &doc, folder, &lock, &doc.stand(&lock), i);
     let held = lock.asset(&row.name);
     let pinned = row.approved;
     let versions = (held.into_iter().flat_map(|held| &held.versions))
@@ -2058,8 +2078,10 @@ impl Walk {
             if let Some(moved) = &package.moved {
                 self.say(Event::Warning { message: moved.clone() });
             }
-            for warning in read_tags(doc, self.folder(), i, &package) {
-                self.say(Event::Warning { message: warning.message });
+            read_tags(doc, self.folder(), i, &package);
+            // Before anything that could cost: its adapter's run, or a function's.
+            if let Some(why) = doc.missing_inputs(i, &package.reserved()) {
+                return Err(Error::new(Kind::Validation, "input_missing", why).remedy(format!("bring it back, or edit {name}'s text")));
             }
             let Some(adapter) = package.adapter(&asset.kind) else {
                 self.say(Event::Warning { message: no_adapter(&name, &package.name, &asset.kind) });

@@ -199,7 +199,8 @@ pub struct Doc {
     index: HashMap<String, usize>,
     /// Each package's own tags, as project.lock last read them. A package not here hasn't been read yet.
     reserved: BTreeMap<String, Vec<String>>,
-    /// Mentions naming nothing in assets whose package hasn't been read: its tags may be among them, so they aren't said yet.
+    /// Mentions naming nothing and no tag its package is known to have. Until a package is read its tags may be among them, so
+    /// nothing is made of these before then.
     unread: Vec<(usize, String)>,
     /// How many the file declares, in order, and those after them are images only a beat names.
     declared: usize,
@@ -650,15 +651,7 @@ impl Doc {
                     continue;
                 }
                 let Some(j) = self.find(&mention) else {
-                    match tags {
-                        Some(_) => {
-                            let line = Warning::of(&asset.name, self.names_nothing(&asset.name, &mention));
-                            if !said.contains(&line) {
-                                said.push(line);
-                            }
-                        }
-                        None => unread.push((i, mention)),
-                    }
+                    unread.push((i, mention));
                     continue;
                 };
                 let key = name_key(&self.assets[j].name);
@@ -740,24 +733,60 @@ impl Doc {
     }
 
     /// The tags of the package that makes asset `i`, once it has been read.
-    fn tags(&self, i: usize) -> Option<&Vec<String>> {
+    pub fn tags(&self, i: usize) -> Option<&Vec<String>> {
         self.reserved.get(&plain_with(&self.target(i)))
     }
 
-    /// What is said of a mention that names nothing and is no tag.
-    fn names_nothing(&self, name: &str, mention: &str) -> String {
-        match self.near(mention) {
-            Some(close) => format!("<{mention}>: did you mean <{close}>?"),
-            None => format!("{name} mentions <{mention}>, which is nothing in the project: it reaches its function as written"),
+    /// What is said of a name that is nothing in the project.
+    fn no_longer(&self, name: &str) -> String {
+        match self.near(name) {
+            Some(close) => format!("<{name}> is no longer in the project: did you mean <{close}>?"),
+            None => format!("<{name}> is no longer in the project"),
         }
     }
 
-    /// What is said of asset `i`'s mentions naming nothing, now its package's `tags` are read.
-    pub fn said_once_read(&self, i: usize, tags: &[String]) -> Vec<Warning> {
-        let mine = self.unread.iter().filter(|(asset, mention)| *asset == i && !tags.contains(mention));
-        let mut said: Vec<Warning> = mine.map(|(_, mention)| Warning::of(&self.assets[i].name, self.names_nothing(&self.assets[i].name, mention))).collect();
-        said.dedup();
-        said
+    /// Why asset `i` can't run, given its package's `tags`: each `<name>` in its text that names nothing and is no tag, and each file
+    /// link to nothing of an entity it reads. Running it would send its words to a model with no picture, and charge for that. None: it can.
+    pub fn missing_inputs(&self, i: usize, tags: &[String]) -> Option<String> {
+        let own = self.mentions_of_nothing(i, tags).map(|mention| self.no_longer(mention));
+        let linked = self.links_to_nothing(i).map(|(j, role, target)| match role {
+            "" => format!("{}: {}", self.assets[j].name, self.no_longer(target)),
+            role => format!("{}'s {role}: {}", self.assets[j].name, self.no_longer(target)),
+        });
+        let mut said: Vec<String> = vec![];
+        own.chain(linked).for_each(|line| if !said.contains(&line) { said.push(line) });
+        (!said.is_empty()).then(|| format!("{}: {}", self.assets[i].name, said.join("; ")))
+    }
+
+    /// The names in `missing_inputs`, each once.
+    pub fn missing_names(&self, i: usize, tags: &[String]) -> Vec<String> {
+        let mut names: Vec<String> = vec![];
+        let all = self.mentions_of_nothing(i, tags).chain(self.links_to_nothing(i).map(|(_, _, target)| target));
+        all.for_each(|name| if !names.iter().any(|there| there == name) { names.push(name.to_owned()) });
+        names
+    }
+
+    fn mentions_of_nothing<'a>(&'a self, i: usize, tags: &'a [String]) -> impl Iterator<Item = &'a str> {
+        self.unread.iter().filter(move |(asset, mention)| *asset == i && !tags.contains(mention)).map(|(_, mention)| mention.as_str())
+    }
+
+    /// Each entity asset `i` reads, a file link of it that goes nowhere, and where it says it goes.
+    fn links_to_nothing(&self, i: usize) -> impl Iterator<Item = (usize, &str, &str)> {
+        self.assets[i].reads.iter().flat_map(move |&j| {
+            let links = self.assets[j].links.iter().flat_map(|links| &links.roles);
+            links.filter(|(_, target)| self.find(target).is_none()).map(move |(role, target)| (j, role.as_str(), target.as_str()))
+        })
+    }
+
+    /// What is said ahead of a run of asset `i`, given its package's `tags`. A pin runs nothing, so it says nothing, whatever its text says.
+    pub fn said_once_read(&self, i: usize, tags: &[String]) -> Option<Warning> {
+        let said = self.missing_inputs(i, tags).filter(|_| self.assets[i].pin.is_none())?;
+        Some(Warning::of(&self.assets[i].name, said))
+    }
+
+    /// `said_once_read` of each asset whose package project.lock knows.
+    pub fn said_of_known(&self) -> Vec<Warning> {
+        (0..self.assets.len()).filter(|&i| self.makes(i) && self.tool(i).is_none()).filter_map(|i| self.said_once_read(i, self.tags(i)?)).collect()
     }
 
     /// The name `mention`, which names nothing, is likely a typo of: within two edits, and neither of them short.

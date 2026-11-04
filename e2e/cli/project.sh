@@ -587,7 +587,7 @@ grep -q "^    badge: $red\$" "$E/project.yaml" || check "entities: approve did n
 cozy project -p "$E" approve hero.primordial.mark "$red" > "$OUT/approve.txt" 2>&1 || check "entities: approve hero.primordial.mark: $(tail -c 300 "$OUT/approve.txt")"
 grep -q "^      mark: $red\$" "$E/project.yaml" || check "entities: approve did not rewrite the sub-entity's link: $(grep -n mark "$E/project.yaml")"
 
-step "a project: a package's own tags are text, and a name that names nothing is said"
+step "a project: a package's own tags are text, and so is what can't be a name"
 local D=$OUT/dialogue look
 mkdir -p "$D"; plate "$D/look.mp4" testsrc2 440 800
 printf 'version: 2\nassets: {}\n' > "$D/project.yaml"
@@ -602,18 +602,96 @@ assets:
   talk:
     kind: video
     render: {with: $here/project/shots.py}
-    summary: <look> says <d><English>Hello</d> to <kyogee>, <Picture 1> and <a b> too.
+    summary: <look> says <d>[English] Hello</d> to <Picture 1> and <a b> too.
 YAML
 render "$D" talk || check "text: render talk: $(tail -c 300 "$OUT/render.txt")"
-says text "<kyogee>: did you mean <kyogre>?"
-says text "talk mentions <English>, which is nothing in the project"
-J '[.warnings[].message] | any(contains("<kyogee>: did you mean <kyogre>?")) and any(contains("<English>"))' <<< "$(status "$D")" || check "text: a name that names nothing was not said: $(status "$D" | jq -c .warnings)"
+J '[.assets[] | select(.name == "talk")][0] | (.failure == null) and (.missing == null)' <<< "$(status "$D")" || check "text: a tag failed its node: $(row "$D" talk .)"
 J '[.warnings[].message | select(contains("<d>") or contains("</d>") or contains("<a b>") or contains("Picture"))] == []' <<< "$(status "$D")" || check "text: a tag was warned of: $(status "$D" | jq -c .warnings)"
 J '[.assets.talk.versions[0].reads[].name] == ["look"]' "$D/project.lock" || check "text: talk reads $(jq -c '.assets.talk.versions[0].reads' "$D/project.lock")"
-grep -qF '<d><English>Hello</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
+grep -qF '<d>[English] Hello</d>' "$D/$(jq -r '.files[.assets.talk.versions[0].files.given].path' "$D/project.lock")" || check "text: the tags did not reach the adapter unchanged"
 sed -i "/^  look:\$/i\\  d:\\n    video: $look" "$D/project.yaml"
 J '[.warnings[].message] | any(contains("d is also a tag of"))' <<< "$(status "$D")" || check "text: a name that is its package's tag was not said: $(status "$D" | jq -c .warnings)"
 [ "$(row "$D" talk .status)" = '"current"' ] || check "text: a thing named as a tag was read: $(row "$D" talk .status)"
+
+step "a project: a name that names nothing fails its node, sends nothing, and the rest land"
+local G=$OUT/gone pic before draw=$here/project/draw.py code
+mkdir -p "$G"; still "$G/pic.png" navy; printf 'version: 2\nassets: {}\n' > "$G/project.yaml"
+pic=$(prefix "$G" "$G/pic.png")
+cat > "$G/project.yaml" <<YAML
+version: 2
+entities:
+  hero:
+    kind: character
+    image: <lost_sheet>
+assets:
+  kyogre: {image: "$pic"}
+  fine:
+    description: Stands on its own.
+    render: {with: $draw}
+  gone:
+    description: Remove the background from <Image-1>.
+    render: {with: $draw}
+  typo:
+    description: From <kyogee>.
+    render: {with: $draw}
+  linked:
+    description: From <hero>.
+    render: {with: $draw}
+  reader:
+    description: From <gone>.
+    render: {with: $draw}
+  accepted:
+    image: "$pic"
+    description: Remove the background from <Image-1>.
+    render: {with: $draw}
+YAML
+code=0; render "$G" all || code=$?
+[ "$code" != 0 ] || check "gone: render all with nodes that can't run exited 0: $(tail -c 300 "$OUT/render.txt")"
+cp "$OUT/render.txt" "$OUT/gone-render.txt"
+says gone "gone: <Image-1> is no longer in the project"
+says gone "typo: <kyogee> is no longer in the project: did you mean <kyogre>?"
+says gone "linked: hero's image: <lost_sheet> is no longer in the project"
+says gone "bring it back, or edit gone's text"
+! grep -F 'accepted' "$OUT/render.txt" | grep -q 'no longer' || check "gone: a pinned node failed in render all: $(grep -F accepted "$OUT/render.txt")"
+status "$G" > "$OUT/gone-status.json"
+J '.assets[] | select(.name == "gone") | .failure.code == "input_missing" and (.failure.message | contains("<Image-1> is no longer in the project")) and (.failure.remedy | contains("bring it back")) and .missing == ["Image-1"]' "$OUT/gone-status.json" || check "gone: its failure: $(jq -c '.assets[] | select(.name == "gone")' "$OUT/gone-status.json")"
+J '.assets[] | select(.name == "typo") | (.failure.message | contains("did you mean <kyogre>?")) and .missing == ["kyogee"]' "$OUT/gone-status.json" || check "gone: a typo's failure: $(jq -c '.assets[] | select(.name == "typo")' "$OUT/gone-status.json")"
+J '.assets[] | select(.name == "linked") | .failure.code == "input_missing" and .missing == ["lost_sheet"]' "$OUT/gone-status.json" || check "gone: what reads a link to nothing: $(jq -c '.assets[] | select(.name == "linked")' "$OUT/gone-status.json")"
+J '.assets[] | select(.name == "fine") | .failure == null and .versions == 1 and .standing == "current"' "$OUT/gone-status.json" || check "gone: the rest did not land: $(jq -c '.assets[] | select(.name == "fine")' "$OUT/gone-status.json")"
+J '.assets[] | select(.name == "reader") | .versions == 0 and .standing == "missing" and (.missing == null) and (.failure.message | contains("gone failed in this render"))' "$OUT/gone-status.json" || check "gone: what reads a failed node should wait: $(jq -c '.assets[] | select(.name == "reader")' "$OUT/gone-status.json")"
+J '.assets[] | select(.name == "accepted") | .pinned and .standing == "current" and .failure == null and .missing == ["Image-1"]' "$OUT/gone-status.json" || check "gone: a pin: $(jq -c '.assets[] | select(.name == "accepted")' "$OUT/gone-status.json")"
+for name in gone typo linked reader; do [ "$(made "$G" "$name")" = 0 ] || [ "$(made "$G" "$name")" = null ] || check "gone: $name has a version"; done
+[ "$(jq '.pending // {} | length' "$G/project.lock")" = 0 ] || check "gone: something is pending"
+J '[.warnings[].message] | any(contains("accepted")) | not' "$OUT/gone-status.json" || check "gone: a pin was warned of: $(jq -c .warnings "$OUT/gone-status.json")"
+[ "$(jq '[.warnings[].message | select(contains("<Image-1>"))] | length' "$OUT/gone-status.json")" = 0 ] || check "gone: a kept failure is also a warning: $(jq -c .warnings "$OUT/gone-status.json")"
+cozy project -p "$G" status > "$OUT/gone-status.txt" 2>&1 || true
+grep -qF 'gone: <Image-1> is no longer in the project' "$OUT/gone-status.txt" || check "gone: cozy project status does not say it: $(tail -c 400 "$OUT/gone-status.txt")"
+before=$(cozy --json run ls --limit 0 | jq '.runs | length')
+code=0; render "$G" gone || code=$?
+{ [ "$code" != 0 ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } || check "gone: naming it sent a run (exit $code): $(tail -c 300 "$OUT/render.txt")"
+code=0; render "$G" accepted || code=$?
+{ [ "$code" != 0 ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } || check "gone: running a pinned node again sent a run (exit $code): $(tail -c 300 "$OUT/render.txt")"
+J '.assets[] | select(.name == "accepted") | .pinned and (.failure.code == "input_missing") and (.files.image.sha256 | length > 0)' <<< "$(status "$G")" || check "gone: a pin run again: $(row "$G" accepted .)"
+# A package read for the first time here: its tags aren't known until it is, and still nothing is sent.
+local G1=$OUT/gone-first; mkdir -p "$G1"
+cat > "$G1/project.yaml" <<YAML
+version: 2
+assets:
+  gone:
+    description: From <Image-1>.
+    render: {with: $draw}
+YAML
+J '.assets[] | select(.name == "gone") | .missing == null and .failure == null' <<< "$(status "$G1")" || check "gone: named missing before its package's tags are known: $(row "$G1" gone .)"
+code=0; render "$G1" gone || code=$?
+{ [ "$code" != 0 ] && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ] && [ "$(row "$G1" gone .failure.code)" = '"input_missing"' ]; } || check "gone: on its package's first read (exit $code): $(tail -c 300 "$OUT/render.txt")"
+# Brought back, it runs and its failure goes. An edit does the same.
+sed -i "/^  fine:\$/i\\  Image-1: {image: \"$pic\"}" "$G/project.yaml"
+J '.assets[] | select(.name == "gone") | .failure == null and .missing == null' <<< "$(status "$G")" || check "gone: brought back, it still says so: $(row "$G" gone .)"
+render "$G" gone reader || check "gone: brought back: $(tail -c 300 "$OUT/render.txt")"
+{ [ "$(made "$G" gone)" = 1 ] && [ "$(made "$G" reader)" = 1 ]; } || check "gone: brought back, gone made $(made "$G" gone), reader $(made "$G" reader)"
+sed -i 's/From <kyogee>\./From <kyogre>./' "$G/project.yaml"
+render "$G" typo || check "gone: edited: $(tail -c 300 "$OUT/render.txt")"
+J '.assets[] | select(.name == "typo") | .failure == null and .versions == 1' <<< "$(status "$G")" || check "gone: edited: $(row "$G" typo .)"
 
 step "a project: a cycle of mentions, or through an entity, is said, and what is in it still renders"
 local Y=$OUT/cycle
