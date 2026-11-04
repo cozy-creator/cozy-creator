@@ -72,6 +72,11 @@ impl From<Error> for LinkError {
             Error::Refused { error, .. } if error.code == "machine_released" => {
                 LinkError::Released(error.message)
             }
+            // The key is admitted: authorizing it again changes nothing.
+            Error::Refused { status: 401, error } if error.code == "machine_clock" => LinkError::Refused {
+                code: error.code,
+                message: error.message,
+            },
             Error::Refused { status: 401, error } => LinkError::Unauthorized(error.message),
             Error::Refused { status, error } if status < 500 => LinkError::Refused {
                 code: error.code,

@@ -11,6 +11,11 @@ use sha2::{Digest as _, Sha256};
 
 const DOMAIN: &[u8] = b"cozy-capability/1\0";
 
+/// How far past its expiry a machine still takes a machine-scope capability, for a clock ahead of
+/// its signer's (one rental booted 675 s ahead). These are minted per request and sent only to a
+/// pinned machine. A run-scope play link's expiry is its signer's choice, so it stays exact.
+const CLOCK_SKEW_SECONDS: i64 = 1800;
+
 /// The scheme of the `authorization` metadata value.
 pub const SCHEME: &str = "Cozy-Cap ";
 
@@ -51,6 +56,8 @@ pub enum Refusal {
     Invalid,
     #[error("the capability has expired")]
     Expired,
+    #[error("the clocks of this machine and the computer asking differ by over {} minutes", CLOCK_SKEW_SECONDS / 60)]
+    Clock,
     #[error("the capability does not grant this")]
     Scope,
 }
@@ -106,8 +113,10 @@ pub fn verify(
     if grant.machine != machine || !grant.binding.is_empty() && grant.binding != binding {
         return Err(Refusal::Invalid);
     }
-    if now >= grant.expires {
-        return Err(Refusal::Expired);
+    match grant.action == MACHINE {
+        true if now >= grant.expires + CLOCK_SKEW_SECONDS => return Err(Refusal::Clock),
+        false if now >= grant.expires => return Err(Refusal::Expired),
+        _ => {}
     }
     Ok((grant, signer))
 }
