@@ -620,6 +620,7 @@ impl Payload {
             if self.publish {
                 region.uses.set(Contents::Ready);
                 arena.fills = arena.fills.saturating_add(1);
+                arena.filled_bytes = arena.filled_bytes.saturating_add(region.len() as u64);
             } else {
                 region.uses.set(Contents::Cold);
             }

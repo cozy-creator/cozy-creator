@@ -19,6 +19,7 @@
 #if defined(_WIN32)
 #define VR_EXPORT __declspec(dllexport)
 #else
+#include <unistd.h>
 #define VR_EXPORT __attribute__((visibility("default")))
 #endif
 
@@ -62,6 +63,12 @@ struct Bindings {
     int32_t (*snapshot)(void*, Visit, Failure*);
 };
 Bindings core{};
+#if defined(_WIN32)
+int process_id() { return 0; }
+#else
+int process_id() { return getpid(); }
+#endif
+int bound_process = 0;
 struct Route {
     int device;
     Pool pool;
@@ -83,6 +90,11 @@ void check(const Failure& error) {
     TORCH_CHECK(error.kind == 0, error.message);
 }
 
+// Before `mutex`, which a forked child may inherit held by a thread it doesn't have.
+void check_process() {
+    TORCH_CHECK(process_id() == bound_process, "varena: the Torch allocator cannot be used after fork");
+}
+
 uint64_t stream_id(Stream stream) {
     TORCH_CHECK(reinterpret_cast<uintptr_t>(stream) != 2,
                 "varena: cudaStreamPerThread is unsupported; use an explicit CUDA stream");
@@ -96,6 +108,7 @@ VR_EXPORT int varena_torch_bind(const Bindings* bindings) noexcept {
         return -1;
     }
     core = *bindings;
+    bound_process = process_id();
     return 0;
 }
 
@@ -104,6 +117,7 @@ VR_EXPORT void* varena_torch_malloc(size_t bytes, int device, Stream stream) {
     Pool pool{0, 0};
     bool routed = false;
     if (routing.load(std::memory_order_acquire)) {
+        check_process();
         std::lock_guard<std::mutex> lock(mutex);
         Route* selected = nullptr;
         for (auto& route : routes) {
@@ -164,6 +178,7 @@ VR_EXPORT void varena_torch_reset() {
 }
 
 VR_EXPORT void varena_torch_begin_pool(int device, Pool pool, Filter filter) {
+    check_process();
     std::lock_guard<std::mutex> lock(mutex);
     for (const auto& route : routes) {
         TORCH_CHECK(route.device != device ||
@@ -180,6 +195,7 @@ VR_EXPORT void varena_torch_begin_pool(int device, Pool pool, Filter filter) {
 }
 
 VR_EXPORT void varena_torch_end_pool(int device, Pool pool) {
+    check_process();
     std::lock_guard<std::mutex> lock(mutex);
     bool found = false;
     for (auto route = routes.begin(); route != routes.end(); ++route) {
@@ -198,6 +214,7 @@ VR_EXPORT void varena_torch_end_pool(int device, Pool pool) {
 
 // Owner calls only after confirming CUDA stream capture ended. Graph reset owns reference release.
 VR_EXPORT int varena_torch_abort_routing(int device, uint64_t a, uint64_t b) noexcept {
+    if (process_id() != bound_process) return -1;
     std::lock_guard<std::mutex> lock(mutex);
     for (auto route = routes.begin(); route != routes.end(); ++route) {
         if (route->device == device && route->pool == Pool{a, b}

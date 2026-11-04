@@ -192,6 +192,8 @@ pub struct Stats {
     pub preferred_bytes: usize,
     pub regions: usize,
     pub fills: u64,
+    /// Bytes every completed fill wrote: host-to-device traffic.
+    pub filled_bytes: u64,
     pub hits: u64,
     pub evictions: u64,
     pub reclaimed_bytes: u64,
@@ -369,6 +371,7 @@ struct State {
     preferred_end: Option<u64>,
     poison: Option<String>,
     fills: u64,
+    filled_bytes: u64,
     hits: u64,
     evictions: u64,
     reclaimed_bytes: u64,
@@ -380,7 +383,7 @@ struct State {
 impl State {
     fn empty() -> Self {
         Self { entries:BTreeMap::new(), clock:0, streaming_limit:usize::MAX,
-            phase_boundary:None, preferred_end:None, poison:None, fills:0, hits:0,
+            phase_boundary:None, preferred_end:None, poison:None, fills:0, filled_bytes:0, hits:0,
             evictions:0, reclaimed_bytes:0, reclaimed_by_reason:ReclaimedBytes::default(),
             context_joins:0, event_waits:0 }
     }
@@ -1374,6 +1377,7 @@ impl Arena {
         let mut stats = Stats {
             regions: state.entries.len(),
             fills: state.fills,
+            filled_bytes: state.filled_bytes,
             hits: state.hits,
             evictions: state.evictions,
             reclaimed_bytes: state.reclaimed_bytes,
@@ -2033,7 +2037,9 @@ impl Fill {
         }
         let entry = state.entries.get_mut(&region.id).expect("fill owns region");
         entry.uses.set(Contents::Ready);
+        let bytes = entry.bytes as u64;
         state.fills = state.fills.saturating_add(1);
+        state.filled_bytes = state.filled_bytes.saturating_add(bytes);
         drop(state);
         drop(_context);
         Ok(self.pin.take().expect("committed fill"))
@@ -2415,6 +2421,16 @@ pub fn reclaim(device: i32, bytes: usize) -> Result<ReclaimReport> {
 }
 
 /// Physical bytes owned by live arenas on this device, for a local managed-memory ceiling.
+/// Bytes filled so far by this device's live Arenas: host-to-device traffic.
+pub fn filled_bytes(device: i32) -> Result<u64> {
+    check_process()?;
+    let mut bytes = 0u64;
+    for arena in &arena_inventory(device)?.arenas {
+        bytes = bytes.saturating_add(arena.stats()?.filled_bytes);
+    }
+    Ok(bytes)
+}
+
 pub fn resident_bytes(device: i32) -> Result<usize> {
     check_process()?;
     let inventory=arena_inventory(device)?;
