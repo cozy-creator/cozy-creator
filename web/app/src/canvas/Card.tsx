@@ -383,6 +383,10 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
     else store.patch(name, { draft: undefined })
   }, [store, name])
+  // A dropped tool's text has taken the keys, or isn't going to.
+  useEffect(() => {
+    if (store.focusing === name) store.focusing = null
+  })
   if (!view) return null
 
   const asset = view.asset
@@ -394,10 +398,6 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   // At rest a box is its picture or its text and a name. All else comes when it's asked for, and isn't there until then, so 300 boxes cost little.
   const active = !far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name)
   const editing = face === "edit" && active
-  // A dropped tool's text has taken the keys, or isn't going to.
-  useEffect(() => {
-    if (store.focusing === name) store.focusing = null
-  })
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
   return (

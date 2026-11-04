@@ -23,6 +23,18 @@ function Home() {
   return last ? <Navigate replace to={`/projects/${last.id}`} /> : null
 }
 
+/** Whatever threw, a person gets a line and a way back, and the file holds what was saved. */
+function Broke() {
+  return (
+    <main className="gate">
+      <h1>That broke this page</h1>
+      <button type="button" className="tb" onClick={() => location.reload()}>
+        Reload
+      </button>
+    </main>
+  )
+}
+
 const drawer = (path: string, element: React.ReactNode, kind: "normal" | "wide" = "normal"): RouteObject => ({
   path,
   element,
@@ -50,6 +62,7 @@ export const theRouter = () =>
     {
       path: "/",
       element: <Shell />,
+      errorElement: <Broke />,
       children: [
         { index: true, element: <Home /> },
         ...drawers,
