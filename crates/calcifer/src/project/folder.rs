@@ -121,6 +121,9 @@ pub type Files = BTreeMap<String, String>;
 /// One result of an operation: its number, its files, the key it was made under, and what made it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Version {
+    /// A cut's: the pieces it was cut without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<Without>,
     /// 1 first, never reused.
     #[serde(default)]
     pub number: u32,
@@ -191,6 +194,23 @@ impl Version {
 /// The file people mean by a set of files.
 pub fn main_of(files: &Files) -> Option<&String> {
     ["video", "image", "audio"].iter().find_map(|name| files.get(*name)).or_else(|| files.values().next())
+}
+
+/// A piece a cut was made without, and why.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Without {
+    pub piece: String,
+    pub why: String,
+    /// Its file wasn't on this computer: once it is, that version isn't its cut's state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+}
+
+impl Without {
+    /// As a film says it: `segment_3: no version yet`.
+    pub fn said(&self) -> String {
+        format!("{}: {}", self.piece, self.why)
+    }
 }
 
 /// A run making a version, recorded before it is sent (under its idempotency key) and followed

@@ -503,10 +503,10 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
                 }
             }
             Event::Moved { .. } | Event::Transferred { .. } => {}
-            Event::Cut { cut, frames, fps, retimed, unchanged, .. } => {
+            Event::Cut { cut, frames, fps, retimed, unchanged, without, .. } => {
                 let (path, seconds) = (output::link(ctx, &opened.path.join(&cut)), frames as f64 / fps);
                 let (name, left) = (cut.trim_end_matches(".mp4"), if unchanged { " (unchanged)" } else { "" });
-                let line = format!("{name}: {path}, {seconds:.1} s{}{left}", retimes(&retimed, fps));
+                let line = format!("{name}: {path}, {seconds:.1} s{}{left}{}", retimes(&retimed, fps), went_without(&without));
                 cuts.retain(|(named, _)| *named != cut);
                 cuts.push((cut, line));
             }
@@ -558,7 +558,7 @@ fn summary(ctx: &Context, state: &State) {
             [] => String::new(),
             pieces => format!(" (from {})", pieces.join(", ")),
         };
-        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}{}", asset.noun, made.number, made.prefix, from(made))).collect();
+        let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}{}{}", asset.noun, made.number, made.prefix, from(made), went_without(&made.without))).collect();
         output::say(ctx, &format!("{}: {}", asset.name, made.join(", ")));
         for made in &asset.prefixes {
             if let Some(kept) = made.kept {
@@ -587,9 +587,10 @@ fn summary(ctx: &Context, state: &State) {
         output::next(ctx, &["cozy project reclaim"]);
     }
     for cut in &state.cuts {
-        let skips = match cut.skips.as_slice() {
-            [] => String::new(),
-            skips => format!("; it skips {} (nothing made yet)", skips.join(", ")),
+        let skips = match (cut.without.is_empty(), cut.skips.as_slice()) {
+            (false, _) => went_without(&cut.without),
+            (true, []) => String::new(),
+            (true, skips) => format!("; it would skip {} (nothing made yet)", skips.join(", ")),
         };
         let name = cut.cut.trim_end_matches(".mp4");
         let made = cut.frames.map(|frames| format!(", {}", length(frames, cut.fps))).unwrap_or_default();
@@ -607,6 +608,14 @@ fn summary(ctx: &Context, state: &State) {
         output::next(ctx, &["cozy project pull"]);
     } else if !state.missing.is_empty() || !state.stale.is_empty() {
         output::next(ctx, &["cozy project render all --on <machine>"]);
+    }
+}
+
+/// ` (without segment_3: no version yet)`, when a film went without something: a short film can't pass unnoticed.
+fn went_without(pieces: &[String]) -> String {
+    match pieces {
+        [] => String::new(),
+        pieces => format!(" (without {})", pieces.join("; ")),
     }
 }
 

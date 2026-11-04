@@ -531,7 +531,9 @@ fn cut_row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize
     // The film's own length once one stands, whatever its pieces now add up to.
     let frames = folder.film_frames(&path).or(made.as_ref().map(|made| made.frames));
     let retimed = made.map(|made| made.retimed).unwrap_or_default();
-    Cut { cut: name, path, fps: canvas.fps, cut_at_ms, frames, retimed, skips }
+    let standing = stand[i].version().and_then(|number| lock.asset(&asset.name)?.version(number));
+    let without = standing.map(|version| version.without.iter().map(folder::Without::said).collect()).unwrap_or_default();
+    Cut { cut: name, path, fps: canvas.fps, cut_at_ms, frames, retimed, skips, without }
 }
 
 /// What a cut's version was cut from: each piece's asset, and its version when it was one.
@@ -614,7 +616,10 @@ fn row(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing], i: usize) ->
         with: doc.makes(i).then(|| doc.target(i)),
         versions: held.map_or(0, |held| held.versions.len() as u32),
         prefixes: (held.into_iter().flat_map(|held| &held.versions))
-            .filter_map(|version| Some(VersionPrefix { number: version.number, prefix: folder::prefix_of(version.main()?).to_owned(), kept: version.kept, from: cut_from(lock, version) }))
+            .filter_map(|version| {
+                let without = version.without.iter().map(folder::Without::said).collect();
+                Some(VersionPrefix { number: version.number, prefix: folder::prefix_of(version.main()?).to_owned(), kept: version.kept, from: cut_from(lock, version), without })
+            })
             .collect(),
         approved: asset.pin.as_ref().and(standing.version()),
         pinned: asset.pin.is_some(),
@@ -1791,7 +1796,7 @@ impl Walk {
                 continue;
             }
             let row = cut_row(doc, self.folder(), &lock, stand, i);
-            self.say(Event::Cut { cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true });
+            self.say(Event::Cut { cut: name, frames: row.frames.unwrap_or(file.frames), fps: row.fps, retimed: row.retimed, took_s: 0.0, unchanged: true, without: row.without });
         }
         Ok(())
     }
@@ -2334,7 +2339,8 @@ impl Walk {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
                 self.tried(&ask.id, &name)?;
-                let Some(files) = self.cut_tool(asset, standing, &ask.target).await? else { return Ok(()) };
+                let Some((files, without)) = self.cut_tool(asset, standing, &ask.target).await? else { return Ok(()) };
+                version.without = without;
                 let now = self.folder().lock()?;
                 let again = now.asset(&name).is_some_and(|held| held.versions.iter().any(|old| old.inputs == version.inputs && old.main() == folder::main_of(&files)));
                 if again {
@@ -2367,9 +2373,11 @@ impl Walk {
         })
     }
 
-    /// Cuts `asset`'s pieces, its film and timeline at the root. None: nothing to cut. A piece not here is fetched from the machine
-    /// that keeps it, or the Hub; one that can't be had, or that it can't read, fails it: nothing is cut, and the film that stands stays.
-    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<Files>, Error> {
+    /// Cuts `asset`'s pieces, its film and timeline at the root, and what it went without. None: nothing to cut. A piece not here is
+    /// fetched from the machine that keeps it, or the Hub. One that can't be had, or has no version yet, is left out, warned of and said
+    /// with the film: Paul, "it'd generate the edit without them", and the film before it stays a version. One here that ffprobe can't
+    /// read fails it: nothing is cut, and the film that stands stays.
+    async fn cut_tool(&self, asset: &format::Asset, standing: &Standing, target: &Target) -> Result<Option<(Files, Vec<folder::Without>)>, Error> {
         let folder = self.folder();
         let mut said = vec![];
         let canvas = Canvas::of(&asset.fields, &mut said);
@@ -2377,13 +2385,16 @@ impl Walk {
         let (ffmpeg, ffprobe) = self.host.ffmpeg().await?;
         let lock = folder.lock()?;
         let (pieces, _) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
-        self.bring_pieces(asset, &pieces, &lock, target).await?;
+        let name = cut_name(&asset.name);
+        let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+        let mut without = self.bring_pieces(asset, &pieces, &lock, target, &ffprobe, &on).await?;
         let mut lock = folder.lock()?;
         folder.measure(&mut lock)?;
         let (mut pieces, skips) = tools::pieces(&asset.fields, &standing.reads, folder, &lock);
-        let name = cut_name(&asset.name);
-        if !skips.is_empty() {
-            self.say(Event::Warning { message: format!("{name} skips {}: no version yet", skips.join(", ")) });
+        pieces.retain(|piece| !without.iter().any(|left| name_key(&left.piece) == name_key(&piece.asset)));
+        for piece in skips {
+            self.say(Event::Warning { message: format!("{name} is cut without {piece}, which has no version yet: cozy project render {piece} --on {on}") });
+            without.push(folder::Without { piece, why: "no version yet".into(), absent: false });
         }
         let unreadable = tools::unreadable(&ffprobe, &pieces);
         if !unreadable.is_empty() {
@@ -2422,8 +2433,9 @@ impl Walk {
         }
         let (retimed, took_s) = (made.retimed, began.elapsed().as_secs_f64());
         self.cut.lock().expect("cut lock").insert(name.clone());
-        self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256) });
-        Ok(Some(Files::from([("video".to_owned(), sha256), ("timeline".to_owned(), timeline)])))
+        let said = without.iter().map(folder::Without::said).collect();
+        self.say(Event::Cut { cut: name, frames, fps, retimed, took_s, unchanged: before.as_ref() == Some(&sha256), without: said });
+        Ok(Some((Files::from([("video".to_owned(), sha256), ("timeline".to_owned(), timeline)]), without)))
     }
 
     /// A file at `at`, where a film goes, that is no version of `asset`: someone made it there. It is kept beside it, and said.
@@ -2467,11 +2479,12 @@ impl Walk {
         }
     }
 
-    /// Each of `pieces` not on this computer fetched: from the machine that keeps it while that lives, else the Hub. What can't be
-    /// had fails the cut, with the command that makes it again.
-    async fn bring_pieces(&self, asset: &format::Asset, pieces: &[tools::Piece], lock: &Lock, target: &Target) -> Result<(), Error> {
-        let mut lost = vec![];
-        for piece in pieces {
+    /// Each of `pieces` not on this computer, or whose bytes aren't its hash, fetched: from the machine that keeps it while that lives, else
+    /// the Hub. What can't be had, warned of with what to run, is what the cut goes without. One whose bytes changed that ffprobe can't read
+    /// fails it, with ffprobe's answer.
+    async fn bring_pieces(&self, asset: &format::Asset, pieces: &[tools::Piece], lock: &Lock, target: &Target, ffprobe: &FsPath, on: &str) -> Result<Vec<folder::Without>, Error> {
+        let (mut without, mut seen) = (vec![], BTreeSet::new());
+        for piece in pieces.iter().filter(|piece| seen.insert(name_key(&piece.asset))) {
             let Some(file) = lock.files.get(&piece.digest) else { continue };
             // A file is named for its bytes, and a cut reads them all anyway.
             let here = piece.path.is_file();
@@ -2480,27 +2493,21 @@ impl Walk {
             if here && !changed {
                 continue;
             }
-            let state = if changed { "isn't what project.lock says, its bytes changed" } else { "is not on this computer" };
-            self.say(Event::Said { message: format!("{}: {} {state}: fetching it", asset.name, piece.asset) });
+            let why = if changed { "its bytes changed" } else { "not on this computer" };
+            self.say(Event::Said { message: format!("{}: {} is {why}: fetching it", asset.name, piece.asset) });
             let brought = match file.stays() && self.host.fetchable(&file.sha256, &file.machine) {
                 true => self.host.fetch(&file.sha256, &file.machine).await,
                 false => self.host.pull_one(&self.project, &target.hub, file.clone()).await,
             };
-            if let Err(why) = brought {
-                lost.push((piece.asset.clone(), format!("{} {state}, and can't be had: {why}", piece.asset)));
+            let Err(reason) = brought else { continue };
+            if let Some(answer) = changed.then(|| tools::unread(ffprobe, &piece.path)).flatten() {
+                return Err(Error::new(Kind::Validation, "piece_unreadable", format!("{} cannot render: {}: {answer}: the film that stands stays", asset.name, piece.asset)).next("cozy project status"));
             }
+            let piece = piece.asset.clone();
+            self.say(Event::Warning { message: format!("{} is cut without {piece}: {why}, and it can't be had: {reason}: cozy project render {piece} --on {on}, or cozy project pull", cut_name(&asset.name)) });
+            without.push(folder::Without { piece, why: why.into(), absent: !here });
         }
-        let Some((piece, _)) = lost.first() else { return Ok(()) };
-        let on = target.on.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
-        let why = lost.iter().map(|(_, why)| why.as_str()).collect::<Vec<_>>().join("; ");
-        let (again, pull) = (format!("cozy project render {piece} --on {on}"), "cozy project pull".to_owned());
-        // What the Hub lacks a pull won't bring; what it couldn't be asked for, a pull may.
-        let nexts = match why.contains("not at the Hub") {
-            true => [again, pull],
-            false => [pull, again],
-        };
-        let [first, second] = nexts;
-        Err(Error::new(Kind::NotFound, "piece_absent", format!("{} cannot render: {why}: the film that stands stays", asset.name)).next(first).next(second))
+        Ok(without)
     }
 
     /// Lists a tool's version: a cut's join its others, and a frame's older ones go unless pinned, with whatever files only they named.
