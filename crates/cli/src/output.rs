@@ -18,6 +18,9 @@ use serde::Serialize;
 
 use crate::Context;
 
+/// The exit of a follower that heard its run stop moving (Calcifer's word, after 10 minutes with no progress): the run goes on.
+pub const STALLED: u8 = 4;
+
 const KEY: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
 const WARN: Style = AnsiColor::Yellow.on_default().bold();

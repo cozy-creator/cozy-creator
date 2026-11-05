@@ -29,11 +29,22 @@ mod web;
 
 pub use context::Context;
 
+/// `cozy --help`'s last words: what each exit means, the same for every verb.
+const EXITS: &str = "Exit codes:
+  0  done, or nothing to do
+  1  refused, or a run or render failed: it says why and what's next
+  2  a usage error: nothing happened
+  3  a push or pull left files out, or an upgrade put something out of date
+  4  a run stopped moving, as Calcifer says after 10 minutes with no progress: it goes on until you cancel it
+
+`cozy` alone says what's going here. --json prints what a view shows, --full all of it.";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "cozy",
     version,
-    about = "Run models on your machines and rented GPUs"
+    about = "Run models on your machines and rented GPUs",
+    after_help = EXITS
 )]
 struct Cli {
     /// Print JSON (NDJSON when following) instead of tables: what the view shows, by the record's own names.
@@ -84,7 +95,7 @@ enum Command {
 }
 
 /// Parses the command line, loads the config once, runs the verb and renders its refusal. Exit
-/// codes: 0 success, 1 a refusal or a run that did not succeed, 2 a usage error.
+/// codes: `EXITS`.
 pub fn main() -> ExitCode {
     completion::answer(Cli::command);
     let cli = match Cli::try_parse() {

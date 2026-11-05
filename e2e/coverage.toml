@@ -195,6 +195,9 @@ test = "pr: projects: the index, a moved folder missing, a DELETEd one gone"
 ["project status"]
 test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
 
+["project wait"]
+test = "pr: agent: nothing going says the project, a render followed to its end, a failure exits 1 (gate: a stall exits 4)"
+
 ["project render"]
 test = "pr: projects: only what has no state; reverting runs nothing; cuts; adapters; a world-state series"
 "--on" = "pr: projects: --on local"

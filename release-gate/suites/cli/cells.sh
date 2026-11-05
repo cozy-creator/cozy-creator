@@ -146,3 +146,24 @@ YAML
   grep -o "cut .* in [0-9.]* s" project-race.log | tail -1 >> project-recut.txt
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell
+
+# A render and a run that stop moving (cl-783): `project wait` and a followed `cozy run` each end with 4 once Calcifer says
+# so (10 minutes with no progress), each naming how to end it, and both go on until they're canceled. About 11 minutes,
+# the two at once. Weightless: tool.py's `slow` sleeps 700 s a step, weightless `silent` 20 minutes.
+stall_cell() {
+  local S=$PWD/stall e2e=$HERE/../e2e/cli n waiting running
+  rm -rf "$S"; "$CLI" project new "$S" > stall-new.log 2>&1 || { cli_fail "stall: project new: $(tail -c 300 stall-new.log)"; return; }
+  printf 'version: 3\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    prompt: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S/project.yaml"
+  "$CLI" project -p "$S" render held --on "$M" --queue > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
+  ( "$CLI" project -p "$S" wait > stall-wait.log 2>&1; echo $? > stall-wait.exit ) & waiting=$!
+  ( "$CLI" --json run -p "$S" "$e2e/weightless/silent" seconds:=1200 --on "$M" > stall-run.ndjson 2> stall-run.err; echo $? > stall-run.exit ) & running=$!
+  wait "$waiting" "$running"
+  [ "$(cat stall-wait.exit)" = 4 ] || cli_fail "stall: project wait exited $(cat stall-wait.exit), not 4: $(tail -c 300 stall-wait.log)"
+  grep -q 'cozy project cancel held' stall-wait.log || cli_fail "stall: wait didn't say how to end it: $(tail -c 300 stall-wait.log)"
+  [ "$(cat stall-run.exit)" = 4 ] || cli_fail "stall: cozy run exited $(cat stall-run.exit), not 4: $(tail -c 300 stall-run.err)"
+  n=$(run_number stall-run.ndjson)
+  [ -n "$n" ] && [ "$("$CLI" --json run show "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on after its follower left"
+  "$CLI" project -p "$S" cancel held > stall-cancel.log 2>&1 || cli_fail "stall: project cancel held: $(tail -c 300 stall-cancel.log)"
+  [ -z "$n" ] || "$CLI" run cancel "$n" > stall-run-cancel.log 2>&1 || cli_fail "stall: run cancel $n: $(tail -c 300 stall-run-cancel.log)"
+}
+[ -z "$ONLY" ] || [[ $ONLY == *",cli-stall,"* ]] && stall_cell

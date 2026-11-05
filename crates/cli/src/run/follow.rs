@@ -71,12 +71,19 @@ pub(crate) fn mint_key() -> String {
     format!("idem-{}", hex::encode(bytes))
 }
 
-/// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled.
+/// 0 for a run that completed or goes on (no longer followed), 1 for one that failed or was canceled,
+/// `STALLED` for one going that has stopped moving.
 pub(crate) fn exit_code(run: &Run) -> ExitCode {
     match run.status {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
+        _ if run.stalled.is_some() && !settled(run) => ExitCode::from(output::STALLED),
         _ => ExitCode::SUCCESS,
     }
+}
+
+/// An event saying its run has stopped moving. A replayed one never does: the record a follower starts from says it.
+fn stalls(event: &Event) -> bool {
+    matches!(event, Event::InProgress { run, .. } if run.stalled.is_some())
 }
 
 /// Follows `run` to its end and its outputs to this computer, until Ctrl-C, which stops following
@@ -175,6 +182,11 @@ async fn watch(
     let mut placing: Option<Following> = None;
     let mut notices = Notices::default();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // A run that has stopped moving ends the following, as one that ended does; it goes on until it's canceled.
+    if run.stalled.is_some() && !settled(&run) {
+        view.done();
+        return Ok((run, true));
+    }
     loop {
         tokio::select! {
             _ = tick.tick() => view.tick(),
@@ -209,6 +221,15 @@ async fn watch(
                 Some(Err(error)) => {
                     view.done();
                     return Err(error);
+                }
+                Some(Ok(event)) if stalls(&event) => {
+                    if events_out {
+                        output::ndjson(&event);
+                    } else if !ctx.json {
+                        view.on(&event);
+                    }
+                    view.done();
+                    return Ok((calcifer.run(id.as_str()).await?, true));
                 }
                 Some(Ok(event)) if events.restarted() && !ctx.json => {
                     view.line(&format!("  Calcifer restarted; following run {} again", view.number));
@@ -323,6 +344,9 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     if let Some(progress) = run.progress.as_ref().filter(|_| !settled(run)) {
         record = record.field("progress", said(progress));
     }
+    if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) {
+        record = record.field("stalled", format!("{}. It keeps running until you end it", stalled_words(stalled)));
+    }
     if let Some(ms) = run.execution_ms {
         record = record.field("execution", format!("{:.1}s", ms as f64 / 1000.0));
     }
@@ -395,6 +419,10 @@ pub(super) fn next(ctx: &Context, run: &Run) {
     match run.status {
         Status::Completed => {}
         Status::Failed | Status::Canceled => output::next(ctx, &[&show]),
+        _ if run.stalled.is_some() => {
+            let logs = run.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
+            output::next(ctx, &[&format!("cozy run cancel {}", run.number), logs.as_deref().unwrap_or(&watch)]);
+        }
         _ => output::next(ctx, &[&watch]),
     }
 }

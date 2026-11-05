@@ -1,6 +1,7 @@
 # e2e/cli/agent.sh: what an agent reads (tracker/design/cli-for-agents.md, step 1). Off a terminal each view is one block on
 # stdout, under its byte budget; an empty one says so; `--json` is one line holding the view's facts, `--full` the whole
-# record; and every `next:` a view prints parses. Measured on a small project of weightless pictures.
+# record; every `next:` a view prints parses; and `project wait` exits as `--help` says (a stall's 4 is the gate's: it takes
+# Calcifer's 10 minutes). Measured on a small project of weightless pictures.
 #   agent            judged, as the cli suite runs it
 #   agent measure    each view's bytes into $OUT/agent/bytes.tsv, nothing judged: what a cozy before this printed
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -10,7 +11,7 @@ J() { jq -e "$@" > /dev/null; }
 declare -A BUDGET=(
   [home]=650 [home-out]=550 [project-status]=650 [project-empty]=100 [machine-ls]=300 [run-ls]=600 [run-ls-empty]=100
   [run-show]=300 [run-show-failed]=1500 [json-home]=2000 [json-project-status]=1300 [json-machine-ls]=500 [json-run-ls]=3500
-  [json-run-show]=700
+  [json-run-show]=700 [wait-idle]=650
 )
 
 agent() {
@@ -76,6 +77,32 @@ view json-run-show-full "$F" --json --full run show "$n"
 view json-run-ls-full "$F" --json --full run ls
 cat "$A/bytes.tsv"
 [ -z "$MEASURE" ] || return 0
+
+# wait: nothing going is the project as it stands; a render asked with --queue is followed to its end; a failure is 1.
+local W=$A/waiting code
+cozy project new "$W" > /dev/null 2>&1 || fail "agent: project new $W"
+cat > "$W/project.yaml" <<YAML
+version: 3
+assets:
+  slow_one:
+    tool: $here/project/tool.py/slow
+    prompt: A still that takes four seconds, $RANDOM.
+    seconds: 4
+  broken:
+    tool: $here/project/shots.py/crash
+    prompt: the agent cell fails on purpose
+YAML
+view wait-idle "$F" project wait
+cmp -s "$A/wait-idle.out" "$A/project-status.out" || check "agent: wait with nothing going isn't what status says: $(diff "$A/wait-idle.out" "$A/project-status.out" | head -4)"
+code=0; (cd "$F" && cozy project wait) > /dev/null 2>&1 || code=$?
+[ "$code" = 0 ] || check "agent: project wait with nothing going and nothing failed exited $code"
+(cd "$W" && cozy project render slow_one --on local --queue) > "$A/wait-queue.out" 2>&1 || check "agent: render --queue: $(tail -c 300 "$A/wait-queue.out")"
+code=0; (cd "$W" && cozy project wait) > "$A/wait-follow.out" 2>&1 || code=$?
+[ "$code" = 0 ] || check "agent: project wait on a render going exited $code: $(tail -c 300 "$A/wait-follow.out")"
+(cd "$W" && cozy --json project status) | J '.assets[] | select(.name == "slow_one") | .standing == "current"' || check "agent: wait returned before slow_one was made: $(cat "$A/wait-follow.out")"
+(cd "$W" && cozy project render broken --on local) > "$A/wait-broken.out" 2>&1 && check "agent: rendering broken exited 0"
+code=0; (cd "$W" && cozy project wait) > "$A/wait-failed.out" 2>&1 || code=$?
+[ "$code" = 1 ] || check "agent: project wait after a failed render exited $code, not 1: $(tail -c 300 "$A/wait-failed.out")"
 
 # Calcifer's age moves between the two.
 diff <(grep -v '^calcifer:' "$A/home.out") <(grep -v '^calcifer:' "$A/status.out") > "$A/home-status.diff" || check "agent: cozy and cozy status differ: $(head -5 "$A/home-status.diff")"
