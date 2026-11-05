@@ -20,6 +20,7 @@ GIB=$("$CLI" --json machine show "$M" 2>/dev/null | jq '[.status.gpus[].memory_b
 # loop_expect <cell> <jq condition on its record>: an expect row with the loop's mode, native steps, reuse, refusals.
 loop_expect() {
   local row
+  [ -z "$ONLY" ] || [ -s "$1.number" ] || return 0  # --only left it out: nothing ran to judge
   row=$(run_get "$OUT" "$1" '.measurements.execution.loops[0] | "\(.mode) native \(.native_steps) reused \(.reused) \(.eager // "") \(.refusals // [] | join("; ") | .[0:200])"')
   expect "$1" "$(jq -e "$2" "$OUT/$1.json" > /dev/null 2>&1 && echo PASS || echo FAIL)" \
     "run $(cat "$1.number" 2> /dev/null) $(run_get "$OUT" "$1" .status): $row"
@@ -35,6 +36,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* || $O
   loop_expect loop-eager '.status == "completed" and (.measurements.execution.loops[0] | .mode == "eager"
     and (.eager // "" | endswith("and no call keeps the program")))'
   # Cancel once the loop is past its first steps.
+  if [ -z "$ONLY" ] || [[ $ONLY == *",loop-cancel,"* || $ONLY == *",qwen-image-2,"* ]]; then
   run_submit "$OUT" loop-cancel run "$LQ" prompt="$OBJECT, a canceled loop" megapixels:=1.0 seed:=$((R + 324)) \
     --lane int8 --gpus=1 --on "$M" > /dev/null
   n=$(cat loop-cancel.number)
@@ -45,6 +47,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",loop-"* || $ONLY == *",qwen-image-2,"* || $O
   "$CLI" --json run cancel "$n" > loop-cancel-cancel.json 2>&1
   run_wait "$OUT" loop-cancel || true
   loop_expect loop-cancel '.status == "canceled"'
+  fi
   cell loop-after-cancel "$LQ" prompt="$OBJECT, after a canceled loop" megapixels:=1.0 seed:=$((R + 325)) --lane int8 --gpus=1
   loop_expect loop-after-cancel '.status == "completed"'
 fi
