@@ -800,10 +800,15 @@ impl Folder {
 
     /// project.lock as the file says, held while it is the same file.
     fn lock_file(&self) -> Result<Lock, Error> {
+        self.reading_lock(Lock::clone)
+    }
+
+    /// `seen` of project.lock as the file says, with no copy of it made. What the walk owes isn't in it.
+    pub fn reading_lock<R>(&self, seen: impl FnOnce(&Lock) -> R) -> Result<R, Error> {
         let stamp = self.stamp();
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, lock)) = held.as_ref().filter(|(at, _)| *at == stamp) {
-            return Ok(lock.clone());
+            return Ok(seen(lock));
         }
         let path = self.dir.join(LOCK);
         let mut lock = match path.exists() {
@@ -814,8 +819,9 @@ impl Folder {
             false => Lock::default(),
         };
         self.fill(&mut lock);
-        *held = Some((stamp, lock.clone()));
-        Ok(lock)
+        let answer = seen(&lock);
+        *held = Some((stamp, lock));
+        Ok(answer)
     }
 
     fn stamp(&self) -> Stamp {

@@ -198,15 +198,18 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     // Refused, nothing stops. Gone from the file, what lands of it lands nothing.
     cancelled(&api, &project, std::slice::from_ref(&name), &deleted_why)?;
     let pin = doc.assets[i].pin.clone();
-    folder
-        .update_lock(|lock| {
-            lock.bury(&name_key(&name));
-            // What it held goes on record, so `reclaim` can take it.
-            if let Some(sha256) = pin.clone().filter(|sha256| !lock.recorded().contains(sha256)) {
-                lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256 });
-            }
-        })
-        .map_err(Refusal)?;
+    // A box that never made anything has no row: nothing to rewrite.
+    if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some()).map_err(Refusal)? {
+        folder
+            .update_lock(|lock| {
+                lock.bury(&name_key(&name));
+                // What it held goes on record, so `reclaim` can take it.
+                if let Some(sha256) = pin.clone().filter(|sha256| !lock.recorded().contains(sha256)) {
+                    lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256 });
+                }
+            })
+            .map_err(Refusal)?;
+    }
     canvas::set(folder, &id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     project.asked.notify_one();
