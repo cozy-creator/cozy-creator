@@ -129,7 +129,11 @@ assets:
   // The explorer: it reads, and fetches nothing.
   // Others use this computer: what counts is this project's runs, and what it dropped being held.
   const madeHere = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id).length;
-  const fetched = async (names) => ((await api('/v1/machines/local/models')).body?.models ?? []).filter((held) => names.includes(held.model));
+  // Asked from here, not the page: where this computer runs no models (macOS, Windows), `local` answers 503, and that's no page's error.
+  const fetched = async (names) => {
+    const answer = await fetch(`${base}/v1/machines/local/models`, { headers: { Authorization: `Bearer ${held?.token}` } });
+    return ((await answer.json().catch(() => null))?.models ?? []).filter((one) => names.includes(one.model));
+  };
   const written = [];
   page.on('request', (request) => { if (request.method() !== 'GET' && request.method() !== 'HEAD' && new URL(request.url()).pathname.startsWith('/v1/') && !request.url().endsWith('/session')) written.push(`${request.method()} ${new URL(request.url()).pathname}`); });
   await page.click('.tools button:has-text("Checkpoints")');
