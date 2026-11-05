@@ -148,7 +148,11 @@ export function MentionText({
   }, [store, asset, put, onSave])
 
   useEffect(() => {
-    if (focus) box.current?.focus()
+    if (!focus || !box.current) return
+    box.current.focus()
+    // Typing goes on from what it says.
+    window.getSelection()?.selectAllChildren(box.current)
+    window.getSelection()?.collapseToEnd()
   }, [focus])
 
   useEffect(() => {

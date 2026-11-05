@@ -67,6 +67,8 @@ export interface ElementView {
   /** The name field's text, while it's open. */
   draft?: string
   aspect?: number
+  /** Being written in where it stands, the canvas drawn in on it. */
+  here?: boolean
   run?: Run
   /** Which face it shows, when a person flipped it. Nothing leaves this page. */
   face?: "edit" | "media"
@@ -179,6 +181,10 @@ export class CanvasStore {
   readAgain: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
+  /** The box being written in where it stands, and the view to go back to. */
+  inPlace: { name: string; back: { x: number; y: number; zoom: number } } | null = null
+  /** From a box written in where it stands: all of it, over the canvas. */
+  openBox: (name: string) => void = () => {}
   /** The box opened over the canvas, if one is. */
   opened: string | null = null
   /** The name a just-dropped tool will have: its text takes the keys. */
