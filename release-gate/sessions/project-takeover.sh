@@ -32,13 +32,15 @@ order
 [ -z "$LOCK" ] || { flock -u 9; exec 9>&-; }
 ready
 
-# A shell there, asked again when it goes quiet: everything asked this way can be asked twice.
+# A shell there, asked again when it goes quiet or can't connect (this runner's own network drops for minutes at a time: 02:47Z on
+# 11-05): everything asked this way can be asked twice, and the pod goes on without it.
 sh() {
   local tries=0 code
   while :; do
     timeout 120 cozy machine ssh "$NAME" -- "$*" < /dev/null 2>> "$OUT/ssh.err"; code=$?
-    [ "$code" = 124 ] && [ "$tries" -lt 3 ] || return "$code"
-    tries=$((tries + 1)); say "ssh went quiet: asked again: ${*:0:80}"
+    { [ "$code" = 124 ] || [ "$code" = 255 ]; } && [ "$tries" -lt 20 ] || return "$code"
+    tries=$((tries + 1)); say "ssh went quiet or found no route ($code): asked again: ${*:0:80}"
+    [ "$code" = 124 ] || sleep 30
   done
 }
 trap 'sh "echo up > /tmp/link"; finish' EXIT
