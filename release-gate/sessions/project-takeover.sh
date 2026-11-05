@@ -243,6 +243,8 @@ YAML
   while :; do
     walk=$(walk_file); where=$(handing "$walk")
     [ "$where" = asked ] && break
+    # Held before and nothing held now: the render ended between two looks, made or not, and what follows says which.
+    [ "$where" = "nothing held" ] && [ $kills -gt 0 ] && { sh 'tail -6 /home/client/k.out' > "$OUT/k-out.txt"; break; }
     [ $kills -lt 60 ] || fail "k: the hand-off didn't end in $kills kills: $where"
     kills=$((kills + 1))
     say "k: kill $kills: $where; X holds $(sh 'du -c -B1 /root/.cozy/calcifer/files/parts/*.part 2>/dev/null | tail -1 | cut -f1') bytes of uploads under way"
@@ -254,8 +256,11 @@ YAML
   line up
   sh 'grep -E "files|PUT|upload" /root/.cozy/calcifer/calcifer.log | tail -20' > "$OUT/k-x-uploads.log" 2>&1
   say "k: asked after $kills kills"
-  local t=0
+  local t=0 state
   until x_made shotk; do
+    state=$(x "--json --full project status")
+    jq -e '.busy == false and ([.assets[] | select(.name == "shotk" and .versions > 0)] | length == 0)' <<<"$state" > /dev/null 2>&1 &&
+      fail "k: X's walk ended without shotk: $(jq -c '[.board.jobs[]? | select(.asset == "shotk") | .error.message // .why] | first' <<<"$state" | cut -c1-400); this computer said: $(sh 'tail -4 /home/client/k.out' | paste -sd'|' | cut -c1-400)"
     [ $t -lt 300 ] || fail "k: X didn't make shotk in $t s"
     t=$((t + 5)); sleep 5
   done
