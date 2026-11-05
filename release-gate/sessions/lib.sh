@@ -33,7 +33,7 @@ finish() {
       fi
       tries=$((tries + 1)); sleep 10
     done
-    say "GONE $r: ended, and the machine listing holds no live machine of it"
+    say "GONE $r: ended, and the machine listing holds no live machine of it; billed $(billed "$r")"
   done
   say "RESULT $([ "$RC" = 0 ] && echo PASSED || echo FAILED)"
   exit "$RC"
@@ -59,6 +59,43 @@ step() {
   return $c
 }
 
+# guard: from the first order on, every rental this session ordered ($OUT/rental, by its recorded rental ids, and what $GUARD_ALSO
+# prints) is ended once what the Hub bills for them would reach $CAP by the next look and an end: what each has cost so far, the
+# providers' if that's more, and each live one at the price an hour it's locked at. Read from the Hub every GUARD_STEP s, never from a
+# quote. No read for GUARD_BLIND s ends them too. Nothing else in the account is touched: other sessions' pods are in the same listing.
+GUARD_STEP=20 GUARD_END_S=120 GUARD_BLIND=300 GUARD_ALSO=''
+guard() {
+  [ -z "$WD" ] || return 0
+  ( blind=0
+    while :; do
+      sleep "$GUARD_STEP"
+      ids=$({ cat "$OUT/rental" 2> /dev/null; [ -z "$GUARD_ALSO" ] || $GUARD_ALSO; } | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))')
+      [ "$ids" != '[]' ] || continue
+      if spent=$(timeout 60 cozy machine ls --since 24h --json < /dev/null 2> /dev/null | jq -e --argjson ids "$ids" \
+          '[.rentals[] | select(.rental_id as $r | any($ids[]; . == $r)) | [.spend_usd_micros // 0, .provider_cost_usd_micros // 0] | max] | add // 0' 2> /dev/null) &&
+        rate=$(machines_json | jq -e --argjson ids "$ids" \
+          '[.machines[] | select(.state != "ended" and (.rental_id as $r | .name as $n | any($ids[]; . == $r or . == $n))) | .rental.usd_micros_per_hour // 0] | add // 0' 2> /dev/null); then
+        blind=0
+        echo "$(date -u +%T) billed $spent, live $rate/h (micro-USD) of $(jq -r 'join(" ")' <<<"$ids")" >> "$OUT/guard.log"
+        awk -v b="$spent" -v r="$rate" -v c="$CAP" -v s=$((GUARD_STEP + GUARD_END_S)) 'BEGIN { exit !(b + r * s / 3600 >= c * 1e6) }' || continue
+        why="\$$CAP reached: the Hub bills $(awk -v b="$spent" 'BEGIN { printf "$%.4f", b / 1e6 }') so far and $(awk -v r="$rate" 'BEGIN { printf "$%.2f", r / 1e6 }')/h live"
+      else
+        blind=$((blind + GUARD_STEP))
+        [ "$blind" -ge "$GUARD_BLIND" ] || continue
+        why="no read of what the Hub bills for ${blind}s"
+      fi
+      echo "$(date -u +%T) GUARD: $why, ending $(jq -r 'join(" ")' <<<"$ids")" >> "$R"
+      jq -r '.[]' <<<"$ids" | while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done
+      exit 0
+    done ) 9>&- & WD=$!
+}
+
+# billed <rental id>: what the Hub bills for it, and what its provider does, from the account's rentals of the last day.
+billed() {
+  timeout 60 cozy machine ls --since 24h --json < /dev/null 2> /dev/null | jq -r --arg r "$1" \
+    '.rentals[] | select(.rental_id == $r) | "\(.spend_usd_micros // 0) micro-USD \(.spend_basis // "?"), the provider \(.provider_cost_usd_micros // "?") \(.provider_cost_basis // ""), \(.ran_s // "?") s"'
+}
+
 # quote <traffic GB> <seconds> [SKU…]: the quote and the guard for one rental of each SKU named ($SKU by default): GPU +
 # disk an hour from each offer, and the traffic at the dearest rate; fails unless CAP buys the seconds. Ends the $0
 # pre-flight unless RENT=true.
@@ -69,13 +106,15 @@ quote() {
   ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
   cozy machine rent --json > "$OUT/skus.json" 2>&1 || fail "no catalog"
   for s in "${skus[@]}"; do
-    read -r storage bw < <(jq -r --arg s "$s" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1) |
-      [(.storage_usd_micros_per_hour / .container_disk_gb), (.bandwidth_usd_micros_per_gb // 0)] | @tsv' "$OUT/skus.json")
+    read -r storage bw listed < <(jq -r --arg s "$s" 'if type=="array" then .[] else . end | select(.name==$s) | .widths[] | select(.accelerator_count==1) |
+      [(.storage_usd_micros_per_hour / .container_disk_gb), (.bandwidth_usd_micros_per_gb // 0), .price_usd_micros_per_hour] | @tsv' "$OUT/skus.json")
     [ -n "${bw:-}" ] || fail "the catalog offers no single $s"
     cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/quote-$s.json" 2>&1
     grep -q quote_unagreed "$OUT/quote-$s.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote-$s.json")"
     gpu=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
     [ -n "$gpu" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"
+    # A quote is of one disk, and an order of another disk is placed elsewhere (42018791462: $0.12/h quoted, $0.49/h billed): the dearer.
+    [ "${listed:-0}" -le "$gpu" ] || gpu=$listed
     disk=$(awk -v s="$storage" -v d="$DISK" 'BEGIN{printf "%d", s*d}')
     hourly=$((hourly + gpu + disk)); rate=$(awk -v a="$rate" -v b="$bw" 'BEGIN{print (b > a ? b : a)}')
     said="$said $s (GPU $gpu + disk $disk)"
@@ -83,12 +122,12 @@ quote() {
   cp "$OUT/quote-${skus[0]}.json" "$OUT/quote.json"
   CAP_S=$(awk -v c="$CAP" -v h="$hourly" -v w="$rate" -v gb="$gb" 'BEGIN{printf "%d", (c*1e6 - w*gb) / h * 3600}')
   [ "$CAP_S" -ge "$need" ] || fail "\$$CAP leaves only ${CAP_S}s for$said micro-USD/h and $rate/GB x $gb GB"
-  say "quote$said micro-USD/h, $DISK GB each, traffic $rate/GB x $gb GB; guard ends them ${CAP_S}s after the first order (\$$CAP)"
+  say "quote$said micro-USD/h, $DISK GB each, traffic $rate/GB x $gb GB: \$$CAP buys about ${CAP_S}s; the guard ends them by what the Hub bills"
   [ "$RENT" = true ] || { say "pre-flight only: nothing rented"; exit 0; }
 }
 
 # order [SKU]: one rental ($SKU by default) ordered, its boot followed in the background; `ready` waits for it. rent =
-# order + ready. The first order starts the guard, which ends every rental in $OUT/rental once CAP_S has passed.
+# order + ready. The first order starts the guard (`guard`).
 order() {
   local o first='' i=${#RIDS[@]} RP sku=${1:-$SKU}
   o=$(date +%s%3N)
@@ -108,8 +147,7 @@ order() {
     { RID=''; fail "$first is not this order's machine: $(head -c 300 "$OUT/show-boot$i.json")"; }
   RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP RRC_$i=$done"
   say "rental $RID ($first)"
-  [ -n "$WD" ] || { ( sleep "$CAP_S"; echo "$(date -u +%T) GUARD: \$$CAP reached, ending $(paste -sd' ' "$OUT/rental")" >> "$R"
-    while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done < "$OUT/rental" ) 9>&- & WD=$!; }
+  guard
 }
 
 # ready [i]: the i-th order (the last by default) booted: RID and NAME are its, its record in show<i>.json/txt (the

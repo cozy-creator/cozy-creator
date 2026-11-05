@@ -1749,6 +1749,8 @@ fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey
         provider: shape.provider,
         sku: sku.to_owned(),
         development: shape.ssh_key.map(|ssh_public_key| types::RentalDevelopment { ssh_public_key }),
+        // The Hub holds the order to what was agreed, so a price that rose between here and there rents nothing.
+        max_usd_micros_per_hour: shape.agreed.map(|agreed| agreed.usd_micros_per_hour),
     };
     (request, alias, signer)
 }

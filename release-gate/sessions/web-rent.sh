@@ -58,9 +58,8 @@ mark "the page states: $(jq -r .seen.stated "$OUT/quote.json"), and ordered noth
 # A Hub gives a boot 15 minutes, and the use and End take some 10 more: a cap that can't buy that much could end the pod before End is tried.
 quote 5 1500
 
-# The guard, before the click: what's in $OUT/rental, and what this runner's Calcifer recorded, ended at the cap.
-( sleep "$CAP_S"; echo "$(date -u +%T) GUARD: \$$CAP reached, ending what this runner holds" >> "$R"
-  { cat "$OUT/rental" 2> /dev/null; own; } | sort -u | while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done ) & WD=$!
+# The guard, before the click: what's in $OUT/rental, and what this runner's Calcifer recorded, by what the Hub bills for them.
+GUARD_ALSO=own guard
 
 # record: the rental id, the moment the order's answer names it.
 record() {
