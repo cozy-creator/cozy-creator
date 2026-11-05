@@ -297,7 +297,7 @@ fn control(field: &Field, default: Option<Value>) -> Option<Control> {
             let (min, max) = bounds(field)?;
             control.ty = ControlType::Range;
             (control.min, control.max) = (Some(min), Some(max));
-            control.step = field.constraints.multiple_of.or((*ty == Type::Int).then_some(1.0));
+            control.step = field.constraints.multiple_of.or_else(|| number(field, "step")).or((*ty == Type::Int).then_some(1.0));
         }
         Type::Asset(kind) if MEDIA.contains(&kind.as_str()) => {
             control.ty = ControlType::File;

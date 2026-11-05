@@ -318,7 +318,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     const name = 'e2e-boxed';
     const package_ = `e2e/${name}`;
     const described = (await api(`/v1/targets?target=${encodeURIComponent(join(folder, 'boxed'))}`)).body.interface;
-    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.ui));
+    check('interface_names_its_ui', described?.entrypoints?.some((entry) => entry.node?.ui === 'ui/shade.js'), described?.entrypoints?.map((entry) => entry.node?.ui));
     // Locked and built beside the local code, not in it: what a publish does, with a real wheel's real layout.
     const dist = mkdtempSync(join(tmpdir(), 'package-ui-'));
     const dir = join(dist, 'src');

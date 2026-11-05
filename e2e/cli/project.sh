@@ -1608,13 +1608,13 @@ cat > "$W/project.yaml" <<YAML
 version: 3
 assets:
   running_gone:
-    tool: $here/project/shots.py/shoot
+    tool: $here/project/shots.py/slow
     seconds: 900
   reads_gone:
     tool: $here/project/draw.py/draw
     instructions: From <running_gone>, which is deleted as it runs.
   slow:
-    tool: $here/project/shots.py/shoot
+    tool: $here/project/shots.py/slow
     seconds: 5
   beside:
     tool: $here/project/draw.py/draw
@@ -1678,10 +1678,10 @@ cat > "$R/project.yaml" <<YAML
 version: 3
 assets:
   first:
-    tool: $here/project/shots.py/shoot
+    tool: $here/project/shots.py/slow
     seconds: 12
   second:
-    tool: $here/project/shots.py/shoot
+    tool: $here/project/shots.py/slow
     seconds: 3
   reader:
     tool: $here/project/draw.py/draw
@@ -1703,7 +1703,7 @@ ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 [ "$(jq -r .pid "$lock")" != "$pid" ] || check "restarted: Calcifer is still pid $pid"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$R")" && break; sleep 0.5; done
 { [ "$(made "$R" first)" = 1 ] && [ "$(made "$R" second)" = 1 ] && [ "$(made "$R" reader)" = 1 ]; } || check "restarted: made $(status "$R" | jq -c '[.assets[] | {(.name): .versions}] | add')"
-local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] | select(.project == $r and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+local sent; sent=$(cozy --json run ls --limit 0 | jq -c --arg r "$R" '[.runs[] | select(.project == $r) | .target] | group_by(.) | map({(.[0]): length}) | add')
 J '[.[]] | add == 3' <<< "$sent" || check "restarted: runs sent: $sent"
 [ "$(cozy --json run ls --limit 0 | jq -c --arg r "$copy" '[.runs[] | select(.project == $r)] | length')" = 0 ] || check "restarted: a copy sent a run"
 [ ! -e "$R/.runs/walk.json" ] || check "restarted: .runs/walk.json outlived the render"
@@ -1747,7 +1747,7 @@ assets:
     tool: $here/project/draw.py/draw
     instructions: The one before.
   slow:
-    tool: $here/project/shots.py/shoot
+    tool: $here/project/shots.py/slow
     seconds: 15
   reader:
     tool: $here/project/draw.py/draw
@@ -1765,7 +1765,7 @@ J '(.busy | not) and ((.board.jobs // []) | length == 0)' <<< "$(status "$copy")
 cp "$OUT/spend-old.lock" "$S/project.lock"
 for _ in $(seq 240); do J '.busy | not' <<< "$(status "$S")" && break; sleep 0.5; done
 { [ "$(made "$S" first)" = 1 ] && [ "$(made "$S" slow)" = 1 ] && [ "$(made "$S" reader)" = 1 ]; } || check "spend: made $(status "$S" | jq -c '[.assets[] | {(.name): .versions}] | add')"
-local ran; ran=$(cozy --json run ls --limit 0 | jq -c --arg s "$S" '[.runs[] | select(.project == $s and (.target | test("adapter") | not)) | .target] | group_by(.) | map({(.[0]): length}) | add')
+local ran; ran=$(cozy --json run ls --limit 0 | jq -c --arg s "$S" '[.runs[] | select(.project == $s) | .target] | group_by(.) | map({(.[0]): length}) | add')
 J '[.[]] | add == 3' <<< "$ran" || check "spend: runs: $ran"
 [ "$(cozy --json run ls --limit 0 | jq --arg c "$copy" '[.runs[] | select(.project == $c)] | length')" = 0 ] || check "spend: the copy sent a run"
 [ ! -e "$copy/.runs/walk.json" ] || check "spend: the copy kept what its original owes"
@@ -2195,7 +2195,7 @@ one() { jq -c --arg f "$1" '.tools[] | select(.local and .function == $f)' "$OUT
 control() { jq -c --arg f "$2" '.controls[] | select(.field == $f)' <<< "$(one "$1")"; }
 J '(.label | startswith("Shaped Shot")) and .takes == true' <<< "$(one shot)" || check "filled: a Node's label and takes: $(one shot)"
 J '.type == "group" and .min_items == 1 and .max_items == 8 and .face and .required and (.members | map(.field) == ["description", "duration"])' <<< "$(control shot beats)" || check "filled: a group: $(control shot beats)"
-J '.members[1] | .type == "range" and .min == 1 and .max == 15 and .total and .unit == "s" and .default == 5' <<< "$(control shot beats)" || check "filled: a group's member: $(control shot beats)"
+J '.members[1] | .type == "range" and .min == 1 and .max == 15 and .step == 1 and .total and .unit == "s" and .default == 5' <<< "$(control shot beats)" || check "filled: a group's member: $(control shot beats)"
 J '.face and .placeholder == "N/A (silent)"' <<< "$(control shot soundscape)" || check "filled: show and placeholder: $(control shot soundscape)"
 J '.face and .placeholder == "N/A (silent)"' <<< "$(control shot music)" || check "filled: music: $(control shot music)"
 J '.face' <<< "$(control shot summary)" || check "filled: its first text is on its face: $(control shot summary)"

@@ -233,7 +233,7 @@ app.entrypoint(generate, node=Node(
 ))
 ```
 
-Hints on a field stay in `msgspec.Meta(extra={"min", "max", "options", "label", "placeholder", "total", "unit"})`. Past a bound is clamped and said. A required text left empty says the asset says nothing to make, and a required file that's missing says so, free, before anything is sent. A take made by another package is refused the same way. What's about the model is the function's, in its first lines: what it raises fails the run before any model loads, and its `warnings` reach the version.
+Hints on a field stay in `msgspec.Meta(extra={"min", "max", "step", "options", "label", "placeholder", "total", "unit"})`. Past a bound is clamped and said. A required text left empty says the asset says nothing to make, and a required file that's missing says so, free, before anything is sent. A take made by another package is refused the same way. What's about the model is the function's, in its first lines: what it raises fails the run before any model loads, and its `warnings` reach the version.
 
 ## Edits and frames
 

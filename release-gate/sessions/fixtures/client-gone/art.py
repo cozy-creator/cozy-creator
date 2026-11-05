@@ -3,8 +3,8 @@
 # dependencies = ["cozy-runtime[media]>=0.38", "msgspec>=0.19", "numpy>=2"]
 # ///
 """The client-gone session's local renderer: no GPU, no weights. `make` works for `seconds`, then saves a picture of noise `side`
-pixels across, so its landing takes as long as the link it crosses. An asset that mentions another reads that one's file by its
-digest in `read`, which says how many bytes it found. `film` is a clip of noise with silence under it, for a cut and a frame."""
+pixels across, so its landing takes as long as the link it crosses. An asset that mentions a picture is that picture read instead:
+how many bytes it found. `film` is a clip of noise with silence under it, for a cut and a frame."""
 
 import os
 import time
@@ -12,38 +12,38 @@ import time
 import msgspec
 import numpy as np
 
-from cozy_runtime.author import App, ImageFile, ImageFrame, ImageResult, Invocation, Operation, Outputs, VideoFile
+from cozy_runtime.author import App, ImageFile, ImageFrame, Outputs, VideoFile
 
 app = App()
 
 
-class Make(msgspec.Struct):
+class Seen(msgspec.Struct, kw_only=True):
+    name: str
+    image: ImageFile | None = None
+
+
+class Make(msgspec.Struct, kw_only=True):
     seconds: float = 0
     side: int = 512
     prompt: str = ""
+    pictures: list[Seen] = []
 
 
-class Read(msgspec.Struct):
+class Made(msgspec.Struct):
     image: ImageFile
-
-
-class Tiny(msgspec.Struct):
-    image: ImageFile
-    read_bytes: int
+    width: int
+    read_bytes: int = 0
 
 
 @app.entrypoint()
-def make(payload: Make, out: Outputs) -> ImageResult:
+def make(payload: Make, out: Outputs) -> Made:
+    picture = next((seen.image for seen in payload.pictures if seen.image is not None), None)
+    if picture is not None:
+        held = picture.read()
+        return Made(out.save_image(ImageFrame(8, 8, os.urandom(8 * 8 * 3)), format="png"), 8, held.width * held.height)
     time.sleep(payload.seconds)
     side = payload.side
-    return ImageResult(out.save_image(ImageFrame(side, side, os.urandom(side * side * 3)), format="png"), side, side, 0, payload.prompt)
-
-
-@app.entrypoint()
-def read(payload: Read, out: Outputs) -> Tiny:
-    held = payload.image.read()
-    tiny = out.save_image(ImageFrame(8, 8, os.urandom(8 * 8 * 3)), format="png")
-    return Tiny(tiny, held.width * held.height)
+    return Made(out.save_image(ImageFrame(side, side, os.urandom(side * side * 3)), format="png"), side)
 
 
 class Film(msgspec.Struct):
@@ -61,18 +61,3 @@ def film(payload: Film, out: Outputs) -> Filmed:
     noise = np.random.randint(0, 255, (frames, 360, 640, 3), dtype=np.uint8)
     silence = np.zeros((2, int(payload.seconds * 48000)), dtype=np.float32)
     return Filmed(out.save_video(noise, fps=24, audio=silence, sample_rate=48000))
-
-
-@app.project_adapter("film")
-def adapt_video(op: Operation) -> list[Invocation]:
-    seconds = {"seconds": op.inputs["seconds"]} if "seconds" in op.inputs else {}
-    return [Invocation(function="film", input={"prompt": op.asset, **seconds})]
-
-
-@app.project_adapter("make")
-def adapt(op: Operation) -> list[Invocation]:
-    for found in op.reads:
-        if files := found.files_of("image"):
-            return [Invocation(function="read", input={"image": files[0].sha256})]
-    fields = {field: op.inputs[field] for field in ("seconds", "side") if field in op.inputs}
-    return [Invocation(function="make", input={"prompt": op.asset, **fields})]

@@ -64,7 +64,7 @@ def slow(payload: SlowInput, out: Outputs, tel: Telemetry) -> Picture:
 
 class Beat(msgspec.Struct, kw_only=True):
     description: str = ""
-    duration: Annotated[float, msgspec.Meta(extra={"min": 1, "max": 15, "total": True, "unit": "s"})] = 5
+    duration: Annotated[float, msgspec.Meta(extra={"min": 1, "max": 15, "step": 1, "total": True, "unit": "s"})] = 5
 
 
 class Seen(msgspec.Struct, kw_only=True):
