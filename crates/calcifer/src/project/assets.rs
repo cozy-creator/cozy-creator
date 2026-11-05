@@ -26,9 +26,10 @@ use super::{
 };
 use crate::api::{Api, Refusal, parse};
 
-/// What to call an asset with no name asked: the tool's last word, with no release.
+/// What to call an asset with no name asked when its tool can't be read: its package's word, numbered, with no release.
 fn tool_name(tool: &str) -> Option<String> {
-    format::plain_name(tool.rsplit('/').next()?.split('@').next()?)
+    let (package, _) = tool.rsplit_once('/')?;
+    format::plain_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
 }
 
 fn own_lines(name: &str) -> Error {
@@ -57,14 +58,18 @@ pub(super) async fn create(
     let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
     let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().kind));
     let held = plain.as_ref().is_some_and(|plain| folder.lock().is_ok_and(|lock| lock.makes.contains_key(plain)));
-    let said = match (said, plain.is_some() && !held) {
-        (None, true) => match crate::toolbox::kind(&api, &asked.tool, &folder.dir).await {
-            Ok(kind) => Some(kind),
-            Err(why) if matches!(why.kind, Kind::NotFound | Kind::Usage | Kind::Validation) => return Err(Refusal(why)),
+    let unsaid = said.is_none() && !held;
+    let read = if plain.is_some() && (unsaid || asked.name.is_none()) {
+        match crate::toolbox::read(&api, &asked.tool, &folder.dir).await {
+            Ok(read) => Some(read),
+            Err(why) if unsaid && matches!(why.kind, Kind::NotFound | Kind::Usage | Kind::Validation) => return Err(Refusal(why)),
             Err(_) => None,
-        },
-        (said, _) => said,
+        }
+    } else {
+        None
     };
+    let (read_kind, read_name) = read.unzip();
+    let said = said.or(read_kind);
     let _one = project.importing.lock().expect("importing lock");
     let lock = folder.lock().map_err(Refusal)?;
     let told = key.as_ref().and_then(|(key, _)| folder.keyed(key));
@@ -76,7 +81,7 @@ pub(super) async fn create(
     let name = match &told {
         Some(told) => told.name.clone(),
         None => {
-            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
+            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
             if text_asset {
                 format::refuse_tag(&lock, &wanted).map_err(Refusal)?;
             }

@@ -438,46 +438,46 @@ function linesOf(text, name) {
     await reload();
     const place = async (name) => {
       await page.locator('.tools li.tool', { has: page.locator(`b:text-is("${labelOf(name)}")`) }).click();
-      await box(name).waitFor();
-      await open(name);
+      await box(`${name}_1`).waitFor();
+      await open(`${name}_1`);
     };
 
     await place('still');
-    const still = box('still');
+    const still = box('still_1');
     await until('one prompt', () => still.locator('.mention-text').count(), (n) => n === 1);
     check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.asset-more input, .asset-more select, .beat, .edit-more').count()) === 0, await still.innerText());
     check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
     await shot('fresh-prompt');
-    await more('still');
+    await more('still_1');
     await still.locator('input[aria-label=Count]').waitFor();
     await still.locator('select[aria-label=Style]').selectOption({ label: 'noise' });
-    await until('the choice in the status', async () => status('still').fields?.style, (style) => style === 'noise');
+    await until('the choice in the status', async () => status('still_1').fields?.style, (style) => style === 'noise');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     await until('marked', () => still.locator('.more-marks').count(), (n) => n === 1);
     check('a_set_value_is_marked', (await still.locator('.more-marks').textContent()).includes('Style noise'), await still.locator('.more-marks').textContent());
     await shot('fresh-marked');
-    await open('still');
+    await open('still_1');
     check('shut_stays_shut', (await still.locator('.edit-more').count()) === 0);
-    await more('still');
-    await open('still');
+    await more('still_1');
+    await open('still_1');
     check('open_stays_open', (await still.locator('.edit-more').count()) === 1);
     await reload();
-    await open('still');
+    await open('still_1');
     check('open_outlasts_a_reload', (await still.locator('.edit-more').count()) === 1);
     await still.locator('select[aria-label=Style]').selectOption({ label: 'flat' });
-    await until('its default in the status', async () => status('still').fields?.style, (style) => style === 'flat');
+    await until('its default in the status', async () => status('still_1').fields?.style, (style) => style === 'flat');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     check('its_default_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
 
     await place('told');
-    const told = box('told');
+    const told = box('told_1');
     await until('a prompt and a beat', () => told.locator('.beat').count(), (n) => n === 1);
     check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
     check('fresh_beat_cannot_go', (await told.locator('[aria-label^="Remove beat"]').count()) === 0);
-    await until('its beat in the status', async () => status('told').fields?.beats?.length, (n) => n === 1);
-    check('its_beat_has_a_length', status('told').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told').fields);
+    await until('its beat in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
+    check('its_beat_has_a_length', status('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told_1').fields);
     await shot('fresh-beat');
     await told.locator('.add-beat').click();
     await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
@@ -486,11 +486,11 @@ function linesOf(text, name) {
     await page.keyboard.type('The second.');
     await told.locator('.beat input[type=range]').nth(1).focus();
     await page.keyboard.press('ArrowRight');
-    await until('both in the status', async () => status('told').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
+    await until('both in the status', async () => status('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
     await told.locator('[aria-label="Remove beat 2"]').click();
-    await until('one in the status', async () => status('told').fields?.beats?.length, (n) => n === 1);
+    await until('one in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
     check('the_last_beat_stays', (await told.locator('.beat').count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
-    for (const name of ['still', 'told', 'fixture']) {
+    for (const name of ['still_1', 'told_1', 'fixture']) {
       await api(`/v1/projects/${id}/assets/${name}`, { method: 'DELETE' });
       await until(`${name} gone`, () => box(name).count(), (n) => n === 0);
     }

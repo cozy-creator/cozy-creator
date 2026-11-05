@@ -2390,9 +2390,10 @@ rows() { api "http://$ADDR/v1/projects/$(status "$T" | jq -r .id)/canvas"; }
 J '.assets[] | select(.name == "drawn") | .tool != null and .fields.instructions == "From the line" and .fields.count == 3 and .fields.style == "flat" and .fields.soft == true' <<< "$(status "$T")" || check "by the CLI: add: $(row "$T" drawn .fields)"
 J '.cards.drawn == {"x": 400, "y": 120, "w": 360}' <<< "$(rows)" || check "by the CLI: add at=: $(rows | head -c 300)"
 refuses "a name taken" "cozy project set drawn" add "$tool/still" drawn
-[ "$(cozy project -p "$T" add "$tool/still")" = still ] || check "by the CLI: add with no name takes the tool's"
-[ "$(cozy project -p "$T" add "$tool/still")" = still_2 ] || check "by the CLI: a name cozy picks is numbered"
-cozy project -p "$T" delete still still_2 > /dev/null || check "by the CLI: delete of two"
+[ "$(cozy project -p "$T" add "$tool/still")" = still_1 ] || check "by the CLI: add with no name takes what its Node calls it"
+[ "$(cozy project -p "$T" add "$tool/still")" = still_2 ] || check "by the CLI: a name cozy picks counts up"
+[ "$(cozy project -p "$T" add "$tool/slow")" = tool_1 ] || check "by the CLI: with no word of its Node's, its package's"
+cozy project -p "$T" delete still_1 still_2 tool_1 > /dev/null || check "by the CLI: delete of three"
 [ "$(cozy project -p "$T" add text mood 'text=Soft light.')" = mood ] || check "by the CLI: add text"
 printf 'text: |\n  Soft light,\n  a long way down.\n' > "$T/mood.yaml"
 cozy project -p "$T" set mood --input "$T/mood.yaml" > /dev/null || check "by the CLI: a text asset from a file"

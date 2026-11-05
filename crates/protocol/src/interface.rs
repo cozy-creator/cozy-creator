@@ -247,6 +247,9 @@ pub struct Callable {
 /// `author.Node`: all a function says of its box beyond its types.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct Node {
+    /// What a box of it is called, numbered: `shot` makes `shot_1`, `shot_2`. Empty: its package.
+    #[serde(default, deserialize_with = "or_default")]
+    pub name: String,
     /// Its name in the tool list, in place of one from its package and function.
     #[serde(default, deserialize_with = "or_default")]
     pub label: String,

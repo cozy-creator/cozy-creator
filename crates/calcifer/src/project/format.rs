@@ -1004,7 +1004,7 @@ pub fn plain_name(text: &str) -> Option<String> {
     (!name_key(&name).is_empty()).then_some(name)
 }
 
-/// `wanted`, or with `_2`, `_3`, … if something in the project goes by it, or versions wait in project.lock for it.
+/// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.
 pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
     free_of(|name| doc.find(name).is_some(), lock, wanted)
 }
@@ -1015,7 +1015,9 @@ pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -
     if !taken(wanted) {
         return wanted.to_owned();
     }
-    (2..).map(|n| format!("{wanted}_{n}")).find(|name| !taken(name)).expect("a free name")
+    let counted = wanted.rsplit_once('_').filter(|(stem, _)| !stem.is_empty()).and_then(|(stem, number)| Some((stem, number.parse::<u32>().ok()?)));
+    let (stem, from) = counted.map_or((wanted, 2), |(stem, number)| (stem, u64::from(number) + 1));
+    (from..).map(|n| format!("{stem}_{n}")).find(|name| !taken(name)).expect("a free name")
 }
 
 /// What a person who typed `name` is told when the project has it.

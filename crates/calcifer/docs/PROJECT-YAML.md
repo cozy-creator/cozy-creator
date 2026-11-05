@@ -225,6 +225,7 @@ An asset is a call of its function, the same one `cozy run` and an agent make. I
 
 ```python
 app.entrypoint(generate, node=Node(
+    name="shot",                            # what a box of it is called: `shot_1`, `shot_2`; by default its package
     label="MiniMax H3",                     # its name in the tool list
     show=["soundscape", "music"],           # on its default face, beside its first text and what's required
     hide=["steps", "upscale"],              # never drawn; a file or `cozy run` can still set them

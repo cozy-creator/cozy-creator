@@ -41,7 +41,7 @@ def _picture(out: Outputs) -> ImageFile:
     return out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
 
 
-@app.entrypoint(node=Node())
+@app.entrypoint(node=Node(name="still"))
 def still(payload: StillInput, out: Outputs) -> Picture:
     """A still of one colour."""
     return Picture(_picture(out), payload.prompt)
@@ -88,7 +88,7 @@ class ToldInput(msgspec.Struct, kw_only=True):
     seed: int | None = None
 
 
-@app.entrypoint(node=Node(hide=["secret"], label="Told"))
+@app.entrypoint(node=Node(name="told", hide=["secret"], label="Told"))
 def told(payload: ToldInput, out: Outputs) -> Picture:
     """A still of one colour."""
     return Picture(_picture(out), payload.prompt)
