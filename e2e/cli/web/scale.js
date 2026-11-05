@@ -36,6 +36,8 @@ const BARS = {
   open_boxes_s: 5,
   open_settled_s: 10,
   edit_shows_ms: 1500,
+  // A person's write, flushed to disk and answered, the middle of nine. "Under 100-ms is pretty much fast enough for most operations" (Paul, 11-05).
+  write_ms: 100,
   landing_shows_ms: 1500,
   // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
@@ -373,6 +375,24 @@ function calciferMb() {
   check('a_burst_right_in_a_second', numbers.burst.right_after_ms <= BARS.edit_shows_ms, numbers.burst);
 
   memory.edits = calciferMb();
+
+  // Each local write at this size: a box made, an input set, a box moved, a box gone, out where nothing's looked at. The file is whole after each.
+  const writes = { post: [], patch: [], move: [], delete: [] };
+  const write = async (held, path, method, body, headers = {}) => {
+    const from = performance.now();
+    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers } });
+    if (!answer.ok) throw new Error(`${method} ${path}: ${answer.status} ${await answer.text()}`);
+    held.push(performance.now() - from);
+    return answer.json();
+  };
+  const made = [];
+  for (let i = 0; i < 9; i++) made.push((await write(writes.post, '/assets', 'POST', { tool: 'cozy/edit', kind: 'video', name: `written ${i}`, at: { x: -9000 - i * 800, y: -9000 } }, { 'Idempotency-Key': `scale-${Date.now()}-${i}` })).name);
+  for (const name of made) await write(writes.patch, `/assets/${name}`, 'PATCH', { fields: { description: 'A box in a big project.' } });
+  for (const [i, name] of made.entries()) await write(writes.move, '/canvas', 'PATCH', { cards: { [name]: { x: -9000 - i * 800, y: -12000 } } });
+  for (const name of made) await write(writes.delete, `/assets/${name}`, 'DELETE', {});
+  numbers.write_ms = Object.fromEntries(Object.entries(writes).map(([what, took]) => [what, summary(took).median_ms]));
+  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), numbers.write_ms);
+  check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
   // A render from the CLI, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
