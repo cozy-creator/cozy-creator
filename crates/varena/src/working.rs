@@ -1003,23 +1003,32 @@ impl Device {
         }
         // All or nothing here: an eager segment never maps again, and a pool has one handle.
         let mut mapped = Vec::new();
-        for chunk in segment.chunks.iter_mut().filter(|chunk| chunk.handle.is_none()) {
-            let handle = self.driver().create(chunk.bytes)?;
-            // Track ownership before map: a partial mapping failure must retain the VA and handle.
-            chunk.handle = Some(handle);
-            self.working.fetch_add(chunk.bytes, Ordering::AcqRel);
-            state.stats.mapped_bytes += chunk.bytes;
-            state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
-            let at = base + chunk.offset as u64;
-            self.driver().map_only(at, chunk.bytes, handle)?;
-            mapped.push((at, chunk.bytes));
+        let result = (|| {
+            for chunk in segment.chunks.iter_mut().filter(|chunk| chunk.handle.is_none()) {
+                let handle = self.driver().create(chunk.bytes)?;
+                // Track ownership before map: a partial mapping failure must retain the VA and handle.
+                chunk.handle = Some(handle);
+                self.working.fetch_add(chunk.bytes, Ordering::AcqRel);
+                state.stats.mapped_bytes += chunk.bytes;
+                state.stats.mapped_peak = state.stats.mapped_peak.max(state.stats.mapped_bytes);
+                let at = base + chunk.offset as u64;
+                self.driver().map_only(at, chunk.bytes, handle)?;
+                mapped.push((at, chunk.bytes));
+            }
+            Ok(())
+        })();
+        // After the grant: an observer may hand these to NCCL, which looks each address up. Short
+        // of pages midway, what did map is reported all the same, since its unmapping will be.
+        match &result {
+            Ok(()) => self.driver().grant(base, segment.bytes)?,
+            Err(_) => for &(at, bytes) in &mapped {
+                self.driver().grant(at, bytes)?;
+            },
         }
-        self.driver().grant(base, segment.bytes)?;
-        // After the grant: an observer may hand these to NCCL, which looks each address up.
         for (at, bytes) in mapped {
             observer::mapped(self, at, bytes, pool, class)?;
         }
-        Ok(())
+        result
     }
 
     fn unback(&self, state: &mut State, base: u64) -> Result<usize> {
