@@ -42,6 +42,17 @@ sh() {
   done
 }
 trap 'sh "echo up > /tmp/link"; finish' EXIT
+# What a failure leaves to read once the pod is gone: X's runs, and both Calcifers' logs.
+fail() {
+  say "FAIL: $*"
+  if [ -n "${TAG:-}" ]; then
+    x "--json run ls --limit 200" > "$OUT/fail-x-runs.json" 2>&1
+    x "--json project status" > "$OUT/fail-x-status.json" 2>&1
+    sh 'tail -300 /root/.cozy/calcifer/calcifer.log' > "$OUT/fail-x-calcifer.log" 2>&1
+    sh 'tail -300 /home/client/.cozy/calcifer/calcifer.log' > "$OUT/fail-client-calcifer.log" 2>&1
+  fi
+  RC=1; exit 1
+}
 # c <cozy args>: as the computer that asks, in the part's project. x <cozy args>: as X, in its copy of it.
 c() { sh "su client -s /bin/sh -c 'cd \$HOME/$TAG 2>/dev/null; /opt/client/cozy $*'"; }
 x() { sh "cd \$(ls -d /root/.cozy/projects/$TAG-* | head -1) && cozy $*"; }
@@ -102,7 +113,8 @@ collected() {
 once() {
   local versions runs
   versions=$(x "--json project status" | jq --arg a "$1" '[.assets[] | select(.name == $a) | .versions] | first // 0')
-  runs=$(x "--json run ls --limit 200" | jq --arg f "$2" --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and (.target | split("@")[0] | split("/")[-1] == $f))] | length')
+  # Its calls: what a machine fetches ahead for it is a warm run, which renders nothing.
+  runs=$(x "--json run ls --limit 200" | jq --arg f "$2" --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not) and (.target | split("@")[0] | split("/")[-1] == $f))] | length')
   [ "$versions" = "$3" ] && [ "$runs" = "$3" ] || fail "$TAG: $1 has $versions versions, and X ran $2 $runs times, not $3"
 }
 
@@ -146,17 +158,18 @@ YAML
   say "a: X walks it ($t s after asking); the line down, this computer's CLI and Calcifer killed"
   line down
   sh "kill -9 \$(cat /tmp/a.pid) $(client_calcifer)"
-  local least=999999999 deadline left at=$SECONDS moved='' was=''
-  t=0
+  local least=999999999 deadline left at=$SECONDS moved='' was='' began=$SECONDS
   until x_made still shot clip edit aframe; do
     deadline=$(cozy machine show "$NAME" --json | jq -r '.status.idle_deadline_ms // 0')
     if [ "$deadline" != 0 ]; then left=$(( (deadline - $(date +%s%3N)) / 1000 )); [ "$left" -ge "$least" ] || least=$left; fi
     moved=$(x "--json project status" | jq -c '[.board.jobs[]? | [.asset, .state, .stage]]')
     [ "$moved" != "$was" ] && { was=$moved; at=$SECONDS; }
     [ $((SECONDS - at)) -lt 300 ] || fail "a: X's render stopped moving for 5 min: $moved"
-    t=$((t + 5)); sleep 5
+    sleep 5
   done
+  t=$((SECONDS - began))
   x "--json project status" > "$OUT/a-x-status.json"
+  x "--json run ls --limit 200" > "$OUT/a-x-runs.json"
   say "a: X made all five in $t s with nobody here; its idle clock at its least had $([ "$least" = 999999999 ] && echo 'never run' || echo "${least} s left")"
   once still make 1; once shot read 1; once clip film 1
   line "up 1000000"
