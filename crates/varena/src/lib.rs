@@ -374,10 +374,14 @@ pub fn activate(device: i32, shared: bool) -> Result<()> {
     working::mark_cooperation_bound(device)
 }
 
-/// A request started or ended on `device`: an atomic store, which orders who donates first.
+/// A request started or ended on `device`: an atomic store, which orders who donates first. At
+/// the last end, the core refills what the Plan uses first (`source::boundary`).
 pub fn request_boundary(device: i32, begin: bool) {
-    if begin && let Ok(device) = gpu(device) {
-        device.held_peak.store(0, Ordering::Release);
+    if let Ok(gpu) = gpu(device) {
+        if begin {
+            gpu.held_peak.store(0, Ordering::Release);
+        }
+        let _ = source::boundary(gpu, begin); // A guess: its failure is no request's.
     }
     #[cfg(target_os = "linux")]
     cooperative::request_boundary(device, begin);
