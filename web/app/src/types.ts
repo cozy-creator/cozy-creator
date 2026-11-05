@@ -800,6 +800,7 @@ export interface MachineStatus {
   gpus?: Gpu[]
   disk_total_bytes?: number
   disk_free_bytes?: number
+  disk_models_bytes?: number
   runs?: LiveRun[]
   gpu_problems?: string[]
 }

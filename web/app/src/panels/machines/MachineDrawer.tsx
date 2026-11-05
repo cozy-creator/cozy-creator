@@ -93,6 +93,18 @@ function Update({ machine }: { machine: Machine }) {
   )
 }
 
+/** Under a tenth of its disk free, said before a render finds out: what a render does about it, and what holds more. */
+function DiskShort({ machine }: { machine: Machine }) {
+  const status = machine.status
+  if (machine.state === "ended" || !status?.disk_total_bytes || (status.disk_free_bytes ?? 0) >= status.disk_total_bytes / 10) return null
+  const models = status.disk_models_bytes ? `, models take ${bytes(status.disk_models_bytes)}` : ""
+  return (
+    <p className="warn">
+      Short of disk: {bytes(status.disk_free_bytes ?? 0)} free of {bytes(status.disk_total_bytes)}{models}. A render evicts the models no queued or running job is using; one that still doesn't fit is refused before it starts. For more, rent a machine with a larger disk.
+    </p>
+  )
+}
+
 /** All the rest it knows, for whoever asks. */
 function Details({ machine, now }: { machine: Machine; now: number }) {
   const status = machine.status
@@ -178,6 +190,7 @@ export function MachineDrawer() {
       <div className="ending">
         <End machine={machine} />
       </div>
+      <DiskShort machine={machine} />
       {machine.status?.gpu_problems?.map((problem) => (
         <p className="warn" key={problem}>
           {problem}
