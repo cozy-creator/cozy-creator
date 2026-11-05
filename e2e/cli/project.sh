@@ -260,6 +260,8 @@ printf '{"nodes": {"a": {"kind": "character", "versions": [{"number": 1}]}}}\n' 
 before=$(sha "$O/project.lock")
 code=0; cozy project -p "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-lock.txt" && [ "$(sha "$O/project.lock")" = "$before" ]; } || check "a format 1 project.lock was read or written (exit $code): $(tail -c 200 "$OUT/old-lock.txt")"
+# What a page opening to the newest project would refuse.
+rm -rf "$O"
 }
 
 # Format 2 to format 3, here, with no Calcifer: nothing goes out of date and nothing runs. A project made for real, its files and versions
@@ -401,6 +403,7 @@ printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    
 cp "$N/project.yaml" "$OUT/upgrade-names.yaml"
 code=0; cozy project -p "$N" upgrade > "$OUT/upgrade-names.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one and amy-ONE are one name' "$OUT/upgrade-names.txt" && cmp -s "$N/project.yaml" "$OUT/upgrade-names.yaml"; } || check "upgrade: names that are one (exit $code): $(tail -c 300 "$OUT/upgrade-names.txt")"
+rm -rf "$N"
 }
 
 # A text asset: its words go where it's mentioned, once, in Doc, and the key follows them.
@@ -510,6 +513,7 @@ code=0; cozy project -p "$C" upgrade > "$OUT/old-landing-stuck.txt" 2>&1 || code
 [ "$code" != 0 ] || check "old landing: names that are one converted"
 (cd "$C" && cozy --json run "$here/project/draw.py" prompt=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
+rm -rf "$C"
 
 step "a project: an upgrade cut short starts again from the originals"
 local K=$OUT/old-landing-cut
