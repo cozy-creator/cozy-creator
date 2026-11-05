@@ -43,7 +43,8 @@ sh() {
     [ "$code" = 124 ] || sleep 30
   done
 }
-trap 'sh "echo up > /tmp/link"; finish' EXIT
+# The line back up while the pod is there (e ends it), and the session's own exit status kept for `finish`.
+trap 'st=$?; [ "$(state "$RID")" != ready ] || sh "echo up > /tmp/link"; [ "$RC" != 0 ] || RC=$st; finish' EXIT
 # What a failure leaves to read once the pod is gone: X's runs, and both Calcifers' logs.
 fail() {
   say "FAIL: $*"
