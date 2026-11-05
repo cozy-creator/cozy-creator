@@ -133,7 +133,7 @@ pub struct WorkingStats {
     pub reclaim_ns: u64,
     pub reclaim_longest_ns: u64,
     pub reclaim_longest_step: u64,
-    pub reclaim_step_ns: [u64; 9],
+    pub reclaim_step_ns: [u64; crate::reclaim::STEPS],
     pub event_queries: u64,
     pub event_records: u64,
     pub event_waits: u64,

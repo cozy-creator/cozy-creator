@@ -82,7 +82,7 @@ pub(crate) struct Counters {
     pub(crate) reclaim_ns: AtomicU64,
     pub(crate) reclaim_longest_ns: AtomicU64,
     pub(crate) reclaim_longest_step: AtomicU64,
-    pub(crate) reclaim_step_ns: [AtomicU64; 9],
+    pub(crate) reclaim_step_ns: [AtomicU64; crate::reclaim::STEPS],
 }
 
 /// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
@@ -307,7 +307,7 @@ impl Driver {
     }
 
     /// Reclaim time by step, in ORDER.
-    pub(crate) fn reclaim_steps(&self) -> [u64; 9] {
+    pub(crate) fn reclaim_steps(&self) -> [u64; crate::reclaim::STEPS] {
         std::array::from_fn(|step| self.counters.reclaim_step_ns[step].load(Ordering::Relaxed))
     }
 

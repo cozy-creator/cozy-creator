@@ -67,7 +67,8 @@ enum Step {
 
 // Scratch comes before any weight: it costs a remap or a wait, while every evicted weight is
 // read again (H3 estimate for pending working: 112 GB per run). Time is measured, not assumed.
-const ORDER: [Step; 10] = [
+pub(crate) const STEPS: usize = 10;
+const ORDER: [Step; STEPS] = [
     Step::CompletedWorking,
     Step::Contentless,
     Step::IdlePools,

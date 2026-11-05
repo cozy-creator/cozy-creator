@@ -412,6 +412,7 @@ fn _varena_working_stats(
         ("reclaim_join_ns", stats.reclaim_step_ns[6]),
         ("reclaim_owner_caches_ns", stats.reclaim_step_ns[7]),
         ("reclaim_peers_ns", stats.reclaim_step_ns[8]),
+        ("reclaim_high_weights_ns", stats.reclaim_step_ns[9]),
         ("event_queries", stats.event_queries),
         ("event_records", stats.event_records),
         ("event_waits", stats.event_waits),
