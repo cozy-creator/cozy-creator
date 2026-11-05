@@ -121,6 +121,7 @@ type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
 const UNDO_MS = 5 * 60_000
+const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
 
 const samePlace = (a: { x: number; y: number }, b: { x: number; y: number }) => a.x === b.x && a.y === b.y
@@ -155,6 +156,7 @@ export class CanvasStore {
   private aliases = new Map<string, string>()
   private subscribers = new Map<string, Set<() => void>>()
   private shapes = new Map<string, string>()
+  private pauses = new Map<string, ReturnType<typeof setTimeout>>()
   private asked = new Set<number>()
   private runs = new Map<number, Run>()
   /** What a person did, in order, on its way to Calcifer. */
@@ -914,14 +916,19 @@ export class CanvasStore {
     return view?.asset?.fields?.[field]
   }
 
-  /** Typed, and not saved: a walk going reads the file, so a save is explicit, or on leaving the text. */
+  /** What's typed shows at once and writes itself at the first pause, on leaving the text, or as its box shuts. */
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
-    if (view) this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag })
+    if (!view) return
+    this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag })
+    clearTimeout(this.pauses.get(name))
+    this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))
   }
 
   /** Writes what's typed. Whether it stands: a refusal leaves it typed. */
   save(name: string): Promise<boolean> {
+    clearTimeout(this.pauses.get(name))
+    this.pauses.delete(name)
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.drafts) return Promise.resolve(true)
@@ -1363,6 +1370,20 @@ export class CanvasStore {
     this.move(key, { x: Math.round(node.position.x), y: Math.round(node.position.y), w: Math.round(width) })
     this.reshape(key)
     this.unsettle(key)
+  }
+
+  /** Its shape under the pointer: drawn, and nothing kept yet. */
+  drawShape(name: string, width: number, height: number) {
+    this.patch(name, { shape: `${width}:${height}` })
+    this.setWidth(name, width, false)
+    this.reshape(name)
+  }
+
+  /** Where a pulled corner lands: what its tool makes, at the width it was pulled to. */
+  setShape(name: string, field: string, width: number, shape: string) {
+    if (this.valueOf(name, field) !== shape) void this.setField(name, field, shape)
+    this.patch(name, { shape: undefined })
+    this.setWidth(name, width)
   }
 
   /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */

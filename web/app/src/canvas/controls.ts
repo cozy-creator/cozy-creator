@@ -72,14 +72,19 @@ export const heldBeyond = (fields: Record<string, unknown> | undefined, controls
   Object.entries(fields ?? {}).filter(([field, value]) => field !== "description" && !empty(value) && !controls.some((control) => control.field === field))
 
 /** The shapes a box snaps to when its tool doesn't say. */
-const SHAPES = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"]
+const SHAPES = ["32:9", "2.39:1", "21:9", "2:1", "16:9", "5:3", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "3:5", "9:16", "1:2", "9:21"]
+
+const parts = (shape: string) => shape.split(":").map(Number)
 
 export const shapesOf = (control: Control): string[] => {
   const options = (control.options ?? []).filter((option): option is string => typeof option === "string")
-  return options.length ? options : SHAPES
+  if (options.length) return options
+  const fits = (shape: string) => {
+    const [w, h] = parts(shape)
+    return w / h >= (control.min ?? 0) && w / h <= (control.max ?? Infinity)
+  }
+  return SHAPES.filter(fits)
 }
-
-const parts = (shape: string) => shape.split(":").map(Number)
 
 /** Of `shapes`, what's closest to `ratio`, as eyes judge it: by how many times over. */
 export function snapped(ratio: number, shapes: string[]): string {

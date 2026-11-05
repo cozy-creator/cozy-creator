@@ -29,7 +29,7 @@ export function shownOf(view: ElementView): Shown | null {
 }
 
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
-export const HEAD = 26
+export const HEAD = 32
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
 export const SUB_ROW = 136

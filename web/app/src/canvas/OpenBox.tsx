@@ -51,6 +51,8 @@ export function OpenBox({ name, close, addFiles, addTake }: { name: string; clos
   const view = useElement(name)
   const box = useRef<HTMLDivElement>(null)
   const there = Boolean(view)
+  // Whichever way it shuts, what's typed stands.
+  useEffect(() => () => void store.save(name), [store, name])
   // Deleted from under it, by anyone: there's nothing to look at.
   useEffect(() => {
     if (!there && store.hasRead) close()

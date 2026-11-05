@@ -391,14 +391,11 @@ function linesOf(text, name) {
   await page.keyboard.type(' mine');
   replaceFile(yamlAt, yaml().replace('      Written\n', '      Rewritten\n'));
   await until('its etag read again', () => box('source-a').count(), (n) => n === 1);
-  await box('Sheet').locator('.actions button:has-text("Save")').click();
   await until('another\'s edit is no conflict', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('mine'));
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' again');
   replaceFile(yamlAt, yaml().replace(' mine', ' theirs'));
-  await page.waitForTimeout(600);
-  await box('Sheet').locator('.actions button:has-text("Save")').click();
   await box('Sheet').locator('.status.ood:has-text("changed under this")').waitFor();
   await shot('conflict');
   check('a_conflict_writes_nothing', linesOf(yaml(), 'Sheet').includes(' theirs') && !linesOf(yaml(), 'Sheet').includes(' again'), linesOf(yaml(), 'Sheet'));
@@ -655,15 +652,11 @@ function linesOf(text, name) {
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
     await open('Other');
-    const beforeCaption = yaml();
     // A caption is of what's been made: it's on the version's face, not the one that asks for another.
     await box('Other').locator('[aria-label="Show its version"]').click();
     await box('Other').locator('button:text-is("Caption")').click();
     const typed = box('Other').locator('.desc-open .mention-text');
     await typed.waitFor({ timeout: FIRST_RUN_MS });
-    check('caption_in_the_field', (await typed.innerText()).includes('THE-PACKAGE-ASKS'), await typed.innerText());
-    check('caption_not_written', yaml() === beforeCaption);
-    await box('Other').locator('.desc-open button:text-is("Save")').click();
     await until('its description in the file', async () => (await of('Other')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
