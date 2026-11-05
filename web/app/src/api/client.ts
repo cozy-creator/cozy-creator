@@ -76,6 +76,9 @@ export class ApiError extends Error {
 const unreachable = () =>
   new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
 
+/** The page's own session is gone. Any other 401 is a Hub's word on a code or a key, which belongs where it happened. */
+export const sessionLost = (error: ApiError) => error.status === 401 && error.body.code === "unauthenticated"
+
 async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
   const error = body?.error
@@ -134,7 +137,7 @@ export class Client {
     this.hooks = hooks
   }
 
-  /** Calcifer said 401. Whether that signs anyone out is the connection's to judge: through a door, it's the pod's word. */
+  /** Calcifer refused the page itself. Whether that signs anyone out is the connection's to judge: through a door, it's the pod's word. */
   unauthorized() {
     this.hooks.signedOut()
   }
@@ -155,7 +158,7 @@ export class Client {
           return response
         }
         failure = await refusal(response)
-        if (response.status === 401) this.unauthorized()
+        if (sessionLost(failure)) this.unauthorized()
         if (response.status !== 503 || options.once) {
           if (attempt > 1) say(0)
           throw failure
@@ -184,8 +187,9 @@ export class Client {
   private async opened(path: string, signal: AbortSignal): Promise<Response> {
     const response = await this.transport.fetch(path, { signal, headers: { Accept: "text/event-stream" } })
     if (response.ok) return response
-    if (response.status === 401) this.unauthorized()
-    throw await refusal(response)
+    const failure = await refusal(response)
+    if (sessionLost(failure)) this.unauthorized()
+    throw failure
   }
 
   private write<T>(method: string, path: string, body: unknown, key?: string, options?: Options): Promise<T> {

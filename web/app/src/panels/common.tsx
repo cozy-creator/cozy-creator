@@ -6,17 +6,16 @@ import { useConnection } from "../app/Connection"
 import { Copyable } from "../ui/Copyable"
 
 /** A refusal as Calcifer said it: its message, its remedy, and `next` as text to copy. */
-export function Failure({ error, lead }: { error: unknown; lead?: string }) {
+/** With `plain`, only what went wrong: no command, where someone is signing in here and may have no terminal to hand. */
+export function Failure({ error, lead, plain }: { error: unknown; lead?: string; plain?: boolean }) {
   if (!error) return null
   const body = error instanceof ApiError ? error.body : undefined
   const message = error instanceof Error ? error.message : String(error)
   return (
     <div className="failure" role="alert">
       <span>{lead ? `${lead}: ${message}` : message}</span>
-      {body?.remedy && <span className="remedy">{body.remedy}</span>}
-      {body?.next?.map((command) => (
-        <Copyable key={command} text={command} />
-      ))}
+      {!plain && body?.remedy && <span className="remedy">{body.remedy}</span>}
+      {!plain && body?.next?.map((command) => <Copyable key={command} text={command} />)}
     </div>
   )
 }

@@ -35,7 +35,7 @@ function CodeEntry({ sent, onDone, onAgain }: { sent: Code; onDone: (code: strin
           Go on
         </button>
       </div>
-      <Failure error={ask.error} lead="That didn't work" />
+      <Failure error={ask.error} lead="That didn't work" plain />
     </form>
   )
 }
@@ -104,7 +104,7 @@ function SignIn({ onSignedIn, keyRefused, needsName }: { onSignedIn: () => void;
           Email me a code
         </button>
       </form>
-      <Failure error={send.error} lead="Couldn't send a code" />
+      <Failure error={send.error} lead="Couldn't send a code" plain />
     </>
   )
 }
