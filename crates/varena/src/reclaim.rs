@@ -385,10 +385,10 @@ pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
 }
 
 /// The prefetch rule: free >= bytes + what this phase's last pass still needs of working
-/// memory, where free counts completed free working pages and completed idle regions that
-/// reclaim would take anyway. With nothing measured yet, a first pass, it reads ahead only
-/// into room already free, and so does `free_only`: a fill past the one a use asked for. False
-/// declines with no IO and no waiting.
+/// memory (a quarter of the card unmeasured, or at idle). Completed free working pages past that
+/// need are room nothing holds, so any fill takes them. Only a measured phase's fill that a use
+/// asked for also takes completed idle regions that reclaim would take anyway; `free_only` is a
+/// fill past it. False declines with no IO and no waiting.
 pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
     let Some((gap, reusable, known)) = working::prefetch_gap(device)? else {
         return Ok(false);
@@ -421,11 +421,15 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
         return Ok(true);
     }
     let short = needed - room;
-    if !known || free_only || short > idle + excess {
+    let weights = known && !free_only;
+    if short > excess + if weights { idle } else { 0 } {
         return Ok(false);
     }
     let trimmed = working::release_completed(device, short.min(excess), usize::MAX, None)?;
     if trimmed < short {
+        if !weights {
+            return Ok(false);
+        }
         let mut released = 0;
         release(device, short - trimmed, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
     }
