@@ -13,7 +13,7 @@ import {
 } from "@xyflow/react"
 import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { useNavigate } from "react-router-dom"
+import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -28,6 +28,7 @@ import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore } from "./context"
 import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
+import { OpenBox } from "./OpenBox"
 import { Placer } from "./place"
 import { madeHere } from "./shown"
 import { noHash } from "./text"
@@ -196,6 +197,8 @@ function Canvas({
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
+  const opened = useMatch("/projects/:id/assets/:name")?.params.name
+  const closeBox = useCallback(() => navigate(`/projects/${store.projectId}`), [navigate, store])
   const stage = useRef<HTMLDivElement>(null)
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -450,6 +453,10 @@ function Canvas({
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onPaneClick={() => store.editing.set(null)}
+          onNodeClick={(event, node) => {
+            if (node.type !== "element" || !store.projectId || event.shiftKey || event.metaKey || event.ctrlKey) return
+            navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(node.data.name)}`)
+          }}
           onNodeContextMenu={(event, node) => {
             if (node.type !== "element") return
             event.preventDefault()
@@ -467,6 +474,7 @@ function Canvas({
         </ReactFlow>
         {veil && <div className="dropveil" />}
       </div>
+      {opened && <OpenBox name={opened} close={closeBox} />}
       <AssetMenu />
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
       {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}

@@ -381,7 +381,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
   )
 }
 
-const CardBody = memo(function CardBody({ name, width, selected }: { name: string; width: number; selected: boolean }) {
+const CardBody = memo(function CardBody({ name, width, selected, close }: { name: string; width: number; selected: boolean; close?: () => void }) {
   const store = useCanvasStore()
   const view = useElement(name)
   const far = useStore((state) => state.transform[2] < 0.2)
@@ -408,7 +408,7 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   const face = faceOf(view)
   const canFlip = makes(view)
   // At rest a box is its picture or its text and a name. All else comes when it's asked for, and isn't there until then, so 300 boxes cost little.
-  const active = !far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name)
+  const active = Boolean(close) || (!far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name))
   const editing = face === "edit" && active
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
@@ -475,7 +475,11 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
             <Icon name={face === "edit" ? "picture" : "edit"} />
           </button>
         )}
-        {view.placing && view.placing.stage !== "adding" ? (
+        {close ? (
+          <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={close}>
+            <Icon name="close" />
+          </button>
+        ) : view.placing && view.placing.stage !== "adding" ? (
           <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={cancel}>
             <Icon name="close" />
           </button>
@@ -529,6 +533,11 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
     </div>
   )
 })
+
+/** A box opened: all of it, at the size of the room it's given. */
+export function OpenCard({ name, close }: { name: string; close: () => void }) {
+  return <CardBody name={name} width={960} selected close={close} />
+}
 
 /** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
 export function Card({ data, width, selected }: NodeProps<ElementNode>) {

@@ -2372,6 +2372,68 @@ input[type="checkbox"] {
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
 }
 
+/* A box opened: the canvas dims behind it, and all of it is here. */
+.open-back {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--top) + 8px) 24px 24px;
+  background: #06070acc;
+}
+.open-box {
+  width: min(1240px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 24px 80px #000c;
+}
+.open-box .card {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px 18px;
+  user-select: text;
+}
+.open-box .head {
+  grid-column: 1 / -1;
+}
+.open-box .nm {
+  font-size: 15px;
+}
+.open-box .asset-more {
+  position: static;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  animation: none;
+}
+.open-box .asset-more::before {
+  content: none;
+}
+.open-box .card > .media {
+  max-height: calc(100vh - var(--top) - 110px);
+}
+/* An Edit's clips want the whole width. */
+.open-box .card:has(.tl) {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 760px) {
+  .open-box .card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .open-back {
+    padding: var(--top) 8px 8px;
+  }
+}
+
 /* What can't be read says so where its boxes would be. */
 .unread {
   position: absolute;
