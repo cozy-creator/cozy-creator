@@ -637,7 +637,7 @@ export class CanvasStore {
   }
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself. Refused, it goes back. */
-  private over<T extends { stale: string[] }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string) {
+  private over<T extends { stale: string[]; etag?: string }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
@@ -650,6 +650,9 @@ export class CanvasStore {
       send,
       done: (answer) => {
         if (mine()) this.patchId(id, { over: { row, until: performance.now() } })
+        // A write of its own: what a typed field began from moves with it, so it's no conflict.
+        const held = this.views.get(this.namesById.get(id ?? "") ?? "")
+        if (held && answer.etag) this.patchId(id, { known: answer.etag, ...(held.base === was.etag ? { base: held.drafts || held.writing ? answer.etag : undefined } : {}) })
         if (answer.stale.length) say(`That puts ${answer.stale.join(", ")} out of date`)
       },
       refused: (error) => {

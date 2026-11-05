@@ -250,6 +250,7 @@ export interface Unpinned {
   name: string
   version?: number
   stale: string[]
+  etag?: string
 }
 
 export interface Approved {
@@ -261,6 +262,7 @@ export interface Approved {
   path: string
   stale: string[]
   warnings?: string[]
+  etag?: string
 }
 
 export interface Renamed {
