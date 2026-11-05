@@ -233,7 +233,7 @@ pub struct Target {
     pub summary: String,
     /// The package's interface document (`cozy.package.interface/1`).
     pub interface: serde_json::Value,
-    /// What a person runs of it, in the order offered: no internal function, recipe or project adapter.
+    /// What a person runs of it, in the order offered: no internal function or recipe.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub functions: Vec<TargetFunction>,
     /// The named function's contract as people read it (`cozy run … --describe`).
@@ -389,9 +389,6 @@ pub struct Run {
     /// With `?detail=full`: its measurements and its calls', worked out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<crate::report::Report>,
-    /// A project adapter's run: `cozy project`'s own, which a list people read leaves out.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub adapter: bool,
     /// With `?detail=full`: what was asked of it, to show and to ask again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<RunAsked>,

@@ -49,6 +49,7 @@ export function MentionText({
   place,
   value,
   label,
+  placeholder,
   missing,
   focus,
   onDraft,
@@ -58,6 +59,8 @@ export function MentionText({
   place: string
   value: string
   label: string
+  /** What it reads when it's empty, its label if nothing else. */
+  placeholder?: string
   missing: string[]
   focus?: boolean
   onDraft: (text: string) => void
@@ -232,11 +235,10 @@ export function MentionText({
         aria-label={label}
         data-drop-target=""
         data-field={place}
-        data-placeholder={label}
+        data-placeholder={placeholder ?? label}
         contentEditable="plaintext-only"
         suppressContentEditableWarning
         spellCheck={false}
-        onFocus={() => store.editing.set(asset)}
         onInput={() => {
           emit()
           look()

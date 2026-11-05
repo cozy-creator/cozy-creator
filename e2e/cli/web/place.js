@@ -1,17 +1,18 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
 // move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
-//   node place.js <sign-in link from `cozy web --no-open`>
+//   node place.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
+const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, drop, png, until, wav } = require('./page');
+const { MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
   if (!ok) failures.push(name);
@@ -19,7 +20,7 @@ function check(name, ok, detail) {
 
 const names = (page) => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .nm, .react-flow__node .nm-field')]
   .map((el) => el.value ?? el.textContent).sort());
-const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
+const element = boxOf;
 const yaml = (folder) => readFileSync(join(folder, 'project.yaml'), 'utf8');
 function rows(folder) {
   let text;
@@ -45,7 +46,7 @@ const constants = (folder) => {
 (async () => {
   const link = process.argv[2];
   const base = new URL(link).origin;
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1500, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(STEP_MS);
@@ -123,11 +124,13 @@ const constants = (folder) => {
   await until('the chosen file named', () => constants(folder).Hero_Shot_v2, Boolean);
 
   // Renamed by double-click.
+  await openBox(page, 'sea_sound');
   await element(page, 'sea_sound').locator('.nm').dblclick();
   await page.waitForSelector('.nm-field');
   await page.keyboard.type('ocean');
   await page.keyboard.press('Enter');
   await until('renamed in project.yaml', () => constants(folder), (all) => all.ocean && !all.sea_sound);
+  await closeBox(page);
   check('renamed_row_moved', Boolean((await until('renamed row', () => rows(folder), (all) => all.ocean)).ocean));
   check('rename_shown', (await names(page)).includes('ocean'), await names(page));
 
@@ -146,27 +149,42 @@ const constants = (folder) => {
     { name: 'notes.txt', type: 'text/plain', bytes: Buffer.from('these are not pictures\n'.repeat(4)) },
     { name: 'Kyogre Art (1).png', type: 'image/png', bytes: pngBytes },
   ], 900, 650);
-  await until('the copy landed', () => constants(folder).kyogre_art_1_2, Boolean);
+  await until('the copy landed', () => constants(folder).kyogre_art_2, Boolean);
   const lines = await until('one line for the text file', () => page.locator('.note .line').allTextContents(), (all) => all.some((line) => line.includes('notes.txt')));
   check('one_line_for_non_media', lines.filter((line) => line.includes('notes.txt')).length === 1, lines);
   check('non_media_not_on_canvas', !(await names(page)).includes('notes'), await names(page));
   check('same_file_one_file', readdirSync(join(folder, 'files')).length === filesBefore);
   const all = constants(folder);
-  check('same_file_same_hash', all.kyogre_art_1.hash === all.kyogre_art_1_2.hash, all);
-  check('same_file_two_elements', (await names(page)).includes('kyogre_art_1_2'), await names(page));
+  check('same_file_same_hash', all.kyogre_art_1.hash === all.kyogre_art_2.hash, all);
+  check('same_file_two_elements', (await names(page)).includes('kyogre_art_2'), await names(page));
 
   // Dragged: the row in project.canvas.yaml moves by what the mouse did, and no input changes.
   const box = await element(page, 'clash_take').locator('.nm').boundingBox();
   const was = rows(folder).clash_take;
   const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
   const yamlBeforeMove = yaml(folder);
+  // Somewhere clear: let go on another box, it goes to the nearest clear place instead (30fc7cbba).
+  const { dx, dy } = await page.evaluate((name) => {
+    const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
+    const mine = rects.find((held) => held.name === name).rect;
+    const others = rects.filter((held) => held.name !== name).map((held) => held.rect);
+    const gap = 32;
+    for (const y of [120, -120, 240, -240]) {
+      for (const x of [180, -180, 360, -360]) {
+        const [left, top, right, bottom] = [mine.left + x - gap, mine.top + y - gap, mine.right + x + gap, mine.bottom + y + gap];
+        const onScreen = top > 60 && left > 230 && bottom < innerHeight - 20 && right < innerWidth - 20;
+        if (onScreen && !others.some((other) => other.left < right && other.right > left && other.top < bottom && other.bottom > top)) return { dx: x, dy: y };
+      }
+    }
+    return { dx: 180, dy: 120 };
+  }, 'clash_take');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
-  await page.mouse.move(box.x + box.width / 2 + 180, box.y + box.height / 2 + 120, { steps: 5 });
+  await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2 + dy, { steps: 5 });
   await page.mouse.up();
   const row = (await until('the moved row', () => rows(folder), (now) => now.clash_take && (now.clash_take.x !== was.x || now.clash_take.y !== was.y))).clash_take;
-  check('move_in_canvas_file', Math.abs(row.x - was.x - 180 / zoom) <= 3 && Math.abs(row.y - was.y - 120 / zoom) <= 3, { was, row, zoom });
+  check('move_in_canvas_file', Math.abs(row.x - was.x - dx / zoom) <= 3 && Math.abs(row.y - was.y - dy / zoom) <= 3, { was, row, zoom, dx, dy });
   check('move_touches_no_input', yaml(folder) === yamlBeforeMove);
 
   // A drag on the empty canvas moves it and selects nothing; with Shift it selects instead.
@@ -241,7 +259,7 @@ const constants = (folder) => {
   if (process.env.COZY) {
     const status = JSON.parse(execFileSync(process.env.COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     const held = status.assets.map((asset) => asset.name);
-    check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_1_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
+    check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
   }
 
   // Everything above hashed in WebAssembly under the page's own CSP, with no violation; `eval` stays refused beside it.
@@ -252,8 +270,10 @@ const constants = (folder) => {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

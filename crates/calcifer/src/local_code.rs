@@ -9,12 +9,13 @@
 //! wheels travel; another receives the files too, and Calcifer writes only the bytes it lacks.
 //! Every client and Calcifer's projects use this one module (cl-716).
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt::Display,
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, LazyLock, Mutex},
+    time::UNIX_EPOCH,
 };
 
 use platform::{durable, paths::Home};
@@ -1094,6 +1095,36 @@ pub fn describe_with(uv: &Path, dir: &Path, python: &str, runtime: Option<&str>)
     Ok((said.trim_end().to_owned(), document))
 }
 
+/// What each local package last read as, by its path and the Runtime that read it, with the stats it read at. One read at a time of each: any other
+/// waits and takes it. Kept for as long as Calcifer runs: a file that changes is another stamp, and it's read again.
+type Described = Arc<tokio::sync::Mutex<Option<(String, (String, Value))>>>;
+static DESCRIBED: LazyLock<Mutex<HashMap<(PathBuf, Option<String>), Described>>> = LazyLock::new(Mutex::default);
+
+/// Each file a read of the local code at `path` depends on, by name, size and time: a stat each, so asking again reads no file's bytes.
+fn stamp_of(path: &Path) -> Result<String, Error> {
+    let path = fs::canonicalize(path).map_err(|e| refuse("project_unreadable", format!("{}: {e}", path.display())))?;
+    let mut names = vec![];
+    if path.is_file() {
+        names.push(path);
+    } else {
+        let mut left = vec![];
+        names.extend(source_files(&path, &mut left)?.into_iter().map(|file| path.join(file)));
+        for local in path_dependencies(&path)? {
+            match local.is_file() {
+                true => names.push(local),
+                false => names.extend(source_files(&local, &mut left)?.into_iter().map(|file| local.join(file))),
+            }
+        }
+    }
+    let mut stamp = Sha256::new();
+    for name in names {
+        let meta = fs::metadata(&name).map_err(|e| refuse("project_unreadable", format!("{}: {e}", name.display())))?;
+        let at = meta.modified().ok().and_then(|at| at.duration_since(UNIX_EPOCH).ok()).unwrap_or_default();
+        stamp.update(format!("{}\0{}\0{}\n", name.display(), meta.len(), at.as_nanos()));
+    }
+    Ok(hex::encode(stamp.finalize()))
+}
+
 /// The Runtime the machine `on` last said it runs, asking it nothing: no machine starts for a read.
 fn last_runtime(api: &Api, on: &On) -> Option<String> {
     let On::Machine(name) = on else { return None };
@@ -1105,12 +1136,24 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
 /// The local code at `path` (a package directory or a script) as a run `on` its machine reads it: `local/<name>` and its
 /// interface. What that machine's Runtime said installing this very source, else Runtime's static describer, on the Python and
 /// Runtime release its project names, or PyPI's newest. That can be older than the machine's, and refuse what the machine runs.
-/// Nothing installs, and no machine is asked.
+/// Nothing installs, and no machine is asked. Read once for as long as its files stand (`stamp_of`).
 pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result<(String, Value), Error> {
+    let runtime = last_runtime(api, on);
+    let held = DESCRIBED.lock().expect("described lock").entry((path.to_owned(), runtime.clone())).or_default().clone();
+    let mut held = held.lock().await;
+    let stamp = stamp_of(path)?;
+    if let Some((_, known)) = held.as_ref().filter(|(read, _)| *read == stamp) {
+        return Ok(known.clone());
+    }
+    let known = read_interface(api, path, on, hub, runtime).await?;
+    *held = Some((stamp, known.clone()));
+    Ok(known)
+}
+
+async fn read_interface(api: &Arc<Api>, path: &Path, on: &On, hub: &str, runtime: Option<String>) -> Result<(String, Value), Error> {
     let hubs = &api.machines.hubs;
     let home = hubs.home();
     let project = Project::read(project(home, path)?)?;
-    let runtime = last_runtime(api, on);
     let read = async {
         let origin = Origin::parse(hub).ok()?;
         let reader = hubs.reader(origin.as_str()).ok()?;
@@ -1123,7 +1166,11 @@ pub async fn describe(api: &Arc<Api>, path: &Path, on: &On, hub: &str) -> Result
     let uv = crate::tools::uv(home, &|line| tracing::info!("{line}")).await?;
     let python = python(&project, &uv)?;
     let locked = locked_runtime(&project.root);
-    let described = describe_with(&uv, &project.root, &python.request, locked.as_deref()).map_err(|error| match (&runtime, &locked, on) {
+    let (root, asked, wanted) = (project.root.clone(), python.request.clone(), locked.clone());
+    let described = tokio::task::spawn_blocking(move || describe_with(&uv, &root, &asked, wanted.as_deref()))
+        .await
+        .map_err(|why| refuse("describe_failed", why))?;
+    let described = described.map_err(|error| match (&runtime, &locked, on) {
         (Some(runtime), None, On::Machine(name)) if error.code == "describe_failed" => error
             .remedy(format!("PyPI's newest Runtime read this, and {name} runs {runtime}: a run there reads it with that one, and this then answers what it read"))
             .next(format!("cozy run {}", path.display())),

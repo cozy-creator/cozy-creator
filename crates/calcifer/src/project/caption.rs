@@ -1,6 +1,6 @@
-//! An asset's description, from what it shows: a run, on a machine that's up, of whatever a package's `project-adapter-text` says to ask.
-//! The answer goes back for the page to put in the field, and nothing is written. Calcifer knows no model and no question: a package that
-//! can read a picture or a video and answer in words declares this adapter, on the file as a `Read`, and owns the words.
+//! An asset's description, from what it shows: a run, on a machine that's up, of a package's `caption`, given the file. The answer goes
+//! back for the page to put in the field, and nothing is written. Calcifer knows no model and no question: a package that can read a
+//! picture or a video and answer in words declares a function of that name, and owns the words.
 use std::sync::Arc;
 
 use axum::{
@@ -16,13 +16,16 @@ use protocol::{
     machine as v1,
     project::{CaptionAsked, Captioned},
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
-use super::{Doc, Host, Package, Renderer, Project, answered, find, folder, format, landing, local_code_named, media_type, new_key, tools};
+use super::{Doc, Host, Package, Renderer, Project, direct, find, format::Given, landing, local_code_named, media_type, new_key, tools};
 use crate::{
     api::{Api, Refusal, parse},
     runs, toolbox,
 };
+
+/// What a package calls the function that says what a file shows.
+const CAPTION: &str = "caption";
 
 /// `POST /v1/projects/{id}/assets/{name}/caption`: its description as a package would say it, for the page to put in the field.
 pub(super) async fn caption(
@@ -55,39 +58,35 @@ pub(super) async fn caption(
     let Some(package) = describer(&api, &host, &id, &hub, &on, &folder.dir).await else {
         return Err(Refusal(Error::new(Kind::NotFound, "caption_no_tool", "nothing here or on the Hub reads a picture and answers in words")));
     };
-    let adapter = package.adapter("text").expect("a describer has a text adapter");
-    let records: Map<String, Value> = files.iter().map(|(field, sha256)| (field.clone(), lock.files.get(sha256).map_or_else(|| json!({"sha256": sha256}), folder::File::record))).collect();
-    let read = json!({"name": name, "kind": doc.assets[i].kind, "files": records});
-    let operation = json!({"version": format::FORMAT, "asset": name, "kind": "text", "function": "text", "inputs": {}, "reads": [read], "keep": null});
+    let asking = package.function(CAPTION).map_err(Refusal)?;
+    let callable = package.callable(CAPTION).expect("a describer has a caption");
+    let kind = ["image", "video"].into_iter().find(|kind| files.contains_key(*kind)).expect("a picture or a video");
+    let given = Given { name: name.clone(), files: files.into_iter().filter(|(field, _)| field.starts_with(kind)).collect(), description: String::new(), asset_type: String::new(), made_by: String::new(), text: String::new() };
+    let tool = format!("{}/{CAPTION}", package.name);
+    let call = direct::Call { name: &name, tool: &tool, package: &package.name, callable: &callable, inputs: &Map::new(), own: &Default::default(), reads: std::slice::from_ref(&given), lock: &lock, take: None };
+    let (input, warnings) = direct::input(call).map_err(Refusal)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map_or_else(new_key, str::to_owned);
-    let adapted = send(&host, &project, &adapter, operation, &on, &hub, &format!("{key}-adapter")).await?;
-    let (calls, warnings) = answered(adapted.result.as_ref());
-    let Some(call) = calls.into_iter().next() else {
-        return Err(Refusal(Error::new(Kind::Unavailable, "caption_failed", format!("{} asked nothing of {name}", package.name))));
-    };
-    let asking = package.function(&call.function).map_err(Refusal)?;
-    let run = send(&host, &project, &asking, Value::Object(call.input), &on, &hub, &format!("{key}-ask")).await?;
-    let answer = package.callable(&call.function).and_then(|callable| protocol::tool::output_text(&callable, run.result.as_ref()?));
-    let Some(text) = answer else {
+    let run = send(&host, &project, &asking, Value::Object(input), &on, &hub, &key).await?;
+    let Some(text) = protocol::tool::output_text(&callable, run.result.as_ref().unwrap_or(&Value::Null)) else {
         return Err(Refusal(Error::new(Kind::Unavailable, "caption_failed", format!("{} answered no text", asking.target()))));
     };
     Ok(Json(Captioned { name, text, run: run.number, warnings }))
 }
 
 /// The package a description comes from: local code this project's assets name, else what `on` holds, else the Hub's first, that declares
-/// `project-adapter-text`. What's there first, so it costs no download. Which words it asks with are that package's.
+/// a `caption`. What's there first, so it costs no download. Which words it asks with are that package's.
 async fn describer(api: &Arc<Api>, host: &Host, id: &str, hub: &str, on: &On, dir: &std::path::Path) -> Option<Package> {
     let from = std::slice::from_ref(on);
     for (written, _) in local_code_named(api, id).unwrap_or_default() {
         if let Ok(package) = host.package(hub, &written, dir, from).await
-            && package.adapter("text").is_some()
+            && package.callable(CAPTION).is_some()
         {
             return Some(package);
         }
     }
     for (package, release) in toolbox::candidates(api, hub, on).await {
         if let Ok(package) = host.published(hub, &format!("{package}@{release}"), Some(on)).await
-            && package.adapter("text").is_some()
+            && package.callable(CAPTION).is_some()
         {
             return Some(package);
         }

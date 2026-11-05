@@ -1,6 +1,6 @@
 // door.sh's look at a package's component through the door: the page on a machine's project, in a real Chrome, with the machine saying its tool
 // ships one. Prints what its box drew and where the page asked for a component, and door.sh judges it.
-//   node component.js <sign-in link from `cozy web --no-open`> <machine> <its project's id>
+//   node component.js <sign-in link from `cozy open --no-open`> <machine> <its project's id>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome. Every step is bounded.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const [link, machine, id] = process.argv.slice(2);
@@ -37,13 +37,14 @@ const STEP_MS = 60000;
   await page.evaluate((name) => sessionStorage.setItem('cozy.calcifer', name), machine);
   await page.goto(`${new URL(link).origin}/#/projects/${encodeURIComponent(id)}`);
   await page.reload();
-  const box = page.locator('.react-flow__node').filter({ has: page.locator('.nm:text-is("drawn")') });
-  await box.waitFor();
-  // In view, then the pointer on it, as a person's: a hover that retries scrolls, and leaves it over something else.
+  const card = '.card[data-asset="drawn"]';
+  await page.locator(`.react-flow__node ${card}`).waitFor();
+  // In view, then a click opens it: the middle of it, where there's nothing else to press.
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
-  const name = await box.locator('.nm').boundingBox();
-  await page.mouse.move(name.x + name.width / 2, name.y + name.height / 2);
+  const { x, y, width, height } = await page.locator(`.react-flow__node ${card} .media`).boundingBox();
+  await page.mouse.click(x + width / 2, y + height / 2);
+  const box = page.locator(`.open-box ${card}`);
   await box.locator('button[aria-label=Render]').waitFor();
   // The page asks this computer's Calcifer, which has no such code.
   for (let waited = 0; waited < 300 && !toolUi.length; waited++) await page.waitForTimeout(100);

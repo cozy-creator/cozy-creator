@@ -1,17 +1,18 @@
 // One stream across tabs, and across a restart of Calcifer (web-ui.md §3): tabs share one `GET /v1/events`, closing the tab that holds
 // it hands it on, and `kill -9` on Calcifer shows reconnecting and recovers with no reload, the session intact. A reload after the
 // restart must not hang, which it did in the shelved build.
-//   node reconnect.js <sign-in link from `cozy web --no-open`>
+//   node reconnect.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: a shell command that kills this Calcifer with -9 and
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { STEP_MS, drop, png, until } = require('./page');
+const { STEP_MS, drop, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
   if (!ok) failures.push(name);
@@ -112,8 +113,10 @@ const row = (folder, name) => {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch((error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

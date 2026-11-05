@@ -3,6 +3,7 @@ import type {
   Agreed,
   Approved,
   Asked,
+  Browsed,
   Canvas,
   Code,
   Ended,
@@ -50,10 +51,12 @@ import type {
   Status,
   Submitted,
   Target,
+  ToolList,
   ToolUi,
   Tools,
   Unpinned,
   Updating,
+  VersionMoved,
 } from "../types"
 import type { Transport } from "./transport"
 
@@ -71,7 +74,7 @@ export class ApiError extends Error {
 }
 
 const unreachable = () =>
-  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy web"] })
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
 
 async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
@@ -98,6 +101,8 @@ export interface Options {
   accept?: number[]
   /** Said for each try after the first; 0 when it is over. */
   onAttempt?: (attempt: number) => void
+  /** One try, which this ends: its retries are the outbox's. */
+  once?: AbortSignal
 }
 
 export interface Hooks {
@@ -144,14 +149,14 @@ export class Client {
     for (let attempt = 1; ; attempt++) {
       let failure: ApiError
       try {
-        const response = await this.transport.fetch(path, init)
+        const response = await this.transport.fetch(path, options.once ? { ...init, signal: options.once } : init)
         if (response.ok || options.accept?.includes(response.status)) {
           if (attempt > 1) say(0)
           return response
         }
         failure = await refusal(response)
         if (response.status === 401) this.unauthorized()
-        if (response.status !== 503) {
+        if (response.status !== 503 || options.once) {
           if (attempt > 1) say(0)
           throw failure
         }
@@ -162,7 +167,7 @@ export class Client {
         }
         failure = unreachable()
       }
-      if (!safe || attempt >= TRIES) {
+      if (!safe || options.once || attempt >= TRIES) {
         if (attempt > 1) say(0)
         throw failure
       }
@@ -266,49 +271,59 @@ export class Client {
     return (await this.send(`${project(id)}/yaml`, { signal })).text()
   }
 
-  import(id: string, key: string, body: Import, onAttempt?: (attempt: number) => void): Promise<Imported> {
-    return this.write("POST", `${project(id)}/imports`, body, key, { onAttempt })
+  import(id: string, key: string, body: Import, once?: AbortSignal): Promise<Imported> {
+    return this.write("POST", `${project(id)}/imports`, body, key, { once })
   }
 
   /** Pins `name` to `version`: a short run of digits is its version, anything else a hash prefix of a file of the project. */
-  approve(id: string, name: string, version: string): Promise<Approved> {
-    return this.write("POST", `${project(id)}/approve`, { name, version })
+  approve(id: string, name: string, version: string, once?: AbortSignal): Promise<Approved> {
+    return this.write("POST", `${project(id)}/approve`, { name, version }, undefined, { once })
   }
 
   /** Its pin's line gone, so its state follows its inputs again. */
-  unpin(id: string, name: string): Promise<Unpinned> {
-    return this.write("POST", `${project(id)}/unpin`, { name })
+  unpin(id: string, name: string, once?: AbortSignal): Promise<Unpinned> {
+    return this.write("POST", `${project(id)}/unpin`, { name }, undefined, { once })
   }
 
   /** A new version of each of `names`, on these machines. `take` and `in_s` keep one video's start; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: { take?: number; in_s?: number; outdated?: boolean } = {}): Promise<Asked> {
-    return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key)
+  render(id: string, names: string[], on: string[], key: string, also: { take?: number; in_s?: number; outdated?: boolean } = {}, once?: AbortSignal): Promise<Asked> {
+    return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 
   /** A tool dropped on the canvas. */
-  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown> }): Promise<AssetMade> {
-    return this.write("POST", `${project(id)}/assets`, body, key)
+  newAsset(id: string, key: string, body: { tool: string; at?: Row; name?: string; fields?: Record<string, unknown>; kind?: string }, once?: AbortSignal): Promise<AssetMade> {
+    return this.write("POST", `${project(id)}/assets`, body, key, { once })
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */
-  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string): Promise<AssetPatched> {
+  patchAsset(id: string, name: string, body: { fields?: Record<string, unknown>; tool?: string }, read?: string, once?: AbortSignal): Promise<AssetPatched> {
     const headers: Record<string, string> = { "Content-Type": "application/json" }
     if (read) headers["If-Match"] = read
-    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) })
+    return this.json(`${project(id)}/assets/${encodeURIComponent(name)}`, { method: "PATCH", headers, body: JSON.stringify(body) }, { once })
   }
 
-  deleteAsset(id: string, name: string): Promise<AssetDeleted> {
-    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {})
+  deleteAsset(id: string, name: string, once?: AbortSignal): Promise<AssetDeleted> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}`, {}, undefined, { once })
   }
 
   /** Its description as a package would say it, from what it shows: a run on a machine that's up. Nothing is written. */
-  caption(id: string, name: string, on: string | undefined, key: string): Promise<Captioned> {
-    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/caption`, on ? { on } : {}, key)
+  caption(id: string, name: string, on: string | undefined, key: string, once?: AbortSignal): Promise<Captioned> {
+    return this.write("POST", `${project(id)}/assets/${encodeURIComponent(name)}/caption`, on ? { on } : {}, key, { once })
   }
 
   /** What deleting it answered, back under its name. */
-  putAssetBack(id: string, name: string, text: string, at?: Row): Promise<AssetMade> {
-    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at })
+  putAssetBack(id: string, name: string, text: string, at?: Row, once?: AbortSignal): Promise<AssetMade> {
+    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at }, undefined, { once })
+  }
+
+  /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
+  discardVersion(id: string, name: string, number: number, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, { once })
+  }
+
+  /** What discarding it answered, and it's back. */
+  restoreVersion(id: string, name: string, number: number, approved: boolean, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { approved }, undefined, { once })
   }
 
   /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
@@ -320,6 +335,18 @@ export class Client {
     return this.json(`/v1/tools?${asked}`, { signal })
   }
 
+  /** A package on your list, or tools off it. Nothing is installed or deleted. */
+  changeToolList(change: { add?: string; remove?: string[] }, once?: AbortSignal): Promise<ToolList> {
+    return this.write("POST", "/v1/tools/list", change, undefined, { once })
+  }
+
+  /** The Hub's packages that make media. */
+  browseTools(q: string, limit: number, signal?: AbortSignal): Promise<Browsed> {
+    const asked = new URLSearchParams({ limit: String(limit) })
+    if (q) asked.set("q", q)
+    return this.json(`/v1/tools/browse?${asked}`, { signal })
+  }
+
   /** Where to import a tool's component from. `project`: local code it names can answer. */
   toolUi(id: string, project: string | null): Promise<ToolUi> {
     const asked = project ? `?${new URLSearchParams({ project })}` : ""
@@ -327,8 +354,8 @@ export class Client {
   }
 
   /** These assets' queued work dropped and their runs canceled. */
-  cancelRender(id: string, names: string[]): Promise<unknown> {
-    return this.write("POST", `${project(id)}/cancel`, { names })
+  cancelRender(id: string, names: string[], once?: AbortSignal): Promise<unknown> {
+    return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
   }
 
   /** Every file `files/` lacks, from the Hub; a project's `moving` says it's going. */
@@ -336,16 +363,16 @@ export class Client {
     return this.write("POST", `${project(id)}/pull`, {})
   }
 
-  rename(id: string, from: string, to: string): Promise<Renamed> {
-    return this.write("POST", `${project(id)}/rename`, { from, to })
+  rename(id: string, from: string, to: string, once?: AbortSignal): Promise<Renamed> {
+    return this.write("POST", `${project(id)}/rename`, { from, to }, undefined, { once })
   }
 
   canvas(id: string, signal?: AbortSignal): Promise<Canvas> {
     return this.json(`${project(id)}/canvas`, { signal })
   }
 
-  moveCards(id: string, cards: Record<string, Row | null>): Promise<{ etag: string }> {
-    return this.write("PATCH", `${project(id)}/canvas`, { cards })
+  moveCards(id: string, cards: Record<string, Row | null>, once?: AbortSignal): Promise<{ etag: string }> {
+    return this.write("PATCH", `${project(id)}/canvas`, { cards }, undefined, { once })
   }
 
   /** A poster, a strip of `strip` frames, a waveform, or a picture, `w` wide. */

@@ -17,6 +17,7 @@ mod daemon;
 mod doctor;
 mod machine;
 mod model;
+mod open;
 mod org;
 pub mod output;
 mod package;
@@ -25,7 +26,6 @@ mod run;
 pub mod tools;
 pub mod tui;
 mod update;
-mod web;
 
 pub use context::Context;
 
@@ -62,8 +62,8 @@ enum Command {
     Model(model::Args),
     /// Projects: assets, and the operations that make them.
     Project(project::Args),
-    /// Open the web UI in your browser.
-    Web(web::Args),
+    /// Open the canvas in your browser: the project you're in, else the home.
+    Open(open::Args),
     /// Claim an organization parked under your name.
     Org(org::Args),
     /// Sign in to the Hub with this computer's device key.
@@ -145,7 +145,7 @@ async fn dispatch(ctx: &Context, command: Option<Command>) -> Result<ExitCode, E
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,
         Command::Project(args) => project::exec(ctx, args).await,
-        Command::Web(args) => web::exec(ctx, args).await,
+        Command::Open(args) => open::exec(ctx, args).await,
         Command::Org(args) => org::exec(ctx, args).await,
         Command::Login(args) => account::login(ctx, args).await,
         Command::Logout(args) => account::logout(ctx, args).await,

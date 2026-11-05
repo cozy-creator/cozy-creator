@@ -38,7 +38,7 @@ door=$(curl -sS --max-time 30 -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1
 
 # link: a fresh sign-in link, which works once.
 link() {
-  cozy web --no-open > "$OUT/web-open.txt" 2>&1 || fail "cozy web --no-open: $(tail -c 300 "$OUT/web-open.txt")"
+  cozy open --no-open > "$OUT/web-open.txt" 2>&1 || fail "cozy open --no-open: $(tail -c 300 "$OUT/web-open.txt")"
   grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1
 }
 browser() {

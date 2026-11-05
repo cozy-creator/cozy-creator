@@ -178,13 +178,9 @@ test = "pr: run play, its link serves the output, then expires"
 "machine rent --provider" = "pending: dev builds only (cargo feature `dev`), never in a release; release-gate/suites/hub rents cpu once per provider with a dev-build cozy, ended and checked gone; the Hub decides who may"
 "machine rent --image-digest" = "pending: release tier, a Hub admin's gated worker-image bake; waits for the CI key"
 
-[web]
+[open]
 test = "pr: web-serves (e2e/cli/web.sh), every OS: its link, redeemed in Chrome; each refusal; Place and a kill -9 in the page"
-"--no-open" = "pr: web-serves"
-
-["project open"]
-test = "pr: a project's session (e2e/cli/project.sh): the link names the project. Opening a browser: manual, a person on a desktop"
-"--no-open" = "pr: a project's session: the link names the project"
+"--no-open" = "pr: web-serves; a project's session: its folder, a folder of none, an older format. Opening a browser: manual, a person on a desktop"
 
 ["project new"]
 test = "pr: projects (e2e/cli/project.sh): a folder holding only project.yaml"
@@ -196,12 +192,12 @@ test = "pr: projects: the index, a moved folder missing, a DELETEd one gone"
 test = "pr: projects: by -p from elsewhere; what changed; a rename suggested; orphans with their bytes; by the CLI: one asset"
 
 ["project render"]
-test = "pr: projects: only what has no state; reverting runs nothing; cuts; adapters; a world-state series"
+test = "pr: projects: only what has no state; reverting runs nothing; cuts; a function's inputs; every mention filled; a world-state series"
 "--on" = "pr: projects: --on local"
 "--approve" = "pr: projects: --approve with -n 2 refused before any run"
 "--missing" = "pr: projects: only what has no state; reverting runs nothing"
 "--outdated" = "pr: a pin out of date: skipped by the plain run, re-run at its turn, its pin gone, the version it held kept"
-"--take" = "pr: projects: keeps: the take reaches the adapter as op.keep, one it doesn't have refused"
+"--take" = "pr: projects: keeps: the take reaches the function as continue_from, one it doesn't have refused"
 "--in" = "pr: projects: keeps: where it lands, ignored with all"
 "--queue" = "pr: projects: three queued, one canceled, the rest land"
 "--plain" = "pr: projects: by asset, one line per event on a terminal too"

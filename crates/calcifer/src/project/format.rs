@@ -26,7 +26,7 @@ pub(super) const FORMAT: u64 = 3;
 const PLATFORM: [&str; 7] = ["tool", "approved", "description", "asset_type", "voice", "models", "lora"];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
-const KINDS: [&str; 3] = ["image", "video", "audio"];
+pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
 const ASSET_TYPES: [&str; 3] = ["character", "prop", "environment"];
 const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 /// What a text asset holds, and what it is.
@@ -36,7 +36,8 @@ const NOT_READ: &str = "kind";
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 const FRAME: &str = "cozy/frame";
-const FOR_READERS: [&str; 2] = ["use_audio", "follow"];
+/// What opens an asset's words.
+const LEADS: [&str; 2] = ["summary", "instructions"];
 /// What `cozy` reads of an edit or a frame.
 const TOOL_INPUTS: [&str; 6] = ["tracks", "fps", "aspect_ratio", "resolution", "video", "at"];
 
@@ -242,22 +243,27 @@ impl Standing {
     }
 }
 
+/// What a read gives the function that reads it.
+#[derive(Clone)]
+pub struct Given {
+    pub name: String,
+    pub files: Files,
+    pub description: String,
+    pub asset_type: String,
+    /// `org/package/function@release`.
+    pub made_by: String,
+    /// The words its version was made from. Only a function's `fill` of `<input>.text` takes them: a prompt never crosses a mention by itself.
+    pub text: String,
+}
+
 /// What an operation reads now.
 #[derive(Clone)]
 pub struct ReadNow {
-    /// As it reaches the adapter.
     pub name: String,
     pub asset: usize,
     pub files: Files,
     /// A tool reading a newest version out of date: its number.
     pub newest: Option<u32>,
-}
-
-impl ReadNow {
-    /// What it reads as: what this version holds.
-    fn kind(&self) -> &'static str {
-        KINDS.iter().copied().find(|kind| self.files.contains_key(*kind)).unwrap_or_default()
-    }
 }
 
 impl Doc {
@@ -289,7 +295,7 @@ impl Doc {
         let version = top.get("version").and_then(Value::as_u64);
         if version.is_some_and(|version| version != FORMAT) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            return Err(invalid("project_format", said).next("cozy project upgrade"));
+            return Err(invalid("project_format", said).next(if version.is_none_or(|version| version == 2) { "cozy project upgrade" } else { "cozy project new" }));
         }
         let mut warnings = vec![];
         if folder.lock_gone() {
@@ -711,6 +717,7 @@ impl Doc {
                 && let Some(version) = lock.asset_mut(name, &self.assets[i].kind).versions.iter_mut().find(|version| version.number == number)
             {
                 version.inputs = now.inputs.unwrap_or_default();
+                version.text = self.text(i);
             }
             done[i] = self.standing(i, lock, &done);
         }
@@ -853,27 +860,36 @@ impl Doc {
         self.parts(i, reads).into_iter().filter(|(_, part)| !held.contains(&part.as_bytes())).map(|(name, _)| format!("<{name}>")).collect()
     }
 
-    /// The operation asset `i` is, as its adapter takes it: the function its tool names, its inputs, and what it reads with what is known of
-    /// each file.
-    pub fn operation(&self, i: usize, function: &str, reads: &[ReadNow], lock: &Lock, keep: Option<Value>, stand: &[Standing]) -> Value {
-        let asset = &self.assets[i];
-        let file = |sha256: &String| lock.files.get(sha256).map_or_else(|| json!({"sha256": sha256}), folder::File::record);
-        let reads: Vec<Value> = reads
-            .iter()
-            .map(|read| {
-                let of = &self.assets[read.asset];
-                let files: Map<String, Value> = read.files.iter().map(|(name, sha256)| (name.clone(), file(sha256))).collect();
-                let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
-                let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target));
-                json!({"name": read.name, "kind": read.kind(), "asset_type": of.asset_type, "description": of.description, "files": files, "inputs": for_readers(&of.inputs), "made_by": made_by})
-            })
-            .collect();
-        json!({"version": FORMAT, "asset": asset.name, "kind": asset.kind, "function": function, "inputs": self.inputs_of(i), "reads": reads, "keep": keep})
+    /// What each of `reads` gives the function that reads it: its files, and the words meant for a reader. A prompt never crosses a mention.
+    pub fn given(&self, reads: &[ReadNow], lock: &Lock, stand: &[Standing]) -> Vec<Given> {
+        let given = |read: &ReadNow| {
+            let of = &self.assets[read.asset];
+            let number = stand[read.asset].version().or(read.newest);
+            let made = number.and_then(|number| lock.asset(&of.name)?.version(number));
+            let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target)).to_owned();
+            let text = number.and_then(|number| lock.asset(&of.name)?.text_of(number)).unwrap_or_default().to_owned();
+            Given { name: read.name.clone(), files: read.files.clone(), description: of.description.clone(), asset_type: of.asset_type.clone(), made_by, text }
+        };
+        reads.iter().map(given).collect()
     }
 
-    /// `--take`, `--in`: what its adapter is told of the take a new one keeps, its files as records; None if it holds no video.
+    /// The words asset `i` is made from, its text assets' in them, what leads first, as a version keeps them. Calcifer's own tools have none.
+    pub fn text(&self, i: usize) -> Option<String> {
+        if self.tool(i).is_some() {
+            return None;
+        }
+        let inputs = &self.assets[i].inputs;
+        let lead = LEADS.iter().filter_map(|field| inputs.get(*field));
+        let rest = inputs.iter().filter(|(field, _)| !LEADS.contains(&field.as_str())).map(|(_, value)| value);
+        let mut words = vec![];
+        lead.chain(rest).for_each(|value| words_in(value, &mut words));
+        (!words.is_empty()).then(|| words.join("\n\n"))
+    }
+
+    /// `--take`, `--in`: the take a new one keeps, its files as records; None if it holds no video.
     pub fn keep(&self, i: usize, lock: &Lock, keeps: Keeps) -> Option<Value> {
-        let held = lock.asset(&self.assets[i].name)?.version(keeps.take)?;
+        // Discarded since it was asked, it's still on record, and reclaim waits for this render.
+        let held = lock.asset(&self.assets[i].name)?.on_record().find(|version| version.number == keeps.take)?;
         let video = lock.files.get(held.files.get("video")?)?;
         let latents = held.files.get("latents").and_then(|sha256| lock.files.get(sha256));
         let ends_s = if video.fps > 0.0 { video.frames as f64 / video.fps } else { 0.0 };
@@ -882,9 +898,14 @@ impl Doc {
     }
 }
 
-/// What of a read crosses its mention beside its description: how to take the file. What made it is for its maker alone.
-fn for_readers(inputs: &Map<String, Value>) -> Map<String, Value> {
-    inputs.iter().filter(|(field, _)| FOR_READERS.contains(&field.as_str())).map(|(field, value)| (field.clone(), value.clone())).collect()
+/// Every string of `value` that holds more than a word, in order: what's said, not a shape or a mention.
+fn words_in<'a>(value: &'a Value, words: &mut Vec<&'a str>) {
+    match value {
+        Value::String(text) if text.trim().contains(char::is_whitespace) => words.push(text.trim()),
+        Value::Array(items) => items.iter().for_each(|item| words_in(item, words)),
+        Value::Object(fields) => fields.values().for_each(|field| words_in(field, words)),
+        _ => {}
+    }
 }
 
 /// `tool` as the key holds it: no release, no root namespace, and local code by its directory's name, with the function it names, so moving
@@ -983,13 +1004,20 @@ pub fn plain_name(text: &str) -> Option<String> {
     (!name_key(&name).is_empty()).then_some(name)
 }
 
-/// `wanted`, or with `_2`, `_3`, … if something in the project goes by it, or versions wait in project.lock for it.
+/// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.
 pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
-    let taken = |name: &str| name_key(name) == ALL || doc.find(name).is_some() || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
+    free_of(|name| doc.find(name).is_some(), lock, wanted)
+}
+
+/// `free_name`, of what `holds` says the project goes by.
+pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -> String {
+    let taken = |name: &str| name_key(name) == ALL || holds(name) || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
     if !taken(wanted) {
         return wanted.to_owned();
     }
-    (2..).map(|n| format!("{wanted}_{n}")).find(|name| !taken(name)).expect("a free name")
+    let counted = wanted.rsplit_once('_').filter(|(stem, _)| !stem.is_empty()).and_then(|(stem, number)| Some((stem, number.parse::<u32>().ok()?)));
+    let (stem, from) = counted.map_or((wanted, 2), |(stem, number)| (stem, u64::from(number) + 1));
+    (from..).map(|n| format!("{stem}_{n}")).find(|name| !taken(name)).expect("a free name")
 }
 
 /// What a person who typed `name` is told when the project has it.

@@ -26,7 +26,7 @@ if [ -n "$URL" ]; then
   [ "$(sha256sum "$W" | cut -c1-64)" = "${URL##*sha256=}" ] || fail "runtime wheel sha256"
 fi
 command -v ffprobe >/dev/null || sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || fail "no ffmpeg"
-jq -n --arg p "$PROMPT" --argjson s "$RANDOM$RANDOM" '{prompt: $p, seed: $s, duration_s: 15}' > "$OUT/request.json"
+jq -n --arg p "$PROMPT" --argjson s "$RANDOM$RANDOM" '{beats: [{description: $p, duration: 15}], seed: $s}' > "$OUT/request.json"
 quote "$(param traffic_gb 85)" 3600
 rent
 

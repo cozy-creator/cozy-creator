@@ -88,6 +88,7 @@ class Bridge {
       await this.queries.refetchQueries({ queryKey: key })
       return
     }
+    const began = performance.now()
     try {
       const [rows, said] = await Promise.all([
         Promise.all(names.map((name) => this.client.asset(id, name).then(({ asset }) => asset, (error) => {
@@ -98,7 +99,7 @@ class Bridge {
       ])
       const asked = rows.flatMap((row) => row ?? [])
       const left = [...gone, ...names.filter((_, at) => !rows[at])]
-      if (asked.length || left.length || said) this.queries.setQueryData<ProjectState>(key, (state) => state && withAssets(state, asked, left, said))
+      if (asked.length || left.length || said) this.queries.setQueryData<ProjectState>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true

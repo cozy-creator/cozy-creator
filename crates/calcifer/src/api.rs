@@ -163,6 +163,8 @@ pub fn router(api: Arc<Api>) -> Router {
         .route("/v1/run-quotes", post(crate::runs::quote))
         .route("/v1/targets", get(crate::runs::describe))
         .route("/v1/tools", get(crate::toolbox::list))
+        .route("/v1/tools/list", post(crate::toolbox::change))
+        .route("/v1/tools/browse", get(crate::toolbox::browse))
         .route("/v1/tools/{id}/ui", get(crate::tool_ui::find))
         .route(
             "/v1/files/{name}",
@@ -371,7 +373,7 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy web");
+        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
     // Through the door a mutation commits nothing here, and a long upload must not hold up a stop.

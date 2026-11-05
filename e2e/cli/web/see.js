@@ -4,19 +4,20 @@
 // at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
 // run. With the Hub unreachable it still answers. 300 elements, measured: seen.scale.
-//   node see.js <sign-in link from `cozy web --no-open`>
+//   node see.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
+const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav, pointAt, inView } = require('./page');
+const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 // The last thing checked, so a refusal says when it happened.
 let during = 'the start';
 function check(name, ok, detail) {
@@ -29,13 +30,12 @@ const shownUrl = (url) => url.replace(/([?&]media=)[^&]+/, '$1…');
 
 const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
-const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
-const away = (page) => page.mouse.move(2, 500);
-async function open(page, name) {
-  await away(page);
-  await pointAt(page, element(page, name).locator('.nm'));
-  await inView(page, element(page, name));
-}
+const element = boxOf;
+const away = async (page) => {
+  await closeBox(page);
+  await page.mouse.move(2, 500);
+};
+const open = openBox;
 async function tag(page, name) {
   await open(page, name);
   return element(page, name).locator('.card').getAttribute('data-kind');
@@ -100,7 +100,7 @@ function summary(frames) {
 (async () => {
   const link = process.argv[2];
   const base = new URL(link).origin;
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
   lookAt(page);
@@ -253,7 +253,9 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('no_checkerboard_without_alpha', (await element(page, 'older_art').locator('.media.alpha').count()) === 0);
   const thumbUp = (name) => until(`${name}'s thumbnail`, () => element(page, name).locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
   await thumbUp('sea_sound');
+  await open(page, 'sea_sound');
   check('sound_plays', (await element(page, 'sea_sound').locator('.play').count()) === 1);
+  await away(page);
   await thumbUp('clip');
 
   // No edges at all: what reads what stays inside Calcifer.
@@ -262,6 +264,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // A video costs nothing until clicked: hovering scrubs a strip, with a timecode, and opens no <video>.
   await until('clip measured', () => asset('clip'), (held) => held.duration_ms > 0);
   const clip = element(page, 'clip');
+  await open(page, 'clip');
   const media = await clip.locator('.media').boundingBox();
   await page.mouse.move(media.x + media.width * 0.6, media.y + media.height * 0.6);
   await until('a strip of 8 asked', () => Promise.resolve(thumbs), (all) => all.some((thumb) => thumb.strip === '8' && thumb.status === 200));
@@ -522,9 +525,11 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);
-});
+}

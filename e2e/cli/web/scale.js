@@ -1,7 +1,7 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project in the file format as it stands, a real Calcifer, the real CLI, a real
 // Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a render landing, panning, memory.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
-//   node scale.js <sign-in link from `cozy web --no-open`>
+//   node scale.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $HOLDER: Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.
@@ -11,10 +11,11 @@ const { createHash } = require('crypto');
 const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { STEP_MS, lastLook, lookAt, png, until } = require('./page');
+const { STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 let during = 'the start';
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
@@ -23,6 +24,7 @@ function check(name, ok, detail) {
 }
 
 const ASSETS = 5000;
+const HOLE = { col: 3, row: 1 };
 const PICTURES = 1000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -35,6 +37,8 @@ const BARS = {
   open_boxes_s: 5,
   open_settled_s: 10,
   edit_shows_ms: 1500,
+  // A person's write, flushed to disk and answered, the middle of nine. "Under 100-ms is pretty much fast enough for most operations" (Paul, 11-05).
+  write_ms: 100,
   landing_shows_ms: 1500,
   // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
@@ -98,7 +102,12 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES) {
   // A grid, each where it'd sit if a person had placed it.
   const side = Math.ceil(Math.sqrt(assetCount));
   const rows = ['# Where cards sit. Only the page reads this. Nothing here is an input.', 'version: 1', 'cards:'];
-  const card = (name, at) => rows.push(`  ${name}: {x: ${(at % side) * 300}, y: ${Math.floor(at / side) * 320}, w: 260}`);
+  // A place left empty near the top: a grid has no other room, and a box that lands on another is moved off it.
+  const hole = side * HOLE.row + HOLE.col;
+  const card = (name, at) => {
+    const place = at < hole ? at : at + 1;
+    rows.push(`  ${name}: {x: ${(place % side) * 300}, y: ${Math.floor(place / side) * 320}, w: 260}`);
+  };
   for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
   for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
   replaceFile(join(folder, 'project.canvas.yaml'), `${rows.join('\n')}\n`);
@@ -224,6 +233,8 @@ function calciferMb() {
   const reads = { whole: 0, heads: 0, assets: 0, whole_bytes: 0 };
   /** Each asset as the page last read it alone, and when. */
   const readAlone = new Map();
+  /** What the page read and found gone. */
+  const readGone = new Set();
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (request.method() !== 'GET') return;
@@ -234,7 +245,10 @@ function calciferMb() {
     if (answer.request().method() !== 'GET') return;
     const { pathname } = new URL(answer.url());
     if (pathname === `/v1/projects/${id}`) answer.body().then((body) => { reads.whole_bytes = Math.max(reads.whole_bytes, body.length); }, () => {});
-    if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() }), () => {});
+    if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => {
+      if (asset) readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() });
+      else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
+    }, () => {});
   });
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, timeout: 60_000 }).catch(() => {}) : Promise.resolve());
@@ -373,13 +387,28 @@ function calciferMb() {
 
   memory.edits = calciferMb();
 
+  // Each local write at this size: a box made, an input set, a box moved, a box gone, out where nothing's looked at. The file is whole after each.
+  const writes = { post: [], patch: [], move: [], delete: [] };
+  const write = async (held, path, method, body, headers = {}) => {
+    const from = performance.now();
+    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers } });
+    if (!answer.ok) throw new Error(`${method} ${path}: ${answer.status} ${await answer.text()}`);
+    held.push(performance.now() - from);
+    return answer.json();
+  };
+  const made = [];
+  for (let i = 0; i < 9; i++) made.push((await write(writes.post, '/assets', 'POST', { tool: 'cozy/edit', kind: 'video', name: `written ${i}`, at: { x: -9000 - i * 800, y: -9000 } }, { 'Idempotency-Key': `scale-${Date.now()}-${i}` })).name);
+  for (const name of made) await write(writes.patch, `/assets/${name}`, 'PATCH', { fields: { description: 'A box in a big project.' } });
+  for (const [i, name] of made.entries()) await write(writes.move, '/canvas', 'PATCH', { cards: { [name]: { x: -9000 - i * 800, y: -12000 } } });
+  for (const name of made) await write(writes.delete, `/assets/${name}`, 'DELETE', {});
+  numbers.write_ms = Object.fromEntries(Object.entries(writes).map(([what, took]) => [what, summary(took).median_ms]));
+  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), numbers.write_ms);
+  check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
+
   // A render from the CLI, on the fixture tool, landing on the open canvas.
   if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
-    const rect = await page.evaluate((name) => window.boxOf(name).getBoundingClientRect().toJSON(), onScreen.at(-1));
-    const viewport = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).toJSON());
-    const [x, y] = [Math.round((rect.right + 20 - viewport.e) / viewport.a), Math.round((rect.top - viewport.f) / viewport.a)];
-    await project('add', `${TOOL}/still`, 'scale_shot', `at=${x},${y},200`, 'instructions=A landing at scale');
+    await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');
     await box('scale_shot').waitFor();
     const landing = within('its picture', page.evaluate((name) => window.pictureOf(name), 'scale_shot'), 300_000);
     const render = await project('render', 'scale_shot', '--on', 'local');
@@ -418,13 +447,17 @@ function calciferMb() {
 
   check('never_reloaded', await page.evaluate(() => window.notReloaded === true));
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
+  // A box deleted is read once more, which is how the page hears it's gone. Nothing else should be.
+  check('only_what_was_deleted_reads_as_gone', [...readGone].every((name) => made.includes(name)), [...readGone]);
   check('no_page_errors', errors.length === 0, errors.slice(0, 8));
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
   process.exit(2);
-});
+}
