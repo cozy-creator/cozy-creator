@@ -39,12 +39,12 @@ const STEP_MS = 60000;
   await page.reload();
   const card = '.card[data-asset="drawn"]';
   await page.locator(`.react-flow__node ${card}`).waitFor();
-  // In view, then a click opens it: the middle of it, where there's nothing else to press.
+  // In view, then a click works on it where it stands: the middle of it, where there's nothing else to press.
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
   const { x, y, width, height } = await page.locator(`.react-flow__node ${card} .media`).boundingBox();
   await page.mouse.click(x + width / 2, y + height / 2);
-  const box = page.locator(`.open-box ${card}`);
+  const box = page.locator(`.react-flow__node ${card}.here`);
   await box.locator('button[aria-label=Render]').waitFor();
   // The page asks this computer's Calcifer, which has no such code.
   for (let waited = 0; waited < 300 && !toolUi.length; waited++) await page.waitForTimeout(100);

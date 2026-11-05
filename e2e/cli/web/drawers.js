@@ -89,10 +89,10 @@ async function runs(page, base, id, folder) {
   await other.close();
 
   await page.click('.drawer-head button:has-text("Cancel")');
-  await page.click('dialog[open] button:has-text("Not now")');
+  await page.click('.confirm button:has-text("Not now")');
   check('no_cancel_without_its_yes', !shown(secondNumber).cancel_requested);
   await page.click('.drawer-head button:has-text("Cancel")');
-  await page.click('dialog[open] button:has-text("Cancel it")');
+  await page.click('.confirm button:has-text("Cancel it")');
   await until('canceled, live', () => page.textContent('.run-head'), (text) => text.includes('canceled'), 120_000);
   check('cli_agrees_it_canceled', shown(secondNumber).status === 'canceled', shown(secondNumber).status);
   await second;

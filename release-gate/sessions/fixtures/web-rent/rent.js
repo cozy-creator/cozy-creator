@@ -241,11 +241,11 @@ async function use(name, work) {
     await page.reload();
     await page.waitForSelector('.ending button:text-is("End")');
     await page.click('.ending button:text-is("End")');
-    await page.waitForSelector('dialog[open]');
-    seen.end_says = (await page.textContent('dialog[open] .says')).trim();
+    await page.waitForSelector('.confirm');
+    seen.end_says = (await page.textContent('.confirm .says')).trim();
     check('end_says_what_bills', /bills \$\d+\.\d\d\/h until the Hub affirms it gone/.test(seen.end_says), seen.end_says);
     await shot('end');
-    await page.click('dialog[open] button:has-text("End it")');
+    await page.click('.confirm button:has-text("End it")');
     // What it says of the end, and not the facts below it, whose clock would read as progress.
     const ended = await whileMoving('ending', () => page.evaluate(() => [...document.querySelectorAll('.run-head, .ending, .drawer-body > p')].map((el) => el.innerText).join(' | ')), (text) => /nothing of it bills now/i.test(text));
     // A pod that's gone can't answer, and that's no news (42018791462).

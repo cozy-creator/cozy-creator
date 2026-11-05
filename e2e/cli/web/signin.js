@@ -220,7 +220,7 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   check('only_this_origin', elsewhere.length === 0, elsewhere);
 
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-  await page.locator('dialog[open]').getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.locator('.confirm').getByRole('button', { name: 'Sign out', exact: true }).click();
   await address.waitFor();
   check('signs_out', (await page.locator('.gate').count()) === 0);
 

@@ -75,33 +75,32 @@ async function pointAt(page, locator) {
   await page.mouse.move(x + width / 2, y + height / 2);
 }
 
-// A box's controls open under it and may pass the window's edge. The canvas doesn't scroll for them, so this takes it up by the wheel, as a person
-// does, and comes back to the box.
-async function inView(page, box) {
-  const controls = await box.locator('.asset-more').boundingBox({ timeout: 500 }).catch(() => null);
-  const over = controls ? controls.y + controls.height + 16 - page.viewportSize().height : 0;
-  if (over <= 0) return;
-  await page.mouse.wheel(0, over);
-  await page.waitForTimeout(250);
-  await pointAt(page, box.locator('.nm'));
+// The canvas still: drawn in on a box or gone back, a person reaches for what's there once it stops moving.
+async function settled(page) {
+  const at = () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
+  for (let last = await at(), now; ; last = now) {
+    await page.waitForTimeout(80);
+    now = await at();
+    if (now === last) return;
+  }
 }
 
-// A box as a person reaches it: opened if it is, else on the canvas. An opened box comes after the canvas in the page.
-const boxOf = (page, name) => page.locator(`.open-box:has(.card[data-asset="${name}"]), .react-flow__node:has(.card[data-asset="${name}"])`).last();
+// A box as a person reaches it, worked on or at rest: it's always on the canvas.
+const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   if (!(await page.evaluate(() => location.hash.includes('/assets/')))) return;
-  await page.locator('.open-box').waitFor();
+  await page.locator('.card.here').waitFor();
   await page.keyboard.press('Escape');
-  await page.locator('.open-box').waitFor({ state: 'detached' });
+  await page.locator('.card.here').waitFor({ state: 'detached' });
+  await settled(page);
 }
-// A click opens a box: the middle of it, where there's nothing else to press.
+// A click works on a box where it stands: the middle of it, where there's nothing else to press.
 async function openBox(page, name) {
-  // By the address too: a box shut a moment ago can still be in the page, and reaching for it finds it gone (macOS, 41977214625).
-  const card = page.locator(`.open-box .card[data-asset="${name}"]`);
+  // By the address too: a box left a moment ago can still say so, and reaching for it finds it gone (macOS, 41977214625).
+  const card = page.locator(`.card.here[data-asset="${name}"]`);
   if (await page.evaluate((asked) => location.hash.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.waitFor();
   await closeBox(page);
-  await page.locator('.open-box').waitFor({ state: 'detached' });
   // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
   await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
   const media = page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first();
@@ -120,9 +119,15 @@ async function openBox(page, name) {
   const { x, y } = await middle();
   await page.mouse.click(x, y);
   await card.waitFor();
-  // It grows from where it sat: a person reaches for it once it's there.
-  await page.locator('.open-box').evaluate((box) => Promise.all(box.getAnimations().map((grow) => grow.finished)));
+  // The canvas draws in on it: a person reaches for it once it's there.
+  await settled(page);
 }
+
+// A point on open canvas, clear of every box and what floats over it: where a take dragged out lands as a box of its own.
+const openCanvas = (page) => page.evaluate(() => {
+  for (let y = innerHeight - 60; y > 120; y -= 30) for (let x = innerWidth - 60; x > 320; x -= 30) if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane')) return { x, y };
+  throw new Error('no open canvas to drop on');
+});
 
 async function drop(page, files, x, y) {
   const transfer = await page.evaluateHandle((list) => {
@@ -210,4 +215,4 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, drop, inView, lastLook, launch, lookAt, noStall, png, pointAt, until, watchBoxes, wav };
+module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, png, pointAt, until, watchBoxes, wav };

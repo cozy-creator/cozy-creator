@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, until, watchBoxes, pointAt } = require('./page');
+const { STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, until, watchBoxes, pointAt } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -272,7 +272,7 @@ function plate(path, color, seconds, hz) {
 
   // Back to the first: its arrangement shows, and an edit carries on from there.
   await openBox(page, 'Edit');
-  await card('Edit').locator('.take').first().click();
+  await card('Edit').locator('.take[aria-label$=" 1"]').click();
   await until('version 1\'s clips', clips, (now) => now[0].out === placed[0].out);
   await pull('blue', 'in', 10);
   await until('carried on from it', async () => (await edit()).fields.timeline.tracks[0].clips[0].out, (out) => out === placed[0].out);
@@ -280,13 +280,13 @@ function plate(path, color, seconds, hz) {
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
   await openBox(page, 'Edit');
-  await card('Edit').locator('.take[draggable=true]').first().dragTo(page.locator('.open-back'), { targetPosition: { x: 60, y: 880 } });
+  await card('Edit').locator('.take[draggable=true][aria-label$=" 1"]').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
   const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Edit'), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
   // Approved, that version is what the Edit is, and its film follows.
   await openBox(page, 'Edit');
-  await card('Edit').locator('.take').nth(1).click();
+  await card('Edit').locator('.take[aria-label$=" 2"]').click();
   await card('Edit').locator('button:text-is("Approve")').click();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));

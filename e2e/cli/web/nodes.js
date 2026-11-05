@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
+const { MP4, boxLog, boxOf, closeBox, openBox, openCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -452,7 +452,7 @@ function linesOf(text, name) {
     await place('still');
     const still = box('still_1');
     await until('one prompt', () => still.locator('.mention-text').count(), (n) => n === 1);
-    check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.asset-more input, .asset-more select, .beat, .edit-more').count()) === 0, await still.innerText());
+    check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.here-all input, .here-all select, .beat, .edit-more').count()) === 0, await still.innerText());
     check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
     await shot('fresh-prompt');
     await more('still_1');
@@ -510,8 +510,8 @@ function linesOf(text, name) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
     const render = async (name, count) => {
       await open(name);
-      // Render is on its controls, and it may be showing what it made.
-      if (await box(name).locator('[aria-label=Edit]').count()) await box(name).locator('[aria-label=Edit]').click();
+      // Render is with its words, and it may be showing what it made.
+      if (await box(name).locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box(name).locator('.take.add[aria-label="Its words"]').click();
       await box(name).locator('button[aria-label=Render]').click();
       await until(`${name}'s ${count}`, () => versions(name), (n) => n === count, FIRST_RUN_MS);
     };
@@ -539,12 +539,12 @@ function linesOf(text, name) {
     const approved = await of('Sheet');
     check('approved_is_that_version', approved.approved === 1 && approved.pinned, approved.approved);
     await open('Sheet');
-    await box('Sheet').locator('[aria-label=Edit]').waitFor();
-    check('approved_shows_its_file', (await box('Sheet').locator('.edit-face').count()) === 0);
+    await box('Sheet').locator('.take.add[aria-label="Its words"]').waitFor();
+    check('approved_shows_its_file', (await box('Sheet').locator('.in-frame').count()) === 0);
     check('no_word_says_pin', !/\bpin|accept/i.test(await box('Sheet').innerText()), await box('Sheet').innerText());
     await box('Sheet').locator('button:has-text("Unapprove")').click();
     await until('unapproved', () => of('Sheet'), (held) => !held.pinned);
-    await box('Sheet').locator('.edit-face').waitFor();
+    await box('Sheet').locator('button:text-is("Approve")').waitFor();
     await box('Sheet').locator('button:has-text("Approve")').click();
     await until('approved again', () => of('Sheet'), (held) => held.pinned);
 
@@ -554,7 +554,7 @@ function linesOf(text, name) {
     await box('Sheet').locator('.take-at').first().hover();
     await box('Sheet').locator('.take-at .take-off').first().click();
     check('a_take_goes_at_once', (await strip()) === asked - 1, await strip());
-    check('and_the_box_stays_open', (await page.locator('.open-box').count()) === 1);
+    check('and_the_box_stays_open', (await page.locator('.card.here[data-asset="Sheet"]').count()) === 1);
     await until('and from the project', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked - 1);
     await page.locator('.note:has-text("Discarded") button:has-text("Undo")').first().click();
     await until('it came back', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked);
@@ -567,7 +567,9 @@ function linesOf(text, name) {
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
     await until('the page has its words', () => box('Sheet').locator('text=The sheet of two.').count(), (n) => n > 0);
-    await box('Sheet').locator('.take[aria-label="version 2"]').dragTo(page.locator('.open-back'), { targetPosition: { x: 60, y: 700 } });
+    // Picked up from its big tile, the take it shows.
+    await box('Sheet').locator('.take[aria-label="version 2"]').click();
+    await box('Sheet').locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
     check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
     check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
@@ -641,8 +643,7 @@ function linesOf(text, name) {
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
     await open('Other');
-    // A caption is of what's been made: it's on the version's face, not the one that asks for another.
-    await box('Other').locator('[aria-label="Show its version"]').click();
+    // A caption is of what's been made: it's with the take, which is what a box with takes opens on.
     await box('Other').locator('button:text-is("Caption")').click();
     const typed = box('Other').locator('.desc-open .mention-text');
     await typed.waitFor({ timeout: FIRST_RUN_MS });
@@ -667,7 +668,7 @@ function linesOf(text, name) {
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
-    await box('Sheet').locator('[aria-label=Edit]').click();
+    await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('.chip.missing:has-text("source-a")').waitFor();
     check('missing_chip_on_edit', true);
     await shot('missing');
@@ -682,7 +683,7 @@ function linesOf(text, name) {
     await render('Other', 2);
     check('the_rest_goes_on', true);
     await open('Sheet');
-    await box('Sheet').locator('[aria-label="Show its version"]').click();
+    await box('Sheet').locator('.take.approved').click();
     await away();
     await page.waitForTimeout(200);
     check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.dot.s-failed').count()) === 0);
@@ -726,7 +727,7 @@ function linesOf(text, name) {
     // Render on what's approved: another to look at, and the approval stays.
     const nowHeld = (await of('Sheet')).sha256;
     await open('Sheet');
-    await box('Sheet').locator('[aria-label=Edit]').click();
+    await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('button[aria-label=Render]').click();
     await until('another to look at', () => versions('Sheet'), (n) => n === 3, FIRST_RUN_MS);
     check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));

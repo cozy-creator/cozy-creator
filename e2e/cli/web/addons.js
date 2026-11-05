@@ -258,10 +258,9 @@ assets:
 
   // Strength is behind More, and not on the chip.
   await box('shot').locator('.media').first().click({ position: { x: 20, y: 20 } });
-  await box('shot').locator('.here-acts button:has-text("More")').click();
-  await page.locator('.open-box').waitFor();
-  if (!(await page.locator('.open-box .edit-more').count())) await page.locator('.open-box .more-toggle').click();
-  const slider = page.locator(`.open-box input[aria-label="Strength of ${word(loraA)}"]`);
+  await page.locator('.card.here[data-asset="shot"]').waitFor();
+  if (!(await box('shot').locator('.edit-more').count())) await box('shot').locator('.more-toggle').click();
+  const slider = box('shot').locator(`input[aria-label="Strength of ${word(loraA)}"]`);
   await slider.focus();
   for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
   await until('its strength in the file', () => Promise.resolve(yaml()), (text) => /strength: 1\.2/.test(text.split(`ref: ${loraA.model}`)[1] ?? ''));
@@ -344,7 +343,7 @@ assets:
       await idle();
       const had = (await state()).assets.find((asset) => asset.name === 'still').versions;
       await page.evaluate((to) => { location.hash = to; }, `/projects/${id}/assets/still`);
-      await page.locator('.open-box button[aria-label=Render]').click();
+      await page.locator('.card.here[data-asset="still"] button[aria-label=Render]').click();
       await closeBox(page);
       seen.asked_at = new Date().toISOString();
       for (;;) {
