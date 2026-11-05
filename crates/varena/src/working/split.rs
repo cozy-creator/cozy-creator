@@ -433,7 +433,28 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     Ok(Menu { plans, capacity: total.min(owner.capacity()), live: live_working(&state) + held })
 }
 
+/// TEST BUILD, never to land: `/var/tmp/levels` holds `<site substring> <level>` lines, and
+/// `floor <divisor>` for the budget's floor.
+fn overrides() -> Vec<(String, usize)> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<(String, usize)>)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.as_ref().is_none_or(|(at, _)| at.elapsed().as_secs() >= 5) {
+        let rows = std::fs::read_to_string("/var/tmp/levels").unwrap_or_default().lines()
+            .filter_map(|line| {
+                let (site, level) = line.rsplit_once(' ')?;
+                Some((site.to_owned(), level.parse().ok()?))
+            }).collect();
+        *cache = Some((std::time::Instant::now(), rows));
+    }
+    cache.as_ref().map(|(_, rows)| rows.clone()).unwrap_or_default()
+}
+
 impl Menu {
+    fn pinned(&self, key: &str) -> Option<usize> {
+        overrides().iter().find(|(site, _)| site != "floor" && key.contains(site.as_str()))
+            .map(|(_, level)| (*level).min(self.plans.len() - 1))
+    }
+
     /// The level this operation should run at, whatever is free right now: the largest under
     /// what the card leaves beside the phase's weights, or a quarter of it on a card that streams
     /// them anyway. Weights make room for it, but what's live can't: the op gets no more than the
@@ -446,7 +467,7 @@ impl Menu {
 
     fn budget(&self) -> usize {
         let weights = self.plans.first().and_then(|plan| plan.phase.as_ref()).map_or(0, |phase| phase.bytes);
-        self.capacity.saturating_sub(weights).max(self.capacity / 4)
+        self.capacity.saturating_sub(weights).max(self.capacity / overrides().iter().find(|(site, _)| site == "floor").map_or(4, |(_, floor)| (*floor).max(1)))
             .min(self.capacity.saturating_sub(self.live))
     }
 
@@ -505,7 +526,7 @@ fn split_select_inner(
     // Make room for the target with memory this process can give up by itself.
     let at_target = reclaim::acquire(device, 0, Wait::Local, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
-        let target = menu.target();
+        let target = menu.pinned(key).unwrap_or_else(|| menu.target());
         let selected = &menu.plans[target];
         if !selected.usable() {
             return Err(selected.short().into());
@@ -519,7 +540,7 @@ fn split_select_inner(
     // Only now a smaller legal choice, or what other threads and processes can give up.
     reclaim::acquire(device, 0, Wait::Yes, keep, || {
         let menu = snapshot(device, owner, key, stream)?;
-        let target = menu.target();
+        let target = menu.pinned(key).unwrap_or_else(|| menu.target());
         let choices = &menu.plans[target..];
         if let Some(selected) = choices.iter().find(|plan| plan.usable()) {
             return Ok(menu.selection(selected, target, stream));
