@@ -2722,8 +2722,9 @@ impl Walk {
             walker.facts.insert(with.to_owned(), (function.to_owned(), widths));
             if !walker.learned.contains_key(&(name.clone(), function.to_owned())) {
                 let mut learned = sim::Learned::default();
-                if let Some(measured) = self.host.last_measured(function, &name) {
-                    learned.took(measured.width, measured.busy_s, measured.exchange_share);
+                // Oldest first, so the newest run's exchange is what counts.
+                for (measured, length) in self.host.last_measured(function, &name).into_iter().rev() {
+                    learned.took(measured.width, measured.busy_s / length, measured.exchange_share);
                 }
                 walker.learned.insert((name.clone(), function.to_owned()), learned);
             }
