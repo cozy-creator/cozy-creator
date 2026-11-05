@@ -110,5 +110,7 @@ for index, prompt in enumerate(request["prompts"]):
            "steady_step_s": statistics.median(steps), "steps_s": [round(s, 4) for s in steps], "nvml_peak": peak[0], "host": host(), **counters()}
     report["calls"].append(row)
     print(json.dumps({"call": row}), flush=True)
+    if failure:  # Stock Torch's own limit: its VAE stays half upcast, so a next call only says that.
+        break
 stop.set()
 print(json.dumps({"report": report}), flush=True)
