@@ -160,34 +160,26 @@ fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> 
         .collect())
 }
 
-/// What the checkpoints and components of `each` all share, and all of them with that first. No components names a whole checkpoint.
-fn shared_first(each: &[Vec<(String, Vec<String>)>]) -> (Vec<(String, Vec<String>)>, Vec<(String, Vec<String>)>) {
+/// What the checkpoints and components of `each` all share. No components names a whole checkpoint.
+fn shared_of(each: &[Vec<(String, Vec<String>)>]) -> Vec<(String, Vec<String>)> {
     let holds = |list: &[(String, Vec<String>)], header: &str, component: Option<&str>| {
         list.iter().any(|(held, components)| held == header && (components.is_empty() || component.is_none_or(|component| components.iter().any(|c| c == component))))
     };
-    let (mut shared, mut rest): (Vec<(String, Vec<String>)>, Vec<(String, Vec<String>)>) = (vec![], vec![]);
-    let add = |list: &mut Vec<(String, Vec<String>)>, header: &str, component: Option<&str>| {
-        if holds(list, header, component) {
-            return;
-        }
-        match (list.iter_mut().find(|(held, _)| held == header), component) {
-            (Some((_, components)), Some(component)) => components.push(component.to_owned()),
-            (Some((_, components)), None) => components.clear(),
-            (None, _) => list.push((header.to_owned(), component.map(str::to_owned).into_iter().collect())),
-        }
-    };
-    for (header, components) in each.iter().flatten() {
+    let mut shared: Vec<(String, Vec<String>)> = vec![];
+    for (header, components) in each.first().into_iter().flatten() {
         let names: Vec<Option<&str>> = match components.is_empty() {
             true => vec![None],
             false => components.iter().map(|component| Some(component.as_str())).collect(),
         };
-        for component in names {
-            let everywhere = each.iter().all(|list| holds(list, header, component));
-            add(if everywhere { &mut shared } else { &mut rest }, header, component);
+        for component in names.into_iter().filter(|component| each.iter().all(|list| holds(list, header, *component))) {
+            match (shared.iter_mut().find(|(held, _)| held == header), component) {
+                (Some((_, components)), Some(component)) => components.push(component.to_owned()),
+                (Some((_, components)), None) => components.clear(),
+                (None, _) => shared.push((header.clone(), component.map(str::to_owned).into_iter().collect())),
+            }
         }
     }
-    let all = shared.iter().chain(&rest).cloned().collect();
-    (shared, all)
+    shared
 }
 
 /// Whether `installation` declares a public entrypoint `name` for a warm set.
@@ -847,8 +839,8 @@ impl Runs {
                 false => vec![],
             };
             // A function that loads no model itself runs on what it calls, and which of its package's internal functions
-            // that is, only it knows: H3's shot takes one transformer with references and another without. So all of them,
-            // what they share first, as that's sure. A wrong guess costs bytes, and stops when its job's run begins.
+            // that is, only it knows: H3's shot takes one transformer with references and another without. So what they all
+            // load, and that only.
             let plans: Vec<_> = match plan {
                 None if !install_only => {
                     let mut plans = vec![];
@@ -873,13 +865,11 @@ impl Runs {
             if !plans.is_empty() {
                 let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
                 let each: Vec<_> = plans.iter().map(|plan| [plan.upfront(), plan.on_demand()].concat()).collect();
-                let (shared, all) = shared_first(&each);
+                // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
+                // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
+                // function that isn't called are paid for wherever downloads are billed.
+                let selected = shared_of(&each);
                 let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
-                // What they all need if all of them won't fit.
-                let selected = match fetch.absent(&all)? <= free {
-                    true => all,
-                    false => shared,
-                };
                 let absent = fetch.absent(&selected)?;
                 if absent > free {
                     return Err(refused("machine_disk_full", format!("its weights' {absent} bytes don't fit in the {free} free")));
