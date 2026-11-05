@@ -28,17 +28,27 @@ sys.exit(0 if any(sys.argv[3] in k.get("cells", []) and k["sku"] in (sys.argv[2]
     "$HERE/known-failing.json" "$SKU" "$1"
 }
 vcell() { if parked "$1"; then log "$1 parked (known-failing.json)"; else cell "$@"; fi; }
+# A cap is v1's room: v2 charges the driver's reservation to the cap and v1 does not, so v2's cap is the nominal one plus
+# that reservation (nvidia-smi's memory.reserved, what varena measures), and both have the same bytes for cozy.
+reservation() {
+  local mib
+  mib=$("$CLI" machine ssh "$M" 'nvidia-smi --query-gpu=memory.reserved --format=csv,noheader,nounits' 2>/dev/null | sort -n | tail -n 1 | tr -dc 0-9)
+  echo $(( ${mib:-0} << 20 ))
+}
 cap() {
-  "$CLI" machine update "$M" --gpu-memory-limit "$1" -y >"cap-$1.log" 2>&1
-  local i said want=0
-  [ "$1" = off ] || want=$(( ${1%GiB} << 30 ))
+  local i said want=0 extra=0 limit=$1
+  if [ "$1" != off ]; then
+    extra=$(reservation); want=$(( ((${1%GiB} << 30) + extra) >> 20 << 20 )); limit="$(( want >> 20 ))MiB"
+    echo "$extra" > "cap-$1.reservation"
+  fi
+  "$CLI" machine update "$M" --gpu-memory-limit "$limit" -y >"cap-$1.log" 2>&1
   for i in $(seq 12); do  # the restarted machine reports its limit once it is up
     "$CLI" --json machine show "$M" >"cap-$1.show.json" 2>/dev/null
     said=$(jq -r '[.status.gpus[]? | .memory_limit_bytes // 0 | tostring] | unique | join(",")' "cap-$1.show.json" 2>/dev/null)
     [ "$said" = "$want" ] && break
     sleep 5
   done
-  log "cap $1 on $M: machine show says ${said:-nothing} bytes; $(grep -E '^status' "cap-$1.log")"
+  log "cap $1 (+ $(( extra >> 20 )) MiB driver reservation, v1's room) on $M: machine show says ${said:-nothing} bytes; $(grep -E '^status' "cap-$1.log")"
   [ "$said" = "$want" ] || expect "cap-$1" FAIL "machine show says ${said:-nothing} bytes, not $want"
 }
 SDXL=$(pkg sdxl generate) KLEIN=$(pkg flux-3-klein generate_turbo) H3=$(pkg minimax-h3 generate)

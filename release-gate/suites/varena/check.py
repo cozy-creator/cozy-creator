@@ -101,6 +101,14 @@ def host(recs):
     return fails, notes
 
 
+def reservation(out, gib):
+    """The driver reservation `cap` added to this cap (varena/cells.sh), 0 when none."""
+    try:
+        return int(open(os.path.join(out, f'cap-{gib}GiB.reservation')).read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
 def caps(out, recs):
     fails, notes = [], []
     capped = [(n, int(m.group(1)), m.group(2), m.group(3)) for n in recs for m in [CELL.fullmatch(n)] if m]
@@ -111,15 +119,19 @@ def caps(out, recs):
         except (OSError, ValueError, KeyError) as error:
             fails.append(f'cap {gib} GiB: no machine show to read ({error})')
             continue
-        if not limits or any(limit != gib * GIB for limit in limits):
-            fails.append(f'cap {gib} GiB: machine show reports {limits}')
+        extra = reservation(out, gib)
+        want = (gib * GIB + extra) >> 20 << 20
+        if not limits or any(limit != want for limit in limits):
+            fails.append(f'cap {gib} GiB: machine show reports {limits}, not {want}')
+        elif extra:
+            notes.append(f'cap {gib} GiB + {extra >> 20} MiB driver reservation: v2 charges it to the cap and v1 does not, so this is v1\'s room')
     execs = {}
     for name, gib, model, i in capped:
         run, mems = recs[name], memories(recs[name])
         moved = sum(record.paged(m) for m in mems)
         if run.vram:  # none read fails in analyze.py
             line = f'{name}: {run.vram["peak"] / 1024:.2f} GiB in use at its fullest (driver), streamed + paged {moved / GIB:.1f} GiB'
-            (fails if run.vram['peak'] * 2**20 > gib * GIB else notes).append(line + f', cap {gib} GiB')
+            (fails if run.vram['peak'] * 2**20 > gib * GIB + reservation(out, gib) else notes).append(line + f', cap {gib} GiB')
         left = sum(record.leftover(m) for m in mems)
         if left:
             fails.append(f'{name}: left {left / GIB:.2f} GiB behind')
