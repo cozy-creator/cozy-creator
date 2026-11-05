@@ -174,7 +174,8 @@ code {
 .stage {
   position: fixed;
   inset: 0;
-  background: var(--paper);
+  overflow: hidden;
+  background: var(--bg);
 }
 .picker {
   display: none;
@@ -635,6 +636,65 @@ code {
   opacity: 1;
   transform: translate(1px, 1px);
 }
+/* Written in where it stands: the words over whatever it shows, and what it can do just under it, at the size the words are. */
+.card.here .words {
+  visibility: hidden;
+}
+.card.here .in-frame {
+  background: var(--card);
+}
+.here-under {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: calc(100% / var(--text, 1));
+  transform: scale(var(--text, 1));
+  transform-origin: top left;
+  z-index: 5;
+}
+.here-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.here-under .takes {
+  gap: 6px;
+  padding: 0;
+}
+.here-under .take {
+  width: clamp(120px, 9vw, 260px);
+  height: clamp(80px, 6vw, 173px);
+}
+.here-under .take.add {
+  flex: none;
+  background: var(--card);
+  border: 1px solid var(--line2);
+  color: var(--ink);
+  font-size: 44px;
+}
+.here-under .take.add.on {
+  border-color: var(--ember);
+}
+.here-under .take-off {
+  display: inline-flex;
+  top: 4px;
+  right: 4px;
+  width: 30px;
+  height: 30px;
+  color: #fff;
+}
+.here-under .take-off .icon {
+  width: 18px;
+  height: 18px;
+}
+.here-acts .act,
+.here-acts .tb {
+  font-size: 18px;
+}
 .ratio-rest {
   position: absolute;
   top: 100%;
@@ -1056,7 +1116,7 @@ code {
   position: fixed;
   left: 8px;
   bottom: 8px;
-  width: min(460px, calc(100vw - 16px));
+  width: min(560px, calc(100vw - 16px));
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1072,7 +1132,7 @@ code {
   border: 1px solid var(--line2);
   border-radius: var(--round2);
   box-shadow: 0 8px 24px var(--shadow);
-  font-size: 12px;
+  font-size: 18px;
   animation: open-up 140ms ease-out;
 }
 .note .line {

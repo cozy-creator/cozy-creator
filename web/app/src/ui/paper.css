@@ -31,6 +31,9 @@
   .tb.primary {
     border-image: var(--frame-primary) 12 fill / 12px / 4px round;
   }
+  .main-menu nav .tb {
+    border-image: none;
+  }
   .ptab.on {
     background: none;
     border-image: var(--frame-chosen) 12 fill / 12px / 3px round;
@@ -45,9 +48,33 @@
   background-color: var(--box);
 }
 
-/* The sky is Paper's. Its empty layers stay in dark: they lift the canvas off the sheet, so a pan doesn't repaint the sheet, at half the cost. */
-:root[data-theme="dark"] .paper-sky::before,
-:root[data-theme="dark"] .paper-sky::after {
-  background: none;
-  animation: none;
+/* Warm cream around a picture skews how it reads, so an open box shows it on neutral grey, with a margin of it. */
+.open-box .card > .media:not(.blank) {
+  margin: 12px;
+  border-radius: 3px;
+  background-color: var(--stage);
+  box-shadow: 0 0 0 12px var(--stage);
+}
+.output video,
+.stillframe {
+  background: var(--stage);
+}
+
+.drawer-head b {
+  font-family: var(--serif);
+  font-weight: 400;
+}
+
+/* Where the keyboard is. */
+:where(a, button, summary, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
+}
+
+/* The sheet, and in dark no clouds on it. */
+.paper-world {
+  background: var(--paper);
+}
+:root[data-theme="dark"] .paper-world::after {
+  content: none;
 }

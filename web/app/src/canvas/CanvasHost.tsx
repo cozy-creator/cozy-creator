@@ -30,6 +30,7 @@ import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { OpenBox } from "./OpenBox"
 import { Placer } from "./place"
+import { Sheet } from "./Sheet"
 import { madeHere } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
@@ -419,7 +420,7 @@ function Canvas({
       />
       <div
         ref={stage}
-        className="stage paper-sky"
+        className="stage"
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
         onDragEnter={(event) => {
@@ -435,6 +436,7 @@ function Canvas({
         }}
         onDrop={drop}
       >
+        <Sheet />
         <ReactFlow<ElementNode, Edge>
           defaultNodes={[]}
           nodeTypes={nodeTypes}
