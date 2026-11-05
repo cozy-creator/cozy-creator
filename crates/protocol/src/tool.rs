@@ -93,6 +93,9 @@ pub struct Tool {
     /// The frames a kept take can end on, if it can't end on any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cuts: Option<Cuts>,
+    /// With another tool of its package of the same `label` this is one box, and a toggle by this word turns it on: `Turbo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -182,6 +185,7 @@ pub fn edit() -> Tool {
         ui: None,
         takes: false,
         cuts: None,
+        variant: None,
         controls: vec![Control { field: "timeline".to_owned(), ty: ControlType::Timeline, label: "Edit".to_owned(), face: true, ..Control::default() }],
     }
 }
@@ -237,6 +241,7 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
         takes: node.fill.values().any(|source| source == TAKE),
         cuts: node.cuts,
         ui: node.ui,
+        variant: Some(node.variant).filter(|word| !word.is_empty()),
     })
 }
 

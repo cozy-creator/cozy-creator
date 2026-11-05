@@ -271,6 +271,9 @@ pub struct Node {
     /// The frames a kept take can end on, if it can't end on any.
     #[serde(default, deserialize_with = "or_default")]
     pub cuts: Option<Cuts>,
+    /// This function's word beside another of its package of the same label: one box, and a toggle by this word that flips to it.
+    #[serde(default, deserialize_with = "or_default")]
+    pub variant: String,
 }
 
 /// `offset + k * every`, from frame `first`.
