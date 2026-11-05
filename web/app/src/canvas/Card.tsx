@@ -582,7 +582,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               pressedAt.current = { x: event.clientX, y: event.clientY }
             }}
             onClick={(event) => {
-              // A tap renames. A drag by its name only moved it.
+              // A tap renames. A drag by its name only moved it, and with Shift, Ctrl or Cmd it selects, as anywhere on the box.
+              if (event.shiftKey || event.metaKey || event.ctrlKey) return
               event.stopPropagation()
               const from = pressedAt.current
               if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) naming()
