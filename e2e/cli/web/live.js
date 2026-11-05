@@ -4,7 +4,7 @@
 // screen and lands. A render from the CLI shows progress on its card and lands, on the fixture tool. What's typed and unsaved stays when the
 // CLI changes that field, and the page shows the conflict. What the page does reads back in the CLI. 200 edits as fast as they go: right at the
 // end, shown as it goes, only what changed read, frames sampled. And the stream made to fall behind for real, so `resync` runs: nothing's lost.
-//   node live.js <sign-in link from `cozy web --no-open`>
+//   node live.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -577,7 +577,9 @@ function linesOf(text, name) {
   await shot('burst');
   const cards = await until('every row written', rows, (now) => arrived.every((asset) => now[asset.name]));
   check('burst_rows_written', arrived.every((asset) => cards[asset.name]));
-  check('burst_on_nothing', (await overlaps()).length === 0, (await overlaps()).slice(0, 12));
+  // What the page placed: the rest are where this cell said.
+  const placedOver = (await overlaps()).filter((pair) => pair.includes('arrived_'));
+  check('burst_on_nothing', placedOver.length === 0, placedOver.slice(0, 12));
 
   // The stream made to fall behind. The page stops reading, Calcifer's socket to it fills, and the ring goes round: what happened in between
   // never reaches it as events. A real text, a move and a new box are in there, and only `resync` can tell it of them.

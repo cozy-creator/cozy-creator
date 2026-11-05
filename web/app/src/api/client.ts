@@ -71,7 +71,7 @@ export class ApiError extends Error {
 }
 
 const unreachable = () =>
-  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy web"] })
+  new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
 
 async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)

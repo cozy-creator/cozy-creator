@@ -3,7 +3,7 @@
 // The film's frames are counted, its `.otio` read back with OpenTimelineIO's own reader. Two different edits make two versions, each with
 // its own clips, and the same edit twice makes one; a version carries on and drags out to its own asset; a clip whose asset is deleted says
 // so on the clip, and a render goes on without it.
-//   node timeline.js <sign-in link from `cozy web --no-open`>
+//   node timeline.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep its
 // screenshots; ffmpeg, ffprobe and uv on PATH. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);

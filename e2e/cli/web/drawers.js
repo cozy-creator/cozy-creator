@@ -1,7 +1,7 @@
 // Runs and Machines, as a person uses them (web-ui.md §1). Where this computer runs models: a real run from the CLI shows live with no reload,
 // to its end; its log and events; a cancel from the page, which the terminal sees; one log stream across tabs. Everywhere: the filters, local
 // code staying the CLI's, machines as the CLI lists them, what's installed, a log, and the page's CSP holding. It rents, ends and updates nothing.
-//   node drawers.js <sign-in link from `cozy web --no-open`>
+//   node drawers.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);

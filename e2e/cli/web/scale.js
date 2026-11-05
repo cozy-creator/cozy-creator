@@ -1,7 +1,7 @@
 // Thousands of assets (Paul expects them): a generated 5,000-asset project in the file format as it stands, a real Calcifer, the real CLI, a real
 // Chrome. How long `cozy project status` takes, opening it in the page, one edit to show, what's read for it, a render landing, panning, memory.
 // The bars are what a person would feel, in BARS. What each took is seen.scale.
-//   node scale.js <sign-in link from `cozy web --no-open`>
+//   node scale.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $HOLDER: Calcifer's lock file, which names its process; $ARGV_LOG: where each cozy call is logged for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.

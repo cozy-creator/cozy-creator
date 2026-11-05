@@ -22,7 +22,7 @@ export function useTo() {
   return (rest = "") => (id ? `/projects/${id}${rest && `/${rest}`}` : `/${rest}`)
 }
 
-/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy web` does anywhere. A pod's Calcifer is its own. */
+/** A few tries in, it isn't a blip. Nothing restarts Calcifer on Windows, and `cozy open` does anywhere. A pod's Calcifer is its own. */
 const SAYS_HOW = 5
 
 function Connectivity() {
@@ -38,7 +38,7 @@ function Connectivity() {
           {!remote && health.attempt >= SAYS_HOW && (
             <>
               {" "}
-              · run <code>cozy web</code>
+              · run <code>cozy open</code>
             </>
           )}
         </span>

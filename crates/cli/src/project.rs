@@ -23,7 +23,7 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
-  cozy project open garden                     in your browser
+  cozy open garden                             in your browser
   cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
   cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
   cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
@@ -79,15 +79,6 @@ enum Verb {
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
-    /// Open the project in your browser.
-    #[command(after_help = "Examples:\n  cozy project open\n  cozy project open ../garden\n  cozy project open --no-open   only prints the link: over SSH, say")]
-    Open {
-        /// The project's folder, if not the one you are in.
-        path: Option<PathBuf>,
-        /// Only print the link, which works once, for 60 s.
-        #[arg(long)]
-        no_open: bool,
-    },
     Import(ImportFile),
     Add(assets::Add),
     Set(assets::Set),
@@ -254,10 +245,6 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             if listed.older > 0 {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
-        }
-        Verb::Open { path, no_open } => {
-            let opened = open(ctx, path.as_ref().or(args.path.as_ref()), false).await?;
-            return crate::web::open(ctx, Some(format!("/projects/{}", opened.id)), no_open).await;
         }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
         Verb::Upgrade { status } => return upgrade(ctx, args.path.as_ref(), status.as_ref()),
@@ -666,7 +653,7 @@ fn retimes(retimed: &[String], fps: f64) -> String {
 
 /// The project holding `at` (else the folder you are in) as Calcifer opens it, made there first
 /// when `create`.
-async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opened, Error> {
+pub(crate) async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opened, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let path = match at {
