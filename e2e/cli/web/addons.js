@@ -125,8 +125,9 @@ assets:
   check('one_line_chip', (await chips('flowed').allInnerTexts()).join() === 'wushu', await chips('flowed').allInnerTexts());
 
   // The explorer: it reads, and fetches nothing.
-  const heldBefore = (await api('/v1/machines/local/models')).body?.models?.length ?? 0;
-  const runsBefore = (await api('/v1/runs?limit=1')).body?.runs?.[0]?.number ?? 0;
+  // Others use this computer: what counts is this project's runs, and what it dropped being held.
+  const madeHere = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id).length;
+  const fetched = async (names) => ((await api('/v1/machines/local/models')).body?.models ?? []).filter((held) => names.includes(held.model));
   const written = [];
   page.on('request', (request) => { if (request.method() !== 'GET' && request.method() !== 'HEAD' && new URL(request.url()).pathname.startsWith('/v1/') && !request.url().endsWith('/session')) written.push(`${request.method()} ${new URL(request.url()).pathname}`); });
   await page.click('.tools button:has-text("Checkpoints")');
@@ -139,7 +140,9 @@ assets:
   await page.fill('input[aria-label="Search the checkpoints"]', '');
   await row(fineA).waitFor();
   check('what_fits_comes_first', !(await row(loraA).getAttribute('class')).includes('away'));
-  check('listing_writes_nothing', written.length === 0, written);
+  // Where boxes sit is saved as they arrive, and says nothing of what a list did.
+  const wrote = written.filter((line) => !line.endsWith('/canvas'));
+  check('listing_writes_nothing', wrote.length === 0, wrote);
   await shot('explorer');
 
   const cardRect = (name) => box(name).locator('.card').boundingBox();
@@ -211,7 +214,7 @@ assets:
   // It's what the project reads.
   const fields = (await state()).assets.find((asset) => asset.name === 'shot').fields;
   check('project_reads_them', fields.lora?.length === 2 && fields.models?.[mine.model.slot]?.ref === fineB.model, fields);
-  check('no_new_run', ((await api('/v1/runs?limit=1')).body?.runs?.[0]?.number ?? 0) === runsBefore && ((await api('/v1/machines/local/models')).body?.models?.length ?? 0) === heldBefore);
+  check('no_run_and_no_weights', (await madeHere()) === 0 && (await fetched([loraA.model, loraB.model, fineA.model, fineB.model])).length === 0);
 
   // Chips follow.
   const list = (name) => box(name).locator('.add-ons');
@@ -305,32 +308,70 @@ assets:
   await page.reload();
   await chips('shot').first().waitFor();
   check('reloaded', (await chips('shot').count()) === 2, await chips('shot').allInnerTexts());
-  // Where there's a machine: a render passes both on its function's call, and the machine says what it applied.
+  // Where there's a machine: a render passes both on its function's call, and the machine says what it applied. A shared machine goes first to what's already on it: this
+  // waits for it to be idle, and gives way if anyone else asks for it. It cancels no run but its own.
   if (process.env.RENDER) {
-    const still = (await api('/v1/tools')).body.tools.find((tool) => tool.kind === 'image' && tool.model?.family && loras(tool.model.family).length && fines(tool.model.family).length);
+    const family = process.env.RENDER_FAMILY;
+    const still = (await api('/v1/tools')).body.tools.find((tool) => tool.kind === 'image' && tool.model?.family && (!family || tool.model.family === family) && loras(tool.model.family).length && fines(tool.model.family).length);
     const [lora] = loras(still.model.family);
-    const [fine] = fines(still.model.family);
+    const fine = fines(still.model.family).find((model) => !still.model.default?.startsWith(`${model.model}@`));
     seen.render = { tool: still.id, local: Boolean(still.local), lora: lora.model, fine: fine.model };
     writeFileSync(yamlAt, `${yaml().trimEnd()}\n  still:\n    tool: ${still.id}\n    instructions: A red boat on still water, ink on paper.\n`);
     await box('still').waitFor();
-    await page.click('.tools button:has-text("Checkpoints")').catch(() => {});
+    await page.keyboard.press('f');
+    await page.waitForTimeout(500);
+    if (!(await page.locator('.checkpoints').count())) await page.click('.tools button:has-text("Checkpoints")');
     await row(lora).waitFor();
     await carry(lora, 'still');
     await page.mouse.up();
     await carry(fine, 'still');
     await page.mouse.up();
     await until('both on it', () => Promise.resolve(yaml().split('still:')[1]), (text) => text.includes(lora.model) && text.includes(fine.model));
-    const { status } = await api(`/v1/projects/${id}/runs`, { method: 'POST', headers: {}, body: JSON.stringify({ names: ['still'], on: [process.env.RENDER] }) });
-    check('render_asked', status < 300, status);
-    const made = await until('its version', async () => (await state()).assets.find((asset) => asset.name === 'still'), (asset) => asset.versions > 0 || asset.failure, 15 * 60_000);
-    check('render_landed', made.versions > 0, made.failure);
-    const number = made.prefixes?.at(-1)?.run;
-    const run = (await api(`/v1/runs/${number}`)).body;
-    const asked = run.request?.input?.models?.[still.model.slot];
-    const applied = run.report?.models?.find((model) => model.slot === still.model.slot);
-    seen.render_run = { number, asked, applied };
-    check('call_was_passed_both', asked?.ref === fine.model && asked?.lora?.some((one) => one.ref === lora.model), asked);
-    check('machine_applied_both', applied?.repository?.includes(fine.model.split('/').pop()) && applied?.adapters?.some((one) => one.model.includes(lora.model.split('/').pop())), applied);
+    await shot('both-on');
+
+    const runs = async () => (await Promise.all(['in_progress', 'queued'].map((status) => api(`/v1/runs?status=${status}&limit=100`)))).flatMap((answer) => answer.body?.runs ?? []).filter((run) => run.machine === process.env.RENDER || !run.machine);
+    const others = async () => (await runs()).filter((run) => run.kind === 'call' && run.project_id !== id);
+    const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+    const idle = async () => {
+      for (let held = await others(); held.length; held = await others()) {
+        seen.waited_for = [...new Set([...(seen.waited_for ?? []), ...held.map((run) => run.number)])];
+        seen.waiting = `${seen.waiting ?? ''}.`;
+        await pause(20_000);
+      }
+    };
+    let made;
+    for (let tries = 0; !made && tries < 5; tries++) {
+      await idle();
+      const had = (await state()).assets.find((asset) => asset.name === 'still').versions;
+      await page.evaluate((to) => { location.hash = to; }, `/projects/${id}/assets/still`);
+      await page.locator('.open-box button[aria-label=Render]').click();
+      await closeBox(page);
+      seen.asked_at = new Date().toISOString();
+      for (;;) {
+        await pause(5_000);
+        const asset = (await state()).assets.find((held) => held.name === 'still');
+        seen.rendering = `${seen.rendering ?? ''}.`;
+        if (asset.versions > had) { made = asset; break; }
+        if (asset.failure) { made = asset; break; }
+        if ((await others()).length) {
+          const mine = (await runs()).filter((run) => run.project_id === id);
+          for (const run of mine) await api(`/v1/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
+          seen.yielded = [...(seen.yielded ?? []), ...mine.map((run) => run.number)];
+          break;
+        }
+      }
+    }
+    check('render_landed', made?.versions > 0, made?.failure ?? 'it never had a turn');
+    const number = made?.prefixes?.at(-1)?.run;
+    const run = (await api(`/v1/runs/${number}?detail=full`)).body;
+    const asked = run?.request?.input?.models;
+    const applied = run?.measurements?.models;
+    seen.render_run = { number, target: run?.target, machine: run?.machine, asked, applied, warnings: run?.warnings };
+    const slot = asked && Object.entries(asked).find(([, held]) => held.ref === fine.model || held.lora?.length);
+    check('call_was_passed_both', Object.values(asked ?? {}).some((held) => held.ref === fine.model) && Object.values(asked ?? {}).some((held) => held.lora?.some((one) => one.ref === lora.model)), asked ?? slot);
+    const word = (name) => name.split('/').pop();
+    check('machine_applied_both', (applied ?? []).some((model) => model.repository.includes(word(fine.model))) && (applied ?? []).some((model) => model.adapters?.some((one) => one.model.includes(word(lora.model)))), applied);
+    await page.waitForTimeout(1000);
     await shot('rendered');
   }
 
