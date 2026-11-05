@@ -169,16 +169,18 @@ function ProjectSync({ id }: { id: string }) {
 }
 
 /**
- * The machines a render may go to: there's no choosing, the walk places it. A rental of yours is what a render is for, so this computer is one only with
- * none up, and another computer's rental of your account takes nothing from here. With none, Render asks for one under Machines. Null until they're read.
+ * The machines a render may go to, as `cozy project render` sends them: there's no choosing, the walk places each job on whichever ends it first (Paul,
+ * 11-05). Every rental of yours, up or on its way, since a rented GPU is for using; another computer's that's up; this one last, which loses a tie.
+ * Another computer's rental of your account takes nothing from here. With none, Render asks for one under Machines. Null until they're read.
  */
 function useMachines(store: CanvasStore): string[] | null {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
-  const up = (data?.machines ?? []).filter((machine) => machine.state === "ready" && machine.recorded !== false && !machine.offline && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
+  const held = (data?.machines ?? []).filter((machine) => machine.recorded !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
-  const rented = (data?.machines ?? []).filter((machine) => machine.kind === "rental" && machine.recorded !== false && !machine.offline && (machine.state === "ready" || machine.state === "booting"))
-  const names = (rented.length ? rented : up).map((machine) => machine.name)
+  const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
+  const up = held.filter((machine) => machine.kind !== "rental" && machine.state === "ready" && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
+  const names = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {

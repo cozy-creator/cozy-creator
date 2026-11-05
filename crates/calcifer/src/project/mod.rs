@@ -557,6 +557,35 @@ fn sync_jobs(project: &Project, run: impl Fn(u64) -> Option<Run>) -> Result<(), 
     Ok(())
 }
 
+/// What runs of `function` on `machine` took, per unit of `length`: its own, read once from those before this walk, which are taken as as long
+/// as this job (the store doesn't say: a guess its own runs put right); else what its card took, here or on any machine this walk has read.
+fn learned_on<'a>(
+    host: &Host,
+    learned: &'a mut HashMap<(String, String), sim::Learned>,
+    cards: &'a mut HashMap<(String, String), sim::Learned>,
+    machine: &str,
+    function: &str,
+    length: f64,
+) -> Option<&'a sim::Learned> {
+    let key = (machine.to_owned(), function.to_owned());
+    let card = host.card(machine).map(|card| (card, function.to_owned()));
+    if !learned.contains_key(&key) {
+        let mut read = sim::Learned::default();
+        // Oldest first, so the newest run's exchange is what counts.
+        for measured in host.last_measured(function, machine).into_iter().rev() {
+            read.took(measured.width, measured.busy_s / length, measured.exchange_share);
+        }
+        if let Some(card) = card.clone().filter(|_| read.one_gpu_s().is_some()) {
+            cards.entry(card).or_insert_with(|| read.clone());
+        }
+        learned.insert(key.clone(), read);
+    }
+    match learned.get(&key) {
+        Some(own) if own.one_gpu_s().is_some() => Some(own),
+        _ => card.and_then(|card| cards.get(&card)),
+    }
+}
+
 /// `seconds` after the plan was worked out, to the nearest 10 s: a guess, the same each time it is read.
 fn at_ms(planned_at_ms: i64, seconds: f64) -> i64 {
     (planned_at_ms + (seconds * 1000.0) as i64) / 10_000 * 10_000
@@ -582,8 +611,10 @@ struct Walker {
     asked_ahead: HashSet<(String, String, String)>,
     /// What each `with` calls, as its package said: its function and the widths it runs at.
     facts: HashMap<String, (String, Vec<u32>)>,
-    /// What runs here took, by machine and function.
+    /// What runs here took, by machine and function, each read once from the runs before this walk.
     learned: HashMap<(String, String), sim::Learned>,
+    /// The same by card and function: what a machine with nothing of its own goes by.
+    cards: HashMap<(String, String), sim::Learned>,
     /// Where the last plan put each job, by its key, and the machines it counted them on.
     placed: HashMap<String, sim::Placed>,
     plan_machines: Vec<On>,
@@ -2916,7 +2947,7 @@ impl Walk {
     fn plan_now(&self) {
         let Ok(walk) = self.folder().walk_now() else { return };
         let mut walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, facts, learned, placed, plan_machines, sent_at, planned_at_ms, .. } = &mut *walker;
+        let Walker { graph, readings, facts, learned, cards, placed, plan_machines, sent_at, planned_at_ms, .. } = &mut *walker;
         let open = graph.open_jobs();
         let at: HashMap<usize, usize> = open.iter().enumerate().map(|(place, &id)| (id, place)).collect();
         let mut machines: Vec<On> = vec![];
@@ -2933,22 +2964,27 @@ impl Walk {
                 JobKind::Free { .. } => vec![],
                 _ => fact.map_or_else(|| vec![1], |(_, widths)| widths.clone()),
             };
+            // This computer is the last choice (Paul, 11-05): of two that end a job as soon, the other.
+            let mut on: Vec<&On> = on.iter().collect();
+            on.sort_by_key(|machine| machine.is_local());
             let mut places = vec![];
+            let mut one_gpu_s = vec![];
+            let mut scaling = None;
             for machine in on {
                 let place = machines.iter().position(|known| known == machine).unwrap_or_else(|| {
                     machines.push(machine.clone());
                     machines.len() - 1
                 });
                 places.push(place);
+                let known = fact.and_then(|(function, _)| learned_on(&self.host, learned, cards, &machine.to_string(), function, length));
+                one_gpu_s.push(known.and_then(|known| known.one_gpu_s()).map(|unit| unit * length));
+                scaling = scaling.or(known.map(|known| known.scaling()));
             }
-            let known = fact.and_then(|(function, _)| {
-                let name = on.first()?.to_string();
-                learned.get(&(name, function.clone()))
-            });
-            let (one_gpu_s, scaling) = known.map_or((None, sim::Scaling::PRIOR), |known| (known.one_gpu_s().map(|unit| unit * length), known.scaling()));
+            let scaling = scaling.unwrap_or(sim::Scaling::PRIOR);
             let running = sent_at.get(&job.key).filter(|_| job.state == walker::State::Going).map(|(sent, machine, width)| {
                 let place = machines.iter().position(|known| known.to_string() == *machine).unwrap_or_default();
-                let whole = one_gpu_s.unwrap_or(60.0) * scaling.at(*width);
+                let one = places.iter().position(|&known| known == place).and_then(|k| one_gpu_s[k]);
+                let whole = one.or(one_gpu_s.iter().flatten().copied().reduce(f64::max)).unwrap_or(60.0) * scaling.at(*width);
                 (place, *width, (whole - sent.elapsed().as_secs_f64()).max(1.0))
             });
             let needs = job.needs.iter().filter_map(|need| at.get(need).copied()).filter(|&need| need < works.len()).collect();
@@ -2971,20 +3007,9 @@ impl Walk {
         {
             let mut walker = self.project.walker.lock().expect("walker lock");
             walker.facts.insert(with.to_owned(), (function.to_owned(), widths));
-            if !walker.learned.contains_key(&(name.clone(), function.to_owned())) {
-                let mut learned = sim::Learned::default();
-                // Runs before this walk are taken as as long as this job, which the store doesn't say: a guess its own runs put right.
-                let length = walker.graph.job(key).and_then(|job| {
-                    let walk = self.folder().walk_now().ok()?;
-                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
-                    Some(walker.readings.get(&ask.digest)?.nodes.get(job.node)?.length)
-                });
-                // Oldest first, so the newest run's exchange is what counts.
-                for measured in self.host.last_measured(function, &name).into_iter().rev() {
-                    learned.took(measured.width, measured.busy_s / length.unwrap_or(1.0), measured.exchange_share);
-                }
-                walker.learned.insert((name.clone(), function.to_owned()), learned);
-            }
+            let length = self.length_of(&walker, key);
+            let Walker { learned, cards, .. } = &mut *walker;
+            learned_on(&self.host, learned, cards, &name, function, length);
         }
         self.plan_now();
         let mut walker = self.project.walker.lock().expect("walker lock");
@@ -3005,9 +3030,35 @@ impl Walk {
             Some((reading.nodes.get(job.node)?.length, reading.doc.target(job.node)))
         }) else { return };
         let Some(function) = walker.facts.get(&with).map(|(function, _)| function.clone()) else { return };
-        let length = Some(length);
-        let learned = walker.learned.entry((machine, function)).or_default();
-        learned.took(measured.width, measured.busy_s / length.unwrap_or(1.0), measured.exchange_share);
+        let card = self.host.card(&machine);
+        let learned = walker.learned.entry((machine, function.clone())).or_default();
+        learned.took(measured.width, measured.busy_s / length, measured.exchange_share);
+        if let Some(card) = card {
+            walker.cards.entry((card, function)).or_default().took(measured.width, measured.busy_s / length, measured.exchange_share);
+        }
+    }
+
+    /// Whether a run of `renderer` on this computer, the plan's pick of `on`, would go poorly while another machine could take it, and nothing
+    /// measured says this computer ends it first: it goes to the others then. Paul, 11-05: a rented GPU is for using.
+    fn poorly_here(&self, job: &str, placed: &On, on: &[On], hub: &str, package: &Package, renderer: &Renderer, asset: &format::Asset) -> bool {
+        if !placed.is_local() || on.len() < 2 || !fit::poorly_now(&self.host.api(), hub, package, &renderer.function, &asset.made) {
+            return false;
+        }
+        let function = format!("{}/{}", renderer.package, renderer.function);
+        let mut walker = self.project.walker.lock().expect("walker lock");
+        let length = self.length_of(&walker, job);
+        let Walker { learned, cards, .. } = &mut *walker;
+        !on.iter().all(|machine| learned_on(&self.host, learned, cards, &machine.to_string(), &function, length).is_some_and(|known| known.one_gpu_s().is_some()))
+    }
+
+    /// How much job `key` makes (a shot's seconds, else 1), as its reading says.
+    fn length_of(&self, walker: &Walker, key: &str) -> f64 {
+        let length = walker.graph.job(key).and_then(|job| {
+            let walk = self.folder().walk_now().ok()?;
+            let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
+            Some(walker.readings.get(&ask.digest)?.nodes.get(job.node)?.length)
+        });
+        length.unwrap_or(1.0)
     }
 
     /// What it fetches ahead for jobs that all went or ended: it needn't go on.
@@ -3849,7 +3900,11 @@ impl Walk {
             let place = walker.placed.get(pending.job_of(key))?;
             walker.plan_machines.get(place.machine).filter(|machine| on.contains(machine)).cloned()
         });
-        let placed = holder.or(planned.flatten()).unwrap_or_else(|| self.host.place(&on, &renderer));
+        let mut placed = holder.or(planned.flatten()).unwrap_or_else(|| self.host.place(&on, &renderer));
+        if self.poorly_here(pending.job_of(key), &placed, &on, &hub, package, &renderer, asset) {
+            let others: Vec<On> = on.iter().filter(|machine| !machine.is_local()).cloned().collect();
+            placed = self.host.place(&others, &renderer);
+        }
         let with = asset.target.clone();
         let function = format!("{}/{}", renderer.package, renderer.function);
         let job = pending.job_of(key).to_owned();
