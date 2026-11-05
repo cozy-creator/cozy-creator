@@ -352,10 +352,11 @@ function linesOf(text, name) {
   await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => replaceFile(yamlAt, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
   const whole = yaml();
   saved(() => writeFileSync(yamlAt, `${whole}\n  : [ this doesn't read\n`));
-  await until('the page says so', () => page.locator('.note').allTextContents(), (notes) => notes.some((note) => note.includes("Couldn't read this project")));
+  await page.locator('.unread').waitFor();
+  check('broken_file_says_why', (await page.locator('.unread').innerText()).includes('project.yaml'), await page.locator('.unread').innerText());
   check('broken_file_keeps_the_canvas', (await box('live_b').count()) === 1);
   await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => replaceFile(yamlAt, whole.replace('Hand words two', 'Mended'))));
-  await until('and no longer says so', () => page.locator('.note').allTextContents(), (notes) => !notes.some((note) => note.includes("Couldn't read this project")));
+  await page.locator('.unread').waitFor({ state: 'detached' });
   refused.length = 0;
 
   // What's typed and not saved stays. A command changing another field of that asset leaves it to go on, and what's typed is saved over it.
