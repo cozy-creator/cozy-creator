@@ -611,6 +611,14 @@ unsafe impl Sync for HostPin {}
 /// # Safety
 /// `ptr..ptr+len` remains mapped until the returned guard drops; the caller retains the
 /// current context for the same lifetime and finishes every copy before dropping the guard.
+/// SCRATCH, never to land: host registrations, unregistrations and pinned allocations: count, ns.
+pub static HOST_PINS: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+pub fn host_pin_note(at: usize, began: std::time::Instant) {
+    use std::sync::atomic::Ordering::Relaxed;
+    HOST_PINS[at].fetch_add(1, Relaxed);
+    HOST_PINS[at + 1].fetch_add(began.elapsed().as_nanos() as u64, Relaxed);
+}
+
 pub unsafe fn pin_region(ptr: *mut u8, len: usize, read_only: bool) -> Result<HostPin> {
     let d = driver()?;
     let mut ctx = std::ptr::null_mut();
@@ -625,7 +633,10 @@ pub unsafe fn pin_region(ptr: *mut u8, len: usize, read_only: bool) -> Result<Ho
     let rc = {
         let _wait = tracing::trace_span!("tensorfs cuMemHostRegister").entered();
         // SAFETY: the caller lends `[ptr, ptr+len)` as live host memory for the registration's life (contract above).
-        unsafe { (d.mem_host_register)(ptr.cast(), len, flags) }
+        let began = std::time::Instant::now();
+        let rc = unsafe { (d.mem_host_register)(ptr.cast(), len, flags) };
+        host_pin_note(0, began);
+        rc
     };
     if rc != ERROR_HOST_MEMORY_ALREADY_REGISTERED {
         check("cuMemHostRegister", rc)?;
@@ -669,9 +680,10 @@ impl HostPin {
             // It synchronizes the device: a host wait, a trace span like the others.
             let _wait = tracing::trace_span!("tensorfs cuMemHostUnregister").entered();
             // SAFETY: this guard registered `ptr` and unregisters it once, with its context entered.
-            check("cuMemHostUnregister", unsafe {
-                (driver.mem_host_unregister)(self.ptr)
-            })?;
+            let began = std::time::Instant::now();
+            let rc = unsafe { (driver.mem_host_unregister)(self.ptr) };
+            host_pin_note(2, began);
+            check("cuMemHostUnregister", rc)?;
             self.owned = false;
         }
         Ok(())

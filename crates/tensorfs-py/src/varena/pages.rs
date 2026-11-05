@@ -580,6 +580,10 @@ impl PyPages {
         row.set_item("refused", off)?;
         row.set_item("wanted", wanted)?;
         row.set_item("pin_failed", pin_failed)?;
+        let host = |at: usize| tensorfs::io::cuda::HOST_PINS[at].load(Ordering::Relaxed);
+        row.set_item("host_registers", (host(0), host(1)))?;
+        row.set_item("host_unregisters", (host(2), host(3)))?;
+        row.set_item("host_allocs", (host(4), host(5)))?;
         row.set_item("ahead_canceled", self.tier.canceled.load(Ordering::Relaxed))?;
         row.set_item("ahead_failed", self.tier.failed.load(Ordering::Relaxed))?;
         Ok(row)
