@@ -148,7 +148,7 @@ function linesOf(text, name) {
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
-  const firstTool = page.locator('.tools .tool').first();
+  const firstTool = page.locator('.tools .tool:not([data-kind=text])').first();
   const label = await firstTool.locator('b').textContent();
   const kind = await firstTool.getAttribute('data-kind');
   const made = await dragOut(firstTool, 1300, 900);
@@ -476,40 +476,6 @@ function linesOf(text, name) {
     await until('its beat in the status', async () => status('told').fields?.beats?.length, (n) => n === 1);
     check('its_beat_has_a_length', status('told').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told').fields);
     await shot('fresh-beat');
-
-    // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
-    const shaped = join(__dirname, '..', 'project', 'shaped.py');
-    replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
-    await box('sounded').waitFor();
-    await open('sounded');
-    const sounded = box('sounded');
-    const scape = sounded.locator('.mention-text[data-field=soundscape]');
-    await scape.waitFor();
-    check('shown_by_its_node', (await sounded.locator('.mention-text[data-field=music]').count()) === 1 && (await sounded.locator('.edit-more').count()) === 0, await sounded.innerText());
-    check('empty_reads_na', (await scape.getAttribute('data-placeholder')) === 'N/A (silent)', await scape.getAttribute('data-placeholder'));
-    check('a_hidden_input_isnt_drawn', (await sounded.locator('[data-field=steps], [data-field=plate], [data-field=references]').count()) === 0, await sounded.innerText());
-    await scape.click();
-    await page.keyboard.type('Rain on steel.');
-    await sounded.locator('.mention-text[data-field=music]').click();
-    await until('the soundscape as the CLI reads it', async () => status('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
-    check('an_empty_one_isnt_written', !('music' in status('sounded').fields), status('sounded').fields);
-    await page.keyboard.type('Low strings.');
-    await sounded.locator('.mention-text[data-field=music]').blur();
-    await until('the music as the CLI reads it', async () => status('sounded').fields?.music, (said) => said === 'Low strings.');
-    await shot('sounded');
-
-    // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
-    const textRow = page.locator('aside.tools li.tool[data-kind=text]');
-    check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
-    await textRow.click();
-    const wording = box('text');
-    await wording.locator('.mention-text[data-field=text]').waitFor();
-    await wording.locator('.mention-text[data-field=text]').click();
-    await page.keyboard.type('Painted by hand.');
-    await wording.locator('.mention-text[data-field=text]').blur();
-    await until('its words as the CLI reads them', async () => status('text').fields?.text, (said) => said === 'Painted by hand.');
-    check('text_has_no_render', (await wording.locator('button:text-is("Render"), .takes, button:text-is("Approve")').count()) === 0, await wording.innerText());
-    check('text_has_a_kind', status('text').kind === 'text', status('text'));
     await told.locator('.add-beat').click();
     await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
     check('either_can_go_now', (await told.locator('[aria-label^="Remove beat"]').count()) === 2);
@@ -581,6 +547,40 @@ function linesOf(text, name) {
     // Something else to go on while one fails.
     await dropBox('Other', 1100, 600);
     await render('Other', 1);
+
+    // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
+    const shaped = join(__dirname, '..', 'project', 'shaped.py');
+    replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
+    await box('sounded').waitFor();
+    await open('sounded');
+    const sounded = box('sounded');
+    const scape = sounded.locator('.mention-text[data-field=soundscape]');
+    await scape.waitFor();
+    check('shown_by_its_node', (await sounded.locator('.mention-text[data-field=music]').count()) === 1 && (await sounded.locator('.edit-more').count()) === 0, await sounded.innerText());
+    check('empty_reads_na', (await scape.getAttribute('data-placeholder')) === 'N/A (silent)', await scape.getAttribute('data-placeholder'));
+    check('a_hidden_input_isnt_drawn', (await sounded.locator('[data-field=steps], [data-field=plate], [data-field=references]').count()) === 0, await sounded.innerText());
+    await scape.click();
+    await page.keyboard.type('Rain on steel.');
+    await sounded.locator('.mention-text[data-field=music]').click();
+    await until('the soundscape as the CLI reads it', async () => status('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
+    check('an_empty_one_isnt_written', !('music' in status('sounded').fields), status('sounded').fields);
+    await page.keyboard.type('Low strings.');
+    await sounded.locator('.mention-text[data-field=music]').blur();
+    await until('the music as the CLI reads it', async () => status('sounded').fields?.music, (said) => said === 'Low strings.');
+    await shot('sounded');
+
+    // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
+    const textRow = page.locator('aside.tools li.tool[data-kind=text]');
+    check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
+    await textRow.click();
+    const wording = box('text');
+    await wording.locator('.mention-text[data-field=text]').waitFor();
+    await wording.locator('.mention-text[data-field=text]').click();
+    await page.keyboard.type('Painted by hand.');
+    await wording.locator('.mention-text[data-field=text]').blur();
+    await until('its words as the CLI reads them', async () => status('text').fields?.text, (said) => said === 'Painted by hand.');
+    check('text_has_no_render', (await wording.locator('button:text-is("Render"), .takes, button:text-is("Approve")').count()) === 0, await wording.innerText());
+    check('text_has_a_kind', status('text').kind === 'text', status('text'));
 
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');

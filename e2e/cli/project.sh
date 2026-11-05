@@ -481,7 +481,7 @@ mkdir -p "$R"
 cat > "$R/project.yaml" <<YAML
 version: 3
 assets:
-  look: {tool: $here/project/shots.py/slow, seconds: 0}
+  look: {tool: $here/project/shots.py/shoot, refuse: Only its tags are read here.}
   D: {text: A tag.}
 YAML
 render "$R" look > /dev/null 2>&1 || true
@@ -1188,7 +1188,7 @@ assets:
   no_kind:
     tool: $here/project/draw.py/draw
     instructions: An image, then.
-  no_kind:
+  any_tool:
     tool: $here/project/draw.py/draw
     instructions: Nor me either.
 YAML
@@ -1208,7 +1208,7 @@ J '.assets[] | select(.name == "no_kind") | .kind == "image"' <<< "$(status "$C"
 J '.assets[] | select(.name == "only_words") | .standing == "current" and .status == "only words"' <<< "$(status "$C")" || check "pins: an asset that is only words: $(row "$C" only_words .)"
 sed -i 's/It renders without that\./Rendered again./' "$C/project.yaml"
 render "$C" all --missing || check "pins: render all with what can't be made: $(tail -c 400 "$OUT/render.txt")"
-[ "$(made "$C" no_kind)" = 1 ] || check "pins: a tool makes what it makes, whatever a file once said: $(made "$C" no_kind)"
+[ "$(made "$C" any_tool)" = 1 ] || check "pins: a tool makes what it makes, whatever a file once said: $(made "$C" any_tool)"
 [ "$(made "$C" wrong)" = 2 ] || check "pins: what could be made was not: wrong has $(made "$C" wrong)"
 }
 
@@ -1877,7 +1877,7 @@ wait "$going" || check "edit: the render: $(tail -c 400 "$OUT/queue-edit.txt")"
 case "$(row "$W" words .status)" in *'out of date'*) ;; *) check "edit: words is $(row "$W" words .status)" ;; esac
 render "$W" reader || check "edit: the next render: $(tail -c 400 "$OUT/render.txt")"
 { [ "$(made "$W" words)" = 2 ] && [ "$(made "$W" reader)" = 2 ] && [ "$(prompt "$W" words)" = 'New words.' ]; } || check "edit: the next render made $(counts "$W")"
-grep -qF "$(take_file "$W" words image -1)" <<< "$(prompt "$W" reader)" || check "edit: the reader did not read the new file"
+grep -qF "$(take_file "$W" words image -1)" <<< "$(asked "$W" reader)" || check "edit: the reader did not read the new file"
 
 step "a project: two queued renders with an edit between use their own text"
 local Q=$OUT/queue-two

@@ -28,6 +28,14 @@ pub fn files_of<'a>(files: &'a Files, kind: &str) -> Vec<&'a str> {
     files.get(kind).map(String::as_str).into_iter().chain(listed.into_iter().map(|(_, sha256)| sha256)).collect()
 }
 
+/// The files of a read a file input of `kind` takes: of `file`, any kind, its main one.
+fn of_kind<'a>(files: &'a Files, kind: &str) -> Vec<&'a str> {
+    match kind {
+        "file" => folder::main_of(files).map(String::as_str).into_iter().collect(),
+        _ => files_of(files, kind),
+    }
+}
+
 /// A text as a function reads it: an asset's dotted name is the project's, so `<kyogre.primordial>` reads `<kyogre primordial>`.
 fn spoken(text: &str) -> String {
     let mut out = text.to_owned();
@@ -81,7 +89,7 @@ impl Filling<'_> {
                 let name = self.name.to_owned();
                 let mut found = vec![];
                 for mention in mentions(text) {
-                    match self.read(mention).map(|read| files_of(&read.files, kind).into_iter().map(|sha256| json!(sha256)).collect::<Vec<_>>()) {
+                    match self.read(mention).map(|read| of_kind(&read.files, kind).into_iter().map(|sha256| json!(sha256)).collect::<Vec<_>>()) {
                         Some(files) if !files.is_empty() => found.extend(files),
                         Some(_) => self.warnings.push(format!("{name}: <{mention}> has no {kind}, so it isn't sent")),
                         None => {}
@@ -239,15 +247,15 @@ impl Filling<'_> {
         }
         match plain(&field.ty) {
             Type::Asset(kind) => {
-                let at = (0..self.reads.len()).find(|&at| !self.taken[at] && !files_of(&self.reads[at].files, kind).is_empty())?;
+                let at = (0..self.reads.len()).find(|&at| !self.taken[at] && !of_kind(&self.reads[at].files, kind).is_empty())?;
                 self.taken[at] = true;
-                files_of(&self.reads[at].files, kind).first().map(|sha256| json!(sha256))
+                of_kind(&self.reads[at].files, kind).first().map(|sha256| json!(sha256))
             }
             Type::List(item) => match &**item {
                 Type::Asset(kind) => {
                     let mut files = vec![];
                     for at in 0..self.reads.len() {
-                        let found = files_of(&self.reads[at].files, kind);
+                        let found = of_kind(&self.reads[at].files, kind);
                         if !self.taken[at] && !found.is_empty() {
                             self.taken[at] = true;
                             files.extend(found.iter().map(|sha256| json!(sha256)));

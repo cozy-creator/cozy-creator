@@ -47,7 +47,7 @@ export function shownControls(controls: Control[]): Control[] {
 }
 
 /** A new row: what its members default to. */
-export const newRow = (control: Control): Row => Object.fromEntries((control.members ?? []).flatMap((member) => (member.default === undefined ? [] : [[member.field, member.default]])))
+export const newRow = (control: Control): Row => Object.fromEntries((control.members ?? []).flatMap((member) => (member.default === undefined || member.default === "" ? [] : [[member.field, member.default]])))
 
 /** What a group holds once it has as many rows as it must. */
 export const fullRows = (control: Control, held: Row[]): Row[] => [...held, ...Array.from({ length: Math.max(0, (control.min_items ?? 0) - held.length) }, () => newRow(control))]

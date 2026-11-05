@@ -54,7 +54,7 @@ def gone(payload: Shaded, out: Outputs) -> Picture:
     return _picture(out)
 
 
-@app.entrypoint()
+@app.entrypoint(node=Node())
 def plain(payload: Shaded, out: Outputs) -> Picture:
     """A still with the declared box."""
     return _picture(out)
