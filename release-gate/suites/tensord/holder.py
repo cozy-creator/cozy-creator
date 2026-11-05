@@ -30,7 +30,7 @@ def hold(payload: Hold) -> Held:
     gpus = range(torch.cuda.device_count())
     free = [torch.cuda.mem_get_info(gpu)[0] for gpu in gpus]
     blocks = [torch.ones(int(payload.gib * (1 << 30)) // 4, device=f"cuda:{gpu}") for gpu in gpus]
-    means = [float((block * 2).mean()) for block in blocks]
+    means = [float(block.mul_(2).mean()) for block in blocks]
     allocated = [torch.cuda.memory_allocated(gpu) for gpu in gpus]
     taken = [before - torch.cuda.mem_get_info(gpu)[0] for gpu, before in zip(gpus, free)]
     time.sleep(payload.seconds)
