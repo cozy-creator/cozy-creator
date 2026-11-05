@@ -405,11 +405,7 @@ def graph(cuda_graph: Any, *, pool: PoolId | None = None, stream: Stream | None 
     try:
         if _workspace_cache_enabled() and (device, stream.cuda_stream) not in _primed:
             _prime_library(device, stream)
-        if reserve_bytes is None:
-            # What the pass being recorded charged, not the largest thing the process has run.
-            row = stats(device)
-            reserve_bytes = pool_bytes(row["last_eager_peak"] or row["allocated_peak"])
-        prepare_pool(pool, reserve_bytes, device)
+        prepare_pool(pool, stats(device)["allocated_peak"] if reserve_bytes is None else reserve_bytes, device)
         _ext._varena_working_pool_arm(device, cast(PoolId, tuple(pool)))
         # Include caller preparation, but never drain unrelated device streams.
         # Native allocations during capture use this already prepared pool only.

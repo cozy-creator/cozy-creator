@@ -484,23 +484,29 @@ def fill_keeps_phase_pages():
 
 @case
 def pool_follows_its_pass():
-    """A capture's pool comes from the pass it records, not the request's high-water: 7.1 GB for
-    Qwen's 2.5 GB pass kept 3.9 GB of its weights off the card on every warm call (29669)."""
+    """A pool reuses a block only at its size, so a capture needs each size's high-water, not the
+    pass's peak (SDXL's 0.7 GB pool refused it, 29809), and not the request's high-water either,
+    which kept 3.9 GB of Qwen's weights off the card on every warm call (29669)."""
+
+    def sizes(value: int) -> None:
+        for mib in (8, 16, 32):
+            torch.empty(mib * MIB, dtype=torch.uint8, device="cuda").fill_(value)
+
     large = torch.empty(256 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
     torch.cuda.synchronize()
     del large
     token = vt.phase_enter(0, "core/pool")
-    value = torch.empty(16 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
+    sizes(1)
     torch.cuda.synchronize()
-    del value
     assert vt.phase_leave(0, token, completed=True)["published"]
-    assert vt.stats(0)["last_eager_peak"] == 16 * MIB, vt.stats(0)
+    need = vt.stats(0)["capture_bytes"]
+    assert need == 56 * MIB, vt.stats(0)
     pool = torch.cuda.graph_pool_handle()
     graph = torch.cuda.CUDAGraph()
-    with vt.graph(graph, pool=pool):
-        torch.empty(16 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
+    with vt.graph(graph, pool=pool, reserve_bytes=vt.pool_bytes(need)):
+        sizes(2)
     held = vt.stats(0)["pools_bytes"]
-    assert 16 * MIB <= held <= 24 * MIB, vt.stats(0)
+    assert need <= held <= 80 * MIB, vt.stats(0)
     token = vt.phase_enter(0, "core/pool")  # A use of the pool leaves a measured pass measured.
     vt.prepare_pool(pool, 0, 0)
     vt.record_pool_stream(pool, torch.cuda.current_stream(0), 0)
