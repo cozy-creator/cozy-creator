@@ -58,7 +58,7 @@ web_proof instant "$chrome" "$pw" "$restart"
 jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
-step "web-signin: AuthKit's form to a stand-in Hub: a new account, a wrong code, too soon, either email's code, signed out"
+step "web-signin: AuthKit's form to a stand-in Hub: a new account, a wrong code, too soon, either email's code, signed out, a deleted account restored"
 if [ -z "${WEB_ALONE:-}" ]; then
   TO_HUB=$(web_restart "$lock" @HUB@) web_proof signin "$chrome" "$pw" "$restart"
   jq -c '.seen | {stated_wait}' "$OUT/web-signin.json" 2> /dev/null || true

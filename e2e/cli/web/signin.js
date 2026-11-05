@@ -1,6 +1,7 @@
 // The page's sign-in: AuthKit's own form, through Calcifer to a Hub. A new email signs up. A wrong code stays in the form and says so in plain
 // words, with no command to run. Asked too soon, it moves on to the code already out. Either email's code works. The account shows, a reload
-// finds it, nothing of the Hub's is in the browser, and it signs out.
+// finds it, nothing of the Hub's is in the browser, and it signs out. Deleted, its code reaches AuthKit's restore screen, which says when it
+// goes for good, and Restore signs in.
 //   node signin.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser. $HUB_LOG: a development Hub's log to read codes from, with Calcifer already
 // pointed at that Hub. Without it a stand-in Hub runs here, since a runner can't reach AuthKit; $TO_HUB (a shell command, @HUB@ for its origin)
@@ -38,9 +39,18 @@ const COOLDOWN_S = 12;
 const ANSWERS_AFTER_MS = 1500;
 const heard = [];
 
-/** What a Hub does for a sign-in, on loopback. It holds Calcifer to its signatures and refuses as AuthKit does: a wrong code is 401, too soon is 429. */
+/** Noon, 19 days on: the restore screen counts calendar days, so midnight can't move it. */
+const PURGE = (() => {
+  const at = new Date();
+  at.setHours(12, 0, 0, 0);
+  at.setDate(at.getDate() + 19);
+  return at;
+})();
+
+/** What a Hub does for a sign-in, on loopback. It holds Calcifer to its signatures and refuses as AuthKit does: a wrong code is 401, too soon is 429,
+ * and a deleted account's right code is 409 with its recovery token, the enrollment still live, until that token is confirmed. */
 async function standIn() {
-  const enrollments = new Map(), logins = new Map(), keys = new Map();
+  const enrollments = new Map(), logins = new Map(), keys = new Map(), recoveries = new Map(), deleted = new Set();
   const mailed = [];
   let name = null, nextAt = 0;
   const signed = (domain, challenge, key, signature) => {
@@ -76,10 +86,23 @@ async function standIn() {
         if (!held || held.code !== ask.code || !signed('authkit.device-key-enrollment/1', held.challenge, held.public_key, ask.signature)) {
           return refuse(401, 'invalid_code', 'Invalid verification code.');
         }
+        if (deleted.has(held.email)) {
+          const token = b64(randomBytes(32));
+          recoveries.set(token, held.email);
+          const metadata = { token, expires_at: new Date(Date.now() + 600_000).toISOString(), purge_at: PURGE.toISOString() };
+          return send(409, { error: { code: 'account_recovery_required', message: 'Confirm account recovery before signing in.', metadata } });
+        }
         enrollments.delete(ask.enrollment_id);
         const id = randomUUID();
         keys.set(id, held.public_key);
         return send(200, session(id));
+      }
+      if (route === 'POST /v1/auth/v1/account/recovery/confirm') {
+        const email = recoveries.get(ask.token);
+        if (!email) return refuse(401, 'invalid_credentials', 'Refused.');
+        recoveries.delete(ask.token);
+        deleted.delete(email);
+        return send(204);
       }
       if (route === 'POST /v1/auth/v1/device-keys/login/begin') {
         const id = b64(randomBytes(32)), challenge = b64(randomBytes(32));
@@ -108,7 +131,13 @@ async function standIn() {
     });
   });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
-  return { origin: `http://127.0.0.1:${server.address().port}`, mailed: () => [...mailed], close: () => server.close() };
+  return {
+    origin: `http://127.0.0.1:${server.address().port}`,
+    mailed: () => [...mailed],
+    sendsIn: () => Math.max(0, nextAt - Date.now()),
+    deletes: (email) => deleted.add(email),
+    close: () => server.close(),
+  };
 }
 
 /** The codes a development Hub logged for `email`, oldest first. */
@@ -226,6 +255,25 @@ const logged = (email) => () => readFileSync(process.env.HUB_LOG, 'utf8').split(
   await page.locator('.confirm').getByRole('button', { name: 'Sign out', exact: true }).click();
   await address.waitFor();
   check('signs_out', (await page.locator('.gate').count()) === 0);
+
+  // The account deletes itself, and its owner signs in again: AuthKit's restore screen, the days left, and Restore signs in.
+  if (hub) {
+    hub.deletes(email);
+    await new Promise((done) => setTimeout(done, hub.sendsIn()));
+    await address.fill(email);
+    await go.click();
+    await code.waitFor();
+    const third = await until('a code to the deleted account', () => mailed()[2], Boolean);
+    await code.pressSequentially(third);
+    await form.getByText('Restore your account?').waitFor();
+    const when = `in 19 days, on ${new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(PURGE)}`;
+    check('restore_says_when_it_goes', (await said()).includes(`It will be deleted for good ${when}.`), await said());
+    await page.getByRole('button', { name: 'Restore account', exact: true }).click();
+    await record(email).waitFor();
+    check('restore_signs_in', (await record(name).count()) === 1);
+    const steps = heard.filter((line) => /\/enroll\/finish|\/recovery\/confirm/.test(line)).slice(-3).map((line) => line.split(' ').slice(1).join(' '));
+    check('restore_is_authkits_step', steps.join() === '/v1/auth/v1/device-keys/enroll/finish 409,/v1/auth/v1/account/recovery/confirm 204,/v1/auth/v1/device-keys/enroll/finish 200', steps);
+  }
 
   check('no_csp_violation', [...violations, ...(await page.evaluate(() => window.__violations))].length === 0, violations);
   check('no_page_error', errors.length === 0, errors);
