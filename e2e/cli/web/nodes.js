@@ -665,11 +665,16 @@ function linesOf(text, name) {
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const heldFile = (await of('Sheet')).sha256;
     const filesThen = readdirSync(join(folder, 'files')).length;
+    const stood = (await rows())['source-a'];
+    const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a'));
     await deleteBox('source-a');
+    const deleted = await (await deleting).json();
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
     const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
-    check('approved_reader_says_nothing', !noted.some((line) => line.includes('reads this')), noted);
+    // `mentioning` reads it too, and isn't approved: only it is named.
+    check('approved_reader_says_nothing', !noted.some((line) => line.includes('Sheet')), noted);
+    check('unapproved_reader_named', noted.some((line) => line.includes('mentioning reads this')), noted);
     check('a_deleted_file_stays', readdirSync(join(folder, 'files')).length === filesThen);
     await until('out of the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines === null);
     await away();
@@ -688,6 +693,10 @@ function linesOf(text, name) {
     await box('Sheet').locator('button[aria-label=Render]').click();
     const failed = await until('it says why', () => of('Sheet'), (held) => held.failure);
     check('fails_naming_it', failed.failure.code === 'input_missing' && failed.failure.message.includes('<source-a> is no longer in the project'), failed.failure);
+    // Render leaves the box: the failure is a toast, and an approved box's is on its words, its picture standing.
+    await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('no longer in the project')));
+    await open('Sheet');
+    await box('Sheet').locator('.take.add[aria-label="Its words"]').click();
     await box('Sheet').locator('.status.bad:has-text("no longer in the project")').waitFor();
     check('its_next_steps_as_text', (await box('Sheet').locator('.status.bad .next-line').count()) > 0, await box('Sheet').locator('.status.bad').innerText());
     check('failed_runs_nothing', (await versions('Sheet')) === 2 && (await of('Sheet')).sha256 === heldFile);
@@ -699,8 +708,9 @@ function linesOf(text, name) {
     await page.waitForTimeout(200);
     check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.dot.s-failed').count()) === 0);
 
-    // Undo: back with its row, and nothing is missing.
-    await page.locator('.note:has-text("source-a") button:has-text("Undo")').click();
+    // Undo: back with its row, and nothing is missing. Its note has gone by now (10 s, Paul 11-05), so this is what its Undo sends; the button's own below.
+    const back = await api(`/v1/projects/${id}/assets/source-a`, { method: 'PUT', body: JSON.stringify({ text: deleted.text, at: stood }) });
+    check('put_back', back.status === 200, back);
     await box('source-a').waitFor();
     await until('back in the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), Boolean);
     check('undo_keeps_its_description', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
