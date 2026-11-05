@@ -3,7 +3,7 @@
 //! another shape reads as absent, so no reader refuses a member it does not use.
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 /// The member that lists the entrypoints, for a reader that rewrites the document.
@@ -268,6 +268,17 @@ pub struct Node {
     /// The path in its package of a component that draws its box.
     #[serde(default, deserialize_with = "or_default")]
     pub ui: Option<String>,
+    /// The frames a kept take can end on, if it can't end on any.
+    #[serde(default, deserialize_with = "or_default")]
+    pub cuts: Option<Cuts>,
+}
+
+/// `offset + k * every`, from frame `first`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cuts {
+    pub every: u32,
+    pub offset: u32,
+    pub first: u32,
 }
 
 /// What `fill` calls the take a new one keeps the start of.

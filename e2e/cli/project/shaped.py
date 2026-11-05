@@ -76,7 +76,7 @@ def _video(payload: ShotInput) -> VideoFile:
     return found[0]
 
 
-@app.entrypoint(node=Node(label="Shaped Shot", show=["soundscape", "music"], hide=["steps", "plate"], fill={"continue_from": "take"}, reserved=["d"]))
+@app.entrypoint(node=Node(label="Shaped Shot", show=["soundscape", "music"], hide=["steps", "plate"], cuts={"every": 17, "offset": 5, "first": 39}, fill={"continue_from": "take"}, reserved=["d"]))
 def shot(payload: ShotInput, out: Outputs) -> Shot:
     """A video in its own words, beat by beat."""
     warned = [f"beat {at + 1} says nothing" for at, beat in enumerate(payload.beats) if not beat.description]
@@ -104,6 +104,7 @@ def up(payload: UpInput, out: Outputs) -> Up:
 
 class Mentions(Picture, kw_only=True):
     image: ImageFile | None = None
+    description: str = ""
 
 
 class PictureInput(msgspec.Struct, kw_only=True):

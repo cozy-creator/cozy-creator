@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    interface::{Callable, Constraints, Field, Interface, Node, Struct, TAKE, Type, Wire},
+    interface::{Callable, Constraints, Cuts, Field, Interface, Node, Struct, TAKE, Type, Wire},
     names::shown,
 };
 
@@ -90,6 +90,9 @@ pub struct Tool {
     /// A new take can keep the start of one of its: it says `fill: {.. take}`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takes: bool,
+    /// The frames a kept take can end on, if it can't end on any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuts: Option<Cuts>,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -178,6 +181,7 @@ pub fn edit() -> Tool {
         local: false,
         ui: None,
         takes: false,
+        cuts: None,
         controls: vec![Control { field: "timeline".to_owned(), ty: ControlType::Timeline, label: "Edit".to_owned(), face: true, ..Control::default() }],
     }
 }
@@ -231,6 +235,7 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
         local: false,
         controls: controls(callable, &node),
         takes: node.fill.values().any(|source| source == TAKE),
+        cuts: node.cuts,
         ui: node.ui,
     })
 }

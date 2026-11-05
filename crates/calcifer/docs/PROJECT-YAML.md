@@ -230,6 +230,7 @@ app.entrypoint(generate, node=Node(
     show=["soundscape", "music"],           # on its default face, beside its first text and what's required
     hide=["steps", "upscale"],              # never drawn; a file or `cozy run` can still set them
     fill={"continue_from": "take"},         # the take a new one keeps, or `<input>.<member>` of what that input mentions; `<input>.text` is the words its version was made from, else its description
+    cuts={"every": 17, "offset": 5, "first": 124},  # the frames a kept take can end on, if it can't end on any
     reserved=["d", "scenetrans"],           # its model's own tags
 ))
 ```
