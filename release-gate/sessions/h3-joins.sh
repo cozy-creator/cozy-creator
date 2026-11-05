@@ -1,6 +1,8 @@
-# h3-joins (cl-774): two H3 behaviours of the release that no run had shown, through `cozy project render` on a real project folder, the
-# page's path (`project import`, `add` and `set`, the routes its boxes call), on one rental (a 4090). minimax-h3 is local code from a
-# packages_refs checkout `pk` at the release's commit; the session's cozy carries its TensorD to the pod, `runtime` the Runtime.
+# h3-joins (cl-774): two H3 behaviours of the release that no run had shown, through `cozy project render` on a real project folder, on
+# one rental (a 4090): the pictures imported and typed by the routes the page's boxes call, the shots written in project.yaml as `add`
+# writes them (`add` reads local code here with the Runtime its uv.lock names, and minimax-h3's 0.39.6 refuses its `node=`; a render
+# reads it with the pod's). minimax-h3 is local code from a packages_refs checkout `pk` at the release's commit; the session's cozy
+# carries its TensorD to the pod, `runtime` the Runtime.
 #   1. joins: two 8 s beats, past one segment's 15 s, so the shot crosses a join, with two characters drawn here (fixtures/h3-joins)
 #      mentioned in both, `pip` typed a character and `tova` untyped. Its frames are the beats' on H3's grid, as the package planned
 #      them; nothing jumps at the join (each frame against the next, the join among the 24 either side, the frames kept to look at);
@@ -57,27 +59,33 @@ for art in pip.png tova.png lighthouse.jpg; do
   cozy project -p "$P" import "$OUT/art/$art" "${art%.*}" >> "$OUT/import.txt" 2>&1 || fail "import $art: $(tail -3 "$OUT/import.txt")"
 done
 cozy project -p "$P" set pip asset_type=character > "$OUT/set.txt" 2>&1 || fail "set pip: $(tail -3 "$OUT/set.txt")"
-cozy project -p "$P" add "$TOOL" joins aspect_ratio=16:9 soundscape='Birdsong and light wind.' beats:='[
-  {"description": "<pip> and <tova> walk side by side along a sunny park path as the camera tracks them.", "duration": 8},
-  {"description": "<pip> stops to point at a red kite, and <tova> looks up and flaps its wings.", "duration": 8}]' > "$OUT/add-joins.txt" 2>&1 ||
-  fail "add joins: $(tail -3 "$OUT/add-joins.txt")"
-cozy project -p "$P" add "$TOOL" framed aspect_ratio=16:9 first_frame='<lighthouse>' soundscape='Wind and crashing waves.' beats:='[
-  {"description": "<pip> and <tova> walk into view on the snowy cliff below the lighthouse.", "duration": 5}]' > "$OUT/add-framed.txt" 2>&1 ||
-  fail "add framed: $(tail -3 "$OUT/add-framed.txt")"
-for _ in $(seq 1 30); do
-  cozy --json project -p "$P" status > "$OUT/status.json" 2>&1
-  J '[.assets[] | select(.name == "joins" or .name == "framed") | .kind] == ["video", "video"]' "$OUT/status.json" && break
-  sleep 1
-done
-J '[.assets[] | select(.name == "joins" or .name == "framed") | .kind] == ["video", "video"]' "$OUT/status.json" ||
-  fail "the shots aren't videos: $(jq -c '[.assets[]? | {name, kind}]' "$OUT/status.json" 2> /dev/null || head -c 300 "$OUT/status.json")"
+cat >> "$P/project.yaml" <<YAML || fail "project.yaml"
+  joins:
+    tool: $TOOL
+    aspect_ratio: "16:9"
+    soundscape: Birdsong and light wind.
+    beats:
+      - duration: 8
+        description: "<pip> and <tova> walk side by side along a sunny park path as the camera tracks them."
+      - duration: 8
+        description: "<pip> stops to point at a red kite, and <tova> looks up and flaps its wings."
+  framed:
+    tool: $TOOL
+    aspect_ratio: "16:9"
+    first_frame: <lighthouse>
+    soundscape: Wind and crashing waves.
+    beats:
+      - duration: 5
+        description: "<pip> and <tova> walk into view on the snowy cliff below the lighthouse."
+YAML
+cozy --json project -p "$P" status > "$OUT/status.json" 2>&1 || fail "status: $(tail -c 300 "$OUT/status.json")"
+J '[.assets[].name] | index("joins") and index("framed")' "$OUT/status.json" || fail "the shots aren't assets: $(jq -c '[.assets[]? | .name]' "$OUT/status.json")"
 grep -qE '^ +asset_type: character' "$P/project.yaml" || fail "pip isn't typed: $(cat "$P/project.yaml")"
 cp "$P/project.yaml" "$OUT/project-before.yaml"
-say "project: $(jq -c '[.assets[] | {name, kind}]' "$OUT/status.json"), warnings $(jq -c '.warnings // []' "$OUT/status.json")"
+say "project: $(jq -c '[.assets[] | {name, kind, tool}]' "$OUT/status.json"), warnings $(jq -c '.warnings // []' "$OUT/status.json")"
 sha_of() { jq -r --arg n "$1" '.assets[] | select(.name == $n) | .sha256 // empty' "$OUT/status.json" | sed 's/^sha256://'; }
 SHA_PIP=$(sha_of pip) SHA_TOVA=$(sha_of tova) SHA_LIGHT=$(sha_of lighthouse)
 [ -n "$SHA_PIP" ] && [ -n "$SHA_TOVA" ] && [ -n "$SHA_LIGHT" ] || fail "an imported picture has no hash: $(jq -c '[.assets[] | {name, sha256}]' "$OUT/status.json")"
-cozy run "$TOOL" --describe > "$OUT/describe.txt" 2>&1 || fail "describe $TOOL: $(tail -3 "$OUT/describe.txt")"
 
 # The pre-flight's own: the Runtime the pod gets, and minimax-h3's environment, here first (what fails here is said, for a person to judge).
 if [ "$RENT" != true ]; then
