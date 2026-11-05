@@ -481,6 +481,7 @@ impl State {
     // Completion and pool resizing already traverse metadata. Rebuild their phase counts once.
     fn refresh_phase(&mut self) {
         if let Some(token) = self.phases.active.as_ref().map(|active| active.token) {
+            let _timed = crate::diag::T::new(3);
             for segment in self.segments.values_mut() {
                 segment.phase_blocks = 0;
             }
@@ -681,6 +682,7 @@ impl Device {
 
     /// Settle what completed. The caller holds the gate with no capture active.
     fn poll(&self, state: &mut State) -> Result<()> {
+        let _timed = crate::diag::T::new(2);
         let mut fences = self.fences();
         fences.poll(self.driver())?;
         cache::poll(state, &fences);
@@ -1414,6 +1416,8 @@ fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, boun
 }
 
 fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bound: bool) -> Result<u64> {
+    crate::diag::tick();
+    let _timed = crate::diag::T::new(4);
     valid_stream(stream)?;
     if bytes == 0 && !bound {
         crate::check_process()?;
@@ -1475,6 +1479,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         }
     }
     let segment = rounded(class.max(SEGMENT), owner.page())?;
+    let _slow = crate::diag::T::new(5);
     let result = reclaim::acquire(device, exact, Wait::Yes, Protect { reuse_working: true, ..Default::default() }, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
@@ -1519,6 +1524,7 @@ pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
 
 /// Metadata only: no driver call, no gate. A stamp covers everything the stream has been given.
 fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
+    let _timed = crate::diag::T::new(6);
     if ptr == 0 {
         crate::check_process()?;
         return Ok(());
