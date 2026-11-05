@@ -5,8 +5,8 @@
 #                    with three crawling objects, each ask of which sends 64 KiB and drips, as R2's coldest do (tfs-141:
 #                    15-60 min per chunk read whole, gate 41623354412); then with sixteen, whose 16 MiB ranges come at
 #                    full speed: many write at once, and no download may hang behind them (tfs-143: gate 41823522538's
-#                    stopped for good at 1207 of 11847 MiB). Each lands, and a slowed object costs at most about one
-#                    16 MiB range at the drip rate: its ranges are read side by side (check.py)
+#                    stopped for good at 1207 of 11847 MiB). Each lands within a fixed bar of
+#                    the clean download, whatever the range size (check.py)
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
 #                    a scale of 1, as kohya's and ComfyUI's loaders apply it (10-29: the Mystic XXX LoRAs, this format,
