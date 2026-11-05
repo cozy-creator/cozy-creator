@@ -5,6 +5,7 @@ mod account;
 pub(crate) mod after;
 mod asks;
 mod author;
+pub(crate) mod checkpoints;
 mod models;
 mod orgs;
 mod packages;

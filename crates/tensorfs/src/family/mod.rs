@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use crate::format::{Component, Metadata, Value};
+use crate::format::{Component, Header, Metadata, Value};
 
 macro_rules! family {
     ($name:literal) => {
@@ -135,6 +135,88 @@ pub fn of_table(table: &str) -> Option<&'static Family> {
 /// The family a class names.
 pub fn of_class(class: &str) -> Option<&'static Family> {
     families().iter().find(|f| f.classes.iter().any(|c| c == class))
+}
+
+/// What a LoRA's tensors end in.
+pub const FACTORS: [&str; 3] = [".lora_A.weight", ".lora_B.weight", ".alpha"];
+
+/// A LoRA target's factors' shapes, A and B.
+pub type Factors<'a> = (Option<&'a [u64]>, Option<&'a [u64]>);
+
+/// A LoRA's targets, by path, from its tensors' keys and shapes.
+pub fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors<'a>> {
+    let mut targets: BTreeMap<&str, Factors> = BTreeMap::new();
+    for (key, shape) in tensors {
+        if let Some(path) = key.strip_suffix(".lora_A.weight") {
+            targets.entry(path).or_default().0 = Some(shape);
+        } else if let Some(path) = key.strip_suffix(".lora_B.weight") {
+            targets.entry(path).or_default().1 = Some(shape);
+        }
+    }
+    targets
+}
+
+/// Every family component all of `targets` fit: an adapter with no record of its family is one when that's a single one.
+pub fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family, &'static str)> {
+    (families().iter())
+        .flat_map(|f| f.components.iter().filter(|(_, d)| d.same_as.is_none()).map(move |(c, _)| (f, c.as_str())))
+        .filter(|(f, c)| !targets.is_empty() && targets.iter().all(|(path, t)| f.takes(c, path, t)))
+        .collect()
+}
+
+fn is_lora(component: &Component) -> bool {
+    component.tensors.iter().all(|t| FACTORS.iter().any(|f| t.key.ends_with(f)))
+}
+
+/// What a checkpoint is, from its header alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Facts {
+    /// It holds only a LoRA's factors, and no weights of its own.
+    pub lora: bool,
+    /// What its ingest recorded, else what its keys and shapes verify as now. Never guessed: none when neither says.
+    pub family: Option<String>,
+}
+
+impl Facts {
+    /// What `header` is; none when it holds no tensors.
+    pub fn of(header: &Header) -> Option<Facts> {
+        let (loras, bases): (Vec<&Component>, Vec<&Component>) = header.components().iter().filter(|c| !c.tensors.is_empty()).partition(|c| is_lora(c));
+        let lora = bases.is_empty();
+        if lora && loras.is_empty() {
+            return None;
+        }
+        let family = match lora {
+            true => adapted(&header.metadata, &loras),
+            false => based(header, &bases),
+        };
+        Some(Facts { lora, family })
+    }
+}
+
+/// The one family every LoRA component of a header adapts.
+fn adapted(metadata: &Metadata, loras: &[&Component]) -> Option<String> {
+    let recorded: BTreeSet<String> = Adapter::read_all(metadata).into_values().map(|adapter| adapter.family).collect();
+    let fits = |c: &&Component| fitting(&targets_of(c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())))).into_iter().map(|(family, _)| family.name.clone()).collect::<BTreeSet<_>>();
+    let mut found = match recorded.is_empty() {
+        true => loras.iter().map(fits).reduce(|held, next| &held & &next).unwrap_or_default().into_iter(),
+        false => recorded.into_iter(),
+    };
+    found.next().filter(|_| found.next().is_none())
+}
+
+/// The family a header's classes name, by the keys and shapes of what they name: a lane's text encoder is cut or scaled as it likes, and says nothing of what a
+/// checkpoint is. A class of the pipeline's alone leaves all it has of the family to say.
+fn based(header: &Header, bases: &[&Component]) -> Option<String> {
+    if let Some(record) = Record::read(&header.metadata) {
+        return Some(record.name);
+    }
+    let classes = header.pipeline().map(|p| &p.class.name).into_iter().chain(header.components().iter().map(|c| &c.class.name));
+    let family = classes.into_iter().find_map(|class| of_class(class))?;
+    let (named, rest): (Vec<&Component>, Vec<&Component>) = bases.iter().copied().filter(|c| family.def(&c.name).is_some()).partition(|c| family.classes.contains(&c.class.name));
+    let stored: Vec<Stored> = (if named.is_empty() { rest } else { named }.iter())
+        .map(|c| Stored { name: &c.name, keys: c.tensors.iter().map(|t| (t.key.as_str(), t.shape.as_slice())).collect() })
+        .collect();
+    (!stored.is_empty() && family.form_of(&stored).is_ok()).then(|| family.name.clone())
 }
 
 /// One stored component: its name and every tensor's key and logical shape.
@@ -278,6 +360,15 @@ impl Family {
         sites.chain(forms).collect()
     }
 
+    /// Whether a LoRA target at `path` fits `component`: base `[out, in, kernel…]` as A `[r, in, kernel…]` and B `[out, r, 1…]`.
+    pub fn takes(&self, component: &str, path: &str, (a, b): &Factors) -> bool {
+        let (Some(a), Some(b)) = (a, b) else { return false };
+        let at = |v: &[Option<u64>], i: usize, got: u64| v.get(i).copied().flatten().is_none_or(|w| w == got);
+        self.targets(component, path).iter().any(|want| {
+            want.len() == a.len() && a.len() == b.len() && a.len() >= 2 && at(want, 0, b[0]) && (1..a.len()).all(|i| at(want, i, a[i]))
+        })
+    }
+
     /// The component a LoRA was trained on, by its producer's declared field: `(component,
     /// "field=value")`. Never inferred from structure.
     pub fn trained_on(&self, metadata: &BTreeMap<String, String>) -> Option<(String, String)> {
@@ -350,8 +441,7 @@ impl Record {
 /// now (a lane its recipe pruned is the pruned form), or no `family` when they are no form of it.
 /// A derived lane carries its base's metadata; this keeps `family` true of what was written.
 pub fn reverify(metadata: &mut Metadata, components: &[Component]) {
-    let lora = |c: &&Component| c.tensors.iter().all(|t| [".lora_A.weight", ".lora_B.weight", ".alpha"].iter().any(|f| t.key.ends_with(f)));
-    let bases: Vec<&Component> = components.iter().filter(|c| !c.tensors.is_empty() && !lora(c)).collect();
+    let bases: Vec<&Component> = components.iter().filter(|c| !c.tensors.is_empty() && !is_lora(c)).collect();
     let Some(mut record) = Record::read(metadata).filter(|_| !bases.is_empty()) else {
         metadata.remove(FAMILY);
         return;
