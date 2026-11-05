@@ -384,6 +384,19 @@ pub fn input(call: Call) -> Result<(Map<String, Value>, Vec<String>), Error> {
             rows.resize_with((least as usize).max(rows.len()), || json!({}));
         }
     }
+    // A row's length adds up to how long the render goes on, so one left to its default is said.
+    for field in declared {
+        let (Type::List(item), Some(Value::Array(rows))) = (plain(&field.ty), input.get(&field.name)) else { continue };
+        let Type::Struct(row) = &**item else { continue };
+        for member in row.fields.iter().filter(|member| member.extra.get("total").is_some_and(|total| *total == json!(true))) {
+            let Some(default) = &member.default else { continue };
+            let unit = member.extra.get("unit").and_then(Value::as_str).map_or(String::new(), |unit| format!(" {unit}"));
+            let word = field.name.strip_suffix('s').unwrap_or(&field.name);
+            for (at, _) in rows.iter().enumerate().filter(|(_, row)| row.get(&member.name).is_none()) {
+                filling.warnings.push(format!("{name}'s {word} {} has no {}: it lasts {default}{unit}", at + 1, member.name));
+            }
+        }
+    }
     filling.warnings.extend(conform(name, &callable.request, &mut input));
     let reads_field = |written: &str| declared.iter().any(|field| field.name == written) || (written == tool::TEXT && text.is_some());
     let mut warnings = filling.warnings;
