@@ -1,10 +1,13 @@
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
+import { DRAGGED_FILE } from "./drag"
 import { Thumb } from "./Media"
 import { shownOf } from "./shown"
 import { mentionsIn, withMentions } from "./text"
+import { isSelf, mentionFrom, NO_BARE_SELF, versionIn } from "./versions"
 
 function chip(name: string, missing: boolean): HTMLElement {
   const el = document.createElement("span")
@@ -12,7 +15,7 @@ function chip(name: string, missing: boolean): HTMLElement {
   el.contentEditable = "false"
   el.dataset.mention = name
   el.textContent = name
-  el.title = missing ? `${name} is no longer here` : name
+  el.title = !missing ? name : isSelf(name) ? NO_BARE_SELF : `${name} is no longer here`
   return el
 }
 
@@ -232,6 +235,23 @@ export function MentionText({
     }
   }
 
+  // What's copied is what the file holds, so a name keeps its brackets.
+  const copy = (event: ClipboardEvent) => {
+    const selection = document.getSelection()
+    if (!selection?.rangeCount || selection.isCollapsed) return
+    const held = document.createElement("div")
+    held.append(selection.getRangeAt(0).cloneContents())
+    event.clipboardData.setData("text/plain", read(held))
+    event.preventDefault()
+  }
+
+  const cut = (event: ClipboardEvent) => {
+    copy(event)
+    if (!event.defaultPrevented) return
+    document.getSelection()?.getRangeAt(0).deleteContents()
+    emit()
+  }
+
   const paste = (event: ClipboardEvent) => {
     event.preventDefault()
     const selection = document.getSelection()
@@ -263,6 +283,8 @@ export function MentionText({
           look()
         }}
         onKeyDown={keys}
+        onCopy={copy}
+        onCut={cut}
         onPaste={paste}
         onDragOver={(event) => {
           if (event.dataTransfer.types.includes(DRAGGED_FILE)) event.preventDefault()
@@ -289,10 +311,11 @@ export function MentionText({
   )
 }
 
-function MentionThumb({ name }: { name: string }) {
+function MentionThumb({ name, asset }: { name: string; asset: string }) {
   const store = useCanvasStore()
-  const view = useElement(store.nameOf(name) ?? name)
-  const shown = view && shownOf(view)
+  const said = store.mentionOf(name, asset)
+  const view = useElement(said?.name ?? name)
+  const shown = said?.number && view?.asset?.prefixes?.length ? versionIn(view.asset, said.number)?.main : view && shownOf(view)
   if (!shown || shown.absent || shown.field === "audio") return null
   return (
     <span className="mention-thumb" title={name}>
@@ -308,7 +331,7 @@ function MentionThumbs({ text, besides }: { text: string; besides: string }) {
   return (
     <div className="mention-thumbs">
       {mentioned.map((name) => (
-        <MentionThumb key={name} name={name} />
+        <MentionThumb key={name} name={name} asset={besides} />
       ))}
     </div>
   )
