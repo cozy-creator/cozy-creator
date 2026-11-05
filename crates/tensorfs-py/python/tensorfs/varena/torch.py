@@ -363,6 +363,12 @@ def capture_complete(pool: PoolId, *, stream: Stream, device: DeviceLike = None)
         _ext._varena_working_capture_complete(index, cast(PoolId, tuple(pool)))
 
 
+def pool_short(pool: PoolId, device: DeviceLike = None) -> int:
+    """The largest allocation the pool's last capture had no room for, 0 when none."""
+    _installed()
+    return _ext._varena_working_pool_short(_device(device), cast(PoolId, tuple(pool)))
+
+
 def record_pool_stream(pool: PoolId, stream: Stream, device: DeviceLike = None) -> None:
     """After a replay's output use has been submitted on this stream: this use is over."""
     _installed()

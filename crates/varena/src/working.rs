@@ -281,6 +281,8 @@ struct Pool {
     // Streams whose library workspaces Torch already holds for this capture (`pool_arm`): an
     // allocation there is ordinary whatever its size.
     primed: BTreeSet<u64>,
+    // The largest allocation this capture's pool had no room for (`pool_short`).
+    short: usize,
     waits: Waits,
 }
 
@@ -1395,6 +1397,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 return Ok(Device::activate(&mut state, ptr, bytes));
             }
             state.stats.ooms += 1;
+            let session = state.pools.get_mut(&id).expect("routed pool");
+            session.short = session.short.max(bytes);
             return Err(Error::OutOfMemory {
                 requested_bytes: bytes,
             });
@@ -2291,12 +2295,19 @@ pub fn pool_arm(device: i32, id: PoolId, primed: &[u64]) -> Result<()> {
         let session = state.pools.entry(id).or_default();
         session.armed = true;
         session.primed = primed.iter().copied().collect();
+        session.short = 0;
         if Device::free_block(&state, AUXILIARY_CLASS).is_none() {
             let mapped = owner.map(&mut state, owner.page(), None, AUXILIARY_CLASS);
             mapped.map_err(|failure| owner.fail_allocation(&mut state, failure))?;
         }
         Ok(())
     })
+}
+
+/// The largest allocation the pool's last capture had no room for, 0 when none: what its next
+/// reservation adds.
+pub fn pool_short(device: i32, id: PoolId) -> Result<usize> {
+    Ok(owner(device)?.lock()?.pools.get(&id).map_or(0, |pool| pool.short))
 }
 
 // Pages for every segment of this pool that has none. Returns the pool's total bytes.
