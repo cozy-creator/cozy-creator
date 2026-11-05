@@ -26,7 +26,7 @@ const WINDOW: usize = 64 << 20;
 pub(super) struct Page {
     ptr: *mut u8,
     len: usize,
-    pins: Vec<HostPin>,
+    pins: Mutex<Vec<HostPin>>,
 }
 // SAFETY: an owned allocation; its pin is a registration handle used with its context entered.
 unsafe impl Send for Page {}
@@ -43,7 +43,7 @@ impl Page {
         if ptr.is_null() {
             return Err(PyRuntimeError::new_err("host page allocation failed"));
         }
-        Ok(Self { ptr, len, pins: Vec::new() })
+        Ok(Self { ptr, len, pins: Mutex::default() })
     }
     pub(super) fn ptr(&self) -> *mut u8 {
         self.ptr
@@ -55,19 +55,23 @@ impl Page {
     pub(super) fn windows(&self) -> impl Iterator<Item = (usize, usize)> + use<'_> {
         (0..self.len).step_by(WINDOW).map(|at| (at, WINDOW.min(self.len - at)))
     }
-    fn registered(&self) -> bool {
-        self.pins.len() * WINDOW >= self.len
+    fn pins(&self) -> MutexGuard<'_, Vec<HostPin>> {
+        self.pins.lock().unwrap_or_else(|e| e.into_inner())
     }
-    fn register_window(&mut self, device: i32) -> Result<(), tensorfs::io::cuda::Error> {
-        let (at, len) = self.windows().nth(self.pins.len()).expect("a window left to register");
+    fn registered(&self) -> bool {
+        self.pins().len() * WINDOW >= self.len
+    }
+    fn register_window(&self, device: i32) -> Result<(), tensorfs::io::cuda::Error> {
+        let mut pins = self.pins();
+        let (at, len) = self.windows().nth(pins.len()).expect("a window left to register");
         // SAFETY: inside this page, which outlives its pins: `Drop` releases them first.
-        self.pins.push(unsafe { tensorfs::io::register(device, self.ptr.add(at), len) }?);
+        pins.push(unsafe { tensorfs::io::register(device, self.ptr.add(at), len) }?);
         Ok(())
     }
 }
 impl Drop for Page {
     fn drop(&mut self) {
-        for pin in &mut self.pins {
+        for pin in self.pins.get_mut().unwrap_or_else(|e| e.into_inner()) {
             if pin.release().is_err() {
                 return; // The driver may still touch it: it stays, with its registrations.
             }
@@ -121,6 +125,8 @@ struct State {
     /// Pages to keep behind `use`, and whether a thread is keeping them.
     behind: VecDeque<Behind>,
     keeping: bool,
+    /// Kept pages not yet registered: `pin_idle` registers them.
+    unregistered: Vec<String>,
     /// A wanted page read whole when a command arrived: it registers at the next idle.
     filled: Option<(String, String, Page)>,
     refills: HashMap<String, u64>,
@@ -286,14 +292,9 @@ impl Tier {
         if !admitted {
             return Ok(None);
         }
-        let mut page = Page::new(len)?;
-        while !page.registered() {
-            if let Err(error) = page.register_window(self.device) {
-                self.state().off = Some(error.to_string());
-                return Ok(None);
-            }
-        }
-        Ok(Some(page))
+        // Registered at idle (`pin_idle`): registering beside a request held its launches back,
+        // 7.5 s of H3's first step on an A40 (runs 33275, 33352).
+        Ok(Some(Page::new(len)?))
     }
 
     /// Keep `region`'s bytes as `key` behind the thread that called `use`: first touching 21 GB of
@@ -339,6 +340,7 @@ impl Tier {
         drop(unsafe { pin.into_completed_region() });
         if copied.is_ok() {
             self.insert(&job.key, &job.set, page);
+            self.state().unregistered.push(job.key);
         }
     }
 
@@ -389,7 +391,7 @@ impl Tier {
 
     fn pending(&self) -> bool {
         let state = self.state();
-        state.off.is_none() && (state.filled.is_some() || state.wanted.values().any(|wanted| {
+        state.off.is_none() && (state.filled.is_some() || !state.unregistered.is_empty() || state.wanted.values().any(|wanted| {
             wanted.region.upgrade().is_some_and(|region| !region.holds_contents())
         }))
     }
@@ -401,7 +403,7 @@ impl Tier {
         &self,
         py: Python<'_>,
         waiting: &impl Fn() -> PyResult<bool>,
-        (key, set, mut page): (String, String, Page),
+        (key, set, page): (String, String, Page),
     ) -> PyResult<bool> {
         while !page.registered() {
             if waiting()? {
@@ -421,6 +423,19 @@ impl Tier {
     /// and registered once filled, window by window. The page refilled most per request goes first.
     fn pin_idle(&self, py: Python<'_>, waiting: &Bound<'_, PyAny>) -> PyResult<()> {
         let is_waiting = || -> PyResult<bool> { waiting.call0()?.is_truthy() };
+        while let Some(key) = self.state().unregistered.last().cloned() {
+            let page = self.state().kept.get(&key).map(|kept| kept.page.clone());
+            while let Some(page) = page.as_ref().filter(|page| !page.registered()) {
+                if is_waiting()? {
+                    return Ok(());
+                }
+                if let Err(error) = py.detach(|| page.register_window(self.device)) {
+                    self.state().off = Some(error.to_string());
+                    return Ok(());
+                }
+            }
+            self.state().unregistered.retain(|other| *other != key);
+        }
         let filled = self.state().filled.take();
         if let Some(filled) = filled {
             if !self.register(py, &is_waiting, filled)? {
