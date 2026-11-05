@@ -447,7 +447,10 @@ impl Live {
         job.stage = (!progress.stage.is_empty()).then(|| words(&progress.stage));
         job.detail = detail(progress);
         job.fraction = progress.done_fraction;
-        job.stalled = None;
+        // A move since it stopped clears it; the progress a run's record carries is from before.
+        if job.stalled.as_ref().is_some_and(|stalled| progress.at_ms > stalled.since_ms) {
+            job.stalled = None;
+        }
         let at = (job.stage.clone(), job.detail.clone());
         if let Some((landed, _)) = self.landed.take_if(|(_, then)| *then != at) {
             job.preview = Some(landed);

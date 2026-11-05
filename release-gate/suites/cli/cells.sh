@@ -155,8 +155,9 @@ stall_cell() {
   rm -rf "$S"; "$CLI" project new "$S" > stall-new.log 2>&1 || { cli_fail "stall: project new: $(tail -c 300 stall-new.log)"; return; }
   printf 'version: 3\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    prompt: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S/project.yaml"
   "$CLI" project -p "$S" render held --on "$M" --queue > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
-  ( "$CLI" project -p "$S" wait > stall-wait.log 2>&1; echo $? > stall-wait.exit ) & waiting=$!
-  ( "$CLI" --json run -p "$S" "$e2e/weightless/silent" seconds:=1200 --on "$M" > stall-run.ndjson 2> stall-run.err; echo $? > stall-run.exit ) & running=$!
+  # Each exit kept whether or not the shell stops at a command that fails (`set -e`).
+  ( code=0; "$CLI" project -p "$S" wait > stall-wait.log 2>&1 || code=$?; echo "$code" > stall-wait.exit ) & waiting=$!
+  ( code=0; "$CLI" --json run -p "$S" "$e2e/weightless/silent" seconds:=1200 --on "$M" > stall-run.ndjson 2> stall-run.err || code=$?; echo "$code" > stall-run.exit ) & running=$!
   wait "$waiting" "$running"
   [ "$(cat stall-wait.exit)" = 4 ] || cli_fail "stall: project wait exited $(cat stall-wait.exit), not 4: $(tail -c 300 stall-wait.log)"
   grep -q 'cozy project cancel held' stall-wait.log || cli_fail "stall: wait didn't say how to end it: $(tail -c 300 stall-wait.log)"
