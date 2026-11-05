@@ -4,6 +4,9 @@ which holds each request and response to that document. This is the one place in
 Hub by hand: it is the contract test, for the paths no cozy verb reaches as a person uses it (cells.sh drives the rest
 through `cozy`). Prints `check<TAB>PASS|FAIL<TAB>what` rows for expect.
     contract.py <hub> paths
+    contract.py <hub> paths-empty                             a fresh Hub (tensorhub's contract.yaml): a path that names a
+                                                              package, model, SKU or distribution may answer 404, since
+                                                              an empty Hub has none; hubcheck still holds its body
     contract.py <hub> yanked <org> <distribution> <version>   the simple index marks it data-yanked"""
 import re
 import sys
@@ -34,7 +37,7 @@ def get(path):
         return e.code, e.headers.get('content-type', ''), e.read()
 
 
-if MODE == 'paths':
+if MODE in ('paths', 'paths-empty'):
     spec = yaml.safe_load(get('/openapi.yaml')[2])
     for template, args in PATHS:
         path = template.format(**args)
@@ -46,6 +49,9 @@ if MODE == 'paths':
         security = op.get('security')
         if security and not any(not s for s in security):  # bearer only: an anonymous caller is refused
             row(f'hub {path}', status == 401, f'{status} to an anonymous caller (its contract: bearer only)')
+            continue
+        if MODE == 'paths-empty' and status == 404 and args:
+            row(f'hub {path}', True, f'404 on an empty Hub, which has no {template.rsplit("/", 2)[-2] if template.endswith("/") else template.rsplit("/", 1)[0]}')
             continue
         row(f'hub {path}', status == 200, f'{status} {ctype} ({len(body)} bytes)' if status == 200 else f'{status}: {body[:200]!r}')
 elif MODE == 'yanked':
