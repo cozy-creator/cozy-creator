@@ -310,6 +310,7 @@ pub(crate) fn acquire<T>(
     protect: Protect<'_>,
     mut try_map: impl FnMut() -> AllocationResult<T>,
 ) -> Result<T> {
+    let _timed = crate::diag::T::new(12);
     let mut sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
     let mut floor = 2usize << 20;
     loop {
@@ -390,6 +391,7 @@ pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
 /// into room already free, and so does `free_only`: a fill past the one a use asked for. False
 /// declines with no IO and no waiting.
 pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
+    let _timed = crate::diag::T::new(13);
     let Some((gap, reusable, known)) = working::prefetch_gap(device)? else {
         return Ok(false);
     };

@@ -11,6 +11,7 @@
 #![deny(unsafe_code)]
 
 mod cuda;
+mod diag;
 mod fence;
 pub(crate) mod reclaim;
 pub use reclaim::set_host_lock_probe;
@@ -512,10 +513,12 @@ impl Device {
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, State>> {
+        let waited = crate::diag::T::new(0);
         let state = self
             .state
             .lock()
             .map_err(|_| Error::Poisoned("device table mutex".into()))?;
+        drop(waited);
         if let Some(reason) = &state.poison {
             return Err(Error::Poisoned(reason.clone()));
         }
@@ -865,7 +868,9 @@ impl Gate {
 
 pub(crate) fn gate(ordinal: i32) -> Result<Gate> {
     let device = gpu(ordinal)?;
+    let waited = crate::diag::T::new(1);
     let held = device.gate.lock().map_err(|_| Error::Poisoned("device gate mutex".into()))?;
+    drop(waited);
     Ok(Gate { device, _held: held })
 }
 
@@ -1116,6 +1121,7 @@ impl Region {
     /// `consumer` is live in this primary context and reads nothing before this returns.
     #[allow(unsafe_code)]
     pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
+        let _timed = crate::diag::T::new(11);
         let pin = loop {
             // SAFETY: this method's own contract.
             match unsafe { self.prepare_on(consumer) } {
