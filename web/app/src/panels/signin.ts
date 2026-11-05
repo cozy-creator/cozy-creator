@@ -35,8 +35,11 @@ export function signInClient(client: Client) {
     const proving = path === "/passwordless/confirm"
     try {
       if (path === "/passwordless/start") {
-        sent.set(ask.identifier, (await client.sendCode("sign_in", ask.identifier)).id)
-        return reply(204)
+        const out = await client.sendCode("sign_in", ask.identifier)
+        sent.set(ask.identifier, out.id)
+        if (out.retry_after_s === undefined) return reply(204)
+        const metadata = { retry_after_seconds: out.retry_after_s }
+        return reply(429, { error: { type: "", code: "rate_limited", message: "Too soon.", metadata } }, out.retry_after_s)
       }
       if (proving) {
         const id = sent.get(ask.identifier)

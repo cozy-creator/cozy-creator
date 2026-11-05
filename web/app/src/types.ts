@@ -667,6 +667,7 @@ export interface Account {
 export interface Code {
   id: string
   email: string
+  retry_after_s?: number
 }
 
 export type Proven = ({ purpose: "sign_in" } & Account) | { purpose: "export" } | ({ purpose: "sign_out_everywhere" } & SignedOutAnswer)
