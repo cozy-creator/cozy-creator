@@ -133,9 +133,10 @@ class Run:
                     ms += st['first_ms']
         began = end - series[0][1]
         native = [row.get('stats') or {} for row in ((m.get('memory') or {}).get('stats') or {}).get('varena') or []]
-        ms = max(ms, sum(fill.get('ns', 0) for row in native for fill in row.get('trace') or [] if began <= fill.get('at_unix_ms', 0) <= end) / 1e6)
+        # A group's GPUs ready their weights at once: the slowest one's time, not their sum (cr-261).
+        ms = max(ms, max((sum(fill.get('ns', 0) for fill in row.get('trace') or [] if began <= fill.get('at_unix_ms', 0) <= end) for row in native), default=0) / 1e6)
         ms += sum(built.get('prepare_ms', 0) for built in ((m.get('execution') or {}).get('on_demand') or {}).values() if began <= built.get('prepared_unix_ms', 0) <= end)
-        ms += sum(((row.get('moved') or {}).get('bake') or {}).get('device_ns', 0) for row in native) / 1e6
+        ms += max((((row.get('moved') or {}).get('bake') or {}).get('device_ns', 0) for row in native), default=0) / 1e6
         return min(ms, series[0][1])
 
     def stage_ms(self, name):

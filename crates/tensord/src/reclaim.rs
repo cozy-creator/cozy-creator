@@ -13,7 +13,9 @@
 //! writes are skipped on a low disk. Never evicted: result copies a client hasn't read (durable
 //! outputs), an output a run is using or was read within `IDLE`, the same TTL for the rest,
 //! journal rows, a generation a run holds or an installation names, a uv entry an environment
-//! links, a kernel namespace a live executor or kernel boot holds. Each sweep logs what it
+//! links, a kernel namespace a live executor or kernel boot holds. A run's held output isn't
+//! among these: a machine doesn't track what a client has collected, so on a disk still low
+//! after everything else, one nothing used for `IDLE` goes, read or not. Each sweep logs what it
 //! freed and its bytes; what fills the disk by kind is measured with each sweep and whenever
 //! the disk moves (`usage`).
 use crate::{catalog::Catalog, execution::Engine};

@@ -641,9 +641,11 @@ impl Runs {
             let named = crate::published::choose(choice, &choice.parameter)
                 .map_err(|(code, message)| refused(code, message))?;
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
-            let stage = format!("downloading {}", choice.repository);
+            let (stage, saving) = (format!("downloading {}", choice.repository), format!("saving {}", choice.repository));
             let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, &spec.catalog_revision, structure, stop, &|done, total| {
-                observe(&stage, done, total)
+                // Every byte is here (a total this small is still only the header's): what is left is the disk's,
+                // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
+                observe(if total >= 1 << 20 && done >= total { &saving } else { &stage }, done, total)
             })?;
             for reason in &named.reasons {
                 let warning = format!("{}: {reason}", named.repository);

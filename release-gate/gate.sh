@@ -30,7 +30,7 @@ fi
 HERE=$2; shift 2
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30
 BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -102,14 +102,20 @@ I=$(( $(date +%s) / 60 + $(cksum <<< "$SKU" | cut -d' ' -f1) ))
 IFS=$'\t' read -r NAME CHAR MOTION OBJECT SCENE <<< "${ROWS[$((I % ${#ROWS[@]}))]}"
 R=$(( $(date +%s%N) / 1000 % 4000000000 ))
 M= RID= RP= KEEP= AQ=
+# The machine's own logs as they stand. A pod that's gone can't answer, so what was last saved stays.
+save_machine_logs() {
+  local log
+  for log in memory tensord; do
+    if timeout 60 "$CLI" machine logs "$M" "$log" -n 0 >"machine-$log.log.new" 2>&1; then mv -f "machine-$log.log.new" "machine-$log.log"; else rm -f "machine-$log.log.new"; fi
+  done
+}
 end_it() {
   [ -z "$KEEP" ] || kill "$KEEP" 2>/dev/null
   [ -z "$AQ" ] || kill "$AQ" 2>/dev/null
   [ -z "$RP" ] || kill "$RP" 2>/dev/null  # the boot's follower only: the order is ended below
   if [ -n "$M" ]; then
     # The machine's own logs leave with it: keep them for every gate (a poisoned executor is diagnosed from them).
-    "$CLI" machine logs "$M" memory -n 0 >machine-memory.log 2>&1
-    "$CLI" machine logs "$M" tensord -n 0 >machine-tensord.log 2>&1
+    save_machine_logs
     "$CLI" --json machine show "$M" >machine-end.json 2>/dev/null
     if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
   fi
@@ -221,8 +227,8 @@ PY
 # rented <machine>: its rental id into RID and `rental`, which end_it and the workflow's cleanup end.
 rented() { RID=$("$CLI" --json machine show "$1" 2>/dev/null | jq -r '.rental_id // empty'); [ -z "$RID" ] || echo "$RID" > rental; }
 if [ -z "$ON" ]; then
-  # Suite tensorfs's `kill` case kills the rental's TensorD over SSH (tfs_kill), and suite tensord measures the pod's link
-  # over it, with this computer's key, or a new one on a runner. A tensorfs --only without `kill` rents with no SSH.
+  # Suite tensorfs's `kill` case kills the rental's TensorD (kill-at.sh, put there over SSH), and suite tensord measures the
+  # pod's link over it, with this computer's key, or a new one on a runner. A tensorfs --only without `kill` rents with no SSH.
   SSH=
   if [[ ,$SUITES, == *,tensord,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; }; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
@@ -239,6 +245,13 @@ if [ -z "$ON" ]; then
     [ -z "$RID" ] || { acquisition "$RID" & AQ=$!; }
     wait "$RP"; rc=$? RP=
     [ -z "$AQ" ] || { kill "$AQ" 2>/dev/null; wait "$AQ" 2>/dev/null; AQ=; }
+    # A boot that never starts is released unbilled (th-358: `cpu` with SSH, often): a new order may place elsewhere.
+    if [ "$rc" != 0 ] && grep -q boot_idle rent.err && [ "$order" -lt "$REORDERS" ]; then
+      log "order $order ended boot_idle, nothing billed: ordering again"
+      cat rent.err >> rent-orders.err
+      RID= first=; rm -f acquisition.jsonl rental
+      continue
+    fi
     [ -s acquisition.repriced ] || break
     log "order $order, $(head -n 1 rent.err), is under the market: $(grep -oE 'waiting for an offer.*' acquisition.repriced)"
     cat rent.err >> rent-orders.err
@@ -259,29 +272,45 @@ log "${ON:+on }${ON:-rented} $M"
 # hold: every 240 s while this gate lives (a killed gate's loop ends at its next look), the runs' own clock decides.
 # A move within --stall minutes restarts the rental's 15-minute idle clock, which the gate's work between runs needs
 # (fetches, uploads, analysis). No move that long with a run open is a hung cell (the longest quiet in 786 real cells was
-# 7.2 min): its runs are canceled, and the gate fails and ends the rental. With none open, nothing renews.
+# 7.2 min): its runs are canceled, and the gate fails and ends the rental. With none open, nothing renews. So does a
+# listing that hasn't answered for that long, and a run that has said it stands in one place for STALL_STAGE minutes: a run
+# whose every event moves the clock can crawl inside one stage until the job's cap (41904557331, 54 min at decode_video).
 # beat: the gate's newest line as a commit status: off the runner, nothing else shows a gate's cells (a running job's log
 # isn't served, and its pod answers only the runner's Calcifer).
 beat() {
   [ -n "${GITHUB_RUN_ID:-}" ] || return 0
   gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="gate/$GITHUB_RUN_ID/$SKU" \
-    -f description="$(tail -n 1 gate.log | cut -c1-135)" > /dev/null 2>&1 || true
+    -f description="$(printf '%s | %s' "$(tail -n 1 gate.log | cut -c1-70)" "$(paste -sd';' <<< "$1" | cut -c1-60)")" > /dev/null 2>&1 || true
 }
 hold() {
-  local clock at active seen= moved=$SECONDS
+  local clock at active seen= moved=$SECONDS stands stood= still=$SECONDS why
   while sleep 240 && kill -0 $$ 2> /dev/null; do
-    beat
-    clock=$(run_clock "$M" "$CLI") || continue
-    read -r at active <<< "$clock"
-    [ "$at" = "$seen" ] || { seen=$at moved=$SECONDS; }
-    if (( SECONDS - moved < STALL * 60 )); then
-      [ -n "$ON" ] || "$CLI" machine keepalive "$M" > /dev/null 2>&1
+    stands=$(run_stands "$M" "$CLI")
+    [ -n "$ON" ] || save_machine_logs
+    beat "$stands"
+    [ "$stands" = "$stood" ] || { stood=$stands still=$SECONDS; }
+    why=
+    if clock=$(run_clock "$M" "$CLI"); then
+      read -r at active <<< "$clock"
+      [ "$at" = "$seen" ] || { seen=$at moved=$SECONDS; }
+      if (( SECONDS - moved >= STALL * 60 )); then why="no run on $M moved for $(( (SECONDS - moved) / 60 )) min"
+      elif [ -n "$stands" ] && (( SECONDS - still >= STALL_STAGE * 60 )); then why="a run on $M stood for $(( (SECONDS - still) / 60 )) min at: $(paste -sd';' <<< "$stands" | cut -c1-120)"
+      else
+        [ -n "$ON" ] || "$CLI" machine keepalive "$M" > /dev/null 2>&1
+        continue
+      fi
+    elif (( SECONDS - moved >= STALL * 60 )); then why="no listing of $M's runs answered for $(( (SECONDS - moved) / 60 )) min"; active=
+      printf 'FAIL hung: %s\nVERDICT FAIL (hung)\n' "$why" | tee verdict.txt
+      expect cell-progress FAIL "$why"
+      kill -TERM $$
+      return
+    else
       continue
     fi
     # On a machine it did not rent, only its own runs (each cell's <name>.number).
     [ -z "$ON" ] || active=$(find "$OUT" -name '*.number' -exec cat {} + | grep -xF -f <(tr ' ' '\n' <<< "$active") | paste -sd' ')
     [ -n "$active" ] || continue
-    local why="no run on $M moved for $(( (SECONDS - moved) / 60 )) min; canceled $active"
+    why="$why; canceled $active"
     expect cell-progress FAIL "$why"
     for at in $active; do "$CLI" run cancel "$at" > /dev/null 2>&1; done
     printf 'FAIL hung: %s\nVERDICT FAIL (hung)\n' "$why" | tee verdict.txt
@@ -332,6 +361,7 @@ jq -n --arg label "$LABEL" --arg cozy "${TDF:+$v}" --arg runtime "${RWF:+$rt}" -
   --arg tensorfs_sha256 "$(digest "$TWF")" --arg pins "${PINS//,/ }" --arg packages_ref "${PKGS:+$(git -C "$PKGS" rev-parse HEAD)}" \
   -S '$ARGS.named | .pins |= (split(" ") | map(select(. != "")) | sort)' > candidate.json
 printf '%s\n' ${SUITES//,/ } > suites
+printf '%s\n' ${ONLY//,/ } > only  # what --only chose, for a suite's check.py (empty: everything)
 for s in ${SUITES//,/ }; do . "$HERE/suites/$s/cells.sh"; done
 # More cells (`--cells FILE`): `name<TAB>target<TAB>args`, args expanded here ($SCENE, $CHAR, $R, $K, $M, $CLI ...).
 for f in "${EXTRA[@]}"; do

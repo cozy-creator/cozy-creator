@@ -2273,7 +2273,6 @@ struct Missed {
 /// How often a walk with no network looks again.
 const OFFLINE: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// A version listed with files on their way here.
 /// A run followed to its end: its key, the asset, inputs and number it was a try at if it was still owed, and what landing it came to.
 struct Followed {
     key: String,
