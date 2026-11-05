@@ -175,7 +175,7 @@ def check(gate):
             against(case, sl['seconds'], c['bytes'], f'download with {what}')
     # Arms that must land: through one 5 MB/s link for every request (run 31103: the old downloader moved nothing for good
     # on one), with every object's partial held by another process (gate 41991226171: IO_FAILED, Bad file descriptor), and
-    # through a 3 s burst of 503s once the ramp has settled (run 32321: one request left, held by nothing to start).
+    # through 8 s of 503s once the ramp has settled (run 32321: one request left, held by nothing to start).
     for name, what in (('straggler-link', 'through a 5 MB/s link'), ('straggler-held', "with every object's partial held elsewhere"),
                        ('straggler-burst', 'through a burst of 503s')):
         sl = st.get(name)

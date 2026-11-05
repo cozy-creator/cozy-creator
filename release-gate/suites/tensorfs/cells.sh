@@ -14,7 +14,7 @@
 #                    to a temp it could not read back): it must land. Then with one small ask's socket held silent
 #                    after half its body (straggler-silent; run 32321 sat 16 min on its last two chunks): it must land
 #                    within 60 s, asked again. Then new random weights from origin.py through a 40 MB/s link, every
-#                    storage ask answered 503 for 3 s once the ramp has settled (straggler-burst; R2 sent 13 near run
+#                    storage ask answered 503 for 8 s once the ramp has settled (straggler-burst; R2 sent 13 near run
 #                    32321's end, which left one request held by nothing to start): it must land
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
 #                    tensors whose kohya metadata says ss_network_alpha 420 at rank 4: its committed `lora_alpha` must be r,
@@ -119,7 +119,8 @@ tfs_straggler() {
   kill "$pid"; wait "$pid" 2>/dev/null || true  # the proxy ends on TERM
 }
 # tfs_burst <name>: `tfs download` of new random weights, 24 objects of 40 MiB (three ranges each), from origin.py through
-# one 40 MB/s link, every storage ask answered 503 from 8 s to 11 s, after the ramp has settled.
+# one 40 MB/s link, every storage ask answered 503 from 8 s to 16 s, after the ramp has settled: enough halvings to reach
+# the floor.
 tfs_burst() {
   local port pid tree
   rm -rf "$T/$1-origin"
@@ -134,7 +135,7 @@ PY
     --name local/burst | python3 -c 'import json, sys; print(json.load(sys.stdin)["tree"]["sha256"])')
   rm -f "$T/$1.safetensors"
   port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-  python3 -I "$HERE/suites/tensorfs/origin.py" "$port" "$T/$1-origin" "$T/$1.proxy" 40000000 8 11 & pid=$!
+  python3 -I "$HERE/suites/tensorfs/origin.py" "$port" "$T/$1-origin" "$T/$1.proxy" 40000000 8 16 & pid=$!
   tfs_fetch "$1" "$port" "sha256:$tree"
   kill "$pid"; wait "$pid" 2>/dev/null || true
   rm -rf "$T/$1-origin"
