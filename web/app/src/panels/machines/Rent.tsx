@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { useEffect, useRef, useState } from "react"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { rentalSkusQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
@@ -32,13 +32,17 @@ function saveKey(key: string) {
 }
 
 /** Its price is what we charge for its GPUs an hour. Nothing about its disk or traffic is a renter's. */
-function Sku({ sku, disabled, onPick }: { sku: RentalSku; disabled: boolean; onPick: (sku: RentalSku, gpus: number) => void }) {
-  const [gpus, setGpus] = useState(sku.widths[0]?.accelerator_count ?? 1)
+function Sku({ sku, disabled, chosen, onPick }: { sku: RentalSku; disabled: boolean; chosen?: number; onPick: (sku: RentalSku, gpus: number) => void }) {
+  const [gpus, setGpus] = useState(chosen ?? sku.widths[0]?.accelerator_count ?? 1)
+  const row = useRef<HTMLLIElement>(null)
+  useEffect(() => {
+    if (chosen !== undefined) row.current?.scrollIntoView({ block: "nearest" })
+  }, [chosen])
   const width = sku.widths.find((candidate) => candidate.accelerator_count === gpus) ?? sku.widths[0]
   if (!width) return null
   const cpu = !sku.vram_gb
   return (
-    <li className="sku">
+    <li ref={row} className={`sku ${chosen !== undefined ? "chosen" : ""}`} aria-current={chosen !== undefined || undefined}>
       <b>{sku.name}</b>
       <small>
         {cpu ? `${width.vcpu_count ?? "?"} vCPU, no GPU` : `${sku.accelerator_model} · ${sku.vram_gb} GB`}
@@ -145,12 +149,21 @@ export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: bo
   const asking = now.state === "placing" || now.state === "uncertain" || now.state === "quoting"
   const key = sshKey.trim()
   const badKey = key.includes("PRIVATE KEY") || /[\r\n]/.test(key)
+  // A render asked for this one: it's chosen, and signed in its price is asked, which rents nothing.
+  const [search] = useSearchParams()
+  const wanted = search.get("rent")
+  const wantedGpus = Number(search.get("gpus")) || 1
+  const chosen = skus?.find((sku) => sku.name === wanted)
 
   const pick = (sku: RentalSku, gpus: number) => {
     saveKey(badKey ? "" : key)
     // As the CLI: one GPU, or none on the CPU product, is what naming no count asks for.
     void quote(client, { sku: sku.name, gpus: gpus > 1 ? gpus : undefined, ssh_key: key && !badKey ? key : undefined })
   }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once for each one a render asks for
+  useEffect(() => {
+    if (chosen && signedIn && !asking) pick(chosen, wantedGpus)
+  }, [chosen?.name, wantedGpus, signedIn])
 
   return (
     <Section title="Rent a machine">
@@ -165,7 +178,7 @@ export function Rent({ machines, signedIn }: { machines: Machine[]; signedIn: bo
       <Failure error={error} lead="The Hub didn't list its machines" />
       <ul className="rows">
         {skus?.map((sku) => (
-          <Sku key={sku.name} sku={sku} disabled={asking || !signedIn} onPick={pick} />
+          <Sku key={sku.name} sku={sku} disabled={asking || !signedIn} chosen={sku === chosen ? wantedGpus : undefined} onPick={pick} />
         ))}
       </ul>
       {skus && !skus.length && <p className="muted">No machine is for rent on this Hub right now.</p>}

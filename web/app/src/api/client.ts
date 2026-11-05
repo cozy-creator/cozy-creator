@@ -8,6 +8,7 @@ import type {
   Canvas,
   Code,
   Ended,
+  Fit,
   ErrorBody,
   Held,
   Import,
@@ -293,6 +294,16 @@ export class Client {
   /** A new version of each of `names`, on these machines. A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
   render(id: string, names: string[], on: string[], key: string, also: { pickup?: Pickup; outdated?: boolean } = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
+  }
+
+  /** What a render of `names` on this computer alone would do poorly, a line a tool. */
+  fit(id: string, names: string[], outdated = false): Promise<Fit> {
+    return this.write("POST", `${project(id)}/fit`, { names, outdated })
+  }
+
+  /** The same, each tool kept as rendered here, so nothing asks again. */
+  renderHere(id: string, names: string[], outdated = false): Promise<Fit> {
+    return this.write("POST", `${project(id)}/fit/here`, { names, outdated })
   }
 
   /** A tool dropped on the canvas. */

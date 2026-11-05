@@ -20,6 +20,7 @@ import { aspectOf, faceOf, madeHere, makes, shownOf } from "./shown"
 import { noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
+import { Asking } from "./Asking"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
 const WIDEST = 1600
@@ -397,6 +398,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   const asset = view.asset
   if (!asset) return null
   const askable = Boolean(asset.tool)
+  if (view.asking) return <Asking name={name} fit={view.asking.fit} />
   if (view.waiting) {
     return (
       <div className="status mak">

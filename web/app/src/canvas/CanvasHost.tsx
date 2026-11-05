@@ -24,6 +24,7 @@ import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
+import { Asking } from "./Asking"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
@@ -197,12 +198,14 @@ function RenderAll({ id }: { id: string }) {
   const fresh = assets.filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
   const late = assets.filter((asset) => asset.pinned && asset.tool && asset.standing === "out_of_date").length
   const also = outdated && late > 0
+  const asking = useSignal(store.allAsking)
   if (!fresh && !late) return null
   return (
     <span className="render-all">
       <button type="button" className="tb primary" onClick={() => store.runAll(also)}>
         Render all {fresh + (also ? late : 0)}
       </button>
+      {asking && <Asking fit={asking.fit} all />}
       {late > 0 && (
         <label>
           <input type="checkbox" checked={outdated} onChange={(event) => setOutdated(event.target.checked)} />
@@ -395,6 +398,10 @@ function Canvas({
       if (store.projectId) saveMore(scope, store.projectId, names)
     }
     store.askMachine = () => navigate(store.projectId ? `/projects/${store.projectId}/machines` : "/machines")
+    store.rent = (pick) => {
+      const chosen = pick ? `?${new URLSearchParams({ rent: pick.sku, gpus: String(pick.gpus) })}` : ""
+      navigate(`${store.projectId ? `/projects/${store.projectId}` : ""}/machines${chosen}`)
+    }
     store.attach(flow)
     return () => store.detach()
   }, [store, flow, saved, scope, openedOn, bridge, navigate])

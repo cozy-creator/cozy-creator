@@ -1,0 +1,179 @@
+// A render on this computer alone, which it would do poorly (Paul, 11-05: "do you want to run locally? rent a GPU"), in a real browser on a real
+// Calcifer. A runner has no GPU, so a tool that loads a model on one asks first: on its box, beside its Render, how it would go here and what a
+// rented GPU would do. Render here renders, and is kept by Calcifer: the next Render, and one after a reload, don't ask. Rent a GPU opens Rent with
+// the card the Hub places the tool on chosen, and renders nothing. Render all asks once, on its own control. The CLI says the same line once, as
+// a warning, and goes on.
+//   node localfit.js <sign-in link from `cozy open --no-open`>
+// $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js; $ALONE: on a shared computer, so it runs nothing. Prints what it saw as JSON, exits 1 if anything failed.
+const playwright = require(process.env.PLAYWRIGHT);
+const { execFile } = require('child_process');
+const { writeFileSync } = require('fs');
+const { join } = require('path');
+const { boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, STEP_MS, until, watchBoxes } = require('./page');
+
+const failures = [];
+const seen = {};
+noStall(seen, died);
+function check(name, ok, detail) {
+  seen[name] = ok ? true : (detail ?? false);
+  if (!ok) failures.push(name);
+}
+const FIRST_RUN_MS = 300_000;
+const COZY = process.env.COZY;
+const heavy = join(__dirname, 'heavy.py');
+const finish = (code) => {
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(code);
+};
+
+(async () => {
+  const link = process.argv[2];
+  const base = new URL(link).origin;
+  const browser = await launch(playwright);
+  const page = await (await browser.newContext({ viewport: { width: 1600, height: 1100 } })).newPage();
+  lookAt(page);
+  await watchBoxes(page);
+  page.setDefaultTimeout(STEP_MS);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
+  const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+
+  await page.goto(link);
+  await page.waitForSelector('.top');
+  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const api = async (path, init = {}) => {
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    return { status: answer.status, body: await answer.json().catch(() => null) };
+  };
+  // Only where this computer runs models and has no GPU: anywhere else there's nothing it would do poorly to ask about.
+  const gpus = (await api('/v1/machines/local')).body?.status?.gpus;
+  seen.gpus = gpus;
+  if (!(await api('/v1/status')).body.local_usable || process.env.ALONE || gpus?.length) {
+    check('ran', true);
+    await browser.close();
+    return finish(0);
+  }
+
+  await page.goto(`${base}/#/projects`);
+  await page.fill('input[aria-label="New project\'s name"]', `web-localfit-${Date.now()}`);
+  await page.click('form button[type=submit]');
+  await page.waitForURL(/#\/projects\/[^/]+$/);
+  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  const state = async () => (await api(`/v1/projects/${id}`)).body;
+  const folder = (await state()).path;
+  seen.project = { id, folder };
+  const versions = async (name) => (await state()).assets.find((held) => held.name === name)?.versions ?? 0;
+  // A render's runs of `fn`, not its package's install.
+  const runsOf = async (fn) => ((await api(`/v1/runs?project=${id}&limit=100`)).body?.runs ?? []).filter((run) => new RegExp(`^\\S+/${fn}(@\\S+)?$`).test(run.target ?? ''));
+  const fit = async (names) => (await api(`/v1/projects/${id}/fit`, { method: 'POST', body: JSON.stringify({ names }) })).body;
+  const box = (name) => boxOf(page, name);
+  const asking = (name) => box(name).locator('.status.asking');
+  // Render is with its words, and it may be showing what it made.
+  const render = async (name) => {
+    await openBox(page, name);
+    if (await box(name).locator('.take.add[aria-label="Its words"]:not(.on)').count()) await box(name).locator('.take.add[aria-label="Its words"]').click();
+    await box(name).locator('button[aria-label=Render]').click();
+  };
+  // Asked, it would have said so by the time a render's Queued gives way to its run; a weightless one is quick, so this watches until it's made.
+  const neverAsks = async (name, made) => {
+    let asked = false;
+    await until(`${name}'s version ${made}`, async () => {
+      asked ||= (await asking(name).count()) > 0;
+      return asked || (await versions(name)) >= made;
+    }, Boolean, FIRST_RUN_MS);
+    return !asked;
+  };
+
+  // A still whose package's GPU function loads a model, and Qwen Image from the Hub. Neither has run here.
+  writeFileSync(join(folder, 'project.yaml'), `version: 3\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n  kite:\n    tool: qwen-image-2/generate_turbo\n    instructions: a red kite over dunes\n`);
+  await box('heavy').waitFor();
+  await box('kite').waitFor();
+
+  // 1. The first Render asks, on the box, and nothing renders.
+  await render('heavy');
+  await asking('heavy').waitFor({ timeout: FIRST_RUN_MS });
+  const said = await asking('heavy').innerText();
+  check('asks_on_the_box', /no GPU/.test(said) && /Render here/.test(said) && /Rent a GPU/.test(said), said);
+  seen.line = said;
+  check('asks_under_its_render', (await box('heavy').locator('.here-under .status.asking').count()) === 1);
+  await page.waitForTimeout(1000);
+  check('asking_renders_nothing', (await runsOf('heavy')).length === 0 && (await versions('heavy')) === 0, await runsOf('heavy'));
+  await shot('asks');
+
+  // 2. Render here renders, and Calcifer keeps it.
+  await asking('heavy').locator('button:has-text("Render here")').click();
+  check('render_here_renders', Boolean(await until('heavy rendered here', () => versions('heavy'), (n) => n >= 1, FIRST_RUN_MS)));
+  const kept = await fit(['heavy']);
+  check('kept_by_calcifer', kept?.tools?.length === 1 && kept.tools[0].here === true, kept);
+  check('rendered_here', (await runsOf('heavy')).every((run) => run.machine === 'local'), (await runsOf('heavy')).map((run) => run.machine));
+
+  // 3. The next Render doesn't ask.
+  await render('heavy');
+  check('second_render_does_not_ask', await neverAsks('heavy', 2));
+
+  // 4. Nor after a reload.
+  await page.reload();
+  await box('heavy').waitFor();
+  await render('heavy');
+  check('reload_does_not_ask', await neverAsks('heavy', 3));
+
+  // 5. Rent a GPU opens Rent with the card the Hub places Qwen Image on, and renders nothing. Only if it asks: a runner can't hold its weights.
+  const kiteFit = await fit(['kite']);
+  const placed = kiteFit?.rent;
+  seen.placed = placed;
+  if (!kiteFit?.tools?.length) {
+    check('kite_asks', false, kiteFit);
+    await browser.close();
+    return finish(1);
+  }
+  await render('kite');
+  await asking('kite').waitFor({ timeout: STEP_MS });
+  const kiteSaid = await asking('kite').innerText();
+  check('kite_asks', /no GPU/.test(kiteSaid) && (!placed || kiteSaid.includes(placed.line)), kiteSaid);
+  await shot('kite-asks');
+  await asking('kite').locator('button:has-text("Rent a GPU")').click();
+  await until('Machines open', () => Promise.resolve(page.url()), (url) => url.includes('/machines'));
+  check('rent_opens', true);
+  if (placed) {
+    await page.locator('.sku.chosen').waitFor({ timeout: STEP_MS });
+    const chosen = await page.locator('.sku.chosen b').innerText();
+    check('rent_has_it_chosen', chosen === placed.sku && page.url().includes(`rent=${placed.sku}`), { chosen, placed: placed.sku, url: page.url() });
+    await shot('rent');
+  } else check('rent_has_it_chosen', false, 'the Hub placed no card for qwen-image-2/generate_turbo');
+  await page.waitForTimeout(1500);
+  check('rent_renders_nothing', (await runsOf('generate_turbo')).length === 0 && (await versions('kite')) === 0, await runsOf('generate_turbo'));
+  await page.goBack();
+  await closeBox(page);
+
+  // Render all: once, on its own control, for what's still unsaid (Qwen Image only), and Rent a GPU there renders nothing either.
+  const before = await versions('heavy');
+  await page.locator('.render-all button.primary').click();
+  const all = page.locator('.render-all .status.asking');
+  await all.waitFor({ timeout: STEP_MS });
+  const allSaid = await all.innerText();
+  check('render_all_asks_once', (await page.locator('.status.asking').count()) === 1 && /Qwen|qwen|kite/i.test(allSaid) && !/heavy/i.test(allSaid), allSaid);
+  await shot('render-all-asks');
+  await all.locator('button:has-text("Rent a GPU")').click();
+  await page.waitForTimeout(1500);
+  check('render_all_rent_renders_nothing', (await versions('heavy')) === before && (await runsOf('generate_turbo')).length === 0);
+  await page.goBack();
+
+  // 6. The CLI never asks: it says the line once, as a warning, and goes on.
+  const cli = await new Promise((done) => execFile(COZY, ['project', '-p', folder, 'render', 'heavy', '--on', 'local'], { encoding: 'utf8', timeout: FIRST_RUN_MS }, (error, stdout, stderr) => done({ code: error?.code ?? 0, stdout, stderr })));
+  const warned = (cli.stderr.match(/warning: This computer has no GPU/g) ?? []).length;
+  check('cli_warns_once', warned === 1 && cli.code === 0, { code: cli.code, stderr: cli.stderr.slice(-600) });
+  check('cli_goes_on', (await versions('heavy')) === before + 1, await versions('heavy'));
+
+  check('no_page_errors', errors.length === 0, errors);
+  check('ran', true);
+  await browser.close();
+  finish(failures.length ? 1 : 0);
+})().catch(died);
+
+async function died(error) {
+  console.error(error);
+  await lastLook();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(2);
+}
