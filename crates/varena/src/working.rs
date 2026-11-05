@@ -616,6 +616,7 @@ impl Device {
 
     /// Weights held for use now, and this request's high-water mark of them.
     pub(super) fn note_held(&self) -> (usize, usize) {
+        let _timed = crate::diag::T::new(18);
         let held = self.held.load(Ordering::Acquire);
         (held, self.held_peak.fetch_max(held, Ordering::AcqRel).max(held))
     }
@@ -684,7 +685,9 @@ impl Device {
     fn poll(&self, state: &mut State) -> Result<()> {
         let _timed = crate::diag::T::new(2);
         let mut fences = self.fences();
+        let fence_timed = crate::diag::T::new(22);
         fences.poll(self.driver())?;
+        drop(fence_timed);
         cache::poll(state, &fences);
         let mut ready = Vec::new();
         for ptr in std::mem::take(&mut state.fenced) {
@@ -754,6 +757,7 @@ impl Device {
     /// the shared sizes keep to their own segments, and a large block's pages stay mapped until
     /// something needs them. Each size holding its own pages cost H3 2.5 times the driver calls.
     fn split_run(state: &mut State, bytes: usize, stream: u64, any: bool) -> Option<()> {
+        let _timed = crate::diag::T::new(21);
         let most = if any || bytes >= SEGMENT { usize::MAX } else { SEGMENT };
         let mut stale = Vec::new();
         let found = state.runs.range((bytes + 1, 0)..=(most, u64::MAX)).find_map(|&(class, ptr)| {
@@ -809,6 +813,7 @@ impl Device {
     /// page serves first; else one whose frees are still running on this stream alone, which this
     /// stream may reuse in order, so its new blocks keep that ordering and their waits.
     fn reslab(state: &mut State, class: usize, stream: u64) -> Option<()> {
+        let _timed = crate::diag::T::new(20);
         let mut ordered = None;
         let (base, bytes) = state.segments.iter()
             .filter(|(_, segment)| segment.pool.is_none() && segment.size_class <= LARGE && segment.size_class != class && segment.backed())
@@ -1225,6 +1230,7 @@ impl Device {
         &self, state: &mut State, limit: usize, exclude: Option<PoolId>,
         preserve: &BTreeSet<u64>, maximum: usize,
     ) -> Result<usize> {
+        let _timed = crate::diag::T::new(19);
         let mut released = 0usize;
         let mut candidates = Vec::new();
         let mut large = Vec::new();

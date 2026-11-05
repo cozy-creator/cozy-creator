@@ -264,6 +264,7 @@ impl Driver {
     }
 
     pub(crate) fn memory_info(&self) -> Result<(usize, usize)> {
+        let _timed = crate::diag::T::new(14);
         let (mut free, mut total) = (0, 0);
         // SAFETY: valid output storage; the caller entered this driver's primary context.
         status("cuMemGetInfo", unsafe {

@@ -312,6 +312,7 @@ fn fits(
     generation: u64,
     phase: Option<&crate::plan::Snapshot>,
 ) -> Result<Vec<Fit>> {
+        let _timed = crate::diag::T::new(15);
     // Only pages whose owner released them and whose submitted fence was observed complete.
     // These are reclaimable backing, not reusable working slots or phase working demand.
     let reclaimable_cache = cache::ready_bytes(state, owner.page());

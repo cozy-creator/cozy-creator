@@ -3,12 +3,13 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const NAMES: [&str; 14] = [
+const NAMES: [&str; 23] = [
     "lock_wait", "gate_wait", "poll", "refresh_phase", "alloc", "alloc_slow", "free", "split_select",
-    "split_begin", "split_end", "room", "use_on", "acquire", "prefetch_room",
+    "split_begin", "split_end", "room", "use_on", "acquire", "prefetch_room", "memory_info", "fits",
+    "plan_snapshot", "lease", "note_held", "trim_ready", "reslab", "split_run", "fence_poll",
 ];
-static NS: [AtomicU64; 14] = [const { AtomicU64::new(0) }; 14];
-static N: [AtomicU64; 14] = [const { AtomicU64::new(0) }; 14];
+static NS: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
+static N: [AtomicU64; 23] = [const { AtomicU64::new(0) }; 23];
 static LAST: AtomicU64 = AtomicU64::new(0);
 static START: OnceLock<Instant> = OnceLock::new();
 
