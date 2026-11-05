@@ -165,7 +165,7 @@ export function MachineDrawer() {
         </p>
       )}
       {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
-      {machine.unreachable && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
+      {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
       {machine.rental && !ended && (
         <p className="cost">
           <b>{usd(machine.rental.usd_micros_per_hour)}/h</b>

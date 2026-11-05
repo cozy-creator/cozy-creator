@@ -247,7 +247,9 @@ async function use(name, work) {
     await shot('end');
     await page.click('dialog[open] button:has-text("End it")');
     // What it says of the end, and not the facts below it, whose clock would read as progress.
-    await whileMoving('ending', () => page.evaluate(() => [...document.querySelectorAll('.run-head, .ending, .drawer-body > p')].map((el) => el.innerText).join(' | ')), (text) => /nothing of it bills now/.test(text));
+    const ended = await whileMoving('ending', () => page.evaluate(() => [...document.querySelectorAll('.run-head, .ending, .drawer-body > p')].map((el) => el.innerText).join(' | ')), (text) => /nothing of it bills now/i.test(text));
+    // A pod that's gone can't answer, and that's no news (42018791462).
+    check('ended_is_all_it_says', !/didn't answer/.test(ended), ended);
     await shot('ended');
     check('the_page_says_ended_on_the_hubs_word', true);
   }
