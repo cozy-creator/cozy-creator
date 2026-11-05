@@ -17,23 +17,25 @@ pub use disk::{DiskClass, Filesystem, cached, cached_runs, filesystem, open_dire
 
 static TEMPS: AtomicU64 = AtomicU64::new(0);
 
+/// Whether a rename over a file failed because another program holds it open: Windows only.
+pub fn held(error: &io::Error) -> bool {
+    const ACCESS_DENIED: i32 = 5;
+    const SHARING_VIOLATION: i32 = 32;
+    cfg!(windows) && matches!(error.raw_os_error(), Some(ACCESS_DENIED | SHARING_VIOLATION))
+}
+
 /// Renames `from` over `to`. On Windows, a program holding `to` open with no delete sharing, as a
 /// scanner or an editor does for a moment, refuses it, so it's tried for as long as a moment lasts.
 pub fn rename_over(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::time::{Duration, Instant};
-        const ACCESS_DENIED: i32 = 5;
-        const SHARING_VIOLATION: i32 = 32;
-        const HELD: Duration = Duration::from_secs(5);
+        const MOMENT: Duration = Duration::from_secs(5);
         let began = Instant::now();
         let mut wait = Duration::from_millis(10);
         loop {
             match fs::rename(from, to) {
-                Err(error)
-                    if matches!(error.raw_os_error(), Some(ACCESS_DENIED | SHARING_VIOLATION))
-                        && began.elapsed() < HELD =>
-                {
+                Err(error) if held(&error) && began.elapsed() < MOMENT => {
                     std::thread::sleep(wait);
                     wait = (wait * 2).min(Duration::from_millis(250));
                 }

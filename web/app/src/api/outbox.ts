@@ -21,6 +21,8 @@ const FIRST_PAUSE_MS = 250
 const LONGEST_PAUSE_MS = 5000
 /** Nothing heard for this long is worth one line. */
 const SAYS_AFTER_MS = 8000
+/** What Calcifer said kept it from saving, where that's more than not answering. */
+const HELD = "file_held"
 
 function lost(error: unknown): boolean {
   return (error instanceof ApiError && LOST.has(error.status)) || (error instanceof DOMException && error.name === "AbortError")
@@ -34,6 +36,7 @@ export class Outbox {
   private wake?: () => void
   private note?: number
   private silence?: ReturnType<typeof setTimeout>
+  private held?: string
 
   /** Whether something isn't known to be saved. */
   get owed() {
@@ -84,7 +87,7 @@ export class Outbox {
   private listen() {
     clearTimeout(this.silence)
     this.silence = setTimeout(() => {
-      this.note ??= say("Not saved yet: Calcifer isn't answering, and this goes as soon as it does")
+      this.note ??= say(this.held ? `Not saved yet: ${this.held}, and this goes as soon as it's closed` : "Not saved yet: Calcifer isn't answering, and this goes as soon as it does")
     }, SAYS_AFTER_MS)
   }
 
@@ -97,6 +100,7 @@ export class Outbox {
         answer = await action.send(trying.signal)
       } catch (error) {
         if (lost(error)) {
+          this.held = error instanceof ApiError && error.body.code === HELD ? error.message : undefined
           if (!trying.signal.aborted) await this.pause(tries)
           continue
         }

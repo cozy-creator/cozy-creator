@@ -188,13 +188,16 @@ mkdir -p "$T"
 plate "$T/a.mp4" testsrc2 440 800 2; plate "$T/b.mp4" smptebars 660 800 2
 printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
 a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
-yaml_of() { printf 'version: 3\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  film:\n    tool: cozy/edit\n    tracks:\n      - clips:\n          - <%s>\n' "$a" "$b" "$1" > "$T/project.yaml"; }
+yaml_of() {
+  { printf 'version: 3\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  film:\n    tool: cozy/edit\n    tracks:\n      - clips:\n' "$a" "$b"
+    printf '          - <%s>\n' "$@"; } > "$T/project.yaml"
+}
 yaml_of a; render "$T" film || check "held open: first: $(tail -c 300 "$OUT/render.txt")"
 cozy project -p "$T" set film 'at=40,40,320' > /dev/null || check "held open: placing it"
-# holding <file>: it's open from when this returns, for 2.5 s, in $hold.
+# holding <file> [ms]: it's open from when this returns, for 2.5 s or [ms], in $hold.
 holding() {
   local ready=$OUT/held-ready; rm -f "$ready"
-  powershell -NoProfile -Command "\$f = [IO.File]::Open('$(cygpath -w "$1")', 'Open', 'Read', 'Read'); New-Item -ItemType File '$(cygpath -w "$ready")' | Out-Null; Start-Sleep -Milliseconds 2500; \$f.Close()" & hold=$!
+  powershell -NoProfile -Command "\$f = [IO.File]::Open('$(cygpath -w "$1")', 'Open', 'Read', 'Read'); New-Item -ItemType File '$(cygpath -w "$ready")' | Out-Null; Start-Sleep -Milliseconds ${2:-2500}; \$f.Close()" & hold=$!
   until [ -e "$ready" ] || ! kill -0 "$hold" 2> /dev/null; do sleep 0.1; done
   [ -e "$ready" ] || check "held open: nothing held $1"
 }
@@ -216,6 +219,28 @@ holding "$T/film.mp4"
 code=0; render "$T" film || code=$?
 wait "$hold"
 { [ "$code" = 0 ] && [ "$(made "$T" film)" = 2 ]; } || check "held open: film.mp4 (exit $code, $(made "$T" film) versions): $(tail -c 300 "$OUT/render.txt")"
+
+step "a project on Windows: a file held past the wait costs nothing, and says so"
+local was
+# As a player holds a film someone's watching: the version lands, and the film is updated when it's let go.
+yaml_of a b; was=$(sha "$T/film.mp4")
+holding "$T/film.mp4" 9000
+code=0; render "$T" film || code=$?
+{ [ "$code" = 0 ] && [ "$(made "$T" film)" = 3 ]; } || check "held long: a render lost its version (exit $code, $(made "$T" film) versions): $(tail -c 300 "$OUT/render.txt")"
+says "held long" "film.mp4 is open in another program"
+[ "$(grep -c 'is open in another program' "$OUT/render.txt")" = 1 ] || check "held long: said more than once: $(grep -c 'is open in another program' "$OUT/render.txt")"
+[ "$(sha "$T/film.mp4")" = "$was" ] || check "held long: the film changed while held"
+wait "$hold"
+render "$T" film || check "held long: the render after: $(tail -c 300 "$OUT/render.txt")"
+[ "sha256:$(sha "$T/film.mp4")" = "$(take_file "$T" film video)" ] || check "held long: the film isn't the state once it's let go"
+# A write of the file itself says why and changes nothing, and goes when it's let go.
+holding "$T/project.yaml" 9000
+code=0; cozy project -p "$T" set film 'description=Saved after' > "$OUT/held-long.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'project.yaml is open in another program' "$OUT/held-long.txt"; } || check "held long: project.yaml (exit $code): $(tail -c 300 "$OUT/held-long.txt")"
+! grep -q 'Saved after' "$T/project.yaml" || check "held long: it says it failed, and it wrote"
+wait "$hold"
+cozy project -p "$T" set film 'description=Saved after' > "$OUT/held-long.txt" 2>&1 || check "held long: after it's let go: $(tail -c 300 "$OUT/held-long.txt")"
+grep -q 'Saved after' "$T/project.yaml" || check "held long: not saved after it's let go"
 }
 
 projects() {
