@@ -142,12 +142,18 @@ pub fn main() {
     println!("killed: {result:?} {:?} after the kill", killed.elapsed());
     assert_eq!(result, Recovery::Retry);
     assert!(killed.elapsed() < Duration::from_millis(500), "{:?}", killed.elapsed());
-    // The dead row's bytes are settling: retries, not out of memory, and the other is still there.
+    // The other donor is still there.
     let (result, _) = recover(table, row, GIB, patience);
     assert_eq!(result, Recovery::Retry);
     table.reap();
     assert_eq!(table.pids().len(), 3, "this process's two rows and the living donor");
     let _ = (other.kill(), other.wait());
+    table.reap();
+    // With no parent to report an exit, a dead peer means no wait: the asker takes what's free.
+    let (result, took) = recover(table, row, GIB, patience);
+    println!("dead peer, no parent: {result:?} in {took:?}");
+    assert_eq!(result, Recovery::Final);
+    assert!(took < Duration::from_millis(100), "{took:?}");
 
     // A stopped donor first in line does not block the one behind it.
     let (uuid, table, row) = fresh(3);
@@ -163,6 +169,15 @@ pub fn main() {
     println!("stopped alone: {result:?} in {took:?}");
     assert_eq!(result, Recovery::Final);
     assert!(took >= patience && took < patience * 2, "{took:?}");
+    // A process's exit, as its parent reports it, wakes an asker at once.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        table.exited();
+    });
+    let (result, took) = recover(table, row, GIB, patience);
+    println!("exit reported: {result:?} in {took:?}");
+    assert_eq!(result, Recovery::Retry);
+    assert!(took < Duration::from_millis(500), "{took:?}");
     signal(&stopped, libc::SIGCONT);
     let _ = (stopped.kill(), behind.kill(), stopped.wait(), behind.wait());
 

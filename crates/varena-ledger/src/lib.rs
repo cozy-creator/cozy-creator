@@ -24,8 +24,6 @@ const PAGE: usize = 4096;
 const CADENCE: Duration = Duration::from_millis(500);
 /// How often a waiter rechecks what no futex wake can report: a killed peer.
 const TICK: Duration = Duration::from_millis(50);
-/// What a dead process held can come back after its lock drops.
-const SETTLE: Duration = Duration::from_secs(5);
 /// TensorD always answers a short asker; this bounds a TensorD that cannot.
 const SUPERVISOR_ANSWER: Duration = Duration::from_secs(30);
 const REFUSED: u64 = u64::MAX;
@@ -63,7 +61,6 @@ struct Page {
     answers: AtomicU64,
     /// Bytes given back, plus one per death: any change is a reason to retry the driver.
     released: AtomicU64,
-    died_at: AtomicU64,
     rows: [Words; ROWS],
 }
 const _: () = assert!(size_of::<Page>() <= PAGE);
@@ -132,7 +129,7 @@ impl Table {
     pub fn open(uuid: &[u8; 16]) -> io::Result<Self> {
         let name: String = uuid.iter().map(|byte| format!("{byte:02x}")).collect();
         // The layout version is in the name: peers of another layout simply do not meet.
-        let path = directory()?.join(format!("v5-{name}"));
+        let path = directory()?.join(format!("v6-{name}"));
         let open = || OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW).open(&path);
         // The mapping gets its own description: a mapping keeps its description alive, in a forked
@@ -207,12 +204,16 @@ impl Table {
         let row = &self.page.rows[index];
         let held = row.held.swap(0, AcqRel);
         if row.pid.swap(0, AcqRel) != 0 {
-            self.page.died_at.store(now_ns(), Release);
             self.release(held.max(1));
         }
         for word in [&row.idle, &row.want, &row.running, &row.short, &row.donated] {
             word.store(0, Release);
         }
+    }
+
+    /// A process has fully exited, by its parent's word: what it held is the driver's again.
+    pub fn exited(&self) {
+        self.release(1);
     }
 
     fn release(&self, bytes: u64) {
@@ -363,12 +364,6 @@ impl Table {
                     continue;
                 }
                 if answered || now >= deadline {
-                    let settling = now_ns().saturating_sub(page.died_at.load(Acquire)) < SETTLE.as_nanos() as u64
-                        && page.died_at.load(Acquire) != 0;
-                    if settling {
-                        std::thread::sleep(TICK);
-                        return Recovery::Retry;
-                    }
                     if !self.held_elsewhere(0) { return Recovery::Final; }
                     page.rows[row.0].short.store(before + 1, Release);
                     self.changed();
@@ -421,7 +416,6 @@ impl Table {
                 match end_idle() {
                     Some(true) => {
                         self.reap();
-                        self.page.died_at.store(now_ns(), Release);
                         self.release(1);
                     }
                     Some(false) => {
