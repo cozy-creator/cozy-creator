@@ -2,7 +2,9 @@
 use super::{INITIALIZE, Life, PoolId, devices};
 use crate::Device;
 use crate::{Error, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 #[derive(Clone, Copy)]
 pub struct WorkingSegment {
@@ -36,6 +38,23 @@ pub trait WorkingObserver: Send + Sync {
 }
 
 static OBSERVER: OnceLock<Arc<dyn WorkingObserver>> = OnceLock::new();
+/// Handles reported mapped and retiring, and the time those calls took: under a group each is an
+/// NCCL registration or deregistration.
+static MAPPED: AtomicU64 = AtomicU64::new(0);
+static RETIRED: AtomicU64 = AtomicU64::new(0);
+static OBSERVED_NS: AtomicU64 = AtomicU64::new(0);
+
+pub(super) fn observed() -> (u64, u64, u64) {
+    (MAPPED.load(Ordering::Relaxed), RETIRED.load(Ordering::Relaxed), OBSERVED_NS.load(Ordering::Relaxed))
+}
+
+fn timed(count: &AtomicU64, notify: impl FnOnce() -> Result<()>) -> Result<()> {
+    let began = Instant::now();
+    let result = notify();
+    OBSERVED_NS.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    count.fetch_add(1, Ordering::Relaxed);
+    result
+}
 
 /// Install one process-lifetime observer with an atomic existing/future handoff.
 /// The registry prevents new devices; all existing state locks prevent maps/frees.
@@ -111,7 +130,7 @@ pub fn working_snapshot() -> Result<Vec<WorkingSnapshot>> {
 
 pub(super) fn mapped(owner: &Device, address: u64, bytes: usize, pool: Option<PoolId>, size_class: usize) -> Result<()> {
     if let Some(observer) = OBSERVER.get() {
-        observer.mapped(WorkingSegment { device: owner.ordinal, address, bytes, size_class, pool })
+        timed(&MAPPED, || observer.mapped(WorkingSegment { device: owner.ordinal, address, bytes, size_class, pool }))
             .map_err(|error| Error::Poisoned(format!("working map observer: {error}")))?;
     }
     Ok(())
@@ -119,7 +138,7 @@ pub(super) fn mapped(owner: &Device, address: u64, bytes: usize, pool: Option<Po
 
 pub(super) fn retiring(owner: &Device, address: u64, bytes: usize, pool: Option<PoolId>, size_class: usize) -> Result<()> {
     if let Some(observer) = OBSERVER.get() {
-        observer.retiring(WorkingSegment { device: owner.ordinal, address, bytes, size_class, pool })
+        timed(&RETIRED, || observer.retiring(WorkingSegment { device: owner.ordinal, address, bytes, size_class, pool }))
             .map_err(|error| Error::Poisoned(format!("working retirement observer: {error}")))?;
     }
     Ok(())

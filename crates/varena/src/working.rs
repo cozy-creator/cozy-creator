@@ -126,6 +126,9 @@ pub struct WorkingStats {
     pub driver_physical_ooms: u64,
     pub driver_memory_ns: u64,
     pub driver_memory_longest_ns: u64,
+    pub observed_mapped: u64,
+    pub observed_retired: u64,
+    pub observed_ns: u64,
     pub reclaim_ns: u64,
     pub reclaim_longest_ns: u64,
     pub reclaim_longest_step: u64,
@@ -2165,6 +2168,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.reclaim_longest_ns,
         stats.reclaim_longest_step,
     ) = owner.driver().times();
+    (stats.observed_mapped, stats.observed_retired, stats.observed_ns) = observer::observed();
     Ok(stats)
 }
 
