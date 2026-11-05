@@ -696,11 +696,14 @@ impl Device {
         result.map_err(|error| poison(state, error))
     }
 
-    /// Unmap and release one completed, unpinned region. `completed` records the physical
-    /// effect before any later fallible address retirement.
-    fn evict(&self, state: &mut State, id: u64, reason: ReclaimReason, completed: &mut usize) -> Result<()> {
+    /// Unmap one completed, unpinned region, and release its pages, or move them to `into` when
+    /// that is an absent region of its size. `completed` records the physical effect before any
+    /// later fallible address retirement.
+    fn evict(&self, state: &mut State, id: u64, reason: ReclaimReason, completed: &mut usize, into: Option<u64>) -> Result<()> {
         let prefetched = state.entries[&id].prefetched;
-        let size = self.release_backing_counted(state, id, completed)?;
+        let bytes = state.entries[&id].bytes;
+        let into = into.filter(|to| state.entries.get(to).is_some_and(|to| to.handle.is_none() && to.bytes == bytes));
+        let size = self.release_backing_counted(state, id, completed, into)?;
         if prefetched {
             state.prefetch_unused_bytes = state.prefetch_unused_bytes.saturating_add(size as u64);
             if let Some(entry) = state.entries.get(&id) {
@@ -713,20 +716,31 @@ impl Device {
         Ok(())
     }
 
-    /// Unmap and release a completed, unpinned region's pages; a retired region's address goes too.
-    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize) -> Result<usize> {
+    /// Unmap a completed, unpinned region's pages and release them, or map them at `into`, an
+    /// absent region of its size: a refill then costs a remap, never a release and a create. A
+    /// retired region's address goes too.
+    fn release_backing_counted(&self, state: &mut State, id: u64, completed: &mut usize, into: Option<u64>) -> Result<usize> {
         let entry = state.entries.get(&id).expect("candidate in the table");
         let (ptr, size, handle) = (entry.ptr, entry.bytes, entry.handle.expect("mapped candidate"));
         if let Err(error) = self.driver().unmap(ptr, size) {
             return Err(poison(state, error));
         }
+        if let Some(to) = into {
+            // Custody before map, as a fill records it: an ambiguous map failure keeps both.
+            let to = state.entries.get_mut(&to).expect("live region");
+            to.handle = Some(handle);
+            let target = to.ptr;
+            if let Err(error) = self.driver().map(target, size, handle) {
+                return Err(poison(state, error));
+            }
         // If release fails, do not retry or reuse either handle or reservation.
-        if let Err(error) = self.driver().release(handle) {
+        } else if let Err(error) = self.driver().release(handle) {
             return Err(poison(state, error));
+        } else {
+            self.pages.fetch_sub(size, Ordering::AcqRel);
+            self.released.fetch_add(size as u64, Ordering::AcqRel);
         }
         *completed += size;
-        self.pages.fetch_sub(size, Ordering::AcqRel);
-        self.released.fetch_add(size as u64, Ordering::AcqRel);
         let entry = state.entries.get_mut(&id).expect("candidate in the table");
         entry.uses.waits().clear();
         entry.prefetched = false;
@@ -1070,7 +1084,7 @@ impl Region {
             return Ok(false);
         }
         let _context = self.gpu.driver().enter()?;
-        self.gpu.release_backing_counted(&mut state, self.id, &mut 0)?;
+        self.gpu.release_backing_counted(&mut state, self.id, &mut 0, None)?;
         Ok(true)
     }
 
@@ -1094,7 +1108,7 @@ impl Region {
     /// Demand: anything idle may go to make room, in the one reclaim order.
     fn prepare(self: &Arc<Self>) -> Result<Preparation> {
         let protected = std::collections::BTreeSet::from([self.id]);
-        let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, ..Default::default() };
+        let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, into: Some(self.id), ..Default::default() };
         let result = (|| loop {
             let prepared = reclaim::acquire(self.gpu.ordinal, self.rounded, reclaim::Wait::Yes, protect, || {
                 let gate = gate(self.gpu.ordinal)?;
