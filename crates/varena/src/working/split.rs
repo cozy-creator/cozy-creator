@@ -468,9 +468,14 @@ impl Menu {
         self.trial().unwrap_or_else(|| self.fitting())
     }
 
+    /// The coarsest level under the budget that fits without evicting a weight. One that evicts to fit
+    /// need not be faster, and the next call reads back what it evicted: Qwen 4 MP held 7.1 GB at a level
+    /// that denoised no faster than 0.11 GB, and refilled 5.6-7.3 GB of text encoder a call. With none
+    /// that fits, the coarsest under the budget.
     fn fitting(&self) -> usize {
         let cap = self.budget();
-        self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1)
+        let under = self.plans.iter().position(|plan| plan.want() <= cap).unwrap_or(self.plans.len() - 1);
+        self.plans[under..].iter().position(Fit::fits).map_or(under, |finer| under + finer)
     }
 
     /// A level that never ran is only an estimate, which can sit well over what it measures, and
@@ -482,7 +487,7 @@ impl Menu {
         let at = self.fitting();
         let room = self.capacity.saturating_sub(self.live);
         self.plans[at].measured().then(|| {
-            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room)
+            self.plans[..at].iter().rposition(|plan| !plan.measured() && !plan.tried && plan.want() <= room && plan.fits())
         })?
     }
 
