@@ -226,7 +226,7 @@ pub fn main() {
         let name: String = uuid.iter().map(|b| format!("{b:02x}")).collect();
         // SAFETY: geteuid has no arguments.
         let uid = unsafe { libc::geteuid() };
-        let _ = std::fs::remove_file(format!("/dev/shm/cozy-varena-{uid}/v5-{name}"));
+        let _ = std::fs::remove_file(format!("/dev/shm/cozy-varena-{uid}/v6-{name}"));
     }
     println!("all cells passed");
 }
