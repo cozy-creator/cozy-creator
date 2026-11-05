@@ -88,8 +88,8 @@ fn want(device: &'static Device, region: Arc<Region>, free_only: bool) -> Result
         return Ok(());
     }
     if slot.worker.is_none() {
-        let (ordinal, spawned) = (device.ordinal(), std::thread::Builder::new());
-        let worker = spawned.name(format!("varena-ahead-{ordinal}")).spawn(move || run(device))
+        let worker = std::thread::Builder::new().name(format!("varena-ahead-{}", device.ordinal()))
+            .spawn(move || run(device))
             .map_err(|error| Error::Unsupported(format!("fill worker could not start: {error}")))?;
         slot.worker = Some(worker.thread().id());
     }
