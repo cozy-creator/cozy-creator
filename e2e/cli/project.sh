@@ -3529,11 +3529,20 @@ soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: cozy ru
 
 if [ -z "${ALONE:-}" ] && [ "$RUNNER_OS" = Linux ]; then
   step "a project: a live view across a Calcifer restart, the branch resync takes"
+  # What the index knows and this Calcifer hasn't opened, as a page finds it: format 2 upgrades on its first read, and says so there, once.
+  local G=$OUT/opened-by-id gid
+  mkdir -p "$G"; printf 'version: 3\nassets: {}\n' > "$G/project.yaml"
+  gid=$(status "$G" | jq -r .id)
+  printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$G/project.yaml"
+  printf '{"format": 2, "assets": {}, "files": {}}\n' > "$G/project.lock"
   systemctl --user restart cozy-calcifer || check "live: systemctl --user restart cozy-calcifer failed"
   (cd "$R" && cozy run "$here/project/draw.py" prompt=restarted) > "$OUT/live-restarted.txt" 2>&1 || check "live: a run after the restart: $(tail -c 300 "$OUT/live-restarted.txt")"
   n=$(cd "$R" && cozy --json run ls --limit 1 | jq -r '.runs[0].number') || check "live: run ls after the restart failed"
   soon screen_says "$OUT/runs.screen" "^ *$n .* completed" || check "live: past a restart, cozy run ls does not show run $n: $(head -5 "$OUT/runs.screen")"
   ADDR=$(jq -r .address "$HOME/.cozy/calcifer/calcifer.lock.holder") TOKEN=$(jq -r .token "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id doesn't say it upgraded: $(api "http://$ADDR/v1/projects/$gid" | jq -c .warnings)"
+  grep -q '^version: 3$' "$G/project.yaml" || check "first open: a read by id didn't upgrade: $(cat "$G/project.yaml")"
+  J '[.warnings[]?.message] | any(contains("project.yaml.v2")) | not' <<< "$(api "http://$ADDR/v1/projects/$gid")" || check "first open: a read by id said it twice"
 fi
 code=0; kill "$term" 2> /dev/null || true; wait "$term" || code=$?
 [ "$code" = 0 ] || check "live: cozy run ls exited $code on q"
