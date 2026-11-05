@@ -81,6 +81,11 @@ fn window<'a>(text: &'a str, name: &str) -> Option<Window<'a>> {
     Some(Window { before: &text[..start], alone: format!("{SECTION}:\n{}", &text[start..finish]), after: &text[finish..] })
 }
 
+/// `window`, for an edit: an anchor in these lines may be what another asset's alias reads, which only the whole file can prove.
+fn editing<'a>(text: &'a str, name: &str) -> Option<Window<'a>> {
+    window(text, name).filter(|at| !at.alone.contains('&'))
+}
+
 /// Asset `name`'s own lines as a project of one, for what needs only it read.
 pub(super) fn alone(text: &str, name: &str) -> Option<String> {
     window(text, name).map(|at| format!("version: {}\n{}", super::folder::FORMAT, at.alone))
@@ -382,7 +387,7 @@ fn write_field(text: &str, name: &str, field: &str, value: &Value) -> Result<(St
 
 /// `text` with these keys of asset `name` set, a null cleared, and what went doing so. Setting what it holds changes nothing.
 pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
-    if let Some(at) = window(text, name)
+    if let Some(at) = editing(text, name)
         && let Ok((edited, warnings)) = set_in(&at.alone, name, fields)
         && let Some(lines) = edited.strip_prefix(&format!("{SECTION}:\n"))
     {
@@ -475,7 +480,7 @@ fn add_block(text: &str, name: &str, block: &str) -> Result<String, Error> {
 
 /// `text` with asset `name`'s lines gone, and what puts them back.
 pub(super) fn removed(text: &str, name: &str) -> Result<(String, String), Error> {
-    if let Some(at) = window(text, name)
+    if let Some(at) = editing(text, name)
         && let Ok((_, back)) = removed_from(&at.alone, name)
     {
         return Ok(([at.before, at.after].concat(), back));

@@ -36,6 +36,11 @@ pub const FILES: &str = "files";
 pub const RUNS: &str = ".runs";
 /// What a walk owes, in `.runs`: no one commits it, and it moves without touching what the project is.
 pub const WALK: &str = ".runs/walk.json";
+/// What `Idempotency-Key`s answered, for their retries. Not in project.lock, which a key would rewrite whole and which goes with the project, and
+/// not in `.runs`, which `reclaim` empties.
+const KEYS: &str = ".keys.json";
+/// How long a key is kept: as long as a held file waits.
+const KEY_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 /// A cache of what is measured of each file, which a read of the file can always make again.
 pub(super) const MEASURED: &str = ".measured.json";
 /// Where a project.lock that can't be read goes.
@@ -417,28 +422,19 @@ pub struct Lock {
     /// As `pending`.
     #[serde(skip)]
     pub walk: Owed,
-    /// What each import under an `Idempotency-Key` answered, for its retries, by that key.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub imported: BTreeMap<String, Keyed>,
-    /// The name each `Idempotency-Key` a new asset was asked under took, kept as `imported` is.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub assets_made: BTreeMap<String, KeyedAsset>,
 }
 
-/// An import's answer, and the digest of what asked it.
+/// What an `Idempotency-Key` answered, and the digest of what asked it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Keyed {
     pub digest: String,
     pub at_ms: i64,
-    pub answer: protocol::project::Imported,
-}
-
-/// The name a new asset took, and the digest of what asked it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KeyedAsset {
-    pub digest: String,
-    pub at_ms: i64,
+    /// What a new asset was called.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// An import's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<protocol::project::Imported>,
 }
 
 /// One file a `cozy run` left in the project.
@@ -452,7 +448,7 @@ pub struct RunFile {
 
 impl Default for Lock {
     fn default() -> Self {
-        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default(), imported: BTreeMap::new(), assets_made: BTreeMap::new() }
+        Self { format: FORMAT, files: BTreeMap::new(), assets: BTreeMap::new(), pending: BTreeMap::new(), runs: vec![], reserved: BTreeMap::new(), makes: BTreeMap::new(), walk: Owed::default() }
     }
 }
 
@@ -926,6 +922,25 @@ impl Folder {
     /// No render holds any.
     pub fn drop_texts(&self) {
         let _ = std::fs::remove_dir_all(self.dir.join(RUNS).join("asked"));
+    }
+
+    /// What `Idempotency-Key` `key` answered here.
+    pub fn keyed(&self, key: &str) -> Option<Keyed> {
+        self.keys().remove(key)
+    }
+
+    fn keys(&self) -> BTreeMap<String, Keyed> {
+        std::fs::read(self.dir.join(KEYS)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    }
+
+    /// Keeps what `key` answered.
+    pub fn keep_key(&self, key: &str, digest: &str, name: &str, answer: Option<protocol::project::Imported>) -> Result<(), Error> {
+        let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut keys = self.keys();
+        let at_ms = super::now_ms();
+        keys.retain(|_, row| at_ms - row.at_ms < KEY_KEPT_MS);
+        keys.insert(key.to_owned(), Keyed { digest: digest.to_owned(), at_ms, name: name.to_owned(), answer });
+        durable::replace(&self.dir.join(KEYS), serde_json::to_string(&keys).expect("keys serialize").as_bytes(), 0o644).map_err(io)
     }
 
     /// Applies `change` to what the walk owes, touching nothing of what the project is.

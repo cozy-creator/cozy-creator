@@ -2188,7 +2188,7 @@ J '.next[0] | startswith("cozy project") and contains(" restore drawn ")' <<< "$
 
 tool_functions() {
 step "a tool is a function: called directly with no adapter, its mentions the files they name, and past a bound clamped with a line saying so"
-local T=$OUT/tools tool=$here/project/tool.py red blue id one input read before lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+local T=$OUT/tools tool=$here/project/tool.py red blue id one input read before lock=$HOME/.cozy/calcifer/calcifer.lock.holder key
 mkdir -p "$T"; still "$T/red.png" red; still "$T/blue.png" blue
 printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
 red=$(prefix "$T" "$T/red.png"); blue=$(prefix "$T" "$T/blue.png")
@@ -2280,6 +2280,14 @@ step "a tool is a function: a node from a tool takes its kind from what it makes
 one=$(api -X POST -H "Idempotency-Key: tool-$RANDOM$RANDOM" -d "$(jq -n --arg t "$tool/need" '{tool: $t, name: "kept_video"}')" "http://$ADDR/v1/projects/$id/assets")
 J '.name == "kept_video"' <<< "$one" || check "tools: POST assets: $one"
 J '.assets[] | select(.name == "kept_video") | .kind == "video"' <<< "$(status "$T")" || check "tools: its kind isn't from its output: $(row "$T" kept_video .kind)"
+key=tool-$RANDOM$RANDOM; before=$(sha "$T/project.lock")
+for _ in 1 2; do
+  one=$(api -X POST -H "Idempotency-Key: $key" -d "$(jq -n --arg t "$tool/need" '{tool: $t, name: "by_key"}')" "http://$ADDR/v1/projects/$id/assets")
+  J '.name == "by_key"' <<< "$one" || check "tools: POST assets under a key: $one"
+done
+[ "$(grep -c '^  by_key' "$T/project.yaml")" = 1 ] || check "tools: a key's retry made another asset"
+[ "$(sha "$T/project.lock")" = "$before" ] || check "tools: a key rewrote the lock"
+cozy project -p "$T" delete by_key > /dev/null || check "tools: delete by_key"
 before=$(runs "$T")
 render "$T" kept_video || true
 says tools "needs video"

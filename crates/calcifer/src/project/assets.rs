@@ -22,7 +22,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    Doc, IMPORT_KEPT_MS, Project, Tool, Walk, assetfile, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, model, noun, now_ms, pin_in_file, stale_names,
+    Doc, Project, Tool, Walk, assetfile, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, model, noun, pin_in_file, stale_names,
 };
 use crate::api::{Api, Refusal, parse};
 
@@ -57,13 +57,13 @@ pub(super) async fn create(
     let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
     let _one = project.importing.lock().expect("importing lock");
     let lock = folder.lock().map_err(Refusal)?;
-    let told = key.as_ref().and_then(|(key, _)| lock.assets_made.get(key));
-    if let (Some(told), Some((key, digest))) = (told, &key)
+    let told = key.as_ref().and_then(|(key, _)| folder.keyed(key));
+    if let (Some(told), Some((key, digest))) = (&told, &key)
         && told.digest != *digest
     {
         return Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another asset already"))));
     }
-    let name = match told {
+    let name = match &told {
         Some(told) => told.name.clone(),
         None => {
             let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
@@ -83,17 +83,11 @@ pub(super) async fn create(
     let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().kind));
     let makes = plain.as_ref().and_then(|plain| said.as_ref().filter(|kind| lock.makes.get(plain) != Some(kind)).map(|kind| (plain.clone(), kind.clone())));
     let unknown = plain.as_ref().filter(|plain| said.is_none() && !lock.makes.contains_key(*plain)).cloned();
-    let keyed = key.as_ref().filter(|_| told.is_none());
-    if keyed.is_some() || makes.is_some() {
-        let at_ms = now_ms();
-        (folder.update_lock(|lock| {
-            if let Some((key, digest)) = keyed {
-                lock.assets_made.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
-                lock.assets_made.insert(key.clone(), folder::KeyedAsset { digest: digest.clone(), at_ms, name: name.clone() });
-            }
-            lock.makes.extend(makes.clone());
-        }))
-        .map_err(Refusal)?;
+    if let Some((key, digest)) = key.as_ref().filter(|_| told.is_none()) {
+        folder.keep_key(key, digest, &name, None).map_err(Refusal)?;
+    }
+    if makes.is_some() {
+        folder.update_lock(|lock| lock.makes.extend(makes.clone())).map_err(Refusal)?;
     }
     // Its row before its lines: a page that reads the name has somewhere to put it, and places nothing of its own.
     if let Some(card) = asked.at {
@@ -195,7 +189,8 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     let unknown = || Refusal(Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy project status"));
     // Its own lines are all this needs of the file.
     let alone = assetfile::alone(&folder.text().map_err(Refusal)?, &name).ok_or_else(unknown)?;
-    let doc = Doc::read(folder, &alone).map_err(Refusal)?;
+    // Its lines may read an anchor from elsewhere in the file.
+    let doc = Doc::read(folder, &alone).or_else(|_| Doc::load(folder)).map_err(Refusal)?;
     let i = doc.find(&name).ok_or_else(unknown)?;
     let name = doc.assets[i].name.clone();
     let at = canvas::row(folder, &name).map_err(Refusal)?;

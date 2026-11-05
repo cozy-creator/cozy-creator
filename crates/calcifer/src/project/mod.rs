@@ -227,8 +227,6 @@ impl Projects {
 
 /// A run that a person canceled: no version, and no failure of its asset.
 const CANCELED: &str = "version_canceled";
-/// How long what an import under an `Idempotency-Key` answered is kept for its retries: as long as a held file waits.
-const IMPORT_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 /// How long what was heard of a package stands before a read asks again, in the background.
 const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
@@ -1451,9 +1449,9 @@ async fn runs(
     let project = api.projects.get(&api, &id)?;
     let idempotency = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
     if let Some((key, digest)) = &idempotency {
-        // Kept in the lock too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
-        let held = project.folder.lock().map_err(Refusal)?;
-        let kept = held.walk.asked.get(key).cloned().or_else(|| held.assets_made.get(key).map(|row| row.digest.clone()));
+        // Kept in the walk's file too while the walk goes: the answer to a retry must outlive a restart, now each ask makes new versions.
+        let held = project.folder.walk_now().map_err(Refusal)?;
+        let kept = held.walk.asked.get(key).cloned().or_else(|| project.folder.keyed(key).map(|row| row.digest));
         let mut keys = project.keys.lock().expect("keys lock");
         match keys.get(key).or(kept.as_ref()) {
             Some(seen) if seen == digest => {
@@ -1595,22 +1593,18 @@ async fn runs(
     }))
     .map_err(Refusal)?;
     // One write of the project per ask: what the file has lost is set aside, and what's asked again fails no more.
-    {
-        let at_ms = now_ms();
-        (project.folder.update_lock(|lock| {
-            lock.tombstone(|key| doc.find(key).is_some());
-            for take in &ask.takes {
-                if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
-                    held.failed = None;
-                }
+    (project.folder.update_lock(|lock| {
+        lock.tombstone(|key| doc.find(key).is_some());
+        for take in &ask.takes {
+            if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
+                held.failed = None;
             }
-            // The walk's own record goes as it ends: this one outlives it, so a retry however late runs nothing twice.
-            if let Some((key, digest)) = &idempotency {
-                lock.assets_made.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
-                lock.assets_made.insert(key.clone(), folder::KeyedAsset { digest: digest.clone(), at_ms, name: String::new() });
-            }
-        }))
-        .map_err(Refusal)?;
+        }
+    }))
+    .map_err(Refusal)?;
+    // The walk's own record goes as it ends: this one outlives it, so a retry however late runs nothing twice.
+    if let Some((key, digest)) = &idempotency {
+        project.folder.keep_key(key, digest, "", None).map_err(Refusal)?;
     }
     let made = project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &made);
@@ -1831,12 +1825,7 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
     }
     let answer = Imported { name: name.clone(), sha256: kept.file.sha256, field: kept.field.to_owned(), path: kept.file.path, already: kept.already };
     if let Some((key, digest)) = key {
-        let at_ms = now_ms();
-        (folder.update_lock(|lock| {
-            lock.imported.retain(|_, row| at_ms - row.at_ms < IMPORT_KEPT_MS);
-            lock.imported.insert(key.clone(), folder::Keyed { digest: digest.clone(), at_ms, answer: answer.clone() });
-        }))
-        .map_err(Refusal)?;
+        folder.keep_key(&key, &digest, "", Some(answer.clone())).map_err(Refusal)?;
     }
     Ok(answer)
 }
@@ -1844,8 +1833,8 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<protocol::proje
 /// What an import under this key answered, if one did: it answers the same. Another import under it is refused.
 fn replayed(folder: &Folder, key: Option<&(String, String)>) -> Result<Option<Imported>, Refusal> {
     let Some((key, digest)) = key else { return Ok(None) };
-    match folder.lock().map_err(Refusal)?.imported.remove(key) {
-        Some(row) if row.digest == *digest => Ok(Some(row.answer)),
+    match folder.keyed(key) {
+        Some(row) if row.digest == *digest => Ok(row.answer),
         Some(_) => Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another import already")))),
         None => Ok(None),
     }
