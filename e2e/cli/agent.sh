@@ -56,7 +56,7 @@ YAML
 (cd "$F" && cozy project approve sky 1) > /dev/null 2>&1 || check "agent: approve sky 1"
 sed -i 's/A green hill\./A green hill in the rain./' "$F/project.yaml"
 (cd "$F" && cozy --json run "$here/weightless/reverse" "text=agent $RANDOM" --on local) > "$A/reverse.ndjson" 2> "$A/reverse.err" || check "agent: the weightless run failed"
-(cd "$F" && cozy --json run "$here/project/shots.py/crash" "prompt=the agent cell fails on purpose" --on local) > "$A/crash.ndjson" 2> "$A/crash.err" || true
+(cd "$F" && cozy --json run "$here/project/shots.py/crash" "crash=the agent cell fails on purpose" --on local) > "$A/crash.ndjson" 2> "$A/crash.err" || true
 n=$(run_number "$A/reverse.ndjson") failed=$(run_number "$A/crash.ndjson")
 [ -n "$n" ] && [ -n "$failed" ] || fail "agent: no run numbers: $(tail -c 300 "$A/reverse.err" "$A/crash.err")"
 
@@ -90,7 +90,7 @@ assets:
     seconds: 4
   broken:
     tool: $here/project/shots.py/crash
-    prompt: the agent cell fails on purpose
+    crash: the agent cell fails on purpose
 YAML
 view wait-idle "$F" project wait
 cmp -s "$A/wait-idle.out" "$A/project-status.out" || check "agent: wait with nothing going isn't what status says: $(diff "$A/wait-idle.out" "$A/project-status.out" | head -4)"

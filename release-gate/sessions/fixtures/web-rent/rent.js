@@ -2,7 +2,7 @@
 // list, a quote through the page, its stated price, and no order. With --rent: one click on that price, one order, followed until it's ready; it's
 // used; then End, followed until the Hub affirms the pod gone. What it uses is checked and said, and End goes on whatever those found: `web-rent.sh`'s
 // trap ends the pod if the page doesn't.
-//   node rent.js <sign-in link from `cozy web --no-open`> [--rent]
+//   node rent.js <sign-in link from `cozy open --no-open`> [--rent]
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: Google Chrome; $COZY: the CLI; $SKU: the product; $SSH_KEY: an OpenSSH public key; $ORDER: where
 // what the order answered goes, the moment it does; $PROJECT: a project's folder for its run; $SHOT: where its screenshots go. Prints what it saw as
 // JSON and exits 1 if anything failed.

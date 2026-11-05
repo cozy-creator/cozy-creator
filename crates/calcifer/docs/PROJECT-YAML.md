@@ -9,7 +9,7 @@ A project is a folder of files plus a graph that says how each file was made.
 - **Asset:** a stable name holding one main file: a name, what it is, how it's made, the file you approved, and words for whatever mentions it.
 - **Edge:** you don't write edges: `<name>` in any input reads that asset. The only rule is no cycles.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
-- **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.lock`.
+- **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.lock`, with the words that made it where they changed from the version before.
 
 Calcifer owns all of this. It knows no inputs and no packages by name.
 
@@ -24,6 +24,7 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `<edit_name>.mp4`, `.otio` | Cozy | Each edit |
 | `.runs/` | Cozy only | Where a run's outputs land on their way into `files/`, and while a render goes what its walk owes (`walk.json`, `asked/`), of this folder and this Calcifer only: a copy goes on with none of it, and `push` and `pull` don't carry it |
 | `.measured.json` | Cozy only | What was measured of each file. Disposable: it's measured again |
+| `.keys.json` | Cozy only | What each `Idempotency-Key` answered, for a day. Disposable |
 
 **A machine write changes only its own lines.** Comments, `|` blocks and everything else in the file stay as a hand left them. An unknown key warns when the file is read.
 
@@ -88,7 +89,7 @@ assets:
 | `voice` | `<name>`, another asset. Readers get its main file as `files.voice`. It isn't part of making this asset |
 | `models`, `lora` | Go on its function's first call |
 
-Every other key is an **input**: it passes through to the function and counts in the key. A function's adapter types them, and that type is its controls. An unknown key warns at render, and an unknown section warns at reading. A `kind` line warns and is ignored: what an asset is comes from its tool, its file or its version, and `GET /v1/projects/{id}` says it.
+Every other key is an **input**: it goes to the function and counts in the key. A function's types are its controls. An unknown key warns at render, and an unknown section warns at reading. A `kind` line warns and is ignored: what an asset is comes from its tool, its file or its version, and `GET /v1/projects/{id}` says it.
 
 **Text assets.** `text:` with no `tool` is an asset of words alone. `<name>` of one, in any input, is replaced by its words where it stands, before a package sees it, so a function has no `style` input and nothing is prepended: a style goes only where it's mentioned. Its text may mention others, and what it mentions is read by whatever mentions it. A cycle stays plain text, with a warning. Editing it puts what reaches it out of date, and what's approved stays approved. One deleted is no change to what was made with it. It can't go by a tag of a package the project uses.
 
@@ -102,24 +103,24 @@ Every other key is an **input**: it passes through to the function and counts in
 
 | Tool | Inputs |
 |---|---|
-| A shot, `minimax-h3/generate`, `generate_turbo` | `summary`, `beats` (each `description`, `duration`), `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `preset`, `resolution`; on `generate`, `turbo`, on unless it says `false`, and `steps`, only with it off |
+| A shot, `minimax-h3/generate` | `summary`, `beats` (each `description`, `duration`), `turbo`, `soundscape`, `music`, `aspect_ratio`, `first_frame`, `last_frame`, `plate` (`video`, `use_audio`), `preset`, `resolution`; on `generate`, `turbo`, on unless it says `false`, and `steps`, only with it off |
 | An upscale, `minimax-h3/upscale` | `video`, `resolution` |
 | A picture, `qwen-image-2/generate_turbo`, `generate` | `instructions`, `aspect_ratio`, `megapixels`, `preset`; `steps` on `generate` |
 | An edit or a frame, `cozy/edit`, `cozy/frame` | See below |
 
-**A shot with no `soundscape`** goes to H3 as `N/A`, which it reads as silence. A package chooses its own internals, such as how many context frames H3 keeps.
+**A shot with no `soundscape` or `music`** says `N/A` for each, which H3 reads as silence, with no warning: it's the default. Dialogue goes in a beat's text. **One beat and no `summary`** goes to the model as written, in MiniMax's own form if you like, at most 15 s here: `cozy run` takes one of any length. A package chooses its own internals, such as how many context frames H3 keeps.
 
 ## Mentions
 
 `<name>` in any input makes that asset an input.
 
 - **In a shot's `summary`:** reaches every segment. **In a beat:** only the segment holding it. H3 gets confused by extra references, so mention things only where they're needed.
-- **A package's own tags:** an adapter declares them, `@app.project_adapter("generate", reserved=["d", "scenetrans", "cutoff"])`, written out, as cozy reads it from the source. In the text of an asset that function makes, each stays text in any case, and reaches the adapter unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
+- **A package's own tags:** its function declares them, `node=Node(reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that function makes, each stays text in any case, and reaches it unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
 - **What can't be a name** is text, with no warning, as `<Picture 1>` and `</d>` are.
 - **A name that names nothing** fails that asset before anything runs, at no cost: `<Image-1> is no longer in the project`, with `did you mean <kyogre>?` when it's close. The failure stays until a version lands or its inputs change, what reads it waits, and everything else goes on. `status` says it ahead of a render. Until a function is read, at its first render, its assets' are held back, because they may be its tags. An approved asset runs nothing, so it doesn't fail unless you name it. An edit leaves out a clip it can't read.
 - **A cycle:** a mention that closes one stays plain text, with a warning, and both still render.
 
-**What a reader gets of what it mentions:** `name`, `kind`, `asset_type`, `description`, `files` by role (`image`, `video` or `audio`, `latents`, `voice`), `made_by`, and `inputs` holding only `use_audio` and `follow`. What made it, its `instructions` or a shot's `summary`, is for its maker alone, and never crosses a mention.
+**What a reader gets of what it mentions:** `name`, `kind`, `asset_type`, `description`, `files` by role (`image`, `video` or `audio`, `latents`, `voice`), and `made_by`. What made it, its `instructions` or a shot's `summary`, is for its maker alone, and never crosses a mention.
 
 ## How rendering decides
 
@@ -133,7 +134,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 
 **The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, and twelve for each text asset it takes in, so one gone hides no change in the others. Its inputs are as written, `<style>` and all. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
-**Not in the key:** its own `description`, `asset_type` and `voice`; package, adapter and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
+**Not in the key:** its own `description`, `asset_type` and `voice`; package and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
 **Seed:** Calcifer draws it when the function takes one, and records it.
 
@@ -151,10 +152,11 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `approve <name> <version>` | Writes that version's hash as its `approved` |
 | `approve <name> <hash>` | The same with any file in `files/`, whatever made it |
 | `unapprove <name>` | Takes `approved` away. A dropped file keeps it: it's all it is |
+| `delete <name> --version <n>` | Discards that take, repeatable, and prints the `restore` line for each: see [Discarded takes](#discarded-takes) |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
-| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions |
-| `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names. With `project.lock` gone, unreadable or listing nothing, those files may be all that's left of its takes, so `--yes` is refused and they stay |
+| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions. A name is no input: nothing that reads it goes out of date |
+| `reclaim [--yes]` | Lists orphans and the bytes they'd free, and discarded takes, or with `--yes` deletes them and any file a version or run has on record and nothing names now. A file with no record is listed and stays: it may be all that's left of a take. With `project.lock` gone, unreadable or listing nothing, `--yes` is refused |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
 | `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
@@ -173,7 +175,7 @@ A project has one walker, and each render adds to it. Without `--queue` a render
 - **A save that can't be read** refuses a new `render`, and does nothing else. `status` says what's wrong, and `cancel` works.
 - **`--on`:** each render's work goes where it said. With several machines, a job goes to the one where the plan has it ending soonest, once that has its GPUs free.
 - **Everything at once, up to 32 jobs per render going:** what doesn't read each other goes side by side, each sent, installed and made on its own. What fails stops what reads it, there and then, and nothing else. How wide a job goes, how many GPUs of its machine, comes from how long things took there: it never changes once a job has started.
-- **Ahead of its turn,** a machine fetches the code and weights of what's queued for it, behind whatever a run is waiting on: its `tool`'s function, and for one that loads nothing itself, what its package's internal functions load, what they share first. It's a guess, so a wrong one costs bytes, and it stops when its last job's run begins. It holds no GPU, doesn't show in `cozy run ls`, and a machine with no room for it stays as it is, saying so in one line. `status` and the render's view show it; `cancel all` stops it.
+- **Ahead of its turn,** a machine fetches the code and weights of what's queued for it, behind whatever a run is waiting on: its `tool`'s function, and for one that loads nothing itself, only what all its package's internal functions load. It's a guess, so a wrong one costs bytes, and it stops when its last job's run begins. It holds no GPU, doesn't show in `cozy run ls`, and a machine with no room for it stays as it is, saying so in one line. `status` and the render's view show it; `cancel all` stops it.
 - **`--missing`** doesn't make again what another render is making with the same inputs. A plain render makes its own version.
 
 ## An asset's files
@@ -190,7 +192,17 @@ An asset has one main file; any other files are what the same run left, such as 
 
 ## Orphans
 
-An asset no longer named in the file keeps its versions and files until `reclaim`. Once a render has seen it gone, its name is free: a later asset of that name starts with no versions, and `cozy project rename` still finds the old ones. Deleting one from the page takes its versions with it, and Undo puts them back; what it made stands, and its files wait, unnamed, for `reclaim`.
+An asset no longer named in the file keeps its versions and files until `reclaim`. Deleted from the page or the CLI, or gone from the file once a render has seen that, its name is free: a later asset of that name starts with no versions, and `cozy project rename` or Undo still finds the old ones. What it made stands.
+
+## Discarded takes
+
+Discarding a take takes it off its asset at once. Nothing runs and no bytes go: it stays in `project.lock` under `discarded` until `reclaim`, and `cozy project restore <name> --version <n>` or Undo brings it back. Its number is never given again, so a list can have gaps.
+
+- **The approved take:** its `approved:` goes with it, and the asset stands on its newest take left. Undo brings both back, unless another take has been approved since.
+- **The last take:** the asset stays, with no take, and a render makes it again like anything with no state.
+- **A running take** isn't a take yet: `cozy project cancel <name>` stops it.
+- **What read it** is out of date only by the usual rule, that what it reads has changed. A take that kept the start of this one (`--take`) stands, and still says which take it kept.
+- **`reclaim`** ends Undo and deletes the files, except a file another version names, or that a clip of an Edit's version cut.
 
 ## Storyboards
 
@@ -202,24 +214,28 @@ cozy project approve clash_board 3
 cozy project render clash
 ```
 
-## Adapters
+## Functions
 
-**A function no adapter speaks for** is called directly with its inputs, each `<mention>` in a file input the file it names (`CALCIFER-API.md`). **An adapter** translates:
+An asset is a call of its function, the same one `cozy run` and an agent make. Its text goes to the function with its `<mentions>` in it, and everything else the function asks for is filled by its types:
+
+- **A file input** takes the file `<name>` names, and one no mention names takes the first read that has a file of its kind.
+- **A list of structs with a `name` member** (`references`, `pictures`) takes what the text mentions, member by member: `name`, `description`, `asset_type`, `made_by`; `alpha`, `width`, `height` as measured; a file by its role, `image`, `video`, `audio`, `voice`, or an output's name. A prompt never crosses a mention. An output past the main one reaches only the package that made it. With one file member, an entry per file, the rest `<name 2>`, `<name 3>`.
+- **A list of any other struct** is rows, as long as its type says at the least.
+- **A `Node` says the rest**, in the function's own package:
 
 ```python
-class TurboOperation(Operation, kw_only=True):
-    inputs: TurboInputs                          # its controls
-
-@app.project_adapter("generate_turbo", reserved=["d"])       # project-adapter-generate_turbo
-def adapt(op: TurboOperation) -> list[Invocation]: ...
+app.entrypoint(generate, node=Node(
+    name="shot",                            # what a box of it is called: `shot_1`, `shot_2`; by default its package
+    label="MiniMax H3",                     # its name in the tool list
+    show=["soundscape", "music"],           # on its default face, beside its first text and what's required
+    hide=["steps", "upscale"],              # never drawn; a file or `cozy run` can still set them
+    fill={"continue_from": "take"},         # the take a new one keeps, or `<input>.<member>` of what that input mentions; `<input>.text` is the words its version was made from, else its description
+    cuts={"every": 17, "offset": 5, "first": 124},  # the frames a kept take can end on, if it can't end on any
+    reserved=["d", "scenetrans"],           # its model's own tags
+))
 ```
 
-For each asset that needs a run, Calcifer:
-1. Builds an `Operation`: `{version: 3, asset, kind, function, inputs, reads, keep}`.
-2. Stops there if the memo already has a result.
-3. Installs the package on the render machine and runs its adapter as a small CPU run. Adapters are pure, so they only take text, names and hashes.
-4. Runs the invocations it returns, in order, adding the seed, and on the first its `models` and `lora`. An empty list means no run: the asset's files are what it reads. In `input`, a string that is exactly `$0.video` means that field of invocation 0's result. A failed one stops the list and makes no version.
-5. Records all the resulting files as one new version, by output name, later over earlier.
+Hints on a field stay in `msgspec.Meta(extra={"min", "max", "step", "options", "label", "placeholder", "total", "unit"})`. Past a bound is clamped and said. A required text left empty says the asset says nothing to make, and a required file that's missing says so, free, before anything is sent. A take made by another package is refused the same way. What's about the model is the function's, in its first lines: what it raises fails the run before any model loads, and its `warnings` reach the version.
 
 ## Edits and frames
 
@@ -239,12 +255,14 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 
 ## Upgrading from format 2
 
+A project of format 2 upgrades itself the first time anything opens it, or a run lands in it, and says so once. The old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. Each asset's approved version, else its newest, is taken as current, so what was out of date no longer shows it. To keep those marks, upgrade it yourself first:
+
 ```
 cozy project status --json > status.json      # with the cozy that reads format 2
 cozy project upgrade --status status.json     # with this one
 ```
 
-It runs here with no Calcifer, and the old files stay beside the new as `project.yaml.v2` and `project.lock.v2`. It refuses while runs are on their way. With no `--status`, each asset's approved version, else its newest, is taken as current.
+It runs here with no Calcifer. What can't convert is refused, says why and stays as it is: runs on their way, or two names that fold to one. Format 1 isn't moved.
 
 - Each asset's `render` goes flat, `prompt` as `instructions`, and `with` as `tool`, always a function: H3 is `generate`, with `turbo: false` only where a file said so or where it set `steps`; any other package's `turbo: true` is `generate_turbo`, `turbo: false` `generate`, and with neither what made its newest version. A video with only `video` and `resolution` is `upscale`. `with: cozy` is `cozy/edit`, or `cozy/frame` for a picture. `pieces` become `tracks`, `start` `in` and `end` `out`. A hash in `image`, `video` or `audio` is `approved`, and an input under `# was` is back. `kind` lines go. Comments stay.
 - Each entity folds into its sheet, which takes its name, `description` and `asset_type`. Each form becomes an asset, `<entity>.<form>`, and mentions are rewritten.

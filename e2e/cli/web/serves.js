@@ -1,4 +1,4 @@
-// The web-serves cell's browser (e2e/cli/web.sh): `cozy web --no-open`'s link, opened in a real Chrome. The page redeems its
+// The web-serves cell's browser (e2e/cli/web.sh): `cozy open --no-open`'s link, opened in a real Chrome. The page redeems its
 // code and clears it, renders under its CSP and opens GET /v1/events. On its session a stream here then sees `hello`, and the
 // `project.changed` of an import the CLI makes. Prints what it saw as JSON, and web.sh judges it.
 //   node serves.js <link> <project id> <project folder> <file to import>

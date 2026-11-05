@@ -1,18 +1,19 @@
 import type { NodeProps } from "@xyflow/react"
-import { useReactFlow, useStore } from "@xyflow/react"
-import { type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { useReactFlow } from "@xyflow/react"
+import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
+import type { Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { AssetEdit, Conflict, InFrame, RenderButton } from "./AssetEdit"
+import { AssetEdit, Conflict, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { ElementNode, ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
-import { controlsOf, shapesOf, snapped } from "./controls"
+import { controlsOf } from "./controls"
 import { DRAGGED_FILE } from "./drag"
 import { Media, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
-import { aspectOf, faceOf, madeHere, makes, ratioOf, shownOf } from "./shown"
-import { beatLength, beatsOf, clock, noHash, piecesOf, took } from "./text"
+import { faceOf, madeHere, makes, shownOf } from "./shown"
+import { clock, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
@@ -30,7 +31,7 @@ function kindOf(view: ElementView): string {
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
 function dotOf(view: ElementView): string {
-  if (view.placing || view.queued) return "s-making"
+  if (view.placing || view.queued || view.asked !== undefined) return "s-making"
   const asset = view.asset
   if (asset?.standing === "making") return "s-making"
   if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
@@ -53,7 +54,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
   if (versions.length < 2 && !adds && !(versions.length && asset.making?.length)) return null
   const takeOut = (event: DragEvent, version: (typeof versions)[number]) => {
     const description = store.valueOf(name, "description")
-    const file = { sha256: version.main?.sha256, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }
+    const file = { sha256: version.main?.sha256, field: version.main?.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined }
     event.dataTransfer.setData(DRAGGED_FILE, JSON.stringify(file))
     event.dataTransfer.effectAllowed = "copy"
   }
@@ -65,18 +66,22 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       }}
     >
       {versions.map((version) => (
-        <button
-          key={version.number}
-          type="button"
-          className={`take ${shown?.number === version.number ? "on" : ""} ${view.slid === version.number ? "fresh" : ""}`}
-          aria-label={`${asset.noun} ${version.number}`}
-          title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
-          draggable={Boolean(version.main)}
-          onDragStart={(event) => takeOut(event, version)}
-          onClick={() => store.view(name, version.number === asset.version ? undefined : version.number)}
-        >
-          {version.main && !version.main.absent ? <Thumb sha256={version.main.sha256} cardWidth={width} /> : <span>{version.number}</span>}
-        </button>
+        <span key={version.number} className="take-at">
+          <button
+            type="button"
+            className={`take ${shown?.number === version.number ? "on" : ""} ${view.slid === version.number ? "fresh" : ""}`}
+            aria-label={`${asset.noun} ${version.number}`}
+            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
+            draggable={Boolean(version.main)}
+            onDragStart={(event) => takeOut(event, version)}
+            onClick={() => store.view(name, version.number === asset.version ? undefined : version.number)}
+          >
+            {version.main && !version.main.absent ? <Thumb sha256={version.main.sha256} cardWidth={width} /> : <span>{version.number}</span>}
+          </button>
+          <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
+            <Icon name="close" />
+          </button>
+        </span>
       ))}
       {(asset.making ?? []).map((run) => (
         <span key={run} className="take making" title={`Run ${run}`}>
@@ -84,7 +89,7 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
         </span>
       ))}
       {adds && (
-        <button type="button" className="take add" aria-label={`New ${asset.noun}`} title={`New ${asset.noun}`} onClick={() => void store.run(name)}>
+        <button type="button" className="take add" aria-label={`New ${asset.noun}`} title={`New ${asset.noun}`} onClick={() => store.run(name)}>
           +
         </button>
       )}
@@ -101,55 +106,83 @@ function Approve({ view, name }: { view: ElementView; name: string }) {
   const approved = Boolean(asset.pinned) && (asset.approved === undefined ? view.viewed === undefined : shown?.number === asset.approved)
   if (approved) {
     return (
-      <button type="button" className="act nodrag" onClick={() => void store.unpin(name)}>
+      <button type="button" className="act nodrag" onClick={() => store.unpin(name)}>
         Unapprove
       </button>
     )
   }
   if (shown?.number === undefined) return null
   return (
-    <button type="button" className="act nodrag" onClick={() => void store.pin(name, shown.number!)}>
+    <button type="button" className="act nodrag" onClick={() => store.pin(name, shown.number!)}>
       Approve
     </button>
   )
 }
 
-/** On a video: scrub to a point, and a new take keeps it up to there. Its words stay as they are. */
+/** A take's frames a second. */
+const FPS = 24
+
+const frameCode = (frame: number) => `${clock((frame / FPS) * 1000)}.${String(frame % FPS).padStart(2, "0")}`
+
+/** The frame a new take really starts from, asked for `frame` of a take of `last` frames, as its tool declares. Null: not this early. */
+function cutAt(frame: number, last: number, cuts: Tool["cuts"]): number | null {
+  if (!cuts) return Math.min(frame, last)
+  if (frame < cuts.first) return null
+  return Math.min(last, cuts.offset + Math.round((frame - cuts.offset) / cuts.every) * cuts.every)
+}
+
+/** On a take of what can go on from one: scrub to a point, a frame at a time, and a new take holds all before where it can really cut and carries on from there. Its words stay as they are. */
 function FromHere({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
+  const tools = useSignal(store.tools)
   const shown = shownOf(view)
-  if (!makes(view) || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
-  const at = view.scrub ?? 0
+  const tool = tools.get(view.asset?.tool ?? "")
+  if (!makes(view) || !tool?.takes || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
+  const last = Math.round((shown.duration_ms / 1000) * FPS)
+  const frame = Math.min(last, Math.round((view.scrub ?? 0) * FPS))
+  const cut = cutAt(frame, last, tool.cuts)
+  const go = (to: number) => {
+    const held = Math.max(0, Math.min(last, to)) / FPS
+    store.patch(name, { scrub: held })
+    store.seek(name, held)
+  }
+  const says = cut === null ? `From ${frameCode(tool.cuts?.first ?? 0)} on` : tool.cuts && cut !== frame ? `Cuts at ${frameCode(cut)}` : ""
   return (
-    <div className="from-here">
-      <input
-        className="nodrag nopan"
-        type="range"
-        aria-label="Where to keep it up to"
-        min={0}
-        max={shown.duration_ms / 1000}
-        step={0.1}
-        value={at}
-        onChange={(event) => store.patch(name, { scrub: Number(event.target.value) })}
-      />
-      <span className="tc-inline">{clock(at * 1000)}</span>
-      <button type="button" className="act nodrag" disabled={at <= 0} onClick={() => void store.run(name, { take: shown.number, in_s: at })}>
-        New take from here
-      </button>
+    <div className="from-here" style={{ "--kept": `${((cut ?? 0) / last) * 100}%` } as CSSProperties}>
+      <input className="nodrag nopan keeps" type="range" aria-label="Where to keep it up to" min={0} max={last} step={1} value={frame} onChange={(event) => go(Number(event.target.value))} />
+      <div className="row">
+        <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={frame <= 0} onClick={() => go(frame - 1)}>
+          ‹
+        </button>
+        <span className="tc-inline">{frameCode(frame)}</span>
+        <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={frame >= last} onClick={() => go(frame + 1)}>
+          ›
+        </button>
+        {says && <span className="muted cut-says">{says}</span>}
+        <span className="sp" />
+        <button type="button" className="run nodrag" disabled={!cut} title={cut ? `Keep up to ${frameCode(cut)} and make the rest again` : undefined} onClick={() => cut && store.run(name, { take: shown.number, in_s: cut / FPS })}>
+          New take from here
+        </button>
+      </div>
     </div>
   )
 }
 
-/** A shot's beats, each as wide as it lasts, or a cut's pieces. Read only: a beat opens the box's controls, a piece plays from there. */
+/** The rows of a group that adds up, each as wide as it lasts, or a cut's pieces. Read only: a row opens the box's controls, a piece plays from there. */
 function Bar({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
-  const beats = beatsOf(view.asset?.fields)
-  if (beats.length) {
+  const tools = useSignal(store.tools)
+  const group = view.asset && controlsOf(view.asset, tools).find((control) => control.members?.some((member) => member.total))
+  const total = group?.members?.find((member) => member.total)
+  const rows = group ? rowsIn(view.asset?.fields?.[group.field]) : []
+  if (total && rows.length) {
+    const lasts = (row: Record<string, unknown>) => Number(row[total.field]) || Number(total.default) || 1
     return (
       <div className="beats">
-        {beats.map((beat, i) => (
-          <button key={i} type="button" className="nodrag" style={{ flexGrow: beatLength(beat) }} onClick={() => store.patch(name, { face: "edit" })}>
-            {beatLength(beat)}s
+        {rows.map((row, i) => (
+          <button key={i} type="button" className="nodrag" style={{ flexGrow: lasts(row) }} onClick={() => store.patch(name, { face: "edit" })}>
+            {lasts(row)}
+            {total.unit ?? ""}
           </button>
         ))}
       </div>
@@ -220,7 +253,7 @@ function Status({ view, name }: { view: ElementView; name: string }) {
       return (
         <div className="status bad">
           Stalled {since} on {stalled.machine}
-          {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => void store.cancelRender(asset.name)} />
+          {stalled.usd_micros_per_hour !== undefined && ` · ${usdPerHour(stalled.usd_micros_per_hour)}`} <Act label="Cancel" onClick={() => store.cancelRender(asset.name)} />
         </div>
       )
     }
@@ -228,13 +261,13 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     // An Edit's film shows on its own bar, and anything else's on its picture.
     return null
   }
-  if (view.queued) return <div className="status mak">Queued</div>
+  if (view.queued || view.asked !== undefined) return <div className="status mak">Queued</div>
   const approvedFace = asset.pinned && faceOf(view) === "media"
   if (asset.failure && !approvedFace) {
     const reason = noHash(asset.failure.message).replace(`${asset.name}: `, "")
     return (
       <div className="status bad">
-        {reason} {askable && <Act label="Try again" onClick={() => void store.run(name)} />}
+        {reason} {askable && <Act label="Try again" onClick={() => store.run(name)} />}
         {asset.failure.remedy && <div className="next-line">{noHash(asset.failure.remedy)}</div>}
         {asset.failure.next?.map((line) => (
           <div className="next-line" key={line}>
@@ -259,14 +292,14 @@ function Status({ view, name }: { view: ElementView; name: string }) {
     const changed = asset.changed?.length ? `Out of date: ${asset.changed.join(", ")} changed` : noHash(asset.status)
     return (
       <div className="status ood">
-        {changed} {askable && <Act label={`New ${asset.noun}`} onClick={() => void store.run(name)} />}
+        {changed} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
       </div>
     )
   }
   if (asset.standing === "missing" && !makes(view)) {
     return (
       <div className="status">
-        {noHash(asset.status)} {askable && <Act label={`New ${asset.noun}`} onClick={() => void store.run(name)} />}
+        {noHash(asset.status)} {askable && <Act label={`New ${asset.noun}`} onClick={() => store.run(name)} />}
       </div>
     )
   }
@@ -289,7 +322,7 @@ function Description({ name, view }: { name: string; view: ElementView }) {
           {text || "Describe"}
         </button>
         {shown && !shown.absent && shown.field !== "audio" && (
-          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => void store.caption(name)}>
+          <button type="button" className={`act nodrag ${view.captioning ? "going" : ""}`} disabled={view.captioning} title="Ask a model what this is" onClick={() => store.caption(name)}>
             {view.captioning ? "Captioning" : "Caption"}
           </button>
         )}
@@ -325,65 +358,53 @@ function Description({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-/** The corner. On a box's controls it reshapes what it will make, snapping to what's allowed and saying which; anywhere else it's only the width. */
-function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
+/** The corner, pulled to make a box wider or narrower on the canvas. What it makes is another matter, and that's in the box. */
+function Corner({ name, width }: { name: string; width: number }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
-  const tools = useSignal(store.tools)
-  const from = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
+  const from = useRef<{ x: number; w: number } | null>(null)
   const wide = useRef<number | null>(null)
-  const shape = faceOf(view) === "edit" && view.asset ? controlsOf(view.asset, tools).find((control) => control.type === "shape") : undefined
-
   const moved = (event: PointerEvent) => {
     if (!from.current) return
-    const zoom = flow.getZoom()
-    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / zoom))
+    const w = Math.min(WIDEST, Math.max(NARROWEST, from.current.w + (event.clientX - from.current.x) / flow.getZoom()))
     wide.current = w
-    if (shape) store.patch(name, { shape: snapped(w / Math.max(40, from.current.h + (event.clientY - from.current.y) / zoom), shapesOf(shape)) })
     store.setWidth(name, w, false)
   }
   const done = () => {
     if (!from.current) return
     from.current = null
-    const now = store.get(name)
     if (wide.current !== null) store.setWidth(name, wide.current)
     wide.current = null
-    if (shape && now?.shape) void store.setField(name, shape.field, now.shape).then(() => store.patch(name, { shape: undefined }))
   }
   return (
-    <>
-      {shape && <span className="ratio-shown">{String(view.shape ?? store.valueOf(name, shape.field) ?? shape.default ?? "")}</span>}
-      <div
-        className="corner nodrag nopan"
-        role="slider"
-        aria-label={shape ? "Its shape" : "Its width"}
-        aria-valuenow={Math.round(width)}
-        tabIndex={-1}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId)
-          from.current = { x: event.clientX, y: event.clientY, w: width, h: width / (ratioOf(view.shape) ?? aspectOf(view)) }
-        }}
-        onPointerMove={moved}
-        onPointerUp={done}
-        onPointerCancel={done}
-      />
-    </>
+    <div
+      className="corner nodrag nopan"
+      role="slider"
+      aria-label="Its width"
+      aria-valuenow={Math.round(width)}
+      tabIndex={-1}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId)
+        from.current = { x: event.clientX, w: width }
+      }}
+      onPointerMove={moved}
+      onPointerUp={done}
+      onPointerCancel={done}
+    />
   )
 }
 
-const CardBody = memo(function CardBody({ name, width, selected }: { name: string; width: number; selected: boolean }) {
+const CardBody = memo(function CardBody({ name, width, close }: { name: string; width: number; close?: () => void }) {
   const store = useCanvasStore()
   const view = useElement(name)
-  const far = useStore((state) => state.transform[2] < 0.2)
-  const [hover, setHover] = useState(false)
-  const [focused, setFocused] = useState(false)
-  const typedIn = useSyncExternalStore(store.editing.subscribe, () => store.editing.get() === name)
-  const open = useCallback(() => store.openName(name), [store, name])
+  const open = Boolean(close)
+  const naming = useCallback(() => store.openName(name), [store, name])
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
     else store.patch(name, { draft: undefined })
   }, [store, name])
-  // A dropped tool's text has taken the keys, or isn't going to.
+  // Opened, its first text has taken the keys.
   useEffect(() => {
     if (store.focusing === name) store.focusing = null
   })
@@ -395,9 +416,8 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   const at = versions.findIndex((version) => version.number === shown?.number)
   const face = faceOf(view)
   const canFlip = makes(view)
-  // At rest a box is its picture or its text and a name. All else comes when it's asked for, and isn't there until then, so 300 boxes cost little.
-  const active = !far && (hover || selected || focused || typedIn || Boolean(view.hot) || Boolean(view.drafts) || view.draft !== undefined || store.focusing === name)
-  const editing = face === "edit" && active
+  // On the canvas a box is its name, its picture or its text, its state and an X. All else is in it, a click away, so 300 boxes cost little.
+  const editing = face === "edit" && open
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media")
   const actions = (
@@ -411,48 +431,51 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
       )}
     </>
   )
-  const more = asset && !view.placing && (
-    <>
-      {!asset.timeline && <FromHere view={view} name={name} />}
-      <Description name={name} view={view} />
-    </>
-  )
+  const more = asset && !view.placing && <Description name={name} view={view} />
   return (
     <div
-      className={`card ${editing ? "editing" : ""} ${active ? "active" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${editing ? "editing" : ""} ${open ? "active" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       onClick={buttonsOnly}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
-      onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
-      }}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
       }}
     >
       <div className="head">
-        {view.draft !== undefined ? (
+        {view.draft !== undefined && (open || store.opened !== view.name) ? (
           <NameField name={name} draft={view.draft} onCancel={cancel} />
         ) : (
-          <span className="nm" title={view.name} onDoubleClick={open}>
+          <span className="nm" title={view.name} onDoubleClick={open ? naming : undefined}>
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
         {view.draft === undefined && <span className="sp" />}
-        {view.draft === undefined && active && versions.length > 1 && (
+        {view.draft === undefined && open && versions.length > 1 && (
           <span className="count">
             {at + 1}/{versions.length}
           </span>
         )}
-        {view.draft === undefined && active && warned ? (
+        {view.draft === undefined && open && warned ? (
           <button type="button" className="iconb warned nodrag" aria-label="Warnings" title={noHash(view.warnings!.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
             !
           </button>
         ) : null}
-        {view.draft === undefined && active && canFlip && (
+        {open && (
+          <button
+            type="button"
+            className="iconb nodrag"
+            aria-label="More for this box"
+            title="More"
+            onClick={(event) => {
+              const at = event.currentTarget.getBoundingClientRect()
+              store.menu.set({ name, x: at.left, y: at.bottom, full: true })
+            }}
+          >
+            ⋯
+          </button>
+        )}
+        {view.draft === undefined && open && canFlip && (
           <button
             type="button"
             className="iconb nodrag"
@@ -463,30 +486,36 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
             <Icon name={face === "edit" ? "picture" : "edit"} />
           </button>
         )}
-        {view.placing && view.placing.stage !== "adding" ? (
+        {close ? (
+          <button type="button" className="iconb nodrag" aria-label="Close" title="Close" onClick={close}>
+            <Icon name="close" />
+          </button>
+        ) : view.placing && view.placing.stage !== "adding" ? (
           <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={cancel}>
             <Icon name="close" />
           </button>
         ) : (
           view.draft === undefined &&
-          active &&
           asset && (
-            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => void store.remove([name])}>
+            <button type="button" className="iconb nodrag on-hover" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
             </button>
           )
         )}
         <span className={`dot ${dotOf(view)}`} />
       </div>
-      {asset?.timeline && editing ? (
+      {open && asset?.kind === "text" ? (
+        <TextAsset name={name} view={view} />
+      ) : asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
-        <Media view={view} name={name} cardWidth={width}>
+        <Media view={view} name={name} cardWidth={width} open={open}>
           {editing && <InFrame name={name} view={view} />}
-          {active && asset && !view.placing && <Corner name={name} view={view} width={width} />}
+          {!open && asset && !view.placing && <Corner name={name} width={width} />}
         </Media>
       )}
-      {active && (
+      {open && asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
+      {open && asset?.kind !== "text" && (
         <div className="asset-more">
           {asset && !view.placing && <Takes view={view} name={name} width={width} />}
           {editing ? (
@@ -496,7 +525,6 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
           ) : (
             <>
               {asset && !view.placing && <div className="row actions">{actions}</div>}
-              {asset && !view.placing && !asset.timeline && <FromHere view={view} name={name} />}
               <Bar view={view} name={name} />
               {asset && !view.placing && <Description name={name} view={view} />}
               {view.conflict && <Conflict name={name} />}
@@ -516,7 +544,12 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
   )
 })
 
+/** A box opened: all of it, at the size of the room it's given. */
+export function OpenCard({ name, close }: { name: string; close: () => void }) {
+  return <CardBody name={name} width={960} close={close} />
+}
+
 /** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
-export function Card({ data, width, selected }: NodeProps<ElementNode>) {
-  return <CardBody name={data.name} width={width ?? 240} selected={Boolean(selected)} />
+export function Card({ data, width }: NodeProps<ElementNode>) {
+  return <CardBody name={data.name} width={width ?? 240} />
 }

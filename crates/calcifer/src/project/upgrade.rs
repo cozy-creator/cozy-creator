@@ -6,6 +6,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
+    sync::Mutex,
 };
 
 use protocol::{
@@ -666,6 +667,31 @@ fn word_of(state: &State) -> &'static str {
     }
 }
 
+/// Held while a project moves, so that two touches of it make one move.
+static MOVING: Mutex<()> = Mutex::new(());
+
+/// Whether `text` is a project.yaml of the format `upgrade` moves.
+fn moves(text: &str) -> bool {
+    match text.lines().find_map(|line| line.strip_prefix("version:")) {
+        Some(version) => version.split('#').next().is_some_and(|version| version.trim() == "2"),
+        None => text.lines().any(|line| line.starts_with("entities:")),
+    }
+}
+
+/// The first thing to touch `dir`'s project moves it, if it's format 2, as `cozy project upgrade` with no status would. What to say of that, once:
+/// nothing if there was nothing to move. What can't convert refuses, says why and is left as it is.
+pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
+    let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(text) = std::fs::read_to_string(dir.join(folder::PROJECT)) else { return Ok(vec![]) };
+    if !moves(&text) {
+        return Ok(vec![]);
+    }
+    let done = upgrade(dir, None)?;
+    let mut said = vec![format!("{} was format 2 and is format {FORMAT} now: the old files stay beside it as {WAS_YAML} and {WAS_LOCK}", folder::PROJECT)];
+    said.extend(done.said);
+    Ok(said)
+}
+
 /// `dir`'s project, format 2, as format 3. `status`: what `cozy project status --json` said.
 pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     let dir = holding(dir)?;
@@ -861,11 +887,6 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
         })
         .collect();
     doc.stamped(&mut lock, &current);
-    // What landed while the project couldn't list it is a run's, as any other, and reads as that rather than as nothing.
-    let pins: BTreeSet<&str> = doc.assets.iter().filter_map(|asset| asset.pin.as_deref()).collect();
-    let named: BTreeSet<String> = lock.named(|_| true).into_iter().chain(pins).chain(lock.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect();
-    let unlisted: Vec<String> = lock.files.iter().filter(|(sha256, file)| !named.contains(*sha256) && !file.path.is_empty() && dir.join(&file.path).is_file()).map(|(sha256, _)| sha256.clone()).collect();
-    lock.runs.extend(unlisted.into_iter().map(|sha256| folder::RunFile { run: 0, function: String::new(), output: "kept".to_owned(), sha256 }));
 
     // Old files aside, then the lock, the canvas and last the file, each whole. Until the file is replaced it's format 2, and this starts again
     // from the originals, which are kept at every step.

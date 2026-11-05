@@ -359,11 +359,11 @@ for i in "${!names[@]}"; do
     for w in $(seq 0 "$warm"); do
       k=$(( (k + 1) % ${#PROMPTS[@]} ))
       if [ "$m" = sdxl ]; then
-        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, guidance: 7.0, hidiffusion: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
       elif [ "$m" = qwen ]; then
-        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt_upsampling: false, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 1.0, aspect_ratio: "1:1", steps: 20, prompt: $p, seed: $s}' > "$OUT/$a-$m-$w.yaml"
       else
-        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt_upsampling: false, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
+        jq -n --arg p "${PROMPTS[$k]}" --argjson s "$RANDOM$i$w" '{megapixels: 2.25, aspect_ratio: "1:1", steps: 30, guidance: 4.5, cfg_interval_start: 0.0, cfg_interval_stop: 1.0, prompt: $p, seed: $s, negative_prompt: "worst quality, low quality, blurry, jpeg artifacts"}' > "$OUT/$a-$m-$w.yaml"
       fi
       label="$a-$m-cold"; [ "$w" = 0 ] || label="$a-$m-warm$w"
       [ "$w" != 0 ] || settled "$label"

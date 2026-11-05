@@ -160,7 +160,7 @@ fn unreadable(id: &str, why: impl std::fmt::Display) -> Error {
 fn declared(interface: &Interface, function: &str, id: &str) -> Result<(String, String), Error> {
     let callable = interface.callables.iter().find(|callable| callable.name == function);
     let plain = |ui: &&String| !ui.contains('\\') && ui.split('/').all(|part| !matches!(part, "" | "." | ".."));
-    let ui = callable.and_then(|callable| callable.ui.as_ref()).filter(plain).ok_or_else(|| none(id))?;
+    let ui = callable.and_then(|callable| callable.node.as_ref()?.ui.as_ref()).filter(plain).ok_or_else(|| none(id))?;
     Ok((ui.clone(), callable.map(|callable| callable.invocable.module.clone()).unwrap_or_default()))
 }
 
@@ -281,7 +281,7 @@ fn from_wheel(id: &str, wheel: File, module: &str, ui: &str) -> Result<Files, Er
 pub(crate) fn not_in_wheel(wheel: &Path, interface: &Interface) -> Vec<String> {
     let names = File::open(wheel).ok().and_then(|file| zip::ZipArchive::new(file).ok()).map_or_else(BTreeSet::new, |archive| named(&archive));
     let gone = |callable: &&protocol::interface::Callable| -> Option<String> {
-        let ui = callable.ui.as_ref()?;
+        let ui = callable.node.as_ref()?.ui.as_ref()?;
         (!folders(&callable.invocable.module).iter().any(|folder| names.contains(&joined(folder, ui)))).then(|| ui.clone())
     };
     interface.callables.iter().filter_map(|callable| gone(&callable)).collect()

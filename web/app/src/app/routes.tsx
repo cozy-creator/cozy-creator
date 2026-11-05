@@ -70,6 +70,8 @@ export const theRouter = () =>
           path: "projects/:id",
           children: [
             { index: true, element: null },
+            // A box opened: drawn over the canvas, by the canvas, which is always mounted.
+            { path: "assets/:name", element: null },
             ...drawers,
             drawer("new", <NewRun />),
             drawer("files", <Stub title="Files" />),

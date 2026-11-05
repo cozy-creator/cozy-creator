@@ -12,7 +12,7 @@ use protocol::{
     calcifer::{MachineState, On, OutputItem, Run, Status as RunStatus, SubmitRun},
     error::{Error, Kind},
     ids::{Digest, RunId},
-    interface::{self, ADAPTER, Interface, Slot, adapter_name},
+    interface::{self, Interface, Slot},
     model_ref::ModelRef,
     names::shown,
     project::Event,
@@ -22,8 +22,6 @@ use serde_json::Value;
 
 use sha2::{Digest as _, Sha256};
 use tokio::sync::broadcast;
-
-use super::format::FORMAT;
 
 use crate::{
     api::{Api, Refusal},
@@ -47,22 +45,10 @@ pub struct Package {
     document: Value,
 }
 
-/// How an asset of a package gets made.
-pub enum Maker {
-    /// Told the function, it answers the calls.
-    Adapter(Renderer, String),
-    /// No adapter speaks for this function: it's called with the asset's inputs.
-    Direct(Renderer),
-}
-
 impl Package {
-    /// How its tool's asset gets made: the adapter that speaks for the function it names, else that function directly. None: it names none.
-    pub fn maker(&self) -> Result<Option<Maker>, Error> {
-        let Some(function) = self.named.clone() else { return Ok(None) };
-        match self.adapter(&function) {
-            Some(adapter) => Ok(Some(Maker::Adapter(adapter, function))),
-            None => self.function(&function).map(|renderer| Some(Maker::Direct(renderer))),
-        }
+    /// The function its tool names, as a run of it is sent. None: it names none.
+    pub fn maker(&self) -> Result<Option<Renderer>, Error> {
+        self.named.as_deref().map(|function| self.function(function)).transpose()
     }
 
     /// The function a job of `kind` will most likely call: the one named, else the first public one that makes it.
@@ -71,7 +57,7 @@ impl Package {
             return self.function(function).ok();
         }
         let interface = self.interface();
-        let makes = |name: &&str| !name.starts_with(ADAPTER) && interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
+        let makes = |name: &&str| interface.callables.iter().find(|callable| callable.name == **name).and_then(tool::output_kind) == Some(kind);
         let first = interface.public().into_iter().find(makes)?;
         self.function(first).ok()
     }
@@ -118,21 +104,10 @@ impl Package {
         Interface::parse(&self.document).unwrap_or_default()
     }
 
-    /// The function of its package that turns an asset of `function` into calls, if it reads this format.
-    pub fn adapter(&self, function: &str) -> Option<Renderer> {
-        let name = adapter_name(function);
-        let entry = interface::entrypoints(&self.document).find(|entry| interface::name(entry) == Some(name.as_str()))?;
-        let version = entry["request"]["fields"].as_array()?.iter().find(|field| field["name"] == "version")?;
-        let reads = version["type"]["literal"].as_array()?.iter().any(|value| value.as_u64() == Some(FORMAT));
-        reads.then(|| self.function(&name)).and_then(Result::ok)
-    }
-
-    /// The tags its adapters declare as their own (`App.project_adapter(reserved=)`): in a text they are text.
+    /// The tags of the function its tool names (`Node.reserved`): in a text they are text.
     pub fn reserved(&self) -> Vec<String> {
-        let adapters = interface::entrypoints(&self.document).filter(|entry| interface::name(entry).is_some_and(|name| name.starts_with(ADAPTER)));
-        let mut tags: Vec<String> = adapters.flat_map(|entry| entry["reserved"].as_array().into_iter().flatten()).filter_map(|tag| Some(tag.as_str()?.to_owned())).collect();
+        let mut tags = self.named.as_deref().and_then(|function| self.callable(function)?.node).map(|node| node.reserved).unwrap_or_default();
         tags.sort_unstable();
-        tags.dedup();
         tags
     }
 
@@ -153,8 +128,6 @@ pub struct Renderer {
     pub local: Option<PathBuf>,
     /// What its request takes, read from its schema.
     pub accepts: BTreeSet<String>,
-    /// An adapter's typed `inputs`, if it types them: one the asset wrote that isn't one is warned of.
-    pub signature: Option<BTreeSet<String>>,
     /// Its model slots and those of the calls it makes, for a request's `models:` and `lora:`.
     pub slots: Vec<Slot>,
     pub calls: Vec<Slot>,
@@ -179,15 +152,12 @@ impl Renderer {
             .filter(|field| field["constraints"]["max_length"].as_u64() != Some(0))
             .filter_map(|field| field["name"].as_str().map(str::to_owned))
             .collect();
-        let typed = fields.and_then(|fields| fields.iter().find(|field| field["name"] == "inputs"));
-        let signature = typed.and_then(|field| Some(field["type"]["fields"].as_array()?.iter().filter_map(|field| field["name"].as_str().map(str::to_owned)).collect()));
         Ok(Self {
             package: package.into(),
             function: function.into(),
             release,
             local,
             accepts,
-            signature,
             slots: read(interface::models(entry).iter().collect()),
             calls: read(interface::call_slots(document, entry)),
         })

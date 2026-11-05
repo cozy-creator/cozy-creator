@@ -477,6 +477,7 @@ impl Machines {
                         let reason = Reason {
                             code: "rental_refused".into(),
                             message: reason,
+                            next: error.next.clone(),
                             ..Default::default()
                         };
                         self.calcifer.fail(run, reason).map_err(internal)?;
@@ -1541,7 +1542,7 @@ fn said(error: &Error) -> String {
 
 /// A refusal as a run's reason.
 pub(crate) fn reason(error: Error) -> Reason {
-    Reason { message: words(&error), code: error.code, ..Default::default() }
+    Reason { message: error.message, code: error.code, next: error.next, ..Default::default() }
 }
 
 /// What a rental's Hub said of a machine that did not answer, once acted on.

@@ -21,7 +21,9 @@
   --float: #15161a;
   --round: 7px;
   --round2: 10px;
-  --top: 44px;
+  /* How much larger the frame around the canvas is drawn: the top bar and the tools. Nudge this one number. */
+  --ui: 1.35;
+  --top: calc(44px * var(--ui));
   --head: 26px;
   color-scheme: dark;
 }

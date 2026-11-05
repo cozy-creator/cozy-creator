@@ -3,6 +3,8 @@ const { writeFileSync } = require('fs');
 const zlib = require('zlib');
 
 const STEP_MS = 60_000;
+// Past live.js's first run, the longest any cell waits between two checks.
+const STALL_MS = 8 * 60_000;
 const crc = (() => {
   const table = Array.from({ length: 256 }, (_, n) => {
     for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
@@ -84,6 +86,28 @@ async function inView(page, box) {
   await pointAt(page, box.locator('.nm'));
 }
 
+// A box as a person reaches it: opened if it is, else on the canvas. An opened box comes after the canvas in the page.
+const boxOf = (page, name) => page.locator(`.open-box:has(.card[data-asset="${name}"]), .react-flow__node:has(.card[data-asset="${name}"])`).last();
+async function closeBox(page) {
+  // By the address: after a reload the box is on its way, and not there to count yet.
+  if (!page.url().includes('/assets/')) return;
+  await page.locator('.open-box').waitFor();
+  await page.keyboard.press('Escape');
+  await page.locator('.open-box').waitFor({ state: 'detached' });
+}
+// A click opens a box: the middle of it, where there's nothing else to press.
+async function openBox(page, name) {
+  if (await page.locator(`.open-box .card[data-asset="${name}"]`).count()) return;
+  await closeBox(page);
+  // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
+  const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
+  await page.mouse.click(x + width / 2, y + height / 2);
+  await page.locator(`.open-box .card[data-asset="${name}"]`).waitFor();
+  // It grows from where it sat: a person reaches for it once it's there.
+  await page.locator('.open-box').evaluate((box) => Promise.all(box.getAnimations().map((grow) => grow.finished)));
+}
+
 async function drop(page, files, x, y) {
   const transfer = await page.evaluateHandle((list) => {
     const data = new DataTransfer();
@@ -140,10 +164,31 @@ const boxLog = (page) => page.evaluate(() => ({
   focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
   under: [...document.querySelectorAll(':hover')].at(-1)?.className,
 }));
+/** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME. */
+const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true }));
+
 async function lastLook() {
-  if (!looking || !process.env.SHOT) return;
-  await looking.screenshot({ path: `${process.env.SHOT}-died.png`, timeout: 10_000 }).catch(() => {});
-  await boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
+  if (!looking || !process.env.LAST_LOOK) return;
+  await looking.screenshot({ path: `${process.env.LAST_LOOK}-died.png`, timeout: 10_000 }).catch(() => {});
+  const told = boxLog(looking).then(async (said) => {
+    const clicks = await looking.evaluate(() => window.clicks?.slice(-12));
+    writeFileSync(`${process.env.LAST_LOOK}-died.json`, JSON.stringify({ url: looking.url(), clicks, ...said }, null, 2));
+  }).catch(() => {});
+  await Promise.race([told, new Promise((done) => setTimeout(done, 10_000))]);
 }
 
-module.exports = { MP4, STEP_MS, boxLog, drop, inView, lastLook, lookAt, png, pointAt, until, watchBoxes, wav };
+/** `died`, the cell's own ending, once `seen` stops growing: a wait on a page or a command that never answers ends no other way. */
+function noStall(seen, died) {
+  let [held, since] = [-1, Date.now()];
+  const watch = setInterval(() => {
+    const now = Object.keys(seen).length;
+    if (now !== held) [held, since] = [now, Date.now()];
+    else if (Date.now() - since > STALL_MS) {
+      clearInterval(watch);
+      died(new Error(`nothing new for ${STALL_MS} ms, after ${Object.keys(seen).at(-1)}`));
+    }
+  }, 5000);
+  watch.unref();
+}
+
+module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, drop, inView, lastLook, launch, lookAt, noStall, png, pointAt, until, watchBoxes, wav };

@@ -55,7 +55,6 @@ def exercise(device: str, seed: int, driver_room: bool = False) -> dict:
         from cozy_runtime.internal import accel
         accel.initialize(torch, "cuda")
     memory = residency.Memory.open(device, budget_bytes=budget)
-    memory.apply_budget()
     generator = torch.Generator().manual_seed(seed)
     source_hash = hashlib.sha256(Path(residency.__file__).read_bytes()).hexdigest()
     result = {

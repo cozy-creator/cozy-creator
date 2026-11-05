@@ -1283,9 +1283,9 @@ fn reference_objects(
 pub const PREPARING: &str = "preparing";
 
 /// The tables holding rows of one execution.
-const EXECUTION_ROWS: [&str; 10] = [
+const EXECUTION_ROWS: [&str; 9] = [
     "public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied",
-    "run_calls", "triage", "run_objects", "derived_output_bindings", "run_specs",
+    "run_calls", "triage", "run_objects", "run_specs",
 ];
 
 fn insert(

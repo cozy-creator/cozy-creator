@@ -1,10 +1,11 @@
-# e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy web
+# e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy open
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
 # models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js),
-# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), and a package's own UI (web/package_ui.js).
+# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
+# canvas in a second engine, and on Windows a save past a file held open (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -52,6 +53,9 @@ step "web-reconnect: one stream across tabs, and kill -9 of Calcifer with no rel
 local restart=''
 [ -n "${WEB_ALONE:-}" ] || restart=$(web_restart "$lock")
 web_proof reconnect "$chrome" "$pw" "$restart"
+step "web-instant: a box in the frame of its drop with its POST held, answers lost, a refusal, kill -9 mid-queue, a render whose answer is lost"
+web_proof instant "$chrome" "$pw" "$restart"
+jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
 step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"
@@ -75,6 +79,35 @@ step "web-package-ui: a package's component drawn, its field saved and read back
 local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
+[ -n "${WEB_ALONE:-}" ] || web_engines "$chrome" "$pw"
+[ "${RUNNER_OS:-}" != Windows ] || web_held "$chrome" "$pw"
+}
+
+# Windows: a save past a file another program holds longer than Calcifer waits, from the page (web/held.js).
+web_held() {
+  local T=$OUT/web-held id
+  step "web-held: a save past a file held open: said, kept, and saved when it's let go"
+  mkdir -p "$T"
+  printf 'version: 3\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$T/project.yaml"
+  id=$(status "$T" | jq -r '.id // empty')
+  [ -n "$id" ] || { check "web-held: the project has no id"; return; }
+  HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''
+}
+
+# The cells the canvas lives by in a second engine: WebKit on a Mac, Firefox on Linux. Each is Playwright's own build, and WebKit's is not
+# Safari: it finds what differs in the engine, drag and drop above all, and nothing of Safari's own.
+web_engines() {
+  local chrome=$1 pw=$2 ENGINE cell
+  case ${RUNNER_OS:-} in
+    macOS) ENGINE=webkit ;;
+    # H.264 is the system's libavcodec on Linux: with none, Firefox says "This browser can't play it" (41966978063).
+    Linux) ENGINE=firefox; sudo apt-get install -y -qq libavcodec-extra > "$OUT/web-firefox-codec.log" 2>&1 || check "web-firefox: no H.264: $(tail -c 300 "$OUT/web-firefox-codec.log")" ;;
+    *) return 0 ;;
+  esac
+  step "web-$ENGINE: place, see and nodes, in Playwright's $ENGINE"
+  node "$pw/node_modules/playwright-core/cli.js" install $([ "$RUNNER_OS" != Linux ] || echo --with-deps) "$ENGINE" > "$OUT/web-$ENGINE-install.log" 2>&1 \
+    || { check "web-$ENGINE: install failed: $(tail -c 300 "$OUT/web-$ENGINE-install.log")"; return; }
+  for cell in place see nodes; do web_proof "$cell" "$chrome" "$pw" ''; done
 }
 
 # A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
@@ -89,19 +122,22 @@ web_restart() {
 
 # A fresh sign-in link in $link, or a failed check.
 web_link() {
-  cozy web --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy web --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
+  cozy open --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy open --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
   link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
-  [ -n "$link" ] || { check "web-serves: cozy web --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
+  [ -n "$link" ] || { check "web-serves: cozy open --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by
 # name, which it forgets, folder and all, whatever happened.
 web_proof() {
-  local name=$1 chrome=$2 pw=$3 restart=$4 json=$OUT/web-$1.json link code=0 id folder lock addr token
+  local name=$1 chrome=$2 pw=$3 restart=$4 pass=$1${ENGINE:+-$ENGINE} json shot link code=0 id folder lock addr token
+  json=$OUT/web-$pass.json shot=$(web_path "$OUT/web-$pass")
+  # A screenshot in WebKit sets off the CSP on any page, with an inline style of Playwright's: its pass keeps its last look, past caring, and no others.
+  [ "${ENGINE:-}" != webkit ] || shot=''
   web_link || return
-  HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart SHOT=$(web_path "$OUT/web-$name") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
-    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$name.err" || code=$?
-  [ "$code" = 0 ] || check "web-$name: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
+  HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
+    node "$(web_path "$here/web/$name.js")" "$link" > "$json" 2> "$OUT/web-$pass.err" || code=$?
+  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$name.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   lock=$HOME/.cozy/calcifer/calcifer.lock.holder

@@ -306,7 +306,8 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
     }
     if let (Status::Failed | Status::Canceled, Some(reason)) = (run.status, &run.reason) {
         let line = format!("{}: {}: {}", run.target, status_word(run.status), reason.message);
-        return output::failure(ctx, &line, &[format!("cozy run show {}", run.number)]);
+        let next: Vec<String> = reason.next.iter().cloned().chain([format!("cozy run show {}", run.number)]).take(2).collect();
+        return output::failure(ctx, &line, &next);
     }
     fields(ctx, run).print(ctx);
     next(ctx, run);
@@ -359,6 +360,9 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     }
     if let Some(reason) = &run.reason {
         record = record.field("reason", format!("{} ({})", reason.message, reason.code));
+        for next in &reason.next {
+            record = record.field("next", next);
+        }
         if !reason.detail.is_empty() {
             record = record.field("traceback", output::cut(ctx, &reason.detail, true));
         }

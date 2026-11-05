@@ -1,6 +1,8 @@
 // An Edit as the box holds it: clips end to end on V1, every point a whole frame at the edit's rate. No gaps and no overlaps
 // can be written, since a clip has no place of its own: where it sits is the sum of what's before it.
 import type { Clip, ClipNow } from "../../types"
+import type { CanvasStore } from "../CanvasStore"
+import { shownOf } from "../shown"
 
 /** How long a still lasts until a handle says otherwise, as Calcifer reads one with no `frames`. */
 export const STILL_S = 3
@@ -129,4 +131,24 @@ export function timecode(frame: number, fps: number): string {
   const seconds = Math.floor(frame / rate)
   const pad = (value: number) => String(value).padStart(2, "0")
   return `${pad(Math.floor(seconds / 3600))}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}:${pad(frame % rate)}`
+}
+
+/** What's known of an asset dropped in, until Calcifer has read the Edit that holds it. */
+export function clipOf(store: CanvasStore, name: string, fps: number): ClipNow | null {
+  const view = store.get(name)
+  const shown = view && shownOf(view)
+  const field = shown?.field ?? view?.asset?.kind
+  if (field !== "video" && field !== "image") return null
+  return {
+    clip: mention(view?.name ?? name),
+    name: view?.name ?? name,
+    field,
+    frames: field === "image" ? Math.round(STILL_S * fps) : undefined,
+    sha256: shown?.sha256,
+    path: shown?.path,
+    width: shown?.width,
+    height: shown?.height,
+    holds: field === "video" && shown?.duration_ms ? Math.floor((shown.duration_ms * fps) / 1000) : undefined,
+    missing: shown ? undefined : "no version yet",
+  }
 }

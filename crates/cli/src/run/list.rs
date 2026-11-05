@@ -170,9 +170,9 @@ pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
     runs.iter().map(row).collect()
 }
 
-/// Whether the list people read shows it: a project adapter's run is `cozy project`'s own (`run show` and `--json` have it).
+/// Whether the list people read shows it: what a walk sends ahead of itself is `cozy project`'s own (`run show` and `--json` have it).
 pub(crate) fn shown(run: &Run) -> bool {
-    !run.adapter && !run.target.starts_with(protocol::project::AHEAD)
+    !run.target.starts_with(protocol::project::AHEAD)
 }
 
 fn row(run: &Run) -> Vec<String> {

@@ -45,14 +45,15 @@ if want project-split || want project-upscale; then
 version: 3
 defaults:
   video:
-    style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
 assets:
+  look_style:
+    text: Naturalistic photo, warm late-afternoon light, handheld camera.
   mural:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 300))
     summary: |
-      <hero_sheet> paints a sign on the long wall of <yard>.
+      <look_style> <hero_sheet> paints a sign on the long wall of <yard>.
     beats:
       - duration: 6
         description: |
@@ -63,9 +64,8 @@ assets:
   hero_art:
     approved: hero.png
   hero_sheet:
-    tool: ./still.py/draw
-    instructions: From <hero_art>.
-    keep: true
+    tool: ./still.py/keep
+    image: <hero_art>
     description: "$CHAR"
     asset_type: character
   yard:
@@ -94,7 +94,7 @@ YAML
     expect project-split "$(jq -r 'if .run != null and .files.latents != null then "PASS" else "FAIL" end' <<< "$v")" \
       "run $(jq -c .run <<< "$v"), latents $(jq -r '.files.latents // "none"' <<< "$v")"
     expect project-split-text "$(jq -r 'if ([.warnings[]?.message | select(test("past the end"))] | length) == 0 then "PASS" else "FAIL" end' <<< "$v")" "warnings: $(jq -c '.warnings // []' <<< "$v")"
-    # The gate's hero is a character whose sheet its package made, with a background: H3's adapter says it goes into the shot
+    # The gate's hero is a character whose sheet its package made, with a background: H3 says it goes into the shot
     # (se-104). A warning, no failed run. An imported picture is left alone, since it may be opaque on purpose.
     expect project-opaque "$(grep -q "picture is opaque" project-split.log && echo PASS || echo FAIL)" "$(grep -m1 opaque project-split.log | cut -c1-160)"
   fi
@@ -106,7 +106,7 @@ YAML
       h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$P/$u")
       expect project-upscale "$([ "$h" = 1080 ] && [ "$(near "$(aspect "$P/$u")" "$(aspect "$P/$f")")" = PASS ] && echo PASS || echo FAIL)" \
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
-      "$CLI" --json --full run show "$("$CLI" --json project -p "$P" show mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
+      "$CLI" --json --full run show "$("$CLI" --json project -p "$P" status mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
@@ -121,9 +121,10 @@ if want project-segments; then
 version: 3
 defaults:
   video:
-    style: naturalistic photo, warm late-afternoon light, handheld camera
     aspect_ratio: "16:9"
 assets:
+  look_style:
+    text: Naturalistic photo, warm late-afternoon light, handheld camera.
   hero_art:
     approved: hero.png
     description: "$CHAR"
@@ -133,11 +134,11 @@ assets:
     description: "$SCENE"
     asset_type: environment
   walk:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 330 + cf))
     context_frames: $cf
     summary: |
-      <hero_art> walks the length of <yard_art> in one continuous shot with no cuts.
+      <look_style> <hero_art> walks the length of <yard_art> in one continuous shot with no cuts.
     beats:
       - duration: 10
         description: |
@@ -166,7 +167,7 @@ defaults:
     aspect_ratio: "16:9"
 assets:
   look:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 305))
     summary: |
       A slow look around <yard>.
@@ -198,7 +199,7 @@ YAML
     s=$(nice -n 19 ffmpeg -nostdin -v info -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$old" -t "$(awk -v t="$until_s" 'BEGIN { print t - 1 }')" -i "$P/$f" -lavfi ssim -f null - 2>&1 | grep -oE 'All:[0-9.]+' | tail -1 | cut -d: -f2)
     expect project-in-kept "$(awk -v s="${s:-0}" 'BEGIN { print s >= 0.95 ? "PASS" : "FAIL" }')" "SSIM of the kept part to take 1: ${s:-none}"
   fi
-  # H3's adapter refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
+  # H3 refuses: a failed run on purpose, so this suite only ever runs on a gate machine, never a person's history.
   render project-in-end "$P" look --take 2; code=$?
   expect project-in-end "$([ "$code" != 0 ] && grep -q "already reaches the shot's end" project-in-end.log && echo PASS || echo FAIL)" "exit $code: $(tail -c 200 project-in-end.log)"
 fi
@@ -211,7 +212,7 @@ defaults:
     aspect_ratio: "16:9"
 assets:
   follow:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 301))
     summary: "<pattern>: colour bars, a moving gradient sweep and a running timecode on a dark field; no person appears."
     beats:
@@ -243,7 +244,7 @@ defaults:
     aspect_ratio: "16:9"
 assets:
   hello:
-    tool: $H3/generate_turbo
+    tool: $H3/generate
     seed: $((R + 302))
     summary: <host_sheet> stands in <yard>, looks into the camera and says "Welcome to the yard."
     beats:

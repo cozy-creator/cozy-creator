@@ -964,7 +964,7 @@ pub fn publish(from: &Path, to: &Path) -> std::io::Result<()> {
     // A real file of its own, whatever a person does to it; `copy` clones where the filesystem can.
     std::fs::copy(from, &part)?;
     writable(&part)?;
-    std::fs::rename(&part, to)
+    platform::durable::rename_over(&part, to)
 }
 
 #[cfg(unix)]

@@ -23,7 +23,7 @@ const PARTIAL: u8 = 3;
 
 const EXAMPLES: &str = "Examples:
   cozy project new garden
-  cozy project open garden                     in your browser
+  cozy open garden                             in your browser
   cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
   cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
   cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
@@ -79,33 +79,34 @@ enum Verb {
     /// List your projects.
     #[command(alias = "list", after_help = "Example:\n  cozy project ls")]
     Ls,
-    /// Open the project in your browser.
-    #[command(after_help = "Examples:\n  cozy project open\n  cozy project open ../garden\n  cozy project open --no-open   only prints the link: over SSH, say")]
-    Open {
-        /// The project's folder, if not the one you are in.
-        path: Option<PathBuf>,
-        /// Only print the link, which works once, for 60 s.
-        #[arg(long)]
-        no_open: bool,
-    },
     Import(ImportFile),
     Add(assets::Add),
     Set(assets::Set),
     /// Delete assets, as the X on a box: their work stops, what they made stays until `reclaim`, and it prints what puts each back.
-    #[command(after_help = "Example:\n  cozy project delete whale\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line it printed")]
+    /// With `--version`, discards takes of one asset instead.
+    #[command(after_help = "Examples:\n  cozy project delete whale\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line it printed\n  cozy project delete whale --version 2 --version 3")]
     Delete {
         /// The assets.
         #[arg(required = true, value_name = "NAME")]
         names: Vec<String>,
+        /// Discard this take or version: it's off the asset, its number is never used again, and its files stay until `reclaim`. Repeatable.
+        #[arg(long = "version", value_name = "N")]
+        versions: Vec<u32>,
     },
-    /// Put a deleted asset back as it was, where it was, with what it made.
-    #[command(after_help = "Example:\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line `delete` printed")]
+    /// Put back a deleted asset as it was, where it was, with what it made, or with `--version` a take it discarded.
+    #[command(after_help = "Examples:\n  cozy project restore whale eyJ0ZXh0Ijoi…   the line `delete` printed\n  cozy project restore whale --version 2")]
     Restore {
         /// The asset.
         name: String,
         /// What `delete` printed for it.
-        #[arg(value_name = "KEPT")]
-        kept: String,
+        #[arg(value_name = "KEPT", required_unless_present = "versions", conflicts_with = "versions")]
+        kept: Option<String>,
+        /// The take or version to put back. Repeatable.
+        #[arg(long = "version", value_name = "N")]
+        versions: Vec<u32>,
+        /// And its approval, as `delete --version` printed.
+        #[arg(long, requires = "versions")]
+        approved: bool,
     },
     Render(Render),
     /// Approve a take or version: its hash goes on the asset's line in project.yaml.
@@ -196,7 +197,7 @@ struct Render {
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
     /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
-    #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',', default_value = "local")]
+    #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',')]
     on: Vec<String>,
     /// Ask and return at once: what it queued and what's ahead of each is printed, and `status` shows how it goes.
     #[arg(long)]
@@ -258,16 +259,12 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 output::say(ctx, &format!("{} more, used earlier (?before=<id>)", listed.older));
             }
         }
-        Verb::Open { path, no_open } => {
-            let opened = open(ctx, path.as_ref().or(args.path.as_ref()), false).await?;
-            return crate::web::open(ctx, Some(format!("/projects/{}", opened.id)), no_open).await;
-        }
         Verb::Import(import) => return self::import(ctx, args.path.as_ref(), import).await,
         Verb::Upgrade { status } => return upgrade(ctx, args.path.as_ref(), status.as_ref()),
         Verb::Add(add) => return assets::add(ctx, args.path.as_ref(), add).await,
         Verb::Set(set) => return assets::set(ctx, args.path.as_ref(), set).await,
-        Verb::Delete { names } => return assets::delete(ctx, args.path.as_ref(), names).await,
-        Verb::Restore { name, kept } => return assets::restore(ctx, args.path.as_ref(), name, kept).await,
+        Verb::Delete { names, versions } => return assets::delete(ctx, args.path.as_ref(), names, versions).await,
+        Verb::Restore { name, kept, versions, approved } => return assets::restore(ctx, args.path.as_ref(), name, kept, versions, approved).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
@@ -334,6 +331,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 (true, _) => output::say(ctx, &format!("deleted {files} files, {bytes}")),
                 (false, 0) if reclaimed.orphans.is_empty() => output::say(ctx, "nothing to reclaim"),
                 (false, _) => output::say(ctx, &format!("{files} files nothing else names, {bytes}")),
+            }
+            if reclaimed.unrecorded > 0 {
+                output::say(ctx, &format!("{} with no record here, which --yes leaves: they may be all that's left of a take", reclaimed.unrecorded));
             }
             if let Some(lost) = &reclaimed.lost {
                 output::say(ctx, &format!("{lost}: --yes is refused"));
@@ -464,8 +464,11 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         true => None,
         false => Some(calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?),
     };
-    let on: Vec<On> =
-        args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?;
+    // Named, it's held to what this OS can do. Unnamed it's `local`, and Calcifer says so only of what needs a machine: an Edit needs none.
+    let on: Vec<On> = match args.on.is_empty() {
+        true => vec![On::from("local".to_owned())],
+        false => args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?,
+    };
     let runs = Runs {
         outdated: args.outdated,
         names: args.names,
@@ -735,12 +738,14 @@ fn retimes(retimed: &[String], fps: f64) -> String {
 
 /// The project holding `at` (else the folder you are in) as Calcifer opens it, made there first
 /// when `create`.
-async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opened, Error> {
+pub(crate) async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> Result<Opened, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let path = match at {
         Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
         None => cwd,
     };
-    ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await
+    let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await?;
+    opened.said.iter().for_each(|said| output::warn(said));
+    Ok(opened)
 }

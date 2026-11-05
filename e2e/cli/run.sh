@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow] [--tensord F|V] [--tensorfs F|V]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web] [--tensord F|V] [--tensorfs F|V]
 #                  [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -110,6 +110,11 @@ for r in 16:1 1:16 32000:2000 17:1 1:17 32768:32; do
     echo "$name: canvas ${w}x${h}"
   fi
 done
+# What a function doesn't take is said, and the run goes on: these are no input of `ImageRequest`.
+if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry guidance:=3 prompt_upsampling:=true; then
+  grep -q 'ignored unknown fields .*guidance.*negative_prompt.*prompt_upsampling' "$OUT/ratio-unknown.ndjson" "$OUT/ratio-unknown.err" \
+    || check "ratio-unknown: what it doesn't take isn't said"
+fi
 }
 
 # Describe reads a checkout's editable install statically (direct_url.json and .pth paths, never their code).
@@ -254,11 +259,13 @@ case $SHARD in
   '') parts="weightless script_package one_name_two_paths image_ratio describe first_run second_executor lifetime catalog basics yaml_requests run_flags run_follow run_filters run_play projects bound_runs agent web_serves machines completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run run_flags run_play logs" ;;
   executors) parts="second_executor lifetime update remove" ;;
-  commands) parts="catalog basics yaml_requests run_filters projects bound_runs web_serves agent logs" ;;
+  commands) parts="catalog basics yaml_requests run_filters projects bound_runs agent logs" ;;
+  # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
+  web) parts="web_serves logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals web_serves completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done

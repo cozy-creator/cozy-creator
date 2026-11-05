@@ -152,8 +152,8 @@ door_component() {
   id=$(pod "cozy --json project -p $a status" | jq -r '.id // empty')
   [ -n "$id" ] || { check "the project has no id: $(tail -c 300 "$OUT/pod.err")"; return; }
   answers "a box of it through the door" 201 - "${bearer[@]}" -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: door-component-$RANDOM" -d '{"tool":"./draw.py/draw","name":"drawn","at":{"x":0,"y":0,"w":300}}' "$D/v1/projects/$id/assets"
-  link=$(cozy web --no-open 2>&1 | grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' | head -1)
-  [ -n "$link" ] || { check "cozy web --no-open printed no link"; return; }
+  link=$(cozy open --no-open 2>&1 | grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' | head -1)
+  [ -n "$link" ] || { check "cozy open --no-open printed no link"; return; }
   CHROME=$(command -v google-chrome) PLAYWRIGHT=$PW/node_modules/playwright-core timeout 300 node "$FIX/component.js" "$link" "$X" "$id" > "$OUT/component.json" 2> "$OUT/component.err" \
     || check "the component's browser: $(tail -c 500 "$OUT/component.err")"
   J '.declared == 1' "$OUT/component.json" || check "the box isn't the declared one: $(jq -c . "$OUT/component.json")"

@@ -3,17 +3,18 @@
 // and one beat, with all else behind More; controls from what it holds; reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
 // Undo brings it back. Takes side by side, one dragged out, a new take from here, Render all.
-//   node nodes.js <sign-in link from `cozy web --no-open`>
+//   node nodes.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
+const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt, inView } = require('./page');
+const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
+noStall(seen, died);
 let during = 'the start';
 function check(name, ok, detail) {
   seen[name] = ok ? true : (detail ?? false);
@@ -24,7 +25,6 @@ const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
 const shots = join(__dirname, '..', 'project', 'shots.py');
 const drawer = join(__dirname, '..', 'project', 'draw.py');
-const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
@@ -43,7 +43,7 @@ function linesOf(text, name) {
 (async () => {
   const link = process.argv[2];
   const base = new URL(link).origin;
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
   lookAt(page);
@@ -90,21 +90,18 @@ function linesOf(text, name) {
   const yaml = () => readFileSync(yamlAt, 'utf8');
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
-  const box = (name) => element(page, name);
-  // Off every box, so the next hover lands on what it's aimed at.
-  const away = () => page.mouse.move(2, 500);
-  const open = async (name) => {
-    await away();
-    await pointAt(page, box(name).locator('.nm'));
-    await box(name).locator('.head [aria-label=Delete]').waitFor();
-    await inView(page, box(name));
+  const box = (name) => boxOf(page, name);
+  // Shut, and off every box.
+  const away = async () => {
+    await closeBox(page);
+    await page.mouse.move(2, 500);
   };
+  const open = (name) => openBox(page, name);
   // Behind its More, opened if it isn't.
   const more = async (name) => {
     await open(name);
     if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
     await box(name).locator('.edit-more').waitFor();
-    await inView(page, box(name));
   };
   await page.evaluate(() => { window.notReloaded = true; });
 
@@ -127,6 +124,8 @@ function linesOf(text, name) {
   // Tools on the left: searchable, folding away with the canvas where it was.
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
+  const resting = (await api(`/v1/tools?project=${id}`)).body;
+  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
   const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
@@ -145,10 +144,10 @@ function linesOf(text, name) {
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
-  const firstTool = page.locator('.tools .tool').first();
+  const firstTool = page.locator('.tools .tool:not([data-kind=text])').first();
   const label = await firstTool.locator('b').textContent();
   const kind = await firstTool.getAttribute('data-kind');
-  const made = await dragOut(firstTool, 700, 500);
+  const made = await dragOut(firstTool, 1300, 900);
   seen.tool_dragged = made.name;
   check('tool_named_from_its_label', made.name.toLowerCase().startsWith(label.toLowerCase().slice(0, 4)), { label, name: made.name });
   check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
@@ -157,22 +156,24 @@ function linesOf(text, name) {
   const place = await page.evaluate(({ x, y }) => {
     const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
     return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
-  }, { x: 700, y: 500 });
+  }, { x: 1300, y: 900 });
   check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
   check('list_keeps_comments', yaml().startsWith(head), yaml());
 
   // Local code is listed, and says so: the box Paul's example uses comes from here, dragged like any tool, and called what a person calls it.
-  const fromTheList = page.locator('.tools .tool', { hasText: '(local)' }).first();
+  const fromTheList = page.locator('.tools section:has(h4:has-text("Editable")) .tool').first();
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
+    await open(fresh.name);
     await box(fresh.name).locator('.nm').dblclick();
     await page.waitForSelector('.nm-field');
     await page.keyboard.type(name);
     await page.keyboard.press('Enter');
     await until(`named ${name}`, () => of(name), Boolean);
+    await away();
     return fresh;
   };
   let tool = 'no-such-package-here';
@@ -180,7 +181,8 @@ function linesOf(text, name) {
     await fromTheList.waitFor({ timeout: FIRST_RUN_MS });
     const wire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local);
     tool = wire.id;
-    check('local_tool_says_so', wire.label.endsWith('(local)') && wire.id.startsWith(drawer), wire);
+    check('local_tool_says_so', wire.local && !wire.label.includes('(local)') && wire.id.startsWith(drawer), wire);
+    check('local_tools_are_editable', (await page.locator('.tools section:has(h4:has-text("Editable")) .tool').count()) > 0);
     // A retry of a new asset makes no `_2`, on the wire.
     const body = JSON.stringify({ tool, at: { x: 0, y: 0, w: 300 }, name: 'Twice' });
     const first = await api(`/v1/projects/${id}/assets`, { method: 'POST', headers: { 'Idempotency-Key': 'nodes-twice' }, body });
@@ -208,7 +210,7 @@ function linesOf(text, name) {
   await page.waitForTimeout(100);
 
   // At rest a box is its picture or its text and a name, with nothing to press and no state in words.
-  check('at_rest_no_buttons', (await box('source-a').locator('button').count()) === 0, await box('source-a').innerText());
+  check('at_rest_only_its_x', (await box('source-a').locator('button:visible').count()) === 0, await box('source-a').innerText());
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -230,9 +232,10 @@ function linesOf(text, name) {
   check('typing_writes_nothing', yaml() === before2);
 
   // Any element dragged onto the box: its name goes in, where the caret was, and it goes back where it was with no move saved.
+  await away();
   const rowsBefore = await rows();
   const from = await box('source-b').locator('.nm').boundingBox();
-  const to = await sheetText.boundingBox();
+  const to = await box('Sheet').locator('.media').boundingBox();
   await page.mouse.move(from.x + 4, from.y + 4);
   await page.mouse.down();
   await page.mouse.move(from.x + 12, from.y + 4);
@@ -250,6 +253,44 @@ function linesOf(text, name) {
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
+
+  // No box lies on another. Dropped on one that can't take it, it slides to the nearest clear place, the other stays, and where it ended is what's saved.
+  const canvasAt = join(folder, 'project.canvas.yaml');
+  const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  const apart = async (a, b) => !lies(await box(a).boundingBox(), await box(b).boundingBox());
+  await away();
+  const stood = await rows();
+  const carried = await box('source-b').locator('.nm').boundingBox();
+  const onto = await box('source-a').boundingBox();
+  await page.mouse.move(carried.x + 4, carried.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(carried.x + 12, carried.y + 4);
+  await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
+  await page.waitForTimeout(100);
+  check('a_box_that_cant_take_it_doesnt_offer', (await box('source-a').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
+  await page.mouse.up();
+  await until('it slid clear', () => apart('source-a', 'source-b'), Boolean);
+  check('a_box_cant_lie_on_a_box', true);
+  check('the_other_box_stays', (await rows())['source-a'].x === stood['source-a'].x && (await rows())['source-a'].y === stood['source-a'].y, await rows());
+  await until('where it ended, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
+
+  // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
+  const held = (await rows())['source-a'];
+  execFileSync(COZY, ['project', '-p', folder, 'set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
+  await page.waitForTimeout(300);
+  await until('an `at` on a box comes off it', () => apart('source-a', 'source-b'), Boolean);
+  check('an_at_settles', true);
+  const asItStood = (await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing]);
+  const piled = readFileSync(canvasAt, 'utf8').replace(/^(\s+source-b: )\{[^}]*\}$/m, `$1{x: ${held.x}, y: ${held.y}}`);
+  replaceFile(canvasAt, piled);
+  await page.reload();
+  await box('source-a').waitFor();
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
+  await until('what lay on another came apart on opening', () => apart('source-a', 'source-b'), Boolean);
+  await until('and that was saved', rows, (now) => now['source-b'].x !== held.x || now['source-b'].y !== held.y);
+  check('coming_apart_changes_no_input', JSON.stringify((await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing])) === JSON.stringify(asItStood));
+  await page.evaluate(() => { window.notReloaded = true; });
 
   // A description, on anything, as text whatever it says.
   await open('source-a');
@@ -274,7 +315,7 @@ function linesOf(text, name) {
   check('what_it_holds_says_so', ['megapixels 1', 'turbo on', 'style'].every((word) => marked.includes(word)), marked);
   await more('knobs');
   check('its_style_behind_more', (await knobs.locator('.mention-text[data-field=style]').textContent()).includes('wash'));
-  check('a_shape_has_only_its_corner', (await knobs.locator('select').count()) === 0);
+  check('a_shape_is_a_choice', (await knobs.locator('select[aria-label="Shape"]').count()) === 1);
   await knobs.locator('input[aria-label=megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field(/megapixels: (\S+)/), (value) => value === '2');
@@ -288,19 +329,21 @@ function linesOf(text, name) {
   check('a_control_keeps_the_comment', (await field(/(# Stays\.)/)) === '# Stays.' && (await field(/(# how)/)) === '# how', linesOf(yaml(), 'knobs'));
   check('text_stays_block', (linesOf(yaml(), 'knobs') ?? '').includes('summary: |'), linesOf(yaml(), 'knobs'));
 
-  // Reshaping: the corner snaps to what's allowed, says which, writes it. Width is only layout.
-  await open('knobs');
+  // Its shape is a choice in the box, and writes what it makes. Width is only layout, from its corner on the canvas.
+  await more('knobs');
   const widthBefore = (await rows()).knobs.w;
+  await knobs.locator('select[aria-label="Shape"]').selectOption('3:4');
+  await until('the ratio written', () => field(/aspect_ratio: (\S+)/), (value) => value === '"3:4"');
+  check('reshape_writes_the_shape', true);
+  await away();
+  await knobs.locator('.nm').hover();
   const corner = await knobs.locator('.corner').boundingBox();
   await page.mouse.move(corner.x + 6, corner.y + 6);
   await page.mouse.down();
-  await page.mouse.move(corner.x + 6, corner.y + 200, { steps: 6 });
-  await page.waitForTimeout(100);
-  const ratio = await knobs.locator('.ratio-shown').textContent();
+  await page.mouse.move(corner.x + 60, corner.y + 6, { steps: 6 });
   await page.mouse.up();
-  check('corner_says_the_ratio', /^\d+:\d+$/.test(ratio), ratio);
-  await until('the ratio written', () => field(/aspect_ratio: (\S+)/), (value) => value === `"${ratio}"`);
-  check('reshape_is_taller', Number(ratio.split(':')[0]) / Number(ratio.split(':')[1]) < 16 / 9, ratio);
+  await until('the width written', rows, (now) => now.knobs.w && now.knobs.w !== widthBefore);
+  check('corner_is_only_layout', (await field(/aspect_ratio: (\S+)/)) === '"3:4"');
   seen.width_before_reshape = widthBefore;
 
   // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.
@@ -313,7 +356,7 @@ function linesOf(text, name) {
   await page.keyboard.type('Second.');
   await knobs.locator('.beat input[type=range]').nth(1).focus();
   await page.keyboard.press('ArrowRight');
-  const beats = await until('both beats in the file', () => Promise.resolve(linesOf(yaml(), 'knobs') ?? ''), (lines) => lines.includes('Second.') && lines.includes('duration: 6'));
+  const beats = await until('both beats in the file', () => Promise.resolve(linesOf(yaml(), 'knobs') ?? ''), (lines) => lines.includes('Second.') && lines.includes('duration: 5'));
   check('a_beat_keeps_what_it_holds', beats.includes('camera: low'), beats);
   await open('knobs');
   await knobs.locator('[aria-label="Remove beat 2"]').click();
@@ -355,11 +398,13 @@ function linesOf(text, name) {
 
   // Right click: rename, delete, and what it's made with.
   await away();
+  await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
-  await box('Sheet').locator('.nm').click({ button: 'right' });
+  await open('Sheet');
+  await box('Sheet').locator('[aria-label="More for this box"]').click();
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
   check('box_menu', ['Change the tool', 'Change the model', 'Add a LoRA', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
@@ -381,6 +426,8 @@ function linesOf(text, name) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
+    // Read with this machine's Runtime, as a run reads it: PyPI's can't, and this may be the first run of it here.
+    execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     const wire = await until('its functions listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.filter((held) => held.local && held.id.startsWith(fixture)), (held) => held.length > 0, FIRST_RUN_MS);
     const labelOf = (name) => wire.find((held) => held.function === name).label;
     const reload = async () => {
@@ -393,46 +440,46 @@ function linesOf(text, name) {
     await reload();
     const place = async (name) => {
       await page.locator('.tools li.tool', { has: page.locator(`b:text-is("${labelOf(name)}")`) }).click();
-      await box(name).waitFor();
-      await open(name);
+      await box(`${name}_1`).waitFor();
+      await open(`${name}_1`);
     };
 
     await place('still');
-    const still = box('still');
+    const still = box('still_1');
     await until('one prompt', () => still.locator('.mention-text').count(), (n) => n === 1);
     check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.asset-more input, .asset-more select, .beat, .edit-more').count()) === 0, await still.innerText());
     check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
     await shot('fresh-prompt');
-    await more('still');
+    await more('still_1');
     await still.locator('input[aria-label=Count]').waitFor();
     await still.locator('select[aria-label=Style]').selectOption({ label: 'noise' });
-    await until('the choice in the status', async () => status('still').fields?.style, (style) => style === 'noise');
+    await until('the choice in the status', async () => status('still_1').fields?.style, (style) => style === 'noise');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     await until('marked', () => still.locator('.more-marks').count(), (n) => n === 1);
     check('a_set_value_is_marked', (await still.locator('.more-marks').textContent()).includes('Style noise'), await still.locator('.more-marks').textContent());
     await shot('fresh-marked');
-    await open('still');
+    await open('still_1');
     check('shut_stays_shut', (await still.locator('.edit-more').count()) === 0);
-    await more('still');
-    await open('still');
+    await more('still_1');
+    await open('still_1');
     check('open_stays_open', (await still.locator('.edit-more').count()) === 1);
     await reload();
-    await open('still');
+    await open('still_1');
     check('open_outlasts_a_reload', (await still.locator('.edit-more').count()) === 1);
     await still.locator('select[aria-label=Style]').selectOption({ label: 'flat' });
-    await until('its default in the status', async () => status('still').fields?.style, (style) => style === 'flat');
+    await until('its default in the status', async () => status('still_1').fields?.style, (style) => style === 'flat');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     check('its_default_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
 
     await place('told');
-    const told = box('told');
+    const told = box('told_1');
     await until('a prompt and a beat', () => told.locator('.beat').count(), (n) => n === 1);
     check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
     check('fresh_beat_cannot_go', (await told.locator('[aria-label^="Remove beat"]').count()) === 0);
-    await until('its beat in the status', async () => status('told').fields?.beats?.length, (n) => n === 1);
-    check('its_beat_has_a_length', status('told').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told').fields);
+    await until('its beat in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
+    check('its_beat_has_a_length', status('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told_1').fields);
     await shot('fresh-beat');
     await told.locator('.add-beat').click();
     await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
@@ -441,11 +488,11 @@ function linesOf(text, name) {
     await page.keyboard.type('The second.');
     await told.locator('.beat input[type=range]').nth(1).focus();
     await page.keyboard.press('ArrowRight');
-    await until('both in the status', async () => status('told').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
+    await until('both in the status', async () => status('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
     await told.locator('[aria-label="Remove beat 2"]').click();
-    await until('one in the status', async () => status('told').fields?.beats?.length, (n) => n === 1);
+    await until('one in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
     check('the_last_beat_stays', (await told.locator('.beat').count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
-    for (const name of ['still', 'told', 'fixture']) {
+    for (const name of ['still_1', 'told_1', 'fixture']) {
       await api(`/v1/projects/${id}/assets/${name}`, { method: 'DELETE' });
       await until(`${name} gone`, () => box(name).count(), (n) => n === 0);
     }
@@ -490,6 +537,17 @@ function linesOf(text, name) {
     await box('Sheet').locator('button:has-text("Approve")').click();
     await until('approved again', () => of('Sheet'), (held) => held.pinned);
 
+    // One discarded: off the strip at once, Undo brings it back, and what's approved going says so and stands on the newest.
+    const strip = () => box('Sheet').locator('.take[aria-label^="version"]').count();
+    const asked = await strip();
+    await box('Sheet').locator('.take-at').first().hover();
+    await box('Sheet').locator('.take-at .take-off').first().click();
+    check('a_take_goes_at_once', (await strip()) === asked - 1, await strip());
+    await until('and from the project', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked - 1);
+    await page.locator('.note:has-text("Discarded") button:has-text("Undo")').first().click();
+    await until('it came back', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked);
+    check('a_take_comes_back', (await strip()) === asked, await strip());
+
     // One dragged out: its own asset, the same file, what it says it is, and no new bytes.
     await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'The sheet of two.' } }) });
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
@@ -506,11 +564,45 @@ function linesOf(text, name) {
     await dropBox('Other', 1100, 600);
     await render('Other', 1);
 
+    // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
+    const shaped = join(__dirname, '..', 'project', 'shaped.py');
+    replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
+    await box('sounded').waitFor();
+    await open('sounded');
+    const sounded = box('sounded');
+    const scape = sounded.locator('.mention-text[data-field=soundscape]');
+    await scape.waitFor();
+    check('shown_by_its_node', (await sounded.locator('.mention-text[data-field=music]').count()) === 1 && (await sounded.locator('.edit-more').count()) === 0, await sounded.innerText());
+    check('empty_reads_na', (await scape.getAttribute('data-placeholder')) === 'N/A (silent)', await scape.getAttribute('data-placeholder'));
+    check('a_hidden_input_isnt_drawn', (await sounded.locator('[data-field=steps], [data-field=plate], [data-field=references]').count()) === 0, await sounded.innerText());
+    await scape.click();
+    await page.keyboard.type('Rain on steel.');
+    await sounded.locator('.mention-text[data-field=music]').click();
+    await until('the soundscape as the CLI reads it', async () => status('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
+    check('an_empty_one_isnt_written', !('music' in status('sounded').fields), status('sounded').fields);
+    await page.keyboard.type('Low strings.');
+    await sounded.locator('.mention-text[data-field=music]').blur();
+    await until('the music as the CLI reads it', async () => status('sounded').fields?.music, (said) => said === 'Low strings.');
+    await shot('sounded');
+
+    // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
+    const textRow = page.locator('aside.tools li.tool[data-kind=text]');
+    check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
+    await textRow.click();
+    const wording = box('text');
+    await wording.locator('.mention-text[data-field=text]').waitFor();
+    await wording.locator('.mention-text[data-field=text]').click();
+    await page.keyboard.type('Painted by hand.');
+    await wording.locator('.mention-text[data-field=text]').blur();
+    await until('its words as the CLI reads them', async () => status('text').fields?.text, (said) => said === 'Painted by hand.');
+    check('text_has_no_render', (await wording.locator('button:text-is("Render"), .takes, button:text-is("Approve")').count()) === 0, await wording.innerText());
+    check('text_has_a_kind', status('text').kind === 'text', status('text'));
+
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  asker:\n    tool: ${asker}/told\n`);
     await box('asker').waitFor();
-    // A toggle shows its adapter's own default, on, with nothing in the file, and off is what's written.
+    // A toggle shows its function's own default, on, with nothing in the file, and off is what's written.
     await more('asker');
     const bright = box('asker').locator('label:has-text("Bright") input');
     await bright.waitFor();
@@ -584,7 +676,7 @@ function linesOf(text, name) {
     await page.keyboard.press('Delete');
     await until('the Delete key', () => box('Other').count(), (n) => n === 0);
     await until('no versions showing', () => of('Other'), (held) => !held);
-    check('deleted_is_no_orphan', !(await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
+    check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
     await box('Other').waitFor();
     check('undo_brings_its_versions', (await versions('Other')) === takes, await versions('Other'));
@@ -620,7 +712,7 @@ function linesOf(text, name) {
     await until('Other made again', () => versions('Other'), (n) => n === otherTakes + 1, FIRST_RUN_MS);
     check('render_all_leaves_approved', (await versions('Sheet')) === sheetTakes);
 
-    // A new take from here: scrubbed to a time, its words as they were, and the adapter told to keep up to there.
+    // A new take from here: scrubbed to a time, its words as they were, and the function told to keep up to there.
     // One file dropped asks its name first: Enter takes the one offered.
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
     await page.waitForSelector('.nm-field');
@@ -634,7 +726,7 @@ function linesOf(text, name) {
     await open('Clip');
     const clipFile = linesOf(yaml(), 'Clip');
     await more('Clip');
-    await box('Clip').locator('.from-here input').fill('0.5');
+    await box('Clip').locator('.from-here .keeps').fill('12');
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).versions.at(-1).files.given.path;
@@ -666,7 +758,8 @@ function linesOf(text, name) {
   await until('gone', () => box('source-b').count(), (n) => n === 0);
   await page.locator('.note:has-text("source-b") button:has-text("Undo")').first().click();
   await box('source-b').waitFor();
-  check('delete_and_undo', Boolean(linesOf(yaml(), 'source-b')), yaml());
+  // The box is back as it's asked for, ahead of the file.
+  check('delete_and_undo', Boolean(await until('back in the file', () => Promise.resolve(linesOf(yaml(), 'source-b')), Boolean)));
 
   check('comments_and_text_kept', yaml().includes('# Mine, and kept.') && yaml().includes('  # A note on what follows.') && yaml().includes('    # Inside it.') && yaml().includes('      by hand.'), yaml());
   const hashes = [...yaml().matchAll(/approved: "?([0-9a-f]{12})/g)].map((m) => m[1]);
@@ -683,9 +776,11 @@ function linesOf(text, name) {
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
   process.exit(failures.length ? 1 : 0);
-})().catch(async (error) => {
+})().catch(died);
+
+async function died(error) {
   console.error(error);
   await lastLook();
   console.log(JSON.stringify({ failures, seen, during }, null, 2));
   process.exit(2);
-});
+}

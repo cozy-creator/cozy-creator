@@ -202,6 +202,8 @@ export interface ProjectState {
   stale?: Stale[]
   orphans?: Orphan[]
   busy: boolean
+  /** The page's own: when the read that says this began, so a read from before a write says nothing of it. */
+  began?: number
   moving?: boolean
   absent?: number
   run_files?: number
@@ -248,6 +250,7 @@ export interface Unpinned {
   name: string
   version?: number
   stale: string[]
+  etag?: string
 }
 
 export interface Approved {
@@ -259,6 +262,19 @@ export interface Approved {
   path: string
   stale: string[]
   warnings?: string[]
+  etag?: string
+}
+
+/** What discarding a take or version, or bringing it back, did. */
+export interface VersionMoved {
+  name: string
+  number: number
+  noun: string
+  /** It's the approved one: its approval went with it, or came back with it. */
+  approved?: boolean
+  /** What the asset stands on now, else its newest. None: it has none left. */
+  stands?: number
+  stale?: string[]
 }
 
 export interface Renamed {
@@ -487,7 +503,6 @@ export interface Run {
   stalled?: Stalled
   calls?: Call[]
   report?: Report
-  adapter?: boolean
   request?: RunAsked
 }
 
@@ -967,7 +982,7 @@ export interface AssetDeleted {
   at?: Row
 }
 
-export type ControlType = "text" | "beats" | "shape" | "range" | "choice" | "toggle" | "file" | "timeline"
+export type ControlType = "text" | "group" | "shape" | "range" | "choice" | "toggle" | "file" | "timeline"
 
 /** One thing a box asks for. A box is built from these, and nothing about any function. */
 export interface Control {
@@ -980,9 +995,20 @@ export interface Control {
   step?: number
   accept?: string
   multiple?: boolean
-  max_duration?: number
+  /** `group`: a row's controls, and how few and how many rows. */
+  members?: Control[]
+  min_items?: number
+  max_items?: number
+  /** A group's member whose sum it shows. */
+  total?: boolean
+  /** What an empty text reads. */
+  placeholder?: string
+  /** What a number counts. */
+  unit?: string
   default?: unknown
   required?: boolean
+  /** On its box's default face. The rest folds away. */
+  face?: boolean
 }
 
 export interface Tool {
@@ -990,6 +1016,8 @@ export interface Tool {
   package: string
   function: string
   release: string
+  /** What a new box of it is called, `shot_1`: its `Node`'s word or its package's. A Calcifer that doesn't say goes by `label`. */
+  name?: string
   label: string
   kind: string
   description?: string
@@ -998,11 +1026,25 @@ export interface Tool {
   controls: Control[]
   /** The path in its package of a component that draws its box. */
   ui?: string
+  /** A new take can keep the start of one of its. */
+  takes?: boolean
+  /** Where a new take can start, in whole frames of the video: `offset + k * every`, from `first` up. None: any frame. */
+  cuts?: { every: number; offset: number; first: number }
 }
 
 /** Where a tool's component is, for `import()`. */
 export interface ToolUi {
   module: string
+}
+
+export interface ToolList {
+  packages: string[]
+  without?: string[]
+}
+
+export interface Browsed {
+  packages: { package: string; summary?: string; tools: string[] }[]
+  older: number
 }
 
 export interface Tools {

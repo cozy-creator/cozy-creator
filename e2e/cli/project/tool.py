@@ -6,13 +6,12 @@
 adapter, whose answer says what it saw of what it reads. `need` wants a file it may not get, `clip` makes a video, `words`
 makes no media, and `ask` answers text, by an adapter of kind `text`."""
 
-import json
 import os
 import time
 from typing import Annotated, Literal
 
 import msgspec
-from cozy_runtime.author import App, File, ImageFile, ImageFrame, Invocation, Operation, Outputs, Telemetry, VideoFile
+from cozy_runtime.author import App, File, ImageFile, ImageFrame, Node, Outputs, Telemetry, VideoFile
 
 app = App()
 SIDE = 16
@@ -42,7 +41,7 @@ def _picture(out: Outputs) -> ImageFile:
     return out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")
 
 
-@app.entrypoint()
+@app.entrypoint(node=Node(name="still"))
 def still(payload: StillInput, out: Outputs) -> Picture:
     """A still of one colour."""
     return Picture(_picture(out), payload.prompt)
@@ -54,7 +53,7 @@ class SlowInput(msgspec.Struct, kw_only=True):
     seed: int | None = None
 
 
-@app.entrypoint()
+@app.entrypoint(node=Node())
 def slow(payload: SlowInput, out: Outputs, tel: Telemetry) -> Picture:
     """A still that takes its time, saying how far it's got."""
     for step in range(10):
@@ -65,43 +64,34 @@ def slow(payload: SlowInput, out: Outputs, tel: Telemetry) -> Picture:
 
 class Beat(msgspec.Struct, kw_only=True):
     description: str = ""
-    duration: Annotated[float | None, msgspec.Meta(extra={"max_duration": 15})] = None
+    duration: Annotated[float, msgspec.Meta(extra={"min": 1, "max": 15, "step": 1, "total": True, "unit": "s"})] = 5
 
 
-class ToldInputs(msgspec.Struct, kw_only=True):
+class Seen(msgspec.Struct, kw_only=True):
+    """A prompt never crosses a mention, whatever a package asks for."""
+
+    name: str
+    description: str = ""
     instructions: str = ""
-    bright: bool = True
-    shade: Annotated[float | None, msgspec.Meta(extra={"min": 0, "max": 1})] = None
-    aspect_ratio: Annotated[str | None, msgspec.Meta(extra={"options": ["1:1"]})] = None
-    beats: list[Beat] = []
-    video: Annotated[str, msgspec.Meta(extra={"accept": "video"})] = ""
-    secret: Annotated[str, msgspec.Meta(extra={"hidden": True})] = ""
-
-
-class ToldOperation(Operation, kw_only=True):
-    inputs: ToldInputs
+    image: ImageFile | None = None
 
 
 class ToldInput(msgspec.Struct, kw_only=True):
     prompt: str
+    bright: bool = True
+    shade: Annotated[float | None, msgspec.Meta(extra={"min": 0, "max": 1})] = None
+    aspect_ratio: Annotated[str | None, msgspec.Meta(extra={"options": ["1:1"]})] = None
+    beats: Annotated[list[Beat], msgspec.Meta(min_length=1, max_length=4)]
+    video: VideoFile | None = None
+    secret: str = ""
+    references: list[Seen] = []
     seed: int | None = None
 
 
-@app.entrypoint()
+@app.entrypoint(node=Node(name="told", hide=["secret"], label="Told"))
 def told(payload: ToldInput, out: Outputs) -> Picture:
-    """A still of one colour, by its adapter."""
+    """A still of one colour."""
     return Picture(_picture(out), payload.prompt)
-
-
-def _heard(op: Operation) -> list[Invocation]:
-    reads = [{"description": read.description, "inputs": read.inputs} for read in op.reads]
-    heard = {"function": op.function, "inputs": msgspec.to_builtins(op.inputs), "reads": reads}
-    return [Invocation(function=op.function or "told", input={"prompt": json.dumps(heard)})]
-
-
-@app.project_adapter("told")
-def adapt_told(op: ToldOperation) -> list[Invocation]:
-    return _heard(op)
 
 
 class NeedInput(msgspec.Struct, kw_only=True):
@@ -112,7 +102,7 @@ class Clip(msgspec.Struct):
     video: VideoFile
 
 
-@app.entrypoint(ui="ui/clip.js")
+@app.entrypoint(node=Node(ui="ui/clip.js"))
 def need(payload: NeedInput, out: Outputs) -> Clip:
     """Keeps a video as it is."""
     with payload.video.stream() as events:
@@ -123,7 +113,7 @@ class ClipInput(msgspec.Struct, kw_only=True):
     resolution: Literal["720p", "1080p"] = "720p"
 
 
-@app.entrypoint()
+@app.entrypoint(node=Node())
 def clip(payload: ClipInput, out: Outputs) -> Clip:
     """Never run: a function whose output is a video."""
     raise NotImplementedError(payload.resolution)
@@ -144,8 +134,7 @@ def words(payload: WordsInput) -> Said:
     return Said(payload.prompt)
 
 
-class AskInput(msgspec.Struct, kw_only=True):
-    prompt: str
+class CaptionInput(msgspec.Struct, kw_only=True):
     images: list[ImageFile] = []
     videos: list[VideoFile] = []
 
@@ -155,12 +144,6 @@ class Asked(msgspec.Struct):
 
 
 @app.entrypoint()
-def ask(payload: AskInput) -> Asked:
-    """Answers about what it's shown."""
-    return Asked([f"{payload.prompt} {len(payload.images)} pictures, {len(payload.videos)} videos."])
-
-
-@app.project_adapter("text")
-def adapt_text(op: Operation) -> list[Invocation]:
-    read = op.reads[0]
-    return [Invocation(function="ask", input={"prompt": "THE-PACKAGE-ASKS", "images": [file.sha256 for file in read.files_of("image")], "videos": [file.sha256 for file in read.files_of("video")]})]
+def caption(payload: CaptionInput) -> Asked:
+    """Answers about what it's shown, in the words it chooses."""
+    return Asked([f"THE-PACKAGE-ASKS {len(payload.images)} pictures, {len(payload.videos)} videos."])
