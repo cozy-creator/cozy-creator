@@ -1533,10 +1533,10 @@ export class CanvasStore {
     this.removeNode(key)
   }
 
-  /** A picture says its shape before it's measured. */
+  /** A picture says its shape before it's measured. A take looked at where the box stands keeps the box's frame, so its row stays under the pointer. */
   setAspect(name: string, aspect: number) {
     const view = this.get(name)
-    if (!view || view.aspect === aspect) return
+    if (!view || view.aspect === aspect || (view.here && view.viewed !== undefined)) return
     this.patch(name, { aspect })
     this.reshape(name)
   }
