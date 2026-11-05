@@ -161,13 +161,28 @@ const constants = (folder) => {
   const was = rows(folder).clash_take;
   const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
   const yamlBeforeMove = yaml(folder);
+  // Somewhere clear: let go on another box, it goes to the nearest clear place instead (30fc7cbba).
+  const { dx, dy } = await page.evaluate((name) => {
+    const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
+    const mine = rects.find((held) => held.name === name).rect;
+    const others = rects.filter((held) => held.name !== name).map((held) => held.rect);
+    const gap = 32;
+    for (const y of [120, -120, 240, -240]) {
+      for (const x of [180, -180, 360, -360]) {
+        const [left, top, right, bottom] = [mine.left + x - gap, mine.top + y - gap, mine.right + x + gap, mine.bottom + y + gap];
+        const onScreen = top > 60 && left > 230 && bottom < innerHeight - 20 && right < innerWidth - 20;
+        if (onScreen && !others.some((other) => other.left < right && other.right > left && other.top < bottom && other.bottom > top)) return { dx: x, dy: y };
+      }
+    }
+    return { dx: 180, dy: 120 };
+  }, 'clash_take');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
-  await page.mouse.move(box.x + box.width / 2 + 180, box.y + box.height / 2 + 120, { steps: 5 });
+  await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2 + dy, { steps: 5 });
   await page.mouse.up();
   const row = (await until('the moved row', () => rows(folder), (now) => now.clash_take && (now.clash_take.x !== was.x || now.clash_take.y !== was.y))).clash_take;
-  check('move_in_canvas_file', Math.abs(row.x - was.x - 180 / zoom) <= 3 && Math.abs(row.y - was.y - 120 / zoom) <= 3, { was, row, zoom });
+  check('move_in_canvas_file', Math.abs(row.x - was.x - dx / zoom) <= 3 && Math.abs(row.y - was.y - dy / zoom) <= 3, { was, row, zoom, dx, dy });
   check('move_touches_no_input', yaml(folder) === yamlBeforeMove);
 
   // A drag on the empty canvas moves it and selects nothing; with Shift it selects instead.
