@@ -236,13 +236,14 @@ YAML
     [ "$where" = asked ] && break
     [ $kills -lt 60 ] || fail "k: the hand-off didn't end in $kills kills: $where"
     kills=$((kills + 1))
-    say "k: kill $kills: $where; X holds $(sh 'cat /root/.cozy/calcifer/files/parts/*.held 2>/dev/null | head -c 80' | tr -d '\n') of the plate"
+    say "k: kill $kills: $where; X holds $(sh 'du -c -B1 /root/.cozy/calcifer/files/parts/*.part 2>/dev/null | tail -1 | cut -f1') bytes of uploads under way"
     killed "$(client_calcifer)"
     [ $kills = 1 ] && line "up 300000 both"
     c "project status" > /dev/null 2>&1
     sleep 6
   done
   line up
+  sh 'grep -E "files|PUT|upload" /root/.cozy/calcifer/calcifer.log | tail -20' > "$OUT/k-x-uploads.log" 2>&1
   say "k: asked after $kills kills"
   local t=0
   until x_made shotk; do
