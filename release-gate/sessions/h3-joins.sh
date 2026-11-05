@@ -83,9 +83,10 @@ J '[.assets[].name] | index("joins") and index("framed")' "$OUT/status.json" || 
 grep -qE '^ +asset_type: character' "$P/project.yaml" || fail "pip isn't typed: $(cat "$P/project.yaml")"
 cp "$P/project.yaml" "$OUT/project-before.yaml"
 say "project: $(jq -c '[.assets[] | {name, kind, tool}]' "$OUT/status.json"), warnings $(jq -c '.warnings // []' "$OUT/status.json")"
-sha_of() { jq -r --arg n "$1" '.assets[] | select(.name == $n) | .sha256 // empty' "$OUT/status.json" | sed 's/^sha256://'; }
+# An import keeps the file as it is: its hash is the picture's, and the project holds it.
+sha_of() { local h; h=$(sha256sum "$OUT/art/$1".* | cut -c1-64); ls "$P/files/$h".* > /dev/null 2>&1 && echo "$h"; }
 SHA_PIP=$(sha_of pip) SHA_TOVA=$(sha_of tova) SHA_LIGHT=$(sha_of lighthouse)
-[ -n "$SHA_PIP" ] && [ -n "$SHA_TOVA" ] && [ -n "$SHA_LIGHT" ] || fail "an imported picture has no hash: $(jq -c '[.assets[] | {name, sha256}]' "$OUT/status.json")"
+[ -n "$SHA_PIP" ] && [ -n "$SHA_TOVA" ] && [ -n "$SHA_LIGHT" ] || fail "an imported picture isn't in the project's files: $(ls "$P/files")"
 
 # The pre-flight's own: the Runtime the pod gets, and minimax-h3's environment, here first (what fails here is said, for a person to judge).
 if [ "$RENT" != true ]; then
