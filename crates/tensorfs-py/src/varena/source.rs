@@ -128,14 +128,15 @@ impl Inner {
         });
     }
 
-    /// One DMA from its kept page.
+    /// DMA from its kept page, each registered window its own copy.
     fn from_page(&self, fill: &varena::Fill, page: &Page) -> Result<(), io::Error> {
-        let copy = io::Copy {
-            src: Src::Host(page.ptr()),
-            dst: Dst::Device { device: fill.device(), ptr: fill.ptr(), len: fill.len(), stream: 0 },
-        };
+        let copies: Vec<_> = page.windows().map(|(at, len)| io::Copy {
+            // SAFETY: `at` lies inside the page.
+            src: Src::Host(unsafe { page.ptr().add(at) }),
+            dst: Dst::Device { device: fill.device(), ptr: fill.ptr() + at as u64, len, stream: 0 },
+        }).collect();
         // SAFETY: the Fill is exclusive, and the caller holds the page through this read.
-        unsafe { io::read(&[copy], &ReadOpts::default()) }.map(drop)
+        unsafe { io::read(&copies, &ReadOpts::default()) }.map(drop)
     }
 
     fn read(&self, stored: &Stored, fill: &varena::Fill, ahead: bool) -> Result<u64, tensorfs::io::source::Error> {
@@ -172,7 +173,11 @@ impl Inner {
         let torch = py.import("torch")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("dtype", torch.getattr("uint8")?)?;
-        torch.call_method("frombuffer", (host,), Some(&kwargs))?.call_method1("copy_", (view,))?;
+        let kept = torch.call_method("frombuffer", (host,), Some(&kwargs))?;
+        for (at, len) in page.windows() {
+            let window = pyo3::types::PySlice::new(py, at as isize, (at + len) as isize, 1);
+            kept.get_item(&window)?.call_method1("copy_", (view.get_item(&window)?,))?;
+        }
         self.tier.insert(key, &self.set, page);
         Ok(())
     }

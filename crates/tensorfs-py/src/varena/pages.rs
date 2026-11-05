@@ -16,15 +16,16 @@ use super::source::Inner;
 
 /// How stale a reading of host RAM may be.
 const LOOK: Duration = Duration::from_millis(100);
-/// How much of a page is read before a command may take over.
+/// How much of a page is read or registered before a command may take over: one registration
+/// of H3's largest page made a request wait 0.6 s on an RTX 3090.
 const WINDOW: usize = 64 << 20;
 
 /// Host bytes, page aligned, registered once filled: registering touched memory runs at about
-/// twice the rate of untouched memory.
+/// twice the rate of untouched memory. A window at a time, and no copy spans two: CUDA refuses it.
 pub(super) struct Page {
     ptr: *mut u8,
     len: usize,
-    pin: Option<HostPin>,
+    pins: Vec<HostPin>,
 }
 // SAFETY: an owned allocation; its pin is a registration handle used with its context entered.
 unsafe impl Send for Page {}
@@ -41,7 +42,7 @@ impl Page {
         if ptr.is_null() {
             return Err(PyRuntimeError::new_err("host page allocation failed"));
         }
-        Ok(Self { ptr, len, pin: None })
+        Ok(Self { ptr, len, pins: Vec::new() })
     }
     pub(super) fn ptr(&self) -> *mut u8 {
         self.ptr
@@ -49,17 +50,25 @@ impl Page {
     pub(super) fn len(&self) -> usize {
         self.len
     }
-    fn register(&mut self, device: i32) -> Result<(), tensorfs::io::cuda::Error> {
-        // SAFETY: this page outlives its pin, which `Drop` releases first.
-        self.pin = Some(unsafe { tensorfs::io::register(device, self.ptr, self.len) }?);
+    /// Each window's (offset, length).
+    pub(super) fn windows(&self) -> impl Iterator<Item = (usize, usize)> + use<'_> {
+        (0..self.len).step_by(WINDOW).map(|at| (at, WINDOW.min(self.len - at)))
+    }
+    fn registered(&self) -> bool {
+        self.pins.len() * WINDOW >= self.len
+    }
+    fn register_window(&mut self, device: i32) -> Result<(), tensorfs::io::cuda::Error> {
+        let (at, len) = self.windows().nth(self.pins.len()).expect("a window left to register");
+        // SAFETY: inside this page, which outlives its pins: `Drop` releases them first.
+        self.pins.push(unsafe { tensorfs::io::register(device, self.ptr.add(at), len) }?);
         Ok(())
     }
 }
 impl Drop for Page {
     fn drop(&mut self) {
-        if let Some(mut pin) = self.pin.take() {
+        for pin in &mut self.pins {
             if pin.release().is_err() {
-                return; // The driver may still touch it: it stays, with its registration.
+                return; // The driver may still touch it: it stays, with its registrations.
             }
         }
         // SAFETY: allocated in `new` with this layout; nothing else owns it.
@@ -268,9 +277,11 @@ impl Tier {
         let mut page = Page::new(len)?;
         // SAFETY: `len` bytes of this page: touched first, as registering touched memory is faster.
         unsafe { std::ptr::write_bytes(page.ptr, 0, len) };
-        if let Err(error) = page.register(self.device) {
-            self.state().off = Some(error.to_string());
-            return Ok(None);
+        while !page.registered() {
+            if let Err(error) = page.register_window(self.device) {
+                self.state().off = Some(error.to_string());
+                return Ok(None);
+            }
         }
         Ok(Some(page))
     }
@@ -327,27 +338,36 @@ impl Tier {
         }))
     }
 
-    /// Keep `page`, read whole; false once pinning failed: the tier is off.
-    fn register(&self, key: String, set: String, mut page: Page) -> bool {
-        if let Err(error) = page.register(self.device) {
-            self.state().off = Some(error.to_string());
-            return false;
+    /// Keep `page`, read whole, once the rest of it is registered. False stops `pin_idle`: a
+    /// command is waiting, and the next idle takes the page up where it was, or pinning failed
+    /// and the tier is off.
+    fn register(
+        &self,
+        py: Python<'_>,
+        waiting: &impl Fn() -> PyResult<bool>,
+        (key, set, mut page): (String, String, Page),
+    ) -> PyResult<bool> {
+        while !page.registered() {
+            if waiting()? {
+                self.state().filled = Some((key, set, page));
+                return Ok(false);
+            }
+            if let Err(error) = py.detach(|| page.register_window(self.device)) {
+                self.state().off = Some(error.to_string());
+                return Ok(false);
+            }
         }
         self.insert(&key, &set, page);
-        true
+        Ok(true)
     }
 
     /// Pin the wanted pages until a command arrives: each read again from the store into host RAM,
-    /// window by window, and registered once filled. The page refilled most per request goes first.
+    /// and registered once filled, window by window. The page refilled most per request goes first.
     fn pin_idle(&self, py: Python<'_>, waiting: &Bound<'_, PyAny>) -> PyResult<()> {
         let is_waiting = || -> PyResult<bool> { waiting.call0()?.is_truthy() };
         let filled = self.state().filled.take();
-        if let Some((key, set, page)) = filled {
-            if is_waiting()? {
-                self.state().filled = Some((key, set, page));
-                return Ok(());
-            }
-            if !py.detach(|| self.register(key, set, page)) {
+        if let Some(filled) = filled {
+            if !self.register(py, &is_waiting, filled)? {
                 return Ok(());
             }
         }
@@ -379,11 +399,7 @@ impl Tier {
                 tracing::warn!("a host page did not pin: {error}");
                 continue;
             }
-            if is_waiting()? {
-                self.state().filled = Some((key, set, page));
-                return Ok(());
-            }
-            if !py.detach(|| self.register(key, set, page)) {
+            if !self.register(py, &is_waiting, (key, set, page))? {
                 return Ok(());
             }
         }
