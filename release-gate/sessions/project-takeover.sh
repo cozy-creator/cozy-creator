@@ -296,8 +296,12 @@ YAML
   say "h: X walks it, this computer gone"
   local was='' at=$SECONDS moved
   t=0
+  local state
   until x_made seashot; do
-    moved=$(x "--json project status" | jq -c '[.board.jobs[]? | [.state, .stage, .detail]]')
+    state=$(x "--json project status")
+    jq -e '.busy == false and ([.assets[] | select(.name == "seashot" and .versions > 0)] | length == 0)' <<<"$state" > /dev/null 2>&1 &&
+      fail "h: X's walk ended without seashot: $(jq -c '[.board.jobs[]? | select(.asset == "seashot") | .error.message // .why] | first' <<<"$state" | cut -c1-400)"
+    moved=$(jq -c '[.board.jobs[]? | [.state, .stage, .detail]]' <<<"$state")
     [ "$moved" != "$was" ] && { was=$moved; at=$SECONDS; say "h: $moved"; }
     [ $((SECONDS - at)) -lt 900 ] || fail "h: stopped moving for 15 min"
     t=$((t + 15)); sleep 15
