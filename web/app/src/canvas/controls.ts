@@ -33,10 +33,22 @@ function fromFields(fields: Record<string, unknown>): Control[] {
   return [...held].sort((a, b) => said(b) - said(a))
 }
 
+/** A toggle's field that flips what makes the box, not a field of it. */
+export const VARIANT = "variant"
+
+/** The other function a box can be, of its package and label: the word on its toggle, whether it's on, and what it flips to. */
+export function variantOf(tool: Tool | undefined, tools: Map<string, Tool>) {
+  const other = tool && [...tools.values()].find((held) => held.package === tool.package && held.label === tool.label && held.id !== tool.id)
+  const word = tool?.variant ?? other?.variant
+  return other && word ? { word, on: Boolean(tool?.variant), other: other.id } : null
+}
+
 /** What a box asks for: its tool's controls, or what its fields hold. Nothing here knows any function. */
 export function controlsOf(asset: Asset, tools: Map<string, Tool>): Control[] {
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  return tool ? tool.controls : fromFields(asset.fields ?? {})
+  if (!tool) return fromFields(asset.fields ?? {})
+  const variant = variantOf(tool, tools)
+  return variant ? [...tool.controls, { field: VARIANT, type: "toggle", label: variant.word, face: true }] : tool.controls
 }
 
 /** What a box shows unasked: its tool says, its first text, what a render can't go without and what its package shows; for a box from its fields, what it says, and with no text the file it takes. The rest waits. */
