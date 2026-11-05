@@ -6,8 +6,14 @@ import copy
 import gc
 import hashlib
 import json
+import os
 import resource
+import select
+import signal
+import subprocess
+import sys
 import tempfile
+import threading
 import time
 import zlib
 from collections import OrderedDict
@@ -25,6 +31,8 @@ from .oracle import E2M1_DECODE32, E4M3_MAG32, encode_nvfp4
 
 STRATEGY = "svdq-nvfp4-r32-faer/1"
 WORKSPACE = 64 << 20
+# What the cancellation cell's conversion reads: its two weights, and each one's 64 calibration rows and maxima.
+SOURCE_BYTES = sum(4 * (rows * cols + 64 * cols + cols) for rows, cols in ((64, 256), (1024, 1024)))
 PARAMS = {
     "block_size": 16,
     "global_scale": "multiply",
@@ -544,9 +552,56 @@ def basic(payload: Request) -> dict[str, Any]:
 
 
 def cancel(payload: Request) -> dict[str, Any]:
+    """Cancels a real conversion inside its native fit, every time: the fit can end before a poll here
+    sees its window (gates 41911483592, 41939634423), so the conversion runs in a worker that this
+    process holds with SIGSTOP once the worker's progress shows the first tensor written and every
+    read of the second done, and only then tells it to cancel. No timing is tuned: the worker is
+    stopped where the fit is, and its conversion threads run at nice 19 under its monitor."""
+    package = str(Path(__file__).resolve().parent.parent)
+    code = f"import sys; sys.path.insert(0, {package!r}); from ci_svdq_calibration.native import cancel_worker; cancel_worker()"
+    with tempfile.TemporaryFile("w+") as errors:
+        worker = subprocess.Popen(
+            [sys.executable, "-c", code, str(payload.seed)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True
+        )
+        watchdog = threading.Timer(300, worker.kill)
+        watchdog.start()
+        held = None
+        try:
+            for line in worker.stdout:
+                word, _, rest = line.partition(" ")
+                if word == "early":
+                    raise AssertionError(f"the conversion ended before its cancellation window: {rest.strip()[:400]}")
+                if word == "result":
+                    result = json.loads(rest)
+                    assert worker.wait(timeout=60) == 0
+                    result["held_at_progress"] = held
+                    result["worker_peak_rss_bytes"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
+                    return result
+                if word == "progress" and held is None:
+                    read, written, _ = map(int, rest.split())
+                    if written >= 1 and read >= SOURCE_BYTES:
+                        os.kill(worker.pid, signal.SIGSTOP)
+                        _, status = os.waitpid(worker.pid, os.WUNTRACED)
+                        assert os.WIFSTOPPED(status), status
+                        held = [read, written]
+                        worker.stdin.write("cancel\n")
+                        worker.stdin.flush()
+                        os.kill(worker.pid, signal.SIGCONT)
+            errors.seek(0)
+            raise AssertionError(f"the worker ended with {worker.wait()} and no result: {errors.read()[-1500:]}")
+        finally:
+            watchdog.cancel()
+            if worker.poll() is None:
+                worker.kill()
+                worker.wait()
+
+
+def cancel_worker() -> None:
+    """The cancellation cell's conversion, in a process `cancel` holds from outside: see there."""
     import tensorfs
 
-    rng = np.random.default_rng(payload.seed)
+    seed = int(sys.argv[1])
+    rng = np.random.default_rng(seed)
     with tempfile.TemporaryDirectory(prefix="cozy-native-svdq-cancel-") as temporary:
         directory = Path(temporary)
         w = tensorfs.Writer(directory / "source.cozytensors")
@@ -571,12 +626,17 @@ def cancel(payload: Request) -> dict[str, Any]:
         specs = [selection(key, "F32", values.shape) for key, values in cases.items()]
         allowance = sum(encoded_bytes(value.shape) for value in cases.values())
         target = directory / "output.cozytensors"
-        resume = f"native-svdq-{payload.seed}"
+        resume = f"native-svdq-{seed}"
         output = tensorfs.Writer(target, base=source, resume=resume)
         control = tensorfs.ConversionControl()
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(
-                output.quantize,
+        monitor = threading.get_native_id()
+
+        def convert():
+            # Every thread but the monitor's runs at nice 19, and those the conversion starts inherit it.
+            for task in os.listdir("/proc/self/task"):
+                if int(task) != monitor:
+                    os.setpriority(os.PRIO_PROCESS, int(task), 19)
+            return output.quantize(
                 source,
                 specs,
                 calibration=calibration,
@@ -584,15 +644,19 @@ def cancel(payload: Request) -> dict[str, Any]:
                 max_new_bytes=allowance,
                 control=control,
             )
-            until = time.monotonic() + 120
-            # Observe a real first tensor and all second weight reads. No hook or mock advances fitting.
-            source_bytes = sum(v.nbytes for v in cases.values()) + sum(
-                r.nbytes + r.shape[1] * 4 for r in samples.values()
-            )
-            while control.progress()[1] < 1 or control.progress()[0] < source_bytes:
-                assert not future.done(), "the actual cancellation window was missed"
-                assert time.monotonic() < until, control.progress()
-                time.sleep(0.001)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(convert)
+            # Progress out, until `cancel` has held this process and says to cancel. No hook or mock advances fitting.
+            seen = None
+            while not select.select([sys.stdin], [], [], 0.0002)[0]:
+                if future.done():
+                    print("early", repr(future.exception() or future.result()), flush=True)
+                    return
+                if control.progress() != seen:
+                    seen = control.progress()
+                    print("progress", *seen, flush=True)
+            assert sys.stdin.readline() == "cancel\n"
             for operation in (output.commit, output.abandon):
                 try:
                     operation()
@@ -663,7 +727,7 @@ def cancel(payload: Request) -> dict[str, Any]:
         source.close()
         calibration.close()
         changed_calibration.close()
-        return {
+        print("result", json.dumps({
             "result": result,
             "facts": facts,
             "cancel_seconds": cancel_seconds,
@@ -671,7 +735,7 @@ def cancel(payload: Request) -> dict[str, Any]:
             "cancel_progress": control.progress(),
             "identity_refusals": refusals,
             "scope": "real interrupted/resumed Writer; cancellation waits for any current faer call",
-        }
+        }), flush=True)
 
 
 @app.entrypoint(accelerator=False)
