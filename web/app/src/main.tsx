@@ -1,3 +1,4 @@
+import "@openrails/auth-ui/styles.css"
 import "@xyflow/react/dist/base.css"
 import "./ui/tokens.css"
 import "./ui/app.css"

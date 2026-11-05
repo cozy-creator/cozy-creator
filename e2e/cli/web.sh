@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and on Windows a save past a file held open (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
@@ -58,6 +58,11 @@ web_proof instant "$chrome" "$pw" "$restart"
 jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
+step "web-signin: AuthKit's form to a stand-in Hub: a new account, a wrong code, too soon, either email's code, signed out"
+if [ -z "${WEB_ALONE:-}" ]; then
+  TO_HUB=$(web_restart "$lock" @HUB@) web_proof signin "$chrome" "$pw" "$restart"
+  jq -c '.seen | {stated_wait}' "$OUT/web-signin.json" 2> /dev/null || true
+fi
 step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"
 local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
