@@ -167,11 +167,13 @@ function linesOf(text, name) {
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
+    await open(fresh.name);
     await box(fresh.name).locator('.nm').dblclick();
     await page.waitForSelector('.nm-field');
     await page.keyboard.type(name);
     await page.keyboard.press('Enter');
     await until(`named ${name}`, () => of(name), Boolean);
+    await away();
     return fresh;
   };
   let tool = 'no-such-package-here';

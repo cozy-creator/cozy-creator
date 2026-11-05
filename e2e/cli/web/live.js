@@ -57,7 +57,7 @@ const WATCH = () => {
     })().catch(() => {});
     return new Response(theirs, { status: answer.status, statusText: answer.statusText, headers: answer.headers });
   };
-  const box = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
+  const box = (name) => document.querySelector(`.open-box:has(.card[data-asset="${name}"])`) ?? [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
   window.boxOf = box;
   /** What the pointer did and where the page was, for a box that doesn't open. First at the window, so it hears a click d3-drag then swallows. */
   window.clicks = [];

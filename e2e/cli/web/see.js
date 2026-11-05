@@ -304,7 +304,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_version_main', landedVersion?.main?.field === 'image' && /^files\//.test(landedVersion?.main?.path ?? '') && landedVersion?.main?.sha256?.startsWith('sha256:'), landedVersion);
   await shot('landed');
 
-  // Playing: a file here over Range with ?media=, two at most, and the third stops the first.
+  // Playing: a file here over Range with ?media=. One box is open at a time, and what it plays goes with it.
   await open(page, 'clip');
   // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
   const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));
@@ -320,19 +320,12 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('plays_by_range_and_media', true);
   }
   await open(page, 'clip_b');
+  await until('what was playing went with its box', () => page.locator('video').count(), (n) => n === 0);
   await element(page, 'clip_b').locator('.play').click();
-  await until('two videos', () => page.locator('video').count(), (n) => n === 2);
-  await held();
-  await open(page, 'edit');
-  await element(page, 'edit').locator('.tl-play').click();
-  await until('still two, the first stopped', () => clip.locator('video').count(), (n) => n === 0);
-  await page.waitForTimeout(300);
-  check('two_videos_at_most', (await page.locator('video').count()) === 2, await page.locator('video').count());
-  await until('none playing', async () => {
-    // One that ends takes its Stop away as this reaches for it.
-    if (await page.locator('.stop').count()) await page.locator('.stop').first().click({ timeout: 2000 }).catch(() => {});
-    return page.locator('video').count();
-  }, (n) => n === 0);
+  await until('its own', () => page.locator('video').count(), (n) => n === 1);
+  check('one_box_plays', (await page.locator('video').count()) === 1, await page.locator('video').count());
+  await away(page);
+  await until('none playing', () => page.locator('video').count(), (n) => n === 0);
 
   // A failure is named and stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
