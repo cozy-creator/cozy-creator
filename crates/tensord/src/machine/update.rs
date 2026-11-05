@@ -1120,9 +1120,15 @@ impl Updates {
         };
         let runtime = stage(candidate, &runtime, "cozy_runtime")?;
         // A file the caller sent is a development build; a numbered prerelease it named (`url`) is a
-        // release like any other, and a package's floor on it is met as ever.
-        if let Some(file) = request.runtime.as_ref().filter(|c| !c.file.is_empty() && c.url.is_empty()) {
-            fs::write(candidate.join(RUNTIME_BUILD), build(&runtime, &file.sha256)?)?;
+        // release like any other, and a package's floor on it is met as ever. The Runtime kept
+        // (a TensorFS named alone) stays what it was.
+        let development = match &request.runtime {
+            Some(file) if !file.file.is_empty() && file.url.is_empty() => build(&runtime, &file.sha256)?,
+            Some(_) => String::new(),
+            None => development_runtime(&self.paths.sdk(), &self.paths.update("staged")),
+        };
+        if !development.is_empty() {
+            fs::write(candidate.join(RUNTIME_BUILD), development)?;
         }
         match tensorfs {
             None if request.runtime.is_some() => self.pair(candidate, &runtime)?,

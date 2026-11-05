@@ -147,10 +147,9 @@ enum Stop {
 impl From<LinkError> for Stop {
     fn from(e: LinkError) -> Self {
         match e {
-            // A run's reason has only its words: what to do goes in them.
             LinkError::Refused { code, message, remedy, next } => {
-                let message = remedy.into_iter().chain(next.into_iter().map(|next| format!("next: {next}"))).fold(message, |said, more| format!("{said}; {more}"));
-                Stop::Refused(Reason { code, message, ..Default::default() })
+                let message = remedy.into_iter().fold(message, |said, remedy| format!("{said}; {remedy}"));
+                Stop::Refused(Reason { code, message, next, ..Default::default() })
             }
             LinkError::Released(message) => Stop::Released(message),
             LinkError::NoRun => Stop::Lost,
@@ -701,7 +700,7 @@ impl Calcifer {
                     self.waiting(id, format!("local cannot start: {}", e.message));
                     pause.wait(wake, None).await;
                 } else {
-                    let reason = Reason { code: e.code, message: e.message, ..Default::default() };
+                    let reason = Reason { code: e.code, message: e.message, next: e.next, ..Default::default() };
                     match self.store.fail(id.as_str(), reason) {
                         Ok(events) => self.publish(id, events),
                         Err(e) => warn!(run = %id, "{e}"),
