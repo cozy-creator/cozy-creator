@@ -1219,6 +1219,22 @@ pub struct MachineList {
     pub rentals: LiveRentals,
 }
 
+impl MachineList {
+    /// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
+    /// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
+    /// `local`, which says why it can't where it can't.
+    pub fn render_set(&self) -> Vec<On> {
+        let held = |machine: &&Machine| machine.recorded && machine.offline.is_none();
+        let rented = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting));
+        let added = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
+        let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
+        if set.is_empty() || platform::Os::CURRENT.local_inference() {
+            set.push(On::Machine("local".into()));
+        }
+        set
+    }
+}
+
 /// Live rentals summed: how many, what they cost an hour now, and what they accrued so far.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveRentals {
@@ -1722,6 +1738,13 @@ pub fn local_usable(machine: &str) -> Result<(), crate::error::Error> {
     Err(crate::error::Error::new(crate::error::Kind::Unavailable, "local_unavailable", message)
         .remedy("add `--on new` to rent a Linux GPU, or `--on <machine>` for one you have")
         .next("cozy machine rent"))
+}
+
+impl On {
+    /// This computer's machine.
+    pub fn is_local(&self) -> bool {
+        matches!(self, On::Machine(name) if name == "local")
+    }
 }
 
 impl From<String> for On {

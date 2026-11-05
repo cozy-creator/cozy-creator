@@ -1,18 +1,19 @@
 //! What the walker works out of time (cl-770): a simulation of what is owed, on the machines' GPUs, by how long things took here. It says how many
 //! GPUs a job should have and when each should end, one function, so the width chosen and the time shown can't disagree. Wrong, a job
-//! takes a little longer, as it may anyway. It knows no model and no card: what it knows of a width it measured.
+//! takes a little longer, as it may anyway. It knows no model: what it knows of a machine and a width it measured there, or on its card.
 
 /// One job to place.
 #[derive(Clone, Debug)]
 pub struct Work {
     /// Those of the list it waits for, each before it.
     pub needs: Vec<usize>,
-    /// How long it takes on one GPU: at a width, by `Scaling`. None: nothing it is like has run here, so it counts as what is known of the rest.
-    pub one_gpu_s: Option<f64>,
+    /// How long it takes on one GPU of each of its machines, in their order: at a width, by `Scaling`. None: nothing it is like has run on that
+    /// machine or its card, so it counts as its slowest known elsewhere, else as what is known of the rest.
+    pub one_gpu_s: Vec<Option<f64>>,
     /// The widths it runs at, smallest first: one for all that takes no group. Empty: no GPU.
     pub widths: Vec<u32>,
     pub scaling: Scaling,
-    /// The machines it may go to, of the list.
+    /// The machines it may go to, of the list: of two that end it as soon, the first.
     pub machines: Vec<usize>,
     /// It is running: where, how wide, and how much is left.
     pub running: Option<(usize, u32, f64)>,
@@ -111,7 +112,7 @@ pub fn plan(works: &[Work], gpus: &[u32]) -> Plan {
     if caps.is_empty() {
         caps.push(1);
     }
-    let known: Vec<f64> = works.iter().filter_map(|work| work.one_gpu_s).collect();
+    let known: Vec<f64> = works.iter().flat_map(|work| work.one_gpu_s.iter().flatten().copied()).collect();
     let usual = if known.is_empty() { 60.0 } else { known.iter().sum::<f64>() / known.len() as f64 };
     let mut best: Option<Plan> = None;
     for &cap in &caps {
@@ -141,15 +142,18 @@ fn placed(works: &[Work], gpus: &[u32], cap: u32, usual: f64) -> Plan {
     let mut end_s: f64 = placed.iter().map(|place| place.end_s).fold(0.0, f64::max);
     for (at, work) in works.iter().enumerate().filter(|(_, work)| work.running.is_none()) {
         let ready = work.needs.iter().map(|&need| placed[need].end_s).fold(0.0, f64::max);
-        let one = work.one_gpu_s.unwrap_or(usual);
+        let slowest = work.one_gpu_s.iter().flatten().copied().reduce(f64::max).unwrap_or(usual);
+        let one_on = |k: usize| work.one_gpu_s.get(k).copied().flatten().unwrap_or(slowest);
         // A job with no GPU takes its time, in no one's way.
         if work.widths.is_empty() {
+            let one = one_on(0);
             placed[at] = Placed { machine: work.machines.first().copied().unwrap_or(0), width: 0, start_s: ready, end_s: ready + one };
             end_s = end_s.max(ready + one);
             continue;
         }
         let mut chosen: Option<(usize, u32, f64, f64)> = None;
-        for &machine in &work.machines {
+        for (k, &machine) in work.machines.iter().enumerate() {
+            let one = one_on(k);
             let line = &mut free[machine];
             line.sort_by(f64::total_cmp);
             let widest = cap.min(line.len() as u32);

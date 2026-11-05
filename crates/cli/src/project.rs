@@ -7,7 +7,7 @@ pub(crate) mod render;
 use std::{path::PathBuf, process::ExitCode};
 
 use protocol::{
-    calcifer::{On, local_usable},
+    calcifer::{MachineList, On, local_usable},
     error::{Error, Kind},
     hub::At,
     project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Fit, FitAsk, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
@@ -200,7 +200,8 @@ struct Render {
     /// The assets (`theo`, `dock_b`, `fight`, `fight_upscale`, …), with what they read, or `all`: every asset.
     #[arg(required = true, value_name = "NAME")]
     names: Vec<String>,
-    /// The machines the renders go to: `local`, machine names, or `any`, comma-separated.
+    /// The machines the renders go to: `local`, machine names, or `any`, comma-separated. None: your rentals and this computer, each render
+    /// on whichever ends it first, this computer last.
     #[arg(long = "on", value_name = "MACHINE", value_delimiter = ',')]
     on: Vec<String>,
     /// Ask and return at once: what it queued and what's ahead of each is printed, and `status` shows how it goes.
@@ -476,12 +477,13 @@ async fn render(ctx: &Context, at: Option<&PathBuf>, args: Render) -> Result<Exi
         true => None,
         false => Some(calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?),
     };
-    // Named, it's held to what this OS can do. Unnamed it's `local`, and Calcifer says so only of what needs a machine: an Edit needs none.
+    // Named, it's held to what this OS can do. Unnamed it's every rental of yours and this computer last, as the page sends it, each job going
+    // where it ends first; with none, `local`, and Calcifer says so only of what needs a machine: an Edit needs none.
     let on: Vec<On> = match args.on.is_empty() {
-        true => vec![On::from("local".to_owned())],
+        true => calcifer.get::<MachineList>("/v1/machines").await.map_or_else(|_| vec![On::from("local".to_owned())], |list| list.render_set()),
         false => args.on.into_iter().map(|on| local_usable(&on).map(|()| On::from(on))).collect::<Result<_, _>>()?,
     };
-    if matches!(on.as_slice(), [On::Machine(only)] if only == "local") {
+    if matches!(on.as_slice(), [only] if only.is_local()) {
         poorly_here(&calcifer, &opened.id, &args.names, args.outdated).await;
     }
     let runs = Runs {

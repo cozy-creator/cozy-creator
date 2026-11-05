@@ -46,6 +46,11 @@ pub struct Package {
 }
 
 impl Package {
+    /// Its interface, as its card or its source says.
+    pub fn document(&self) -> &Value {
+        &self.document
+    }
+
     /// The function its tool names, as a run of it is sent. None: it names none.
     pub fn maker(&self) -> Result<Option<Renderer>, Error> {
         self.named.as_deref().map(|function| self.function(function)).transpose()
@@ -300,6 +305,11 @@ impl Host {
     pub fn gpus(&self, on: &On) -> u32 {
         let On::Machine(name) = on else { return 64 };
         self.api.machines.frame(name).map_or(64, |frame| (frame.gpus.len() as u32).max(1))
+    }
+
+    /// The card a machine has, as it last said: its first GPU's name. None: it hasn't said, or has none.
+    pub fn card(&self, machine: &str) -> Option<String> {
+        self.api.machines.frame(machine)?.gpus.first().map(|gpu| gpu.name.clone())
     }
 
     /// What run `number` measured: its time on GPUs and in what it did itself, the width it had, and the share of it spent exchanging between GPUs.

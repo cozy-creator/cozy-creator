@@ -225,52 +225,106 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         Some(_) => described.await.ok()?,
         None => tokio::time::timeout(HUB_LATE, described).await.ok()?.ok()?,
     };
-    let interface = Interface::parse(&found.interface).ok()?;
     let function = found.function.clone()?;
-    let callable = interface.callables.iter().find(|callable| callable.name == function)?;
-    let own: Vec<&Slot> = callable.models.iter().collect();
-    let calls = interface.call_slots(callable);
-    if !interface.gpu(callable) || (own.is_empty() && calls.is_empty()) {
-        return None;
+    let local_code = found.release_from == ReleaseFrom::Local;
+    let weights = Weights::of(&found.interface, &function, made)?;
+    if !local_code {
+        placed(api, hub, &found.package, &found.release, &function).await;
     }
+    for (written, lane) in weights.refs(placed_now(hub, &found.package, &found.release, &function).as_ref()) {
+        sized(api, hub, &written, lane.as_deref()).await;
+    }
+    let (bytes, pick) = weights.weighed(hub, &found.package, &found.release, &function, local_code);
+    let interface = Interface::parse(&found.interface).ok()?;
     let label = tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|tool| tool.function == function).map_or_else(|| function.clone(), |tool| tool.label);
-    let on_box = |param: &str| made.get("models").and_then(|models| models.get(param)).and_then(|slot| slot["ref"].as_str()).map(str::to_owned);
-    let param = |slot: &Slot| slot.path.rsplit(".models.").next().unwrap_or_default().to_owned();
-    let (bytes, pick, measured) = match found.release_from {
-        ReleaseFrom::Local => {
-            // An orchestrator is as big as the biggest function it calls, as the Hub places one.
-            let mut groups: BTreeMap<&str, Vec<&Slot>> = BTreeMap::new();
-            for slot in if own.is_empty() { calls } else { own } {
-                groups.entry(slot.path.split(".models.").next().unwrap_or_default()).or_default().push(slot);
-            }
-            let mut biggest = 0;
-            for slots in groups.values() {
-                let mut sum = 0;
-                for slot in slots {
-                    let written = on_box(&param(slot)).or_else(|| slot.default.clone());
-                    sum += match written {
-                        Some(written) => sized(api, hub, &written, slot.lane.as_deref()).await.unwrap_or(0),
-                        None => 0,
-                    };
-                }
-                biggest = biggest.max(sum);
-            }
-            (biggest, None, format!("{}/{function}", found.package))
-        }
-        _ => {
-            let placed = placed(api, hub, &found.package, &found.release, &function).await;
-            let mut sum = 0;
-            for (param, lane, bytes) in placed.iter().flat_map(|placed| &placed.slots) {
-                sum += match on_box(param) {
-                    Some(written) => sized(api, hub, &written, Some(lane)).await.unwrap_or(*bytes),
-                    None => *bytes,
-                };
-            }
-            (sum, placed.and_then(|placed| placed.pick), format!("{}/{function}@", found.package))
-        }
+    let measured = match local_code {
+        true => format!("{}/{function}", found.package),
+        false => format!("{}/{function}@", found.package),
     };
     let took_s = Host::new(api).last_measured(&measured, "local").first().map(|measured| measured.busy_s);
     Some(Need { tool: tool.to_owned(), label, bytes, pick, took_s })
+}
+
+/// Whether this computer would run `function` of `package` poorly, by what's known here without asking anyone: what the Hub and its
+/// model cards said lately (a render on it alone asks `fit` first), and what this computer's machine said it has.
+pub(super) fn poorly_now(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>) -> bool {
+    let Some(gpus) = gpus(api) else { return false };
+    let Some(weights) = Weights::of(package.document(), function, made) else { return false };
+    let (bytes, _) = weights.weighed(hub, &package.name, &package.release, function, package.local.is_some());
+    let largest = gpus.iter().map(|(_, bytes)| *bytes).max();
+    largest.is_none_or(|largest| bytes > 0 && bytes * 4 > largest * 3)
+}
+
+/// The model slots a function loads on a GPU, its own or, for one that orchestrates, those of what it calls; and what's on its box in their
+/// place.
+struct Weights {
+    slots: Vec<Slot>,
+    /// A checkpoint on the box, by the parameter it takes the place of.
+    on_box: BTreeMap<String, String>,
+}
+
+impl Weights {
+    /// None: nothing says it loads a model on a GPU.
+    fn of(document: &Value, function: &str, made: &Map<String, Value>) -> Option<Self> {
+        let interface = Interface::parse(document).ok()?;
+        let callable = interface.callables.iter().find(|callable| callable.name == function)?;
+        let slots: Vec<Slot> = match callable.models.is_empty() {
+            true => interface.call_slots(callable).into_iter().cloned().collect(),
+            false => callable.models.clone(),
+        };
+        if !interface.gpu(callable) || slots.is_empty() {
+            return None;
+        }
+        let on_box = (made.get("models").and_then(Value::as_object).into_iter().flatten())
+            .filter_map(|(param, slot)| Some((param.clone(), slot["ref"].as_str()?.to_owned())))
+            .collect();
+        Some(Self { slots, on_box })
+    }
+
+    fn param(slot: &Slot) -> &str {
+        slot.path.rsplit(".models.").next().unwrap_or_default()
+    }
+
+    /// Each checkpoint whose bytes it needs, and the lane it'd load: what's on the box, and with no placement its slots' own defaults.
+    fn refs(&self, placed: Option<&Placed>) -> Vec<(String, Option<String>)> {
+        let lane = |param: &str| placed.and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param)).map(|(_, lane, _)| lane.clone());
+        (self.slots.iter())
+            .filter_map(|slot| {
+                let param = Self::param(slot);
+                let written = self.on_box.get(param).cloned().or_else(|| placed.is_none().then(|| slot.default.clone()).flatten())?;
+                Some((written, lane(param).or_else(|| slot.lane.clone())))
+            })
+            .collect()
+    }
+
+    /// Its weights' bytes as what's kept here says (0: unknown), and the GPU the Hub would rent for it. A release is what the Hub places it
+    /// by; local code, its models' releases, an orchestrator as big as the biggest function it calls, as the Hub places one.
+    fn weighed(&self, hub: &str, package: &str, release: &str, function: &str, local_code: bool) -> (u64, Option<RentFor>) {
+        let on_box = |param: &str, lane: Option<&str>| self.on_box.get(param).and_then(|written| sized_now(hub, written, lane));
+        if !local_code {
+            let Some(placed) = placed_now(hub, package, release, function) else { return (0, None) };
+            let bytes = placed.slots.iter().map(|(param, lane, bytes)| on_box(param, Some(lane)).unwrap_or(*bytes)).sum();
+            return (bytes, placed.pick);
+        }
+        let mut groups: BTreeMap<&str, u64> = BTreeMap::new();
+        for slot in &self.slots {
+            let param = Self::param(slot);
+            let written = self.on_box.get(param).or(slot.default.as_ref());
+            let bytes = written.and_then(|written| sized_now(hub, written, slot.lane.as_deref())).unwrap_or(0);
+            *groups.entry(slot.path.split(".models.").next().unwrap_or_default()).or_default() += bytes;
+        }
+        (groups.into_values().max().unwrap_or(0), None)
+    }
+}
+
+/// What the Hub last said of where it places a run of `package@release`'s `function`, however long ago.
+fn placed_now(hub: &str, package: &str, release: &str, function: &str) -> Option<Placed> {
+    PLACED.lock().expect("placed lock").get(&format!("{hub}\n{package}@{release}/{function}")).and_then(|(_, held)| held.clone())
+}
+
+/// What a model card last said of a checkpoint's bytes, however long ago.
+fn sized_now(hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
+    SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| *held)
 }
 
 /// What the Hub places a run of `package@release`'s `function` on, kept a while. None: it didn't say.

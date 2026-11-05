@@ -119,6 +119,7 @@ Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, 
 runner with a second user as an added machine; `part` is `idle`, which ends with a page held open while the pod releases itself,
 or `release`, End through the door.
 `tool-functions` (cl-774) takes `qwen-image-2/generate_turbo`, `birefnet/remove_background`, `minimax-h3/generate_turbo` and `minimax-h3/upscale` from dropping the tool to accepting its output on one 4090, a shape like `lab`'s beside them, and a Caption, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`render-placement` (cl-774) is `cozy project render` with no `--on` on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
 `disk-valentino` (cl-774) is a 100 GB 4090 past a full disk: Qwen-Image 2.1 and turbo, then H3, which makes its room by
 ending turbo's idle executor and evicting both, H3 untouched while it renders, H3 bf16 refused before it downloads.
