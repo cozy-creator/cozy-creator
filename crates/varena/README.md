@@ -28,7 +28,7 @@ what it is asked for (`CacheOwner`), and TensorD may end an idle process.
 3. idle graph pools (a remap, no re-read)
 4. working frees still running: wait
 5. idle peer processes, in no request (physical shortage only)
-6. idle weights, strictly in eviction rank, waiting for one still in use rather than passing it
+6. completed idle weights in eviction rank, passing over ones still in use; short of those, waiting for the first of them to finish
 7. a context join, for releases with unknown consumers
 8. owner caches
 9. peer processes (physical shortage only, one last retry on their final answer)

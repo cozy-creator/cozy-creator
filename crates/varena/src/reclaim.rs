@@ -52,6 +52,8 @@ pub(crate) struct Protect<'a> {
     /// The caller's retry takes free working pages in place: what a wait completes is tried
     /// once before any working page goes.
     pub(crate) reuse_working: bool,
+    /// The absent region this is for: a region of its size evicted moves its pages there.
+    pub(crate) into: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -211,7 +213,7 @@ impl<'a> Sequence<'a> {
                 wait_outside(self.gpu, &[], true)?;
                 drop(hold);
                 self.working(want)?;
-                self.weight_pass(want, &classes, false)?;
+                self.weight_pass(want, &classes)?;
                 Ok(true)
             }
             Step::OwnerCaches if self.wait == Wait::Yes => self.recovery.owner_caches(self.device, want),
@@ -224,13 +226,14 @@ impl<'a> Sequence<'a> {
         }
     }
 
-    /// Evict idle regions of these classes strictly in rank order. A region still in use on the
-    /// GPU is waited for when `wait`, outside every lock, rather than passed over: the next in
-    /// rank is what a loop reaches soonest, and reading it back costs more than the wait.
+    /// Evict completed idle regions of these classes in rank order. One still in use on the GPU is
+    /// passed over: waiting for the block just launched starts the copy only once the GPU has run
+    /// dry (Flux-2 on a 4090: 0.4 s a step). Short of completed ones in its class, `wait` waits
+    /// outside every lock for those passed over that finish first, before a costlier class goes.
     /// `join` also covers unknown consumers.
     fn weights(&mut self, want: usize, classes: RangeInclusive<u8>, wait: bool, join: bool) -> Result<bool> {
         let released = self.released;
-        let first = self.weight_pass(want, &classes, wait)?;
+        let first = self.weight_pass(want, &classes)?;
         if self.released > released {
             return Ok(true);
         }
@@ -242,11 +245,11 @@ impl<'a> Sequence<'a> {
         let events = if wait { first.events.as_slice() } else { &[] };
         wait_outside(self.gpu, events, joining)?;
         drop(hold);
-        self.weight_pass(want, &classes, wait)?;
+        self.weight_pass(want, &classes)?;
         Ok(true)
     }
 
-    fn weight_pass(&mut self, want: usize, classes: &RangeInclusive<u8>, stop_at_pending: bool) -> Result<Pass> {
+    fn weight_pass(&mut self, want: usize, classes: &RangeInclusive<u8>) -> Result<Pass> {
         // Plan data precedes the gate: a Plan's last drop reaches Regions, which need it.
         let order = plan::order(self.device)?;
         let gate = crate::gate(self.device)?;
@@ -261,34 +264,36 @@ impl<'a> Sequence<'a> {
         candidates.sort_unstable();
         let start = self.released;
         let mut pass = Pass::default();
-        let mut held = 0usize;
-        for (_, id, bytes) in candidates {
-            if self.released - start + held >= want {
+        let mut pending: Vec<(u64, u8, u64, usize)> = Vec::new();
+        for ((class, _), id, bytes) in candidates {
+            if self.released - start >= want {
+                break;
+            }
+            // A costlier class goes only once this one's uses have finished.
+            if pending.last().is_some_and(|&(_, other, ..)| other != class) {
                 break;
             }
             match self.gpu.completion(&state, id) {
                 Completion::Done => {
                     if bytes <= self.maximum.saturating_sub(self.released) {
                         let _context = self.gpu.driver().enter()?;
-                        self.gpu.evict(&mut state, id, self.reason, &mut self.released)?;
+                        self.gpu.evict(&mut state, id, self.reason, &mut self.released, self.protect.into)?;
                         self.evicted += 1;
                     }
                 }
-                Completion::Pending => {
-                    let uses = &state.entries[&id].uses;
-                    self.gpu.fences().events(&uses.waits(), &mut pass.events);
-                    held += bytes;
-                    if stop_at_pending {
-                        break;
-                    }
-                }
-                Completion::Unjoined => {
-                    pass.unjoined = true;
-                    if stop_at_pending {
-                        break;
-                    }
-                }
+                Completion::Pending => pending.push((state.entries[&id].last_use, class, id, bytes)),
+                Completion::Unjoined => pass.unjoined = true,
             }
+        }
+        // Uses run in order on the GPU: the oldest finishes first.
+        pending.sort_unstable();
+        let mut short = want.saturating_sub(self.released - start);
+        for (_, _, id, bytes) in pending {
+            if short == 0 {
+                break;
+            }
+            self.gpu.fences().events(&state.entries[&id].uses.waits(), &mut pass.events);
+            short = short.saturating_sub(bytes);
         }
         Ok(pass)
     }
@@ -397,7 +402,8 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
     let needed = bytes + gap.saturating_sub(reusable);
     let excess = reusable.saturating_sub(gap);
     let gpu = crate::gpu(device)?;
-    let protect = Protect { regions: Some(group), speculative: true, keep_working: true, ..Default::default() };
+    let into = group.first().copied();
+    let protect = Protect { regions: Some(group), speculative: true, keep_working: true, into, ..Default::default() };
     let (room, idle) = {
         let order = plan::order(device)?;
         let gate = crate::gate(device)?;
