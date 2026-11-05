@@ -380,7 +380,7 @@ bash -c ". '$OUT/completion.bash'; complete -p cozy" > /dev/null || check "compl
   || check "completion zsh: no _cozy"
 [ ! -s "$OUT/completion.fish" ] || fish -c "source '$OUT/completion.fish'; complete -C 'cozy mach'" | grep -q machine \
   || check "completion fish: cozy mach does not complete to machine"
-[ ! -s "$OUT/completion.powershell" ] || PATH="$(dirname "$COZY"):$PATH" pwsh -NoProfile -c ". '$OUT/completion.ps1'; (TabExpansion2 'cozy mach' 9).CompletionMatches.CompletionText" | grep -q machine \
+[ ! -s "$OUT/completion.powershell" ] || PATH="$(dirname "$COZY"):$PATH" pwsh -NoProfile -c ". '$(cygpath -w "$OUT/completion.ps1" 2>/dev/null || echo "$OUT/completion.ps1")'; (TabExpansion2 'cozy mach' 9).CompletionMatches.CompletionText" | grep -q machine \
   || check "completion powershell: cozy mach does not complete to machine"
 echo "completion: ${shells[*]}"
 }
