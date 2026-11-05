@@ -280,6 +280,8 @@ struct Pool {
 pub(crate) struct State {
     pub(crate) entries: BTreeMap<u64, crate::Entry>,
     pub(crate) phase_boundary: Option<u64>,
+    // The Region used last: its `next` is this use's.
+    pub(crate) last_used: Option<u64>,
     pub(crate) fills: u64,
     pub(crate) filled_bytes: u64,
     pub(crate) hits: u64,

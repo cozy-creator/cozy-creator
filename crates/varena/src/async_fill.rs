@@ -796,19 +796,19 @@ fn run_worker(receiver: mpsc::Receiver<Payload>) {
     }
 }
 
-pub enum StreamPreparation {
+pub(crate) enum StreamPreparation {
     Ready(Pin),
     Ordered(Pin),
     Fill(Fill),
 }
 impl Region {
-    /// Demand admission with explicit producer ordering. Legacy prepare/pin stay completed-only.
+    /// Demand admission with explicit producer ordering.
     ///
     /// # Safety
     /// Consumer stream is live in this primary context. No dependent reads may be enqueued
     /// before success; every additional consumer stream must call Pin::order_on first.
     #[allow(unsafe_code)]
-    pub unsafe fn prepare_on(self: &Arc<Self>, consumer_stream: u64) -> Result<StreamPreparation> {
+    pub(crate) unsafe fn prepare_on(self: &Arc<Self>, consumer_stream: u64) -> Result<StreamPreparation> {
         if self.pid != std::process::id() {
             return Err(Error::Invalid("CUDA regions cannot be used after fork"));
         }

@@ -111,7 +111,6 @@ pub(super) struct Continuation {
     abi: Abi,
     owner: Option<Py<PyAny>>,
     quiescent: AtomicBool,
-    start_after: Option<StartAfter>,
     rearm: Option<Op>,
     finish: Option<Op>,
     finished: AtomicBool,
@@ -158,15 +157,13 @@ impl Continuation {
         {
             return Err(invalid());
         }
-        let start_after = if abi.flags & 8 != 0 {
+        if abi.flags & 8 != 0 {
             if size < std::mem::size_of::<EventAbi>() as u32 {
                 return Err(invalid());
             }
             // SAFETY: the capability and checked full size cover this optional C tail.
-            Some(unsafe { (*ptr.cast::<EventAbi>()).start_after }.ok_or_else(invalid)?)
-        } else {
-            None
-        };
+            unsafe { (*ptr.cast::<EventAbi>()).start_after }.ok_or_else(invalid)?;
+        }
         let (rearm, finish) = if abi.flags & 16 != 0 {
             if size < std::mem::size_of::<ReusableAbi>() as u32 {
                 return Err(invalid());
@@ -192,7 +189,6 @@ impl Continuation {
             abi,
             owner: Some(owner),
             quiescent: AtomicBool::new(false),
-            start_after,
             rearm,
             finish,
             finished: AtomicBool::new(false),
@@ -236,25 +232,6 @@ impl Continuation {
     pub fn start(&self) -> Result<(), Status> {
         // SAFETY: same-process retained capability. The provider atomically arbitrates cancel/start.
         unsafe { self.abi.start.expect("validated start")(self.abi.context) }.result()
-    }
-    pub fn supports_event_input(&self) -> bool {
-        self.start_after.is_some()
-    }
-    pub fn start_after(&self, streams: &[usize], error: u64) -> Result<(), Status> {
-        let start = self
-            .start_after
-            .ok_or_else(|| Status::unproven("event input capability missing"))?;
-        // SAFETY: the owned producer streams and error word stay live through composed
-        // completion; the provider copies the temporary handle array during this call.
-        unsafe {
-            start(
-                self.abi.context,
-                streams.as_ptr(),
-                streams.len() as u32,
-                error,
-            )
-        }
-        .result()
     }
     /// v1 cancel is atomic and nonblocking: safe even from a Python-side destructor.
     pub fn cancel(&self) -> Status {

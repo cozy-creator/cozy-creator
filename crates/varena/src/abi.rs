@@ -43,6 +43,7 @@ impl From<Error> for Failure {
             Error::Unsupported(_) => (UNSUPPORTED, 0),
             Error::Busy => (BUSY, 0),
             Error::Callback(_) => (SOURCE_ERROR, 0),
+            Error::Source { status, bytes, .. } => (*status, *bytes),
             Error::Cuda { .. } | Error::Invalid(_) | Error::PhaseOverlap => (INVALID, 0),
         };
         Self(status, error.to_string(), requested)
@@ -422,14 +423,9 @@ pub extern "C" fn vr_v1_gpu_close(id: u64) -> i32 {
 }
 
 pub type DropFn = unsafe extern "C" fn(*mut c_void);
-enum Bytes {
-    Host(host_source::Payload),
-    Foreign(Arc<source::Owner>),
-}
 pub(crate) struct Weight {
     gpu: Arc<Gpu>,
     region: Arc<Region>,
-    bytes: Bytes,
 }
 struct Use {
     _weights: Vec<Arc<Weight>>,
@@ -463,13 +459,9 @@ pub unsafe extern "C" fn vr_v1_region_from_host(
         }
         let gpu = gpu(g)?;
         let bytes: Arc<[u8]> = unsafe { slice(bytes, len)? }.into();
-        let region = gpu.core.reserve(len)?;
+        let region = host_source::region(&gpu, host_source::Payload::Copied(bytes))?;
         unsafe {
-            out.write(insert(Handle::Region(Arc::new(Weight {
-                gpu: gpu.clone(),
-                region,
-                bytes: Bytes::Host(host_source::Payload::Copied(bytes)),
-            })))?);
+            out.write(insert(Handle::Region(Arc::new(Weight { gpu: gpu.clone(), region })))?);
         }
         Ok(())
     })
@@ -490,12 +482,8 @@ pub unsafe extern "C" fn vr_v1_region_from_host_parts(
         let parts = unsafe { slice(parts, count)? };
         let gpu = gpu(g)?;
         let (bytes, layout) = unsafe { host_parts::snapshot(parts)? };
-        let region = gpu.core.reserve(bytes.len())?;
-        let handle = insert(Handle::Region(Arc::new(Weight {
-            gpu: gpu.clone(),
-            region,
-            bytes: Bytes::Host(host_source::Payload::Copied(bytes)),
-        })))?;
+        let region = host_source::region(&gpu, host_source::Payload::Copied(bytes))?;
+        let handle = insert(Handle::Region(Arc::new(Weight { gpu: gpu.clone(), region })))?;
         // SAFETY: caller provides disjoint writable outputs; every fallible step is
         // complete. The snapshots no longer depend on any caller input allocation.
         unsafe {
@@ -524,12 +512,8 @@ pub unsafe extern "C" fn vr_v1_region_borrow_host_parts(
             return Err(invalid("null host parts output"));
         }
         let gpu = gpu(g)?;
-        let region = gpu.core.reserve(borrowed.len())?;
-        let handle = insert(Handle::Region(Arc::new(Weight {
-            gpu: gpu.clone(),
-            region,
-            bytes: Bytes::Host(host_source::Payload::Borrowed(borrowed)),
-        })))?;
+        let region = host_source::region(&gpu, host_source::Payload::Borrowed(borrowed))?;
+        let handle = insert(Handle::Region(Arc::new(Weight { gpu: gpu.clone(), region })))?;
         // SAFETY: caller provides disjoint writable outputs; every fallible step is complete.
         unsafe {
             std::ptr::copy_nonoverlapping(layout.as_ptr(), offsets, count);
@@ -549,11 +533,9 @@ pub unsafe extern "C" fn vr_v1_region_from_source(g: u64, len: u64,
         let provider = unsafe { provider.read() };
         source::validate(&provider)?;
         let gpu = gpu(g)?;
-        let region = gpu.core.reserve(size(len)?)?;
         let source = source::Owner::new(gpu.clone(), provider);
-        let id = insert(Handle::Region(Arc::new(Weight {
-            gpu: gpu.clone(), region, bytes: Bytes::Foreign(source.clone()),
-        })))?;
+        let region = gpu.core.region(size(len)?, source.clone())?;
+        let id = insert(Handle::Region(Arc::new(Weight { gpu: gpu.clone(), region })))?;
         source.owned.store(true, Ordering::Release);
         unsafe { out.write(id); }
         Ok(())
@@ -613,13 +595,7 @@ fn acquire_use(weights: &[Lease<Weight>], stream: u64) -> Result<u64> {
     let mut pins = Vec::with_capacity(weights.len());
     let acquired = (|| -> Result<()> {
         for weight in weights {
-            pins.push(match unsafe { weight.region.prepare_on(stream)? } {
-                crate::StreamPreparation::Ready(pin) | crate::StreamPreparation::Ordered(pin) => pin,
-                crate::StreamPreparation::Fill(fill) => match &weight.bytes {
-                    Bytes::Host(bytes) => host_source::acquire(weight, bytes.clone(), fill, stream)?,
-                    Bytes::Foreign(provider) => source::acquire(weight, provider, fill, stream)?,
-                },
-            });
+            pins.push(unsafe { weight.region.use_on(stream)? });
         }
         Ok(())
     })();

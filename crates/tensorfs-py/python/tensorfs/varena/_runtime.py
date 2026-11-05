@@ -100,8 +100,9 @@ class Device:
     def granularity(self) -> int:
         return self._native.granularity
 
-    def reserve(self, bytes: int) -> Region:
-        return Region(self._native.reserve(bytes))
+    def region(self, bytes: int, source: Source) -> Region:
+        """A Region of `bytes` from `source`: address space only, until it is used."""
+        return Region(self._native.region(bytes, source._native))
 
     def stats(self) -> dict[str, int]:
         return self._native.stats()
@@ -111,11 +112,6 @@ class Device:
         """Exclude native producers and recovery during actual CUDA capture."""
         with capture(self.device):
             yield
-
-
-def supports_phase_plans() -> bool:
-    """The current private integration always provides copied phase-region intent."""
-    return True
 
 
 class Plan:
@@ -154,6 +150,66 @@ class PhaseController:
         return self._native.facts()
 
 
+class Pages:
+    """One GPU's host tier: weight pages in pinned host RAM, which TensorFS alone manages."""
+
+    def __init__(self, device: int, *, cap: int, headroom: int) -> None:
+        self._native = _ext._VarenaPages(device, cap, headroom)
+
+    def pending(self) -> bool:
+        """Whether pages wait for an idle executor to pin them."""
+        return self._native.pending()
+
+    def pin_idle(self, waiting: Callable[[], bool]) -> None:
+        """Pin them until `waiting()`: it is asked between windows of a page's read."""
+        self._native.pin_idle(waiting)
+
+    def forget(self, set: str | None = None) -> None:
+        """`set`'s pages go, or every page."""
+        self._native.forget(set)
+
+    def request_ended(self) -> None:
+        self._native.request_ended()
+
+    def drain(self) -> list[tuple[str, int, int, str, bool, int, float]]:
+        """The fills since the last call: (set, block, bytes, origin, ahead, ns, unix ms)."""
+        return self._native.drain()
+
+    def stats(self) -> dict[str, Any]:
+        return self._native.stats()
+
+
+class Source:
+    """Where a Region's bytes come from: its page in `pages`, else `parts` of `checkpoint`, then
+    `derive`, on the thread that called `use`, never during capture. `derive(view)` gets the Region
+    as a U8 Tensor, stored bytes in it and gaps zeroed, and returns whether they are now different.
+
+    parts: (component/key#role, destination offset, stored length). `page` names it in the tier;
+    None: never kept. `set` and `block` name its fills in the record.
+    """
+
+    def __init__(
+        self,
+        pages: Pages,
+        set: str,
+        block: int,
+        bytes: int,
+        *,
+        checkpoint: _ext.Checkpoint | None = None,
+        parts: Sequence[tuple[str, int, int]] = (),
+        page: str | None = None,
+        derive: Callable[[Tensor], object] | None = None,
+    ) -> None:
+        self._native = _ext._VarenaSource(
+            pages._native, set, block, bytes,
+            checkpoint=checkpoint, parts=list(parts), page=page, derive=derive,
+        )
+
+    def read_host(self, out: Buffer, *, stored: bool = False) -> None:
+        """Its bytes in a writable host buffer: its kept page unless `stored`, else the store."""
+        self._native.read_host(out, stored=stored)
+
+
 class Region:
     def __init__(self, native: _ext._VarenaRegion) -> None:
         self._native = native
@@ -170,135 +226,30 @@ class Region:
     def ptr(self) -> int:
         return self._native.ptr
 
-    def prepare(self) -> Use:
-        """A fill, or the resident contents. The core makes room in its one reclaim order."""
-        return Use(self._native.prepare())
-
-    def prepare_prefetch_fill(self) -> Use | None:
-        """A fill ahead of demand, under prefetch admission. None declines without I/O."""
-        native = self._native.prepare_prefetch_fill()
-        return Use(native) if native is not None else None
+    def use(self, stream: int) -> Use:
+        """Pinned for `stream`, a live ``torch.cuda.Stream.cuda_stream``. Absent, its Source fills
+        it; the core makes room in its one reclaim order and alone chooses what else moves."""
+        return Use(self._native.use_on(stream))
 
     def pin(self) -> Use | None:
         """Pin existing ready contents atomically, or return None for a residency miss.
 
         Never allocates, maps, refills or starts recovery. Errors such as poison and
-        use after fork propagate. The returned Use and its aliases own the same physical
-        pin as prepare(); this adds no ordering for writes after the committed fill.
+        use after fork propagate.
         """
         native = self._native.pin()
         return None if native is None else Use(native)
 
-    def prepare_prefetch(
-        self,
-        checkpoint: _ext.Checkpoint,
-        parts: Sequence[tuple[str, int, int]],
-        *,
-        threads: int = 2,
-    ) -> PreparedRead | None:
-        """Offer an immutable raw source to native prefetch admission.
-
-        None means no fill was admitted (phase not measured yet, no room for its bytes and the
-        phase's remaining working peak, or already resident). An admitted read retains its
-        source and Fill but starts no IO. Encoded decode/scratch is outside this path.
-        """
-        native = _ext._VarenaPreparedRead.prefetch(self._native, checkpoint, list(parts), threads)
-        return None if native is None else PreparedRead(native)
-
-    def prepare_read(
-        self,
-        checkpoint: _ext.Checkpoint,
-        parts: Sequence[tuple[str, int, int]],
-        *,
-        threads: int = 2,
-        host: Buffer | None = None,
-    ) -> PreparedRead:
-        """Admit a fill and warm bounded staging, without starting source I/O.
-
-        Each part is (component/key#role, destination byte offset, exact stored length).
-        This region must be dedicated to that immutable source recipe. Native prefetch
-        uses local available sources only; it never calls a Python transformer/fetcher.
-        host, a writable C-contiguous buffer covering every part and at most the region's
-        length, receives the one store read; one copy then fills the region from it (zeroes
-        past it). The read row's
-        host_bytes says whether it was filled (0 when the region was already resident).
-        """
-        native = getattr(_ext, "_VarenaPreparedRead", None)
-        if native is None:
-            raise RuntimeError(
-                "this TensorFS build has no native owned refill capability"
-            )
-        return PreparedRead(
-            native(
-                self._native, checkpoint, list(parts), threads, host
-            )
-        )
-
-
-def supports_refill() -> bool:
-    """Whether this prebuilt extension exposes the owning native refill interface."""
-    return hasattr(_ext, "_VarenaPreparedRead")
-
-
-def supports_phases() -> bool:
-    """Whether this native build supports explicit metadata-only cache reprioritization."""
-    return True
-
-
-def supports_prefetch() -> bool:
-    """Whether native refill can refuse admission without eviction or a context join."""
-    # Native refill is omitted only by an explicit no-store build.
-    return supports_refill()
-
-
-def supports_host_prefetch() -> bool:
-    """Whether prepare_read accepts host=: one store read into a caller's host page."""
-    return supports_refill()
-
-
-class PreparedRead:
-    """Own source/staging/Fill until checked producer completion, without a context join.
-
-    Call start after active work is admitted. A successful wait/poll publishes only
-    completed bytes, so ordinary Region.prepare/DLPack exports remain stream-safe.
-    cancel() requests stop; wait() or completed poll() proves the submitted work drained.
-    An unstarted cancellation settles without a later start. Partial fills are never published.
-    """
-
-    def __init__(self, native: _ext._VarenaPreparedRead) -> None:
-        self._native = native
-
-    def start(self) -> None:
-        self._native.start()
-
-    def cancel(self) -> None:
-        self._native.cancel()
-
-    def poll(self) -> dict[str, int | bool]:
-        return self._native.poll()
-
-    def wait(self) -> dict[str, int | bool]:
-        return self._native.wait()
-
 
 class Use:
-    """Pinned storage. Fill every byte before commit when needs_fill is true.
-
-    This Use and every independently exported Storage share one checked native Pin
-    owner. Storage references survive this Python object; an abandoned fill stays
-    unreadable to later prepares.
-    """
+    """Pinned storage. This Use and every independently exported Storage share one checked
+    native Pin owner, and Storage references survive this Python object."""
 
     def __init__(self, native: _ext._VarenaUse) -> None:
         import torch
 
         self._native = native
-        self.needs_fill = native.needs_fill
         self.tensor = torch.from_dlpack(native)
-
-    def commit(self) -> None:
-        self._native.commit()
-        self.needs_fill = False
 
     def consume_on(self, stream: int) -> None:
         """Declare a CUDA stream (``torch.cuda.Stream.cuda_stream``) that uses this storage.
@@ -343,183 +294,3 @@ def no_capture(device: int) -> Iterator[None]:
         yield
     finally:
         guard.close()
-
-
-class LoadSlot:
-    """One initialized capture slot for a raw checkpoint load followed by native execution.
-
-    This is dedicated storage, not a readable cache entry before load completion. Use its
-    zero-initialized ``tensor`` only to prepare/capture the known body that will consume the
-    stored parts. ``PreparedRepeat.capture(load=slot)`` seals that capture. Submission is
-    one-shot; no Python callback runs between the native read and the retained continuation.
-    Ordinary region prefetch keeps its existing behavior. ``encoded`` adds native decode
-    before the same continuation. With matching capabilities, Runtime may select event
-    ordering: producer events permit compute without a host completion wait, and a device
-    input guard skips the complete authored program for invalid decoded values. Checked
-    completion still precedes publication; late device/ownership failures discard outputs.
-    """
-
-    # The store feature owns all three operations in the current native interface.
-    # No-store builds retain CPU importability but cannot construct a load slot.
-    supports_event_input = hasattr(_ext, "_VarenaLoadSlot")
-    supports_region_input = supports_event_input
-    supports_ready_stage = supports_event_input
-
-    def __init__(
-        self,
-        device: Device,
-        checkpoint: _ext.Checkpoint,
-        parts: Sequence[tuple[str, int, int]],
-        *,
-        bytes: int,
-        threads: int = 2,
-    ) -> None:
-        native = getattr(_ext, "_VarenaLoadSlot", None)
-        if native is None:
-            raise RuntimeError("this TensorFS build has no native load/execution slot")
-        self._native: _ext._VarenaLoadSlot = native(
-            device._native, checkpoint, list(parts), bytes, threads
-        )
-        self._tensor: Tensor | None = None
-        self._decoded: tuple[str, tuple[int, ...]] | None = None
-        self._tensors: tuple[Tensor, ...] | None = None
-        self._existing_regions = False
-        self.device = device.device
-
-    @classmethod
-    def encoded(
-        cls,
-        device: Device,
-        checkpoint: _ext.Checkpoint,
-        component: str,
-        key: str,
-        *,
-        dtype: str,
-        max_scratch_bytes: int,
-        threads: int = 2,
-    ) -> LoadSlot:
-        """One encoded tensor read/decode followed by native execution.
-
-        dtype is F16, BF16 or F32. The required scratch bound includes aligned packed
-        parts and the decoder's private GPU allocation sizes; it excludes final output,
-        shared read staging and CUDA driver/module/allocation-granularity overhead.
-        Metadata, catalog and budget checks precede source I/O. Checked ordering validates
-        decoded input before submitting compute. Event ordering guards the complete program
-        on the device instead; a late device/ownership failure does not imply zero execution.
-        The initialized typed tensor is capture-only until submission completes, using the
-        same owning alias and sealing as raw slots.
-        """
-        native = getattr(_ext, "_VarenaLoadSlot", None)
-        if native is None:
-            raise RuntimeError("this TensorFS build has no encoded native load slot")
-        result = cls.__new__(cls)
-        result._native = native.encoded(
-            device._native, checkpoint, component, key, dtype=dtype,
-            max_scratch_bytes=max_scratch_bytes, threads=threads,
-        )
-        result._tensor = None
-        result._tensors = None
-        result._existing_regions = False
-        result._decoded = (dtype, tuple(checkpoint.components[component].tensors[key].shape))
-        result.device = device.device
-        return result
-
-    @classmethod
-    def from_regions(
-        cls,
-        checkpoint: _ext.Checkpoint,
-        groups: Sequence[tuple[Region, Sequence[tuple[str, int, int]]]],
-        *,
-        threads: int = 2,
-        keep_ready: bool = False,
-    ) -> LoadSlot | None:
-        """Capture against existing immutable raw block regions, then load misses once.
-
-        Native preparation pins every ready input before admitting cold fills. Only missing
-        inputs are initialized for capture and later read; their regions remain independently
-        cached after completion. None means all inputs were ready at this observation; the
-        caller must reacquire and revalidate its ordinary resident binding before capture.
-        keep_ready=True instead retains the ready inputs as a capture slot, so an own-address
-        native stage can detach its temporary views and refill after later eviction.
-        Each region must already belong exclusively to the declared immutable source recipe.
-        Authored computation must treat every input as read-only: successful completion
-        caches its bytes under that source identity. Runtime rejects mutable-state overlap
-        and visible ATen writes; custom/native kernels must honor the same read-only contract.
-        """
-        native = getattr(_ext, "_VarenaLoadSlot", None)
-        if native is None:
-            raise RuntimeError("this TensorFS build has no region loading capability")
-        if keep_ready and not cls.supports_ready_stage:
-            raise RuntimeError("this TensorFS build cannot detach ready stage inputs")
-        owned = native.from_regions(
-            checkpoint, [(region._native, list(parts)) for region, parts in groups], threads,
-            keep_ready=keep_ready,
-        )
-        if owned is None:
-            return None
-        result = cls.__new__(cls)
-        result._native = owned
-        result._tensor = None
-        result._decoded = None
-        result._tensors = None
-        result._existing_regions = True
-        result.device = owned.device
-        return result
-
-    @property
-    def immutable_inputs(self) -> tuple[Tensor, ...]:
-        """Existing-region source bytes that authored computation must never write."""
-        return self.tensors if self._existing_regions else ()
-
-    @property
-    def tensors(self) -> tuple[Tensor, ...]:
-        """Capture-only input views, in the declared region order."""
-        if self._tensors is None:
-            import torch
-
-            self._tensors = (
-                (self.tensor,) if self._decoded is not None
-                else tuple(torch.from_dlpack(pin) for pin in self._native.capture_inputs(
-                    torch.cuda.current_stream(self.device).cuda_stream
-                ))
-            )
-        return self._tensors
-
-    @property
-    def tensor(self) -> Tensor:
-        """Initialized capture storage (U8 for raw slots, typed/shaped for encoded slots)."""
-        if self._tensor is None:
-            import torch
-
-            self._tensor = torch.from_dlpack(self._native)
-            if self._decoded is not None:
-                dtype, shape = self._decoded
-                self._tensor = self._tensor.view(
-                    {"F16": torch.float16, "BF16": torch.bfloat16, "F32": torch.float32}[dtype]
-                ).reshape(shape)
-        return self._tensor
-
-    def seal(self) -> None:
-        """Called after successful known-body capture; no new capture views are exported."""
-        self._native.seal()
-
-    def submit_native(
-        self, continuation: object, *, event_ordered: bool = False
-    ) -> _ext._VarenaLoadJob:
-        """Import the private Runtime capability and start its owning native read worker."""
-        return self._native.submit_native(continuation, event_ordered=event_ordered)
-
-    def cancel(self) -> None:
-        """Cancel before submission or request native stop; the job's wait proves completion."""
-        self._native.cancel()
-
-    def close(self) -> None:
-        """Retire an unused slot or request cancellation; existing tensor aliases stay owned."""
-        self._native.close()
-        self._tensor = None
-        self._tensors = None
-
-
-def supports_load_execution() -> bool:
-    """Whether this build accepts the private continuation v1 capability."""
-    return hasattr(_ext, "_VarenaLoadSlot") and hasattr(_ext, "_VarenaLoadJob")

@@ -7,13 +7,11 @@ mod plan;
 #[cfg(feature = "store")]
 mod continuation;
 #[cfg(feature = "store")]
-mod load;
-#[cfg(feature = "store")]
-mod refill;
-#[cfg(feature = "store")]
-mod stage_continuation;
+mod pages;
 #[cfg(feature = "store")]
 mod phase;
+#[cfg(feature = "store")]
+mod source;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     ffi,
@@ -144,14 +142,6 @@ enum UsePreparation {
     Resident(Arc<SharedPin>),
     Fill { fill: varena::Fill, exported: Option<Arc<SharedPin>> },
 }
-impl UsePreparation {
-    fn new(value: varena::Preparation, consumers: Consumers) -> Self {
-        match value {
-            varena::Preparation::Resident(pin) => Self::Resident(SharedPin::new(pin, consumers)),
-            varena::Preparation::Fill(fill) => Self::Fill { fill, exported: None },
-        }
-    }
-}
 
 fn raise(py: Python<'_>, error: varena::Error) -> PyErr {
     let message = error.to_string();
@@ -213,14 +203,16 @@ impl PyDevice {
     fn granularity(&self) -> PyResult<usize> {
         Ok(self.owner()?.granularity())
     }
-    fn reserve(&self, py: Python<'_>, bytes: usize) -> PyResult<PyRegion> {
+    /// A Region of `bytes` from `source`: address space only, until it is used.
+    #[cfg(feature = "store")]
+    fn region(&self, py: Python<'_>, bytes: usize, source: PyRef<'_, source::PySource>) -> PyResult<PyRegion> {
         let device = self.owner()?;
-        Ok(PyRegion {
-            region: Deferred::new(
-                py.detach(|| device.reserve(bytes))
-                    .map_err(|e| raise(py, e))?,
-            ),
-        })
+        let inner = source.inner.clone();
+        let bound = inner.clone();
+        let region = py.detach(|| device.region(bytes, Arc::new(source::PageSource(inner))))
+            .map_err(|e| raise(py, e))?;
+        source::bind(&bound, &region);
+        Ok(PyRegion { region: Deferred::new(region) })
     }
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let device = self.owner()?;
@@ -275,19 +267,6 @@ impl Drop for PyRegion {
         }
     }
 }
-impl PyRegion {
-    fn use_of(&self, preparation: varena::Preparation) -> PyUse {
-        let needs_fill = matches!(preparation, varena::Preparation::Fill(_));
-        let consumers = Consumers::new(self.region.device());
-        PyUse {
-            preparation: Mutex::new(Some(UsePreparation::new(preparation, consumers.clone()))),
-            needs_fill,
-            device: self.region.device(),
-            pid: std::process::id(),
-            consumers,
-        }
-    }
-}
 #[pymethods]
 impl PyRegion {
     #[getter]
@@ -303,17 +282,20 @@ impl PyRegion {
     fn ptr(&self) -> u64 {
         self.region.ptr()
     }
-    /// A fill, or the resident contents. The core makes room in its one reclaim order.
-    fn prepare(&self, py: Python<'_>) -> PyResult<PyUse> {
-        let preparation = py.detach(|| self.region.prepare()).map_err(|e| raise(py, e))?;
-        Ok(self.use_of(preparation))
-    }
-    /// A fill ahead of demand, under prefetch admission. None declines with no IO or waiting.
-    fn prepare_prefetch_fill(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
-        let prepared = py
-            .detach(|| varena::Region::prepare_prefetch(std::slice::from_ref(&*self.region)))
-            .map_err(|e| raise(py, e))?;
-        Ok(prepared.and_then(|mut prepared| prepared.pop()).map(|preparation| self.use_of(preparation)))
+    /// Pinned for `stream`, which is ordered behind its bytes. Absent, its Source fills it,
+    /// and only the core chooses what else moves.
+    #[cfg(feature = "store")]
+    #[pyo3(name = "use_on")]
+    fn use_on(&self, py: Python<'_>, stream: u64) -> PyResult<PyUse> {
+        // SAFETY: the caller's live stream, which reads nothing before this returns.
+        let pin = py.detach(|| unsafe { self.region.use_on(stream) })
+            .map_err(|error| source::take_failure(py).unwrap_or_else(|| raise(py, error)))?;
+        let consumers = Consumers::new(self.region.device());
+        consumers.declare(stream).map_err(|error| raise(py, error))?;
+        Ok(PyUse {
+            preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
+            device: self.region.device(), pid: std::process::id(), consumers,
+        })
     }
     fn pin(&self, py: Python<'_>) -> PyResult<Option<PyUse>> {
         let pin = py
@@ -323,7 +305,7 @@ impl PyRegion {
             let consumers = Consumers::new(self.region.device());
             PyUse {
                 preparation: Mutex::new(Some(UsePreparation::Resident(SharedPin::new(pin, consumers.clone())))),
-                needs_fill: false, device: self.region.device(), pid: std::process::id(), consumers,
+                device: self.region.device(), pid: std::process::id(), consumers,
             }
         }))
     }
@@ -332,59 +314,42 @@ impl PyRegion {
 #[pyclass(name = "_VarenaUse", module = "tensorfs._ext", frozen)]
 struct PyUse {
     preparation: Mutex<Option<UsePreparation>>,
-    needs_fill: bool,
     device: i32,
     pid: u32,
     consumers: Consumers,
 }
+#[cfg(feature = "store")]
+impl PyUse {
+    /// A fill exposed to a Source's derive, on the thread that called `use`.
+    fn filling(fill: varena::Fill, consumers: Consumers) -> Self {
+        let device = fill.device();
+        Self {
+            preparation: Mutex::new(Some(UsePreparation::Fill { fill, exported: None })),
+            device, pid: std::process::id(), consumers,
+        }
+    }
+    /// The derive returned: every byte is initialized. Joins its writers and publishes. The
+    /// returned Pin is its caller's; what was exported keeps its own.
+    fn finish(&self, py: Python<'_>) -> PyResult<varena::Pin> {
+        // All owner/native locks leave scope before detach reacquires Python.
+        py.detach(|| -> varena::Result<varena::Pin> {
+            let current = self.preparation.lock()
+                .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))?
+                .take().ok_or(varena::Error::Invalid("fill already ended"))?;
+            let UsePreparation::Fill { fill, exported } = current else {
+                return Err(varena::Error::Invalid("fill already ended"));
+            };
+            // SAFETY: the derive initialized every byte; this joins all its writers.
+            let pin = unsafe { fill.commit_external() }?;
+            *self.preparation.lock()
+                .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))? =
+                exported.map(UsePreparation::Resident);
+            Ok(pin)
+        }).map_err(|e| raise(py, e))
+    }
+}
 #[pymethods]
 impl PyUse {
-    #[getter]
-    fn needs_fill(&self) -> bool {
-        self.needs_fill
-    }
-    fn commit(&self, py: Python<'_>) -> PyResult<()> {
-        if self.pid != std::process::id() {
-            return Err(PyRuntimeError::new_err(
-                "CUDA storage cannot be used after fork",
-            ));
-        }
-        // All owner/native locks leave scope before detach reacquires Python. A concurrent
-        // export sees None during commit; it never holds the GIL while waiting on a CUDA join.
-        py.detach(|| -> varena::Result<()> {
-            let current = self
-                .preparation
-                .lock()
-                .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))?
-                .take()
-                .ok_or(varena::Error::Invalid(
-                    "fill is committing or already failed",
-                ))?;
-            let ready = match current {
-                UsePreparation::Resident(owner) => UsePreparation::Resident(owner),
-                UsePreparation::Fill { fill, exported } => {
-                    // SAFETY: Use requires every logical byte initialized; this joins all writers.
-                    let pin = unsafe { fill.commit_external() }?;
-                    let owner = if let Some(owner) = exported {
-                        // The exported owner already holds this exact Fill's Region.
-                        // SAFETY: this is the producer's now-completed, unexported Pin;
-                        // all consumer custody remains in the retained shared owner.
-                        release_region(unsafe { pin.into_completed_region() });
-                        owner
-                    } else {
-                        SharedPin::new(pin, self.consumers.clone())
-                    };
-                    UsePreparation::Resident(owner)
-                }
-            };
-            *self
-                .preparation
-                .lock()
-                .map_err(|_| varena::Error::Poisoned("fill owner mutex".into()))? = Some(ready);
-            Ok(())
-        })
-        .map_err(|e| raise(py, e))
-    }
     /// Declare a CUDA stream handle that uses this storage. The final shared owner
     /// records live-stream events or consumes checked retirement witnesses.
     fn consume_on(&self, py: Python<'_>, stream: u64) -> PyResult<()> {
@@ -526,14 +491,6 @@ unsafe extern "C" fn capsule_delete(capsule: *mut ffi::PyObject) {
             delete(ffi::PyCapsule_GetPointer(capsule, c"dltensor".as_ptr()) as *mut Managed);
         }
     }
-}
-fn capsule(py: Python<'_>, pin: varena::Pin, stream: u64) -> PyResult<Bound<'_, PyAny>> {
-    let consumers = Consumers::new(pin.device());
-    if let Err(error) = consumers.declare(stream) {
-        varena::retain_unproven_pin(pin, error.clone());
-        return Err(raise(py, error));
-    }
-    export(py, SharedPin::new(pin, consumers))
 }
 fn export(py: Python<'_>, owner: Arc<SharedPin>) -> PyResult<Bound<'_, PyAny>> {
     let pin = owner.pin();
@@ -677,15 +634,9 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAllocatorCapture>()?;
     module.add_class::<PyNoCapture>()?;
     #[cfg(feature = "store")]
-    module.add_class::<refill::PreparedRead>()?;
+    module.add_class::<pages::PyPages>()?;
     #[cfg(feature = "store")]
-    module.add_class::<load::LoadSlot>()?;
-    #[cfg(feature = "store")]
-    module.add_class::<load::LoadJob>()?;
-    #[cfg(feature = "store")]
-    module.add_class::<load::StageSource>()?;
-    #[cfg(feature = "store")]
-    module.add_class::<stage_continuation::StageJob>()?;
+    module.add_class::<source::PySource>()?;
     #[cfg(feature = "store")]
     module.add_class::<phase::PhaseController>()?;
     Ok(())

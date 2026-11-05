@@ -34,6 +34,16 @@ pub fn prepare_device(device: i32) -> cuda::Result<()> {
     device::prepare(device)
 }
 
+/// `[ptr, ptr + len)` registered with this device's context: a copy from it is one DMA.
+///
+/// # Safety
+/// The range stays mapped until the guard is released, and every copy from it finishes first.
+#[cfg(feature = "cuda")]
+pub unsafe fn register(device: i32, ptr: *mut u8, len: usize) -> cuda::Result<cuda::HostPin> {
+    // SAFETY: this function's own contract.
+    unsafe { device::register(device, ptr, len) }
+}
+
 /// `len` bytes of object `obj` from `off`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectRange {

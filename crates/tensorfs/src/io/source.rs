@@ -52,13 +52,7 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[cfg(feature = "cuda")]
-mod raw;
-#[cfg(feature = "cuda")]
-pub use raw::{RawFill, RawRead, RawReadFacts};
-
 // The plan owns every file/inline source that a borrowed engine copy refers to.
-// It is shared by joined reads and the owned raw submission path.
 enum OwnedSource {
     Zero,
     File(Arc<File>, u64),

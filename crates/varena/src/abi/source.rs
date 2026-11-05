@@ -30,6 +30,7 @@ unsafe impl Sync for Provider {}
 unsafe impl Send for Job {}
 
 pub(super) struct Owner {
+    this: std::sync::Weak<Owner>,
     gpu: Arc<Gpu>,
     provider: Provider,
     pub(super) owned: AtomicBool,
@@ -46,7 +47,8 @@ pub(super) fn validate(provider: &Provider) -> Result<()> {
 }
 impl Owner {
     pub(super) fn new(gpu: Arc<Gpu>, provider: Provider) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|this| Self {
+            this: this.clone(),
             gpu,
             provider,
             owned: AtomicBool::new(false),
@@ -169,22 +171,28 @@ impl Drop for Resource {
     }
 }
 
-pub(super) fn acquire(
-    weight: &Arc<Weight>,
-    source: &Arc<Owner>,
-    fill: crate::Fill,
-    consumer_stream: u64,
-) -> Result<Pin> {
+impl crate::Source for Owner {
+    fn fill(&self, fill: crate::Fill, consumer: Option<u64>) -> crate::Result<Option<Pin>> {
+        let consumer = consumer.ok_or(Error::Busy)?; // A foreign Source runs only for its caller.
+        match acquire(self, fill, consumer) {
+            Ok(pin) => Ok(Some(pin)),
+            Err(Failure(status, detail, bytes)) => Err(Error::Source { status, detail, bytes }),
+        }
+    }
+}
+
+fn acquire(source: &Owner, fill: crate::Fill, consumer_stream: u64) -> Result<Pin> {
+    let source = source.this.upgrade().expect("a Source in use lives in its Region");
     let bytes = fill.len() as u64;
     let mut job = Job::default();
     let prepared = (|| -> Result<i32> {
-        let _context = weight.gpu.core.driver().enter()?;
+        let _context = source.gpu.core.driver().enter()?;
         // No destination is exposed. Any failure transfers NOTHING; the persistent
         // provider retains its failed-prepare owners for its checked final retirement.
         Ok(unsafe {
             source.provider.prepare.expect("validated Source")(
                 source.provider.context,
-                weight.gpu.device(),
+                source.gpu.device(),
                 0,
                 bytes,
                 &mut job,
@@ -232,7 +240,7 @@ pub(super) fn acquire(
     validation?;
     let destination = session.begin()?;
     let status = {
-        let _context = weight.gpu.core.driver().enter()?;
+        let _context = source.gpu.core.driver().enter()?;
         unsafe {
             job.submit.expect("validated job")(
                 job.context,

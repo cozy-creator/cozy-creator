@@ -28,6 +28,25 @@ impl Payload {
     }
 }
 
+/// Host bytes as a Region's Source.
+struct Bytes {
+    gpu: Arc<Gpu>,
+    payload: Payload,
+}
+impl crate::Source for Bytes {
+    fn fill(&self, fill: crate::Fill, consumer: Option<u64>) -> crate::Result<Option<Pin>> {
+        let consumer = consumer.ok_or(Error::Busy)?;
+        match acquire(&self.gpu, self.payload.clone(), fill, consumer) {
+            Ok(pin) => Ok(Some(pin)),
+            Err(Failure(status, detail, bytes)) => Err(Error::Source { status, detail, bytes }),
+        }
+    }
+}
+
+pub(super) fn region(gpu: &Arc<Gpu>, payload: Payload) -> crate::Result<Arc<crate::Region>> {
+    gpu.core.region(payload.len(), Arc::new(Bytes { gpu: gpu.clone(), payload }))
+}
+
 struct State {
     bytes: Payload,
     stream: usize,
@@ -36,7 +55,7 @@ struct State {
     reuse: usize,
 }
 struct Host {
-    weight: Arc<Weight>,
+    gpu: Arc<Gpu>,
     state: Mutex<Option<State>>,
 }
 struct Claim<'a> {
@@ -69,7 +88,7 @@ impl Host {
     fn prepare(&self) -> crate::Result<usize> {
         let mut held = self.claim()?.ok_or(Error::Busy)?;
         let state = held.state.as_mut().expect("exclusive host preparation");
-        let driver = self.weight.gpu.core.driver();
+        let driver = self.gpu.core.driver();
         let _context = driver.enter()?;
         state.stream = driver.create_stream()?;
         driver.prepare_host(&mut state.host, state.capacity)?;
@@ -79,7 +98,7 @@ impl Host {
     fn submit(&self, destination: crate::FillDestination) -> crate::Result<()> {
         let mut held = self.claim()?.ok_or(Error::Busy)?;
         let state = held.state.as_mut().expect("exclusive host submission");
-        let driver = self.weight.gpu.core.driver();
+        let driver = self.gpu.core.driver();
         let _context = driver.enter()?;
         let mut recorded = false;
         let total = state.bytes.len();
@@ -113,7 +132,7 @@ impl Host {
             return Ok(false);
         };
         let state = held.state.as_mut().expect("exclusive host retirement");
-        let driver = self.weight.gpu.core.driver();
+        let driver = self.gpu.core.driver();
         let _context = driver.enter()?;
         driver.release_host(&mut state.host)?;
         if state.reuse != 0 {
@@ -144,14 +163,9 @@ unsafe impl crate::FillResource for Resource {
     }
 }
 
-pub(super) fn acquire(
-    weight: &Arc<Weight>,
-    bytes: Payload,
-    fill: crate::Fill,
-    consumer: u64,
-) -> Result<Pin> {
+fn acquire(gpu: &Arc<Gpu>, bytes: Payload, fill: crate::Fill, consumer: u64) -> Result<Pin> {
     let host = Arc::new(Host {
-        weight: weight.clone(),
+        gpu: gpu.clone(),
         state: Mutex::new(Some(State {
             capacity: bytes.len().min(STAGING),
             bytes,

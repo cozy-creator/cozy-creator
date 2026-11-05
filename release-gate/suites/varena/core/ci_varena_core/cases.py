@@ -71,12 +71,14 @@ def drained():
         time.sleep(0.001)
 
 
+def pages():
+    return varena.Pages(0, cap=0, headroom=0)
+
+
 def filled(gpu, bytes, value):
-    region = gpu.reserve(bytes)
-    use = region.prepare()
-    use.tensor.fill_(value)
-    use.commit()
-    use.consume_on(torch.cuda.current_stream().cuda_stream)
+    source = varena.Source(pages(), "core", 0, bytes, derive=lambda view: view.fill_(value) is None)
+    region = gpu.region(bytes, source)
+    use = region.use(torch.cuda.current_stream().cuda_stream)
     del use
     gc.collect()
     deadline = time.monotonic() + 10
@@ -104,20 +106,30 @@ def clear(gpu):
 
 @case
 def abandoned_fill():
-    """Run 28306: a fill dropped uncommitted after its copy ran leaves no pin, only memory the
-    next demand takes once the copy completes, with no context join, and fills again."""
+    """Run 28306: a derive that raises after its copy ran leaves no pin, only memory the next
+    demand takes once the copy completes, with no context join, and the Region fills again."""
     gpu = varena.Device(0)
     stream = torch.cuda.Stream()
     host = torch.full((32 * MIB,), 7, dtype=torch.uint8).pin_memory()
-    regions = [gpu.reserve(host.numel()) for _ in range(4)]
+    failing = [True]
+
+    def derive(view):
+        if failing[0]:
+            view.copy_(host, non_blocking=True)
+            raise InterruptedError("abandoned")
+        view.fill_(3)
+        return True
+
+    regions = [gpu.region(host.numel(), varena.Source(pages(), "core", 0, host.numel(), derive=derive))
+               for _ in range(4)]
     before = vt.stats(0)["context_joins"]
-    for region in regions:
-        use = region.prepare()
-        assert use.needs_fill
-        use.consume_on(stream.cuda_stream)
-        with torch.cuda.stream(stream):
-            use.tensor.copy_(host, non_blocking=True)
-        del use
+    with torch.cuda.stream(stream):
+        for region in regions:
+            try:
+                region.use(stream.cuda_stream)
+            except InterruptedError:
+                continue
+            raise AssertionError("a derive's error reaches its use")
     gc.collect()
     deadline = time.monotonic() + 10
     while gpu.stats()["pinned_bytes"]:
@@ -133,11 +145,8 @@ def abandoned_fill():
     gc.collect()
     torch.cuda.synchronize()
     vt.set_limit(0, None)
-    use = regions[0].prepare()
-    assert use.needs_fill
-    use.tensor.fill_(3)
-    use.commit()
-    use.consume_on(torch.cuda.current_stream().cuda_stream)
+    failing[0] = False
+    use = regions[0].use(torch.cuda.current_stream().cuda_stream)
     del use, regions
     clear(gpu)
     return {"abandoned_mib": 4 * 32}
@@ -523,7 +532,8 @@ def eviction_order():
 
 @case
 def prefetch_rule():
-    """Free >= bytes + the phase's remaining peak; evicts for it; unused prefetches go first."""
+    """The core alone fills ahead, what the Plan says comes next: free >= bytes + the phase's
+    remaining peak; it evicts for that; unused fills go first; a demand fill finds the bytes."""
     key = "core/prefetch"
     token = vt.phase_enter(0, key)
     value = torch.empty(8 * MIB, dtype=torch.uint8, device="cuda").fill_(1)
@@ -537,54 +547,176 @@ def prefetch_rule():
         source = torch.full((2 * MIB,), 41, dtype=torch.uint8)
         writer.component("net").put("bytes", source)
         checkpoint = writer.commit()
-        parts = [("net/bytes#value", 0, source.nbytes)]
         gpu = varena.Device(0)
-        idle = filled(gpu, 2 * MIB, 5)
-        target = gpu.reserve(source.nbytes)
+        tier = pages()
+        stream = torch.cuda.current_stream().cuda_stream
+        anchor, idle = filled(gpu, 2 * MIB, 6), filled(gpu, 2 * MIB, 5)
+
+        def ahead():
+            """A use of `anchor`, then what the core did about the Region after it."""
+            target = gpu.region(source.nbytes, varena.Source(
+                tier, "core", 1, source.nbytes, checkpoint=checkpoint,
+                parts=[("net/bytes#value", 0, source.nbytes)],
+            ))
+            plan = varena.Plan(gpu, [("phase", [anchor, target])])
+            plan.activate("phase")
+            attempts = vt.stats(0)["prefetch_attempts"]
+            used = anchor.use(stream)
+            deadline = time.monotonic() + 10
+            while vt.stats(0)["prefetch_attempts"] == attempts:
+                assert time.monotonic() < deadline, "the core offered no fill"
+                time.sleep(0.001)
+            while vt.stats(0)["prefetch_declines"] == declines[0] and not target.resident:
+                assert time.monotonic() < deadline, gpu.stats()
+                time.sleep(0.001)
+            declines[0] = vt.stats(0)["prefetch_declines"]
+            del used
+            gc.collect()
+            plan.deactivate()
+            return target, plan
+
+        declines = [vt.stats(0)["prefetch_declines"]]
         before = vt.stats(0)
         # Nothing measured: only into room already free beside a quarter of the card, evicting nothing.
-        cap(4 * MIB, gpu)
-        assert target.prepare_prefetch(checkpoint, parts, threads=1) is None and idle.resident  # no phase
+        cap(6 * MIB, gpu)
+        target, plan = ahead()  # no phase
+        assert not target.resident and idle.resident, gpu.stats()
         token = vt.phase_enter(0, "core/unmeasured")
-        assert target.prepare_prefetch(checkpoint, parts, threads=1) is None and idle.resident
+        target, plan = ahead()
+        assert not target.resident and idle.resident, gpu.stats()
         vt.phase_leave(0, token, completed=False)
         cap(64 * MIB, gpu)
-        read = target.prepare_prefetch(checkpoint, parts, threads=1)
-        assert read is not None and idle.resident
-        read.cancel()
-        read.wait()
-        del read
-        # 12 MiB of room: 2 MiB idle region, 8 MiB peak, 2 MiB read: the idle region may stay.
-        cap(13 * MIB, gpu)
+        target, plan = ahead()
+        assert target.resident and idle.resident, gpu.stats()
+        del target, plan
+        gc.collect()
+        drained()
+        # 14 MiB of room: 2 MiB anchor, 2 MiB idle region, 8 MiB peak, 2 MiB read: both stay.
+        cap(15 * MIB, gpu)
         token = vt.phase_enter(0, key)
-        read = target.prepare_prefetch(checkpoint, parts, threads=1)
-        assert read is not None and idle.resident
-        read.start()
-        read.wait()
-        assert target.resident and gpu.stats()["prefetch_unused_bytes"] == 0
-        # Working demand takes the unused prefetch before the older idle region.
+        target, plan = ahead()
+        assert target.resident and idle.resident and gpu.stats()["prefetch_unused_bytes"] == 0, gpu.stats()
+        # Working demand takes the unused fill before the older idle region.
         value = torch.empty(10 * MIB, dtype=torch.uint8, device="cuda").fill_(2)
         assert not target.resident and idle.resident, gpu.stats()
         assert gpu.stats()["prefetch_unused_bytes"] == 2 * MIB, gpu.stats()
-        del value, read
+        del value, target, plan
         gc.collect()
         torch.cuda.synchronize()
         vt.phase_leave(0, token, completed=False)
         # A full card: an idle region gives way to the read, by the same rule.
         drained()
-        cap(2 * MIB + 8 * MIB, gpu)
+        cap(2 * MIB + 2 * MIB + 8 * MIB, gpu)
         token = vt.phase_enter(0, key)
-        read = target.prepare_prefetch(checkpoint, parts, threads=1)
-        assert read is not None and not idle.resident, gpu.stats()
-        read.cancel()
-        read.wait()
-        del read
+        target, plan = ahead()
+        assert target.resident and not idle.resident, gpu.stats()
+        used = target.use(stream)
+        assert int(used.tensor[source.nbytes - 1]) == 41 and bool((used.tensor == 41).all())
+        del used, target, plan
         vt.phase_leave(0, token, completed=False)
         after = vt.stats(0)
         clear(gpu)
         checkpoint.close()
     return {"attempts": after["prefetch_attempts"] - before["prefetch_attempts"],
             "admissions": after["prefetch_admissions"] - before["prefetch_admissions"]}
+
+
+@case
+def fill_paths_agree():
+    """One fill path: a store read, its page and its derive land the same bytes; the tier pins a
+    page only once its Region has left the card; alternating Regions refill nothing."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = tensorfs.Writer(Path(directory) / "raw.cozytensors")
+        source = torch.arange(4 * MIB, dtype=torch.uint8)
+        writer.component("net").put("bytes", source)
+        checkpoint = writer.commit()
+        gpu = varena.Device(0)
+        tier = varena.Pages(0, cap=1 << 34, headroom=0)
+        stream = torch.cuda.current_stream().cuda_stream
+        parts = [("net/bytes#value", 0, source.nbytes)]
+
+        def region(page, derive=None):
+            return gpu.region(source.nbytes, varena.Source(
+                tier, "core", 0, source.nbytes, checkpoint=checkpoint, parts=parts, page=page, derive=derive,
+            ))
+
+        def same(region, expected):
+            used = region.use(stream)
+            assert bool((used.tensor.cpu() == expected).all())
+            used.consume_on(stream)
+            del used
+            gc.collect()
+
+        def origins():
+            return [row[3] for row in tier.drain()]
+
+        calls = []
+
+        def bake(view):
+            calls.append(torch.cuda.current_stream().cuda_stream)
+            assert threading.current_thread() is threading.main_thread()
+            view.add_(1)
+            return True
+
+        stored, baked = region("stored"), region("baked", bake)
+        same(stored, source)
+        assert origins() == ["store"]
+        assert not tier.pending(), "a resident page is not pinned"
+        same(baked, source + 1)
+        assert len(calls) == 1 and origins() == ["store"]
+        # Both off the card: the stored page pins at idle, the baked one was kept at its bake.
+        give_back()
+        assert not stored.resident and not baked.resident
+        assert tier.pending()
+        tier.pin_idle(lambda: False)
+        assert not tier.pending() and tier.stats()["pages"] == 2, tier.stats()
+        same(stored, source)
+        same(baked, source + 1)
+        assert origins() == ["baked", "baked"] and len(calls) == 1, "a kept page bakes nothing"
+        # Resident, both Regions serve with no fill at all.
+        same(stored, source)
+        same(baked, source + 1)
+        assert not origins()
+        # A failed derive reaches its use with its own type, and publishes nothing.
+        def fails(view):
+            raise LookupError("derive")
+
+        broken = region(None, fails)
+        try:
+            broken.use(stream)
+        except LookupError:
+            pass
+        else:
+            raise AssertionError("a derive's error reaches its use")
+        assert not broken.resident
+        tier.forget()
+        assert tier.stats()["pages"] == 0
+        del stored, baked, broken
+        clear(gpu)
+        checkpoint.close()
+    return {"origins": "store, baked, none"}
+
+
+@case
+def capture_refuses_a_fill():
+    """A use during capture never runs a derive."""
+    gpu = varena.Device(0)
+    ran = []
+    bytes = 2 * MIB
+    region = gpu.region(bytes, varena.Source(pages(), "core", 0, bytes, derive=ran.append))
+    stream = torch.cuda.current_stream().cuda_stream
+    guard = _ext._VarenaAllocatorCapture(0)
+    try:
+        region.use(stream)
+    except RuntimeError as error:
+        assert "capture" in str(error), error
+    else:
+        raise AssertionError("a fill ran during capture")
+    finally:
+        guard.close()
+    assert not ran
+    clear(gpu)
+    return {"refused": True}
 
 
 if MODE == "varena":

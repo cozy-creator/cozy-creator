@@ -15,7 +15,9 @@ mod fence;
 pub(crate) mod reclaim;
 pub use reclaim::set_host_lock_probe;
 mod async_fill;
-pub use async_fill::{FillDestination, FillFacts, FillOwners, FillResource, FillRetirement, FillSession, FillState, StreamPreparation, FillTicket};
+pub use async_fill::{FillDestination, FillFacts, FillOwners, FillResource, FillRetirement, FillSession, FillState, FillTicket};
+pub mod source;
+pub use source::Source;
 /// Versioned public ABI. All frontends resolve this shared library.
 pub mod abi;
 pub mod plan;
@@ -45,7 +47,7 @@ pub mod fork_guard;
 
 use fence::{Fences, Waits};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use working::State;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -74,6 +76,9 @@ pub enum Error {
     Unsupported(String),
     #[error("cache owner callback failed: {0}")]
     Callback(String),
+    /// A Source's own failure: its ABI status, its words and, for capacity, the bytes it asked.
+    #[error("{detail}")]
+    Source { status: i32, detail: String, bytes: u64 },
 }
 
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
@@ -255,6 +260,9 @@ struct Entry {
     bytes: usize,
     handle: Option<u64>,
     uses: Arc<Uses>,
+    region: Weak<Region>,
+    // The Region used right after this one, last time.
+    next: Option<u64>,
     // Clock ticks between its last two uses.
     period: u64,
     // Filled ahead of demand and not yet used: the first to go.
@@ -278,6 +286,11 @@ impl State {
     /// narrows that to one pass, so what ran before the loop goes first; a small loop inside a
     /// larger one, which would leave most of the pass's bytes outside, does not.
     fn used(&mut self, id: u64, now: u64) {
+        if let Some(last) = self.last_used.replace(id).filter(|last| *last != id)
+            && let Some(entry) = self.entries.get_mut(&last)
+        {
+            entry.next = Some(id);
+        }
         let entry = self.entries.get_mut(&id).expect("live region");
         let (previous, period) = (entry.last_use, entry.period);
         entry.last_use = now;
@@ -397,6 +410,7 @@ pub struct Device {
     plan: Mutex<Option<plan::Active>>,
     plan_generation: AtomicU64,
     cooperation_bound: AtomicBool,
+    ahead: source::Ahead,
 }
 
 impl Device {
@@ -428,6 +442,7 @@ impl Device {
             plan: Mutex::new(None),
             plan_generation: AtomicU64::new(0),
             cooperation_bound: AtomicBool::new(false),
+            ahead: source::Ahead::default(),
         }
     }
 
@@ -554,8 +569,9 @@ impl Device {
         Ok(handle)
     }
 
-    /// Reserve address space without allocating physical memory. A region is one eviction group.
-    pub fn reserve(&'static self, bytes: usize) -> Result<Arc<Region>> {
+    /// A Region of `bytes` from `source`: address space only, no physical memory. One eviction
+    /// group. `use_on` fills it.
+    pub fn region(&'static self, bytes: usize, source: Arc<dyn Source>) -> Result<Arc<Region>> {
         if bytes == 0 {
             return Err(Error::Invalid("zero-length region"));
         }
@@ -572,26 +588,31 @@ impl Device {
         let _context = self.driver().enter()?;
         let ptr = self.driver().reserve(rounded)?;
         let uses = Arc::new(Uses::new());
-        state.entries.insert(
-            id,
-            Entry {
+        Ok(Arc::new_cyclic(|region| {
+            state.entries.insert(
+                id,
+                Entry {
+                    ptr,
+                    bytes: rounded,
+                    handle: None,
+                    uses: Arc::clone(&uses),
+                    region: region.clone(),
+                    next: None,
+                    period: 0,
+                    prefetched: false,
+                    last_use: 0,
+                },
+            );
+            Region {
+                gpu: self,
+                pid: std::process::id(),
+                id,
                 ptr,
-                bytes: rounded,
-                handle: None,
-                uses: Arc::clone(&uses),
-                period: 0,
-                prefetched: false,
-                last_use: 0,
-            },
-        );
-        Ok(Arc::new(Region {
-            gpu: self,
-            pid: std::process::id(),
-            id,
-            ptr,
-            bytes,
-            rounded,
-            uses,
+                bytes,
+                rounded,
+                uses,
+                source,
+            }
         }))
     }
 
@@ -800,6 +821,7 @@ pub(crate) fn gate(ordinal: i32) -> Result<Gate> {
 /// Short-lived holders finish first. The bound is a last resort: a holder may be this very
 /// thread, with no signal to tell. A refused capture falls back to eager.
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
+    source::stop(device)?;
     let deadline = std::time::Instant::now() + reclaim::RECOVERY_BUDGET;
     loop {
         {
@@ -890,6 +912,7 @@ pub struct Region {
     bytes: usize,
     rounded: usize,
     uses: Arc<Uses>,
+    source: Arc<dyn Source>,
 }
 
 /// Final reservation ownership with no remaining public views or handles.
@@ -1008,13 +1031,18 @@ impl Region {
         Ok(true)
     }
 
+    /// Whether its bytes are on the card, as far as an atomic read can tell.
+    pub fn holds_contents(&self) -> bool {
+        matches!(self.uses.state(), Contents::Ready | Contents::Published | Contents::Loading)
+    }
+
     /// This fill is not the region's first: it has been evicted and read back.
     pub fn refilled(&self) -> bool {
         self.uses.generation.load(Ordering::Acquire) > 1
     }
 
     /// Demand: anything idle may go to make room, in the one reclaim order.
-    pub fn prepare(self: &Arc<Self>) -> Result<Preparation> {
+    fn prepare(self: &Arc<Self>) -> Result<Preparation> {
         let protected = std::collections::BTreeSet::from([self.id]);
         let protect = reclaim::Protect { regions: Some(&protected), keep_phase: true, ..Default::default() };
         let result = (|| loop {
@@ -1034,21 +1062,35 @@ impl Region {
         result
     }
 
-    /// Prefetch one immutable group, all or nothing, if the rule allows (`reclaim::prefetch_room`).
-    /// A wrong guess costs a read, never a refusal: None declines without IO or waiting.
+    /// Pin this Region for `consumer`, which orders its next work behind the bytes, calling its
+    /// Source if they are absent. The one way a use gets them.
+    ///
+    /// # Safety
+    /// `consumer` is live in this primary context and reads nothing before this returns.
     #[allow(unsafe_code)]
-    pub fn prepare_prefetch(regions: &[Arc<Self>]) -> Result<Option<Vec<Preparation>>> {
-        let Some(first) = regions.first() else {
-            return Ok(None);
+    pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
+        let pin = loop {
+            // SAFETY: this method's own contract.
+            match unsafe { self.prepare_on(consumer) } {
+                Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
+                Ok(async_fill::StreamPreparation::Fill(fill)) => {
+                    source::yield_to(self);
+                    break self.source.fill(fill, Some(consumer))?
+                        .ok_or(Error::Invalid("a Source returned no pin to its consumer"))?;
+                }
+                Err(Error::Busy) if source::wait_for(self) => {}
+                Err(error) => return Err(error),
+            }
         };
-        if regions.iter().any(|region| !std::ptr::eq(region.gpu, first.gpu)) {
-            return Ok(None); // Another GPU's region: no speculative partial group.
-        }
-        let ids: std::collections::BTreeSet<_> = regions.iter().map(|region| region.id).collect();
-        if ids.len() != regions.len() {
-            return Err(Error::Invalid("prefetch regions must be distinct"));
-        }
-        let (device, arena) = (first.device(), first.gpu);
+        let _ = source::after_use(self); // Only ever a guess: its failure is not this use's.
+        Ok(pin)
+    }
+
+    /// A fill ahead of demand, if the rule allows (`reclaim::prefetch_room`). A wrong guess costs
+    /// a read, never a refusal: None declines without IO or waiting.
+    #[allow(unsafe_code)]
+    fn prepare_ahead(self: &Arc<Self>, free_only: bool) -> Result<Option<Fill>> {
+        let (device, arena) = (self.device(), self.gpu);
         let missing = {
             let gate = gate(device)?;
             if gate.not_capturing().is_err() {
@@ -1056,70 +1098,35 @@ impl Region {
             }
             let mut state = arena.lock()?;
             arena.poll_fences(&mut state)?;
-            let (mut missing, mut cold) = (0usize, false);
-            for region in regions {
-                let entry = state.entries.get(&region.id).expect("source owns its region");
-                if entry.uses.state() == Contents::Ready {
-                    continue;
-                }
-                if matches!(entry.uses.state(), Contents::Loading | Contents::Published)
-                    || entry.uses.pins() != 0
-                    || (entry.handle.is_some() && arena.completion(&state, region.id) != Completion::Done)
-                {
-                    return Ok(None);
-                }
-                cold = true;
-                if entry.handle.is_none() {
-                    missing += region.rounded;
-                }
-            }
-            if !cold {
+            let entry = state.entries.get(&self.id).expect("live region");
+            if entry.uses.state() != Contents::Cold || entry.uses.pins() != 0
+                || (entry.handle.is_some() && arena.completion(&state, self.id) != Completion::Done)
+            {
                 return Ok(None);
             }
-            missing
+            if entry.handle.is_none() { self.rounded } else { 0 }
         };
-        if !reclaim::prefetch_room(device, missing, &ids)? {
+        if !reclaim::prefetch_room(device, missing, &std::collections::BTreeSet::from([self.id]), free_only)? {
             return Ok(None);
         }
         let gate = gate(device)?;
         let mut state = arena.lock()?;
-        let (mut prepared, mut created) = (Vec::with_capacity(regions.len()), Vec::new());
-        for region in regions {
-            let fresh = state.entries[&region.id].handle.is_none();
-            let outcome = region.prepare_locked(&gate, &mut state, true);
-            if let Ok(Some(value)) = outcome {
-                if fresh {
-                    created.push(region.id);
-                }
-                prepared.push(value);
-                continue;
-            }
-            // No producer or consumer has seen these pins. Abort the admitted prefix.
-            for value in prepared {
-                match value {
-                    // SAFETY: group admission has issued no writes or exports.
-                    Preparation::Fill(fill) => drop(unsafe { fill.abort_completed() }),
-                    // SAFETY: this temporary pin was never handed to a consumer.
-                    Preparation::Resident(pin) => drop(unsafe { pin.into_completed_region() }),
-                }
-            }
-            let _context = arena.driver().enter()?;
-            for id in created {
-                arena.release_backing_counted(&mut state, id, &mut 0)?;
-            }
-            return match outcome {
-                Ok(_) => Ok(None),
-                Err(failure) if failure.is_oom() => Ok(None),
-                Err(failure) => match Error::from(failure) {
-                    Error::Busy | Error::CaptureActive => Ok(None),
-                    // Ambiguous device faults retain tracked mappings in the poisoned arena.
-                    error => Err(error),
-                },
-            };
-        }
+        let fill = match self.prepare_locked(&gate, &mut state, true) {
+            Ok(Some(Preparation::Fill(fill))) => fill,
+            // SAFETY: this temporary pin was never handed to a consumer.
+            Ok(Some(Preparation::Resident(pin))) => { drop(unsafe { pin.into_completed_region() }); return Ok(None) }
+            Ok(None) => return Ok(None),
+            Err(failure) if failure.is_oom() => return Ok(None),
+            Err(failure) => return match Error::from(failure) {
+                Error::Busy | Error::CaptureActive => Ok(None),
+                // Ambiguous device faults retain tracked mappings in the poisoned arena.
+                error => Err(error),
+            },
+        };
         drop(state);
+        drop(gate);
         working::prefetch_admitted(device)?;
-        Ok(Some(prepared))
+        Ok(Some(fill))
     }
 
     /// One attempt, with no reclaim. None: this region's own earlier users have not completed.
@@ -1209,7 +1216,7 @@ impl Region {
     }
 }
 
-pub enum Preparation {
+enum Preparation {
     Resident(Pin),
     Fill(Fill),
 }
@@ -1234,6 +1241,10 @@ impl Fill {
     }
     pub fn device(&self) -> i32 {
         self.region().device()
+    }
+    /// The Region this fills.
+    pub fn target(&self) -> &Arc<Region> {
+        self.pin.as_ref().expect("uncommitted fill").region()
     }
 
     /// Retain the in-flight mapping for a foreign fill tensor, including escaped failed-fill views.
@@ -1444,15 +1455,6 @@ impl Drop for Pin {
         {
             region.mark_unjoined();
             decrement(&region.uses.pins);
-        }
-    }
-}
-
-impl Preparation {
-    pub fn into_unpinned_region(self) -> Arc<Region> {
-        match self {
-            Self::Resident(pin) => pin.into_unpinned_region(),
-            Self::Fill(fill) => fill.into_unpinned_region(),
         }
     }
 }

@@ -95,6 +95,7 @@ struct Sequence<'a> {
     released: usize,
     evicted: usize,
     recovery: Recovery,
+    ahead_stopped: bool,
 }
 
 #[derive(Default)]
@@ -116,11 +117,18 @@ impl<'a> Sequence<'a> {
             released: 0,
             evicted: 0,
             recovery: Recovery::default(),
+            ahead_stopped: false,
         })
     }
 
     /// Run steps until one makes progress. False: every step is exhausted.
     fn advance(&mut self, want: usize, physical: bool) -> Result<bool> {
+        // A fill ahead of demand is a guess: it stops before anything real gives way.
+        if self.wait != Wait::No && !std::mem::replace(&mut self.ahead_stopped, true)
+            && crate::source::stop_and_wait(self.gpu)
+        {
+            return Ok(true);
+        }
         while let Some(step) = ORDER.get(self.step).copied() {
             let started = Instant::now();
             let done = self.run(step, want, physical);
@@ -353,8 +361,9 @@ pub(crate) fn release(
 /// The prefetch rule: free >= bytes + what this phase's last pass still needs of working
 /// memory, where free counts completed free working pages and completed idle regions that
 /// reclaim would take anyway. With nothing measured yet, a first pass, it reads ahead only
-/// into room already free. False declines with no IO and no waiting.
-pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>) -> Result<bool> {
+/// into room already free, and so does `free_only`: a fill past the one a use asked for. False
+/// declines with no IO and no waiting.
+pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
     let Some((gap, reusable, known)) = working::prefetch_gap(device)? else {
         return Ok(false);
     };
@@ -386,7 +395,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>) ->
         return Ok(true);
     }
     let short = needed - room;
-    if !known || short > idle + excess {
+    if !known || free_only || short > idle + excess {
         return Ok(false);
     }
     let trimmed = working::release_completed(device, short.min(excess), usize::MAX, None)?;

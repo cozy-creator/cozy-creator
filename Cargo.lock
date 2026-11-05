@@ -4017,6 +4017,7 @@ dependencies = [
  "async-trait",
  "executor-protocol",
  "libc",
+ "platform",
  "pyo3",
  "serde",
  "serde_json",
