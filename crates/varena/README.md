@@ -38,6 +38,17 @@ owners and peers under a 2 s budget of last resort. Eviction rank: contentless, 
 unused, unplanned, later phases furthest first, then this phase's used regions most recent first,
 then its next use.
 
+## Fills
+
+A Region has a `Source`, and only the core calls it. `use` on an absent Region runs it on the caller's
+thread, with no lock held and never during capture. One worker per GPU runs it ahead of demand, one
+Region at a time: what comes next in the observed order, else the Plan's. Past the one Region a use asked
+for, it fills only room already free. Demand stops it, and so does a shortfall, before anything real gives
+way. A Source that needs its caller, for the GIL or a GPU kernel, says so in `ahead()` and never runs there.
+
+TensorFS implements `Source`: a Region's page in host RAM, else the store, then its derive. It owns reads
+and the page tier. Its decode scratch still comes from here.
+
 ## Completion
 
 A free, unpin or replay stamps `(stream, sequence)` with no driver call. Outside capture, `poll`
