@@ -5,6 +5,7 @@ import json
 import os
 
 import tensorfs.varena.torch as vt
+from tensorfs.varena import api
 
 vt.install(0)
 
@@ -78,20 +79,24 @@ x = torch.randn(1, 4)
 
 @check("a block too big to pin descends to its children")
 def split():
-    model = nn.Sequential(nn.Sequential(nn.Linear(2048, 2048), nn.Linear(2048, 2048)), nn.Sequential(nn.Linear(2048, 2048), nn.Linear(2048, 2048))).eval()
-    y = torch.randn(1, 2048)
+    model = nn.Sequential(*(nn.Sequential(nn.Linear(7168, 7168), nn.Linear(7168, 7168)) for _ in range(2))).eval()
+    y = torch.randn(1, 7168)
     with torch.inference_mode():
         want = model(y).to(device)
-    offload(model, device=0)
+    handle = offload(model, device=0)
     torch.cuda.empty_cache()
-    limit = vt.stats(0)["mapped_bytes"] + 24 * 2**20  # Each half is 34 MiB, each layer 17. Run first: nothing else is pinned.
-    vt.set_limit(0, limit)
+    # Room for a layer (196 MiB) and not a half (392, under `vt.unit_bytes`, so it starts whole). A cap counts what's
+    # outside us, so the core says what one leaves; 40 MiB of that comes back in the first call.
+    wide = torch.cuda.mem_get_info(0)[1]
+    vt.set_limit(0, wide)
+    vt.set_limit(0, wide - api.open(0).room()["free"] + 280 * 2**20)
     try:
         with torch.inference_mode():
             got = model(y.to(device))
     finally:
         vt.set_limit(0, None)
     assert torch.allclose(got, want, rtol=1e-3, atol=1e-3)
+    assert any(unit.split for unit in handle.units), "a block fit whole: nothing descended"
 
 
 @check("a dropped handle keeps working, identities and ties preserved")
