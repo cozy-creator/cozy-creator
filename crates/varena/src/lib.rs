@@ -1052,7 +1052,8 @@ impl Region {
                 None => reclaim::settle(self)?,
             }
         })();
-        if result.is_err() {
+        // `Busy` is a fill already running, which `use_on` waits for: nothing was refused.
+        if result.as_ref().is_err_and(|error| !matches!(error, Error::Busy)) {
             let _ = working::invalidate_current_phase(self.gpu.ordinal, "weight_admission_error");
         }
         result
