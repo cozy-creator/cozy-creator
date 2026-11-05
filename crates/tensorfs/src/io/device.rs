@@ -136,9 +136,10 @@ impl Slot {
         let done = Event::new(ctx, false)?;
         let mut ptr = std::ptr::null_mut();
         // SAFETY: `ptr` is a writable out-pointer and the slot's context is current.
-        cuda::check("cuMemHostAlloc", unsafe {
-            (cuda::driver()?.mem_host_alloc)(&mut ptr, PIECE, cuda::MEMHOSTALLOC_PORTABLE)
-        })?;
+        let began = std::time::Instant::now();
+        let rc = unsafe { (cuda::driver()?.mem_host_alloc)(&mut ptr, PIECE, cuda::MEMHOSTALLOC_PORTABLE) };
+        cuda::host_pin_note(4, began);
+        cuda::check("cuMemHostAlloc", rc)?;
         Ok(Slot {
             ptr: ptr.cast(),
             done,
