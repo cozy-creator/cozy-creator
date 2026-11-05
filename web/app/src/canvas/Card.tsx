@@ -520,6 +520,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const store = useCanvasStore()
   const view = useElement(name)
   const here = Boolean(view?.here)
+  // Far out, only what can be seen: its picture, its name and its state.
+  const lite = useSignal(store.far) && !here
   const naming = useCallback(() => store.openName(name), [store, name])
   const pressedAt = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
@@ -589,7 +591,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {view.draft === undefined && <span className="sp" />}
+        {view.draft === undefined && !lite && <span className="sp" />}
         {view.draft === undefined && here && versions.length > 1 && (
           <span className="count">
             {at + 1}/{versions.length}
@@ -624,7 +626,8 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </button>
         ) : (
           view.draft === undefined &&
-          asset && (
+          asset &&
+          !lite && (
             <button type="button" className="iconb nodrag on-hover" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
             </button>
@@ -638,11 +641,11 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width}>
           {here && (asset?.kind === "text" ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && !view.hereWords && asset && shownVersion?.main && <div className="take-out nodrag nopan" draggable onDragStart={(event) => takeOut(event, store, name, asset, shownVersion)} />}
-          {asset && !view.placing && <Corner name={name} view={view} width={width} />}
+          {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!here && asset && !view.placing && <ShapeLine name={name} view={view} />}
-      {!here && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
+      {!here && !lite && asset && !view.placing && <ShapeLine name={name} view={view} />}
+      {!here && !lite && (view.queued || view.asked !== undefined || asset?.standing === "making") && (
         <div className="rest-waiting">
           <Waiting view={view} />
         </div>

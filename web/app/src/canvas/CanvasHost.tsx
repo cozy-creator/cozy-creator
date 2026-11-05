@@ -9,9 +9,10 @@ import {
   SelectionMode,
   useReactFlow,
   useStore,
+  useStoreApi,
   type Viewport,
 } from "@xyflow/react"
-import { type ChangeEvent, type CSSProperties, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useRef, useState } from "react"
+import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
@@ -621,9 +622,67 @@ function Canvas({
     }
   }, [store, client, flow, placer, visibleCentre])
 
+  // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
+  const moveStarted = useCallback(
+    (event: unknown) => {
+      if (event && store.inPlace) store.inPlace.moved = true
+    },
+    [store],
+  )
+  const nodeClicked = useCallback(
+    (event: ReactMouseEvent, node: ElementNode) => {
+      if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
+      clearTimeout(firstClick.current)
+      const { name } = node.data
+      const looks = viewable(store.get(name))
+      if (event.detail > 1 && looks && (event.target as Element).closest(".media")) return store.viewing.set(name)
+      if (store.inPlace?.name === name && store.get(name)?.here) return
+      // A click opens: only Shift selects.
+      flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
+      const go = () => {
+        writeHere(name)
+        navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
+      }
+      if (looks) firstClick.current = setTimeout(go, DOUBLE_CLICK_MS)
+      else go()
+    },
+    [store, flow, writeHere, navigate],
+  )
+  const paneClicked = useCallback(() => {
+    clearTimeout(firstClick.current)
+    leaveHere()
+  }, [leaveHere])
+  const nodeMenu = useCallback(
+    (event: ReactMouseEvent, node: ElementNode) => {
+      if (node.type !== "element") return
+      event.preventDefault()
+      store.menu.set({ name: node.data.name, x: event.clientX, y: event.clientY })
+    },
+    [store],
+  )
+  const nodeDragStart = useCallback((_: unknown, __: unknown, nodes: ElementNode[]) => dragStart(nodes), [dragStart])
+  const nodeDrag = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragging(event, nodes), [dragging])
+  const nodeDragStop = useCallback((event: Pointing, _: unknown, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
+  const selectionDragStart = useCallback((_: unknown, nodes: ElementNode[]) => dragStart(nodes), [dragStart])
+  const selectionDrag = useCallback((event: Pointing, nodes: ElementNode[]) => dragging(event, nodes), [dragging])
+  const selectionDragStop = useCallback((event: Pointing, nodes: ElementNode[]) => dragStop(event, nodes), [dragStop])
+
   // Far out, a card shows its picture, its name and little else.
   const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
-  const text = useStore((state) => textScale(state.transform[2]))
+  useLayoutEffect(() => store.far.set(band === 2), [store, band])
+  // How large a box's words are drawn goes on the stage as the zoom crosses a step: no render, so a zoom draws no box again.
+  const flowStore = useStoreApi<ElementNode, Edge>()
+  useLayoutEffect(() => {
+    let held = 0
+    const set = (zoom: number) => {
+      const text = textScale(zoom)
+      if (text === held) return
+      held = text
+      stage.current?.style.setProperty("--text", String(text))
+    }
+    set(flowStore.getState().transform[2])
+    return flowStore.subscribe((state) => set(state.transform[2]))
+  }, [flowStore])
   const accepted = useCallback((event: DragEvent) => [DRAGGED_TOOL, DRAGGED_FILE, DRAGGED_NAME, DRAGGED_CHECKPOINT].some((type) => event.dataTransfer.types.includes(type)), [])
 
   // The list a box's controls come from, whatever the panel is searching.
@@ -648,7 +707,6 @@ function Canvas({
       <div
         ref={stage}
         className="stage"
-        style={{ "--text": text } as CSSProperties}
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
         onPointerMove={(event) => {
@@ -690,42 +748,18 @@ function Canvas({
           onlyRenderVisibleElements
           colorMode="dark"
           attributionPosition="bottom-right"
-          onMoveStart={(event) => {
-            if (event && store.inPlace) store.inPlace.moved = true
-          }}
+          onMoveStart={moveStarted}
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
-          onNodeClick={(event, node) => {
-            if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
-            clearTimeout(firstClick.current)
-            const { name } = node.data
-            const looks = viewable(store.get(name))
-            if (event.detail > 1 && looks && (event.target as Element).closest(".media")) return store.viewing.set(name)
-            if (store.inPlace?.name === name && store.get(name)?.here) return
-            // A click opens: only Shift selects.
-            flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
-            const go = () => {
-              writeHere(name)
-              navigate(`/projects/${store.projectId}/assets/${encodeURIComponent(name)}`)
-            }
-            if (looks) firstClick.current = setTimeout(go, DOUBLE_CLICK_MS)
-            else go()
-          }}
-          onPaneClick={() => {
-            clearTimeout(firstClick.current)
-            leaveHere()
-          }}
-          onNodeContextMenu={(event, node) => {
-            if (node.type !== "element") return
-            event.preventDefault()
-            store.menu.set({ name: node.data.name, x: event.clientX, y: event.clientY })
-          }}
-          onNodeDragStart={(_, __, nodes) => dragStart(nodes)}
-          onNodeDrag={(event, _, nodes) => dragging(event, nodes)}
-          onNodeDragStop={(event, _, nodes) => dragStop(event, nodes)}
-          onSelectionDragStart={(_, nodes) => dragStart(nodes)}
-          onSelectionDrag={(event, nodes) => dragging(event, nodes)}
-          onSelectionDragStop={(event, nodes) => dragStop(event, nodes)}
+          onNodeClick={nodeClicked}
+          onPaneClick={paneClicked}
+          onNodeContextMenu={nodeMenu}
+          onNodeDragStart={nodeDragStart}
+          onNodeDrag={nodeDrag}
+          onNodeDragStop={nodeDragStop}
+          onSelectionDragStart={selectionDragStart}
+          onSelectionDrag={selectionDrag}
+          onSelectionDragStop={selectionDragStop}
         >
           <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
           {unread ? <Unread error={unread} /> : <Empty choose={choose} />}

@@ -9,7 +9,8 @@ import { madeHere } from "./shown"
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
 /** One thing on a box: its word, and an X when it can come off. */
-export function Chip({ word, title, kind, off }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void } }) {
+export function Chip({ word, title, kind, off, mark }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; mark?: boolean }) {
+  if (mark) return <li className={`add-on ${kind ?? ""}`} title={title} />
   return (
     <li className={`add-on ${kind ?? ""}`} title={title} onClick={(event) => event.stopPropagation()}>
       <span className="add-on-word">{word}</span>
@@ -30,23 +31,25 @@ function useAddOns(name: string) {
   return { held: addOnsOf(lora, models), lora, models, store }
 }
 
-/** What's on a box, its tool first, each with its X: as many as it holds. */
+/** What's on a box, its tool first, each with its X: as many as it holds. Far out, each is only a mark. */
 export function Stack({ name }: { name: string }) {
   const { held, lora, models, store } = useAddOns(name)
   const view = useElement(name)
   const tools = useSignal(store.tools)
+  const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
   const made = tool && !madeHere(tool) ? (tools.get(tool)?.label ?? tool.split("/").at(-2) ?? tool) : null
   if (!made && !held.length) return null
   return (
     <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
-      {made && <Chip word={made} title={tool ?? made} kind="tool" off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
+      {made && <Chip word={made} title={tool ?? made} kind="tool" mark={mark} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
       {held.map((addOn) => (
         <Chip
           key={`${addOn.slot}:${addOn.ref}`}
           word={wordOf(addOn.ref)}
           title={said(addOn)}
           kind={addOn.lora ? undefined : "fine-tune"}
+          mark={mark}
           off={{ label: `Take ${wordOf(addOn.ref)} off ${name}`, take: () => store.putOn(name, takenOff(addOn, lora, models)) }}
         />
       ))}

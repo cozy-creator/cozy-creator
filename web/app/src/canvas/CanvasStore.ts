@@ -193,6 +193,8 @@ export class CanvasStore {
   readonly menu = signal<{ name: string; x: number; y: number; full?: boolean } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
+  /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
+  readonly far = signal(false)
   /** What takes a drop, by its element: a box marks itself `data-drop-target`. */
   readonly dropTargets = new Map<Element, DropTarget>()
   /** Each open text's way to take a name at its caret, by `<node>:<place>`. */

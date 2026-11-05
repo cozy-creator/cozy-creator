@@ -1264,6 +1264,7 @@ code {
 
 /* Lines the page says */
 /* Bottom left, over the tools. */
+/* A note is read, and only its buttons take the pointer: a drag or a click goes through it to what's under it. */
 .notes {
   position: fixed;
   left: 8px;
@@ -1273,6 +1274,11 @@ code {
   flex-direction: column;
   gap: 6px;
   z-index: 60;
+  pointer-events: none;
+}
+.note button,
+.note code {
+  pointer-events: auto;
 }
 .note {
   display: flex;
@@ -2743,12 +2749,6 @@ input[type="checkbox"] {
   line-height: 1.45;
 }
 
-/* Clear of the tools while they're open, so a note never covers what's to be dragged from there. */
-@media (min-width: 641px) {
-  body:has(.tools:not(.shut)) .notes {
-    left: calc(8px + 188px * var(--ui) + 16px + 2px + 8px);
-  }
-}
 @media (max-width: 640px) {
   .notes {
     left: 12px;
