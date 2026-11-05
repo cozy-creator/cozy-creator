@@ -164,8 +164,9 @@ export class Placer {
 
   private project(): Promise<string> {
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
-    this.made ??= this.client.newProject("untitled", `project-${crypto.randomUUID()}`).then(({ id }) => {
+    this.made ??= this.client.newProject("untitled", `project-${crypto.randomUUID()}`).then(({ id, said }) => {
       this.store.projectId = id
+      for (const line of said ?? []) say(line)
       this.hooks.adopt(id)
       return id
     })

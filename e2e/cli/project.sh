@@ -3365,9 +3365,13 @@ step "a project: a name makes one, bytes by parts in any order and resumed, an e
 local X P2 len hex mid url held big n
 api -o "$OUT/named.json" -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" > /dev/null
 X=$(jq -r .path "$OUT/named.json") ID=$(jq -r .id "$OUT/named.json")
-{ [ "$X" = "$HOME/.cozy/projects/web_made.it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made.it ] && [ "$(cat "$X/project.yaml")" = 'version: 3' ]; } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
+{ [ "$X" = "$HOME/web_made.it" ] && [ "$(jq -r .name "$OUT/named.json")" = web_made.it ] && [ "$(cat "$X/project.yaml")" = 'version: 3' ]; } || check "POST /v1/projects {name}: $(cat "$OUT/named.json")"
 P2=$(api -X POST -d '{"name":"web made.it"}' "http://$ADDR/v1/projects" | jq -r .path)
 [ "$P2" = "$X"_2 ] || check "POST /v1/projects {name}, again: $P2"
+# A folder of anything in the home is left as it is: the next free name, and it says so.
+mkdir -p "$HOME/web_taken" && echo mine > "$HOME/web_taken/keep"
+api -o "$OUT/named-taken.json" -X POST -d '{"name":"web taken"}' "http://$ADDR/v1/projects" > /dev/null
+{ [ "$(jq -r .path "$OUT/named-taken.json")" = "$HOME/web_taken_2" ] && [ "$(ls "$HOME/web_taken")" = keep ] && jq -e '.said | any(contains("is taken"))' "$OUT/named-taken.json" > /dev/null; } || check "POST /v1/projects {name}, a folder there: $(jq -c . "$OUT/named-taken.json")"
 plate "$OUT/parts.mp4" testsrc2 440 800 2
 len=$(stat -c %s "$OUT/parts.mp4") hex=$(sha "$OUT/parts.mp4") mid=$((len / 2))
 url=http://$ADDR/v1/files/sha256:$hex

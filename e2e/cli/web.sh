@@ -144,7 +144,7 @@ web_proof() {
   addr=$(jq -r .address "$lock" 2> /dev/null) token=$(jq -r .token "$lock" 2> /dev/null)
   id=$(jq -r '.seen.project.id // empty' "$json" 2> /dev/null) folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
   [ -z "$id" ] || curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "http://$addr/v1/projects/$id" || true
-  case $folder in */.cozy/projects/web-*) rm -rf "$folder" ;; esac
+  case $folder in */web-*) rm -rf "$folder" ;; esac
 }
 
 # web_serves's own, on its project, which it forgets whatever happens here.

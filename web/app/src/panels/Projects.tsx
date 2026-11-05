@@ -25,6 +25,7 @@ export function Projects() {
     try {
       const made = await client.newProject(name.trim() || "untitled", `project-${crypto.randomUUID()}`)
       void queries.invalidateQueries({ queryKey: ["projects"] })
+      for (const line of made.said ?? []) say(line)
       navigate(`/projects/${made.id}`)
     } catch (failure) {
       say("Couldn't make the project", failure)
@@ -51,7 +52,7 @@ export function Projects() {
           <li key={project.id}>
             <Link to={`/projects/${project.id}`} title={project.path}>
               <b>{project.name}</b>
-              {project.missing && <small>Its folder is gone</small>}
+              <small className="project-path">{project.missing ? "Its folder is gone" : project.path}</small>
             </Link>
           </li>
         ))}

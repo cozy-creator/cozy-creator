@@ -722,20 +722,22 @@ fn status_next(folder: &Folder) -> Vec<String> {
     vec![format!("cozy project -p {} status", folder.dir.display())]
 }
 
-/// By `name`, makes a new empty project under `~/.cozy/projects`. By `path`, opens the project holding it (the nearest folder up from
+/// By `name`, makes a new empty project in this person's home folder. By `path`, opens the project holding it (the nearest folder up from
 /// it with a project.yaml), or makes one there (`create`: the folder and its project.yaml). Either way it is recorded in the index as
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Json<Opened>, Refusal> {
     let open: Open = parse(&body?)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
+    let mut moved_on = None;
     let dir = match (&open.name, &open.path) {
         (Some(name), _) => {
             let made = key.and_then(|key| api.projects.made.lock().expect("made lock").get(key).cloned());
             match made {
                 Some(dir) => dir,
                 None => {
-                    let dir = named_project(&api, name).map_err(Refusal)?;
+                    let (dir, why) = named_project(&api, name).map_err(Refusal)?;
+                    moved_on = why;
                     if let Some(key) = key {
                         api.projects.made.lock().expect("made lock").insert(key.to_owned(), dir.clone());
                     }
@@ -771,7 +773,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     });
     api.projects.open(&api, &dir).map_err(Refusal)?;
     let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
-    let said = api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..).collect();
+    let said = moved_on.into_iter().chain(api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..)).collect();
     Ok(Json(Opened { next, said, ..opened(id, &dir) }))
 }
 
@@ -781,22 +783,23 @@ fn opened(id: String, dir: &FsPath) -> Opened {
     Opened { id, path: dir.to_owned(), name, next: vec![], said: vec![] }
 }
 
-/// A new empty project called `name` under `~/.cozy/projects`, or the next free name: what it could be called, `_2`, `_3`, ….
-fn named_project(api: &Api, name: &str) -> Result<PathBuf, Error> {
-    let home = api.machines.hubs.home().projects();
+/// A new empty project called `name` in this person's home folder, or the next free name: what it could be called, `_2`, `_3`, …. Whatever is
+/// there already stays as it is, a folder of anything or another project, and it says so: nothing is made in a folder it didn't make.
+fn named_project(api: &Api, name: &str) -> Result<(PathBuf, Option<String>), Error> {
+    let home = &api.machines.user_home;
     let io = |e: std::io::Error| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", home.display()));
-    std::fs::create_dir_all(&home).map_err(io)?;
     let wanted = format::plain_name(name).unwrap_or_else(|| "untitled".to_owned());
     let names = std::iter::once(wanted.clone()).chain((2..).map(|n| format!("{wanted}_{n}")));
     for name in names {
-        let dir = home.join(name);
+        let dir = home.join(&name);
         match std::fs::create_dir(&dir) {
             Ok(()) => {
                 let project = dir.join(folder::PROJECT);
                 platform::durable::replace(&project, format::blank().as_bytes(), 0o644).map_err(|e| io(std::io::Error::other(e)))?;
                 let dir = platform::durable::canonical(&dir).map_err(|e| io(std::io::Error::other(e)))?;
                 crate::events::project_changed(&dir);
-                return Ok(dir);
+                let why = (name != wanted).then(|| format!("{} is taken, so this is {name}", home.join(&wanted).display()));
+                return Ok((dir, why));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(io(e)),
