@@ -270,7 +270,7 @@ async function loseAnswers(page, method, path, times) {
   const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const kept = await view();
   await tab(second_project).click();
-  await page.locator(`.ptab.on[title="${second_project.path}"]`).waitFor();
+  await page.locator('.ptab.on').and(page.getByTitle(second_project.path, { exact: true })).waitFor();
   await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
   await page.getByTitle(folder, { exact: true }).click();
