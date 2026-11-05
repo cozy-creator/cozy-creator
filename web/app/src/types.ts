@@ -586,6 +586,8 @@ export interface FoundModel {
   lanes: string[]
   private: boolean
   author?: ModelAuthor
+  /** What its header says: only a LoRA's factors, or weights of its own. Absent: it couldn't be read. */
+  kind?: "lora" | "weights"
 }
 
 export interface ModelSearch {
@@ -1033,6 +1035,8 @@ export interface Tool {
   takes?: boolean
   /** Where a new take can start, in whole frames of the video: `offset + k * every`, from `first` up. None: any frame. */
   cuts?: { every: number; offset: number; first: number }
+  /** What a checkpoint dropped on its box goes on: the one model its function runs. */
+  model?: { slot: string; default?: string; family?: string }
 }
 
 /** Where a tool's component is, for `import()`. */

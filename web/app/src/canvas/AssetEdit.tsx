@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react"
 import type { Control, Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
+import { AddOnRows } from "./AddOns"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
 import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
@@ -450,6 +451,7 @@ export function AssetEdit({ name, view, actions, children }: { name: string; vie
               {(open || typing) && (
                 <div className="edit-more">
                   {open && more}
+                  {open && <AddOnRows name={name} />}
                   {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
                   {children}
                 </div>

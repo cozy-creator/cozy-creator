@@ -8,6 +8,7 @@ import { say } from "../ui/notes"
 import { useCanvasStore } from "./context"
 import { TEXT_TOOL } from "./controls"
 import { DRAGGED_TOOL } from "./drag"
+import { ModelBrowse } from "./ModelBrowse"
 import { madeHere } from "./shown"
 import { ToolBrowse } from "./ToolBrowse"
 
@@ -102,12 +103,14 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
   const store = useCanvasStore()
   const [typed, setTyped] = useState("")
   const [q, setQ] = useState("")
-  const [browsing, setBrowsing] = useState(false)
+  const [shelf, setShelf] = useState<"tools" | "browse" | "checkpoints">("tools")
+  const browsing = shelf === "browse"
+  const exploring = shelf === "checkpoints"
   useEffect(() => {
     const timer = setTimeout(() => setQ(typed.trim()), 250)
     return () => clearTimeout(timer)
   }, [typed])
-  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, browsing ? "" : q, machine, project), enabled: !waiting })
+  const { data, error, isPending, isPlaceholderData } = useQuery({ ...toolsQuery(client, shelf === "tools" ? q : "", machine, project), enabled: !waiting })
   useEffect(() => {
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools] : [TEXT_TOOL])
   }, [store, data, isPlaceholderData])
@@ -132,12 +135,18 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, cho
           <Icon name="back" />
         </button>
       </div>
-      <input className="field wide" aria-label="Search the tools" placeholder="Search" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
-      <button type="button" className={`act browse-toggle ${browsing ? "on" : ""}`} aria-pressed={browsing} onClick={() => setBrowsing(!browsing)}>
-        {browsing ? "Your tools" : "Browse"}
-      </button>
+      <input className="field wide" aria-label={exploring ? "Search the checkpoints" : "Search the tools"} placeholder="Search" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
+      <div className="row center">
+        <button type="button" className={`act browse-toggle ${browsing ? "on" : ""}`} aria-pressed={browsing} onClick={() => setShelf(browsing ? "tools" : "browse")}>
+          {browsing ? "Your tools" : "Browse"}
+        </button>
+        <button type="button" className={`act browse-toggle ${exploring ? "on" : ""}`} aria-pressed={exploring} onClick={() => setShelf(exploring ? "tools" : "checkpoints")}>
+          {exploring ? "Your tools" : "Checkpoints"}
+        </button>
+      </div>
       {browsing && <ToolBrowse q={q} listed={tools} />}
-      <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={browsing}>
+      {exploring && <ModelBrowse q={q} />}
+      <div className={`tool-groups ${isPlaceholderData ? "stale" : ""}`} hidden={shelf !== "tools"}>
         {"text".includes(q.toLowerCase()) && (
           <ul>
             <ToolRow tool={TEXT_TOOL} place={place} yours={false} />

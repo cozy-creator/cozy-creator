@@ -67,9 +67,9 @@ export function markOf(control: Control, value: unknown): string | null {
 /** A field no control names, in words. */
 export const fieldWords = (field: string) => field[0].toUpperCase() + field.slice(1).replaceAll("_", " ")
 
-/** What it holds that no control draws, such as a LoRA or a hand-written seed: it reaches a render all the same. Its description is its own line. */
+/** What it holds that no control draws, such as a hand-written seed: it reaches a render all the same. Its description is its own line, and a LoRA or a fine-tune is an add-on. */
 export const heldBeyond = (fields: Record<string, unknown> | undefined, controls: Control[]) =>
-  Object.entries(fields ?? {}).filter(([field, value]) => field !== "description" && !empty(value) && !controls.some((control) => control.field === field))
+  Object.entries(fields ?? {}).filter(([field, value]) => field !== "description" && field !== "lora" && field !== "models" && !empty(value) && !controls.some((control) => control.field === field))
 
 /** The shapes a box snaps to when its tool doesn't say. */
 const SHAPES = ["32:9", "2.39:1", "21:9", "2:1", "16:9", "5:3", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "3:5", "9:16", "1:2", "9:21"]

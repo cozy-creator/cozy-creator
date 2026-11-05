@@ -6,3 +6,5 @@ export const DRAGGED_TOOL = "application/x-cozy-tool"
 export const DRAGGED_NAME = "application/x-cozy-name"
 /** A take or version out of its box. */
 export const DRAGGED_FILE = "application/x-cozy-file"
+/** A fine-tune or a LoRA out of the explorer, by its name. */
+export const DRAGGED_CHECKPOINT = "application/x-cozy-checkpoint"

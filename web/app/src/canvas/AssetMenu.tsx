@@ -1,37 +1,12 @@
-import { useQuery } from "@tanstack/react-query"
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { useConnection } from "../app/Connection"
 import type { Tool } from "../types"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { makes } from "./shown"
 import { retimed } from "./timeline/model"
 
-type Open = "menu" | "tool" | "lora" | "model"
-
-/** The models a chooser finds. Whatever the Hub calls them, as text. */
-function ModelSearch({ label, onPick }: { label: string; onPick: (model: string) => void }) {
-  const { client } = useConnection()
-  const [typed, setTyped] = useState("")
-  const { data, error } = useQuery({ queryKey: ["models", typed], queryFn: ({ signal }) => client.models(typed.trim(), 20, signal), staleTime: 60_000 })
-  return (
-    <>
-      <input className="field wide" aria-label={label} placeholder={label} spellCheck={false} autoFocus value={typed} onChange={(event) => setTyped(event.target.value)} />
-      {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
-      <ul className="menu-list">
-        {data?.models.map((found) => (
-          <li key={found.model}>
-            <button type="button" onClick={() => onPick(found.model)}>
-              {found.model}
-            </button>
-          </li>
-        ))}
-        {data && !data.models.length && <li className="muted">Nothing by that name</li>}
-      </ul>
-    </>
-  )
-}
+type Open = "menu" | "tool"
 
 const FRAME_RATES = [24, 25, 30, 48, 50, 60]
 const ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:2", "2.39:1"]
@@ -78,7 +53,7 @@ function EditSettings({ name }: { name: string }) {
   )
 }
 
-/** A right click on a box: what makes it, what it's made with, its name, and gone. */
+/** A right click on a box: what makes it, its name, and gone. */
 export function AssetMenu() {
   const store = useCanvasStore()
   const menu = useSignal(store.menu)
@@ -87,7 +62,6 @@ export function AssetMenu() {
 
 function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: boolean }) {
   const store = useCanvasStore()
-  const { client } = useConnection()
   const view = useElement(name)
   const tools = useSignal(store.tools)
   const [open, setOpen] = useState<Open>("menu")
@@ -110,26 +84,8 @@ function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: 
   const asset = view?.asset
   const tool = asset?.tool
   const sameKind: Tool[] = [...tools.values()].filter((other) => other.kind === asset?.kind && other.id !== tool)
-  const { data: target } = useQuery({
-    queryKey: ["target", tool],
-    queryFn: ({ signal }) => client.target(tool!, signal),
-    enabled: open === "model" && Boolean(tool),
-  })
-  const entry = target?.interface.entrypoints?.find((held) => held.name === target.function)
-  const slots = (entry?.models ?? []).map((slot) => slot.path.split(".models.")[1] ?? slot.path)
   const edit = Boolean(asset?.timeline)
   const rendered = makes(view) && !edit
-  const pickModel = (model: string) => {
-    const held = store.valueOf(name, "models")
-    const models = typeof held === "object" && held !== null ? held : {}
-    void store.setField(name, "models", { ...models, [slots[0] ?? "model"]: { ref: model } })
-    close()
-  }
-  const pickLora = (model: string) => {
-    const held = store.valueOf(name, "lora")
-    void store.setField(name, "lora", [...(Array.isArray(held) ? held : []), { ref: model, strength: 1 }])
-    close()
-  }
   const left = Math.min(x, window.innerWidth - 300)
   const top = Math.min(y, window.innerHeight - 340)
   return createPortal(
@@ -138,17 +94,9 @@ function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: 
         <>
           {full && edit && <EditSettings name={name} />}
           {full && rendered && (
-            <>
-              <button type="button" role="menuitem" onClick={() => setOpen("tool")}>
-                Change the tool
-              </button>
-              <button type="button" role="menuitem" onClick={() => setOpen("model")}>
-                Change the model
-              </button>
-              <button type="button" role="menuitem" onClick={() => setOpen("lora")}>
-                Add a LoRA
-              </button>
-            </>
+            <button type="button" role="menuitem" onClick={() => setOpen("tool")}>
+              Change the tool
+            </button>
           )}
           <button
             type="button"
@@ -193,8 +141,6 @@ function Menu({ name, x, y, full }: { name: string; x: number; y: number; full: 
           {!sameKind.length && <li className="muted">No other tool makes {asset?.kind === "image" ? "an image" : `a ${asset?.kind}`} here</li>}
         </ul>
       )}
-      {open === "lora" && <ModelSearch label="Search for a LoRA" onPick={pickLora} />}
-      {open === "model" && <ModelSearch label="Search for a model" onPick={pickModel} />}
     </div>,
     document.body,
   )

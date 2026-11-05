@@ -26,7 +26,8 @@ import { AssetMenu } from "./AssetMenu"
 import { CARD_WIDTH, CanvasStore, type ElementNode } from "./CanvasStore"
 import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore } from "./context"
-import { DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
+import { carriedOver, letGo } from "./checkpoints"
+import { DRAGGED_CHECKPOINT, DRAGGED_FILE, DRAGGED_TOOL } from "./drag"
 import { EntityCard } from "./EntityCard"
 import { OpenBox } from "./OpenBox"
 import { Placer } from "./place"
@@ -329,6 +330,7 @@ function Canvas({
     (nodes: ElementNode[]) => {
       carrying(true)
       store.dragStarted(nodes)
+      if (letGo(store, event.clientX, event.clientY)) return event.preventDefault()
     },
     [store],
   )
@@ -397,7 +399,7 @@ function Canvas({
 
   // Far out, a card shows its picture, its name and little else.
   const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
-  const accepted = useCallback((event: DragEvent) => event.dataTransfer.types.includes(DRAGGED_TOOL) || event.dataTransfer.types.includes(DRAGGED_FILE), [])
+  const accepted = useCallback((event: DragEvent) => [DRAGGED_TOOL, DRAGGED_FILE, DRAGGED_CHECKPOINT].some((type) => event.dataTransfer.types.includes(type)), [])
 
   // The list a box's controls come from, whatever the panel is searching.
   useEffect(() => {
@@ -476,6 +478,7 @@ function Canvas({
           onSelectionDrag={(event, nodes) => dragging(event, nodes)}
           onSelectionDragStop={(event, nodes) => dragStop(event, nodes)}
         >
+          carriedOver(store, event.clientX, event.clientY)
           <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="var(--dot)" />
           {unread ? <Unread error={unread} /> : <Empty choose={choose} />}
         </ReactFlow>

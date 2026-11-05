@@ -4,6 +4,7 @@ import { type Action, Outbox } from "../api/outbox"
 import type { Entity, Imported, AssetDeleted, AssetMade, AssetPatched, Asset, ProjectState, Row, Run, Standing, Tool } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
+import { ADD_ON_HEIGHT, ADD_ON_ROOM, addOnsOf } from "./checkpoints"
 import { clearSpot, Field, GLIDE_MS } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import { controlsOf, fullRows } from "./controls"
@@ -598,6 +599,12 @@ export class CanvasStore {
     }
   }
 
+  /** What's on it changed, in one write: the room it takes changes with it. */
+  putOn(name: string, fields: Record<string, unknown>) {
+    void this.setFields(name, fields)
+    this.reshape(name)
+  }
+
   /** Its size, unmeasured, for a fit and for culling: the node hears only when it moved. */
   private reshape(name: string) {
     const key = this.resolveName(name)
@@ -607,7 +614,7 @@ export class CanvasStore {
     if (!id || !view || !node) return
     const width = node.width ?? widthFor(view)
     const height = heightFor(view, width)
-    const shape = `${width}:${height}`
+    const shape = `${width}:${height}:${this.addOns(key)}`
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.flow?.updateNode(id, { measured: { width, height } })
@@ -615,6 +622,16 @@ export class CanvasStore {
   }
 
   // Keeping clear: no box lies on another
+
+  private addOns(name: string) {
+    return addOnsOf(this.valueOf(name, "lora"), this.valueOf(name, "models")).length
+  }
+
+  /** A box and what's beside it, which nothing else lies on. */
+  private laid(name: string, box: Box): Box {
+    const held = this.addOns(name)
+    return held ? { ...box, w: box.w + ADD_ON_ROOM, h: Math.max(box.h, held * ADD_ON_HEIGHT) } : box
+  }
 
   /** Its place and size, from what every tab holds alike. */
   private boxOf(name: string): Box | null {
@@ -625,7 +642,7 @@ export class CanvasStore {
     if ((!node && !row) || !view) return null
     // A row is what the page last said of it, and a node may not have heard yet.
     const w = row?.w ?? node?.width ?? widthFor(view)
-    return { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) }
+    return this.laid(name, { x: row?.x ?? node!.position.x, y: row?.y ?? node!.position.y, w, h: heightFor(view, w) })
   }
 
   private field(besides?: Set<string>): Field {
@@ -650,7 +667,7 @@ export class CanvasStore {
     const spot = clearSpot(box, field)
     if (spot.x === box.x && spot.y === box.y) return box
     this.glide(name, spot)
-    const row = { x: Math.round(spot.x), y: Math.round(spot.y), w: box.w }
+    const row = { x: Math.round(spot.x), y: Math.round(spot.y), w: this.rows?.get(name)?.w ?? box.w }
     if (!this.views.get(name)?.placing) this.move(name, row)
     return { ...box, ...spot }
   }
@@ -1363,7 +1380,7 @@ export class CanvasStore {
       const view = this.views.get(name)
       if (!view) continue
       const row = toRow(node)
-      const box = { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) }
+      const box = this.laid(name, { x: row.x, y: row.y, w: row.w ?? CARD_WIDTH, h: heightFor(view, row.w ?? CARD_WIDTH) })
       if (!view.placing) this.move(name, row)
       field.add(name, this.toClear(name, field, box))
     }

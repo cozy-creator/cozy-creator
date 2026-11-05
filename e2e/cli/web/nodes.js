@@ -422,18 +422,8 @@ function linesOf(text, name) {
   await box('Sheet').locator('[aria-label="More for this box"]').click();
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
-  check('box_menu', ['Change the tool', 'Change the model', 'Add a LoRA', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
-  await page.click('.asset-menu button:has-text("Add a LoRA")');
-  await page.waitForSelector('.asset-menu input');
-  const found = await until('models or none', () => page.locator('.asset-menu li').count(), (n) => n > 0).catch(() => 0);
-  seen.lora_choices = found;
-  if (await page.locator('.asset-menu li button').count()) {
-    await page.locator('.asset-menu li button').first().click();
-    await until('its LoRA written', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('lora:'));
-    await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { lora: null } }) });
-  } else {
-    await page.keyboard.press('Escape');
-  }
+  check('box_menu', ['Change the tool', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
+  await page.keyboard.press('Escape');
 
   // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy project status` reads.
   const statusOf = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);

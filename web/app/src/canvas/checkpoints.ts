@@ -1,0 +1,132 @@
+import type { FoundModel, Tool } from "../types"
+import { say } from "../ui/notes"
+import { signal } from "../ui/signal"
+import type { CanvasStore, ElementView } from "./CanvasStore"
+import { madeHere } from "./shown"
+
+/** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
+export interface Carried {
+  /** Why this box can't take it, in plain words, or null when it can. */
+  whyNot(name: string, view: ElementView | undefined, tools: Map<string, Tool>): string | null
+  put(store: CanvasStore, name: string): void
+}
+
+/** What's in the air: a drag's data can't be read before its drop. */
+export const carried = signal<Carried | null>(null)
+
+/** A LoRA or a fine-tune on a box, as its file says it. */
+export interface AddOn {
+  ref: string
+  lora: boolean
+  /** The model it's under in `models`. None: it's in `lora`, and goes on the box's model. */
+  slot?: string
+  strength: number
+}
+
+/** The room beside a box its add-ons take, and each one's height at its largest: `--text` makes them taller as the canvas zooms out, never wider. */
+export const ADD_ON_ROOM = 188
+export const ADD_ON_HEIGHT = 76
+
+type Entry = Record<string, unknown>
+type Fields = Record<string, unknown>
+
+const isEntry = (value: unknown): value is Entry => typeof value === "object" && value !== null && !Array.isArray(value)
+const slotsOf = (models: unknown): Record<string, Entry> => (isEntry(models) ? (Object.fromEntries(Object.entries(models).filter(([, held]) => isEntry(held))) as Record<string, Entry>) : {})
+const refOf = (entry: unknown) => (isEntry(entry) && typeof entry.ref === "string" ? entry.ref : null)
+
+const lorasIn = (list: unknown, slot?: string): AddOn[] =>
+  (Array.isArray(list) ? list : []).flatMap((entry) => {
+    const ref = refOf(entry)
+    return ref ? [{ ref, lora: true, slot, strength: Number(entry.strength ?? 1) }] : []
+  })
+
+/** What a box's `lora` and `models` hold, its fine-tune first. */
+export function addOnsOf(lora: unknown, models: unknown): AddOn[] {
+  const slots = Object.entries(slotsOf(models))
+  return [
+    ...slots.flatMap(([slot, held]): AddOn[] => {
+      const ref = refOf(held)
+      return ref ? [{ ref, lora: false, slot, strength: 1 }] : []
+    }),
+    ...slots.flatMap(([slot, held]) => lorasIn(held.lora, slot)),
+    ...lorasIn(lora),
+  ]
+}
+
+/** The fields with `addOn` changed by `to`, or with no answer taken off. What else they say stays as it's written. */
+function changed(addOn: AddOn, lora: unknown, models: unknown, to: (entry: Entry) => Entry | null): Fields {
+  const inList = (list: unknown) => {
+    const kept = (Array.isArray(list) ? list : []).flatMap((entry) => (refOf(entry) === addOn.ref ? (to(entry) ?? []) : [entry]))
+    return kept.length ? kept : null
+  }
+  if (!addOn.slot) return { lora: inList(lora) }
+  const { [addOn.slot]: held = {}, ...others } = slotsOf(models)
+  const { ref: _, lora: loras, ...rest } = held
+  const next = { ...rest, ...(addOn.lora ? { ...(_ === undefined ? {} : { ref: _ }), lora: inList(loras) } : loras === undefined ? {} : { lora: loras }) }
+  const left = Object.fromEntries(Object.entries(next).filter(([, value]) => value !== null))
+  const slots = Object.keys(left).length ? { ...others, [addOn.slot]: left } : others
+  return { models: Object.keys(slots).length ? slots : null }
+}
+
+export const takenOff = (addOn: AddOn, lora: unknown, models: unknown) => changed(addOn, lora, models, () => null)
+
+export const atStrength = (addOn: AddOn, strength: number, lora: unknown, models: unknown) => changed(addOn, lora, models, (entry) => ({ ...entry, strength }))
+
+/** A checkpoint's own word: `hf://a/b` and `a/b@1.0` are `b`. */
+export const wordOf = (ref: string) => (ref.split("://").pop() ?? ref).split("@")[0].split("/").filter(Boolean).pop()?.replace(/\.safetensors$/, "") ?? ref
+
+/** Why `found` can't go on this box, in plain words, or null when it can. Only its header and the box's tool say, so this names no model. */
+export function whyNot(found: FoundModel, name: string, view: ElementView | undefined, tools: Map<string, Tool>): string | null {
+  const word = wordOf(found.model)
+  const made = view?.asset?.tool
+  if (!made || madeHere(made)) return `No model makes ${name}, so ${word} has nothing to go on`
+  const tool = tools.get(made)
+  if (!tool) return `Can't tell which model ${name} runs, so ${word} stays off it`
+  if (!tool.model) return `${name} runs no one model, so ${word} has nothing to go on`
+  if (!found.kind || !found.family) return `Can't tell what ${word} is for, so it stays off ${name}`
+  if (!tool.model.family) return `Can't tell which model ${name} runs, so ${word} stays off it`
+  return found.family === tool.model.family ? null : `${word} is for ${found.family}, and ${name} runs ${tool.model.family}`
+}
+
+/** The box under a point, its add-ons being part of it. */
+export function boxAt(store: CanvasStore, x: number, y: number): string | null {
+  for (const element of document.elementsFromPoint(x, y)) {
+    const card = element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
+    if (card) return store.resolveName(card.dataset.asset ?? "")
+  }
+  return null
+}
+
+/** Carried over a point: what would take it says so. */
+export function carriedOver(store: CanvasStore, x: number, y: number) {
+  const held = carried.get()
+  if (!held) return
+  const name = boxAt(store, x, y)
+  store.setHot(name && !held.whyNot(name, store.get(name), store.tools.get()) ? name : null)
+}
+
+/** Whatever's carried, let go at a point: on a box that takes it, it goes on; on one that doesn't, that says why and nothing changes. */
+export function letGo(store: CanvasStore, x: number, y: number) {
+  const held = carried.get()
+  if (!held) return false
+  store.setHot(null)
+  const name = boxAt(store, x, y)
+  if (!name) return true
+  const why = held.whyNot(name, store.get(name), store.tools.get())
+  if (why) say(why)
+  else held.put(store, name)
+  return true
+}
+
+/** A checkpoint carried: a LoRA joins those on a box, and a fine-tune takes the place of any there. */
+export const carrying = (found: FoundModel): Carried => ({
+  whyNot: (name, view, tools) => whyNot(found, name, view, tools),
+  put(store, name) {
+    const lora = store.valueOf(name, "lora")
+    const models = store.valueOf(name, "models")
+    if (addOnsOf(lora, models).some((addOn) => addOn.ref === found.model)) return void say(`${wordOf(found.model)} is already on ${name}`)
+    const slot = store.tools.get().get(store.get(name)?.asset?.tool ?? "")?.model?.slot
+    if (found.kind === "lora") store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, strength: 1 }] })
+    else if (slot) store.putOn(name, { models: { ...slotsOf(models), [slot]: { ...slotsOf(models)[slot], ref: found.model } } })
+  },
+})

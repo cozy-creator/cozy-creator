@@ -18,6 +18,7 @@ import { TimelineControl } from "./timeline/TimelineControl"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
 const WIDEST = 1600
+import { AddOns } from "./AddOns"
 const NARROWEST = 160
 
 function kindOf(view: ElementView): string {
@@ -551,5 +552,10 @@ export function OpenCard({ name, close }: { name: string; close: () => void }) {
 
 /** Thin, as React Flow renders it: `data` is only the name. Element types are `nodeTypes`, looks are `CardBody`. */
 export function Card({ data, width }: NodeProps<ElementNode>) {
-  return <CardBody name={data.name} width={width ?? 240} />
+  return (
+    <>
+      <CardBody name={data.name} width={width ?? 240} />
+      <AddOns name={data.name} />
+    </>
+  )
 }
