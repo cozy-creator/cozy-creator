@@ -196,7 +196,7 @@ async function loseAnswers(page, method, path, times) {
   await openBox(page, 'words');
   await box('words').locator('.mention-text').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
-  await page.keyboard.press('Control+a');
+  await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('mine');
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
