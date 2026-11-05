@@ -6,15 +6,10 @@
 #![allow(unsafe_code)]
 use crate::{Error, Result};
 use std::{
-    collections::BTreeSet,
     fs::{self, File, Metadata, OpenOptions},
     io::{self, Write},
-    path::{Path, PathBuf},
-    sync::{
-        OnceLock,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{Sender, channel},
-    },
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 mod disk;
@@ -33,33 +28,6 @@ pub fn replace(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new(".")),
     )
-}
-
-/// As `replace`, with the wait on the disk behind the caller, on a thread of its own: a reader sees
-/// the old file or the new one at once, and a dead process loses nothing. Only the computer losing
-/// power in that moment can. For a person's edits, which a person is waiting on.
-pub fn replace_soon(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    renamed(path, bytes, mode, false)?;
-    let _ = SETTLING.get_or_init(settling).send(path.to_owned());
-    Ok(())
-}
-
-static SETTLING: OnceLock<Sender<PathBuf>> = OnceLock::new();
-
-/// A thread that flushes what `replace_soon` wrote, each file once however many writes it's behind.
-fn settling() -> Sender<PathBuf> {
-    let (send, written) = channel::<PathBuf>();
-    let flush = move || {
-        while let Ok(first) = written.recv() {
-            let paths: BTreeSet<PathBuf> = std::iter::once(first).chain(written.try_iter()).collect();
-            for path in paths {
-                let _ = OpenOptions::new().write(true).open(&path).and_then(|file| file.sync_all());
-                let _ = sync_dir(path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new(".")));
-            }
-        }
-    };
-    let _ = std::thread::Builder::new().name("settling".to_owned()).spawn(flush);
-    send
 }
 
 /// As `replace`, but nothing is made to survive a crash: for a record of a live process, which a
