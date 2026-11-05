@@ -628,6 +628,8 @@ function linesOf(text, name) {
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
     await open('Other');
     const beforeCaption = yaml();
+    // A caption is of what's been made: it's on the version's face, not the one that asks for another.
+    await box('Other').locator('[aria-label="Show its version"]').click();
     await box('Other').locator('button:text-is("Caption")').click();
     const typed = box('Other').locator('.desc-open .mention-text');
     await typed.waitFor({ timeout: FIRST_RUN_MS });

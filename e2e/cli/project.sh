@@ -2460,6 +2460,11 @@ refuses() { # refuses <what> <what it says> <command…>
   cozy project -p "$T" "$@" > "$OUT/by-cli.txt" 2>&1 || code=$?
   [ "$code" != 0 ] && grep -qF -- "$says" "$OUT/by-cli.txt" || check "by the CLI: $what: exit $code: $(tail -c 300 "$OUT/by-cli.txt")"
 }
+# A list typed with `=` goes by what the tool declares: `beats` is a list, and text in a text field stays text whatever it looks like.
+cozy project -p "$T" add "$tool/told" typed prompt=plain > /dev/null || check "by the CLI: add typed"
+cozy project -p "$T" set typed 'beats=[{"description":"One","duration":3}]' 'prompt=[1, 2]' > /dev/null || check "by the CLI: set typed"
+J '(.asset.fields.beats | type) == "array" and .asset.fields.prompt == "[1, 2]"' <<< "$(held "$T" typed)" || check "by the CLI: fields aren't as the tool declares: $(held "$T" typed | jq -c .asset.fields)"
+cozy project -p "$T" delete typed > /dev/null || check "by the CLI: delete typed"
 rows() { api "http://$ADDR/v1/projects/$(status "$T" | jq -r .id)/canvas"; }
 [ "$(cozy project -p "$T" import "$T/red.png" red_art)" = red_art ] || check "by the CLI: import did not print its name"
 # Read with this machine's Runtime, as a run reads it: a box doesn't wait on PyPI's.
