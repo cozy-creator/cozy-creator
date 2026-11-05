@@ -2084,8 +2084,9 @@ async fn import(
     }
     let wanted = element_name(asked.name.as_deref(), &asked.source);
     if asked.exact {
-        if let Some(name) = &asked.name {
-            format::new_name(name).map_err(Refusal)?;
+        // As it's written, a space an `_`: what a name can't be is a version's or `self`, which is said, not changed.
+        if let Some(name) = asked.name.as_deref().and_then(format::plain_name) {
+            format::new_name(&name).map_err(Refusal)?;
         }
         let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
         if format::free_name(&doc, &lock, &wanted) != wanted {

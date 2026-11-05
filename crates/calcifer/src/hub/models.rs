@@ -46,17 +46,21 @@ pub(super) async fn search(
     let client = reader(&api, &hub)?;
     let limit = ask.limit.unwrap_or(20).clamp(1, 100);
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
     // One word that is org/name is that model; anything else is search text.
-    let exact = match (&ask.family, q) {
+    let exact = match (family, q) {
         (None, Some(one)) if one.contains('/') && !one.contains(char::is_whitespace) => Repo::parse(one).ok(),
         _ => None,
     };
     let (cards, total) = match exact {
         Some(repo) => (vec![client.get_model(&repo.org, &repo.name).await.map_err(|e| refusal(&hub, e))?], 1),
         None => {
-            let answer = (client.search_models(q, ask.family.as_deref(), limit).await).map_err(|e| refusal(&hub, e))?;
+            // A model's family is its header's (`checkpoints::said`), which the Hub's search doesn't know: one is looked for among
+            // the most a search finds.
+            let asked = if family.is_some() { 100 } else { limit };
+            let answer = (client.search_models(q, None, asked).await).map_err(|e| refusal(&hub, e))?;
             let mut reads = tokio::task::JoinSet::new();
-            for (i, model) in answer.models.into_iter().take(limit as usize).enumerate() {
+            for (i, model) in answer.models.into_iter().take(asked as usize).enumerate() {
                 let client = client.clone();
                 reads.spawn(async move { (i, client.get_model(&model.org, &model.name).await) });
             }
@@ -70,6 +74,12 @@ pub(super) async fn search(
     };
     let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
     checkpoints::said(&api, &hub, &cards, &mut models).await;
+    let mut total = total;
+    if let Some(family) = family {
+        models.retain(|row| row.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family)));
+        total = models.len() as i64;
+        models.truncate(limit as usize);
+    }
     let older = (total - models.len() as i64).max(0);
     Ok(Json(ModelSearch { models, total, older }))
 }

@@ -1446,8 +1446,10 @@ code=0; cozy project -p "$C" unapprove teal > "$OUT/unpin.txt" 2>&1 || code=$?
 render "$C" wrong || check "pins: wrong's bad pin stopped it: $(tail -c 300 "$OUT/render.txt")"
 [ "$(made "$C" wrong)" = 1 ] || check "pins: wrong was not made without its bad pin"
 
-step "a project: an asset with no package or no kind says so, and the rest goes on"
-J '[.warnings[].message] | any(contains("no_package has no `tool`"))' <<< "$(status "$C")" || check "pins: an asset with nothing to make is not said: $(status "$C" | jq -c .warnings)"
+step "a project: an asset with no package is its words, one with no kind an image, and the rest goes on"
+# A box is its words and an optional tool (27c5db3f5): with none, it's only words, and nothing's wrong with it.
+J '.assets[] | select(.name == "no_package") | .standing == "current" and .status == "only words"' <<< "$(status "$C")" || check "pins: an asset with no package is not its words: $(row "$C" no_package .)"
+J '[(.warnings // [])[] | select(.name == "no_package")] == []' <<< "$(status "$C")" || check "pins: an asset that is its words is warned of: $(status "$C" | jq -c .warnings)"
 J '.assets[] | select(.name == "no_kind") | .kind == "image"' <<< "$(status "$C")" || check "pins: an asset with no kind is not an image: $(row "$C" 'no_kind' .)"
 J '.assets[] | select(.name == "only_words") | .standing == "current" and .status == "only words"' <<< "$(status "$C")" || check "pins: an asset that is only words: $(row "$C" only_words .)"
 sed -i 's/It renders without that\./Rendered again./' "$C/project.yaml"
@@ -1532,7 +1534,7 @@ code=0; cozy project -p "$N" status > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -qF "use \`a_b\`" "$OUT/name.txt"; } || check "names: a comma in a name: exit $code: $(tail -c 300 "$OUT/name.txt")"
 printf 'version: 3\nassets:\n  a:\n    description: Prose <a b> here.\n  Amy.original: {instructions: From <a>.}\n' > "$N/project.yaml"
 J '[.assets[].name] | index("Amy.original") != null' <<< "$(status "$N")" || check "names: a dot in a name: $(status "$N" | jq -c '[.assets[].name]')"
-J '[.warnings[].message] | any(contains("<a b>")) | not' <<< "$(status "$N")" || check "names: <a b> is just text, and was said: $(status "$N" | jq -c .warnings)"
+J '[(.warnings // [])[].message] | any(contains("<a b>")) | not' <<< "$(status "$N")" || check "names: <a b> is just text, and was said: $(status "$N" | jq -c .warnings)"
 code=0; cozy project -p "$N" rename a "b c" > "$OUT/name.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q "names can't hold" "$OUT/name.txt"; } || check "names: rename took a space: exit $code: $(tail -c 300 "$OUT/name.txt")"
 
