@@ -2551,7 +2551,7 @@ input[type="checkbox"] {
   font-size: calc(12px * var(--ui));
 }
 
-/* Each project a tab, top left: one click to any, and the rest behind +. */
+/* Each project a tab, top left, as many as fit: one click to any, the rest behind "N more", and + for a new one. */
 .ptabs {
   display: flex;
   align-items: stretch;
@@ -2562,7 +2562,8 @@ input[type="checkbox"] {
   border-radius: calc(var(--round) * var(--ui));
   background: var(--float);
 }
-.ptab {
+.ptab,
+.ptabs-ghost > span {
   display: inline-flex;
   align-items: center;
   max-width: calc(150px * var(--ui));
@@ -2584,7 +2585,24 @@ input[type="checkbox"] {
 }
 .ptab.more {
   flex: none;
+}
+.ptab.new {
+  flex: none;
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
+}
+/* What each tab takes at its full width, laid out where no one sees it. */
+.ptabs-ghost {
+  position: absolute;
+  display: flex;
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.ptabs-ghost > span {
+  flex: none;
+}
+.ptabs-ghost > .on {
+  font-weight: 600;
 }
 
 /* Each rental, beside the project tabs: its name, then running / all it holds. */
@@ -2755,6 +2773,15 @@ input[type="checkbox"] {
   }
 }
 
+/* All projects: a search, and a line under those with no tab. */
+.field.find {
+  margin-top: 8px;
+}
+.list .tabbed {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
 /* Where a project is, so a person can find it. */
 .project-path {
   display: block;
