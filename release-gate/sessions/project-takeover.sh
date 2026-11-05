@@ -55,8 +55,8 @@ trap 'st=$?; [ "$(state "$RID")" != ready ] || sh "echo up > /tmp/link"; [ "$RC"
 fail() {
   say "FAIL: $*"
   if [ -n "${TAG:-}" ]; then
-    x "--json run ls --limit 200" > "$OUT/fail-x-runs.json" 2>&1
-    x "--json project status" > "$OUT/fail-x-status.json" 2>&1
+    x "--json --full run ls --limit 200" > "$OUT/fail-x-runs.json" 2>&1
+    x "--json --full project status" > "$OUT/fail-x-status.json" 2>&1
     sh 'tail -300 /root/.cozy/calcifer/calcifer.log' > "$OUT/fail-x-calcifer.log" 2>&1
     sh 'tail -300 /home/client/.cozy/calcifer/calcifer.log' > "$OUT/fail-client-calcifer.log" 2>&1
   fi
@@ -88,7 +88,7 @@ walk_file() { sh "cat /home/client/$TAG/.runs/walk.json 2>/dev/null"; }
 # Where the hand-off stands, from that computer's walk file.
 handing() { jq -r 'if .held == null then "nothing held" elif (.held.id // "") == "" then "not yet taken" elif (.held.asking // []) != [] then "taken, the render not yet asked" else "asked" end' <<<"${1:-{\}}" 2>/dev/null; }
 # The files X's copy has, `sha256 path`, and the computer's.
-x_files() { x "--json project status" | jq -r '[.assets[].prefixes[]?.main | select(. != null) | "\(.sha256) \(.path)"] | unique | .[]'; }
+x_files() { x "--json --full project status" | jq -r '[.assets[].prefixes[]?.main | select(. != null) | "\(.sha256) \(.path)"] | unique | .[]'; }
 
 sh 'useradd -m client && install -d /opt/client && command -v python3 && command -v ffmpeg' > "$OUT/tools.txt" || fail "no second user or tools: $(tail -3 "$OUT/ssh.err")"
 cozy machine ssh "$NAME" -- 'cat > /root/link.py' < "$FIX/link.py" 2>> "$OUT/ssh.err" || fail "copy link"
@@ -97,7 +97,7 @@ write /home/client/art.py < "$FIX/art.py" || fail "copy art"
 step update machine update "$NAME" --tensord "$UNDER" ${RUNTIME:+--runtime "$RUNTIME"} -y || fail "update to $UNDER"
 # A command in a shell there restarts the pod's Calcifer on the new binary.
 was=$(sh 'grep -o "\"pid\":[0-9]*" /root/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2')
-sh 'cozy machine show local --json' > "$OUT/local.json" || fail "cozy machine show local"
+sh 'cozy --full machine show local --json' > "$OUT/local.json" || fail "cozy machine show local"
 now=$(sh 'grep -o "\"pid\":[0-9]*" /root/.cozy/calcifer/calcifer.lock.holder | cut -d: -f2')
 say "the pod runs $(sh 'cozy --version'); its Calcifer was pid $was, is $now, running $(sh "readlink /proc/$now/exe")"
 ADDRESS=$(jq -r .address "$OUT/local.json") FINGERPRINT=$(jq -r .fingerprint "$OUT/local.json")
@@ -120,7 +120,7 @@ new_project() {
 
 # x_made <assets…>: whether X's copy has a version of each, and owes nothing.
 x_made() {
-  local state; state=$(x "--json project status") || return 1
+  local state; state=$(x "--json --full project status") || return 1
   jq -e --args '.busy == false and ([$ARGS.positional[] as $a | [.assets[] | select(.name == $a and .versions > 0)] | length > 0] | all)' "$@" <<<"$state" > /dev/null 2>&1
 }
 
@@ -137,11 +137,11 @@ collected() {
 # once <assets…>: X's copy holds one version of each, and every call X ran for the project is one version's run: none ran twice.
 once() {
   local state runs made
-  state=$(x "--json project status") || fail "$TAG: X's status: $state"
+  state=$(x "--json --full project status") || fail "$TAG: X's status: $state"
   jq -e --args '[$ARGS.positional[] as $a | [.assets[] | select(.name == $a and .versions == 1)] | length == 1] | all' "$@" <<<"$state" > /dev/null ||
     fail "$TAG: not one version each: $(jq -c '[.assets[] | {name, versions}]' <<<"$state")"
   # Its calls: what a machine fetches ahead for it is a warm run, which renders nothing.
-  runs=$(x "--json run ls --limit 200" | jq -c --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not)) | .number] | sort')
+  runs=$(x "--json --full run ls --limit 200" | jq -c --arg t "/projects/$TAG-" '[.runs[] | select(((.project // "") | contains($t)) and ((.kind // "call") | ascii_downcase) == "call" and (.target | startswith("ahead ") | not)) | .number] | sort')
   made=$(jq -c '[.assets[].prefixes[]?.run | select(. != null)] | sort' <<<"$state")
   [ "$runs" = "$made" ] || fail "$TAG: X ran $runs, and its versions came of $made"
   say "$TAG: one version each of $*; X's calls $runs are its versions' runs, none twice"
@@ -179,7 +179,7 @@ YAML
   local t=0 walk=''
   while [ $t -lt 300 ]; do
     walk=$(walk_file)
-    [ "$(handing "$walk")" = asked ] && x "--json project status" 2>/dev/null | jq -e .busy > /dev/null && break
+    [ "$(handing "$walk")" = asked ] && x "--json --full project status" 2>/dev/null | jq -e .busy > /dev/null && break
     t=$((t + 3)); sleep 3
   done
   echo "$walk" > "$OUT/a-walk.json"
@@ -191,14 +191,14 @@ YAML
   until x_made still shot clip edit aframe; do
     deadline=$(cozy machine show "$NAME" --json | jq -r '.status.idle_deadline_ms // 0')
     if [ "$deadline" != 0 ]; then left=$(( (deadline - $(date +%s%3N)) / 1000 )); [ "$left" -ge "$least" ] || least=$left; fi
-    moved=$(x "--json project status" | jq -c '[.board.jobs[]? | [.asset, .state, .stage]]')
+    moved=$(x "--json --full project status" | jq -c '[.board.jobs[]? | [.asset, .state, .stage]]')
     [ "$moved" != "$was" ] && { was=$moved; at=$SECONDS; }
     [ $((SECONDS - at)) -lt 300 ] || fail "a: X's render stopped moving for 5 min: $moved"
     sleep 5
   done
   t=$((SECONDS - began))
-  x "--json project status" > "$OUT/a-x-status.json"
-  x "--json run ls --limit 200" > "$OUT/a-x-runs.json"
+  x "--json --full project status" > "$OUT/a-x-status.json"
+  x "--json --full run ls --limit 200" > "$OUT/a-x-runs.json"
   say "a: X made all five in $t s with nobody here; its idle clock at its least had $([ "$least" = 999999999 ] && echo 'never run' || echo "${least} s left")"
   once still shot clip edit aframe
   # Back at 200 KB/s: what status says while what X made comes down.
@@ -260,9 +260,9 @@ YAML
     t=$((t + 5)); sleep 5
   done
   once shotk
-  local plate; plate=$(x "--json project status" | jq -r '[.assets[] | select(.name == "plate") | .sha256] | first')
+  local plate; plate=$(x "--json --full project status" | jq -r '[.assets[] | select(.name == "plate") | .sha256] | first')
   [ "sha256:$(sh "sha256sum /root/.cozy/projects/k-*/files/${plate#sha256:}.png" | cut -c1-64)" = "$plate" ] || fail "k: the plate on X is not its hash"
-  x "--json project status" > "$OUT/k-x-status.json"
+  x "--json --full project status" > "$OUT/k-x-status.json"
   say "k: shotk made once on X, the plate whole there"
   t=0
   until collected && [ "$(handing "$(walk_file)")" = "nothing held" ]; do
@@ -307,7 +307,7 @@ YAML
   t=0
   local state
   until x_made seashot; do
-    state=$(x "--json project status")
+    state=$(x "--json --full project status")
     jq -e '.busy == false and ([.assets[] | select(.name == "seashot" and .versions > 0)] | length == 0)' <<<"$state" > /dev/null 2>&1 &&
       fail "h: X's walk ended without seashot: $(jq -c '[.board.jobs[]? | select(.asset == "seashot") | .error.message // .why] | first' <<<"$state" | cut -c1-400)"
     moved=$(jq -c '[.board.jobs[]? | [.state, .stage, .detail]]' <<<"$state")
@@ -333,7 +333,7 @@ YAML
 # On Y, the second rental: its update, and a shell there.
 if [ -n "$TWO" ]; then
   step update-y machine update "$Y" --tensord "$UNDER" ${RUNTIME:+--runtime "$RUNTIME"} -y || fail "update $Y to $UNDER"
-  cozy machine ssh "$Y" -- 'cozy machine show local --json' < /dev/null > "$OUT/y-local.json" 2>> "$OUT/ssh.err" || fail "cozy machine show local on $Y"
+  cozy machine ssh "$Y" -- 'cozy --full machine show local --json' < /dev/null > "$OUT/y-local.json" 2>> "$OUT/ssh.err" || fail "cozy machine show local on $Y"
 fi
 ysh() { NAME=$Y sh "$@"; }
 
@@ -373,11 +373,11 @@ YAML
   say "y: X walks it, this computer gone"
   t=0
   until x_made north south east west; do [ $t -lt 900 ] || fail "y: X didn't make all four"; t=$((t + 5)); sleep 5; done
-  x "--json run ls --limit 50" > "$OUT/y-x-runs.json"
+  x "--json --full run ls --limit 50" > "$OUT/y-x-runs.json"
   once north south east west
   local on_y; on_y=$(jq --arg t "/projects/y-" '[.runs[] | select(((.project // "") | contains($t)) and (.target | startswith("ahead ") | not) and .machine == "ybox")] | length' "$OUT/y-x-runs.json")
   [ "$on_y" -gt 0 ] || fail "y: X sent Y nothing: $(jq -c '[.runs[] | [.number, .machine, .target]]' "$OUT/y-x-runs.json")"
-  local xkey; xkey=$(sh 'cozy --json machine show local' | jq -r .controller_key)
+  local xkey; xkey=$(sh 'cozy --json --full machine show local' | jq -r .controller_key)
   line up
   t=0
   until collected && [ "$(handing "$(walk_file)")" = "nothing held" ]; do
@@ -404,7 +404,7 @@ assets:
 YAML
   sh "su client -s /bin/sh -c 'cd \$HOME/l; nohup /opt/client/cozy project render all --on box --plain > \$HOME/l.out 2>&1 < /dev/null &'" > /dev/null
   local t=0
-  until [ "$(handing "$(walk_file)")" = asked ] && x "--json project status" 2>/dev/null | jq -e .busy > /dev/null; do [ $t -lt 300 ] || fail "l: X never took it"; t=$((t + 3)); sleep 3; done
+  until [ "$(handing "$(walk_file)")" = asked ] && x "--json --full project status" 2>/dev/null | jq -e .busy > /dev/null; do [ $t -lt 300 ] || fail "l: X never took it"; t=$((t + 3)); sleep 3; done
   sh 'p=$(pgrep -u root -x calcifer); python3 -c "import json; f=\"/root/.cozy/calcifer/projects.json\"; i=json.load(open(f)); i[\"projects\"]={k: v for k, v in i[\"projects\"].items() if \"/projects/l-\" not in v[\"path\"]}; json.dump(i, open(f, \"w\"))"; rm -rf /root/.cozy/projects/l-*; kill -9 $p' > /dev/null
   say "l: X walks it; X's Calcifer killed and its copy wiped"
   t=0
