@@ -271,6 +271,8 @@ struct Entry {
     // Filled ahead of demand and not yet used: the first to go.
     prefetched: bool,
     last_use: u64,
+    // Its owner ranks it above rebuilding a cache: `reclaim::HIGH`.
+    high: bool,
 }
 
 impl Entry {
@@ -324,6 +326,9 @@ impl State {
     fn rank(&self, id: u64, entry: &Entry, order: &plan::Order) -> (u8, u64) {
         if matches!(entry.uses.state(), Contents::Cold | Contents::Retired) {
             return (reclaim::CONTENTLESS, entry.last_use);
+        }
+        if entry.high {
+            return (reclaim::HIGH, entry.last_use);
         }
         if entry.prefetched {
             // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
@@ -408,6 +413,8 @@ pub struct Device {
     working: AtomicUsize,
     // The most weight bytes held for use at once this request.
     held_peak: AtomicUsize,
+    // A region here was ever marked high. Until then the reclaim sequence has no such step.
+    any_high: AtomicBool,
     // Actual successful physical releases only. An observation permits a real retry, never a grant.
     released: AtomicU64,
     clock: AtomicU64,
@@ -441,6 +448,7 @@ impl Device {
             pages: AtomicUsize::new(0),
             working: AtomicUsize::new(0),
             held_peak: AtomicUsize::new(0),
+            any_high: AtomicBool::new(false),
             released: AtomicU64::new(0),
             clock: AtomicU64::new(0),
             joins_started: AtomicU64::new(0),
@@ -607,6 +615,7 @@ impl Device {
                     period: 0,
                     prefetched: false,
                     last_use: 0,
+                    high: false,
                 },
             );
             Region {
@@ -1030,6 +1039,13 @@ impl Region {
     /// Whether its bytes are on the card, as far as an atomic read can tell.
     pub fn holds_contents(&self) -> bool {
         matches!(self.uses.state(), Contents::Ready | Contents::Published | Contents::Loading)
+    }
+
+    /// High: idle, it goes only once owner caches and peers were asked. Metadata only.
+    pub fn set_high(&self, high: bool) -> Result<()> {
+        self.gpu.lock()?.entries.get_mut(&self.id).expect("live region").high = high;
+        self.gpu.any_high.fetch_or(high, Ordering::AcqRel);
+        Ok(())
     }
 
     /// This fill is not the region's first: it has been evicted and read back.

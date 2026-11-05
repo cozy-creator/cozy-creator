@@ -12,7 +12,7 @@ import ctypes as C
 import operator
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from .. import _ext
 from .sources import Source, dtype_descriptor
@@ -123,6 +123,22 @@ class _Stats(C.Structure):
     ]
 
 
+class _Room(C.Structure):
+    _fields_ = [(name, _u) for name in ("capacity", "working_live", "pinned", "weights_resident", "free")]
+
+
+class _SplitChoice(C.Structure):
+    _fields_ = [("id", C.c_char_p), ("bytes", _u)]
+
+
+class _SplitSelection(C.Structure):
+    _fields_ = [(name, _u) for name in ("index", "bytes", "measured", "budget", "generation")]
+
+
+class _SplitEnd(C.Structure):
+    _fields_ = [(name, _u) for name in ("peak", "counted")]
+
+
 class _Phase(C.Structure):
     _fields_ = [("name", C.c_char_p), ("regions", _h), ("count", C.c_size_t)]
 
@@ -176,6 +192,11 @@ for _name, _args in {
     "phase_leave": [_u, C.c_int32],
     "plan_close": [_u],
     "stats": [_u, C.POINTER(_Stats), C.c_size_t],
+    "room": [_u, C.POINTER(_Room), C.c_size_t],
+    "region_set_priority": [_u, C.c_int32],
+    "split_select": [_u, C.c_char_p, C.POINTER(_SplitChoice), C.c_size_t, _u, C.POINTER(_SplitSelection), C.c_size_t],
+    "split_begin": [_u, C.c_char_p, C.c_char_p, _u, _u, _h],
+    "split_end": [_u, _u, C.c_int32, C.POINTER(_SplitEnd), C.c_size_t],
 }.items():
     _declare(_name, _args)
 
@@ -341,6 +362,22 @@ class Gpu(_Owned):
         _call("stats", self._handle, C.byref(value), C.sizeof(value))
         return _fields(value)
 
+    def room(self) -> dict[str, int]:
+        """What this GPU has right now. A report: nothing is reserved."""
+        value = _Room()
+        _call("room", self._handle, C.byref(value), C.sizeof(value))
+        return _fields(value)
+
+    def split_select(self, key: str, choices: Sequence[tuple[str, int]], stream: int) -> dict[str, int | str]:
+        """Legal levels, largest first, as (id, estimated full bytes). The core picks the largest
+        under its budget, reported with its `id`; pass the result to `Plan.split`. Nothing is reserved.
+        """
+        menu = (_SplitChoice * len(choices))(*(_SplitChoice(_text(id), _uint(bytes)) for id, bytes in choices))
+        value = _SplitSelection()
+        _call("split_select", self._handle, _text(key), menu, len(menu), _uint(stream), C.byref(value), C.sizeof(value))
+        return {**_fields(value), "id": choices[value.index][0]}
+
+
 def open(device: int = 0) -> Gpu:
     return Gpu(device)
 
@@ -351,6 +388,10 @@ class Region(_Owned):
     def __init__(self, handle: int, gpu: Gpu) -> None:
         super().__init__(handle)
         self.gpu = gpu
+
+    def set_priority(self, priority: Literal["normal", "high"]) -> None:
+        """An idle "high" Region goes only once owner Caches and peers were asked to give memory."""
+        _call("region_set_priority", self._handle, ("normal", "high").index(priority))
 
     def tensor(
         self,
@@ -375,6 +416,25 @@ class Region(_Owned):
                 byte_offset=byte_offset,
                 stream=stream,
             )
+
+
+class Split:
+    """One selected level, measured until the end of this `with`. `peak` is what it used and `counted`
+    says leaving the phase completed publishes that. An exception keeps no measure.
+    """
+
+    peak = counted = 0
+
+    def __init__(self, plan: Plan, handle: int) -> None:
+        self.plan, self.handle = plan, handle
+
+    def __enter__(self) -> Split:
+        return self
+
+    def __exit__(self, kind, *_) -> None:
+        value = _SplitEnd()
+        _call("split_end", self.plan._handle, self.handle, int(kind is None), C.byref(value), C.sizeof(value))
+        self.peak, self.counted = value.peak, value.counted
 
 
 class Use(_Owned):
@@ -514,3 +574,8 @@ class Plan(_Owned):
             raise
         else:
             _call("phase_leave", self._handle, 1)
+
+    def split(self, key: str, selection: Mapping[str, int | str], stream: int) -> Split:
+        """Inside a phase: measure the level `Gpu.split_select` chose. Allocate it all on `stream`."""
+        handle = _new("split_begin", self._handle, _text(key), _text(selection["id"]), _uint(stream), selection["generation"])
+        return Split(self, handle)

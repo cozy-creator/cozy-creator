@@ -267,6 +267,34 @@ impl Gpu {
             _gpu: self.clone(),
         })
     }
+    /// What this GPU has right now. A report: nothing is reserved.
+    pub fn room(&self) -> Result<Room> {
+        let mut room = Room::default();
+        check(unsafe {
+            ffi::vr_v1_room(self.0.handle, &mut room, std::mem::size_of::<Room>())
+        })?;
+        Ok(room)
+    }
+    /// The core picks the largest level under its budget and returns its index in `choices`.
+    pub fn split_select(
+        &self,
+        key: &str,
+        choices: &[SplitChoice<'_>],
+        stream: &Stream,
+    ) -> Result<SplitSelection> {
+        self.stream(stream)?;
+        let key = string(key)?;
+        let ids = choices.iter().map(|choice| string(choice.id)).collect::<Result<Vec<_>>>()?;
+        let menu: Vec<ffi::SplitChoice> = ids.iter().zip(choices)
+            .map(|(id, choice)| ffi::SplitChoice { id: id.as_ptr(), bytes: choice.bytes })
+            .collect();
+        let mut selection = SplitSelection::default();
+        check(unsafe {
+            ffi::vr_v1_split_select(self.0.handle, key.as_ptr(), menu.as_ptr(), menu.len(),
+                stream.raw, &mut selection, std::mem::size_of::<SplitSelection>())
+        })?;
+        Ok(selection)
+    }
     pub fn stats(&self) -> Result<Stats> {
         let mut result = Stats::default();
         check(unsafe {
@@ -297,7 +325,12 @@ impl Drop for RegionInner {
 }
 #[derive(Clone)]
 pub struct Region(Arc<RegionInner>);
+#[allow(unsafe_code)]
 impl Region {
+    /// `High` goes only once owner Caches and peers were asked to give memory.
+    pub fn set_priority(&self, priority: Priority) -> Result<()> {
+        check(unsafe { ffi::vr_v1_region_set_priority(self.0.handle, priority as i32) })
+    }
     pub fn device(&self) -> i32 {
         self.0.gpu.device()
     }
@@ -493,6 +526,15 @@ impl Pass<'_> {
         self.active = false;
         Ok(())
     }
+    /// Measure a selected level's allocations, all on `stream`, until `end`.
+    pub fn split(&mut self, key: &str, id: &str, stream: &Stream, generation: u64) -> Result<Split<'_>> {
+        let (key, id) = (string(key)?, string(id)?);
+        let mut handle = 0;
+        check(unsafe {
+            ffi::vr_v1_split_begin(self.plan.handle, key.as_ptr(), id.as_ptr(), stream.raw, generation, &mut handle)
+        })?;
+        Ok(Split { plan: &*self.plan, handle })
+    }
 }
 impl Drop for Pass<'_> {
     fn drop(&mut self) {
@@ -504,6 +546,69 @@ impl Drop for Pass<'_> {
     }
 }
 
+pub struct Split<'a> {
+    plan: &'a Plan,
+    handle: u64,
+}
+#[allow(unsafe_code)]
+impl Split<'_> {
+    fn finish(&mut self, submitted: bool) -> Result<SplitEnd> {
+        let mut end = SplitEnd::default();
+        check(unsafe {
+            ffi::vr_v1_split_end(self.plan.handle, self.handle, i32::from(submitted), &mut end,
+                std::mem::size_of::<SplitEnd>())
+        })?;
+        self.handle = 0;
+        Ok(end)
+    }
+    /// `submitted` false keeps no measure, as dropping it does.
+    pub fn end(mut self, submitted: bool) -> Result<SplitEnd> {
+        self.finish(submitted)
+    }
+}
+impl Drop for Split<'_> {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            let _ = self.finish(false);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    Normal = 0,
+    High = 1,
+}
+#[derive(Clone, Copy)]
+pub struct SplitChoice<'a> {
+    pub id: &'a str,
+    /// Estimated full working bytes.
+    pub bytes: u64,
+}
+#[repr(C)]
+#[derive(Default, Debug)]
+pub struct SplitSelection {
+    pub index: u64,
+    pub bytes: u64,
+    pub measured: u64,
+    pub budget: u64,
+    pub generation: u64,
+}
+#[repr(C)]
+#[derive(Default, Debug)]
+pub struct SplitEnd {
+    pub peak: u64,
+    pub counted: u64,
+}
+#[repr(C)]
+#[derive(Default, Debug)]
+pub struct Room {
+    pub capacity: u64,
+    pub working_live: u64,
+    pub pinned: u64,
+    pub weights_resident: u64,
+    pub free: u64,
+}
 #[repr(C)]
 #[derive(Default, Debug)]
 pub struct CacheInfo {
@@ -538,6 +643,11 @@ pub struct Stats {
 #[allow(unsafe_code)]
 mod ffi {
     use super::*;
+    #[repr(C)]
+    pub struct SplitChoice {
+        pub id: *const c_char,
+        pub bytes: u64,
+    }
     #[repr(C)]
     pub struct HostPart {
         pub data: *const u8,
@@ -612,5 +722,12 @@ mod ffi {
         pub fn vr_v1_phase_enter(plan: u64, name: *const c_char, key: *const c_char) -> i32;
         pub fn vr_v1_phase_leave(plan: u64, completed: i32) -> i32;
         pub fn vr_v1_stats(gpu: u64, out: *mut Stats, size: usize) -> i32;
+        pub fn vr_v1_room(gpu: u64, out: *mut Room, size: usize) -> i32;
+        pub fn vr_v1_region_set_priority(region: u64, priority: i32) -> i32;
+        pub fn vr_v1_split_select(gpu: u64, key: *const c_char, choices: *const SplitChoice, n: usize,
+            stream: u64, out: *mut SplitSelection, size: usize) -> i32;
+        pub fn vr_v1_split_begin(plan: u64, key: *const c_char, choice: *const c_char, stream: u64,
+            generation: u64, out: *mut u64) -> i32;
+        pub fn vr_v1_split_end(plan: u64, split: u64, submitted: i32, out: *mut SplitEnd, size: usize) -> i32;
     }
 }

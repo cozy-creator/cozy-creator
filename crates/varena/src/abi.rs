@@ -4,6 +4,7 @@
 pub(crate) mod source;
 mod host_source;
 mod host_parts;
+mod sizing;
 mod tensor_export;
 #[doc(hidden)]
 pub use tensor_export::{TensorExport, export_use, gpu_event_counts};
@@ -559,6 +560,18 @@ pub unsafe extern "C" fn vr_v1_region_ptr(id: u64, out: *mut u64) -> i32 {
             output(out)?;
             out.write(weight(id)?.region.ptr());
         }
+        Ok(())
+    })
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn vr_v1_region_set_priority(id: u64, priority: i32) -> i32 {
+    boundary(|| {
+        let high = match priority {
+            0 => false,
+            1 => true,
+            _ => return Err(invalid("priority must be VR_PRIORITY_NORMAL or VR_PRIORITY_HIGH")),
+        };
+        weight(id)?.region.set_high(high)?;
         Ok(())
     })
 }

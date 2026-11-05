@@ -23,6 +23,7 @@ pub(crate) const UNPLANNED: u8 = 2;
 pub(crate) const LATER_PHASE: u8 = 3;
 pub(crate) const PHASE_USED: u8 = 4;
 pub(crate) const PHASE_NEXT: u8 = 5;
+pub(crate) const HIGH: u8 = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
@@ -60,11 +61,12 @@ enum Step {
     Join,
     OwnerCaches,
     Peers,
+    HighWeights,
 }
 
 // Scratch comes before any weight: it costs a remap or a wait, while every evicted weight is
 // read again (H3 estimate for pending working: 112 GB per run). Time is measured, not assumed.
-const ORDER: [Step; 9] = [
+const ORDER: [Step; 10] = [
     Step::CompletedWorking,
     Step::Contentless,
     Step::IdlePools,
@@ -74,6 +76,7 @@ const ORDER: [Step; 9] = [
     Step::Join,
     Step::OwnerCaches,
     Step::Peers,
+    Step::HighWeights,
 ];
 
 static HOST_LOCK: OnceLock<fn() -> bool> = OnceLock::new();
@@ -203,6 +206,10 @@ impl<'a> Sequence<'a> {
             }
             Step::OwnerCaches if self.wait == Wait::Yes => self.recovery.owner_caches(self.device, want),
             Step::Peers if self.wait == Wait::Yes => self.recovery.peers(self.device, want, physical),
+            // Only `Yes` has asked the owner caches these rank above.
+            Step::HighWeights if self.wait == Wait::Yes && self.gpu.any_high.load(Ordering::Acquire) => {
+                self.weights(want, HIGH..=HIGH, true, true)
+            }
             _ => Ok(false),
         }
     }
@@ -356,6 +363,15 @@ pub(crate) fn release(
     })();
     *completed += sequence.released;
     result.map(|()| sequence.evicted)
+}
+
+/// A peer's ask, once this process's owner caches have answered: completed high regions may go.
+pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
+    let mut sequence = Sequence::new(device, usize::MAX, Wait::No, Protect::default(), ReclaimReason::Allocator)?;
+    if sequence.gpu.any_high.load(Ordering::Acquire) {
+        sequence.weights(want, HIGH..=HIGH, false, false)?;
+    }
+    Ok(())
 }
 
 /// The prefetch rule: free >= bytes + what this phase's last pass still needs of working

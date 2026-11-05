@@ -3,7 +3,7 @@
 #![allow(unsafe_code)]
 #[path = "support/cuda.rs"]
 mod cuda;
-use varena_client::{Gpu, Phase, Status};
+use varena_client::{Gpu, Phase, Priority, SplitChoice, Status};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|arg| arg == "--host") {
@@ -28,16 +28,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: "decode",
             regions: &[&weights],
         }])?;
-        for _ in 0..2 {
+        weights.set_priority(Priority::High)?;
+        let room = gpu.room()?;
+        assert!(room.free != 0 && room.free <= room.capacity, "{room:?}");
+        let levels = [
+            SplitChoice { id: "whole", bytes: 4096 },
+            SplitChoice { id: "half", bytes: 2048 },
+        ];
+        for number in 0..2 {
             let mut pass = plan.phase("decode", "bytes/4/copy/eager")?;
             let mut used = gpu.use_regions(&[&weights], &stream)?;
-            let mut scratch = gpu.alloc(4096, &stream)?;
-            println!("weights={:#x} scratch={:#x}", used.ptr(0)?, scratch.ptr()?);
+            // The first pass runs on the estimate, the second on what the first measured.
+            let level = gpu.split_select("copy/4", &levels, &stream)?;
+            let SplitChoice { id, bytes } = levels[level.index as usize];
+            assert_eq!(level.measured, number, "{level:?}");
+            let split = pass.split("copy/4", id, &stream, level.generation)?;
+            let mut scratch = gpu.alloc(bytes, &stream)?;
+            println!("weights={:#x} scratch={:#x} level={id}", used.ptr(0)?, scratch.ptr()?);
             // SAFETY: both complete allocations remain retained by these live handles.
             unsafe {
                 owned_stream.verify_copy(used.ptr(0)?, scratch.ptr()?, &[1, 2, 3, 4])?;
             }
             scratch.free()?;
+            let end = split.end(true)?;
+            assert_eq!((end.peak, end.counted), (bytes, 1), "{end:?}");
             used.done()?;
             pass.complete()?;
         }

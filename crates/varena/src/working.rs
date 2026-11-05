@@ -19,7 +19,7 @@ mod observer;
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
 pub use split::{
-    SplitContext, SplitObservation, SplitSelection, split_begin, split_context, split_end,
+    Room, SplitContext, SplitObservation, SplitSelection, room, split_begin, split_context, split_end,
     split_select,
 };
 

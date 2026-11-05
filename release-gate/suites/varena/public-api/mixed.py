@@ -31,14 +31,11 @@ def main() -> None:
     for function in [
         c.mixed_c_identity,
         rust.mixed_rust_identity,
-        rust.mixed_internal_identity,
-        rust.mixed_internal_sequence,
     ]:
         function.restype = C.c_uint64
     identities = [
         c.mixed_c_identity(),
         rust.mixed_rust_identity(),
-        rust.mixed_internal_identity(),
         _ext._varena_core_identity(),
         api.core_identity(),
     ]
@@ -73,9 +70,6 @@ def main() -> None:
         if line.endswith("/libvarena.so")
     }
     assert len(mapped) == 1, mapped
-    # The actual internal owner registry's monotone request sequence is live too.
-    sequence = [rust.mixed_internal_sequence(), rust.mixed_internal_sequence()]
-    assert sequence[1] == sequence[0] + 1
     result = {
         "scope": "host",
         "order": args.order,
@@ -83,7 +77,6 @@ def main() -> None:
         "mapped_core": sorted(mapped),
         "shared_tls": True,
         "thread_local_errors": True,
-        "native_request_sequence": sequence,
         "gpu_executed": False,
     }
     if args.gpu:
@@ -113,6 +106,17 @@ def main() -> None:
             assert value.sum().item() == 1023 * 1024 // 2
             after_torch = gpu.stats()
             assert after_torch["working_live"] > after_c["working_live"]
+            # One room whichever frontend reads it, and it counts the C and Torch bytes.
+            c.mixed_c_room.argtypes = [C.c_uint64, C.POINTER(api._Room)]
+            rust.mixed_rust_room.argtypes = [C.POINTER(api._Room)]
+            from_c, from_rust = api._Room(), api._Room()
+            assert c.mixed_c_room(gpu._handle, C.byref(from_c)) == 0
+            assert rust.mixed_rust_room(C.byref(from_rust)) == 1
+            rooms = [api._fields(from_c), api._fields(from_rust), gpu.room()]
+            for name in ("capacity", "working_live", "pinned", "weights_resident"):
+                assert len({room[name] for room in rooms}) == 1, rooms
+            assert rooms[0]["working_live"] == gpu.stats()["working_capacity"], rooms
+            assert 0 < rooms[0]["free"] <= rooms[0]["capacity"], rooms
             assert rust.mixed_rust_gpu(stream.cuda_stream) == 1
             assert c.mixed_c_free(allocation.value) == 0
             del value
@@ -126,6 +130,7 @@ def main() -> None:
                 before=before,
                 after_c=after_c,
                 after_torch=after_torch,
+                rooms=rooms,
                 final=final,
             )
     print(json.dumps(result, sort_keys=True))

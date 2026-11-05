@@ -12,14 +12,20 @@ def main() -> None:
     # Your own CUDA work uses the same primary context.
     with primary(cuda), Stream(cuda) as stream, varena.open(0) as gpu, gpu.region(bytes(range(64))) as region:
         with gpu.plan({"read": [region]}) as plan:
-            for _ in range(2):
+            region.set_priority("high")
+            for number in range(2):
                 with (
                     plan.phase("read", "u8/64/copy/eager"),
                     gpu.use([region], stream.handle) as used,
-                    gpu.alloc(4096, stream.handle),
                 ):
-                    assert stream.read(used.ptr(), 64) == bytes(range(64))
-        print(json.dumps({"python_region_refill": "pass", "stats": gpu.stats()}))
+                    # The first pass runs on the estimate, the second on what the first measured.
+                    levels = {"whole": 8192, "half": 4096}
+                    level = gpu.split_select("copy/64", list(levels.items()), stream.handle)
+                    assert level["measured"] == number, level
+                    with plan.split("copy/64", level, stream.handle) as split, gpu.alloc(levels[level["id"]], stream.handle):
+                        assert stream.read(used.ptr(), 64) == bytes(range(64))
+                    assert (split.peak, split.counted) == (levels[level["id"]], 1), level
+        print(json.dumps({"python_region_refill": "pass", "room": gpu.room(), "stats": gpu.stats()}))
 
 
 if __name__ == "__main__":

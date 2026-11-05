@@ -10,13 +10,15 @@ Three frontends over one `libvarena.so`, which ships in the TensorFS wheel:
 | Concept | What it is |
 |---|---|
 | `Gpu` | this process's handle on one device; opening it takes a ledger row, in shared mode |
-| `Region` | immutable bytes at a stable address, from host bytes, borrowed host parts or a `Source`; evictable when idle and refilled on use |
+| `Region` | immutable bytes at a stable address, from host bytes, borrowed host parts or a `Source`; evictable when idle and refilled on use; `high` priority keeps it past owner caches |
 | `Use` | pins Regions for one stream until `done` |
 | working allocation | `alloc`, `free`, `record_stream`: stream-ordered memory |
 | `Cache` | a reserved range with exact page `commit` and `release`, and an optional shrink callback |
 | `Plan` | named phases and their Regions; `phase(name, key)` measures a completed pass |
+| `room` | what the GPU has right now: a report, nothing reserved |
+| `split` | an operation's legal levels; the core picks one and measures it |
 
-Splits and graph pools are Torch-side only: no C calls. Everyone allocates and declares intent; only the core decides what stays mapped.
+Graph pools are Torch-side only: no C calls. Everyone allocates and declares intent; only the core decides what stays mapped.
 
 ```python
 from tensorfs import varena
@@ -57,6 +59,37 @@ A shrink callback runs on a native worker with no allocator lock held, and Pytho
 ranges. Returning false, or `VR_BUSY`, declines. Only completed releases count: requested bytes don't, and a live KV a sequence still needs isn't free
 memory. Close refuses live or pending pages, and may not be called from the callback.
 
+## Sizing work
+
+`room` reads `capacity` (the card or its software cap), `working_live`, `pinned`, `weights_resident` and `free`, what can be mapped with no reclaim. It holds
+nothing, and anyone may take that memory next. `capacity - working_live - pinned` is the most reclaim could reach.
+
+`split` is the Runtime's own selection, with no second policy:
+
+```python
+levels = [("whole", 4 << 30), ("half", 2 << 30), ("quarter", 1 << 30)]  # largest first: id, estimated full bytes
+with plan.phase("decode", key):
+    level = gpu.split_select(key, levels, stream)             # the largest under the core's budget
+    with plan.split(key, level, stream) as split:             # measures it: allocate it all on this stream
+        ...                                                   # run level["id"]
+    # split.peak is what it used; leaving the phase completed publishes that
+```
+
+- The budget is `min(max(C - W, C/4), C - live - pinned)`, with `C` the capacity and `W` the active phase's weights. Free memory doesn't move it.
+- `level["bytes"]` is what the level was chosen at: its measure (`measured`), or the estimate scaled as its nearest measured sibling came out. An estimate is
+  compared at 125%. So a good estimate is confirmed on the second pass, and a high one runs coarser.
+- `key` names the operation's geometry, and its menu may not change. One split at a time on a GPU; a measure publishes only when its phase completes.
+- `select` reclaims what the level needs but reserves nothing. Only `alloc` decides.
+
+C: `vr_v1_room`, `vr_v1_split_select`, `vr_v1_split_begin`, `vr_v1_split_end`. Rust: `Gpu::room`, `Gpu::split_select`, `Pass::split`, `Split::end`.
+
+## Region priority
+
+A Region is `normal` or `high`. Idle normal Regions go before owner caches, in the [one reclaim order](README.md#reclaim). A high Region goes last,
+once owner caches and peers were asked: an LLM server's weights outlast its KV, which it can rebuild.
+
+C: `vr_v1_region_set_priority`. Rust: `Region::set_priority`. Python: `region.set_priority("high")`.
+
 ## Errors
 
 | Status | Python | Means |
@@ -88,10 +121,10 @@ Each needs a CUDA GPU, and passes or asserts.
 | Example | Shows |
 |---|---|
 | [examples/native_engine.c](examples/native_engine.c) | a C engine loading a PTX kernel: Region, Plan, Use, scratch, no Python |
-| `crates/varena-client/examples/engine.rs` | the same in Rust, with scoped ownership |
+| `crates/varena-client/examples/engine.rs` | the same in Rust, with scoped ownership, `room`, `split` and priority |
 | `crates/varena-client/examples/parts.rs`, `source.rs` | one Region from many parts; a Rust Source |
-| [examples/python_client.py](examples/python_client.py) | Python reading a Region's exact bytes back |
-| [examples/cache_application.py](examples/cache_application.py) | interior holes and recommit in a Cache, with a shrink callback |
+| [examples/python_client.py](examples/python_client.py) | Python reading a Region's exact bytes back, on a split level |
+| [examples/cache_application.py](examples/cache_application.py) | interior holes and recommit in a Cache, and a shrink it declines |
 
 ```sh
 bash release-gate/suites/varena/public-api/prove-host.sh OUT    # builds the SDK and C engine
@@ -100,3 +133,5 @@ OUT/native-engine
 target/debug/examples/engine
 python crates/varena/examples/python_client.py
 ```
+
+`release-gate/suites/varena/public-api/sized_engine.c` is a C engine sizing a real job with `room` and `split`.

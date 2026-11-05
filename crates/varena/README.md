@@ -32,6 +32,7 @@ what it is asked for (`CacheOwner`), and TensorD may end an idle process.
 7. a context join, for releases with unknown consumers
 8. owner caches
 9. peer processes (physical shortage only, one last retry on their final answer)
+10. idle high-priority regions, once `Yes` has asked owners and peers
 
 `Wait::No` takes completed memory only, `Local` also waits for submitted GPU work, and `Yes` adds
 owners and peers under a 2 s budget of last resort. Eviction rank: contentless, prefetched and

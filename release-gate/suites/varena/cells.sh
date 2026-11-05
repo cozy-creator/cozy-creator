@@ -13,6 +13,7 @@
 #   host-*           on a CPU rental, under its cgroup's memory.max (host-cap.py): pages must spill to disk
 #   core             (every GPU card, last) the memory authority's rules, one fresh process per call (core/)
 #   offload-*        vt.offload's promises, and SDXL through it beside stock Torch (torch-offload/)
+#   public-*         C, Rust and Python clients on one core; sizing and Region priority (public-api/)
 #   fault-*          deliberate faults: correct bytes or a typed error, the GPU recovered, no hang, no Xid (faults.sh)
 #
 # check.py judges caps, host RAM, alternation and load/refill bandwidth as a share of `ceiling`; analyze.py, time
@@ -53,6 +54,11 @@ authority() {
     i=$((i + 1))
     vcell "offload-$mode" "$V/torch-offload/sdxl" mode="$mode" seed:=$((R + 61 + i)) --gpus=1 \
       prompts:="$(jq -nc --arg a "$SCENE, photo, take $i" --arg b "$CHAR, film still, take $i" '[$a, $b]')"
+  done
+  "$V/public-api/pack.sh" "$OUT/public-api"
+  for mode in mixed engines sizing priority; do
+    i=$((i + 1))
+    vcell "public-$mode" "$OUT/public-api/public" case="$mode" seed:=$((R + 61 + i)) --gpus=1
   done
   . "$V/faults.sh"
 }

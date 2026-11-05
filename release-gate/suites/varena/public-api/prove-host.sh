@@ -10,10 +10,11 @@ export VARENA_LIB_DIR="$PWD/target/debug/deps"
 # Build the internal Rust cohort together. Do not rebuild varena as a primary
 # Cargo target afterward: that selects a different Rust dependency-linkage mode.
 nice -n 19 cargo build --locked -p tensorfs-py --features extension-module -p tensorfs \
-    -p varena-mixed-client --lib --bin tfs -j 2 > "$out/build.log" 2>&1
-# The public client deliberately has no Cargo dependency on the core implementation.
-# Its external -lvarena must be available before its final link starts.
+    --lib --bin tfs -j 2 > "$out/build.log" 2>&1
+# The public clients deliberately have no Cargo dependency on the core implementation.
+# Their external -lvarena must be available before their final link starts.
 nice -n 19 cargo build --locked -p varena-client --example engine -j 2 >> "$out/build.log" 2>&1
+nice -n 19 cargo build --locked -p varena-mixed-client -j 2 >> "$out/build.log" 2>&1
 nice -n 19 uv run --no-project --with patchelf python crates/varena/bundle.py \
     --target target/debug --sdk "$out/sdk" > "$out/bundle.json"
 native="$out/sdk/python/tensorfs/.native"
@@ -21,6 +22,8 @@ cc -std=c11 -Wall -Wextra -Werror -fPIC -shared release-gate/suites/varena/publi
     -Icrates/varena/include -L"$native" -lvarena -o "$out/mixed-c.so"
 cc -std=c11 -Wall -Wextra -Werror crates/varena/examples/native_engine.c \
     -Icrates/varena/include -L"$native" -Wl,-rpath-link,"$native" -lvarena -ldl -o "$out/native-engine"
+cc -std=c11 -Wall -Wextra -Werror -fPIC -shared release-gate/suites/varena/public-api/sized_engine.c \
+    -Icrates/varena/include -L"$native" -lvarena -ldl -o "$out/sized-engine.so"
 printf '#include "varena.h"\nint main() { return VR_ABI_VERSION != 1; }\n' | \
     c++ -x c++ -std=c++17 -Wall -Wextra -Werror -Icrates/varena/include -o "$out/header-cxx" -
 export PYTHONPATH="$out/sdk/python"

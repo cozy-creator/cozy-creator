@@ -198,6 +198,9 @@ impl Donor for Native {
                 let _ = request.wait_release(since, Instant::now() + OWNER_WAIT);
             }
         }
+        if released() - since < bytes {
+            let _ = crate::reclaim::release_high(self.device, wanted);
+        }
         released() - since
     }
 

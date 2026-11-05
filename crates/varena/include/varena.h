@@ -98,6 +98,11 @@ VR_API vr_status vr_v1_region_borrow_host_parts(vr_handle gpu,
     const vr_host_part_v1 *parts, size_t count, uint64_t *offsets,
     void (*drop)(void *), void *context, vr_handle *out);
 VR_API vr_status vr_v1_region_ptr(vr_handle, uint64_t *out); /* VA only, never a pin */
+/* An idle HIGH Region goes only once owner Caches and peers were asked to give memory: for
+ * weights worth more than rebuilding a Cache. NORMAL, the default, goes before them. */
+#define VR_PRIORITY_NORMAL 0
+#define VR_PRIORITY_HIGH 1
+VR_API vr_status vr_v1_region_set_priority(vr_handle region, int32_t priority);
 VR_API vr_status vr_v1_region_close(vr_handle);
 /* Orders the stream's next work after each Region's fill. It is not GPU completion. */
 VR_API vr_status vr_v1_use(vr_handle gpu, const vr_handle *regions, size_t n, uint64_t stream, vr_handle *out);
@@ -158,6 +163,35 @@ typedef struct {
     uint64_t allocations, frees, driver_calls, driver_ooms;
 } vr_stats_v1;
 VR_API vr_status vr_v1_stats(vr_handle gpu, vr_stats_v1 *out, size_t out_size);
+
+/* What this GPU has for the caller right now. A report, not a reservation: nothing is held, and
+ * anyone may take it next. capacity is the card or its software cap, free is what can be mapped
+ * with no reclaim, and capacity - working_live - pinned is the most reclaim could reach. */
+typedef struct {
+    uint64_t capacity, working_live, pinned, weights_resident, free;
+} vr_room_v1;
+VR_API vr_status vr_v1_room(vr_handle gpu, vr_room_v1 *out, size_t out_size);
+
+/* One operation's legal levels, largest first, each an id and its estimated full working bytes.
+ * key names the operation's geometry, and its menu may not change. select takes what room it can
+ * and picks the largest level under the core's budget. bytes is what that level was chosen at: its
+ * measure (measured=1), or the estimate scaled as its nearest measured sibling came out. Nothing is
+ * reserved. The same stream and generation go to begin. */
+typedef struct { const char *id; uint64_t bytes; } vr_split_choice_v1;
+typedef struct {
+    uint64_t index, bytes, measured, budget, generation;
+} vr_split_selection_v1;
+VR_API vr_status vr_v1_split_select(vr_handle gpu, const char *key,
+    const vr_split_choice_v1 *choices, size_t n, uint64_t stream,
+    vr_split_selection_v1 *out, size_t out_size);
+/* Inside a phase of plan, measures the level's working allocations until end. All of them go on
+ * this stream. One open split per GPU; leaving the phase closes one left open. submitted=0 keeps
+ * no measure. counted=1 means leaving the phase with completed=1 publishes this peak. */
+typedef struct { uint64_t peak, counted; } vr_split_end_v1;
+VR_API vr_status vr_v1_split_begin(vr_handle plan, const char *key, const char *choice,
+    uint64_t stream, uint64_t generation, uint64_t *out);
+VR_API vr_status vr_v1_split_end(vr_handle plan, uint64_t split, int32_t submitted,
+    vr_split_end_v1 *out, size_t out_size);
 #ifdef __cplusplus
 }
 #endif

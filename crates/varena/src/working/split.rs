@@ -98,6 +98,42 @@ fn context(device: i32) -> Result<()> {
     }
 }
 
+/// What this GPU has right now, from the readings a split chooses by. A report: nothing is held.
+#[derive(Clone, Copy, Debug)]
+pub struct Room {
+    /// The card, or its software cap.
+    pub capacity: usize,
+    pub working_live: usize,
+    /// Weight bytes held for use now.
+    pub pinned: usize,
+    pub weights_resident: usize,
+    /// What can be mapped now with no reclaim.
+    pub free: usize,
+}
+
+pub fn room(device: i32) -> Result<Room> {
+    let owner = initialize_owner(device)?;
+    let gate = crate::gate(device)?;
+    gate.not_capturing()?;
+    let mut state = owner.lock()?;
+    let _context = owner.driver().enter()?;
+    let polled = owner.poll(&mut state);
+    polled.map_err(|error| owner.fail(&mut state, error))?;
+    owner.sample()?;
+    let (free, total) = owner.driver().memory_info()?;
+    Ok(Room {
+        capacity: total.min(owner.capacity()),
+        working_live: live_working(&state),
+        pinned: state.entries.values().filter(|entry| entry.uses.pins() != 0).map(|entry| entry.bytes).sum(),
+        weights_resident: owner.pages.load(Ordering::Acquire),
+        free: headroom(owner, free, 0),
+    })
+}
+
+fn live_working(state: &State) -> usize {
+    state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch).map(|block| block.capacity).sum()
+}
+
 #[derive(Clone, Debug)]
 pub struct SplitSelection {
     pub stream: u64,
@@ -392,11 +428,9 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     owner.sample()?;
     let (free, total) = owner.driver().memory_info()?;
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
-    let working: usize = state.blocks.values().filter(|block| block.life == Life::Live && !block.scratch)
-        .map(|block| block.capacity).sum();
     // The most any op has held this request, since this op's own weights may not be held yet.
     let held = owner.note_held(&state);
-    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: working + held })
+    Ok(Menu { plans, capacity: total.min(owner.capacity()), live: live_working(&state) + held })
 }
 
 impl Menu {

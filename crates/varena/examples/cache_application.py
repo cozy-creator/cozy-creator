@@ -8,9 +8,12 @@ from tensorfs import varena
 
 
 def main() -> None:
+    asked = []
+
     def shrink(cache, requested):
         # The core calls this under memory pressure. A scheduler with no preemptible sequences
         # declines: being a cache does not make a live KV range free memory.
+        asked.append(requested)
         return False
 
     cuda = C.CDLL("libcuda.so.1")
@@ -27,6 +30,18 @@ def main() -> None:
         stream.fill(base + page, 29, page)
         for offset, value in [(0, 17), (page, 29), (2 * page, 17)]:
             assert stream.read(base + offset, page) == bytes([value]) * page
+        # More than the card has: the core asks this Cache, which declines and keeps every page.
+        room = gpu.room()
+        try:
+            gpu.alloc(room["capacity"] + page, stream.handle)
+        except varena.Exhausted as refused:
+            assert refused.requested_bytes >= room["capacity"], refused
+        else:
+            raise AssertionError("more than the card was allocated")
+        assert asked, "the core never asked the owner"
+        assert cache.info()["live"] == 3 * page
+        for offset, value in [(0, 17), (page, 29), (2 * page, 17)]:
+            assert stream.read(base + offset, page) == bytes([value]) * page
         cache.release(0, 3 * page, stream.handle)
         stream.finish()
         assert cache.info()["mapped"] == 0
@@ -35,6 +50,7 @@ def main() -> None:
             json.dumps(
                 {
                     "cache_holes": "pass",
+                    "declined_asks": len(asked),
                     "stats": gpu.stats(),
                 }
             )
