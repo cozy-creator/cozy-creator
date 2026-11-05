@@ -801,7 +801,12 @@ for part in $(seq 1 24); do
   cp "$OUT/killed.yaml" "$S/project.yaml"; cp "$OUT/killed.lock" "$S/project.lock"; rm -f "$S/project.yaml.v2" "$S/project.lock.v2"
   "$COZY" project -p "$S" upgrade > /dev/null 2>&1 & pid=$!
   sleep "$(printf '%d.%03d' $((at / 1000)) $((at % 1000)))"
-  kill -9 "$pid" 2> /dev/null || true
+  # On Windows by the process's own pid: msys's kill -9 of one that had just gone took the suite's shell with it (exit 2304, 41980879114).
+  if [ "${RUNNER_OS:-}" = Windows ]; then
+    [ ! -r "/proc/$pid/winpid" ] || taskkill //F //T //PID "$(cat "/proc/$pid/winpid")" > /dev/null 2>&1 || true
+  else
+    kill -9 "$pid" 2> /dev/null || true
+  fi
   wait "$pid" 2> /dev/null || true
   if grep -q '^version: 2$' "$S/project.yaml"; then
     stopped=$((stopped + 1))
