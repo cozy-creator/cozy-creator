@@ -232,7 +232,8 @@ impl Filling<'_> {
         Ok(Value::Object(kept))
     }
 
-    /// What's left, for a field no file named: a file field takes the first that has one, a list all.
+    /// What's left, for a field no file named, as its package declared: its `assets`, else a required file field, when no list takes what's
+    /// mentioned, takes the first that has one, a list all. An optional one stays as its function leaves it: nothing's guessed from a type.
     fn fill(&mut self, callable: &Callable, field: &Field) -> Option<Value> {
         if callable.is_assets(&field.name) {
             let kinds = callable.assets.as_ref().into_iter().flat_map(|assets| assets.kinds.iter().map(|kind| kind.kind.clone())).collect::<Vec<_>>();
@@ -245,6 +246,9 @@ impl Filling<'_> {
                 }
             }
             return (!entries.is_empty()).then_some(Value::Array(entries));
+        }
+        if field.wire != Wire::Required || callable.request.fields.iter().any(lists_mentions) {
+            return None;
         }
         match plain(&field.ty) {
             Type::Asset(kind) => {
@@ -269,6 +273,11 @@ impl Filling<'_> {
             _ => None,
         }
     }
+}
+
+/// Whether `field` is a list filled from what's mentioned.
+fn lists_mentions(field: &Field) -> bool {
+    matches!(plain(&field.ty), Type::List(item) if matches!(&**item, Type::Struct(row) if row.is_mention()))
 }
 
 fn plain(ty: &Type) -> &Type {

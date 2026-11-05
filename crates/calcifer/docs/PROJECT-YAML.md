@@ -218,7 +218,7 @@ cozy project render clash
 
 An asset is a call of its function, the same one `cozy run` and an agent make. Its text goes to the function with its `<mentions>` in it, and everything else the function asks for is filled by its types:
 
-- **A file input** takes the file `<name>` names, and one no mention names takes the first read that has a file of its kind.
+- **A file input** takes the file `<name>` names. One no mention names stays empty, unless it's required and the function has no list of what's mentioned: then it takes the first read with a file of its kind.
 - **A list of structs with a `name` member** (`references`, `pictures`) takes what the text mentions, member by member: `name`, `description`, `asset_type`, `made_by`; `alpha`, `width`, `height` as measured; a file by its role, `image`, `video`, `audio`, `voice`, or an output's name. A prompt never crosses a mention. An output past the main one reaches only the package that made it. With one file member, an entry per file, the rest `<name 2>`, `<name 3>`.
 - **A list of any other struct** is rows, as long as its type says at the least.
 - **A `Node` says the rest**, in the function's own package:
