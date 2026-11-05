@@ -942,7 +942,9 @@ assets:
   kept: {tool: $here/project/draw.py/draw, instructions: One.}
 YAML
 render "$D" kept || check "deleted: render: $(tail -c 300 "$OUT/render.txt")"
+# What it did, then what restores it, a line each on stdout.
 line=$(cozy project -p "$D" delete kept) || check "deleted: delete"
+line=${line##*$'\n'}
 J '[.orphans[] | select(.name == "kept") | .versions] == [1]' <<< "$(status "$D")" || check "deleted: no orphan: $(status "$D" | jq -c .orphans)"
 printf '  kept: {tool: %s/project/draw.py/draw, instructions: Something else.}\n' "$here" >> "$D/project.yaml"
 [ "$(made "$D" kept)" = 0 ] || check "deleted: a new asset took its name's versions: $(made "$D" kept)"
@@ -970,6 +972,7 @@ cozy project -p "$T" approve hero 3 > /dev/null || check "discards: approve"
 render "$T" scene || check "discards: render scene: $(tail -c 300 "$OUT/render.txt")"
 second=$(take_file "$T" hero image 1); third=$(take_file "$T" hero image 2)
 line=$(cozy project -p "$T" delete hero --version 2) || check "discards: delete the middle"
+line=${line##*$'\n'}
 [ "$line" = "cozy project -p $T restore hero --version 2" ] || check "discards: delete printed: $line"
 J '[.versions[].number] == [1, 3] and .discarded == [2] and .versions[-1].approved' <<< "$(held "$T" hero)" || check "discards: after the middle: $(held "$T" hero | jq -c '{versions: [.versions[].number], discarded}')"
 [ -n "$(file_at "$T" "$second")" ] || check "discards: its file went at once"
@@ -2513,6 +2516,7 @@ J '.asset.name == "drawn" and (.versions | length == 1)' <<< "$(cozy --json proj
 cozy project -p "$T" status drawn | grep -q 'Plain words' || check "by the CLI: status of one does not say its words"
 refuses "status of nothing" "cozy project status" status no_such
 line=$(cozy project -p "$T" delete drawn) || check "by the CLI: delete"
+line=${line##*$'\n'}
 J '.assets | all(.name != "drawn")' <<< "$(status "$T")" || check "by the CLI: delete left it"
 case $line in "cozy project -p $T restore drawn "*) ;; *) check "by the CLI: delete did not print what restores it: $line" ;; esac
 refuses "not what delete printed" "cozy project status" restore drawn nonsense
