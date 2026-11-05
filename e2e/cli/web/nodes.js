@@ -151,7 +151,7 @@ function linesOf(text, name) {
   const firstTool = page.locator('.tools .tool').first();
   const label = await firstTool.locator('b').textContent();
   const kind = await firstTool.getAttribute('data-kind');
-  const made = await dragOut(firstTool, 700, 500);
+  const made = await dragOut(firstTool, 1300, 900);
   seen.tool_dragged = made.name;
   check('tool_named_from_its_label', made.name.toLowerCase().startsWith(label.toLowerCase().slice(0, 4)), { label, name: made.name });
   check('tool_kind_from_its_output', made.kind === kind, { kind, made: made.kind });
@@ -160,7 +160,7 @@ function linesOf(text, name) {
   const place = await page.evaluate(({ x, y }) => {
     const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
     return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
-  }, { x: 700, y: 500 });
+  }, { x: 1300, y: 900 });
   check('box_at_the_drop', Math.abs(home.y - (place.y - 16)) < 3, { home, place });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(made.name)}`, { method: 'DELETE' });
   await until('that box gone', () => box(made.name).count(), (n) => n === 0);
@@ -254,6 +254,44 @@ function linesOf(text, name) {
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);
+
+  // No box lies on another. Dropped on one that can't take it, it slides to the nearest clear place, the other stays, and where it ended is what's saved.
+  const canvasAt = join(folder, 'project.canvas.yaml');
+  const lies = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  const apart = async (a, b) => !lies(await box(a).boundingBox(), await box(b).boundingBox());
+  await away();
+  const stood = await rows();
+  const carried = await box('source-b').locator('.nm').boundingBox();
+  const onto = await box('source-a').boundingBox();
+  await page.mouse.move(carried.x + 4, carried.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(carried.x + 12, carried.y + 4);
+  await page.mouse.move(onto.x + onto.width / 2, onto.y + onto.height / 2, { steps: 8 });
+  await page.waitForTimeout(100);
+  check('a_box_that_cant_take_it_doesnt_offer', (await box('source-a').locator('.card.hot').count()) === 0 && (await page.locator('.stage[data-offering]').count()) === 0);
+  await page.mouse.up();
+  await until('it slid clear', () => apart('source-a', 'source-b'), Boolean);
+  check('a_box_cant_lie_on_a_box', true);
+  check('the_other_box_stays', (await rows())['source-a'].x === stood['source-a'].x && (await rows())['source-a'].y === stood['source-a'].y, await rows());
+  await until('where it ended, saved', rows, (now) => now['source-b'].x !== stood['source-b'].x || now['source-b'].y !== stood['source-b'].y);
+
+  // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
+  const held = (await rows())['source-a'];
+  execFileSync(COZY, ['project', '-p', folder, 'set', 'source-b', `at=${held.x},${held.y}`], { stdio: 'ignore' });
+  await page.waitForTimeout(300);
+  await until('an `at` on a box comes off it', () => apart('source-a', 'source-b'), Boolean);
+  check('an_at_settles', true);
+  const asItStood = (await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing]);
+  const piled = readFileSync(canvasAt, 'utf8').replace(/^(\s+source-b: )\{[^}]*\}$/m, `$1{x: ${held.x}, y: ${held.y}}`);
+  replaceFile(canvasAt, piled);
+  await page.reload();
+  await box('source-a').waitFor();
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
+  await until('what lay on another came apart on opening', () => apart('source-a', 'source-b'), Boolean);
+  await until('and that was saved', rows, (now) => now['source-b'].x !== held.x || now['source-b'].y !== held.y);
+  check('coming_apart_changes_no_input', JSON.stringify((await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing])) === JSON.stringify(asItStood));
+  await page.evaluate(() => { window.notReloaded = true; });
 
   // A description, on anything, as text whatever it says.
   await open('source-a');
