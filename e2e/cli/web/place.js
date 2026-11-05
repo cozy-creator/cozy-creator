@@ -149,14 +149,14 @@ const constants = (folder) => {
     { name: 'notes.txt', type: 'text/plain', bytes: Buffer.from('these are not pictures\n'.repeat(4)) },
     { name: 'Kyogre Art (1).png', type: 'image/png', bytes: pngBytes },
   ], 900, 650);
-  await until('the copy landed', () => constants(folder).kyogre_art_1_2, Boolean);
+  await until('the copy landed', () => constants(folder).kyogre_art_2, Boolean);
   const lines = await until('one line for the text file', () => page.locator('.note .line').allTextContents(), (all) => all.some((line) => line.includes('notes.txt')));
   check('one_line_for_non_media', lines.filter((line) => line.includes('notes.txt')).length === 1, lines);
   check('non_media_not_on_canvas', !(await names(page)).includes('notes'), await names(page));
   check('same_file_one_file', readdirSync(join(folder, 'files')).length === filesBefore);
   const all = constants(folder);
-  check('same_file_same_hash', all.kyogre_art_1.hash === all.kyogre_art_1_2.hash, all);
-  check('same_file_two_elements', (await names(page)).includes('kyogre_art_1_2'), await names(page));
+  check('same_file_same_hash', all.kyogre_art_1.hash === all.kyogre_art_2.hash, all);
+  check('same_file_two_elements', (await names(page)).includes('kyogre_art_2'), await names(page));
 
   // Dragged: the row in project.canvas.yaml moves by what the mouse did, and no input changes.
   const box = await element(page, 'clash_take').locator('.nm').boundingBox();
@@ -259,7 +259,7 @@ const constants = (folder) => {
   if (process.env.COZY) {
     const status = JSON.parse(execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     const held = status.assets.map((asset) => asset.name);
-    check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_1_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
+    check('cli_sees_it', ['kyogre_art_1', 'kyogre_art_2', 'clash_take', 'ocean', 'Hero_Shot_v2'].every((name) => held.includes(name)), held);
   }
 
   // Everything above hashed in WebAssembly under the page's own CSP, with no violation; `eval` stays refused beside it.
