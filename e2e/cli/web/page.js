@@ -142,6 +142,9 @@ const watchBoxes = (page) => page.addInitScript(() => {
     if (now !== under) say(`pointer ${under} -> ${now} at ${clientX},${clientY}`);
     under = now;
   }, true);
+  for (const type of ['mousedown', 'mouseup', 'click']) {
+    document.addEventListener(type, ({ target }) => say(`${type} ${target.tagName}.${target.className}`), true);
+  }
   for (const type of ['focusin', 'focusout']) {
     document.addEventListener(type, ({ target }) => say(`${type} ${boxOf(target)} ${target.tagName}.${target.className} visible=${target.matches(':focus-visible')}`), true);
   }

@@ -2009,7 +2009,7 @@ async fn import(
 }
 
 /// `name` holding a file in project.yaml, written over what the file holds this moment.
-fn pin_in_file(folder: &Folder, name: &str, sha256: &str) -> Result<(), Error> {
+fn pin_in_file(folder: &Folder, name: &str, sha256: &str) -> Result<String, Error> {
     folder.edit_project(|text| assetfile::approved(text, name, sha256))
 }
 
@@ -2061,13 +2061,13 @@ async fn approve(
     let version = versions.iter().find(|version| version.main() == Some(&chosen));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    pin_in_file(folder, &name, &chosen).map_err(Refusal)?;
+    let text = pin_in_file(folder, &name, &chosen).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
     let files = listed(&lock, &files);
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name);
+    let etag = assetfile::etag(&text, &name);
     Ok(Json(Approved { name, noun: noun.into(), number, files, path, stale, warnings, etag }))
 }
 
@@ -2092,18 +2092,20 @@ async fn unpin(
     let stand = doc.stand(&lock);
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
-    if asset.pin.is_some() {
+    let text = if asset.pin.is_some() {
         if asset.hollow {
             let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it from {}", folder::PROJECT);
             return Err(Refusal(Error::new(Kind::Usage, "project_edit", said)));
         }
-        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?;
-    }
+        folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?
+    } else {
+        folder.text().map_err(Refusal)?
+    };
     for message in settle(&api, &project).await {
         let _ = project.events.send(Event::Warning { message, name: None });
     }
     let stale = newly_stale(folder, &before).map_err(Refusal)?;
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name);
+    let etag = assetfile::etag(&text, &name);
     Ok(Json(Unpinned { name, version, stale, etag }))
 }
 

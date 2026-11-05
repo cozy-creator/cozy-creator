@@ -1108,7 +1108,7 @@ impl Folder {
 
     /// Writes one change to project.yaml: `change` is given what it holds this moment, and a save that lands first is read again,
     /// so that edit stands. The only write of it but `cozy project new` and `cozy project upgrade`.
-    pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+    pub fn edit_project(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
         self.rewrite(&self.project(), change)
     }
 
@@ -1122,7 +1122,7 @@ impl Folder {
 
     /// Writes one change to project.canvas.yaml, as `edit_project` does to project.yaml.
     pub fn edit_canvas(&self, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
-        self.rewrite(&self.dir.join(CANVAS), change)
+        self.rewrite(&self.dir.join(CANVAS), change).map(drop)
     }
 
     /// `source`, a file a run saved, kept: copied whole before it is named, once per content, and in the lock's table.
@@ -1337,6 +1337,7 @@ impl Folder {
             }
             Ok(serde_json::to_string(&held).expect("what is measured serializes"))
         })
+        .map(drop)
     }
 
     /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, their bytes, and how many
@@ -1483,18 +1484,18 @@ impl Folder {
     /// Writes `change(what path holds)` over it: compare and swap on its bytes. A write that lands
     /// between the read and the swap (a person saving) is read again and the change applied to it,
     /// so that edit stands.
-    fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<(), Error> {
+    fn rewrite(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>) -> Result<String, Error> {
         self.rewrite_then(path, change, || {})
     }
 
     /// `rewrite`, and `wrote` once it has replaced the file, before any other write can.
-    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
+    fn rewrite_then(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
         let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         self.rewrite_held(path, change, wrote)
     }
 
     /// As `rewrite_then`, with `WRITING` held.
-    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<(), Error> {
+    fn rewrite_held(&self, path: &Path, change: impl Fn(&str) -> Result<String, Error>, wrote: impl FnOnce()) -> Result<String, Error> {
         loop {
             let before = match path.exists() {
                 true => read(path)?,
@@ -1502,7 +1503,7 @@ impl Folder {
             };
             let after = change(&before)?;
             if after == before {
-                return Ok(());
+                return Ok(after);
             }
             let now = match path.exists() {
                 true => read(path)?,
@@ -1512,7 +1513,7 @@ impl Folder {
                 durable::replace(path, after.as_bytes(), 0o644).map_err(io)?;
                 wrote();
                 crate::events::project_changed(&self.dir);
-                return Ok(());
+                return Ok(after);
             }
         }
     }

@@ -112,12 +112,12 @@ pub(super) async fn create(
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
-    (folder.edit_project(|text| match assetfile::etag(text, &name) {
+    let text = (folder.edit_project(|text| match assetfile::etag(text, &name) {
         Some(_) => Ok(text.to_owned()),
         None => assetfile::added(text, &name, &asked.tool, &asked.fields).map(|(edited, _)| edited),
     }))
     .map_err(Refusal)?;
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok((StatusCode::CREATED, Json(AssetMade { name, etag })))
 }
 
@@ -164,7 +164,8 @@ pub(super) async fn patch(
     }
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
     let told = RefCell::new((String::new(), vec![]));
-    (folder.edit_project(|text| {
+    // What it says of itself is what it wrote: the file may hold someone else's by now, and that isn't this write's to claim.
+    let text = (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
         // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
@@ -176,7 +177,7 @@ pub(super) async fn patch(
     }))
     .map_err(Refusal)?;
     let (was, warnings) = told.into_inner();
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetPatched { name, etag, was, warnings }))
 }
 
@@ -333,7 +334,7 @@ pub(super) async fn put_back(
     if let Some(card) = asked.at {
         canvas::set(folder, &id, BTreeMap::from([(name.clone(), Some(card))])).map_err(Refusal)?;
     }
-    (folder.edit_project(|text| {
+    let text = (folder.edit_project(|text| {
         if Doc::read(folder, text)?.find(&name).is_some() {
             return Err(taken(&name));
         }
@@ -342,6 +343,6 @@ pub(super) async fn put_back(
     .map_err(Refusal)?;
     folder.update_lock(|lock| lock.untombstone(&name)).map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
-    let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
+    let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetMade { name, etag }))
 }
