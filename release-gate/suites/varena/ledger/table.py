@@ -10,11 +10,11 @@ import struct
 import sys
 import time
 
-HEADER, ROW, ROWS = 4, 9, 32
+HEADER, ROW, ROWS = 3, 9, 32
 
 
 def tables():
-    return glob.glob(f"/dev/shm/cozy-varena-{os.geteuid()}/v5-*")
+    return glob.glob(f"/dev/shm/cozy-varena-{os.geteuid()}/v6-*")
 
 
 def rows(path):
@@ -22,7 +22,7 @@ def rows(path):
         words = struct.unpack(f"<{HEADER + ROW * ROWS}Q", file.read(8 * (HEADER + ROW * ROWS)))
     names = "pid held idle want answered last_use running short donated".split()
     found = [dict(zip(names, words[HEADER + ROW * i:HEADER + ROW * (i + 1)])) for i in range(ROWS)]
-    return dict(zip("generation answers released died_at".split(), words[:HEADER])), [r for r in found if r["pid"]]
+    return dict(zip("generation answers released".split(), words[:HEADER])), [r for r in found if r["pid"]]
 
 
 def show():

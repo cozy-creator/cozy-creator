@@ -1245,6 +1245,10 @@ impl Pool {
             !(leader.env == env && leader.start == start && gone.contains(&leader.birth)));
         self.tenants.lock().unwrap().retain(|_, t|
             !(t.plan == env && t.start == start && gone.contains(t.exact.birth())));
+        // Only now is what it held free: an asker waits on this, not on its lock dropping.
+        for ledger in self.devices.iter().filter_map(|device| device.ledger.as_ref()) {
+            ledger.exited();
+        }
     }
     /// Wake the engine on memory events and after every GPU allocation change that frees.
     pub fn wake_on_freed(&self, engine: &Arc<Engine>) {
