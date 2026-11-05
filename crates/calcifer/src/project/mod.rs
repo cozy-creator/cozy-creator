@@ -460,6 +460,7 @@ fn walk(api: &Arc<Api>, project: &Arc<Project>) {
             }
         };
         remember(&api);
+        crate::events::project_settled(&walk.project.folder.dir);
         following.abort();
         clock.abort();
         walk.project.jobs.end(walk.began.elapsed().as_millis() as u64);
@@ -2647,6 +2648,10 @@ impl Walk {
         self.plan_now();
         if let Err(error) = sync_jobs(&self.project, |number| self.host.numbered(number)) {
             warn!("the board of {}: {}", self.folder().dir.display(), error.message);
+        }
+        // What's queued is in neither file, so no write says a job left it.
+        if std::mem::take(&mut self.project.walker.lock().expect("walker lock").graph.ended) {
+            crate::events::project_settled(&self.folder().dir);
         }
     }
 

@@ -184,7 +184,8 @@ pub(crate) async fn told(api: &Arc<Api>, id: String, dir: &Path, settled: bool) 
     let Some(was) = was else { return whole(id, rev) };
     let (assets, gone) = changed(&was, &now);
     let (from, to) = (&was.model.head, &now.model.head);
-    let head = was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
+    // Told with no file moved, it's what the head says that moved, even if it went there and back since the last telling and a reader saw it there.
+    let head = settled || was.busy != now.busy || was.moving != now.moving || was.queue != now.queue || (&from.missing, &from.stale, &from.orphans, &from.absent, &from.run_files, &from.cuts, &from.warnings, &from.next) != (&to.missing, &to.stale, &to.orphans, &to.absent, &to.run_files, &to.cuts, &to.warnings, &to.next);
     match assets.len() + gone.len() > MOST_TOLD {
         true => whole(id, rev),
         false => StreamEvent::ProjectChanged { id, rev, assets: Some(assets), gone, head },

@@ -684,7 +684,7 @@ async fn release(api: &Arc<Api>, project: &Project, error: Option<Error>) {
         (None, None) => ended_of(&project.jobs.board()),
     };
     let _ = project.events.send(ended);
-    crate::events::project_changed(&project.folder.dir);
+    crate::events::project_settled(&project.folder.dir);
 }
 
 /// A render's end as its last board says it, when the holder's own word of it never came here.

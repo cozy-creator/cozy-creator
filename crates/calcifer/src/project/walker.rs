@@ -140,6 +140,8 @@ pub struct Graph {
     left: HashMap<String, usize>,
     /// What each render has tried, by name key.
     tried: HashMap<String, BTreeSet<String>>,
+    /// A job ended since the walk last said so.
+    pub ended: bool,
 }
 
 impl Graph {
@@ -392,6 +394,7 @@ impl Graph {
         }
         self.ready.remove(&(self.jobs[id].rank, id));
         self.jobs[id].state = State::Ended(end);
+        self.ended = true;
         let key = name_key(&self.jobs[id].asset);
         if let Some(open) = self.open.get_mut(&key) {
             open.retain(|&other| other != id);
