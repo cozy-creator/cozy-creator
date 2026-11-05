@@ -2,7 +2,8 @@
 //! 16 MiB ranges (one request for an object of 16 MiB or less), one limit on requests in flight across
 //! every object, and each request asked again by the one retry rule ([`ask`]) from the byte it reached.
 //! A range is written at its offset in the object's one file, as aws-cli writes parts; nothing is joined.
-//! One far slower than the others (an eighth of the median, after 5 s) is restarted, at most 3 times.
+//! A request place left free with nothing waiting takes the back half of the in-flight range with the most
+//! left (aria2's dynamic split, BitTorrent's end game), so a dripping object's tail gets many requests.
 //!
 //! - **Order.** The queue is a plain number, smaller first; equal numbers go in arrival order. An
 //!   object wanted twice is downloaded once. Requests take their places in line as their object
@@ -23,7 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::{watch, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
 use super::ask::{self, Backoff, ATTEMPTS};
 use super::net::{shown, Client, GetError};
@@ -34,7 +35,7 @@ use crate::err::{refuse, Code, Refusal, Result};
 use crate::format::ObjectRef;
 
 /// A range: 16 MiB. A request to R2 for never-read bytes pays a fixed start, so 4 MiB ranges moved
-/// 3-4 MB/s each and 8 MiB about 7.5 (11-04); a far slower one is restarted (`RESTARTS`).
+/// 3-4 MB/s each and 8 MiB about 7.5 (11-04). A dripping one is shared out by stealing (`STEAL`).
 const PART: u64 = 16 << 20;
 /// Bytes a request gathers before writing them: the most a cut loses per request.
 const WRITE_BYTES: usize = 256 << 10;
@@ -44,11 +45,9 @@ const WRITE_BACKS: usize = 2;
 const VOLUME_STALL: Duration = Duration::from_secs(30);
 /// How often an object another process is fetching is looked at again.
 const CLAIM_POLL: Duration = Duration::from_millis(250);
-/// A request under an eighth of the median range rate after this long is restarted, at most
-/// `RESTARTS` times a range; the median is of the last `SAMPLES` finished ranges.
-const SLOW_AFTER: Duration = Duration::from_secs(5);
-const RESTARTS: u32 = 3;
-const SAMPLES: usize = 256;
+/// A free place with nothing waiting takes the back half of the in-flight range with the most left,
+/// while that half is at least `STEAL` (aria2's dynamic split, BitTorrent's end game).
+const STEAL: u64 = 1 << 20;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
 /// received grow by `GAIN`, up to the cap; an error or a timeout halves them, once a window.
 const START: usize = 8;
@@ -227,17 +226,15 @@ pub(crate) struct Shared {
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
-    requests: Arc<Semaphore>,
+    slots: Arc<Slots>,
     pace: Mutex<Pace>,
-    /// Places the ramp gave up that are still out: each is forgotten as it comes back (`Slot`).
-    debt: Arc<AtomicUsize>,
+    /// Ranges in flight, for free places to take from.
+    flights: Mutex<Vec<Arc<Flight>>>,
     /// Tasks and write-backs not yet ended.
     busy: AtomicUsize,
     settle: Notify,
     volume_reads: Semaphore,
     write_backs: Semaphore,
-    /// Bytes per second of the last finished ranges.
-    rates: Mutex<VecDeque<f64>>,
     pub stats: Counters,
 }
 
@@ -245,8 +242,8 @@ pub(crate) struct Shared {
 pub(crate) struct Counters {
     pub requests: AtomicU64,
     pub retries: AtomicU64,
-    /// Requests restarted as far slower than the others.
-    pub restarts: AtomicU64,
+    /// Back halves taken from ranges in flight by free places.
+    pub steals: AtomicU64,
     /// Bytes received from the origin.
     pub received: AtomicU64,
     pub volume_written: AtomicU64,
@@ -259,8 +256,6 @@ pub(crate) struct Counters {
 enum Failed {
     /// Ask again (after the answer's stated wait, when it gave one).
     Again(String, Option<Duration>),
-    /// Far slower than the other ranges: asked again from the byte reached.
-    Slow(String),
     Fatal(Refusal),
 }
 
@@ -280,10 +275,18 @@ enum FileRead {
     Failed(Refusal),
 }
 
+/// A range in flight as its stealers see it: the bytes it reached and the byte it ends at, which a
+/// steal moves back. The object fetches what was taken (`ranges`).
+struct Flight {
+    span: Mutex<(u64, u64)>,
+    taken: Option<mpsc::UnboundedSender<(u64, u64, Slot)>>,
+}
+
 /// One range of an object, its bytes written at their offsets as they arrive (`WRITE_BYTES` at a time,
-/// off the runtime).
-struct Part {
-    end: u64,
+/// off the runtime), registered among the ranges in flight while it lives.
+struct Part<'s> {
+    shared: &'s Shared,
+    flight: Arc<Flight>,
     /// Bytes received; those before `written` are in the store, the rest in `buffer`.
     reached: u64,
     written: u64,
@@ -291,22 +294,36 @@ struct Part {
     buffer: Vec<u8>,
 }
 
-impl Part {
-    fn new(admission: &dyn Admission, from: u64, end: u64) -> Result<Part> {
-        Ok(Part { end, reached: from, written: from, writer: Some(admission.writer()?), buffer: Vec::new() })
+impl<'s> Part<'s> {
+    /// A range of `[from, end)`; with `taken`, one free places may take from (a request's, not a file's).
+    fn new(shared: &'s Shared, admission: &dyn Admission, from: u64, end: u64, taken: Option<mpsc::UnboundedSender<(u64, u64, Slot)>>) -> Result<Part<'s>> {
+        let stealable = taken.is_some();
+        let flight = Arc::new(Flight { span: Mutex::new((from, end)), taken });
+        if stealable {
+            lock(&shared.flights).push(Arc::clone(&flight));
+        }
+        Ok(Part { shared, flight, reached: from, written: from, writer: Some(admission.writer()?), buffer: Vec::new() })
     }
 
-    async fn push(&mut self, task: &Task, data: &[u8]) -> Result<()> {
-        if self.reached + data.len() as u64 > self.end {
-            return refuse(Code::LENGTH_MISMATCH, format!("{}: the origin sent more than the range asked", task.object.sha256));
+    fn end(&self) -> u64 {
+        lock(&self.flight.span).1
+    }
+
+    /// `data` onto the range, up to its end, which a steal may have moved back: whether it wants more.
+    async fn push(&mut self, task: &Task, data: &[u8]) -> Result<bool> {
+        let (take, end) = {
+            let mut span = lock(&self.flight.span);
+            let take = (span.1.saturating_sub(span.0) as usize).min(data.len());
+            span.0 += take as u64;
+            (take, span.1)
+        };
+        self.buffer.extend_from_slice(&data[..take]);
+        self.reached += take as u64;
+        task.gained(take as u64);
+        if self.buffer.len() >= WRITE_BYTES {
+            self.flush().await?;
         }
-        self.buffer.extend_from_slice(data);
-        self.reached += data.len() as u64;
-        task.gained(data.len() as u64);
-        match self.buffer.len() >= WRITE_BYTES {
-            true => self.flush().await,
-            false => Ok(()),
-        }
+        Ok(self.reached < end)
     }
 
     async fn flush(&mut self) -> Result<()> {
@@ -327,6 +344,12 @@ impl Part {
         bytes.clear();
         (self.writer, self.buffer) = (Some(writer), bytes);
         Ok(())
+    }
+}
+
+impl Drop for Part<'_> {
+    fn drop(&mut self) {
+        lock(&self.shared.flights).retain(|flight| !Arc::ptr_eq(flight, &self.flight));
     }
 }
 
@@ -356,19 +379,99 @@ struct Pace {
     /// Windows in a row since the last doubling that grew under `GAIN`.
     flat: u32,
     settled: bool,
+    /// Nothing waits, and every place is taking from ranges in flight: a new probe.
+    tail: bool,
     halved: Option<Instant>,
 }
 
-/// A place among the requests in flight, given back as it drops unless the ramp has shrunk since.
-struct Slot(Option<OwnedSemaphorePermit>, Arc<AtomicUsize>);
+/// The places for requests in flight: as many as the ramp allows, each given back as it drops, in the
+/// order asked.
+struct Slots(Mutex<Places>);
+
+#[derive(Default)]
+struct Places {
+    free: usize,
+    /// Places the ramp gave up that are still out: each is kept as it comes back.
+    owed: usize,
+    waiting: VecDeque<oneshot::Sender<Slot>>,
+}
+
+/// A place among the requests in flight.
+struct Slot(Arc<Slots>);
+
+impl Slots {
+    fn new(free: usize) -> Arc<Slots> {
+        Arc::new(Slots(Mutex::new(Places { free, ..Places::default() })))
+    }
+
+    async fn take(self: &Arc<Self>) -> Slot {
+        let waiting = {
+            let mut places = lock(&self.0);
+            if places.free > 0 {
+                places.free -= 1;
+                return Slot(Arc::clone(self));
+            }
+            let (sent, waiting) = oneshot::channel();
+            places.waiting.push_back(sent);
+            waiting
+        };
+        waiting.await.expect("a place's sender lives as long as its queue")
+    }
+
+    /// A free place, when nothing waits for one.
+    fn idle(self: &Arc<Self>) -> Option<Slot> {
+        let mut places = lock(&self.0);
+        places.waiting.retain(|waiter| !waiter.is_closed());
+        (places.free > 0 && places.waiting.is_empty()).then(|| {
+            places.free -= 1;
+            Slot(Arc::clone(self))
+        })
+    }
+
+    /// A place back: owed to the ramp, else to the first waiter still waiting, else free.
+    fn give(self: &Arc<Self>, places: &mut Places) {
+        if places.owed > 0 {
+            places.owed -= 1;
+            return;
+        }
+        while let Some(waiter) = places.waiting.pop_front() {
+            match waiter.send(Slot(Arc::clone(self))) {
+                Ok(()) => return,
+                // Its waiter left: the same place goes on to the next.
+                Err(slot) => std::mem::forget(slot),
+            }
+        }
+        places.free += 1;
+    }
+
+    fn add(self: &Arc<Self>, more: usize) {
+        let mut places = lock(&self.0);
+        (0..more).for_each(|_| self.give(&mut places));
+    }
+
+    fn forget(&self, gone: usize) {
+        let mut places = lock(&self.0);
+        let now = gone.min(places.free);
+        places.free -= now;
+        places.owed += gone - now;
+    }
+
+    /// Every place taken.
+    fn busy(&self) -> bool {
+        lock(&self.0).free == 0
+    }
+
+    /// Every place taken, with requests waiting for one.
+    fn full(&self) -> bool {
+        let places = lock(&self.0);
+        places.free == 0 && !places.waiting.is_empty()
+    }
+}
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        if let Some(permit) = self.0.take() {
-            if self.1.try_update(Ordering::AcqRel, Ordering::Acquire, |debt| debt.checked_sub(1)).is_ok() {
-                permit.forget();
-            }
-        }
+        let slots = Arc::clone(&self.0);
+        slots.give(&mut lock(&slots.0));
     }
 }
 
@@ -382,14 +485,13 @@ impl Shared {
             queued: Notify::new(),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
-            requests: Arc::new(Semaphore::new(START.min(requests.max(1)))),
+            slots: Slots::new(START.min(requests.max(1))),
+            flights: Mutex::default(),
             pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: crate::descriptors::requests(requests.max(1)), ..Pace::default() }),
-            debt: Arc::default(),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
             volume_reads: Semaphore::new(VOLUME_READS),
             write_backs: Semaphore::new(WRITE_BACKS),
-            rates: Mutex::default(),
             stats: Counters::default(),
         }
     }
@@ -429,8 +531,8 @@ impl Shared {
     fn unbusy(&self) {
         if self.busy.fetch_sub(1, Ordering::AcqRel) == 1 {
             let statuses = lock(&self.stats.statuses).clone();
-            let (requests, retries, restarts) = (self.stats.requests.load(Ordering::Relaxed), self.stats.retries.load(Ordering::Relaxed), self.stats.restarts.load(Ordering::Relaxed));
-            tracing::info!(requests, retries, restarts, ?statuses, "downloads settled (counts since start)");
+            let (requests, retries, steals) = (self.stats.requests.load(Ordering::Relaxed), self.stats.retries.load(Ordering::Relaxed), self.stats.steals.load(Ordering::Relaxed));
+            tracing::info!(requests, retries, steals, ?statuses, "downloads settled (counts since start)");
             self.settle.notify_waiters();
         }
     }
@@ -442,6 +544,7 @@ impl Shared {
                 () = tokio::time::sleep(WINDOW) => {}
                 () = self.closed() => return,
             }
+            self.steal();
             let received = self.stats.received.load(Ordering::Relaxed);
             let mut pace = lock(&self.pace);
             let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
@@ -452,8 +555,15 @@ impl Shared {
                 (pace.last, pace.settled, pace.flat) = (None, false, 0);
                 continue;
             }
-            let full = self.requests.available_permits() == 0;
-            if !full || pace.settled || pace.level >= pace.max || self.debt.load(Ordering::Acquire) > 0 {
+            // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
+            // phase, probed afresh from its own rate.
+            let (waiting, stealable) = (self.slots.full(), self.stealable());
+            let tail = !waiting && stealable && self.slots.busy();
+            if tail && !pace.tail {
+                (pace.last, pace.settled, pace.flat) = (None, false, 0);
+            }
+            pace.tail = tail;
+            if !(waiting || tail) || pace.settled || pace.level >= pace.max {
                 continue;
             }
             // A doubling's new requests take more than a window to deliver: two flat windows settle it.
@@ -468,9 +578,47 @@ impl Shared {
             pace.flat = 0;
             let grow = (pace.level * 2).min(pace.max) - pace.level;
             (pace.level, pace.last) = (pace.level + grow, Some(rate));
-            self.requests.add_permits(grow);
+            self.slots.add(grow);
             tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
         }
+    }
+
+    /// Each free place with nothing waiting takes the back half of the in-flight range with the most
+    /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
+    fn steal(&self) {
+        while let Some(slot) = self.slots.idle() {
+            let flights = lock(&self.flights).clone();
+            let most = flights.iter().max_by_key(|flight| {
+                let span = lock(&flight.span);
+                span.1.saturating_sub(span.0)
+            });
+            let Some(flight) = most else { return };
+            let mut span = lock(&flight.span);
+            let left = span.1.saturating_sub(span.0);
+            if left < 2 * STEAL {
+                return;
+            }
+            let (half, end) = (span.0 + left / 2, span.1);
+            span.1 = half;
+            // Sent while the span is held: its range can't end and its object can't finish before.
+            let Some(taken) = &flight.taken else { return };
+            if let Err(error) = taken.send((half, end, slot)) {
+                span.1 = end;
+                drop(span);
+                drop(error);
+                return;
+            }
+            self.stats.steals.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(from = half, end, "a free place took the back half of a range");
+        }
+    }
+
+    /// Whether a range in flight has a back half left to take.
+    fn stealable(&self) -> bool {
+        lock(&self.flights).iter().any(|flight| {
+            let span = lock(&flight.span);
+            span.1.saturating_sub(span.0) >= 2 * STEAL
+        })
     }
 
     /// An error or a timeout: half the requests go, once a window.
@@ -487,8 +635,7 @@ impl Shared {
 
     fn shrink(&self, pace: &mut Pace, gone: usize) {
         pace.level -= gone;
-        let forgotten = self.requests.forget_permits(gone);
-        self.debt.fetch_add(gone - forgotten, Ordering::AcqRel);
+        self.slots.forget(gone);
     }
 
     /// A place in line for `object`, joining its task when one is open.
@@ -593,10 +740,7 @@ impl Shared {
     pub async fn dispatch(self: Arc<Self>) {
         loop {
             let permit = tokio::select! {
-                permit = Arc::clone(&self.requests).acquire_owned() => match permit {
-                    Ok(permit) => Slot(Some(permit), Arc::clone(&self.debt)),
-                    Err(_) => return,
-                },
+                slot = self.slots.take() => slot,
                 () = self.closed() => return,
             };
             let task = loop {
@@ -742,54 +886,51 @@ impl Shared {
         }
     }
 
-    /// What the object lacks, as `PART` ranges side by side, each written at its offset.
+    /// What the object lacks, as `PART` ranges side by side, each written at its offset, and the back
+    /// halves free places take from them (`steal`).
     async fn ranges(&self, task: &Task, admission: &dyn Admission, here: &HttpLocation<'_>, first: &mut Option<Slot>) -> Result<()> {
-        let parts = lacking(&admission.held(), task.object.length)
-            .into_iter()
-            .map(|(from, end)| Part::new(admission, from, end))
-            .collect::<Result<Vec<_>>>()?;
-        let mut flying: FuturesUnordered<_> = parts
-            .into_iter()
-            .map(|mut part| {
-                let first = first.take();
-                async move {
-                    let _permit = match first {
-                        Some(permit) => permit,
-                        None => self.request_slot(&mut None).await?,
-                    };
-                    self.range(task, here, &mut part).await
+        let (taken, mut takes) = mpsc::unbounded_channel();
+        let mut flying = FuturesUnordered::new();
+        for (from, end) in lacking(&admission.held(), task.object.length) {
+            flying.push(self.part(task, Part::new(self, admission, from, end, Some(taken.clone()))?, here, first.take()));
+        }
+        loop {
+            tokio::select! {
+                biased;
+                Some((from, end, slot)) = takes.recv() => {
+                    flying.push(self.part(task, Part::new(self, admission, from, end, Some(taken.clone()))?, here, Some(slot)));
                 }
-            })
-            .collect();
-        while let Some(done) = flying.next().await {
-            done?;
+                done = flying.next() => match done {
+                    Some(done) => done?,
+                    None if takes.is_empty() => return Ok(()),
+                    None => {}
+                },
+            }
         }
-        Ok(())
     }
 
-    /// A place among the requests in flight: `first` when the task still holds the one it started with.
-    async fn request_slot(&self, first: &mut Option<Slot>) -> Result<Slot> {
-        if let Some(slot) = first.take() {
-            return Ok(slot);
-        }
-        let permit = Arc::clone(&self.requests).acquire_owned().await.map_err(|_| Refusal { code: Code::TRANSFER_FAILED, detail: "the fetcher closed".into() })?;
-        Ok(Slot(Some(permit), Arc::clone(&self.debt)))
+    /// One range in a place among the requests in flight (`slot` when it has one: the task's first, or
+    /// the free place that took it).
+    async fn part(&self, task: &Task, mut part: Part<'_>, here: &HttpLocation<'_>, slot: Option<Slot>) -> Result<()> {
+        let _slot = match slot {
+            Some(slot) => slot,
+            None => self.slots.take().await,
+        };
+        self.range(task, here, &mut part).await
     }
 
-    /// One range, asked again by the one rule (`ask`) from the byte reached. A request far slower than
-    /// the others is restarted, at most `RESTARTS` times (Paul, 10-01: "going super slow we restart it").
-    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part) -> Result<()> {
-        let (mut backoff, mut attempt, mut still, mut restarts) = (Backoff::new(), 0, 0, 0);
+    /// One range, asked again by the one rule (`ask`) from the byte reached, to its end.
+    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<()> {
+        let (mut backoff, mut attempt, mut still) = (Backoff::new(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
         loop {
             attempt += 1;
             let from = part.reached;
-            let failed = self.request(task, here, part, attempt, restarts < RESTARTS).await;
+            let failed = self.request(task, here, part, attempt).await;
             let (why, wait, moved) = match failed {
                 Ok(()) => {
                     part.flush().await?;
                     let took = began.elapsed();
-                    self.ranged(part.reached - first, took);
                     let mut slowest = lock(&task.slowest);
                     if took > slowest.0 {
                         *slowest = (took, part.reached - first);
@@ -798,11 +939,6 @@ impl Shared {
                 }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
                 Err(Failed::Again(why, wait)) => (why, wait, part.reached > from),
-                Err(Failed::Slow(why)) => {
-                    restarts += 1;
-                    self.stats.restarts.fetch_add(1, Ordering::Relaxed);
-                    (why, None, false)
-                }
             };
             still = if moved { 0 } else { still + 1 };
             task.unanswered.store(still, Ordering::Release);
@@ -817,29 +953,11 @@ impl Shared {
         }
     }
 
-    /// A finished range's rate, among the last `SAMPLES`.
-    fn ranged(&self, bytes: u64, took: Duration) {
-        let mut rates = lock(&self.rates);
-        if rates.len() == SAMPLES {
-            rates.pop_front();
-        }
-        rates.push_back(bytes as f64 / took.as_secs_f64().max(1e-3));
-    }
-
-    /// The median rate of the last finished ranges, once there are `SAMPLES / 8` of them.
-    fn median_rate(&self) -> Option<f64> {
-        let mut rates: Vec<f64> = lock(&self.rates).iter().copied().collect();
-        (rates.len() >= SAMPLES / 8).then(|| {
-            rates.sort_by(f64::total_cmp);
-            rates[rates.len() / 2]
-        })
-    }
-
-    /// One GET of what `part` still lacks, its body read to the end. With `restart`, one moving under an
-    /// eighth of the median range rate after `SLOW_AFTER` is dropped, to be asked again.
-    async fn request(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part, attempt: u32, restart: bool) -> std::result::Result<(), Failed> {
+    /// One GET of what `part` still lacks, its body read to the end. With `split`, one moving under an
+    /// eighth of what a request moves now after `SLOW_AFTER` is dropped, for its object to split.
+    async fn request(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>, attempt: u32) -> std::result::Result<(), Failed> {
         let (object, length) = (&task.object.sha256, task.object.length);
-        let (from, end) = (part.reached, part.end);
+        let (from, end) = (part.reached, part.end());
         // Nothing left to ask: a range past the end is refused (R2: 400 for `bytes=N-(N-1)`).
         if from == end {
             return Ok(());
@@ -857,7 +975,6 @@ impl Shared {
             let _ = task.located.subscribe().wait_for(|located| *located).await;
             delivered = current();
         }
-        let began = Instant::now();
         let asked = match &delivered {
             Some((at, _)) => self.client.get_authorized(at, &ranged, None).await,
             None => self.client.get_authorized(here.url, &[here.headers, &ranged].concat(), here.provider).await,
@@ -920,7 +1037,10 @@ impl Shared {
             match answer.frame().await {
                 Ok(Some(data)) => {
                     self.stats.received.fetch_add(data.len() as u64, Ordering::Relaxed);
-                    part.push(task, &data).await?
+                    // A steal moved the end back: what is past it is another request's.
+                    if !part.push(task, &data).await? {
+                        break;
+                    }
                 }
                 Ok(None) => break,
                 Err(refusal) => {
@@ -930,17 +1050,9 @@ impl Shared {
                     return Err(Failed::Again(format!("{object}: {} at {at}", refusal.detail), None));
                 }
             }
-            let took = began.elapsed();
-            if restart && took >= SLOW_AFTER {
-                let rate = (part.reached - from) as f64 / took.as_secs_f64();
-                if let Some(median) = self.median_rate().filter(|median| rate < median / 8.0) {
-                    let (at, kbps, median_kbps) = (part.reached, rate / 1e3, median / 1e3);
-                    tracing::info!(object, range = shown_range, attempt, at, kbps, median_kbps, "restart: far slower than the others");
-                    return Err(Failed::Slow(format!("{object}: {kbps:.0} KB/s against a median {median_kbps:.0} KB/s")));
-                }
-            }
         }
-        match part.reached == end {
+        let end = part.end();
+        match part.reached >= end {
             true => Ok(()),
             false => Err(Failed::Again(format!("{object}: the body ended at {} of {end}", part.reached), None)),
         }
@@ -951,7 +1063,7 @@ impl Shared {
     async fn read_file(&self, task: &Task, admission: &dyn Admission, path: PathBuf, volume: Option<&VolumeOrigin>) -> FileRead {
         let length = task.object.length;
         let stuck = || FileRead::Stuck(format!("{}: no step in {} s", path.display(), VOLUME_STALL.as_secs()));
-        let mut part = match Part::new(admission, 0, length) {
+        let mut part = match Part::new(self, admission, 0, length, None) {
             Ok(part) => part,
             Err(refusal) => return FileRead::Failed(refusal),
         };

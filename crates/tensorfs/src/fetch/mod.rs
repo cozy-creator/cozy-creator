@@ -194,7 +194,7 @@ pub struct Pulled {
 pub struct Stats {
     pub requests: u64,
     pub retries: u64,
-    pub restarts: u64,
+    pub steals: u64,
     /// Answers that were not 2xx, by status.
     pub statuses: std::collections::BTreeMap<u16, u64>,
     pub volume_written: u64,
@@ -236,7 +236,7 @@ impl Fetcher {
         Stats {
             requests: counters.requests.load(Ordering::Relaxed),
             retries: counters.retries.load(Ordering::Relaxed),
-            restarts: counters.restarts.load(Ordering::Relaxed),
+            steals: counters.steals.load(Ordering::Relaxed),
             statuses: counters.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             volume_written: counters.volume_written.load(Ordering::Relaxed),
             volume_skipped: counters.volume_skipped.load(Ordering::Relaxed),
