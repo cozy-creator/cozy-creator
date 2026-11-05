@@ -38,8 +38,7 @@ const BARS = {
   open_settled_s: 10,
   edit_shows_ms: 1500,
   // A person's write, flushed to disk and answered, the middle of nine. "Under 100-ms is pretty much fast enough for most operations" (Paul, 11-05).
-  // Hosted Windows's 150 is that 2-core runner's disk, no rule for the product: `write_disk` says what a flush costs where this ran.
-  write_ms: process.env.RUNNER_OS === 'Windows' ? 150 : 100,
+  write_ms: 100,
   landing_shows_ms: 1500,
   // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
@@ -139,8 +138,23 @@ function flushed(dir, like) {
     rmSync(at);
     return summary(took).median_ms;
   };
+  // As `durable::replace` goes: written beside it, flushed, renamed over it.
+  const replace = (bytes) => {
+    const took = [];
+    for (let i = 0; i < 20; i++) {
+      const began = performance.now();
+      const held = openSync(`${at}.part`, 'w');
+      writeSync(held, Buffer.alloc(bytes, i));
+      fsyncSync(held);
+      closeSync(held);
+      renameSync(`${at}.part`, at);
+      took.push(performance.now() - began);
+    }
+    rmSync(at);
+    return summary(took).median_ms;
+  };
   const yaml_bytes = statSync(like).size;
-  return { flush_4k_ms: flush(4096), flush_yaml_ms: flush(yaml_bytes), yaml_bytes };
+  return { flush_4k_ms: flush(4096), flush_yaml_ms: flush(yaml_bytes), replace_yaml_ms: replace(yaml_bytes), yaml_bytes };
 }
 
 function summary(frames) {
