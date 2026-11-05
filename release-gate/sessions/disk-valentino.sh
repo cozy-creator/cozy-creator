@@ -1,8 +1,9 @@
 # disk-valentino (cl-774): rental valentino (11-05, a 100 GB H200) ran out of disk with one H3 + Qwen-Image project and
 # its H3 renders failed DiskFullError mid-denoise. One pod with the same disk, its TensorD the session's cozy:
-#   1. Qwen-Image 2.1 and 2.1 turbo render (int8); turbo's executor stays idle and warm, holding both open.
-#   2. H3 int8 renders: it fits only once both Qwen models go, so its room check ends the idle executors and evicts them
+#   1. Qwen-Image 2.1, SDXL and Qwen-Image 2.1 turbo render (int8); their executors stay idle and warm, holding them open.
+#   2. H3 int8 renders: it fits only once a model it doesn't read goes, so its room check ends idle executors and evicts
 #      before any of H3 is fetched, and its warnings name what went.
+# A step whose request the package refuses (its interface) fails the session before any model is judged.
 #   3. While H3 renders, Qwen turbo is asked again: H3 is never touched (it completes, nothing of it evicted), and turbo
 #      either fits beside it or is refused machine_disk_full with the sizes.
 #   4. H3 bf16 (130 GiB, more than the disk) is refused machine_disk_full while it prepares, with nothing downloaded.
@@ -24,22 +25,26 @@ v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
 read -r free stored listed total < <(disk); say "pod TensorD $v; disk $(gib "$total"), $(gib "$free") free"
 
-# 1. Both Qwen models, the turbo one last so its executor is the idle warm one.
+# 1. Both Qwen models and SDXL (on a 100 GB disk H3 fits beside Qwen alone, by 2 GiB), the turbo one last so its executor
+# is the idle warm one.
 step qwen run qwen-image-2/generate --on "$NAME" --lane int8 prompt="a red lighthouse on a cliff at dawn, photo" seed:=$RANDOM || fail "qwen"
 [ "$(status qwen)" = completed ] || fail "qwen $(status qwen): $(reason qwen)"
+step sdxl run sdxl/generate --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"
+[ "$(status sdxl)" = completed ] || fail "sdxl $(status sdxl): $(reason sdxl)"
 step turbo run qwen-image-2/generate_turbo --on "$NAME" --lane int8 prompt="a green tram in the rain at night, photo" seed:=$RANDOM || fail "turbo"
 [ "$(status turbo)" = completed ] || fail "turbo $(status turbo): $(reason turbo)"
 read -r free stored listed total < <(disk); say "after Qwen: $(gib "$free") free, the store $(gib "$stored")"
 
 # 2 and 3. H3 in the background; turbo asked again once H3 is rendering.
-BEATS='[{"description": "A woman in a yellow raincoat walks along a wet pier at dusk, gulls overhead, the camera tracking beside her.", "duration": 5}]'
+SHOT="A woman in a yellow raincoat walks along a wet pier at dusk, gulls overhead, the camera tracking beside her."
 before=$(cozy machine logs "$NAME" tensord -n 0 2>/dev/null | wc -l)
-step h3 run minimax-h3/generate --on "$NAME" --lane int8 beats:="$BEATS" seed:=$RANDOM & H3P=$!
+step h3 run minimax-h3/generate --on "$NAME" --lane int8 prompt="$SHOT" duration_s:=5 seed:=$RANDOM & H3P=$!
 # Once H3 has made its room (its warning says what went), so turbo's ask can't race H3's room check.
 until { [ -n "$(runno h3)" ] && status h3 > /dev/null && warned h3 | grep -q evicted; } || ! kill -0 "$H3P" 2>/dev/null; do sleep 5; done
 step turbo2 run qwen-image-2/generate_turbo --on "$NAME" --lane int8 prompt="a blue kite over a beach, photo" seed:=$RANDOM
 t2=$(status turbo2)
 wait "$H3P"; hs=$(status h3)
+[ -n "$(runno h3)" ] || fail "H3 made no run: $(tail -4 "$OUT/h3.txt" | tr '\n' ' ')"
 cozy machine logs "$NAME" tensord -n 0 > "$OUT/tensord.log" 2>&1
 tail -n +"$((before + 1))" "$OUT/tensord.log" > "$OUT/tensord-h3.log"
 cozy machine logs "$NAME" memory -n 0 > "$OUT/memory.log" 2>&1
@@ -58,7 +63,7 @@ esac
 
 # 4. More than the disk.
 read -r free stored listed total < <(disk)
-step bf16 run minimax-h3/generate --on "$NAME" --lane bf16 beats:="$BEATS" seed:=$RANDOM
+step bf16 run minimax-h3/generate --on "$NAME" --lane bf16 prompt="$SHOT" duration_s:=5 seed:=$RANDOM
 bs=$(status bf16); read -r free2 stored2 _ _ < <(disk)
 grew=$(( stored2 > stored ? stored2 - stored : 0 ))
 say "H3 bf16 $bs: $(reason bf16); the store grew $(gib "$grew")"
