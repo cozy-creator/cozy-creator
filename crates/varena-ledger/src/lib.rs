@@ -342,6 +342,7 @@ impl Table {
         let bytes = bytes.max(SMALLEST_ASK);
         let mut generation = self.ask(row, bytes);
         let mut supervisor: Option<Instant> = None;
+        let mut idle = u64::MAX;
         loop {
             let seen = page.answers.load(Acquire);
             self.reap();
@@ -357,8 +358,13 @@ impl Table {
             } else {
                 let live = || page.rows.iter().enumerate().filter(|(_, words)| words.pid.load(Acquire) != 0);
                 let answered = live().all(|(_, words)| words.answered.load(Acquire) >= generation);
-                if answered && now < deadline && live().any(|(index, words)| index != row.0 && words.idle.load(Acquire) != 0) {
-                    // A peer still reports idle memory, maybe finishing a stream: ask again.
+                let peers = || live().filter(|(index, _)| *index != row.0);
+                let left = peers().map(|(_, words)| words.idle.load(Acquire)).sum::<u64>();
+                let finishing = peers().any(|(_, words)| words.running.load(Acquire) != 0 && words.idle.load(Acquire) != 0);
+                if answered && now < deadline && left != 0 && (finishing || left != idle) {
+                    // A running peer may be finishing a stream. An idle one that answered with the same
+                    // figure twice has nothing more to give, however long this asks.
+                    idle = left;
                     wait(&page.answers, seen, TICK);
                     generation = self.ask(row, bytes);
                     continue;

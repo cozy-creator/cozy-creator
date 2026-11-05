@@ -25,6 +25,14 @@ impl Donor for Pretend {
     fn tick(&mut self, _: &Table, _: Row, _: u64) {}
 }
 
+/// Idle memory it can't give.
+struct Stuck(u64);
+impl Donor for Stuck {
+    fn holdings(&mut self) -> (u64, u64) { (self.0, self.0) }
+    fn trim(&mut self, _: u64) -> u64 { 0 }
+    fn tick(&mut self, _: &Table, _: Row, _: u64) {}
+}
+
 /// Child: hold `gib` GiB as a donor. `age` orders it: lower trims first.
 fn donor(uuid: [u8; 16], gib: u64, trim_ms: u64, age_ms: u64) {
     // SAFETY: a plain prctl: a failed cell leaves no donor behind.
@@ -36,6 +44,7 @@ fn donor(uuid: [u8; 16], gib: u64, trim_ms: u64, age_ms: u64) {
     table.request_end(row);
     table.publish(row, gib * GIB, gib * GIB);
     println!("ready");
+    if trim_ms == u64::MAX { table.serve(row, &mut Stuck(gib * GIB)); }
     table.serve(row, &mut Pretend { held: gib * GIB, trim_ms });
 }
 
@@ -200,13 +209,21 @@ pub fn main() {
     assert_eq!(table.pids().len(), 1, "its row went with it");
     forked_child_holds_nothing(&uuid);
 
+    // A peer whose idle memory can't be had: the asker doesn't wait out its patience on it.
+    let (uuid, table, row) = fresh(7);
+    let mut stuck = spawn(uuid, 2, u64::MAX, 0);
+    let (result, took) = recover(table, row, GIB, patience);
+    println!("idle it can't give: {result:?} in {took:?}");
+    assert_eq!(result, Recovery::Final);
+    assert!(took < Duration::from_millis(500), "{took:?}");
+    let _ = (stuck.kill(), stuck.wait());
+
     // TensorD's turn: an asker peers could not help waits for an exit, or for a no.
     let (uuid, table, row) = fresh(5);
     let supervisor = Table::open(&uuid).unwrap();
     let waiting = std::thread::spawn(move || {
         let (table, row) = claimed(&uuid);
         let first = recover(table, row, GIB, Duration::from_secs(2)).0;
-        std::thread::sleep(Duration::from_secs(6)); // past the death's settling
         (first, recover(table, row, GIB, Duration::from_secs(2)).0)
     });
     let ended = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -220,7 +237,7 @@ pub fn main() {
     assert_eq!(ended.load(std::sync::atomic::Ordering::SeqCst), 2);
     let _ = (table, row);
 
-    for tag in [1u8, 2, 3, 4, 5, 6] {
+    for tag in [1u8, 2, 3, 4, 5, 6, 7] {
         let mut uuid = [tag; 16];
         uuid[..4].copy_from_slice(&std::process::id().to_le_bytes());
         let name: String = uuid.iter().map(|b| format!("{b:02x}")).collect();
