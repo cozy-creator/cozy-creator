@@ -15,21 +15,20 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use protocol::{
     error::{Error, Kind},
-    project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, Version as VersionRow, VersionBack, VersionMoved},
+    project::{NewAsset, AssetBack, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionBack, VersionMoved},
     tool,
 };
-use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    Doc, Project, Tool, Walk, assetfile, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, listed, model, noun, pin_in_file, stale_names,
+    Doc, Project, Tool, Walk, assetfile, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, keep_file, listed, measure_soon, model, noun, pin_in_file, stale_names,
 };
 use crate::api::{Api, Refusal, parse};
 
 /// What to call an asset with no name asked when its tool can't be read: its package's word, numbered, with no release.
 fn tool_name(tool: &str) -> Option<String> {
     let (package, _) = tool.rsplit_once('/')?;
-    format::plain_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
+    format::asset_name(&tool::first_of(tool::package_word(package.split('@').next()?)))
 }
 
 fn own_lines(name: &str) -> Error {
@@ -47,6 +46,9 @@ pub(super) async fn create(
 ) -> Result<(StatusCode, Json<AssetMade>), Refusal> {
     let body = body?;
     let asked: NewAsset = parse(&body)?;
+    if let Some(name) = asked.name.as_deref().filter(|_| asked.exact) {
+        format::new_name(name).map_err(Refusal)?;
+    }
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok()).map(|key| (key.to_owned(), hex::encode(Sha256::digest(&body))));
@@ -80,7 +82,7 @@ pub(super) async fn create(
     let name = match &told {
         Some(told) => told.name.clone(),
         None => {
-            let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
+            let wanted = asked.name.as_deref().and_then(format::asset_name).or_else(|| read_name.as_deref().and_then(format::asset_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
             let text = folder.text().map_err(Refusal)?;
             let names = assetfile::names(&text);
             let free = folder.reading_lock(|lock| {
@@ -158,15 +160,20 @@ pub(super) async fn patch(
     let asked: AssetPatch = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
-    let mut fields = asked.fields;
-    if let Some(tool) = asked.tool {
-        fields.insert(assetfile::TOOL.to_owned(), Value::String(tool));
-    }
+    let fields = asked.fields;
+    let holds = match &asked.tool {
+        Some(tool) => Some(pictures(folder, &name, tool).map_err(Refusal)?),
+        None => None,
+    };
     let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok());
     let told = RefCell::new((String::new(), vec![]));
     // What it says of itself is what it wrote: the file may hold someone else's by now, and that isn't this write's to claim.
     let text = (folder.edit_project(|text| {
         let was = assetfile::etag(text, &name).ok_or_else(|| own_lines(&name))?;
+        let mut fields = fields.clone();
+        if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
+            assetfile::with_tool(text, &name, tool, *holds, &mut fields)?;
+        }
         let (edited, warnings) = assetfile::set(text, &name, &fields)?;
         // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
         if edited != text && read.is_some_and(|read| read != was) {
@@ -179,6 +186,34 @@ pub(super) async fn patch(
     let (was, warnings) = told.into_inner();
     let etag = assetfile::etag(&text, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetPatched { name, etag, was, warnings }))
+}
+
+/// What a change of `tool` needs of the pictures asset `name` holds: `None` with none. A tool going on a picture nothing numbers makes it a version, as if that
+/// tool had made it, and answers the one a new prompt starts from: what's approved, else its newest. Going off, or swapped, nothing moves, and any number will do.
+fn pictures(folder: &folder::Folder, name: &str, tool: &str) -> Result<Option<u32>, Error> {
+    let (doc, lock) = (Doc::load(folder)?, folder.lock()?);
+    let Some(i) = doc.find(name) else { return Ok(None) };
+    let asset = &doc.assets[i];
+    let newest = lock.asset(&asset.name).and_then(|held| held.versions.last()).map(|version| version.number);
+    let Some(pin) = &asset.pin else { return Ok(newest) };
+    let number = |lock: &folder::Lock| lock.asset(&asset.name).and_then(|held| held.versions.iter().rev().find(|version| version.main() == Some(pin))).map(|version| version.number);
+    if let Some(number) = number(&lock) {
+        return Ok(Some(number));
+    }
+    if tool.is_empty() || asset.tool.is_some() {
+        return Ok(newest.or(Some(0)));
+    }
+    Ok(Some(constant_numbered(folder, asset, pin)?))
+}
+
+/// The file asset holds with no version saying so, made its next version.
+fn constant_numbered(folder: &folder::Folder, asset: &format::Asset, pin: &str) -> Result<u32, Error> {
+    let number = std::cell::Cell::new(0);
+    folder.update_lock(|lock| {
+        let field = lock.files.get(pin).map_or_else(|| asset.kind.clone(), |file| file.field().to_owned());
+        number.set(lock.joined(&asset.name, &asset.kind, folder::Files::from([(field, pin.to_owned())])).0);
+    })?;
+    Ok(number.get())
 }
 
 /// What `DELETE` answers, for `PUT` to put back: its lines. Its versions wait in project.lock.
@@ -247,7 +282,31 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
         folder.edit_project(|text| assetfile::unapproved(text, &name)).map_err(Refusal)?;
     }
     folder.update_lock(|lock| lock.asset_mut(&name, "").discard(number)).map_err(Refusal)?;
-    moved(&api, &project, name, number, noun, approved, &before).await
+    moved(&api, &project, name, number, noun, approved, &before).await.map(|Json(answer)| Json(VersionMoved { read_by: doc.read_by(i, number), ..answer }))
+}
+
+/// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it as its next version, so versions of one thing live on one box. The file it held before that
+/// is a version first, and what's approved stays. The same file again is the version it is.
+pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>, body: Result<Bytes, BytesRejection>) -> Result<Json<VersionMoved>, Refusal> {
+    let asked: NewVersion = parse(&body?)?;
+    let project = api.projects.get(&api, &id)?;
+    let folder = &project.folder;
+    let doc = Doc::load(folder).map_err(Refusal)?;
+    let i = find(&doc, &name).map_err(Refusal)?;
+    let asset = &doc.assets[i];
+    let name = asset.name.clone();
+    let kept = keep_file(&api, folder, &asked.source).await?;
+    folder.start_lock().map_err(Refusal)?;
+    if let Some(pin) = &asset.pin {
+        constant_numbered(folder, asset, pin).map_err(Refusal)?;
+    }
+    let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
+    let joined = std::cell::Cell::new((0, false));
+    folder.update_lock(|lock| joined.set(lock.joined(&name, kept.field, folder::Files::from([(kept.field.to_owned(), kept.file.sha256.clone())])))).map_err(Refusal)?;
+    measure_soon(&api, &project);
+    let (number, already) = joined.get();
+    let noun = noun(&doc, &folder.lock().map_err(Refusal)?, i);
+    moved(&api, &project, name, number, noun, false, &before).await.map(|Json(answer)| Json(VersionMoved { already, ..answer }))
 }
 
 /// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` set aside, back in its place. Its approval too, unless another has come since.
@@ -309,7 +368,7 @@ async fn moved(api: &Arc<Api>, project: &Arc<Project>, name: String, number: u32
     }
     let stands = stand[i].version().or(lock.asset(&name).and_then(|held| held.versions.last()).map(|version| version.number));
     let stale = stale_names(&doc, &stand).into_iter().filter(|name| !before.contains(name)).collect();
-    Ok(Json(VersionMoved { name, number, noun: noun.to_owned(), approved, stands, stale }))
+    Ok(Json(VersionMoved { name, number, noun: noun.to_owned(), approved, stands, stale, read_by: vec![], already: false }))
 }
 
 fn taken(name: &str) -> Error {

@@ -15,8 +15,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{PROJECT, prefix_of},
-    format::{canonical, invalid, names_a_file, yaml_key},
-    graph::{is_name, name_key},
+    format::{INSTRUCTIONS, LEADS, TEXT, canonical, invalid, names_a_file, yaml_key},
+    graph::{is_name, mention_moved, name_key},
 };
 
 /// Where an asset's tool lands.
@@ -418,6 +418,29 @@ fn set_in(text: &str, name: &str, fields: &Map<String, Value>) -> Result<(String
     Ok((edited, warnings))
 }
 
+/// What a change of its tool writes of asset `name`, with what `fields` ask, `tool` empty taking it off. Nothing else moves: its pictures, numbers, approval and
+/// description stay, and its text. Only a box with none of those pictures has its words in another field: `text` with no tool, `instructions` with one. A new
+/// prompt on a picture, `holds`, starts by reading it.
+pub(super) fn with_tool(text: &str, name: &str, tool: &str, holds: Option<u32>, fields: &mut Map<String, Value>) -> Result<(), Error> {
+    let mut read = read(&editing(text, name).map_or_else(|| text.to_owned(), |at| at.alone))?;
+    let held = slot(&mut read, name).ok_or_else(|| by_hand(name, "it has no lines of its own"))?.as_object().cloned().unwrap_or_default();
+    let said = fields.contains_key(INSTRUCTIONS) || fields.contains_key(TEXT);
+    let moved = |fields: &mut Map<String, Value>, from: &str, to: &str| {
+        if let Some(words) = held.get(from).filter(|_| !said) {
+            fields.insert(to.to_owned(), words.clone());
+            fields.insert(from.to_owned(), Value::Null);
+        }
+    };
+    match (tool.is_empty(), holds) {
+        (true, None) => LEADS.iter().rev().find(|field| held.contains_key(**field)).into_iter().for_each(|field| moved(fields, field, TEXT)),
+        (false, None) => moved(fields, TEXT, INSTRUCTIONS),
+        (false, Some(number)) if !said && !held.contains_key(INSTRUCTIONS) && !held.contains_key(TOOL) => drop(fields.insert(INSTRUCTIONS.to_owned(), json!(format!("<self.{number}>")))),
+        _ => {}
+    }
+    fields.insert(TOOL.to_owned(), if tool.is_empty() { Value::Null } else { json!(tool) });
+    Ok(())
+}
+
 /// `text` with a new asset at the end of `assets:`, made by `tool`, or with none a text asset.
 pub(super) fn added(text: &str, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
     let block = match tool.is_empty() {
@@ -443,10 +466,12 @@ pub(super) fn unapproved(text: &str, name: &str) -> Result<String, Error> {
     set(text, name, &Map::from_iter([("approved".to_owned(), Value::Null)])).map(|(edited, _)| edited)
 }
 
-/// `text` with asset `from` called `to`: its key, and every `<from>`. Comments and formatting stay.
+/// `text` with asset `from` called `to`: its key, and every `<from>` and `<from.2>`. Comments and formatting stay.
 pub(super) fn renamed(text: &str, from: &str, to: &str) -> Result<String, Error> {
     let not_its_own = || by_hand(from, "it has no line of its own under `assets:`");
-    let said = text_renamed(text, &|name: &str| (name_key(name) == name_key(from)).then(|| to.to_owned()));
+    // `<from.2>` is a version of it, unless something from before names couldn't end so goes by that.
+    let held = names(text);
+    let said = text_renamed(text, &|name: &str| mention_moved(name, from, to).filter(|_| name_key(name) == name_key(from) || !held.contains(&name_key(name))));
     let place = Place::find(&said, from).ok_or_else(not_its_own)?;
     let written = key_of(place.lines[place.key]).ok_or_else(not_its_own)?;
     Ok(replace_line(&place.lines, place.key, &place.lines[place.key].replacen(&written, &yaml_key(to), 1)))

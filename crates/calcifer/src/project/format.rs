@@ -16,7 +16,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::{self, Files, Folder, Keeps, Lock, Version},
-    graph::{Graph, as_name, edits, is_name, mentions, mentions_in, mentions_replaced, name_key},
+    graph::{Graph, SELF, as_name, can_take, edits, is_name, mentions, mentions_in, mentions_replaced, name_key, version_of},
 };
 
 /// The name `cozy project render all` means.
@@ -36,8 +36,10 @@ const NOT_READ: &str = "kind";
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 const FRAME: &str = "cozy/frame";
+/// A box's words for its tool.
+pub(super) const INSTRUCTIONS: &str = "instructions";
 /// What opens an asset's words.
-const LEADS: [&str; 2] = ["summary", "instructions"];
+pub(super) const LEADS: [&str; 2] = ["summary", INSTRUCTIONS];
 /// What `cozy` reads of an edit or a frame.
 const TOOL_INPUTS: [&str; 6] = ["tracks", "fps", "aspect_ratio", "resolution", "video", "at"];
 
@@ -174,7 +176,17 @@ pub struct Asset {
     /// It has no operation: no `tool` that can make it, or the file says nothing of it.
     pub hollow: bool,
     /// What it reads, in the order its text mentions them.
-    pub reads: Vec<usize>,
+    pub reads: Vec<Reading>,
+}
+
+/// One thing a text reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reading {
+    pub asset: usize,
+    /// One version of it, which nothing moves: `<abr.2>`, `<self.1>`. None: whatever it stands on, and what reads it waits for that.
+    pub number: Option<u32>,
+    /// What the mention says, the name a function hears it by.
+    pub said: String,
 }
 
 /// A function Calcifer runs itself, free, with no machine.
@@ -264,6 +276,8 @@ pub struct ReadNow {
     pub files: Files,
     /// A tool reading a newest version out of date: its number.
     pub newest: Option<u32>,
+    /// The version a mention fixes: `<abr.2>`.
+    pub number: Option<u32>,
 }
 
 impl Doc {
@@ -342,7 +356,7 @@ impl Doc {
             doc.declare(name, written, &defaults, folder, lock);
         }
         for i in 0..doc.assets.len() {
-            if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() && doc.assets[i].text.is_none() {
+            if doc.assets[i].hollow && doc.assets[i].pin.is_none() && doc.assets[i].description.is_empty() && doc.assets[i].text.is_none() && lock.asset(&doc.assets[i].name).is_none_or(|held| held.versions.is_empty()) {
                 let (name, said) = (doc.assets[i].name.clone(), doc.nothing_to_make(i));
                 doc.warn(&name, said);
             }
@@ -388,7 +402,8 @@ impl Doc {
         let made = held.and_then(|version| KINDS.iter().copied().find(|kind| version.files.contains_key(*kind)));
         let of_file = pin.as_ref().and_then(|sha256| lock.files.get(sha256)).and_then(folder::File::media);
         let makes = tool.as_ref().and_then(|tool| lock.makes.get(tool)).and_then(|kind| KINDS.iter().copied().find(|known| known == kind));
-        let text = (tool.is_none() && pin.is_none() && body.contains_key(TEXT)).then(|| text_of(body.get(TEXT)).trim_end().to_owned());
+        // No tool and no images: it's words, in whichever field they stayed.
+        let text = (tool.is_none() && pin.is_none() && held.is_none()).then(|| body.get(TEXT).or_else(|| LEADS.iter().find_map(|field| body.get(*field)))).flatten().map(|words| text_of(Some(words)).trim_end().to_owned());
         let said = tool.as_deref().and_then(kind_made_here).or(of_file).or(made).or(makes).or(text.as_ref().map(|_| TEXT));
         let kind = said.unwrap_or("image").to_owned();
         let mut asset_type = text_of(body.get("asset_type"));
@@ -525,24 +540,35 @@ impl Doc {
                 if tags.is_some_and(|tags| is_tag(tags, &mention)) {
                     continue;
                 }
-                let Some(j) = self.find(&mention) else {
-                    unread.push((i, mention));
-                    continue;
-                };
-                // Left by a cycle of text assets.
-                if self.assets[j].text.is_some() {
-                    continue;
-                }
-                if j != i && !upstream[i].contains(&j) {
-                    upstream[i].push(j);
-                    reads[i].push(j);
+                match self.mentioned(i, &mention) {
+                    None => {
+                        let line = Warning::of(&asset.name, no_bare_self(&mention));
+                        if name_key(&mention) == SELF && !said.contains(&line) {
+                            said.push(line);
+                        }
+                        unread.push((i, mention));
+                    }
+                    // A version is a file that is already there, so it holds nothing up and closes no cycle.
+                    Some((j, Some(number))) => {
+                        if !reads[i].iter().any(|read: &Reading| read.asset == j && read.number == Some(number)) {
+                            reads[i].push(Reading { asset: j, number: Some(number), said: mention });
+                        }
+                    }
+                    // Left by a cycle of text assets. What has no tool sends its words nowhere, so it reads nothing by them.
+                    Some((j, None)) if self.assets[j].text.is_some() || asset.tool.is_none() => {}
+                    Some((j, None)) => {
+                        if j != i && !upstream[i].contains(&j) {
+                            upstream[i].push(j);
+                            reads[i].push(Reading { asset: j, number: None, said: self.assets[j].name.clone() });
+                        }
+                    }
                 }
             }
         }
         // What it reads brings its voice, which isn't what it is made of, so it is the last edge to go in a cycle.
         let mut fixed = vec![vec![]; n];
         for i in 0..n {
-            for &j in &reads[i] {
+            for j in reads[i].iter().filter(|read| read.number.is_none()).map(|read| read.asset) {
                 if let Some(voice) = self.voice_of(j).filter(|voice| *voice != i && !upstream[i].contains(voice)) {
                     upstream[i].push(voice);
                     fixed[i].push(voice);
@@ -551,7 +577,7 @@ impl Doc {
         }
         let graph = Graph::new(upstream, &fixed);
         for &(reader, read) in &graph.closing {
-            reads[reader].retain(|j| *j != read);
+            reads[reader].retain(|held| held.asset != read || held.number.is_some());
             said.push(Warning::of(&self.assets[reader].name, format!("{} mentions {}, which is made from it: that mention stays plain text", self.assets[reader].name, self.assets[read].name)));
         }
         for (asset, reads) in self.assets.iter_mut().zip(reads) {
@@ -565,6 +591,16 @@ impl Doc {
 
     pub fn find(&self, name: &str) -> Option<usize> {
         self.index.get(&name_key(name)).copied()
+    }
+
+    /// What `mention` in asset `i`'s text names: an asset, and a version of it. A name ending like a version, from before none could, is that name.
+    fn mentioned(&self, i: usize, mention: &str) -> Option<(usize, Option<u32>)> {
+        if let Some(j) = self.find(mention) {
+            return Some((j, None));
+        }
+        let (name, number) = version_of(mention)?;
+        let j = self.find(name).or((name_key(name) == SELF).then_some(i))?;
+        Some((j, Some(number)))
     }
 
     fn voice_of(&self, i: usize) -> Option<usize> {
@@ -607,12 +643,28 @@ impl Doc {
         }
         said.sort();
         said.dedup();
-        let read = |&j: &usize| {
-            let key = name_key(&self.assets[j].name);
-            let at = said.iter().filter(|(mention, _)| name_key(mention) == key).map(|(_, place)| place.clone());
-            Read { name: self.assets[j].name.clone(), at: at.collect() }
+        let at = |key: &str| said.iter().filter(|(mention, _)| name_key(mention) == key).map(|(_, place)| place.clone()).collect();
+        let read = |read: &Reading| {
+            let key = name_key(if read.number.is_some() { &read.said } else { &self.assets[read.asset].name });
+            Read { name: self.assets[read.asset].name.clone(), version: read.number, at: at(&key) }
         };
-        asset.reads.iter().chain(&asset.inlined).map(read).collect()
+        let words = asset.inlined.iter().map(|&j| Read { name: self.assets[j].name.clone(), version: None, at: at(&name_key(&self.assets[j].name)) });
+        asset.reads.iter().map(read).chain(words).collect()
+    }
+
+    /// The assets whose text fixes version `number` of asset `i`, itself aside: what a person deleting it is told.
+    pub fn read_by(&self, i: usize, number: u32) -> Vec<String> {
+        let names = (0..self.assets.len()).filter(|&j| j != i && self.assets[j].reads.iter().any(|read| read.asset == i && read.number == Some(number)));
+        names.map(|j| self.assets[j].name.clone()).collect()
+    }
+
+    /// Each version a text names, by its asset's name key: a deleted asset's too, as `reclaim` keeps what they'd bring back.
+    pub fn versions_named(&self) -> BTreeMap<String, BTreeSet<u32>> {
+        let fixed = self.assets.iter().flat_map(|asset| &asset.reads).filter_map(|read| Some((name_key(&self.assets[read.asset].name), read.number?)));
+        let gone = self.unread.iter().filter_map(|(_, mention)| version_of(mention).map(|(name, number)| (name_key(name), number)));
+        let mut named: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+        fixed.chain(gone).for_each(|(key, number)| drop(named.entry(key).or_default().insert(number)));
+        named
     }
 
     /// The tags of the function that makes asset `i`, once it has been read.
@@ -622,6 +674,9 @@ impl Doc {
 
     /// What is said of a name that is nothing in the project, and no tag of `tags`.
     fn no_longer(&self, name: &str, tags: &[String]) -> String {
+        if name_key(name) == SELF {
+            return no_bare_self(name);
+        }
         match self.near(name, tags) {
             Some(close) => format!("<{name}> is no longer in the project: did you mean <{close}>?"),
             None => format!("<{name}> is no longer in the project"),
@@ -630,17 +685,47 @@ impl Doc {
 
     /// Why asset `i` can't run, given its package's `tags`: each `<name>` in its text that names nothing and is no tag. Running it would
     /// send its words to a model with no picture, and charge for that. None: it can.
-    pub fn missing_inputs(&self, i: usize, tags: &[String]) -> Option<String> {
+    pub fn missing_inputs(&self, i: usize, tags: &[String], lock: &Lock) -> Option<String> {
         let mut said: Vec<String> = vec![];
-        self.mentions_of_nothing(i, tags).map(|mention| self.no_longer(mention, tags)).for_each(|line| if !said.contains(&line) { said.push(line) });
+        let nothing = self.mentions_of_nothing(i, tags).map(|mention| self.no_longer(mention, tags));
+        nothing.chain(self.versions_gone(i, lock).into_iter().map(|(_, why)| why)).for_each(|line| if !said.contains(&line) { said.push(line) });
         (!said.is_empty()).then(|| format!("{}: {}", self.assets[i].name, said.join("; ")))
     }
 
     /// The names in `missing_inputs`, each once.
-    pub fn missing_names(&self, i: usize, tags: &[String]) -> Vec<String> {
+    pub fn missing_names(&self, i: usize, tags: &[String], lock: &Lock) -> Vec<String> {
         let mut names: Vec<String> = vec![];
-        self.mentions_of_nothing(i, tags).for_each(|name| if !names.iter().any(|there| there == name) { names.push(name.to_owned()) });
+        let gone = self.versions_gone(i, lock);
+        self.mentions_of_nothing(i, tags).chain(gone.iter().map(|(mention, _)| *mention)).for_each(|name| if !names.iter().any(|there| there == name) { names.push(name.to_owned()) });
         names
+    }
+
+    /// The versions asset `i`'s text fixes that a render can't read: known with no package read.
+    pub fn versions_missing(&self, i: usize, lock: &Lock) -> Vec<String> {
+        self.versions_gone(i, lock).into_iter().map(|(mention, _)| mention.to_owned()).collect()
+    }
+
+    /// The same, each with why: deleted, or never made.
+    fn versions_gone(&self, i: usize, lock: &Lock) -> Vec<(&str, String)> {
+        let mut gone = vec![];
+        for read in &self.assets[i].reads {
+            let Some(number) = read.number else { continue };
+            let of = &self.assets[read.asset];
+            let held = lock.asset(&of.name);
+            let deleted = held.is_some_and(|held| held.discarded.iter().any(|version| version.number == number));
+            if !deleted && self.version_files(read.asset, number, lock).is_some() {
+                continue;
+            }
+            let listed: Vec<String> = held.into_iter().flat_map(|held| &held.versions).map(|version| version.number.to_string()).collect();
+            let said = &read.said;
+            let why = match (deleted, listed.as_slice()) {
+                (true, _) => format!("<{said}> was deleted: cozy project restore {} --version {number} brings it back", of.name),
+                (_, []) => format!("<{said}>: {} has no versions yet", of.name),
+                (_, listed) => format!("<{said}>: {} has no version {number}, only {}", of.name, listed.join(", ")),
+            };
+            gone.push((said.as_str(), why));
+        }
+        gone
     }
 
     fn mentions_of_nothing<'a>(&'a self, i: usize, tags: &'a [String]) -> impl Iterator<Item = &'a str> {
@@ -648,14 +733,14 @@ impl Doc {
     }
 
     /// What is said ahead of a run of asset `i`, given its package's `tags`. A pin runs nothing, so it says nothing, whatever its text says.
-    pub fn said_once_read(&self, i: usize, tags: &[String]) -> Option<Warning> {
-        let said = self.missing_inputs(i, tags).filter(|_| self.assets[i].pin.is_none())?;
+    pub fn said_once_read(&self, i: usize, tags: &[String], lock: &Lock) -> Option<Warning> {
+        let said = self.missing_inputs(i, tags, lock).filter(|_| self.assets[i].pin.is_none())?;
         Some(Warning::of(&self.assets[i].name, said))
     }
 
     /// `said_once_read` of each asset whose package project.lock knows.
-    pub fn said_of_known(&self) -> Vec<Warning> {
-        (0..self.assets.len()).filter(|&i| self.makes(i) && self.tool(i).is_none()).filter_map(|i| self.said_once_read(i, self.tags(i)?)).collect()
+    pub fn said_of_known(&self, lock: &Lock) -> Vec<Warning> {
+        (0..self.assets.len()).filter(|&i| self.makes(i) && self.tool(i).is_none()).filter_map(|i| self.said_once_read(i, self.tags(i)?, lock)).collect()
     }
 
     /// The name `mention`, which names nothing, is likely a typo of: within two edits, neither of them short, and no tag of `tags`.
@@ -742,7 +827,7 @@ impl Doc {
             return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
                 Some(version) => {
                     let changed = match &inputs {
-                        Some(now) if !version.inputs.is_empty() => self.moved(i, &version.inputs, now, &reads),
+                        Some(now) if !version.inputs.is_empty() && !asset.hollow => self.moved(i, &version.inputs, now, &reads),
                         _ => vec![],
                     };
                     stand(State::Pinned { version: Some(version.number), changed }, Some(version.files.clone()))
@@ -750,8 +835,14 @@ impl Doc {
                 None => stand(State::Pinned { version: None, changed: vec![] }, Some(Files::from([(asset.kind.clone(), sha256.clone())]))),
             };
         }
-        if asset.hollow && (!asset.description.is_empty() || asset.text.is_some()) {
-            return stand(State::Words, Some(Files::new()));
+        // With no tool nothing can put it out of date: it stands on its newest, else its words.
+        if asset.hollow {
+            if let Some(version) = versions.last() {
+                return stand(State::Current(version.number), Some(version.files.clone()));
+            }
+            if !asset.description.is_empty() || asset.text.is_some() {
+                return stand(State::Words, Some(Files::new()));
+            }
         }
         let Some(now) = &inputs else { return stand(State::Waits, None) };
         // A film short of its pieces, or that went without one now here, isn't its state, though the memo would say so: it cuts again.
@@ -789,7 +880,13 @@ impl Doc {
     fn reading(&self, i: usize, lock: &Lock, done: &[Standing]) -> Option<Vec<ReadNow>> {
         let tool = self.tool(i).is_some();
         let mut reads = vec![];
-        for &j in &self.assets[i].reads {
+        for read in &self.assets[i].reads {
+            let j = read.asset;
+            // A deleted one is still what was read, so nothing it made goes out of date; `versions_gone` stops a render.
+            if let Some(number) = read.number {
+                reads.extend(self.version_files(j, number, lock).map(|files| ReadNow { name: read.said.clone(), asset: j, files, newest: None, number: Some(number) }));
+                continue;
+            }
             let name = self.assets[j].name.clone();
             match &done[j].files {
                 Some(files) => {
@@ -797,16 +894,27 @@ impl Doc {
                     if let Some(voice) = self.voice_of(j).filter(|voice| !tool && self.upstream[i].contains(voice)) {
                         files.extend(folder::main_of(done[voice].files.as_ref()?).map(|main| ("voice".to_owned(), main.clone())));
                     }
-                    reads.push(ReadNow { name, asset: j, files, newest: None });
+                    reads.push(ReadNow { name, asset: j, files, newest: None, number: None });
                 }
                 None if tool => {
                     let newest = lock.asset(&self.assets[j].name).and_then(|held| held.versions.last());
-                    reads.extend(newest.map(|newest| ReadNow { name, asset: j, files: newest.files.clone(), newest: Some(newest.number) }));
+                    reads.extend(newest.map(|newest| ReadNow { name, asset: j, files: newest.files.clone(), newest: Some(newest.number), number: None }));
                 }
                 None => return None,
             }
         }
         (!tool || !reads.is_empty()).then_some(reads)
+    }
+
+    /// Version `number` of asset `j`, on record though deleted. A file it holds with no version of any yet is its first.
+    fn version_files(&self, j: usize, number: u32, lock: &Lock) -> Option<Files> {
+        let asset = &self.assets[j];
+        let held = lock.asset(&asset.name);
+        if let Some(version) = held.and_then(|held| held.on_record().find(|version| version.number == number)) {
+            return Some(version.files.clone());
+        }
+        let none_yet = number == 1 && held.is_none_or(|held| held.on_record().next().is_none());
+        asset.pin.as_ref().filter(|_| none_yet).map(|sha256| Files::from([(asset.kind.clone(), sha256.clone())]))
     }
 
     /// Its key: eight hex digits of what makes it and its inputs, then twelve for each thing it reads (`read_part`), in name order, so that a
@@ -839,11 +947,11 @@ impl Doc {
     }
 
     /// A read in a key: four hex digits of its name and eight of what reaches a reader, so editing an approved asset's instructions leaves what
-    /// reads it as it is. A tool's holds only files: same takes, same key, whatever their text says.
+    /// reads it as it is. A tool's holds only files: same takes, same key, whatever their text says. So does a fixed version's: its file is all it is.
     fn read_part(&self, tool: bool, read: &ReadNow) -> String {
         let of = &self.assets[read.asset];
         let files: Vec<_> = read.files.values().collect();
-        let held = match tool {
+        let held = match tool || read.number.is_some() {
             true => json!({"files": files}),
             false => json!({"asset_type": of.asset_type, "description": of.description, "files": files}),
         };
@@ -867,7 +975,7 @@ impl Doc {
     pub fn given(&self, reads: &[ReadNow], lock: &Lock, stand: &[Standing]) -> Vec<Given> {
         let given = |read: &ReadNow| {
             let of = &self.assets[read.asset];
-            let number = stand[read.asset].version().or(read.newest);
+            let number = read.number.or(stand[read.asset].version()).or(read.newest);
             let made = number.and_then(|number| lock.asset(&of.name)?.version(number));
             let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target)).to_owned();
             let text = number.and_then(|number| lock.asset(&of.name)?.text_of(number)).unwrap_or_default().to_owned();
@@ -970,6 +1078,23 @@ pub fn named(name: &str) -> Result<(), Error> {
     Err(invalid("project_name", format!("`{name}`: {why}; use `{}`", as_name(name))))
 }
 
+/// Whether something new can go by `name`, a person having typed it: a file that says so already goes on as it is.
+pub fn new_name(name: &str) -> Result<(), Error> {
+    named(name)?;
+    if can_take(name) {
+        return Ok(());
+    }
+    let (why, instead) = match version_of(name) {
+        Some((of, number)) => (format!("`{name}` would read as version {number} of {of}"), format!("{of}_{number}")),
+        None => (format!("`{name}` is what a box calls itself in its own text"), format!("{name}_2")),
+    };
+    Err(invalid("project_name", format!("{why}: use `{instead}`")))
+}
+
+fn no_bare_self(said: &str) -> String {
+    format!("<{said}> would read its own newest version, which every render changes: write <self.1>, the version to start from")
+}
+
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -1007,6 +1132,12 @@ pub fn plain_name(text: &str) -> Option<String> {
     (!name_key(&name).is_empty()).then_some(name)
 }
 
+/// `text` as it calls a new asset: `x.2` says a version, so it's `x_2`.
+pub fn asset_name(text: &str) -> Option<String> {
+    let name = plain_name(text)?;
+    Some(version_of(&name).map_or(name.clone(), |(of, number)| format!("{of}_{number}")))
+}
+
 /// `wanted`, or counting up if something in the project goes by it, or versions wait in project.lock for it: `hero_2`, and `shot_1` is `shot_2`.
 pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
     free_of(|name| doc.find(name).is_some(), lock, wanted)
@@ -1014,7 +1145,7 @@ pub fn free_name(doc: &Doc, lock: &Lock, wanted: &str) -> String {
 
 /// `free_name`, of what `holds` says the project goes by.
 pub(super) fn free_of(holds: impl Fn(&str) -> bool, lock: &Lock, wanted: &str) -> String {
-    let taken = |name: &str| name_key(name) == ALL || holds(name) || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
+    let taken = |name: &str| [ALL, SELF].contains(&name_key(name).as_str()) || holds(name) || lock.asset(name).is_some_and(|held| !held.versions.is_empty());
     if !taken(wanted) {
         return wanted.to_owned();
     }

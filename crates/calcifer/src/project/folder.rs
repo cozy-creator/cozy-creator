@@ -401,10 +401,18 @@ impl Asset {
         self.keep_texts(texts);
     }
 
-    /// What's discarded gone for good: what comes after it keeps its words.
-    pub fn clear_discarded(&mut self) {
+    /// What's discarded gone for good but `read`, which a text names: what comes after it keeps its words.
+    pub fn clear_discarded(&mut self, read: Option<&BTreeSet<u32>>) {
         let texts = self.texts();
-        self.discarded.clear();
+        self.discarded.retain(|version| read.is_some_and(|read| read.contains(&version.number)));
+        self.keep_texts(texts);
+    }
+
+    /// Only `read` left of what's on record: what a text still names of a deleted asset.
+    pub fn keep_only(&mut self, read: &BTreeSet<u32>) {
+        let texts = self.texts();
+        self.versions.retain(|version| read.contains(&version.number));
+        self.discarded.retain(|version| read.contains(&version.number));
         self.keep_texts(texts);
     }
 
@@ -704,6 +712,23 @@ impl Lock {
         let asset = self.asset_mut(name, kind);
         asset.numbered = asset.numbered.max(asset.versions.iter().map(|version| version.number).max().unwrap_or(0)) + 1;
         asset.numbered
+    }
+
+    /// `files` as `name`'s next version, unless a version holds that file already: its number, and whether it did. It made none of it, so it never reads as
+    /// current, and it says no words.
+    pub fn joined(&mut self, name: &str, kind: &str, files: Files) -> (u32, bool) {
+        if let Some(held) = self.asset(name).and_then(|held| held.versions.iter().find(|version| version.main() == main_of(&files))) {
+            return (held.number, true);
+        }
+        let number = self.number(name, kind);
+        self.asset_mut(name, kind).list(Version { number, files, text: Some(String::new()), ..Default::default() });
+        (number, false)
+    }
+
+    /// The rows of a name key, and those `tombstone` set aside of it.
+    pub fn rows_of<'a>(&'a self, key: &str) -> impl Iterator<Item = (&'a String, &'a Asset)> {
+        let (key, buried) = (key.to_owned(), format!("{key}{TOMBSTONE}"));
+        self.assets.iter().filter(move |(at, _)| **at == key || at.starts_with(&buried))
     }
 
     /// The lock as it's written. A file holds a row only for what can't be read again from a file here: where it stays, its parts, or, with nothing

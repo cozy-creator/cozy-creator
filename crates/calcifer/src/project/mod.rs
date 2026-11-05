@@ -176,6 +176,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
         .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete).put(assets::put_back))
+        .route("/v1/projects/{id}/assets/{name}/versions", post(assets::join))
         .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).put(assets::undiscard))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
@@ -984,12 +985,12 @@ pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, 
 
 /// What can be said of each asset whose published package has been heard of: what makes it, its tags. A read waits on no
 /// Hub and writes nothing, so what isn't heard of yet is said by a later read, or a render. Local code is described only on a machine, so a render says it.
-fn unmade(doc: &Doc, known: &HeardOf) -> Vec<ProjectWarning> {
+fn unmade(doc: &Doc, known: &HeardOf, lock: &Lock) -> Vec<ProjectWarning> {
     let mut said = vec![];
     for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()) {
         let Some(heard) = known.get(&doc.target(i)) else { continue };
         if doc.tags(i).is_none() {
-            said.extend(doc.said_once_read(i, &heard.tags));
+            said.extend(doc.said_once_read(i, &heard.tags, lock));
         }
         if doc.assets[i].pin.is_none() && !heard.makes {
             said.push(ProjectWarning::of(&doc.assets[i].name, no_function(&doc.assets[i].name, &heard.name)));
@@ -1277,7 +1278,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         etag: None,
         failure,
         changed,
-        missing: tags_now(doc, known, i).map_or_else(Vec::new, |tags| doc.missing_names(i, tags)),
+        missing: tags_now(doc, known, i).map_or_else(|| doc.versions_missing(i, lock), |tags| doc.missing_names(i, tags, lock)),
         timeline: (doc.tool(i) == Some(Tool::Cut)).then(|| {
             let files = |name: &str| {
                 let read = standing.reads.iter().find(|read| name_key(&read.name) == name_key(name));
@@ -1326,6 +1327,10 @@ fn kept_files(doc: &Doc, lock: &Lock) -> BTreeSet<String> {
     kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
     let clips = lock.assets.iter().filter(|(key, _)| doc.find(key).is_some()).flat_map(|(_, held)| &held.versions).flat_map(|version| &version.clips);
     kept.extend(clips.filter_map(|clip| clip.sha256.clone()));
+    for (key, numbers) in doc.versions_named() {
+        let read = lock.rows_of(&key).flat_map(|(_, held)| held.on_record()).filter(|version| numbers.contains(&version.number));
+        kept.extend(read.flat_map(|version| version.files.values().cloned()));
+    }
     kept
 }
 
@@ -1370,10 +1375,18 @@ async fn reclaim(
                 let _ = std::fs::remove_file(folder.dir.join(FsPath::new(&name).with_extension("otio")));
             }
         }
+        // What a text names by number stays, on any row.
+        let named = doc.versions_named();
+        let row_named: BTreeMap<String, BTreeSet<u32>> = named.iter().flat_map(|(key, numbers)| lock.rows_of(key).map(move |(row, _)| (row.clone(), numbers.clone()))).collect();
         folder
             .update_lock(|lock| {
-                lock.assets.retain(|key, _| doc.find(key).is_some());
-                lock.assets.values_mut().for_each(folder::Asset::clear_discarded);
+                lock.assets.retain(|key, _| doc.find(key).is_some() || row_named.contains_key(key));
+                for (key, held) in &mut lock.assets {
+                    match row_named.get(key).filter(|_| doc.find(key).is_none()) {
+                        Some(numbers) => held.keep_only(numbers),
+                        None => held.clear_discarded(row_named.get(key)),
+                    }
+                }
             })
             .map_err(Refusal)?;
     }
@@ -1404,6 +1417,9 @@ async fn rename(
     let folder = &project.folder;
     let refuse = |kind, code, said: String| Refusal(Error::new(kind, code, said));
     let mut doc = Doc::load(folder).map_err(Refusal)?;
+    if doc.find(&asked.to).is_none() && name_key(&asked.to) != name_key(&asked.from) {
+        format::new_name(&asked.to).map_err(Refusal)?;
+    }
     if doc.find(&asked.from).is_some_and(|i| doc.assets[i].text.is_some()) {
         format::refuse_tag(&folder.lock().map_err(Refusal)?, &asked.to).map_err(Refusal)?;
     }
@@ -1514,8 +1530,10 @@ fn renamed(lock: &mut Lock, from: &str, to: &str) {
     lock.untombstone(from);
     let key = name_key(from);
     for version in lock.assets.values_mut().flat_map(|held| held.versions.iter_mut().chain(&mut held.discarded)) {
-        for clip in version.clips.iter_mut().filter(|clip| graph::mentions(&clip.clip).first().is_some_and(|name| name_key(name) == key)) {
-            clip.clip = format!("<{to}>");
+        for clip in &mut version.clips {
+            if let Some(moved) = graph::mentions(&clip.clip).first().and_then(|name| graph::mention_moved(name, from, to)) {
+                clip.clip = format!("<{moved}>");
+            }
         }
         version.without.iter_mut().filter(|left| name_key(&left.piece) == key).for_each(|left| left.piece = to.to_owned());
     }
@@ -1910,9 +1928,9 @@ fn element_name(name: Option<&str>, source: &str) -> String {
             true => source.split_once("://")?.1.split_once('/')?.1.split(['?', '#']).next()?,
             false => source.strip_prefix("sha256:").map_or(Some(source), |_| None)?,
         };
-        FsPath::new(path).file_stem()?.to_str().and_then(format::plain_name).map(|stem| stem.to_lowercase())
+        FsPath::new(path).file_stem()?.to_str().and_then(format::asset_name).map(|stem| stem.to_lowercase())
     };
-    name.and_then(format::plain_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
+    name.and_then(format::asset_name).or_else(stem).unwrap_or_else(|| "file".to_owned())
 }
 
 /// The element a kept file makes: one constant more in project.yaml, under a name nothing has, and with `at`, its row on the canvas.
@@ -2004,6 +2022,9 @@ async fn import(
     }
     let wanted = element_name(asked.name.as_deref(), &asked.source);
     if asked.exact {
+        if let Some(name) = &asked.name {
+            format::new_name(name).map_err(Refusal)?;
+        }
         let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
         if format::free_name(&doc, &lock, &wanted) != wanted {
             return Err(Refusal(format::name_taken(&doc, &wanted)));
@@ -2101,7 +2122,7 @@ async fn unpin(
     let version = stand[i].version().filter(|_| asset.pin.is_some());
     let before = stale_names(&doc, &stand);
     let text = if asset.pin.is_some() {
-        if asset.hollow {
+        if asset.hollow && lock.asset(&name).is_none_or(|held| held.versions.is_empty()) {
             let said = format!("{name} is a constant, nothing but its file: to be rid of it, delete it from {}", folder::PROJECT);
             return Err(Refusal(Error::new(Kind::Usage, "project_edit", said)));
         }
@@ -3149,11 +3170,11 @@ impl Walk {
                                 }
                             }
                             JobKind::Judged => {
-                                if outdated_now(&doc, &stand, &ask, node) {
+                                if outdated_now(&doc, &stand, &ask, node, &lock) {
                                     let next = Next { i: node, key: key.clone(), take: None, unpin: true };
                                     acts.push(Act::Send { id, key, ask, doc, stand, lock: lock.clone(), next });
                                 } else if pin_changed(&stand, node) {
-                                    let why = doc.tags(node).and_then(|tags| doc.missing_inputs(node, tags)).unwrap_or_default();
+                                    let why = doc.tags(node).and_then(|tags| doc.missing_inputs(node, tags, &lock)).unwrap_or_default();
                                     let why = why.strip_prefix(&format!("{asset}: ")).unwrap_or(&why);
                                     let changed = match &standing.state {
                                         Stand::Pinned { changed, .. } => changed.join(", "),
@@ -3517,7 +3538,7 @@ impl Walk {
                 return Ok(());
             }
             // Before anything that could cost.
-            if let Some(why) = doc.missing_inputs(i, &package.reserved()) {
+            if let Some(why) = doc.missing_inputs(i, &package.reserved(), lock) {
                 return Err(Error::new(Kind::Validation, "input_missing", why).remedy(format!("bring it back, or edit {name}'s text")));
             }
             let Some(maker) = package.maker()? else {
@@ -4430,8 +4451,8 @@ fn pin_changed(stand: &[Standing], i: usize) -> bool {
 
 /// Whether `ask` has a re-run to make of asset `i` as things stand: not if a name it reads is gone, which only fails. With its package's
 /// tags not known, that is for the run to find, which leaves the pin as it is.
-fn outdated_now(doc: &Doc, stand: &[Standing], ask: &Ask, i: usize) -> bool {
-    ask.outdated && judged_pin(doc, stand, ask, i) && pin_changed(stand, i) && doc.tags(i).is_none_or(|tags| doc.missing_names(i, tags).is_empty())
+fn outdated_now(doc: &Doc, stand: &[Standing], ask: &Ask, i: usize, lock: &Lock) -> bool {
+    ask.outdated && judged_pin(doc, stand, ask, i) && pin_changed(stand, i) && doc.tags(i).is_none_or(|tags| doc.missing_names(i, tags, lock).is_empty())
 }
 
 /// The tools with no state whose reads have settled: those nothing that's on its way goes into.

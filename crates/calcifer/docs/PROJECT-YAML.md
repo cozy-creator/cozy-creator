@@ -7,7 +7,7 @@ The page is the way in, and this file is what it writes. A file of format 2 is r
 A project is a folder of files plus a graph that says how each file was made.
 
 - **Asset:** a stable name holding one main file: a name, what it is, how it's made, the file you approved, and words for whatever mentions it.
-- **Edge:** you don't write edges: `<name>` in any input reads that asset. The only rule is no cycles.
+- **Edge:** you don't write edges: `<name>` in any input reads that asset. The only rule is no cycles. `<name.2>` reads that one version, and is no edge.
 - **File:** bytes by hash, in `files/<sha256>.<ext>`.
 - **Version**, or **take** if it has a video: one result of an asset's tool, recorded in `project.lock`, with the words that made it where they changed from the version before.
 
@@ -114,6 +114,8 @@ Every other key is an **input**: it goes to the function and counts in the key. 
 
 `<name>` in any input makes that asset an input.
 
+**By version.** `<name>` is what it stands on, approved else newest, and moves: what reads it can go out of date. `<name.2>` is version 2, whatever else happens to it, and is never out of date. `<self.2>` is a version of the asset whose text it is, which is how a box edits its own picture. A version number is never reused, so one stays what it says when others go. Neither is a dependency: nothing waits for it and it closes no cycle. `<self>` alone is refused: it would change its own input with every render. A version deleted or never made fails a render with `input_missing`, naming it, and nothing is charged; `reclaim` keeps every file a `<name.N>` names. Names match in any case, and a name can't end in `.` and digits or be `self`: one already in a file goes on working, and `<foo.2>` reads the asset called that.
+
 - **In a shot's `summary`:** reaches every segment. **In a beat:** only the segment holding it. H3 gets confused by extra references, so mention things only where they're needed.
 - **A package's own tags:** its function declares them, `node=Node(reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that function makes, each stays text in any case, and reaches it unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
 - **What can't be a name** is text, with no warning, as `<Picture 1>` and `</d>` are.
@@ -132,7 +134,11 @@ Every other key is an **input**: it goes to the function and counts in the key. 
 
 An asset that is only a `description`, with no tool and no file, stands as words: what mentions it reads them.
 
-**The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, and twelve for each text asset it takes in, so one gone hides no change in the others. Its inputs are as written, `<style>` and all. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
+**A box with no tool.** A box is its words, an optional tool, and its versions. With versions and no `tool:` it's a box of pictures: one primary (`approved`, else its newest) and a description, nothing puts it out of date, and `cozy project import <file> --into <name>` adds the next version. Taking a tool off changes only that line: versions, numbers, `approved`, `description` and its `instructions` stay, so putting one back finds them. With no tool and no versions it's a text asset, its words moved to `text`.
+
+Putting a tool on a text asset moves its `text` to `instructions`. On a picture, that picture is its first version and a new prompt starts `<self.1>`.
+
+**The key** is eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its inputs after defaults, then twelve for each read: four of its name, and eight of its `asset_type`, `description` and `files`, or of a `<name.N>`'s files alone, and twelve for each text asset it takes in, so one gone hides no change in the others. Its inputs are as written, `<style>` and all. So editing an approved asset's `instructions` leaves what reads it as it is. Inputs plus the seed never run twice: a seed in its inputs, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
 **Not in the key:** its own `description`, `asset_type` and `voice`; package and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
@@ -155,11 +161,11 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `delete <name> --version <n>` | Discards that take, repeatable, and prints the `restore` line for each: see [Discarded takes](#discarded-takes) |
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
-| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions. A name is no input: nothing that reads it goes out of date |
+| `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, `<old.2>` too, and keeps its versions. If you renamed it there already, this only moves its versions. A name is no input: nothing that reads it goes out of date |
 | `reclaim [--yes]` | Lists orphans and the bytes they'd free, and discarded takes, or with `--yes` deletes them and any file a version or run has on record and nothing names now. A file with no record is listed and stays: it may be all that's left of a take. With `project.lock` gone, unreadable or listing nothing, `--yes` is refused |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
-| `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
+| `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it and `tool=` with nothing takes it off, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
 | `status <name>` | One asset: its fields and each take or version |
 | `delete <name>…` | As the X on its box: its work stops and it goes, and this prints the `restore` line that brings it back |
 | `restore <name> <kept>` | That line: back as it was, where it was, with what it made |

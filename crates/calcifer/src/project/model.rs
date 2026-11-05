@@ -78,9 +78,9 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let doc = Doc::of(folder, &text, &lock)?;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
-    warnings.extend(doc.said_of_known());
+    warnings.extend(doc.said_of_known(&lock));
     let known = known_packages(api, &doc);
-    warnings.extend(unmade(&doc, &known));
+    warnings.extend(unmade(&doc, &known, &lock));
     for (i, standing) in stand.iter().enumerate() {
         let held = lock.asset(&doc.assets[i].name);
         let made = standing.version().and_then(|number| held?.version(number));

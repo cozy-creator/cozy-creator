@@ -203,6 +203,9 @@ impl Warning {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Read {
     pub name: String,
+    /// The one version of it the text fixes: `<name.2>`, `<self.2>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
     /// Where its text says so: `summary`, `beats.0.description`, `tracks.0.clips.1`, `style` for what defaults gave it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at: Vec<String>,
@@ -640,6 +643,18 @@ pub struct VersionMoved {
     /// What is out of date now and wasn't.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale: Vec<String>,
+    /// What names this version in its text: `<name.2>`. Gone, a render of them fails until it's back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_by: Vec<String>,
+    /// A version held that file already: it's that one, and nothing changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
+}
+
+/// `POST /v1/projects/{id}/assets/{name}/versions`: a picture joins it. `source` as an import's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NewVersion {
+    pub source: String,
 }
 
 /// `PUT /v1/projects/{id}/assets/{name}/versions/{number}`: what `DELETE` answered.

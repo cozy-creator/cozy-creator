@@ -156,7 +156,9 @@ fn standing_files(api: &Api, folder: &Folder, text: &str) -> Result<Vec<String>,
     let lock = folder.lock()?;
     let Ok(doc) = Doc::of(folder, text, &lock) else { return Ok(vec![]) };
     let stand = doc.stand(&lock);
-    let named: BTreeSet<&String> = stand.iter().filter_map(|standing| standing.files.as_ref()).flat_map(|files| files.values()).collect();
+    // A version a text fixes is read wherever this renders, though nothing stands on it.
+    let reads = stand.iter().flat_map(|standing| &standing.reads).flat_map(|read| read.files.values());
+    let named: BTreeSet<&String> = stand.iter().filter_map(|standing| standing.files.as_ref()).flat_map(|files| files.values()).chain(reads).collect();
     let mut wants = vec![];
     for sha256 in named {
         let Some(file) = lock.files.get(sha256) else { continue };

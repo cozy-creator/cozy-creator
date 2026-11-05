@@ -10,7 +10,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, NewVersion, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned, VersionMoved},
 };
 
 use crate::{
@@ -176,6 +176,7 @@ enum Verb {
   cozy project import ./kyogre.png kyogre_art    prints kyogre_art
   cozy project import https://example.com/groudon.png
   cozy project import 65b436d4f9a3 kyogre --description 'The colossal blue whale.'    a file of the project's, as an asset of its own
+  cozy project import ./kyogre2.png --into kyogre    the next version of kyogre: <kyogre.2>
 
 A name something in the project has takes _2, and the same file twice is two elements and one file: <name> reads it in any text.
 A URL is downloaded here, up to 64 MiB, from a public address.")]
@@ -187,6 +188,9 @@ struct ImportFile {
     /// The words for whatever mentions it.
     #[arg(long)]
     description: Option<String>,
+    /// Join this box as its next version, instead of an asset of its own: prints `<box>.<number>`.
+    #[arg(long, value_name = "BOX", conflicts_with_all = ["name", "description"])]
+    into: Option<String>,
 }
 
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
@@ -420,6 +424,15 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
         true => args.source,
         false => protocol::target::spelled(&args.source, &cwd, &ctx.user_home).to_string_lossy().into_owned(),
     };
+    if let Some(box_name) = args.into {
+        let joined: VersionMoved = calcifer.post(&crate::calcifer_client::path(&["v1", "projects", &opened.id, "assets", &box_name, "versions"]), &NewVersion { source }, None).await?;
+        if ctx.json {
+            output::json(&joined);
+        } else {
+            anstream::println!("{box_name}.{}", joined.number);
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     let path = format!("/v1/projects/{}/imports", opened.id);
     let exact = args.name.is_some();
     let ask = Import { source, name: args.name, at: None, description: args.description, exact };

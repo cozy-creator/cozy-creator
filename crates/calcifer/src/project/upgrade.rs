@@ -909,7 +909,7 @@ pub fn upgrade(dir: &Path, status: Option<&str>) -> Result<Upgraded, Error> {
     said.extend(notes);
     for i in 0..doc.assets.len() {
         let tags = doc.tags(i).cloned().unwrap_or_default();
-        let gone = doc.missing_names(i, &tags);
+        let gone = doc.missing_names(i, &tags, &lock);
         if !gone.is_empty() {
             said.push(format!("{} mentions {}, which no version wrote and nothing makes: edit its text", doc.assets[i].name, gone.iter().map(|name| format!("<{name}>")).collect::<Vec<_>>().join(", ")));
         }

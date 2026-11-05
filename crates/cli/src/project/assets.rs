@@ -149,7 +149,8 @@ pub(super) async fn add(ctx: &Context, at: Option<&PathBuf>, args: Add) -> Resul
   cozy project set kyogre instructions='A colossal blue whale.' megapixels=1
   cozy project set kyogre lora:='[{\"name\": \"a/b\", \"strength\": 0.8}]'
   cozy project set kyogre style=                       clears it
-  cozy project set kyogre tool=qwen-image-2/generate   what makes it
+  cozy project set kyogre tool=qwen-image-2/generate   what makes it; on a picture, the picture is its first version
+  cozy project set kyogre tool=                        takes it off: its pictures and words stay
   cozy project set kyogre at=400,120,360               where it sits and how wide, as dragging it
   cozy project set film --input timeline.yaml          an Edit's tracks and clips, or any fields
 
@@ -175,6 +176,7 @@ pub(super) async fn set(ctx: &Context, at: Option<&PathBuf>, args: Set) -> Resul
     let card = place(&mut fields)?;
     let tool = match fields.remove(TOOL) {
         Some(Value::String(tool)) => Some(tool),
+        Some(Value::Null) => Some(String::new()),
         Some(other) => return Err(input_error("field_term", format!("tool is a function, not {other}")).next("cozy package ls")),
         None => None,
     };
@@ -280,6 +282,9 @@ async fn discard(ctx: &Context, at: Option<&PathBuf>, names: Vec<String>, versio
         let approval = if moved.approved { ", and its approval with it" } else { "" };
         let stands = moved.stands.map_or_else(|| format!("it has no {noun} now"), |stands| format!("it's on {noun} {stands} now"));
         println!("discarded {name}'s {noun} {number}{approval}: {stands}, and the files stay until `cozy project reclaim`");
+        if !moved.read_by.is_empty() {
+            println!("warning: {} read {noun} {number} by name: a render of them fails until it's back", moved.read_by.join(", "));
+        }
         say_stale(&moved);
         anstream::println!("{back}");
     }
