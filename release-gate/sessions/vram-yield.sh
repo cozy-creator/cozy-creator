@@ -134,7 +134,7 @@ nxt, ref = rec("shrink-next"), rec("shrink-ref2")
 # Taking it back: what cozy held when the game settled, and the first moment it held 1 GiB more.
 shrunk = json.load(open(f"{out}/shrink-game.json"))["t_shrunk"]
 held = [tuple(map(float, f)) for f in (line.split() for line in open(f"{out}/shrink-held.log")) if len(f) == 2 and f[1].isdigit()]
-before = max((b for t, b in held if t <= shrunk), default=0)
+before = next((b for t, b in reversed(held) if t <= shrunk), 0)
 rose = next((t - shrunk for t, b in held if t > shrunk and b >= before + 2**30), None)
 print(json.dumps({"held_at_shrink_gib": round(before / 2**30, 2), "held_peak_after_gib": round(max((b for t, b in held if t > shrunk), default=0) / 2**30, 2),
                   "took_back_s": rose and round(rose, 2), "bytes": moved(nxt), "reference_bytes": moved(ref),
