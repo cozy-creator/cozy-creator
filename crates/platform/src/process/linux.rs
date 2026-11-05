@@ -35,7 +35,7 @@ pub(super) fn state(birth: &Birth) -> io::Result<State> {
         Err(error) if gone(&error) => return Ok(State::Gone),
         Err(error) => return Err(error),
     };
-    if stat.start_ticks != birth.start_ticks || matches!(stat.state, 'Z' | 'X') {
+    if stat.start_ticks != birth.start_ticks || stat.exited() {
         return Ok(State::Gone);
     }
     if stat.flags & PF_EXITING != 0 || sigkill_pending(birth.pid)? {
@@ -201,7 +201,7 @@ pub(super) fn transient(error: &io::Error) -> bool {
 /// Exited, a zombie included, or gone altogether.
 pub(super) fn exited(pid: u32) -> bool {
     match stat(pid) {
-        Ok(stat) => matches!(stat.state, 'Z' | 'X'),
+        Ok(stat) => stat.exited(),
         Err(error) => gone(&error),
     }
 }
@@ -283,7 +283,16 @@ struct Stat {
     flags: u64,
     /// User plus system clock ticks.
     cpu: u64,
+    threads: u64,
     start_ticks: u64,
+}
+
+impl Stat {
+    /// Its last thread is gone, its memory and files with it: what a pidfd says. A leader that
+    /// exits first shows `Z` while the others still hold them.
+    fn exited(&self) -> bool {
+        matches!(self.state, 'Z' | 'X') && self.threads <= 1
+    }
 }
 
 fn stat(pid: u32) -> io::Result<Stat> {
@@ -305,6 +314,7 @@ fn stat(pid: u32) -> io::Result<Stat> {
         flags: field(6)?.parse().map_err(io::Error::other)?,
         cpu: field(11)?.parse::<u64>().map_err(io::Error::other)?
             + field(12)?.parse::<u64>().map_err(io::Error::other)?,
+        threads: field(17)?.parse().map_err(io::Error::other)?,
         start_ticks: field(19)?.parse().map_err(io::Error::other)?,
     })
 }
