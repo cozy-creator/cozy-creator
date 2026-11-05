@@ -25,10 +25,8 @@ pub struct Checked {
     pub notes: Vec<String>,
 }
 
-const FACTORS: [&str; 3] = [".lora_A.weight", ".lora_B.weight", ".alpha"];
-
 fn is_lora(tensors: &[&Planned]) -> bool {
-    !tensors.is_empty() && tensors.iter().all(|p| FACTORS.iter().any(|f| p.key.ends_with(f)))
+    !tensors.is_empty() && tensors.iter().all(|p| family::FACTORS.iter().any(|f| p.key.ends_with(f)))
 }
 
 pub struct Input<'a> {
@@ -324,22 +322,7 @@ fn values(dtype: &Dtype, bytes: &[u8]) -> Option<Vec<f64>> {
 /// converter table's family or, for a PEFT adapter, by the one family component every target
 /// fits; and what it was trained on, when declared.
 fn lora(input: &Input, component: &str, tensors: &[&Planned], notes: &mut Vec<String>) -> Result<Option<Adapter>> {
-    let mut targets: BTreeMap<&str, (Option<&[u64]>, Option<&[u64]>)> = BTreeMap::new();
-    for p in tensors {
-        if let Some(path) = p.key.strip_suffix(".lora_A.weight") {
-            targets.entry(path).or_default().0 = Some(&p.shape);
-        } else if let Some(path) = p.key.strip_suffix(".lora_B.weight") {
-            targets.entry(path).or_default().1 = Some(&p.shape);
-        }
-    }
-    // A target fits base `[out, in, kernel…]` as A `[r, in, kernel…]` and B `[out, r, 1…]`.
-    let fits = |fam: &Family, base: &str, path: &str, (a, b): &(Option<&[u64]>, Option<&[u64]>)| {
-        let (Some(a), Some(b)) = (a, b) else { return false };
-        let at = |v: &[Option<u64>], i: usize, got: u64| v.get(i).copied().flatten().is_none_or(|w| w == got);
-        fam.targets(base, path).iter().any(|want| {
-            want.len() == a.len() && a.len() == b.len() && a.len() >= 2 && at(want, 0, b[0]) && (1..a.len()).all(|i| at(want, i, a[i]))
-        })
-    };
+    let targets = family::targets_of(tensors.iter().map(|p| (p.key.as_str(), p.shape.as_slice())));
     let claimed = (input.recognized.claims.iter())
         .find(|c| c.name == component && input.tables[c.table].lora.is_some())
         .and_then(|c| family::of_table(&input.tables[c.table].name));
@@ -347,7 +330,7 @@ fn lora(input: &Input, component: &str, tensors: &[&Planned], notes: &mut Vec<St
         Some(fam) => {
             let Some((root, _)) = fam.def(component) else { return Ok(None) };
             // A layer the family lacks is left to the run's composition, which skips it and says so.
-            let unfit: Vec<&str> = targets.iter().filter(|(path, t)| !fits(fam, root, path, t)).map(|(path, _)| *path).collect();
+            let unfit: Vec<&str> = targets.iter().filter(|(path, t)| !fam.takes(root, path, t)).map(|(path, _)| *path).collect();
             if unfit.len() == targets.len() {
                 return refuse(
                     Code::ADAPTER_TARGET_UNSUPPORTED,
@@ -362,16 +345,10 @@ fn lora(input: &Input, component: &str, tensors: &[&Planned], notes: &mut Vec<St
             }
             (fam, root.to_owned())
         }
-        None => {
-            let fitting: Vec<(&Family, &str)> = (family::families().iter())
-                .flat_map(|f| f.components.iter().filter(|(_, d)| d.same_as.is_none()).map(move |(c, _)| (f, c.as_str())))
-                .filter(|(f, c)| !targets.is_empty() && targets.iter().all(|(path, t)| fits(f, c, path, t)))
-                .collect();
-            match fitting.as_slice() {
-                [(fam, base)] => (*fam, base.to_string()),
-                _ => return Ok(None),
-            }
-        }
+        None => match family::fitting(&targets).as_slice() {
+            [(fam, base)] => (*fam, base.to_string()),
+            _ => return Ok(None),
+        },
     };
     let trained_on = match input.trained_on {
         Some(asked) => {

@@ -23,7 +23,7 @@ use protocol::{
 };
 use serde::Deserialize;
 
-use super::{origin, reader, refusal, signed_in};
+use super::{checkpoints, origin, reader, refusal, signed_in};
 use crate::api::{Api, Refusal, parse};
 
 #[derive(Deserialize)]
@@ -68,7 +68,8 @@ pub(super) async fn search(
             (cards.into_values().collect(), answer.search.total)
         }
     };
-    let models: Vec<FoundModel> = cards.iter().map(found).collect();
+    let mut models: Vec<FoundModel> = cards.iter().map(found).collect();
+    checkpoints::said(&api, &hub, &cards, &mut models).await;
     let older = (total - models.len() as i64).max(0);
     Ok(Json(ModelSearch { models, total, older }))
 }
@@ -92,6 +93,7 @@ fn found(card: &types::ModelCard) -> FoundModel {
         lanes,
         private: release.is_none(),
         author: card.model.author.clone().map(author),
+        kind: None,
     }
 }
 

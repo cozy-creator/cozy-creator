@@ -83,6 +83,8 @@ pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>
             Err(_) => note = Some(late()),
         }
     }
+    // A Hub that's late leaves them unsaid, and a later list says what's been read by then.
+    let _ = tokio::time::timeout(HUB_LATE, crate::hub::checkpoints::families(&api, &hub, &mut tools)).await;
     Ok(Json(Tools { tools, note }))
 }
 

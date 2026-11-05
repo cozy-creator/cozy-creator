@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    choices,
     interface::{Callable, Constraints, Cuts, Field, Interface, Node, Struct, TAKE, Type, Wire},
     names::shown,
 };
@@ -93,6 +94,22 @@ pub struct Tool {
     /// The frames a kept take can end on, if it can't end on any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cuts: Option<Cuts>,
+    /// What a checkpoint dropped on its box goes on: the one model its function runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ToolModel>,
+}
+
+/// The model a tool runs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolModel {
+    /// Its key in a node's `models`.
+    pub slot: String,
+    /// What its package loads unless told otherwise: `[org/]model@release`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// That checkpoint's family, as its header says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -182,6 +199,7 @@ pub fn edit() -> Tool {
         ui: None,
         takes: false,
         cuts: None,
+        model: None,
         controls: vec![Control { field: "timeline".to_owned(), ty: ControlType::Timeline, label: "Edit".to_owned(), face: true, ..Control::default() }],
     }
 }
@@ -237,6 +255,11 @@ fn tool_of(package: &str, release: &str, callable: &Callable) -> Option<Tool> {
         takes: node.fill.values().any(|source| source == TAKE),
         cuts: node.cuts,
         ui: node.ui,
+        model: choices::main_model(&callable.models, &callable.calls.iter().collect::<Vec<_>>()).map(|slot| ToolModel {
+            slot: slot.param.clone(),
+            default: slot.default.clone(),
+            family: None,
+        }),
     })
 }
 

@@ -191,6 +191,7 @@ pub struct ModelSearch {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FoundModel {
     pub model: String,
+    /// What its header verifies as, else the label its publisher gave it.
     pub family: Option<String>,
     pub release: Option<String>,
     /// The newest release's lanes; a private model's commits' lanes.
@@ -198,6 +199,19 @@ pub struct FoundModel {
     pub private: bool,
     /// Who made it: the org it credits, or the parked org it mirrors into.
     pub author: Option<ModelAuthor>,
+    /// What its header says it is. None: it couldn't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ModelKind>,
+}
+
+/// What a checkpoint is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    /// Only a LoRA's factors: it goes on a model.
+    Lora,
+    /// Weights of its own: it stands in for a model.
+    Weights,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
