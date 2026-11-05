@@ -36,9 +36,10 @@ const BARS = {
   open_settled_s: 10,
   edit_shows_ms: 1500,
   landing_shows_ms: 1500,
-  // A runner draws with no GPU, so a pan is held to the same pan of a project of 36, the same boxes on screen, on the same runner: size adds nothing.
-  pan_times_small: 1.5,
-  pan_slack_ms: 17,
+  // What a pan costs the page itself, per frame, against the same pan of a project of 36, the same boxes on screen, on the same runner: size adds
+  // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
+  pan_work_times_small: 1.5,
+  pan_work_slack_ms: 2,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
@@ -263,11 +264,17 @@ function calciferMb() {
     const images = [...document.querySelectorAll('.react-flow__node .media img')];
     return images.length > 0 && images.every((image) => image.complete);
   }), Boolean, 120_000);
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Performance.enable');
+  /** How long the page's own thread has been busy, in ms. What the compositor and a software rasterizer take isn't in this. */
+  const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
   const measuredPan = async () => {
     await drawn();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
+    const from = await busy();
     const moving = summary(await panning(3000));
-    return { still, moving, mounted: await page.locator('.react-flow__node').count() };
+    const work_ms_per_frame = +(((await busy()) - from) / moving.frames).toFixed(2);
+    return { still, moving, work_ms_per_frame, mounted: await page.locator('.react-flow__node').count() };
   };
 
   // The same pan of a small project, for what this runner draws whatever a project holds.
@@ -292,8 +299,8 @@ function calciferMb() {
   memory.open = calciferMb();
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
-  const allowed = numbers.pan_small.moving.p95_ms * BARS.pan_times_small + BARS.pan_slack_ms;
-  check('size_adds_nothing_to_a_pan', numbers.pan_big.moving.p95_ms <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  const allowed = numbers.pan_small.work_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
+  check('size_adds_nothing_to_a_pan', numbers.pan_big.work_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');

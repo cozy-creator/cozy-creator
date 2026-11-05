@@ -58,7 +58,7 @@ function linesOf(text, name) {
     const url = new URL(answer.url());
     // HEAD on a file asks whether it's held, and no is an answer: what then doesn't get sent shows on a PUT or at the import.
     if (answer.status() < 400 || (answer.request().method() === 'HEAD' && url.pathname.startsWith('/v1/files/'))) return;
-    const refusal = { status: answer.status(), url: url.pathname, during };
+    const refusal = { status: answer.status(), method: answer.request().method(), url: url.pathname, during };
     refused.push(refusal);
     answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
   });
@@ -669,7 +669,8 @@ function linesOf(text, name) {
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
   // Only the conflict it asked for: anything else a project's route refused is a fault, however the page took it.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')));
+  // Nor a read of what the stream said changed, gone by then: that's how the page hears it's gone.
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')) && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
   console.log(JSON.stringify({ failures, seen }, null, 2));

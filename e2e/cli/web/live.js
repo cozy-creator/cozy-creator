@@ -150,7 +150,7 @@ function linesOf(text, name) {
   page.on('response', (answer) => {
     const url = new URL(answer.url());
     if (answer.status() < 400) return;
-    const refusal = { status: answer.status(), url: url.pathname, during };
+    const refusal = { status: answer.status(), method: answer.request().method(), url: url.pathname, during };
     refused.push(refusal);
     answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
   });
@@ -629,7 +629,7 @@ function linesOf(text, name) {
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
   // An asset gone by the time the page read it is no fault: that's how it hears it's gone.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && refusal.code !== 'asset_changed' && refusal.code !== 'asset_unknown');
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && refusal.code !== 'asset_changed' && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
 
