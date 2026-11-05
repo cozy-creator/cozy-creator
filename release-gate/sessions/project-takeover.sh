@@ -310,7 +310,12 @@ YAML
   done
   line up
   t=0
-  until collected; do [ $t -lt 900 ] || fail "h: not collected"; t=$((t + 5)); sleep 5; done
+  until collected; do
+    [ $t -lt 900 ] || fail "h: not collected"
+    c "project status 2>&1" | grep -E 'on box|rendering on' >> "$OUT/h-held.txt"
+    t=$((t + 5)); sleep 5
+  done
+  say "h: this computer back, its status said: $(sort -u "$OUT/h-held.txt" | head -2 | paste -sd'|')"
   local sha path
   while read -r sha path; do
     case $path in *.mp4) cozy machine ssh "$NAME" -- "cat /home/client/h/$path" < /dev/null > "$OUT/h-seashot.mp4" 2>> "$OUT/ssh.err" ;; esac
