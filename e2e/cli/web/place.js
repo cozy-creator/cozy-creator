@@ -55,7 +55,7 @@ const constants = (folder) => {
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d/.test(m.text())) errors.push(`console: ${m.text()}`); });
   await page.addInitScript(() => {
     window.violations = [];
-    document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
+    document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI} ${e.sourceFile}:${e.lineNumber} ${e.sample}`));
   });
 
   // Sign in: the link's code becomes a session, and leaves the URL.
@@ -263,7 +263,8 @@ const constants = (folder) => {
   }
 
   // Everything above hashed in WebAssembly under the page's own CSP, with no violation; `eval` stays refused beside it.
-  check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
+  const violations = await page.evaluate(() => window.violations);
+  check('csp_holds', violations.length === 0, { violations, styles: await page.evaluate(() => [...document.querySelectorAll('style')].map((held) => held.textContent.slice(0, 80))) });
   // In a timer, as the page's own code runs: an evaluation itself is let past the CSP.
   check('eval_refused', await page.evaluate(() => new Promise((done) => setTimeout(() => { try { new Function('return 1')(); done(false); } catch { done(true); } }))));
   check('no_page_errors', errors.length === 0, errors);

@@ -31,6 +31,8 @@ plate() {
 still() { ffmpeg -v error -y -f lavfi -i "color=c=$2:size=832x480" -frames:v 1 "$1"; }
 sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
+# edited <file> <perl s///>: in place, on every OS: a Mac's sed takes neither -i alone nor a newline in what it writes.
+edited() { perl -pi.was -e "$2" "$1"; rm -f "$1.was"; }
 # prefix <project> <file>: `cozy project import`, and what project.yaml writes for it.
 prefix() { (cd "$1" && cozy --json project import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
 # api <curl args…>: Calcifer, with the bearer of its lock record.
@@ -2690,7 +2692,7 @@ YAML
 render "$T" edit || check "healing: first cut: $(tail -c 400 "$OUT/render.txt")"
 J '.cuts[0].frames == 288' <<< "$(status "$T")" || check "healing: the whole film: $(status "$T" | jq -c .cuts)"
 local whole; whole=$(take_file "$T" edit video)
-sed -i "s/${whole#sha256:}/$(sha "$T/short.mp4")/" "$T/project.lock"
+edited "$T/project.lock" "s/${whole#sha256:}/$(sha "$T/short.mp4")/"
 rm -f "$T/edit.mp4"; cp "$T/short.mp4" "$T/edit.mp4"
 [ "$(row "$T" edit .standing)" = '"out_of_date"' ] || check "healing: a short film stands as its state: $(row "$T" edit .status)"
 render "$T" all --missing || check "healing: render: $(tail -c 400 "$OUT/render.txt")"
@@ -2933,7 +2935,7 @@ assets:
 YAML
 render "$T" edit || check "edits: first cut: $(tail -c 400 "$OUT/render.txt")"
 one=$(sha "$T/edit.mp4"); first_timeline=$(sha "$T/edit.otio")
-sed -i 's/^          - <a>$/          - <a>\n          - <b>/' "$T/project.yaml"
+edited "$T/project.yaml" 's/^          - <a>$/          - <a>\n          - <b>/'
 render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
 two=$(sha "$T/edit.mp4")
 [ "$one" != "$two" ] || check "edits: the second cut is the first"
