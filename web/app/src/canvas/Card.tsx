@@ -65,7 +65,7 @@ export function buttonsOnly(event: MouseEvent) {
   if ((event.target as Element).closest("button, input, select, .mention-text")) event.stopPropagation()
 }
 
-/** A take carried out: it lands as a box of its own, or as `<name.N>` in words. It's picked up from the big tile, never the row. */
+/** A take carried out: it lands as a box of its own, or as `<name.N>` in words. It's picked up from the big tile, and an Edit's from its row, as its big tile is its clips. */
 function takeOut(event: DragEvent, store: ReturnType<typeof useCanvasStore>, name: string, asset: NonNullable<ElementView["asset"]>, version: NonNullable<NonNullable<ElementView["asset"]>["prefixes"]>[number]) {
   const description = store.valueOf(name, "description")
   const file = { sha256: version.main?.sha256, field: version.main?.field, name: `${asset.name}_${version.number}`, description: typeof description === "string" ? description : undefined, from: asset.name, number: version.number }
@@ -175,7 +175,8 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
             aria-label={`${asset.noun} ${version.number}`}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
-            draggable={false}
+            draggable={Boolean(asset.timeline && version.main)}
+            onDragStart={(event) => version.main && takeOut(event, store, name, asset, version)}
             onPointerDown={() => pick(version.number)}
             onClick={() => pick(version.number)}
           >
@@ -665,8 +666,9 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
                 </>
               }
             >
-              <Description name={name} view={view} />
+              {editing && <Description name={name} view={view} />}
             </AssetEdit>
+            {!editing && <Description name={name} view={view} />}
             {view.warned && warned ? (
               <div className="warned-lines">
                 {view.warnings!.map((warning) => (

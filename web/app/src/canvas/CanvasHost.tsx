@@ -54,6 +54,8 @@ const LEAST_BOX = 0.35
 /** How wide what's under a box is, in its own pixels, however narrow the box, where there's room. */
 const LEAST_UNDER = 520
 const UNDER_GAP = 8
+/** A window this narrow has no room for the tools beside a box being worked on: they fold away, and come back after. */
+const NARROW = 760
 /** How long the canvas takes to draw in on a box, or go back. */
 const HERE_MS = 260
 /** How long a click on a picture waits to see if it's the first of two, which looks at it large: the press itself shows at once, and a box with no picture to look at doesn't wait. */
@@ -94,7 +96,7 @@ function hereFit(flow: ReturnType<typeof useReactFlow<ElementNode, Edge>>, id: s
       y: top + Math.max(0, tall - high) / 2 - node.position.y * zoom,
       zoom,
     },
-    bottom: top + tall,
+    room: { left, right: left + wide, bottom: top + tall },
   }
 }
 
@@ -277,6 +279,9 @@ function Canvas({
   const opened = useMatch("/projects/:id/assets/:name")?.params.name
   const stage = useRef<HTMLDivElement>(null)
   const returning = useRef<{ view: Viewport; until: number } | null>(null)
+  const folded = useRef(false)
+  const shutNow = useRef(shut)
+  shutNow.current = shut
   const fitHere = useCallback(
     (only = false) => {
       const held = store.inPlace
@@ -288,8 +293,10 @@ function Canvas({
       const at = held.fitted
       if (only && at) {
         const node = flow.getNode(id)
+        const left = (node?.position.x ?? 0) * at.zoom + at.x
+        const right = left + (node?.measured?.width ?? 0) * at.zoom
         const end = (node?.position.y ?? 0) * at.zoom + at.y + (node?.measured?.height ?? 0) * at.zoom + fit.below + UNDER_GAP
-        if (end <= fit.bottom + 1) return
+        if (end <= fit.room.bottom + 1 && left >= fit.room.left - 1 && right <= fit.room.right + 1) return
       }
       held.fitted = fit.view
       void flow.setViewport(fit.view, { duration: HERE_MS })
@@ -311,6 +318,10 @@ function Canvas({
       const words = !view || !shownOf(view)
       if (words) store.focusing = name
       store.patch(name, { here: true, hereWords: words || undefined })
+      if (window.innerWidth < NARROW && !shutNow.current) {
+        folded.current = true
+        setShut(true)
+      }
       requestAnimationFrame(() => fitHere())
     },
     [store, flow, fitHere],
@@ -323,6 +334,10 @@ function Canvas({
     store.patch(held.name, { here: undefined, hereWords: undefined })
     store.view(held.name)
     returning.current = { view: held.back, until: performance.now() + HERE_MS }
+    if (folded.current) {
+      folded.current = false
+      setShut(false)
+    }
     void flow.setViewport(held.back, { duration: HERE_MS })
   }, [store, flow])
   const leaveHere = useCallback(() => {

@@ -1346,7 +1346,8 @@ export class CanvasStore {
 
   /** Gone at once, with no dialog. Files stay: a note offers Undo for a while, and says if something still needs what went. */
   remove(names: string[]) {
-    const going = names.map((name) => this.resolveName(name)).filter((name) => this.views.get(name)?.asset && !this.views.get(name)?.placing)
+    // One taken out or pasted a moment ago may have no row read yet: its delete waits behind its import.
+    const going = names.map((name) => this.resolveName(name)).filter((name) => (this.views.get(name)?.asset || this.views.get(name)?.landed) && !this.views.get(name)?.placing)
     if (!going.length) return
     const readers = this.readers(going)
     const gone = going.map((name) => {

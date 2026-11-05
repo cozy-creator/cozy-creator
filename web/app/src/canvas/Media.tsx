@@ -201,7 +201,7 @@ export function viewable(view: ElementView | undefined): boolean {
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
 export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
   const { client, stream } = useConnection()
-  const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">(auto ? "waiting" : "idle")
+  const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
   const element = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const stopRef = useRef<() => void>(() => {})
@@ -209,6 +209,10 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
   const asked = useRef(seek?.ask ?? 0)
 
   useEffect(() => () => stopRef.current(), [])
+  // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
+  useEffect(() => {
+    if (auto) setState("waiting")
+  }, [auto])
 
   // Calcifer came back: what was playing reloads where it was.
   useEffect(
