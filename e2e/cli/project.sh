@@ -178,7 +178,7 @@ forget_all
 # and what `--json` gives is as it was.
 by_asset() {
 step "a project: runs at once, each line starting with its asset"
-local T=$OUT/by-asset look name
+local T=$OUT/by-asset look name shot
 mkdir -p "$T"; plate "$T/look.mp4" testsrc2 440 800 2
 printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
 look=$(prefix "$T" "$T/look.mp4")
@@ -215,9 +215,11 @@ cp "$OUT/render.txt" "$OUT/by-asset.txt"
 for name in amy sophia long short cut; do
   grep -qE "^$name: (take|version) [0-9]+" "$OUT/by-asset.txt" || check "by asset: no line says $name landed: $(cat "$OUT/by-asset.txt")"
 done
-says "by asset" "long: shot 1/2 : segment 1/2 ready: files/"
-says "by asset" "long: shot 1/2 : segment 2/2, denoise"
-says "by asset" "short: shot 2/2 : segment 1/1, denoise"
+# A shot's number is the order it went in, and these two go side by side.
+shot=$(status "$T" | jq -r '.board.jobs[] | select(.asset == "long") | .shot') || true
+says "by asset" "long: shot $shot/2 : segment 1/2 ready: files/"
+says "by asset" "long: shot $shot/2 : segment 2/2, denoise"
+says "by asset" "short: shot $((3 - shot))/2 : segment 1/1, denoise"
 # Nothing of a run's own, and every line its asset's, the project's first line and the last aside.
 ! grep -qE '^run [0-9]+ · |^  on |^  inputs: |^  call |^(image|video)  ' "$OUT/by-asset.txt" || check "by asset: a run's own lines: $(cat "$OUT/by-asset.txt")"
 grep -vE '^(amy|sophia|long|short|cut): |^by-asset( on [a-z]+)?: following|^rendered ' "$OUT/by-asset.txt" > "$OUT/by-asset-other.txt" || true
@@ -226,7 +228,7 @@ grep -vE '^(amy|sophia|long|short|cut): |^by-asset( on [a-z]+)?: following|^rend
 grep -qE '^(long|short): warning: the fixture' "$OUT/by-asset.txt" || check "by asset: a warning names no asset: $(grep 'lens is dusty' "$OUT/by-asset.txt")"
 J '.board.jobs | map(select(.asset == "long")) | .[0] | .state == "done" and .noun == "take" and .number == 1 and (.path | startswith("files/"))' <<< "$(status "$T")" || check "by asset: status's board: $(status "$T" | jq -c .board)"
 # Shots are what makes a video by a package: a still and a cut count for nothing.
-J '.board.shots == 2 and ([.board.jobs[] | {(.asset): .shot}] | add) == {amy: null, sophia: null, long: 1, short: 2, cut: null}' <<< "$(status "$T")" || check "by asset: its shots: $(status "$T" | jq -c '{shots: .board.shots, jobs: [.board.jobs[] | {asset, shot}]}')"
+J '.board.shots == 2 and ([.board.jobs[] | {(.asset): .shot}] | add | [.amy, .sophia, .cut] == [null, null, null] and ([.long, .short] | sort) == [1, 2])' <<< "$(status "$T")" || check "by asset: its shots: $(status "$T" | jq -c '{shots: .board.shots, jobs: [.board.jobs[] | {asset, shot}]}')"
 
 step "a project: --json is each run's own events"
 cozy --json project -p "$T" render short --on local > "$OUT/by-asset.ndjson" 2> "$OUT/by-asset-json.err" || check "by asset: --json: $(tail -c 300 "$OUT/by-asset-json.err")"
@@ -672,7 +674,8 @@ J '[.warnings[].message] | any(contains("project.lock is gone"))' <<< "$(status 
 printf 'format: [3\n' > "$L/project.lock"
 status "$L" > /dev/null
 stays "can't be read"
-rm "$L/project.lock.broken" "$L/project.lock"
+{ [ -f "$L/project.lock.broken" ] && [ ! -e "$L/project.lock" ]; } || check "lost lock: a broken lock wasn't moved aside: $(ls "$L")"
+rm -f "$L/project.lock.broken"
 printf 'format: 3\nassets: {}\nfiles: {}\n' > "$L/project.lock"
 stays "lists no versions"
 cp "$OUT/lost-lock.lock" "$L/project.lock"
