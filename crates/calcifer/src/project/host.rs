@@ -210,6 +210,14 @@ pub struct Measured {
     pub exchange_share: f64,
 }
 
+/// How much a run made, as what it takes goes by it: a shot's seconds, as it was asked; else one.
+fn length_of(run: &Run) -> f64 {
+    let Some(input) = run.request.as_ref().map(|request| &request.input) else { return 1.0 };
+    let beats: f64 = input.get("beats").and_then(Value::as_array).into_iter().flatten().filter_map(|beat| beat["duration"].as_f64()).sum();
+    let seconds = input.get("duration_s").and_then(Value::as_f64).unwrap_or(beats);
+    if seconds > 0.0 { seconds } else { 1.0 }
+}
+
 impl Measured {
     /// From what its executors recorded: a stage is time it worked; a `host ·` row inside one is where that went, and one in `parallel` is exchange. A wait counts nowhere.
     fn of(run: &Run) -> Option<Self> {
@@ -226,7 +234,9 @@ impl Measured {
             }
             width = width.max(measured.pointer("/execution/degree").and_then(Value::as_u64).unwrap_or(0) as u32);
         }
-        (busy > 0.0).then(|| Self { busy_s: busy / 1000.0, width: width.max(1), exchange_share: exchange / busy })
+        // What it took is its run's own time: the stages of an orchestrator and of its calls are the same time, counted twice.
+        let wall = run.execution_ms.map(|ms| ms as f64).filter(|ms| *ms > 0.0).unwrap_or(busy);
+        (busy > 0.0).then(|| Self { busy_s: wall / 1000.0, width: width.max(1), exchange_share: (exchange / busy).min(1.0) })
     }
 }
 
@@ -339,11 +349,21 @@ impl Host {
     }
 
     /// What the newest finished run of `target` on `machine` measured.
-    pub fn last_measured(&self, target: &str, machine: &str) -> Option<Measured> {
+    /// What the newest finished runs of `target` on `machine` measured, the newest at each width, and the length of what each made.
+    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<(Measured, f64)> {
         let store = self.api.calcifer.store();
-        let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 5 };
-        let (rows, ..) = store.runs(&filter).ok()?;
-        rows.iter().find_map(|row| Measured::of(&store.detail(row).ok()?))
+        let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
+        let Ok((rows, ..)) = store.runs(&filter) else { return vec![] };
+        let mut found: Vec<(Measured, f64)> = vec![];
+        for row in &rows {
+            let Ok(run) = store.detail(row) else { continue };
+            let Some(measured) = Measured::of(&run) else { continue };
+            if found.iter().any(|(had, _)| had.width == measured.width) {
+                continue;
+            }
+            found.push((measured, length_of(&run)));
+        }
+        found
     }
 
     /// Stops a run fetching ahead, however far it got. Nothing depends on it.

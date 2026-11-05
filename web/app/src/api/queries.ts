@@ -18,7 +18,7 @@ function kept<T extends { name: string }>(before: T[], after: T[]): T[] {
   })
 }
 
-/** A state with these assets as they now are, these gone, and what's said of the project besides them. Nothing else is touched. */
+/** A state with these assets as they now are, these gone, and with `head`, all that's now said of the project besides them: what it no longer says isn't in it. */
 export function withAssets(state: ProjectState, rows: Asset[], gone: Iterable<string>, head?: ProjectState): ProjectState {
   const fresh = new Map(rows.map((row) => [row.name, row]))
   const left = new Set(gone)
@@ -29,7 +29,7 @@ export function withAssets(state: ProjectState, rows: Asset[], gone: Iterable<st
     return [now ?? row]
   })
   assets.push(...fresh.values())
-  return { ...state, ...head, assets }
+  return { ...(head ?? state), assets }
 }
 
 export const projectQuery = (client: Client, id: string) =>

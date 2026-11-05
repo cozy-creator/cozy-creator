@@ -30,10 +30,8 @@ imported() {
   done
 }
 render() { local c=$1 P=$2; shift 2; "$CLI" project -p "$P" render "$@" --on "$M" > "$c.log" 2>&1; }
-# lockq <folder> <python expression of lock>
-lockq() { python3 -c "import json, sys; lock = json.load(open(sys.argv[1] + '/project.lock')); print($2)" "$1" 2>/dev/null; }
 # approved <folder> <asset>: the record of its newest version, as JSON.
-approved() { lockq "$1" "json.dumps((lock['assets'].get('$2', {}).get('versions') or [{}])[-1])"; }
+approved() { "$CLI" --json project -p "$1" show "$2" | jq -c '(.versions[-1] // {}) | . + {files: (.files | map_values(.sha256)), run: (.runs[-1] // null)}'; }
 # file <folder> <version record's sha256>: its path.
 file_of() { [ -n "$2" ] && (cd "$1" && ls "files/${2#sha256:}"* | head -1); }
 # made <folder> <asset>: the path of the file people mean by its newest version.
@@ -108,7 +106,7 @@ YAML
       h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$P/$u")
       expect project-upscale "$([ "$h" = 1080 ] && [ "$(near "$(aspect "$P/$u")" "$(aspect "$P/$f")")" = PASS ] && echo PASS || echo FAIL)" \
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
-      "$CLI" --json run show "$(lockq "$P" "lock['assets']['mural upscale']['versions'][-1]['run']")" --once 2> /dev/null | jq -r '.request.input.latents // ""' | grep -q sha256 \
+      "$CLI" --json run show "$("$CLI" --json project -p "$P" show mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"
@@ -152,8 +150,8 @@ YAML
     render project-segments-$cf "$P" walk || expect project-segments-$cf FAIL "render: $(tail -c 300 project-segments-$cf.log)"
     v=$(approved "$P" walk); f=$(made "$P" walk); n=$(jq -r '.run // empty' <<< "$v")
     if [ -z "$f" ] || [ -z "$n" ]; then expect project-segments-$cf FAIL "no version of walk: $(tail -c 300 project-segments-$cf.log)"; continue; fi
-    labels=$("$CLI" --json run show "$n" 2>/dev/null | jq -c '[.calls[]? | {label, status}]')
-    given=$("$CLI" --json run show "$(jq -r .run <<< "$v")" --once 2> /dev/null | jq -c '[.request.input.context_frames]')
+    labels=$("$CLI" --json run show "$n" | jq -c '[.calls[]? | {label, status}]')
+    given=$("$CLI" --json run show "$(jq -r .run <<< "$v")" --once | jq -c '[.request.input.context_frames]')
     expect project-segments-$cf "$(jq -r 'if ([.[] | select(.status == "succeeded")] | length) == 2 and (.[1].label == "Segment 2 of 2") then "PASS" else "FAIL" end' <<< "$labels" 2>/dev/null || echo FAIL)" "calls $labels, context_frames $given, want $cf"
     r=$("${FR[@]}" seams "$P/$f" --at "$(awk 'BEGIN { for (i = -4; i <= 4; i++) printf "%s%g", (i > -4 ? "," : ""), 10 + i / 8 }')" 2>&1 | tail -1)
     expect project-segments-$cf-seam "$(jq -r 'if ([.boundaries[].ratio] | max) < 3 then "PASS" else "FAIL" end' <<< "$r" 2>/dev/null || echo FAIL)" "no cut within half a second of the join at 10 s: $r"

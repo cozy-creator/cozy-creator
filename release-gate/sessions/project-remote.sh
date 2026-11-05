@@ -162,14 +162,14 @@ HUGE=$(hash_of "$P/refs/huge.wav") FRESH=$(hash_of "$P/refs/fresh.wav") HUGE_SHA
 sed -i "/^  edit:$/i\  huge:\n    audio: $HUGE\n  fresh:\n    audio: $FRESH" "$P/project.yaml"
 cozy project -p "$P" push > "$OUT/push-parts-killed.txt" 2>&1 & PUSH=$!
 # Past the first part: its bytes, and the parts listed in project.lock, are what a second push goes on from.
-until grep -qE 'sent [0-9.]+ ?GB|[0-9.]+ GiB' "$OUT/push-parts-killed.txt" && jq -e --arg s "sha256:$HUGE_SHA" '.files[$s].parts | length > 0' "$P/project.lock" > /dev/null || ! kill -0 "$PUSH" 2> /dev/null; do sleep 1; done
+until grep -qE 'sent [0-9.]+ ?GB|[0-9.]+ GiB' "$OUT/push-parts-killed.txt" && grep -A2 "$HUGE_SHA" "$P/project.lock" | grep -q 'parts:' || ! kill -0 "$PUSH" 2> /dev/null; do sleep 1; done
 kill -0 "$PUSH" 2> /dev/null && { kill -9 "$(pid_of "$HOME")"; wait "$PUSH"; code=$?; say "killed mid-way, exit $code: $(tail -1 "$OUT/push-parts-killed.txt" | cut -c1-120)"; }
-KEPT=$(jq -c --arg s "sha256:$HUGE_SHA" '.files[$s].parts | map(.length)' "$P/project.lock"); say "project.lock lists the parts: $KEPT"
-J --arg s "sha256:$HUGE_SHA" '(.files[$s].parts | length == 6) and ([.files[$s].parts[].length] | add == 5368709121) and (.files[$s].parts[5].length == 1)' "$P/project.lock" || fail "project.lock does not list six parts: $KEPT"
+KEPT=$(grep -A30 "$HUGE_SHA" "$P/project.lock" | grep -E '^ +(- )?length:' | awk '{print $NF}' | paste -sd,); say "project.lock lists the parts: $KEPT"
+[ "$KEPT" = 1073741824,1073741824,1073741824,1073741824,1073741824,1 ] || fail "project.lock does not list six parts: $KEPT"
 code=0; cozy --json project -p "$P" push > "$OUT/push-huge.json" 2> "$OUT/push-huge.err" || code=$?
 say "push: exit $code, $(jq -c . "$OUT/push-huge.json" | cut -c1-400)"
 [ "$code" = 0 ] || fail "a push of a file over the limit exited $code: $(tail -3 "$OUT/push-huge.err")"
-J --argjson f "$(jq '.files | length' "$P/project.lock")" '.files == $f and (.skipped // [] | length == 0) and .commit != null' "$OUT/push-huge.json" || fail "the push did not send everything"
+J --argjson f "$(ls "$P/files" | wc -l)" '.files == $f and (.skipped // [] | length == 0) and .commit != null' "$OUT/push-huge.json" || fail "the push did not send everything"
 cozy --json project -p "$P" push > "$OUT/push-huge-2.json" 2> "$OUT/push-huge-2.err"; code=$?
 { [ "$code" = 0 ] && J '.moved == 0 and .bytes == 0' "$OUT/push-huge-2.json"; } || fail "pushed again, exit $code: $(jq -c . "$OUT/push-huge-2.json")"
 
@@ -187,7 +187,7 @@ LANDED=$(sudo find "$C2/files" -name '.*.part' -size +1100M -printf '%s\n' | hea
 code=0; second --json project -p "$C2" pull > "$OUT/pull-huge.json" 2> "$OUT/pull-huge.err" || code=$?
 say "pull: exit $code, $(jq -c . "$OUT/pull-huge.json" | cut -c1-400)"; grep -h 'skipped' "$OUT/pull-huge.err" | tee -a "$R" | cut -c1-200
 [ "$code" = 3 ] || fail "a pull that skipped a file exited $code, not 3"
-J --argjson f "$(sudo cat "$C2/project.lock" | jq '.files | length')" '.files == $f and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
+J --argjson f "$(ls "$P/files" | wc -l)" '.files == $f and (.skipped | length == 1) and (.skipped[0].path | test("^files/"))' "$OUT/pull-huge.json" || fail "the pull did not fetch everything else and name the file"
 J --argjson l "$LANDED" '.bytes <= (5368709121 - $l + 1000000000)' "$OUT/pull-huge.json" || fail "the pull began the big file again"
 GOT=$(sudo sh -c "sha256sum '$C2/files/$HUGE_SHA'.*" | cut -c1-64); [ "$GOT" = "$HUGE_SHA" ] || fail "the parted file came out $GOT, not $HUGE_SHA"
 second --json project -p "$C2" status > "$OUT/status-huge.json" 2> "$OUT/status-huge.err" || fail "status: $(tail -3 "$OUT/status-huge.err")"

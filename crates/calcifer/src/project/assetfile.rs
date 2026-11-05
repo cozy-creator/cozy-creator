@@ -370,9 +370,12 @@ pub(super) fn set(text: &str, name: &str, fields: &Map<String, Value>) -> Result
     Ok((edited, warnings))
 }
 
-/// `text` with a new asset at the end of `assets:`, made by `tool`.
+/// `text` with a new asset at the end of `assets:`, made by `tool`, or with none a text asset.
 pub(super) fn added(text: &str, name: &str, tool: &str, fields: &Map<String, Value>) -> Result<(String, Vec<String>), Error> {
-    let block = format!("{}:\n  tool: {}\n", yaml_key(name), inline(&json!(tool)));
+    let block = match tool.is_empty() {
+        true => format!("{}:\n  {}: \"\"\n", yaml_key(name), super::format::TEXT),
+        false => format!("{}:\n  tool: {}\n", yaml_key(name), inline(&json!(tool))),
+    };
     let edited = add_block(text, name, &block)?;
     set(&edited, name, fields)
 }
