@@ -158,6 +158,9 @@ const boxLog = (page) => page.evaluate(() => ({
   focus: `${document.activeElement?.tagName}.${document.activeElement?.className}`,
   under: [...document.querySelectorAll(':hover')].at(-1)?.className,
 }));
+/** This pass's browser: $ENGINE's own build (webkit, firefox), else the Chrome at $CHROME. */
+const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true }));
+
 async function lastLook() {
   if (!looking || !process.env.SHOT) return;
   await looking.screenshot({ path: `${process.env.SHOT}-died.png`, timeout: 10_000 }).catch(() => {});
@@ -179,4 +182,4 @@ function noStall(seen, died) {
   watch.unref();
 }
 
-module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, drop, inView, lastLook, lookAt, noStall, png, pointAt, until, watchBoxes, wav };
+module.exports = { MP4, STEP_MS, boxLog, boxOf, closeBox, openBox, drop, inView, lastLook, launch, lookAt, noStall, png, pointAt, until, watchBoxes, wav };

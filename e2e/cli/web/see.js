@@ -8,12 +8,12 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI; $SHOT: where to keep
 // its screenshots; $ALONE: on a shared computer, so no run and no restart; $RESTART, $NO_HUB: shell commands that kill this Calcifer and
 // bring it back, the second on a Hub nothing answers. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
+const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
+const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -100,7 +100,7 @@ function summary(frames) {
 (async () => {
   const link = process.argv[2];
   const base = new URL(link).origin;
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1800, height: 1200 } });
   const page = await context.newPage();
   lookAt(page);

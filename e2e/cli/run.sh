@@ -259,7 +259,7 @@ case $SHARD in
   follow) parts="script_package one_name_two_paths image_ratio run_follow machines completions calcifer_faults calcifer_restarts logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
-[ -n "$LOCAL" ] || parts="catalog refusals web_serves completions homebrew calcifer_faults update remove"
+[ -n "$LOCAL" ] || parts="catalog refusals web_serves project_files completions homebrew calcifer_faults update remove"
 
 start
 for part in $parts; do $part; done

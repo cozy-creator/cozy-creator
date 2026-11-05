@@ -29,7 +29,7 @@ plate() {
     -pix_fmt yuv420p -c:a aac -b:a 192k -ac 2 -ar 32000 -shortest "$1"
 }
 still() { ffmpeg -v error -y -f lavfi -i "color=c=$2:size=832x480" -frames:v 1 "$1"; }
-sha() { sha256sum "$1" | cut -c1-64; }
+sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # prefix <project> <file>: `cozy project import`, and what project.yaml writes for it.
 prefix() { (cd "$1" && cozy --json project import "$2" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]') || check "import $2 failed"; }
@@ -84,7 +84,7 @@ file_at() { ls "$1/files/${2#sha256:}"* 2> /dev/null | head -1; }
 render() {
   local P=$1 pid last=-1 since=$SECONDS size why=''; shift
   : > "$OUT/render.txt"
-  cozy project -p "$P" render "$@" --on local >> "$OUT/render.txt" 2>&1 & pid=$!
+  cozy project -p "$P" render "$@" ${LOCAL:+--on local} >> "$OUT/render.txt" 2>&1 & pid=$!
   while [ -z "$why" ] && kill -0 "$pid" 2> /dev/null; do
     sleep 0.2
     grep -q 'downloading .* weights' "$OUT/render.txt" && why='it started downloading weights'
@@ -102,6 +102,113 @@ render() {
   wait "$pid"
 }
 says() { grep -qF -- "$2" "$OUT/render.txt" || check "$1: render does not say '$2': $(tail -c 400 "$OUT/render.txt")"; }
+
+# What a project does with its own files on a computer with no machine (macOS, Windows: `cozy project render --on local` answers
+# local_unavailable), the part cli/run.sh calls `project_files`. A film is a version nothing had to run for, so lock writes, renames and
+# versions all go through here. A take from a function can't: draw.py and shots.py need a machine, so the render, walk, take and
+# queue cells stay Linux's. After web_serves, whose Calcifer has fetched the ffmpeg these use.
+project_files() {
+step "a project's files, with no machine"
+local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
+[ -n "$own" ] || { check "a project's files: Calcifer fetched no ffmpeg"; return; }
+local PATH="$(dirname "$own"):$PATH"
+hard_cut
+first_open
+upgrade_interrupted
+short_film_heals
+cut_versions
+free_versions
+held_open
+}
+
+# A film's versions, as `discards`, `renames_read` and `lost_lock` hold a take's, with nothing to run.
+free_versions() {
+step "a project: a film's versions discarded and put back, renamed, reclaimed, and its lock lost"
+local T=$OUT/free-versions a b first second count code
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800 2; plate "$T/b.mp4" smptebars 660 800 2
+printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
+# film_of <clip>…: project.yaml with a film of those.
+film_of() {
+  { printf 'version: 3\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  film:\n    tool: cozy/edit\n    tracks:\n      - clips:\n' "$a" "$b"
+    printf '          - <%s>\n' "$@"; } > "$T/project.yaml"
+}
+film_of a; render "$T" film || check "free versions: first: $(tail -c 300 "$OUT/render.txt")"
+film_of a b; render "$T" film || check "free versions: second: $(tail -c 300 "$OUT/render.txt")"
+film_of b a; render "$T" film || check "free versions: third: $(tail -c 300 "$OUT/render.txt")"
+[ "$(made "$T" film)" = 3 ] || check "free versions: it made $(made "$T" film)"
+first=$(take_file "$T" film video 0); second=$(take_file "$T" film video 1)
+cozy project -p "$T" delete film --version 2 > /dev/null || check "free versions: delete the middle"
+J '[.versions[].number] == [1, 3] and .discarded == [2]' <<< "$(held "$T" film)" || check "free versions: after the middle: $(held "$T" film | jq -c '{versions: [.versions[].number], discarded}')"
+[ -n "$(file_at "$T" "$second")" ] || check "free versions: its file went at once"
+grep -q '^    discarded:' "$T/project.lock" || check "free versions: the lock has no record of it"
+cozy project -p "$T" restore film --version 2 > /dev/null || check "free versions: restore"
+J '[.versions[].number] == [1, 2, 3] and (.discarded // []) == []' <<< "$(held "$T" film)" || check "free versions: after Undo: $(held "$T" film | jq -c '{versions: [.versions[].number], discarded}')"
+
+cozy project -p "$T" rename film final > "$OUT/free-rename.txt" 2>&1 || check "free versions: rename: $(tail -c 300 "$OUT/free-rename.txt")"
+J '.asset.standing == "current" and (.versions | length) == 3' <<< "$(held "$T" final)" || check "free versions: renamed: $(held "$T" final | jq -c .asset)"
+[ -f "$T/final.mp4" ] || check "free versions: the film didn't follow its name: $(ls "$T" | tr '\n' ' ')"
+
+cozy project -p "$T" delete final --version 1 > /dev/null || check "free versions: delete the first"
+[ -n "$(file_at "$T" "$first")" ] || check "free versions: delete took the file"
+cozy project -p "$T" reclaim --yes > "$OUT/free-reclaim.txt" 2>&1 || check "free versions: reclaim: $(tail -c 300 "$OUT/free-reclaim.txt")"
+[ -z "$(file_at "$T" "$first")" ] || check "free versions: reclaim left what nothing names"
+J '[.versions[].number] == [2, 3]' <<< "$(held "$T" final)" || check "free versions: after reclaim: $(held "$T" final | jq -c '[.versions[].number]')"
+
+count=$(ls "$T/files" | wc -l)
+cp "$T/project.lock" "$OUT/free.lock"
+rm "$T/project.lock"
+J '[.warnings[].message] | any(contains("project.lock is gone"))' <<< "$(status "$T")" || check "free versions: a lost lock isn't said: $(status "$T" | jq -c .warnings)"
+code=0; cozy project -p "$T" reclaim --yes > "$OUT/free-lost.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'put project.lock back' "$OUT/free-lost.txt"; } || check "free versions: reclaim --yes with no lock (exit $code): $(tail -c 300 "$OUT/free-lost.txt")"
+[ "$(ls "$T/files" | wc -l)" = "$count" ] || check "free versions: reclaim --yes with no lock deleted: $(ls "$T/files" | wc -l) of $count"
+printf 'format: [3\n' > "$T/project.lock"
+status "$T" > /dev/null 2>&1 || true
+{ [ -f "$T/project.lock.broken" ] && [ ! -e "$T/project.lock" ]; } || check "free versions: a broken lock wasn't moved aside: $(ls "$T" | tr '\n' ' ')"
+rm -f "$T/project.lock.broken"; cp "$OUT/free.lock" "$T/project.lock"
+J '.asset.standing == "current" and (.versions | length) == 2' <<< "$(held "$T" final)" || check "free versions: with its lock back: $(held "$T" final | jq -c .asset)"
+}
+
+# Windows only: a save over a file another program has open, as an editor, a player or a scanner has it, with no FILE_SHARE_DELETE, so a
+# rename over it is refused while it's held. The write has to land anyway, or say why: never quietly go.
+held_open() {
+[ "${RUNNER_OS:-}" = Windows ] || return 0
+step "a project on Windows: a save over a file another program holds open"
+local T=$OUT/held-open a b code hold
+mkdir -p "$T"
+plate "$T/a.mp4" testsrc2 440 800 2; plate "$T/b.mp4" smptebars 660 800 2
+printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
+a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
+yaml_of() { printf 'version: 3\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  film:\n    tool: cozy/edit\n    tracks:\n      - clips:\n          - <%s>\n' "$a" "$b" "$1" > "$T/project.yaml"; }
+yaml_of a; render "$T" film || check "held open: first: $(tail -c 300 "$OUT/render.txt")"
+cozy project -p "$T" set film 'at=40,40,320' > /dev/null || check "held open: placing it"
+# holding <file>: it's open from when this returns, for 2.5 s, in $hold.
+holding() {
+  local ready=$OUT/held-ready; rm -f "$ready"
+  powershell -NoProfile -Command "\$f = [IO.File]::Open('$(cygpath -w "$1")', 'Open', 'Read', 'Read'); New-Item -ItemType File '$(cygpath -w "$ready")' | Out-Null; Start-Sleep -Milliseconds 2500; \$f.Close()" & hold=$!
+  until [ -e "$ready" ] || ! kill -0 "$hold" 2> /dev/null; do sleep 0.1; done
+  [ -e "$ready" ] || check "held open: nothing held $1"
+}
+holding "$T/project.yaml"
+code=0; cozy project -p "$T" set film 'description=Saved while held' > "$OUT/held-yaml.txt" 2>&1 || code=$?
+wait "$hold"
+{ [ "$code" = 0 ] && grep -q 'Saved while held' "$T/project.yaml"; } || check "held open: project.yaml (exit $code): $(tail -c 300 "$OUT/held-yaml.txt")"
+holding "$T/project.lock"
+code=0; cozy project -p "$T" approve film 1 > "$OUT/held-lock.txt" 2>&1 || code=$?
+wait "$hold"
+{ [ "$code" = 0 ] && grep -q 'approved:' "$T/project.yaml"; } || check "held open: project.lock (exit $code): $(tail -c 300 "$OUT/held-lock.txt")"
+cozy project -p "$T" unapprove film > /dev/null 2>&1 || true
+holding "$T/project.canvas.yaml"
+code=0; cozy project -p "$T" set film 'at=80,80,320' > "$OUT/held-canvas.txt" 2>&1 || code=$?
+wait "$hold"
+{ [ "$code" = 0 ] && grep -q '80' "$T/project.canvas.yaml"; } || check "held open: project.canvas.yaml (exit $code): $(tail -c 300 "$OUT/held-canvas.txt")"
+yaml_of b
+holding "$T/film.mp4"
+code=0; render "$T" film || code=$?
+wait "$hold"
+{ [ "$code" = 0 ] && [ "$(made "$T" film)" = 2 ]; } || check "held open: film.mp4 (exit $code, $(made "$T" film) versions): $(tail -c 300 "$OUT/render.txt")"
+}
 
 projects() {
 step "a project: new, walk-up, -p"
@@ -134,9 +241,11 @@ upgrades
 first_open
 version_text
 old_landing
+upgrade_interrupted
 lock_kept
 lost_lock
 discards
+free_versions
 text_assets
 memo
 pins
@@ -573,7 +682,10 @@ code=0; cozy project -p "$C" upgrade > "$OUT/old-landing-stuck.txt" 2>&1 || code
 (cd "$C" && cozy --json run "$here/project/draw.py" prompt=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
 rm -rf "$C"
+}
 
+# An upgrade stopped part way, by a kill or by hand. Nothing here runs anything.
+upgrade_interrupted() {
 step "a project: an upgrade cut short starts again from the originals"
 local K=$OUT/old-landing-cut
 mkdir -p "$K"
@@ -587,25 +699,28 @@ cp "$OUT/cut-short.yaml" "$K/project.yaml"
 cozy project -p "$K" upgrade > "$OUT/cut-again.txt" 2>&1 || check "cut short: again: $(tail -c 300 "$OUT/cut-again.txt")"
 cmp -s "$K/project.yaml" "$OUT/cut-done.yaml" || check "cut short: it came out otherwise: $(cat "$K/project.yaml")"
 cmp -s "$K/project.lock.v2" "$OUT/cut-short.lock" && cmp -s "$K/project.yaml.v2" "$OUT/cut-short.yaml" || check "cut short: an original went"
-[ "${RUNNER_OS:-}" != Windows ] || return 0
 
 step "a project: an upgrade killed at any moment loses nothing, and finishes"
 local S=$OUT/old-landing-killed stopped=0 tried=0 at pid began took
 mkdir -p "$S"
-python3 -I - "$S" <<'PY'
-import hashlib, json, sys
-assets, yaml = {}, ["version: 2", "assets:"]
-for n in range(3000):
-    digest = "sha256:" + hashlib.sha256(str(n).encode()).hexdigest()
-    assets[f"a {n}"] = {"name": f"a_{n}", "kind": "image", "numbered": 1, "versions": [{"number": 1, "inputs": "old", "files": {"image": digest}, "made_by": {"with": "local/draw/draw"}}]}
-    yaml += [f"  a_{n}:", "    render: {with: ./draw.py, prompt: One of many.}"]
-open(sys.argv[1] + "/project.yaml", "w").write("\n".join(yaml) + "\n")
-open(sys.argv[1] + "/project.lock", "w").write(json.dumps({"format": 2, "assets": assets, "files": {}}))
-PY
+local native=$S
+[ "${RUNNER_OS:-}" != Windows ] || native=$(cygpath -m "$S")
+node - "$native" <<'JS'
+const { createHash } = require('crypto');
+const { writeFileSync } = require('fs');
+const assets = {}, yaml = ['version: 2', 'assets:'];
+for (let n = 0; n < 3000; n++) {
+  const digest = `sha256:${createHash('sha256').update(String(n)).digest('hex')}`;
+  assets[`a ${n}`] = { name: `a_${n}`, kind: 'image', numbered: 1, versions: [{ number: 1, inputs: 'old', files: { image: digest }, made_by: { with: 'local/draw/draw' } }] };
+  yaml.push(`  a_${n}:`, '    render: {with: ./draw.py, prompt: One of many.}');
+}
+writeFileSync(`${process.argv[2]}/project.yaml`, `${yaml.join('\n')}\n`);
+writeFileSync(`${process.argv[2]}/project.lock`, JSON.stringify({ format: 2, assets, files: {} }));
+JS
 cp "$S/project.yaml" "$OUT/killed.yaml"; cp "$S/project.lock" "$OUT/killed.lock"
-began=$(python3 -I -c 'import time; print(int(time.time() * 1000))')
+began=$(node -p 'Date.now()')
 "$COZY" project -p "$S" upgrade > "$OUT/killed-clean.txt" 2>&1 || check "killed: a clean one: $(tail -c 300 "$OUT/killed-clean.txt")"
-took=$(($(python3 -I -c 'import time; print(int(time.time() * 1000))') - began))
+took=$(($(node -p 'Date.now()') - began))
 cp "$S/project.yaml" "$OUT/killed-done.yaml"
 # From its start to past its end: how long it takes moves with the disk, so no one stretch of it can be counted on.
 for part in $(seq 1 24); do

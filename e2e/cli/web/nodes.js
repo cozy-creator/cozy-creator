@@ -6,11 +6,11 @@
 //   node nodes.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
+const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, drop, lastLook, lookAt, png, noStall, until, watchBoxes } = require('./page');
+const { MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -43,7 +43,7 @@ function linesOf(text, name) {
 (async () => {
   const link = process.argv[2];
   const base = new URL(link).origin;
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
   const page = await context.newPage();
   lookAt(page);

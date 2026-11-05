@@ -4,11 +4,11 @@
 //   node place.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
-const { chromium } = require(process.env.PLAYWRIGHT);
+const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, noStall, until, wav } = require('./page');
+const { MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -46,7 +46,7 @@ const constants = (folder) => {
 (async () => {
   const link = process.argv[2];
   const base = new URL(link).origin;
-  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const browser = await launch(playwright);
   const context = await browser.newContext({ viewport: { width: 1500, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(STEP_MS);
