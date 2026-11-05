@@ -194,6 +194,8 @@ struct Uses {
     waits: Mutex<Waits>,
     generation: AtomicU64,
     submission: Mutex<Option<Arc<async_fill::Control>>>,
+    // Filled ahead, evicted unused: no second guess until a use asks for it.
+    unused: AtomicBool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -212,6 +214,7 @@ impl Uses {
             waits: Mutex::new(Vec::new()),
             generation: AtomicU64::new(0),
             submission: Mutex::new(None),
+            unused: AtomicBool::new(false),
         }
     }
     fn waits(&self) -> MutexGuard<'_, Waits> {
@@ -292,6 +295,7 @@ impl State {
             entry.next = Some(id);
         }
         let entry = self.entries.get_mut(&id).expect("live region");
+        entry.uses.unused.store(false, Ordering::Relaxed);
         let (previous, period) = (entry.last_use, entry.period);
         entry.last_use = now;
         if previous == 0 {
@@ -652,6 +656,9 @@ impl Device {
         let size = self.release_backing_counted(state, id, completed)?;
         if prefetched {
             state.prefetch_unused_bytes = state.prefetch_unused_bytes.saturating_add(size as u64);
+            if let Some(entry) = state.entries.get(&id) {
+                entry.uses.unused.store(true, Ordering::Relaxed);
+            }
         }
         state.evictions = state.evictions.saturating_add(1);
         state.reclaimed_bytes = state.reclaimed_bytes.saturating_add(size as u64);

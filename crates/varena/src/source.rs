@@ -2,6 +2,7 @@
 //! absent Region calls its Source on the caller's thread. One worker per GPU calls it ahead of
 //! demand: what comes next in the observed order, else the Plan's. No lock crosses a Source.
 use crate::{Contents, Device, Error, Fill, Pin, Region, Result, gpu, plan};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::ThreadId;
 
@@ -63,7 +64,7 @@ fn upcoming(region: &Arc<Region>) -> Result<Option<Arc<Region>>> {
     let mut at = Arc::clone(region);
     for _ in 0..2 {
         let Some(next) = next(&at)? else { return Ok(None) };
-        if next.uses.state() != Contents::Cold {
+        if next.uses.state() != Contents::Cold || next.uses.unused.load(Ordering::Relaxed) {
             return Ok(None);
         }
         if next.source.ahead() {
