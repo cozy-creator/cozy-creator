@@ -312,6 +312,16 @@ fn _varena_pool_bytes(peak: usize) -> usize {
 }
 
 #[pyfunction]
+fn _varena_set_checks(checks: u8) {
+    varena::working::checks::set(checks);
+}
+
+#[pyfunction]
+fn _varena_check_counts() -> (u64, u64, u64) {
+    varena::working::checks::counts()
+}
+
+#[pyfunction]
 fn _varena_poisoned(py: Python<'_>) -> PyResult<Option<String>> {
     py.detach(varena::working::poisoned).map_err(|e| super::raise(py, e))
 }
@@ -824,6 +834,8 @@ pub(super) fn install(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_varena_working_initialize, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_activate, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_poisoned, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_set_checks, module)?)?;
+    module.add_function(wrap_pyfunction!(_varena_check_counts, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_unit_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_pool_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(_varena_public_keep, module)?)?;

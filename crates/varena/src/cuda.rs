@@ -3,7 +3,7 @@
 
 use crate::{Error, Result};
 use libloading::Library;
-use std::ffi::{c_int, c_uint, c_void};
+use std::ffi::{c_int, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use std::sync::Arc;
@@ -59,6 +59,7 @@ type SetAccess = unsafe extern "system" fn(Pointer, usize, *const Access, usize)
 type Unmap = unsafe extern "system" fn(Pointer, usize) -> Status;
 type Release = unsafe extern "system" fn(Handle) -> Status;
 type CopyHostAsync = unsafe extern "system" fn(Pointer, *const c_void, usize, Object) -> Status;
+type Fill = unsafe extern "system" fn(Pointer, c_uchar, usize, Object) -> Status;
 type StreamCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventCreate = unsafe extern "system" fn(*mut Object, c_uint) -> Status;
 type EventRecord = unsafe extern "system" fn(Object, Object) -> Status;
@@ -113,6 +114,7 @@ pub(crate) struct Driver {
     unmap: Unmap,
     release: Release,
     copy_host_async: CopyHostAsync,
+    fill: Fill,
     host_granularity: Granularity,
     stream_create: StreamCreate,
     stream_destroy: EventOp,
@@ -189,6 +191,7 @@ impl Driver {
             unmap: symbol!("cuMemUnmap", Unmap),
             release: symbol!("cuMemRelease", Release),
             copy_host_async: symbol!("cuMemcpyHtoDAsync_v2", CopyHostAsync),
+            fill: symbol!("cuMemsetD8Async", Fill),
             host_granularity: granularity,
             stream_create: symbol!("cuStreamCreate", StreamCreate),
             stream_destroy: symbol!("cuStreamDestroy_v2", EventOp),
@@ -368,6 +371,12 @@ impl Driver {
         self.counters.memory_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: owned allocation handle; caller has confirmed unmap before releasing.
         status("cuMemRelease", self.timed(|| unsafe { (self.release)(handle) }))
+    }
+
+    /// A gate cell's pattern, in `stream`'s order; 0 is the default stream.
+    pub(crate) fn fill(&self, ptr: u64, value: u8, bytes: usize, stream: usize) -> Result<()> {
+        // SAFETY: an owned, mapped range whose owner gave up its contents.
+        status("cuMemsetD8Async", unsafe { (self.fill)(ptr, value, bytes, stream as Object) })
     }
 
     pub(crate) fn create_event(&self) -> Result<usize> {

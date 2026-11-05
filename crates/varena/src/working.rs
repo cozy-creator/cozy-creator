@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 
 mod split;
 mod cache;
+pub mod checks;
 mod observer;
 pub use observer::{WorkingBlock, WorkingObserver, WorkingSegment, WorkingSnapshot, observe_working, working_snapshot};
 pub use cache::{Cache, CacheStats};
@@ -189,7 +190,7 @@ impl Segment {
         let chunks = (0..bytes).step_by(chunk)
             .map(|offset| Chunk { offset, bytes: chunk.min(bytes - offset), handle: None })
             .collect();
-        Self { bytes, size_class, chunks, pool, phase_blocks: 0 }
+        Self { bytes, size_class, chunks, pool, phase_blocks: 0, guard: 0 }
     }
 
     fn backed(&self) -> bool {
@@ -258,6 +259,8 @@ struct Segment {
     pool: Option<PoolId>,
     // Rebuilt at phase entry; maintained only while that phase owns the device observation.
     phase_blocks: usize,
+    // Unmapped VA after it (`checks::guard`), which goes back with it.
+    guard: usize,
 }
 
 #[derive(Default)]
@@ -707,7 +710,7 @@ impl Device {
         if let Some(ptr) = Self::take_class(state, bytes, requested, stream, pool) {
             return Some(ptr);
         }
-        if pool.is_some() || bytes <= LARGE {
+        if pool.is_some() || bytes <= LARGE || checks::on(checks::GUARDS) {
             return None;
         }
         Self::split_run(state, bytes, stream, false)?;
@@ -863,10 +866,11 @@ impl Device {
         pool: Option<PoolId>,
         class: usize,
     ) -> crate::AllocationResult<u64> {
-        let ptr = Self::address(state, bytes)?;
+        let guard = checks::guard(self, pool, class);
+        let ptr = Self::address(state, bytes + guard)?;
         state.segments.insert(
             ptr,
-            Segment::new(bytes, class, pool),
+            Segment { guard, ..Segment::new(bytes, class, pool) },
         );
         if let Err(error) = self.back(state, ptr) {
             // Short of pages midway: what did map is unused. A failed map itself stays owned.
@@ -875,7 +879,7 @@ impl Device {
             }
             if !state.segments[&ptr].backed() {
                 state.segments.remove(&ptr);
-                Self::return_address(state, ptr, bytes);
+                Self::return_address(state, ptr, bytes + guard);
             }
             return Err(error);
         }
@@ -1065,7 +1069,7 @@ impl Device {
         }
         if !state.segments[&base].backed() {
             let segment = state.segments.remove(&base).expect("owned segment");
-            Self::return_address(state, base, segment.bytes);
+            Self::return_address(state, base, segment.bytes + segment.guard);
         }
         Ok(released)
     }
@@ -1124,8 +1128,8 @@ impl Device {
             for ptr in blocks {
                 state.blocks.remove(&ptr);
             }
-            state.segments.remove(&base);
-            Self::return_address(state, base, bytes);
+            let guard = state.segments.remove(&base).expect("owned segment").guard;
+            Self::return_address(state, base, bytes + guard);
         }
         for base in large {
             if released >= limit {
@@ -1304,6 +1308,9 @@ fn alloc_mode(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, boun
     if result.is_err() {
         let _ = invalidate_current_phase(device, "allocation_error");
     }
+    if pool.is_none() && checks::on(checks::PERTURB) && let Ok(ptr @ 1..) = result.as_ref().copied() {
+        checks::perturb(device, ptr, stream, false)?;
+    }
     result
 }
 
@@ -1378,7 +1385,8 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 None => {
                     owner.sample()?;
                     // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
-                    let mapped = if class > LARGE && owner.headroom() >= segment { segment } else { exact };
+                    let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
+                    let mapped = if whole { segment } else { exact };
                     owner.map(&mut state, mapped, None, class)?;
                     Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
                 }
@@ -1395,6 +1403,9 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
 }
 
 pub fn free(device: i32, ptr: u64, stream: u64) -> Result<()> {
+    if ptr != 0 && checks::on(checks::PERTURB) {
+        checks::perturb(device, ptr, stream, true)?;
+    }
     let result = free_inner(device, ptr, stream);
     if result.is_err() {
         let _ = invalidate_current_phase(device, "free_error");
@@ -2204,6 +2215,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     let owner = initialize_owner(device)?;
     let wanted = rounded(bytes, owner.page())?;
     let keep = Protect { pool: Some(pool), ..Default::default() };
+    let scramble = bytes == 0 && checks::before_use(owner, device, pool)?;
     {
         let mut state = owner.lock()?;
         let session = state.pools.entry(pool).or_default();
@@ -2215,7 +2227,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     }
     let need = wanted + owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
         .map(Segment::unbacked).sum::<usize>();
-    reclaim::acquire(device, need, Wait::Yes, keep, || {
+    let mapped = reclaim::acquire(device, need, Wait::Yes, keep, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -2228,7 +2240,11 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
             Ok(have.max(wanted))
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
-    })
+    })?;
+    if scramble {
+        checks::scramble(owner, pool)?;
+    }
+    Ok(mapped)
 }
 
 /// The next capture on this pool is this module's own. Torch's lazily created RNG tensors,

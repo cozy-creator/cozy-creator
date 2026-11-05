@@ -184,6 +184,20 @@ def reset_peak(device: DeviceLike = 0) -> None:
     _ext._varena_working_reset_peak(_device(device))
 
 
+def checks(*, unmap_idle: bool = False, perturb: bool = False, guards: bool = False) -> None:
+    """A gate cell's first call, never a product's. `unmap_idle`: every idle pool's pages go before
+    a scratch pool's use. `perturb`: freed and reused blocks and a scratch pool's pages read as a
+    nonzero pattern. `guards`: unmapped VA after each large block and pool. Costly while on."""
+    _ext._varena_set_checks(unmap_idle | perturb << 1 | guards << 2)
+
+
+def check_counts() -> dict[str, int]:
+    """What `checks` has done in this process, so a cell can show it did something."""
+    uses, unmapped, perturbed = _ext._varena_check_counts()
+    return {"uses": uses, "unmapped_bytes": unmapped, "perturbed_bytes": perturbed}
+
+
+
 def unit_bytes() -> int:
     """How large a block a whole module may be before its children bind instead."""
     return _ext._varena_unit_bytes()
