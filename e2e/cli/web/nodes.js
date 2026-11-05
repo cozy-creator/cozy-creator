@@ -494,7 +494,7 @@ function linesOf(text, name) {
     await until('the soundscape as the CLI reads it', async () => status('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
     check('an_empty_one_isnt_written', !('music' in status('sounded').fields), status('sounded').fields);
     await page.keyboard.type('Low strings.');
-    await page.keyboard.press('Escape');
+    await sounded.locator('.mention-text[data-field=music]').blur();
     await until('the music as the CLI reads it', async () => status('sounded').fields?.music, (said) => said === 'Low strings.');
     await shot('sounded');
 
@@ -506,10 +506,10 @@ function linesOf(text, name) {
     await wording.locator('.mention-text[data-field=text]').waitFor();
     await wording.locator('.mention-text[data-field=text]').click();
     await page.keyboard.type('Painted by hand.');
+    await wording.locator('.mention-text[data-field=text]').blur();
     await until('its words as the CLI reads them', async () => status('text').fields?.text, (said) => said === 'Painted by hand.');
     check('text_has_no_render', (await wording.locator('button:text-is("Render"), .takes, button:text-is("Approve")').count()) === 0, await wording.innerText());
     check('text_has_a_kind', status('text').kind === 'text', status('text'));
-    await page.keyboard.press('Escape');
     await told.locator('.add-beat').click();
     await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
     check('either_can_go_now', (await told.locator('[aria-label^="Remove beat"]').count()) === 2);

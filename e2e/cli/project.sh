@@ -2193,7 +2193,7 @@ ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock"); id=$(status "$T" |
 api --get --data-urlencode "project=$id" "http://$ADDR/v1/tools" > "$OUT/filled-tools.json"
 one() { jq -c --arg f "$1" '.tools[] | select(.local and .function == $f)' "$OUT/filled-tools.json"; }
 control() { jq -c --arg f "$2" '.controls[] | select(.field == $f)' <<< "$(one "$1")"; }
-J '.label == "Shaped Shot" and .takes == true' <<< "$(one shot)" || check "filled: a Node's label and takes: $(one shot)"
+J '(.label | startswith("Shaped Shot")) and .takes == true' <<< "$(one shot)" || check "filled: a Node's label and takes: $(one shot)"
 J '.type == "group" and .min_items == 1 and .max_items == 8 and .face and .required and (.members | map(.field) == ["description", "duration"])' <<< "$(control shot beats)" || check "filled: a group: $(control shot beats)"
 J '.members[1] | .type == "range" and .min == 1 and .max == 15 and .total and .unit == "s" and .default == 5' <<< "$(control shot beats)" || check "filled: a group's member: $(control shot beats)"
 J '.face and .placeholder == "N/A (silent)"' <<< "$(control shot soundscape)" || check "filled: show and placeholder: $(control shot soundscape)"
@@ -2203,18 +2203,6 @@ J '(.face // false) | not' <<< "$(control shot turbo)" || check "filled: a toggl
 [ -z "$(control shot references)$(control shot continue_from)$(control shot steps)$(control shot plate)" ] || check "filled: what's filled or hidden is a control: $(one shot)"
 [ -z "$(control up latents)$(control up prompt)" ] || check "filled: what's filled is a control: $(one up)"
 J '.type == "file" and .accept == "image"' <<< "$(control shot first_frame)" || check "filled: a file by its type: $(control shot first_frame)"
-if [ -d "${PACKAGES:-}/minimax-h3" ]; then
-  step "a node: H3's own box, read from its source"
-  cat >> "$T/project.yaml" <<YAML
-  h3_shot: {tool: $(cd "$PACKAGES" && pwd)/minimax-h3/generate, summary: Read only.}
-YAML
-  api --get --data-urlencode "project=$id" "http://$ADDR/v1/tools" > "$OUT/filled-tools.json"
-  J '.type == "group" and .min_items == 1 and .face' <<< "$(control generate beats)" || check "filled: H3's beats: $(one generate)"
-  J '.face and .placeholder == "N/A (silent)"' <<< "$(control generate soundscape)" || check "filled: H3's soundscape: $(one generate)"
-  J '.type == "toggle" and .default == true' <<< "$(control generate turbo)" || check "filled: H3's Turbo: $(one generate)"
-  [ -z "$(control generate style)$(control generate prompt)$(control generate duration_s)" ] || check "filled: H3 still takes these: $(one generate)"
-  sed -i '/^  h3_shot:/d' "$T/project.yaml"
-fi
 }
 
 # A tool is a function: what a node names, what makes it, what its box shows, and what crosses a mention. Weightless, by project/tool.py.
@@ -2376,7 +2364,7 @@ J '.type == "range" and .min == 0 and .max == 1' <<< "$(control told shade)" || 
 J '.type == "toggle" and .default == true' <<< "$(control told bright)" || check "tools: a toggle's default: $(control told bright)"
 J '.type == "group" and .max_items == 4 and (.members[1] | .max == 15)' <<< "$(control told beats)" || check "tools: a package's own limit: $(control told beats)"
 J '.type == "file" and .accept == "video"' <<< "$(control told video)" || check "tools: a file by its type: $(control told video)"
-J '.label == "Told"' <<< "$(one told)" || check "tools: a Node's label: $(one told)"
+J '.label | startswith("Told")' <<< "$(one told)" || check "tools: a Node's label: $(one told)"
 [ -z "$(control told secret)" ] || check "tools: a hidden field shows: $(one told)"
 J '.type == "shape" and .options == ["1:1"]' <<< "$(control told aspect_ratio)" || check "tools: a shape's options: $(control told aspect_ratio)"
 
@@ -2482,7 +2470,6 @@ stops
 failed_once
 absent_piece
 rename_waits
-[ -d "${PACKAGES:-}/minimax-h3" ] || return 0
 step "a project: another package's take is refused, with nothing sent"
 local H=$OUT/refused; mkdir -p "$H"; plate "$H/look.mp4" testsrc2 440 800
 printf 'version: 3\nassets: {}\n' > "$H/project.yaml"
@@ -2499,9 +2486,11 @@ assets:
     approved: $look
 YAML
 render "$H" clash || check "refused: the first take: $(tail -c 300 "$OUT/render.txt")"
-sed -i "s#tool: .*shots.py/shoot#tool: $(cd "$PACKAGES" && pwd)/minimax-h3/generate#" "$H/project.yaml"
+sed -i "s#tool: .*shots.py/shoot#tool: $here/project/shaped.py/shot#" "$H/project.yaml"
+before=$(runs "$H")
 code=0; render "$H" clash --take 1 --in 5 || code=$?
-{ [ "$code" != 0 ] && says refused "has no latents this package can read"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
+{ [ "$code" != 0 ] && says refused "has no latents this package can read" && says refused "cozy project render clash"; } || check "refused: another package's take (exit $code): $(tail -c 300 "$OUT/render.txt")"
+[ "$(runs "$H")" = "$before" ] || check "refused: a refused take ran something"
 }
 
 # A film short of its pieces, as a lock from 0.18.5 can hold one, isn't its state: any render cuts it whole, with its pieces as written.

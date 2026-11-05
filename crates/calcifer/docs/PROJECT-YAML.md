@@ -108,7 +108,7 @@ Every other key is an **input**: it goes to the function and counts in the key. 
 | A picture, `qwen-image-2/generate_turbo`, `generate` | `instructions`, `aspect_ratio`, `megapixels`, `preset`; `steps` on `generate` |
 | An edit or a frame, `cozy/edit`, `cozy/frame` | See below |
 
-**A shot with no `soundscape` or `music`** says `N/A` for each, which H3 reads as silence, with no warning: it's the default. Dialogue goes in a beat's text. **One beat and no `summary`** goes to the model as written, in MiniMax's own form if you like; its `duration` is then the whole video's. A package chooses its own internals, such as how many context frames H3 keeps.
+**A shot with no `soundscape` or `music`** says `N/A` for each, which H3 reads as silence, with no warning: it's the default. Dialogue goes in a beat's text. **One beat and no `summary`** goes to the model as written, in MiniMax's own form if you like, at most 15 s here: `cozy run` takes one of any length. A package chooses its own internals, such as how many context frames H3 keeps.
 
 ## Mentions
 

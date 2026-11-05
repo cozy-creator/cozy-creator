@@ -125,15 +125,14 @@ impl Filling<'_> {
     /// What `member` of a mention is, in the platform's words or the asset's own, but for its files.
     fn word(&self, read: &Given, member: &str) -> Option<Value> {
         let text = |text: &str| (!text.is_empty()).then(|| json!(text));
-        let number = |number: f64| (number != 0.0).then(|| json!(number));
         match member {
             "name" => Some(json!(read.name.replace('.', " "))),
             "description" => text(&read.description),
             "asset_type" => text(&read.asset_type),
             "made_by" => text(&read.made_by),
-            "alpha" => number(self.measured(read)?.alpha),
-            "width" => number(self.measured(read)?.width as f64),
-            "height" => number(self.measured(read)?.height as f64),
+            "alpha" => Some(self.measured(read)?.alpha).filter(|alpha| *alpha != 0.0).map(|alpha| json!(alpha)),
+            "width" => Some(self.measured(read)?.width).filter(|width| *width != 0).map(|width| json!(width)),
+            "height" => Some(self.measured(read)?.height).filter(|height| *height != 0).map(|height| json!(height)),
             field => read.inputs.get(field).cloned(),
         }
     }
