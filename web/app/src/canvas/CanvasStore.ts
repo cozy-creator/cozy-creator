@@ -158,6 +158,8 @@ export class CanvasStore {
   private shapes = new Map<string, string>()
   private pauses = new Map<string, ReturnType<typeof setTimeout>>()
   private asked = new Set<number>()
+  /** What's been said of a render that never reached a machine. */
+  private unsentSaid = new Set<string>()
   private runs = new Map<number, Run>()
   /** What a person did, in order, on its way to Calcifer. */
   readonly outbox = new Outbox()
@@ -392,6 +394,12 @@ export class CanvasStore {
       const was = [...this.views.keys()].find((held) => !present.has(held) && !this.views.get(held)?.placing && !becoming.has(held) && samePlace(this.position(held) ?? { x: NaN, y: NaN }, row))
       if (was) this.moveName(was, name)
     }
+    if (!state.unsent?.length) this.unsentSaid.clear()
+    for (const failure of state.unsent ?? []) {
+      if (this.unsentSaid.has(failure.message)) continue
+      this.unsentSaid.add(failure.message)
+      say(failure.message, new ApiError(0, failure))
+    }
     const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
     const warnings = warningsOf(state).byElement
     this.owners.clear()
@@ -408,6 +416,8 @@ export class CanvasStore {
       const view = this.views.get(asset.name)
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
+        // A render that fails says so as it fails, wherever the person is looking. One that failed before this page opened is the box's to show.
+        if (asset.failure && this.hasRead && asset.failure.message !== view.asset?.failure?.message) say(`${asset.name} didn't render`, new ApiError(0, asset.failure))
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (view.asked !== undefined && view.asked < this.began) change.asked = undefined
