@@ -13,7 +13,7 @@ const { exec, execFileSync, spawnSync } = require('child_process');
 const { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav, pointAt } = require('./page');
+const { MP4, boxLog, STEP_MS, lastLook, lookAt, png, until, watchBoxes, wav, pointAt, inView } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -34,6 +34,7 @@ const away = (page) => page.mouse.move(2, 500);
 async function open(page, name) {
   await away(page);
   await pointAt(page, element(page, name).locator('.nm'));
+  await inView(page, element(page, name));
 }
 async function tag(page, name) {
   await open(page, name);
@@ -327,11 +328,6 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
 
   // A failure is named and stays: this asks for no run, as what it reads can never be made.
   const needs = element(page, 'needs');
-  await open(page, 'needs');
-  // Its controls open under it, and it sits low: the canvas goes up as far as they need, as a person would take it.
-  const under = await needs.locator('.take.add').boundingBox();
-  await page.mouse.wheel(0, Math.max(0, under.y + under.height + 40 - page.viewportSize().height));
-  await page.waitForTimeout(200);
   await open(page, 'needs');
   await needs.locator('.take.add').click();
   const failed = await until('its reason', () => asset('needs'), (held) => held.failure);

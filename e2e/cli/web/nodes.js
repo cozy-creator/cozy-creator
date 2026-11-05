@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt } = require('./page');
+const { MP4, boxLog, STEP_MS, drop, lastLook, lookAt, png, until, watchBoxes, pointAt, inView } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -97,12 +97,14 @@ function linesOf(text, name) {
     await away();
     await pointAt(page, box(name).locator('.nm'));
     await box(name).locator('.head [aria-label=Delete]').waitFor();
+    await inView(page, box(name));
   };
   // Behind its More, opened if it isn't.
   const more = async (name) => {
     await open(name);
     if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
     await box(name).locator('.edit-more').waitFor();
+    await inView(page, box(name));
   };
   await page.evaluate(() => { window.notReloaded = true; });
 
