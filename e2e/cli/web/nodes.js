@@ -268,7 +268,6 @@ function linesOf(text, name) {
   await until('it went back', () => box('source-b').locator('.nm').boundingBox(), (now) => Math.abs(now.x - from.x) < 3 && Math.abs(now.y - from.y) < 3);
   await open('Sheet');
   await until('chips', () => sheetText.locator('.chip').count(), (n) => n === 2);
-  await until('its pictures, small', () => box('Sheet').locator('.mention-thumb img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n === 2);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
   check('wire_etag', /^"[0-9a-f]{64}"$/.test((await of('Sheet')).etag ?? ''), (await of('Sheet')).etag);

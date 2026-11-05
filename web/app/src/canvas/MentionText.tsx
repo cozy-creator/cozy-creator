@@ -1,10 +1,8 @@
 import { type ClipboardEvent, type KeyboardEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useSignal } from "../ui/signal"
-import { useCanvasStore, useElement } from "./context"
-import { Thumb } from "./Media"
-import { shownOf } from "./shown"
-import { mentionsIn, withMentions } from "./text"
+import { useCanvasStore } from "./context"
+import { withMentions } from "./text"
 
 function chip(name: string, missing: boolean): HTMLElement {
   const el = document.createElement("span")
@@ -265,32 +263,6 @@ export function MentionText({
           </ul>,
           document.body,
         )}
-      <MentionThumbs text={value} besides={asset} />
     </>
-  )
-}
-
-function MentionThumb({ name }: { name: string }) {
-  const store = useCanvasStore()
-  const view = useElement(store.nameOf(name) ?? name)
-  const shown = view && shownOf(view)
-  if (!shown || shown.absent || shown.field === "audio") return null
-  return (
-    <span className="mention-thumb" title={name}>
-      <Thumb sha256={shown.sha256} cardWidth={120} />
-    </span>
-  )
-}
-
-/** The pictures a text mentions, small, under it. */
-function MentionThumbs({ text, besides }: { text: string; besides: string }) {
-  const mentioned = mentionsIn(text).filter((name) => name !== besides)
-  if (!mentioned.length) return null
-  return (
-    <div className="mention-thumbs">
-      {mentioned.map((name) => (
-        <MentionThumb key={name} name={name} />
-      ))}
-    </div>
   )
 }
