@@ -46,8 +46,9 @@ const BARS = {
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
   pan_work_times_small: 1.5,
   pan_work_slack_ms: 2,
-  // ms of the page's thread each second with nothing happening: a twentieth, until Linux and Windows have said what it is.
-  rest_ms_per_s: 50,
+  // ms of the page's thread each second left alone. Read 0.1 to 0.2 on this project on all three OSes, 11.9 at the most on any: this is twice that,
+  // and under what a loop of frames would spend, 1 to 3 ms sixty times a second.
+  rest_ms_per_s: 25,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
