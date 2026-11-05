@@ -52,7 +52,8 @@ function linesOf(text, name) {
   const errors = [];
   const refused = [];
   seen.refused = refused;
-  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  // WebKit hands the page's error event its spec's own note that a ResizeObserver put a delivery off a frame, which nothing has thrown.
+  page.on('pageerror', (error) => { if (!(process.env.ENGINE === 'webkit' && /^ResizeObserver loop completed with undelivered notifications/.test(error.message))) errors.push(`pageerror: ${error.message}`); });
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   page.on('response', (answer) => {
     const url = new URL(answer.url());
