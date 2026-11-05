@@ -250,7 +250,8 @@ assets:
   });
   await list('shot').hover();
   await box('shot').locator(`[aria-label="Take ${word(loraB)} off shot"]`).click();
-  await until('one LoRA left', () => box('shot').locator('.add-on:not(.fine-tune)').count(), (n) => n === 1, 2000);
+  // Its tool's chip is first in the stack, and no LoRA.
+  await until('one LoRA left', () => box('shot').locator('.add-on:not(.fine-tune):not(.tool)').count(), (n) => n === 1, 2000);
   check('x_before_the_write', yaml().includes(loraB.model));
   again();
   await page.unroute(`**/v1/projects/${id}/assets/shot`);

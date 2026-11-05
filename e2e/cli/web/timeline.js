@@ -327,6 +327,9 @@ function plate(path, color, seconds, hz) {
 
   // Its asset deleted: the clip says so, plainly, and a render goes on without it.
   await away();
+  // Back at rest its X may be past the window: F brings it all in, as for a person.
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
   await pointAt(page, card('red').locator('.nm'));
   await card('red').locator('button[aria-label="Delete"]').click();
   await openEdit();

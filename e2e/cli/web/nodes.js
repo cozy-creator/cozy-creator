@@ -391,7 +391,8 @@ function linesOf(text, name) {
   await page.keyboard.press('End');
   await page.keyboard.type(' mine');
   replaceFile(yamlAt, yaml().replace('      Written\n', '      Rewritten\n'));
-  await until('its etag read again', () => box('source-a').count(), (n) => n === 1);
+  // Read again: the canvas is drawn in on Sheet, so what else is on it may not be drawn.
+  await until('its etag read again', async () => (await of('kept_words'))?.fields?.description ?? '', (text) => text.includes('Rewritten'));
   await until('another\'s edit is no conflict', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('mine'));
   await sheetText.click();
   await page.keyboard.press('End');

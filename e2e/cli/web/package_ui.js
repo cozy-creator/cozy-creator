@@ -164,9 +164,10 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await openBox(page, name);
     await box(name).locator('button[aria-label=Render]').waitFor();
   };
-  // Behind its More, opened if it isn't.
+  // Behind its More, opened if it isn't. With nothing behind it there's no More, and all of it shows.
   const more = async (name) => {
     await open(name);
+    if (!(await box(name).locator('.more-toggle').count())) return;
     if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
     await box(name).locator('.edit-more').waitFor();
   };
