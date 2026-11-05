@@ -53,6 +53,7 @@ pub(crate) struct Lease {
 
 impl Lease {
     pub(crate) fn acquire(ordinal: i32) -> Result<Self> {
+        let _timed = crate::diag::T::new(17);
         let device = crate::gpu(ordinal)?;
         let active = device.plan.lock().map_err(|_| Error::Poisoned("plan mutex".into()))?;
         Ok(Self {
@@ -161,6 +162,7 @@ impl Drop for Plan {
 
 /// Caller holds the gate; the table is not locked.
 pub(crate) fn snapshot(lease: &Lease) -> Result<Option<Snapshot>> {
+        let _timed = crate::diag::T::new(16);
     lease.validate()?;
     let Some((plan, index)) = &lease.active else {
         return Ok(None);
