@@ -1,6 +1,6 @@
 //! Bounded pinned host staging; every native device buffer belongs to Varena working memory.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::{AcqRel, Relaxed}};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -223,7 +223,6 @@ struct Engine {
     near: Near,
     free: Mutex<Vec<Slot>>,
     serial: Mutex<()>,
-    seen: Mutex<VecDeque<(usize, usize)>>,
     held: Mutex<Vec<Retained>>,
     staged: Mutex<Vec<Slot>>,
     /// Completed events of this context, reused: a run records a start and an end on every
@@ -462,25 +461,12 @@ impl Engine {
             near,
             free: Mutex::new(free),
             serial: Mutex::new(()),
-            seen: Mutex::new(VecDeque::new()),
             held: Mutex::new(Vec::new()),
             staged: Mutex::new(Vec::new()),
             events: Mutex::new(Vec::new()),
         });
         engines.insert(device, engine.clone());
         Ok(engine)
-    }
-
-    fn reused(&self, ptr: usize, len: usize) -> bool {
-        let mut seen = self.seen.lock().unwrap();
-        if seen.contains(&(ptr, len)) {
-            return true;
-        }
-        if seen.len() >= 256 {
-            seen.pop_front();
-        }
-        seen.push_back((ptr, len));
-        false
     }
 
     fn wait(&self, event: &Event, streams: usize) -> cuda::Result<()> {
@@ -660,22 +646,11 @@ impl Engine {
                 );
                 if !staged_host {
                     if let (Src::Host(ptr), Dst::Device { .. }) = (c.src, c.dst) {
-                        let reused = self.reused(ptr as usize, c.dst.len());
+                        // An unregistered source is staged: registering for one copy, and the
+                        // unregister after it, stall the whole device. Its owner registers it once.
                         // SAFETY: `ptr` is the caller's live host source for this read (read's contract).
                         if unsafe { cuda::registered(ptr) }.map_err(|e| failed(copy, e))? {
                             direct = true;
-                        } else if reused {
-                            let start = Instant::now();
-                            let pin =
-                                // SAFETY: `[ptr, ptr+len)` is the caller's live host source until the copy completes (read's contract).
-                                unsafe { cuda::pin_region(ptr.cast_mut(), c.dst.len(), true) };
-                            tally
-                                .pin_ns
-                                .fetch_add(start.elapsed().as_nanos() as u64, Relaxed);
-                            if let Ok(pin) = pin {
-                                owners.pins.push(pin);
-                                direct = true;
-                            }
                         }
                     }
                 }
