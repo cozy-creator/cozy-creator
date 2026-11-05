@@ -46,7 +46,7 @@ refuses, as with minimax-h3 on Runtime 0.40.0. A cut runs it before anything els
 2. Puts the candidate on it: `--runtime`, `--tensorfs`, `--tensord` (a cozy binary; each a file or `URL#sha256=`), `--pins`
    (exact package releases, `sdxl@0.1.1,…`: a package candidate is published and yanked, and installs only by its pin),
    or `--packages` (a packages checkout whose directories run). Unpinned cells run the root package users get.
-   The candidate's cozy puts it on; its `machine update` fails unless the machine then runs it.
+   This computer's cozy puts it on (a cozy of another version would restart a shared Calcifer); `machine update` fails unless the machine then runs it.
 3. Runs the chosen suites' cells, each once, with new prompts and seeds. A slow run goes on; a hung one stops: when no run
    on the machine moves for `--stall` minutes by the runs' own progress clock (15; the longest quiet in 786 real cells was
    7.2), the gate cancels them, fails and ends the rental. It renews the rental's idle clock only while they move.

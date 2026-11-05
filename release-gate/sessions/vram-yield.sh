@@ -19,6 +19,7 @@
 #           GPU's reading is known again once the game exits (an ambiguous start is never taken as foreign for life)
 # params:
 #   runtime, tensorfs  `machine update` versions (default: the pod's own)
+#   tensord            a cozy binary for the pod (default: the session's)
 #   idle_gb, midjob_gb, big_gb  the games (default 5, 3 and 5, of an 8 GB card)
 #   traffic_gb         GB the provider bills: the image, SDXL, Qwen and the fixture's environment (default 45)
 . "$(dirname "$0")/lib.sh"
@@ -29,7 +30,7 @@ FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
 quote "$(param traffic_gb 45)" 3000
 rent
 
-args=(--tensord "$(command -v cozy)")
+args=(--tensord "$(param tensord "$(command -v cozy)")")
 [ -z "$(param runtime)" ] || args+=(--runtime "$(param runtime)")
 [ -z "$(param tensorfs)" ] || args+=(--tensorfs "$(param tensorfs)")
 step update machine update "$NAME" "${args[@]}" -y || fail "update"

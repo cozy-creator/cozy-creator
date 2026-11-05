@@ -13,7 +13,8 @@
 # is gate-<SKU>-<suites>.json.
 # A candidate URL is https://…#sha256=<hex>: fetched here, held by its digest, and sent as a file
 # (`cozy machine update --runtime/--tensorfs/--tensord <path>`).
-# One FRESH rental. The candidate goes on with the candidate's own cozy's `machine update`, which fails unless the
+# One FRESH rental. The candidate goes on with $CLI's `machine update`, never the candidate binary's: a cozy of another
+# version talking to a shared Calcifer restarts it on a route it lacks. The update fails unless the
 # machine then runs it; the set the machine reports is the gate's label. Then each cell runs ONCE (e2e/run.sh)
 # with a scenario prompt from scenarios.tsv and fresh seeds. A cell runs the root (first-party) package users get;
 # --pins runs exact releases of them instead (a yanked candidate installs by its exact pin), --packages a packages
@@ -85,8 +86,6 @@ if [ -n "$TDF" ]; then
   chmod +x "$TDF"; BIN=$("$TDF" --version | awk '{print $2}')
   [ -n "$BIN" ] || { log "$TD is not a cozy binary"; exit 1; }
 fi
-# The candidate's own cozy puts the candidate on.
-UP=${TDF:-$CLI}
 [ -z "$RWF" ] || CAND+=(--runtime "$RWF"); [ -z "$TWF" ] || CAND+=(--tensorfs "$TWF"); [ -z "$TDF" ] || CAND+=(--tensord "$TDF")
 BK=$SKU${SUITES:+-${SUITES//,/-}}  # the baseline's name
 echo "$BK" > "$OUT/baseline-key"  # release-gate.yml's baseline job publishes under it
@@ -344,7 +343,7 @@ notinstalled() {
 }
 # cozy's `machine update` fails (update_unapplied) unless the machine then runs what it was sent.
 if [ ${#CAND[@]} -gt 0 ]; then
-  "$UP" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
+  "$CLI" --json machine update "$M" "${CAND[@]}" -y >update.json 2>update.log; code=$?
   log "candidate on $M: exit $code $(jq -c 'select(.machine and .tensord)' update.json 2>/dev/null)"
   [ "$code" = 0 ] || notinstalled "cozy machine update exit $code: $(jq -r 'select(.error) | "\(.error.code): \(.error.message)"' update.json 2>/dev/null) $(tail -c 300 update.log | tr '\n' ' ')"
 fi
