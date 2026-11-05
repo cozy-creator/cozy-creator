@@ -629,9 +629,9 @@ function linesOf(text, name) {
   const stalled = Date.now();
   const fill = 'f'.repeat(200);
   const big = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`${fill}_${i}`, { x: i, y: 0 }]));
-  // Past what a socket and the browser hold on any OS, each its own event.
+  // Past what a socket and the browser hold on any OS, each its own event: Windows has held 24 MB and never fallen behind (41971301588).
   const body = JSON.stringify({ cards: big });
-  for (let sent = 0; sent < 24 << 20; sent += body.length) {
+  for (let sent = 0; sent < 64 << 20; sent += body.length) {
     const answer = await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body });
     if (answer.status !== 200) throw new Error(`filling: ${JSON.stringify(answer)}`);
   }
