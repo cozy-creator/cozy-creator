@@ -550,6 +550,7 @@ function linesOf(text, name) {
     await box('Sheet').locator('.take-at').first().hover();
     await box('Sheet').locator('.take-at .take-off').first().click();
     check('a_take_goes_at_once', (await strip()) === asked - 1, await strip());
+    check('and_the_box_stays_open', (await page.locator('.open-box').count()) === 1);
     await until('and from the project', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked - 1);
     await page.locator('.note:has-text("Discarded") button:has-text("Undo")').first().click();
     await until('it came back', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked);
@@ -560,7 +561,7 @@ function linesOf(text, name) {
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
     const filesBefore = readdirSync(join(folder, 'files')).length;
     await open('Sheet');
-    await box('Sheet').locator('.take[aria-label="version 2"]').dragTo(page.locator('.stage'), { targetPosition: { x: 320, y: 700 } });
+    await box('Sheet').locator('.take[aria-label="version 2"]').dragTo(page.locator('.open-back'), { targetPosition: { x: 60, y: 700 } });
     const out = await until('taken out', () => of('Sheet_2'), Boolean);
     check('taken_out_is_the_same_file', out.sha256 === (await of('Sheet')).prefixes[1].main.sha256 && !out.tool, out);
     check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);

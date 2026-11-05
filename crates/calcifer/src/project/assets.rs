@@ -70,31 +70,38 @@ pub(super) async fn create(
     let (read_kind, read_name) = read.unzip();
     let said = said.or(read_kind);
     let _one = project.importing.lock().expect("importing lock");
-    let lock = folder.lock().map_err(Refusal)?;
     let told = key.as_ref().and_then(|(key, _)| folder.keyed(key));
     if let (Some(told), Some((key, digest))) = (&told, &key)
         && told.digest != *digest
     {
         return Err(Refusal(Error::new(Kind::Conflict, "idempotency_conflict", format!("Idempotency-Key {key} asked another asset already"))));
     }
+    // The lock is read where it's held: a copy of it is a good part of what a POST costs in a big project.
     let name = match &told {
         Some(told) => told.name.clone(),
         None => {
             let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { "asset" }.to_owned());
-            if text_asset {
-                format::refuse_tag(&lock, &wanted).map_err(Refusal)?;
-            }
             let text = folder.text().map_err(Refusal)?;
             let names = assetfile::names(&text);
-            let free = format::free_of(|name| names.contains(&name_key(name)), &lock, &wanted);
+            let free = folder.reading_lock(|lock| {
+                if text_asset {
+                    format::refuse_tag(lock, &wanted)?;
+                }
+                Ok(format::free_of(|name| names.contains(&name_key(name)), lock, &wanted))
+            });
+            let free = free.and_then(|free: Result<String, Error>| free).map_err(Refusal)?;
             if asked.exact && free != wanted {
+                let lock = folder.lock().map_err(Refusal)?;
                 return Err(Refusal(format::name_taken(&Doc::of(folder, &text, &lock).map_err(Refusal)?, &wanted)));
             }
             free
         }
     };
     // What it outputs: what `defaults` fill of it before it has a version.
-    let makes = plain.as_ref().and_then(|plain| said.as_ref().filter(|kind| lock.makes.get(plain) != Some(kind)).map(|kind| (plain.clone(), kind.clone())));
+    let makes = match plain.as_ref().zip(said.as_ref()) {
+        Some((plain, kind)) if folder.reading_lock(|lock| lock.makes.get(plain) != Some(kind)).map_err(Refusal)? => Some((plain.clone(), kind.clone())),
+        _ => None,
+    };
     if let Some((key, digest)) = key.as_ref().filter(|_| told.is_none()) {
         folder.keep_key(key, digest, &name, None).map_err(Refusal)?;
     }

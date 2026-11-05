@@ -86,11 +86,8 @@ export class Placer {
       asName(file.name),
       { landed: { sha256: file.sha256, field: file.field } },
       at,
-      async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear }, once),
+      async (clear, once) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description }, once),
       (error) => say(`Couldn't take out ${file.name}`, error),
-      (name) => {
-        if (description) void this.store.setFields(name, { description })
-      },
     )
   }
 
