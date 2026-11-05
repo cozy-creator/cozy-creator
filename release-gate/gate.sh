@@ -30,7 +30,7 @@ fi
 HERE=$2; shift 2
 . "$HERE/machines.sh"
 REPO=cozy-creator/cozy-creator TAG=release-gate-baselines
-SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30
+SKU=$1; shift; CAND=() ONLY= EXTRA=() BEFORE=() CLI=cozy DISK=400 OUT= PKGS= ESTABLISH= PUBLISH= PINS= SUITES= K= CLIP= GPUS= FIRST= ON= IMAGE= STALL=15 STALL_STAGE=30 SEEDS= SCENARIO=
 BIN= RW= TW= TD=
 while [ $# -gt 0 ]; do
   case $1 in
@@ -53,6 +53,8 @@ while [ $# -gt 0 ]; do
     --runtime|--runtime-wheel) RW=$2;;
     --tensorfs|--tensorfs-wheel) TW=$2;;
     --tensord) TD=$2;;
+    --seeds) SEEDS=$2;;
+    --scenario) SCENARIO=$2;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
 done
@@ -98,9 +100,12 @@ else
 fi
 REF=$(ls "$B/ref-$SKU".* 2>/dev/null | grep -v -- -clip | head -1); REF=${REF:-$HERE/ref/seed.jpg}
 mapfile -t ROWS < <(grep -v '^#' "$HERE/scenarios.tsv")
+# --scenario and --seeds replay a logged gate ("scenario <name>, seeds from <n>") exactly.
 I=$(( $(date +%s) / 60 + $(cksum <<< "$SKU" | cut -d' ' -f1) ))
+[ -z "$SCENARIO" ] || for I in "${!ROWS[@]}"; do [ "${ROWS[$I]%%$'\t'*}" = "$SCENARIO" ] && break; done
 IFS=$'\t' read -r NAME CHAR MOTION OBJECT SCENE <<< "${ROWS[$((I % ${#ROWS[@]}))]}"
-R=$(( $(date +%s%N) / 1000 % 4000000000 ))
+[ -z "$SCENARIO" ] || [ "$NAME" = "$SCENARIO" ] || { echo "no scenario $SCENARIO in scenarios.tsv" >&2; exit 2; }
+R=${SEEDS:-$(( $(date +%s%N) / 1000 % 4000000000 ))}
 M= RID= RP= KEEP= AQ=
 # The machine's own logs as they stand. A pod that's gone can't answer, so what was last saved stays.
 save_machine_logs() {
