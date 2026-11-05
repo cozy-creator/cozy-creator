@@ -739,7 +739,7 @@ impl Device {
 }
 
 /// SCRATCH, never to land: inside a derive, 0 its whole time, 1 nested uses, 2 their eviction waits.
-pub static DERIVE: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+pub static DERIVE: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7]; // 3 use, 4 prepare, 5 fill, 6 wait
 thread_local! { pub static DERIVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 pub fn derive_probe(at: usize, began: std::time::Instant) {
     DERIVE[at].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1090,7 +1090,9 @@ impl Region {
     #[allow(unsafe_code)]
     pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
         let nested = DERIVING.with(|on| on.get()).then(std::time::Instant::now);
+        let began = std::time::Instant::now();
         let result = unsafe { self.use_on_inner(consumer) };
+        if nested.is_none() { derive_probe(3, began); }
         if let Some(began) = nested { derive_probe(1, began); }
         result
     }
@@ -1099,14 +1101,20 @@ impl Region {
     unsafe fn use_on_inner(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
         let pin = loop {
             // SAFETY: this method's own contract.
-            match unsafe { self.prepare_on(consumer) } {
+            let began = std::time::Instant::now();
+            let prepared = unsafe { self.prepare_on(consumer) };
+            derive_probe(4, began);
+            match prepared {
                 Ok(async_fill::StreamPreparation::Ready(pin) | async_fill::StreamPreparation::Ordered(pin)) => break pin,
                 Ok(async_fill::StreamPreparation::Fill(fill)) => {
                     source::yield_to(self);
-                    break self.source.fill(fill, Some(consumer))?
+                    let began = std::time::Instant::now();
+                    let filled = self.source.fill(fill, Some(consumer));
+                    derive_probe(5, began);
+                    break filled?
                         .ok_or(Error::Invalid("a Source returned no pin to its consumer"))?;
                 }
-                Err(Error::Busy) if source::wait_for(self) => {}
+                Err(Error::Busy) if { let began = std::time::Instant::now(); let waited = source::wait_for(self); derive_probe(6, began); waited } => {}
                 Err(error) => return Err(error),
             }
         };
