@@ -169,14 +169,14 @@ const constants = (folder) => {
     const mine = rects.find((held) => held.name === name).rect;
     const others = rects.filter((held) => held.name !== name).map((held) => held.rect);
     const gap = 32;
-    for (const y of [120, -120, 240, -240]) {
-      for (const x of [180, -180, 360, -360]) {
+    for (const y of [120, -120, 240, -240, 360, -360]) {
+      for (const x of [180, -180, 360, -360, 540, -540]) {
         const [left, top, right, bottom] = [mine.left + x - gap, mine.top + y - gap, mine.right + x + gap, mine.bottom + y + gap];
         const onScreen = top > 60 && left > 230 && bottom < innerHeight - 20 && right < innerWidth - 20;
         if (onScreen && !others.some((other) => other.left < right && other.right > left && other.top < bottom && other.bottom > top)) return { dx: x, dy: y };
       }
     }
-    return { dx: 180, dy: 120 };
+    throw new Error(`nowhere clear to move it: ${JSON.stringify({ mine, others })}`);
   }, 'clash_take');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();

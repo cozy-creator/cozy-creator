@@ -119,6 +119,12 @@ short_film_heals
 cut_versions
 free_versions
 held_open
+step "a project: what needs a machine says so where there is none"
+local M=$OUT/no-machine code=0
+mkdir -p "$M"; cp "$here/project/draw.py" "$M/"
+printf 'version: 3\nassets:\n  made: {tool: ./draw.py/draw, instructions: Needs a machine.}\n' > "$M/project.yaml"
+render "$M" made || code=$?
+{ [ "$code" != 0 ] && grep -q "local runs aren't available" "$OUT/render.txt"; } || check "no machine (exit $code): $(tail -c 300 "$OUT/render.txt")"
 }
 
 # A film's versions, as `discards`, `renames_read` and `lost_lock` hold a take's, with nothing to run.
