@@ -740,7 +740,8 @@ impl Device {
 
 /// SCRATCH, never to land: 0 prepare, 1 yield, 2 source fill, 3 wait on the worker, 4 after use,
 /// 5 whole use, 6 uses, 7 read, 8 derive, 9 keep, 10 kept page DMA, 11 eviction's GPU event wait.
-pub static PROBE: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+/// 12 reserve, 13 copy, 14 touch, 15 register.
+pub static PROBE: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 pub fn probe(at: usize, began: std::time::Instant) {
     PROBE[at].fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
 }

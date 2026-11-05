@@ -274,15 +274,19 @@ impl Tier {
         if !admitted {
             return Ok(None);
         }
+        let began = Instant::now();
         let mut page = Page::new(len)?;
         // SAFETY: `len` bytes of this page: touched first, as registering touched memory is faster.
         unsafe { std::ptr::write_bytes(page.ptr, 0, len) };
+        varena::probe(14, began);
+        let began = Instant::now();
         while !page.registered() {
             if let Err(error) = page.register_window(self.device) {
                 self.state().off = Some(error.to_string());
                 return Ok(None);
             }
         }
+        varena::probe(15, began);
         Ok(Some(page))
     }
 

@@ -165,7 +165,9 @@ impl Inner {
     }
 
     fn keep(&self, key: &str, py: Python<'_>, view: &Bound<'_, PyAny>) -> PyResult<()> {
+        let began = Instant::now();
         let Some(page) = self.tier.reserve(key, self.bytes)? else { return Ok(()) };
+        varena::probe(12, began);
         // SAFETY: the memoryview ends with this call's objects, which the blocking copy outlives.
         let host = unsafe {
             Bound::from_owned_ptr_or_err(py, ffi::PyMemoryView_FromMemory(page.ptr().cast(), self.bytes as isize, ffi::PyBUF_WRITE))
@@ -173,11 +175,13 @@ impl Inner {
         let torch = py.import("torch")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("dtype", torch.getattr("uint8")?)?;
+        let began = Instant::now();
         let kept = torch.call_method("frombuffer", (host,), Some(&kwargs))?;
         for (at, len) in page.windows() {
             let window = pyo3::types::PySlice::new(py, at as isize, (at + len) as isize, 1);
             kept.get_item(&window)?.call_method1("copy_", (view.get_item(&window)?,))?;
         }
+        varena::probe(13, began);
         self.tier.insert(key, &self.set, page);
         Ok(())
     }
