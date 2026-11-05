@@ -371,7 +371,7 @@ async fn admit(State(api): State<Arc<Api>>, request: Request, next: Next) -> Res
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy web");
+        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
     // Through the door a mutation commits nothing here, and a long upload must not hold up a stop.

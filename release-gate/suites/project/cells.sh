@@ -106,7 +106,7 @@ YAML
       h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$P/$u")
       expect project-upscale "$([ "$h" = 1080 ] && [ "$(near "$(aspect "$P/$u")" "$(aspect "$P/$f")")" = PASS ] && echo PASS || echo FAIL)" \
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
-      "$CLI" --json run show "$("$CLI" --json project -p "$P" show mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
+      "$CLI" --json run show "$("$CLI" --json project -p "$P" status mural_upscale | jq -r '.versions[-1].runs[-1]')" --once | jq -r '.request.input.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
       e=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/edit.mp4" 2>/dev/null)
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit.mp4 ${e:-missing}"

@@ -1,4 +1,4 @@
-# e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy web
+# e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy open
 # --no-open`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
@@ -89,9 +89,9 @@ web_restart() {
 
 # A fresh sign-in link in $link, or a failed check.
 web_link() {
-  cozy web --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy web --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
+  cozy open --no-open > "$OUT/web-open.txt" 2>&1 || { check "web-serves: cozy open --no-open failed: $(tail -c 300 "$OUT/web-open.txt")"; return 1; }
   link=$(grep -oE 'http://[^[:space:]]+#code=[0-9a-f]+[^[:space:]]*' "$OUT/web-open.txt" | head -1)
-  [ -n "$link" ] || { check "web-serves: cozy web --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
+  [ -n "$link" ] || { check "web-serves: cozy open --no-open printed no link: $(head -c 300 "$OUT/web-open.txt")"; return 1; }
 }
 
 # web_proof <place|reconnect|drawers> <chrome> <playwright's prefix> <restart command, or nothing>: web/<it>.js, on a project of its own by

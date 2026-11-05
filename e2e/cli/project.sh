@@ -133,6 +133,7 @@ hard_cut
 upgrades
 old_landing
 lock_kept
+lost_lock
 text_assets
 memo
 pins
@@ -264,6 +265,8 @@ printf '{"nodes": {"a": {"kind": "character", "versions": [{"number": 1}]}}}\n' 
 before=$(sha "$O/project.lock")
 code=0; cozy project -p "$O" status > "$OUT/old-lock.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-lock.txt" && [ "$(sha "$O/project.lock")" = "$before" ]; } || check "a format 1 project.lock was read or written (exit $code): $(tail -c 200 "$OUT/old-lock.txt")"
+# What a page opening to the newest project would refuse.
+rm -rf "$O"
 }
 
 # Format 2 to format 3, here, with no Calcifer: nothing goes out of date and nothing runs. A project made for real, its files and versions
@@ -405,6 +408,7 @@ printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    
 cp "$N/project.yaml" "$OUT/upgrade-names.yaml"
 code=0; cozy project -p "$N" upgrade > "$OUT/upgrade-names.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'Amy_one and amy-ONE are one name' "$OUT/upgrade-names.txt" && cmp -s "$N/project.yaml" "$OUT/upgrade-names.yaml"; } || check "upgrade: names that are one (exit $code): $(tail -c 300 "$OUT/upgrade-names.txt")"
+rm -rf "$N"
 }
 
 # A text asset: its words go where it's mentioned, once, in Doc, and the key follows them.
@@ -494,7 +498,9 @@ J '[.warnings[]?.message] | any(contains("cozy project upgrade"))' <<< "$(cozy -
 
 step "a project: a run in flight over the upgrade lands, and is listed"
 cozy project -p "$T" upgrade > "$OUT/old-landing-upgrade.txt" 2>&1 || check "old landing: upgrade: $(tail -c 300 "$OUT/old-landing-upgrade.txt")"
-J '.run_files == 1' <<< "$(status "$T")" || check "old landing: what its run kept reads as nothing: $(status "$T" | jq -c .run_files)"
+J '.unrecorded == 1' <<< "$(cozy --json project -p "$T" reclaim)" || check "old landing: what its run kept isn't listed: $(cozy --json project -p "$T" reclaim)"
+cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || true
+[ "$(ls "$T/files" | wc -l)" = 1 ] || check "old landing: reclaim --yes took what its run kept"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 rm -f "$T/project.yaml.v2" "$T/project.lock.v2"
@@ -514,6 +520,7 @@ code=0; cozy project -p "$C" upgrade > "$OUT/old-landing-stuck.txt" 2>&1 || code
 [ "$code" != 0 ] || check "old landing: names that are one converted"
 (cd "$C" && cozy --json run "$here/project/draw.py" prompt=stuck) > "$OUT/old-landing-stuck.ndjson" 2>&1 || check "old landing: a run in it: $(tail -c 300 "$OUT/old-landing-stuck.ndjson")"
 [ "$(ls "$C/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: a project that can't convert lost its output: $(ls -a "$C" 2>&1 | tr '\n' ' ')"
+rm -rf "$C"
 
 step "a project: an upgrade cut short starts again from the originals"
 local K=$OUT/old-landing-cut
@@ -637,6 +644,68 @@ for label, size in (("3 versions, 6.1 MB", int(6.1 * 2**20)), ("9 versions, 18 M
     print(f"lock write at 5,000 assets, {label}: median {statistics.median(took) * 1000:.0f} ms, worst {max(took) * 1000:.0f} ms")
 PY
 rm -rf "$OUT/lock-write"
+}
+
+# With its lock lost, what's in `files/` may be all that's left of a project's takes: `reclaim --yes` deletes none of it.
+lost_lock() {
+step "a project: with its lock lost, reclaim --yes deletes nothing, and says what happened"
+local L=$OUT/lost-lock count code
+mkdir -p "$L"
+cat > "$L/project.yaml" <<YAML
+version: 3
+assets:
+  made: {tool: $here/project/draw.py/draw, instructions: Paid for.}
+YAML
+render "$L" made -n 2 || check "lost lock: render: $(tail -c 300 "$OUT/render.txt")"
+count=$(ls "$L/files" | wc -l)
+[ "$count" -ge 2 ] || check "lost lock: it made $count files"
+cp "$L/project.lock" "$OUT/lost-lock.lock"
+stays() {
+  J --arg s "$1" '.deleted != true and (.next // []) == [] and (.lost | contains($s)) and .files >= 2' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: a dry reclaim with $1: $(cozy --json project -p "$L" reclaim)"
+  code=0; cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || code=$?
+  { [ "$code" != 0 ] && grep -qF "$1" "$OUT/lost-lock.txt" && grep -q 'put project.lock back' "$OUT/lost-lock.txt"; } || check "lost lock: reclaim --yes with $1 (exit $code): $(tail -c 300 "$OUT/lost-lock.txt")"
+  [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes with $1 deleted: $(ls "$L/files" | wc -l) of $count"
+}
+rm "$L/project.lock"
+stays "project.lock is gone"
+J '[.warnings[].message] | any(contains("project.lock is gone"))' <<< "$(status "$L")" || check "lost lock: status doesn't say so: $(status "$L" | jq -c .warnings)"
+printf 'format: [3\n' > "$L/project.lock"
+status "$L" > /dev/null
+stays "can't be read"
+rm "$L/project.lock.broken" "$L/project.lock"
+printf 'format: 3\nassets: {}\nfiles: {}\n' > "$L/project.lock"
+stays "lists no versions"
+cp "$OUT/lost-lock.lock" "$L/project.lock"
+cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with it back: $(tail -c 300 "$OUT/lost-lock.txt")"
+[ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with it back, reclaim took what it names"
+
+step "a project: with a version landed since its lock was lost, reclaim --yes takes nothing old"
+rm "$L/project.lock"
+render "$L" made || check "lost lock: a version since: $(tail -c 300 "$OUT/render.txt")"
+count=$(ls "$L/files" | wc -l)
+J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: what's listed: $(cozy --json project -p "$L" reclaim)"
+cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim since: $(tail -c 300 "$OUT/lost-lock.txt")"
+[ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes took what it had no record of: $(ls "$L/files" | wc -l) of $count"
+
+step "a project: a deleted asset is an orphan, its name starts clean, and restore or reclaim settles it"
+local D=$OUT/deleted line
+mkdir -p "$D"
+cat > "$D/project.yaml" <<YAML
+version: 3
+assets:
+  kept: {tool: $here/project/draw.py/draw, instructions: One.}
+YAML
+render "$D" kept || check "deleted: render: $(tail -c 300 "$OUT/render.txt")"
+line=$(cozy project -p "$D" delete kept) || check "deleted: delete"
+J '[.orphans[] | select(.name == "kept") | .versions] == [1]' <<< "$(status "$D")" || check "deleted: no orphan: $(status "$D" | jq -c .orphans)"
+printf '  kept: {tool: %s/project/draw.py/draw, instructions: Something else.}\n' "$here" >> "$D/project.yaml"
+[ "$(made "$D" kept)" = 0 ] || check "deleted: a new asset took its name's versions: $(made "$D" kept)"
+sed -i '/^  kept: /d' "$D/project.yaml"
+eval "$line" > /dev/null || check "deleted: restore: $line"
+[ "$(made "$D" kept)" = 1 ] || check "deleted: restore lost its version: $(made "$D" kept)"
+cozy project -p "$D" delete kept > /dev/null || check "deleted: delete again"
+cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
+{ J '(.orphans // []) == []' <<< "$(status "$D")" && [ "$(ls "$D/files" | wc -l)" = 0 ]; } || check "deleted: reclaim left: $(ls "$D/files"), $(status "$D" | jq -c .orphans)"
 }
 
 # The key: a run only when an asset has no state. What doesn't change it, what does, reverting, and what reads what.
@@ -3028,13 +3097,21 @@ session_surface "$P" "$ID"
 yaml_routes "$P" "$ID"
 }
 
-# What web-serves (e2e/cli/web.sh) leaves to a project: project open's link, a video's Range on ?media=, and what sessions.json keeps.
+# What web-serves (e2e/cli/web.sh) leaves to a project: cozy open's link, a video's Range on ?media=, and what sessions.json keeps.
 session_surface() {
 step "a project: its link, and a session's file"
 local P=$1 ID=$2 B=http://$ADDR code token media sessions=$HOME/.cozy/calcifer/sessions.json U
 U=$B/v1/projects/$ID/cuts/edit.mp4
-cozy --json project -p "$P" open --no-open > "$OUT/project-open.json" || check "session: project open --no-open failed"
-J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: project open's link: $(cat "$OUT/project-open.json")"
+(cd "$P" && cozy --json open --no-open) > "$OUT/project-open.json" || check "session: open --no-open in its folder failed"
+J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) and endswith($to)' "$OUT/project-open.json" || check "session: open's link in its folder: $(cat "$OUT/project-open.json")"
+J '.url | contains("&to=") | not' <<< "$(cd "$OUT" && cozy --json open --no-open)" || check "session: open in no project isn't the home"
+cozy --json open "$P/sub" --no-open > "$OUT/project-open-named.json" || check "session: open of a folder in it failed"
+J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open of a folder in it: $(cat "$OUT/project-open-named.json")"
+mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 2\nassets: {}\n' > "$OUT/open-old/project.yaml"
+cozy open "$OUT/open-none" --no-open > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a folder of none failed"
+{ grep -q '#code=' "$OUT/open-none.txt" && ! grep -q '&to=' "$OUT/open-none.txt" && grep -q 'cozy project new' "$OUT/open-none.err"; } || check "session: a folder of none: $(cat "$OUT/open-none.txt" "$OUT/open-none.err")"
+code=0; cozy open "$OUT/open-old" --no-open > "$OUT/open-old.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -qF 'cozy project upgrade' "$OUT/open-old.txt" && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: an older format says what to run: exit $code: $(cat "$OUT/open-old.txt")"
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
 token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")

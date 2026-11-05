@@ -1,7 +1,7 @@
 // One stream across tabs, and across a restart of Calcifer (web-ui.md §3): tabs share one `GET /v1/events`, closing the tab that holds
 // it hands it on, and `kill -9` on Calcifer shows reconnecting and recovers with no reload, the session intact. A reload after the
 // restart must not hang, which it did in the shelved build.
-//   node reconnect.js <sign-in link from `cozy web --no-open`>
+//   node reconnect.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: a shell command that kills this Calcifer with -9 and
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);

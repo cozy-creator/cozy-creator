@@ -3,7 +3,7 @@
 // and one beat, with all else behind More; controls from what it holds; reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
 // Undo brings it back. Takes side by side, one dragged out, a new take from here, Render all.
-//   node nodes.js <sign-in link from `cozy web --no-open`>
+//   node nodes.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -518,27 +518,28 @@ function linesOf(text, name) {
     check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
-    await open('source-b');
+    await open('Other');
     const beforeCaption = yaml();
-    await box('source-b').locator('button:text-is("Caption")').click();
-    const typed = box('source-b').locator('.desc-open .mention-text');
+    await box('Other').locator('button:text-is("Caption")').click();
+    const typed = box('Other').locator('.desc-open .mention-text');
     await typed.waitFor({ timeout: FIRST_RUN_MS });
     check('caption_in_the_field', (await typed.innerText()).includes('THE-PACKAGE-ASKS'), await typed.innerText());
     check('caption_not_written', yaml() === beforeCaption);
-    await box('source-b').locator('.desc-open button:text-is("Save")').click();
-    await until('its description in the file', async () => (await of('source-b')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
+    await box('Other').locator('.desc-open button:text-is("Save")').click();
+    await until('its description in the file', async () => (await of('Other')).fields?.description ?? '', (text) => text.includes('THE-PACKAGE-ASKS'));
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const heldFile = (await of('Sheet')).sha256;
+    const filesThen = readdirSync(join(folder, 'files')).length;
     await open('source-a');
     await box('source-a').locator('.head [aria-label=Delete]').click();
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
-    const noted = await page.locator('.note .line').allTextContents();
-    check('approved_reader_says_nothing', noted.some((line) => line.includes('source-a')) && !noted.some((line) => line.includes('reads this')), noted);
-    check('a_deleted_file_stays', readdirSync(join(folder, 'files')).length === filesBefore);
+    const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
+    check('approved_reader_says_nothing', !noted.some((line) => line.includes('reads this')), noted);
+    check('a_deleted_file_stays', readdirSync(join(folder, 'files')).length === filesThen);
     await until('out of the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines === null);
     await away();
     await page.waitForTimeout(300);
@@ -620,7 +621,10 @@ function linesOf(text, name) {
     check('render_all_leaves_approved', (await versions('Sheet')) === sheetTakes);
 
     // A new take from here: scrubbed to a time, its words as they were, and the adapter told to keep up to there.
+    // One file dropped asks its name first: Enter takes the one offered.
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
+    await page.waitForSelector('.nm-field');
+    await page.keyboard.press('Enter');
     await box('look').waitFor();
     await until('look in the file', () => Promise.resolve(linesOf(yaml(), 'look')), Boolean);
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  Clip:\n    summary: |\n      On <look>.\n    tool: ${shots}/shoot\n`);

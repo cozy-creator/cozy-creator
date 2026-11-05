@@ -1,7 +1,7 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
 // move read back from project.canvas.yaml; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
 // and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
-//   node place.js <sign-in link from `cozy web --no-open`>
+//   node place.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
 // terminal sees the same project; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -168,6 +168,37 @@ const constants = (folder) => {
   const row = (await until('the moved row', () => rows(folder), (now) => now.clash_take && (now.clash_take.x !== was.x || now.clash_take.y !== was.y))).clash_take;
   check('move_in_canvas_file', Math.abs(row.x - was.x - 180 / zoom) <= 3 && Math.abs(row.y - was.y - 120 / zoom) <= 3, { was, row, zoom });
   check('move_touches_no_input', yaml(folder) === yamlBeforeMove);
+
+  // A drag on the empty canvas moves it and selects nothing; with Shift it selects instead.
+  const empty = await page.evaluate(() => {
+    const pane = document.querySelector('.react-flow__pane').getBoundingClientRect();
+    for (let y = pane.top + 140; y < pane.bottom - 140; y += 40) {
+      for (let x = pane.left + 340; x < pane.right - 140; x += 40) {
+        if (document.elementFromPoint(x, y)?.classList.contains('react-flow__pane')) return { x, y };
+      }
+    }
+    return null;
+  });
+  check('empty_canvas_found', empty !== null);
+  const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
+  const held = await viewport();
+  const selected = () => page.locator('.react-flow__node.selected').count();
+  const selectedBefore = await selected();
+  await page.mouse.move(empty.x, empty.y);
+  await page.mouse.down();
+  await page.mouse.move(empty.x + 90, empty.y + 60, { steps: 6 });
+  await page.mouse.up();
+  check('dragging_the_canvas_moves_it', (await viewport()) !== held);
+  check('dragging_the_canvas_selects_nothing', (await selected()) === selectedBefore);
+  const moved = await viewport();
+  await page.keyboard.down('Shift');
+  await page.mouse.move(empty.x, empty.y);
+  await page.mouse.down();
+  await page.mouse.move(empty.x + 40, empty.y + 40, { steps: 4 });
+  const drawing = await page.locator('.react-flow__selection').count();
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  check('shift_draws_a_selection', drawing === 1 && (await viewport()) === moved);
 
   // The hash shows nowhere but the raw yaml pane.
   const hashes = Object.values(constants(folder)).map((constant) => constant.hash);

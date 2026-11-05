@@ -4,7 +4,7 @@
 // wrong hash, a climb out, a file that's no module and a foreign origin get nothing. A release: Calcifer on a Hub this cell stands up, as
 // door.sh stands up a hostile holder: not installed, it doesn't load; installed, it loads under the wheel's digest; a Hub whose file isn't what
 // it says doesn't load. The Hub's own API is held by every other cell. A pod can't supply a component: door.sh, through a real door.
-//   node package_ui.js <sign-in link from `cozy web --no-open`>
+//   node package_ui.js <sign-in link from `cozy open --no-open`>
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so no run and no restart; $RESTART, $HUB_RESTART: shell commands that kill this Calcifer and bring it back, the second on the Hub
 // @HUB@ names. Prints what it saw as JSON and exits 1 if anything failed.

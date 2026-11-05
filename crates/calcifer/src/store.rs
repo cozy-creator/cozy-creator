@@ -992,8 +992,9 @@ impl Store {
                 end(tx, id, Status::Canceled, Some(Reason { code: "canceled".into(), message, ..Default::default() }))
             }
             Some(_) => {
-                let message = format!("{machine} keeps failing when asked about this run, and it was not retried: {message}: cozy machine logs {machine}");
-                end(tx, id, Status::Failed, Some(Reason { code: code.into(), message, origin: "machine".into(), ..Default::default() }))
+                let message = format!("{machine} keeps failing when asked about this run, and it was not retried: {message}");
+                let next = vec![format!("cozy machine logs {machine}")];
+                end(tx, id, Status::Failed, Some(Reason { code: code.into(), message, origin: "machine".into(), next, ..Default::default() }))
             }
             None => Ok(vec![]),
         })

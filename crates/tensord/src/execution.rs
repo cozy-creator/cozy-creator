@@ -892,7 +892,12 @@ impl Engine {
                 tracing::warn!("run {id}: attention pin warning not logged: {error}");
             }
         }
+        let began = std::time::Instant::now();
         let record = journal.finish_observed(id, outcome, progress.get(id), held)?;
+        // An fsync behind a busy disk: said, so a run that sat at its end can be explained.
+        if began.elapsed() > std::time::Duration::from_secs(1) {
+            tracing::warn!("run {id}: recording its end took {:.1} s", began.elapsed().as_secs_f64());
+        }
         drop(journal);
         if record.state.terminal() {
             progress.remove(id);

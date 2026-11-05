@@ -409,8 +409,6 @@ function Canvas({
           defaultViewport={saved ?? undefined}
           panOnScroll
           panOnScrollSpeed={1}
-          selectionOnDrag
-          panOnDrag={[1]}
           selectionMode={SelectionMode.Partial}
           zoomOnDoubleClick={false}
           minZoom={0.05}

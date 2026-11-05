@@ -154,7 +154,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 | `status` | Each asset's state and why, orphans, and how many files `cozy run` left here |
 | `import <file\|hash> [name] [--description <words>]` | Keeps a file, URL or a hash already in `files/`, adds `{approved}` under its name, and prints the name. No machine needed. Removing a background is a tool's: drop the file, drop the tool, approve |
 | `rename <old> <new>` | Renames an asset in `project.yaml` and in every `<mention>`, and keeps its versions. If you renamed it there already, this only moves its versions |
-| `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file nothing else names |
+| `reclaim [--yes]` | Lists orphans and the bytes they'd free, or with `--yes` deletes their versions and any file a version or run has on record and nothing names now. A file with no record is listed and stays: it may be all that's left of a take. With `project.lock` gone, unreadable or listing nothing, `--yes` is refused |
 | `push`, `pull` | Sends `files/` to your Tensorhub account, or fetches what's missing here. Commit `project.yaml` and `project.lock`, not `files/` |
 | `add <tool\|text> [name] [field=value…]` | An asset of that tool, as dropping it on the canvas, or with `text` a text asset, and prints its name. A tool is a function: `cozy package ls`, `cozy run <package>`, `cozy run <tool> --describe`. With no `at=` the page gives it a free place on screen |
 | `set <name> field=value… [--input <file>]` | Its fields, as its box's controls. A number, `true` or `false` is that, `:=` is JSON, `field=` clears it, `tool=` is what makes it, and `at=x,y[,w]` is where it sits. An Edit's tracks and clips are its `timeline`, in a file |
@@ -190,7 +190,7 @@ An asset has one main file; any other files are what the same run left, such as 
 
 ## Orphans
 
-An asset no longer named in the file keeps its versions and files until `reclaim`. Once a render has seen it gone, its name is free: a later asset of that name starts with no versions, and `cozy project rename` still finds the old ones. Deleting one from the page takes its versions with it, and Undo puts them back; what it made stands, and its files wait, unnamed, for `reclaim`.
+An asset no longer named in the file keeps its versions and files until `reclaim`. Deleted from the page or the CLI, or gone from the file once a render has seen that, its name is free: a later asset of that name starts with no versions, and `cozy project rename` or Undo still finds the old ones. What it made stands.
 
 ## Storyboards
 
