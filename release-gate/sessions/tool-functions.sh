@@ -48,7 +48,7 @@ accept() {
   step "approve-$1" project -p "$P" approve "$1" "$n" || fail "approve $1: $(tail -c 300 "$OUT/approve-$1.txt")"
   J --arg n "$1" '.assets[] | select(.name == $n) | .pinned' <<< "$(cozy --json project -p "$P" status)" || fail "$1 isn't accepted"
 }
-call() { cozy --json run show "$(cozy --json project -p "$P" status "$1" | jq -r '.versions[-1].runs[-1]')" --once | jq -c .request; }
+call() { cozy --json --full run show "$(cozy --json project -p "$P" status "$1" | jq -r '.versions[-1].runs[-1]')" --once | jq -c .request; }
 file_of() { cozy --json project -p "$P" status "$1" | jq -r --arg f "$2" --arg P "$P" '$P + "/" + .versions[-1].files[$f].path'; }
 size() { ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$1"; }
 seconds() { ffprobe -v error -show_entries format=duration -of csv=p=0 "$1"; }
@@ -195,6 +195,6 @@ accept plated
 J '.input.plate.video | startswith("sha256:")' <<< "$(call plated)" || fail "the plate's call: $(call plated)"
 vid=$(file_of plated video); keep_frames plated "$vid"; say "plated: $(size "$vid"), $(seconds "$vid") s"
 
-cozy --json project -p "$P" status > "$OUT/status.json"
+cozy --json --full project -p "$P" status > "$OUT/status.json"
 cp "$P/project.yaml" "$P/project.lock" "$OUT/"
 say "PASS: each tool from drop to accept; judge $OUT/frames"

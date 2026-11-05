@@ -235,7 +235,7 @@ function linesOf(text, name) {
     });
   });
   const project = (...words) => cozy('project', '-p', folder, ...words);
-  const asJson = async (...words) => JSON.parse((await cozy('--json', 'project', '-p', folder, ...words)).stdout);
+  const asJson = async (...words) => JSON.parse((await cozy('--json', '--full', 'project', '-p', folder, ...words)).stdout);
   const status = () => asJson('status');
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const held = async (name) => (await status()).assets.find((asset) => asset.name === name);

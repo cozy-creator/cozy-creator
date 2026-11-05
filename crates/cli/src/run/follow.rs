@@ -340,7 +340,7 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
             record = record.field("next", next);
         }
         if !reason.detail.is_empty() {
-            record = record.field("traceback", &reason.detail);
+            record = record.field("traceback", output::cut(ctx, &reason.detail, true));
         }
         if let Some(machine) = run.machine.as_deref().filter(|_| run.status == Status::Failed) {
             record = record.field("full log", format!("cozy machine logs {machine} -n 0"));
@@ -361,12 +361,8 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
             if named || value.is_object() || value.is_array() || value.is_null() {
                 continue;
             }
-            record = record.field(
-                key,
-                value
-                    .as_str()
-                    .map_or_else(|| value.to_string(), str::to_owned),
-            );
+            let text = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+            record = record.field(key, output::cut(ctx, &text, false));
         }
     }
     for row in &run.adjustments {

@@ -10,7 +10,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -338,32 +338,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             output::nexts(ctx, &reclaimed.next);
         }
         Verb::Status { name: Some(name) } => return assets::one(ctx, args.path.as_ref(), name).await,
-        Verb::Status { name: None } => {
-            let opened = open(ctx, args.path.as_ref(), false).await?;
-            let state: State = ctx.calcifer().await?.get(&format!("/v1/projects/{}", opened.id)).await?;
-            state.warnings.iter().for_each(|warning| output::warn(&warning.message));
-            if ctx.json {
-                output::json(&state);
-                return Ok(ExitCode::SUCCESS);
-            }
-            let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "APPROVED", "MADE BY", "STATUS", "FILE"]);
-            let rows = state.assets.iter().map(|a| {
-                let made = match a.versions {
-                    1 => format!("1 {}", a.noun),
-                    count => format!("{count} {}s", a.noun),
-                };
-                let pinned = match a.approved {
-                    Some(number) => number.to_string(),
-                    None if a.pinned => "file".into(),
-                    None => "-".into(),
-                };
-                let made_by = a.made_by.clone().unwrap_or_else(|| "-".into());
-                let file = a.path.clone().unwrap_or_else(|| "-".into());
-                [a.name.clone(), a.kind.clone(), made, pinned, made_by, a.status.clone(), file]
-            });
-            rows.fold(table, output::Table::row).print();
-            summary(ctx, &state);
-        }
+        Verb::Status { name: None } => return status(ctx, args.path.as_ref()).await,
         Verb::Rename { from, to } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/rename", opened.id);
@@ -570,22 +545,103 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
     Err(Error::new(Kind::Unavailable, "project_events_ended", "Calcifer stopped telling how the runs go").next(status))
 }
 
-/// Under the table: what is missing, what is out of date and why, what the file no longer names, and where the cuts are.
+/// What `--json` keeps of a project (`--full`: all of it): what the view shows, by the record's own names.
+pub(crate) const FIELDS: &[&str] = &[
+    "id", "path", "busy", "moving", "absent", "missing", "stale", "queue", "warnings", "next", "assets.name", "assets.kind",
+    "assets.tool", "assets.standing", "assets.versions", "assets.version", "assets.approved", "assets.pinned", "assets.making",
+    "assets.status", "assets.failure",
+];
+
+/// `cozy project status`: an asset a row, what makes it and how it stands, the totals, then what to know and do. `--full`:
+/// every column and line, each file's path among them.
+async fn status(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at, false).await?;
+    let state: State = ctx.calcifer().await?.get(&format!("/v1/projects/{}", opened.id)).await?;
+    if ctx.json {
+        output::view(ctx, &state, FIELDS);
+        return Ok(ExitCode::SUCCESS);
+    }
+    state.warnings.iter().for_each(|warning| println!("warning: {}", warning.message));
+    if ctx.full {
+        let table = output::Table::new(ctx, ["NAME", "KIND", "MADE", "APPROVED", "MADE BY", "STATUS", "FILE"]);
+        let rows = state.assets.iter().map(|a| {
+            let made = match a.versions {
+                1 => format!("1 {}", a.noun),
+                count => format!("{count} {}s", a.noun),
+            };
+            let pinned = match a.approved {
+                Some(number) => number.to_string(),
+                None if a.pinned => "file".into(),
+                None => "-".into(),
+            };
+            let made_by = a.made_by.clone().unwrap_or_else(|| "-".into());
+            let file = a.path.clone().unwrap_or_else(|| "-".into());
+            [a.name.clone(), a.kind.clone(), made, pinned, made_by, a.status.clone(), file]
+        });
+        rows.fold(table, output::Table::row).print();
+    } else if !state.assets.is_empty() {
+        let rows = state.assets.iter().map(|a| [a.name.clone(), a.tool.clone().unwrap_or_else(|| "file".into()), a.status.clone()]);
+        rows.fold(output::Table::new(ctx, ["NAME", "TOOL", "STATE"]), output::Table::row).print();
+    }
+    println!("{}", totals(&state));
+    summary(ctx, &state);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `4 assets: 1 approved, 1 current, 1 out of date, 1 missing`, leaving out what none are.
+pub(crate) fn totals(state: &State) -> String {
+    let standing = |asset: &protocol::project::Asset| match asset.standing {
+        Standing::Making => "rendering",
+        Standing::Missing => "missing",
+        Standing::OutOfDate => "out of date",
+        Standing::Current if asset.approved.is_some() || asset.pinned => "approved",
+        Standing::Current => "current",
+    };
+    let said: Vec<String> = ["approved", "current", "out of date", "rendering", "missing"]
+        .into_iter()
+        .map(|w| (state.assets.iter().filter(|asset| standing(asset) == w).count(), w))
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, w)| format!("{n} {w}"))
+        .collect();
+    match state.assets.len() {
+        0 => "assets: none in project.yaml".into(),
+        n => format!("{n} assets: {}", said.join(", ")),
+    }
+}
+
+/// Under the table, on stdout: what's going, what failed, and what to do; with `--full`, each version's hash, what
+/// is missing and out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
     let (running, queued): (Vec<_>, Vec<_>) = state.queue.iter().partition(|item| item.running);
     if !running.is_empty() {
         let shown: Vec<String> = running.iter().map(|item| item.run.map_or_else(|| item.name.clone(), |run| format!("{} (run {run})", item.name))).collect();
-        output::say(ctx, &format!("running: {}", shown.join(", ")));
+        println!("running: {}", shown.join(", "));
     }
     if !queued.is_empty() {
         let shown: Vec<&str> = queued.iter().map(|item| item.name.as_str()).collect();
-        output::say(ctx, &format!("queued: {}", shown.join(", ")));
-    }
-    for line in state.board.iter().flat_map(|board| &board.ahead).filter_map(render::ahead_line) {
-        output::say(ctx, &line);
+        println!("queued: {}", shown.join(", "));
     }
     if !state.queue.is_empty() && !state.busy {
-        output::say(ctx, "nothing is walking these: any `cozy project render` takes them up again");
+        println!("nothing is walking these: any `cozy project render` takes them up again");
+    }
+    for asset in &state.assets {
+        if let Some(failure) = &asset.failure {
+            output::failure_of(ctx, failure);
+        }
+    }
+    if state.absent > 0 {
+        println!("{} files project.lock names are not on this computer", state.absent);
+    }
+    if ctx.full {
+        full_summary(ctx, state);
+    }
+    output::nexts(ctx, &state.next);
+}
+
+/// What `--full` adds under the table.
+fn full_summary(ctx: &Context, state: &State) {
+    for line in state.board.iter().flat_map(|board| &board.ahead).filter_map(render::ahead_line) {
+        println!("{line}");
     }
     for asset in state.assets.iter().filter(|asset| !asset.prefixes.is_empty()) {
         let from = |made: &protocol::project::VersionPrefix| match made.from.as_slice() {
@@ -593,32 +649,26 @@ fn summary(ctx: &Context, state: &State) {
             pieces => format!(" (from {})", pieces.join(", ")),
         };
         let made: Vec<String> = asset.prefixes.iter().map(|made| format!("{} {} {}{}{}", asset.noun, made.number, made.prefix, from(made), went_without(&made.without))).collect();
-        output::say(ctx, &format!("{}: {}", asset.name, made.join(", ")));
+        println!("{}: {}", asset.name, made.join(", "));
         for made in &asset.prefixes {
             if let Some(kept) = made.kept {
-                output::say(ctx, &kept.said(&asset.name, made.number));
+                println!("{}", kept.said(&asset.name, made.number));
             }
         }
     }
-    for asset in &state.assets {
-        if let Some(failure) = &asset.failure {
-            output::failure_of(ctx, failure);
-        }
-    }
     if state.run_files > 0 {
-        output::say(ctx, &format!("{} files from `cozy run` here, belonging to no asset: approve one, or `cozy project reclaim` once nothing names them", state.run_files));
+        println!("{} files from `cozy run` here, belonging to no asset: approve one, or `cozy project reclaim` once nothing names them", state.run_files);
     }
     if !state.missing.is_empty() {
-        output::say(ctx, &format!("missing: {}", state.missing.join(", ")));
+        println!("missing: {}", state.missing.join(", "));
     }
     if !state.stale.is_empty() {
         let stale: Vec<String> = state.stale.iter().map(|s| format!("{} ({})", s.name, s.why)).collect();
-        output::say(ctx, &format!("out of date: {}", stale.join(", ")));
+        println!("out of date: {}", stale.join(", "));
     }
     for orphan in &state.orphans {
         let (n, name, kind) = (orphan.versions, &orphan.name, &orphan.kind);
-        let said = format!("project.lock keeps {n} made of {name} (a {kind}), {}, which project.yaml no longer names", output::bytes(orphan.bytes));
-        output::say(ctx, &said);
+        println!("project.lock keeps {n} made of {name} (a {kind}), {}, which project.yaml no longer names", output::bytes(orphan.bytes));
     }
     for cut in &state.cuts {
         let skips = match (cut.without.is_empty(), cut.skips.as_slice()) {
@@ -630,17 +680,10 @@ fn summary(ctx: &Context, state: &State) {
         let made = cut.frames.map(|frames| format!(", {}", length(frames, cut.fps))).unwrap_or_default();
         let retimed = retimes(&cut.retimed, cut.fps);
         match cut.cut_at_ms {
-            Some(at_ms) => output::say(
-                ctx,
-                &format!("{name}: {}{made}, cut {} ago{retimed}{skips}", output::link(ctx, &cut.path), output::age(at_ms)),
-            ),
-            None => output::say(ctx, &format!("{name}: not cut yet ({})", cut.path.display())),
+            Some(at_ms) => println!("{name}: {}{made}, cut {} ago{retimed}{skips}", output::link(ctx, &cut.path), output::age(at_ms)),
+            None => println!("{name}: not cut yet ({})", cut.path.display()),
         }
     }
-    if state.absent > 0 {
-        output::say(ctx, &format!("{} files project.lock names are not on this computer", state.absent));
-    }
-    output::nexts(ctx, &state.next);
 }
 
 /// ` (without segment_3: no version yet)`, when a film went without something: a short film can't pass unnoticed.

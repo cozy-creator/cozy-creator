@@ -77,8 +77,8 @@ record() {
   local n; n=$(num "$2")
   [ -n "$n" ] || { echo "no run"; return; }
   case $1 in
-    -) cozy run show "$n" --once --json ;;
-    *) sh "$1" "cd /root/session && cozy run show $n --once --json" ;;
+    -) cozy run show "$n" --once --json --full ;;
+    *) sh "$1" "cd /root/session && cozy run show $n --once --json --full" ;;
   esac > "$OUT/$2.json" 2>&1
   jq -r '.status // empty' "$OUT/$2.json"
 }
@@ -222,7 +222,7 @@ on "$A" c-restart 'cozy machine ls' || fail "c: the first command after the upda
 grep -q "restarting it on $NEW" "$OUT/c-restart.txt" || fail "c: the command did not restart Calcifer: $(head -3 "$OUT/c-restart.txt")"
 [ "$(calcifer_on "$A")" = "$NEW" ] || fail "c: A's Calcifer runs $(calcifer_on "$A") after the restart, not $NEW"
 on "$A" c-inflight "cd /root/session && cozy run show $N"
-s=$(sh "$A" "cd /root/session && cozy run show $N --once --json" | jq -r .status)
+s=$(sh "$A" "cd /root/session && cozy run show $N --once --json --full" | jq -r .status)
 [ "$s" = completed ] || fail "c: run $N, going while Calcifer restarted, is $s"
 say "c: A's Calcifer restarted itself on $NEW at the next command; run $N, going on B through it, completed"
 update "$B" "$OLD" "$OLD"

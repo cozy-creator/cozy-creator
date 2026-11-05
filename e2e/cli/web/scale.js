@@ -196,7 +196,7 @@ function calciferMb() {
   });
   const project = (...words) => cozy('project', '-p', folder, ...words);
   const status = async () => {
-    const answer = await cozy('--json', 'project', '-p', folder, 'status');
+    const answer = await cozy('--json', '--full', 'project', '-p', folder, 'status');
     return { state: JSON.parse(answer.stdout), ms: answer.ms };
   };
   const seconds = (ms) => +(ms / 1000).toFixed(2);
@@ -362,7 +362,7 @@ function calciferMb() {
   const smallFolder = join(homedir(), '.cozy', 'projects', `web-scale-small-${Date.now()}`);
   mkdirSync(smallFolder, { recursive: true });
   generated(smallFolder, null, 36, 8);
-  const small = JSON.parse((await cozy('--json', 'project', '-p', smallFolder, 'status')).stdout);
+  const small = JSON.parse((await cozy('--json', '--full', 'project', '-p', smallFolder, 'status')).stdout);
   await page.goto(`${base}/#/projects/${small.id}`);
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();

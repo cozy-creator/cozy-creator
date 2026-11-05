@@ -22,7 +22,7 @@ step hub
 # A run made at that other Hub (local code reads none), then the variable unset: Calcifer still lists and shows it.
 if [ -n "$LOCAL" ] && (cd "$here" && COZY_HUB_URL=http://127.0.0.1:9 cell other-hub ./weightless/reverse "text=hub$RANDOM"); then
   n=$(cat "$OUT/other-hub.number")
-  cozy --json run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
+  cozy --json --full run ls --limit 0 | J --argjson n "$n" 'any(.runs[]; .number == $n and .hub == "http://127.0.0.1:9")' \
     || check "run ls: run $n, made at another Hub, is not listed"
   cozy --json run show "$n" --once | J '.hub == "http://127.0.0.1:9" and .status == "completed"' || check "run show $n: not its record at the other Hub"
 fi

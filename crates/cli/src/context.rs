@@ -13,6 +13,8 @@ use crate::{calcifer_client::Client, output::Term};
 #[derive(Debug)]
 pub struct Context {
     pub json: bool,
+    /// `--full`: the whole record, where a view shows part of it.
+    pub full: bool,
     /// `--yes`: agreed without being asked.
     pub yes: bool,
     pub config: Config,
@@ -23,9 +25,10 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new(json: bool, yes: bool, loaded: Loaded, term: Term) -> Self {
+    pub fn new(json: bool, full: bool, yes: bool, loaded: Loaded, term: Term) -> Self {
         Self {
             json,
+            full,
             yes,
             config: loaded.config,
             home: loaded.home,

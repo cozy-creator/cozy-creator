@@ -1,6 +1,6 @@
 # e2e/run.sh: how every suite runs `cozy` and reads what a run made (e2e/lib.sh, release-gate/gate.sh and its suites).
 # RUN_CLI is the cozy to call (default `cozy`). A run is kept in <dir> under its <name>: <name>.ndjson (its events),
-# <name>.err, <name>.number (`none`: it never got one) and <name>.json, its record (`cozy run show --once --json`).
+# <name>.err, <name>.number (`none`: it never got one) and <name>.json, its whole record (`cozy run show --once --json --full`).
 # A run belongs to a project (`run_project`): its outputs land in the project's files/, and `run_output` finds them by the
 # record's output[].path.
 #
@@ -55,7 +55,7 @@ run_wait() {
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
 # show` exits non-zero for a run that failed or was canceled: the record is what it printed.
 run_show() {
-  "$RUN_CLI" --json run show "$3" --once > "$1/$2.json.new" 2> /dev/null || true
+  "$RUN_CLI" --json --full run show "$3" --once > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else

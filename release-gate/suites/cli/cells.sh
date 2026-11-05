@@ -60,7 +60,7 @@ fi
 # `--approve` with -n 2 is refused before anything runs; a re-rolled character, as the newest, puts what reads it out of
 # date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
 # only project.lock); the re-cut is timed; the edit cuts by frame and writes edit.otio beside edit.mp4.
-project_status() { "$CLI" --json project -p "$1" status > "$2" 2> "$2.err" || cli_fail "project status of $1: $(tail -c 300 "$2.err")"; }
+project_status() { "$CLI" --json --full project -p "$1" status > "$2" 2> "$2.err" || cli_fail "project status of $1: $(tail -c 300 "$2.err")"; }
 project_cell() {
   local P=$PWD/project ok
   rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
