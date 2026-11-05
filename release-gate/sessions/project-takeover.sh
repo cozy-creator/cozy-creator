@@ -282,15 +282,14 @@ version: 3
 assets:
   seashot:
     tool: $H3
-    summary: A slow push in on <sea>, a golden lantern floating on a deep blue sea at night, small waves lapping around it.
-    beats:
-      - duration: 5
-        description: The camera drifts toward the lantern as its light flickers on the water.
+    first_frame: <sea>
+    duration_s: 5
+    prompt: A golden lantern floats on a deep blue sea at night. The camera drifts slowly toward it as its warm light flickers on small waves lapping around it, and a soft wind hums over the water.
 YAML
   c "project import /home/client/sea.png" > "$OUT/h-import.txt" 2>&1 || fail "h: import"
   sh "su client -s /bin/sh -c 'cd \$HOME/h; nohup /opt/client/cozy project render seashot --on box --plain > \$HOME/h.out 2>&1 < /dev/null & echo \$! > /tmp/h.pid'" > /dev/null
   local t=0
-  until [ "$(handing "$(walk_file)")" = asked ]; do [ $t -lt 300 ] || fail "h: never handed"; t=$((t + 3)); sleep 3; done
+  until [ "$(handing "$(walk_file)")" = asked ] || sh 'grep -q "took the render over" /home/client/h.out'; do [ $t -lt 300 ] || fail "h: never handed"; t=$((t + 3)); sleep 3; done
   line down
   killed "$(sh 'cat /tmp/h.pid' | tr -dc 0-9)" "$(client_calcifer)"
   say "h: X walks it, this computer gone"
