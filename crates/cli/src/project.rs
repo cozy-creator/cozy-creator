@@ -15,7 +15,7 @@ use protocol::{
 
 use crate::{
     Context, output,
-    run::{mint_key, settled, watched},
+    run::{exit_code, mint_key, settled, watched},
 };
 
 /// A push or pull that moved all it could and left out a file.
@@ -136,6 +136,9 @@ enum Verb {
         /// One asset.
         name: Option<String>,
     },
+    /// Follow the render going to its end, as `render` follows its own: free, it starts nothing. With none going, the project as it stands.
+    #[command(after_help = "Example:\n  cozy project render clash --on corteo --queue\n  cozy project wait\n\nExits 0 done, 1 something failed, 4 a run stopped moving: it goes on until you cancel it. Ctrl-C stops waiting, never the render.")]
+    Wait,
     /// Keep an asset's versions after renaming it in project.yaml.
     #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
     Rename {
@@ -339,6 +342,7 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         }
         Verb::Status { name: Some(name) } => return assets::one(ctx, args.path.as_ref(), name).await,
         Verb::Status { name: None } => return status(ctx, args.path.as_ref()).await,
+        Verb::Wait => return wait(ctx, args.path.as_ref()).await,
         Verb::Rename { from, to } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/rename", opened.id);
@@ -523,9 +527,10 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
     let mut followed = std::collections::HashSet::new();
     while let Some(event) = events.next().await {
         match event {
-            Event::Started { run, .. } => {
-                if followed.insert(run.clone()) && !settled(&watched(ctx, calcifer.run(&run).await?).await?) {
-                    return Ok(ExitCode::SUCCESS);
+            Event::Started { run, .. } if followed.insert(run.clone()) => {
+                let run = watched(ctx, calcifer.run(&run).await?).await?;
+                if !settled(&run) {
+                    return Ok(exit_code(&run));
                 }
             }
             Event::Warning { message, .. } => {
@@ -547,7 +552,7 @@ async fn following_json(ctx: &Context, mut events: crate::calcifer_client::Watch
 
 /// What `--json` keeps of a project (`--full`: all of it): what the view shows, by the record's own names.
 pub(crate) const FIELDS: &[&str] = &[
-    "id", "path", "busy", "moving", "absent", "missing", "stale", "queue", "warnings", "next", "assets.name", "assets.kind",
+    "id", "path", "busy", "moving", "held", "absent", "missing", "stale", "queue", "warnings", "next", "assets.name", "assets.kind",
     "assets.tool", "assets.standing", "assets.versions", "assets.version", "assets.approved", "assets.pinned", "assets.making",
     "assets.status", "assets.failure",
 ];
@@ -557,9 +562,34 @@ pub(crate) const FIELDS: &[&str] = &[
 async fn status(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> {
     let opened = open(ctx, at, false).await?;
     let state: State = ctx.calcifer().await?.get(&format!("/v1/projects/{}", opened.id)).await?;
+    shown(ctx, &state);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `cozy project wait`: the render going, followed as `render` follows its own. None going: the project as `status` shows
+/// it, failing when an asset's last try did.
+async fn wait(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> {
+    let opened = open(ctx, at, false).await?;
+    let calcifer = ctx.calcifer().await?;
+    // Opened before the read, so nothing between the two is missed.
+    let events = calcifer.watch::<Event>(&format!("/v1/projects/{}/events", opened.id)).await?;
+    let state: State = calcifer.get(&format!("/v1/projects/{}", opened.id)).await?;
+    let status = format!("cozy project -p {} status", opened.path.display());
+    match state.board.clone().filter(|_| state.busy) {
+        Some(_) if ctx.json => following_json(ctx, events, &status).await,
+        Some(board) => render::follow(ctx, render::Rendering::new(opened.path.clone(), board), events, false, &status).await,
+        None => {
+            shown(ctx, &state);
+            let failed = state.assets.iter().any(|asset| asset.failure.is_some());
+            Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+        }
+    }
+}
+
+/// The project as `status` prints it.
+fn shown(ctx: &Context, state: &State) {
     if ctx.json {
-        output::view(ctx, &state, FIELDS);
-        return Ok(ExitCode::SUCCESS);
+        return output::view(ctx, state, FIELDS);
     }
     state.warnings.iter().for_each(|warning| println!("warning: {}", warning.message));
     if ctx.full {
@@ -583,9 +613,8 @@ async fn status(ctx: &Context, at: Option<&PathBuf>) -> Result<ExitCode, Error> 
         let rows = state.assets.iter().map(|a| [a.name.clone(), a.tool.clone().unwrap_or_else(|| "file".into()), a.status.clone()]);
         rows.fold(output::Table::new(ctx, ["NAME", "TOOL", "STATE"]), output::Table::row).print();
     }
-    println!("{}", totals(&state));
-    summary(ctx, &state);
-    Ok(ExitCode::SUCCESS)
+    println!("{}", totals(state));
+    summary(ctx, state);
 }
 
 /// `4 assets: 1 approved, 1 current, 1 out of date, 1 missing`, leaving out what none are.
@@ -613,7 +642,7 @@ pub(crate) fn totals(state: &State) -> String {
 /// is missing and out of date and why, what the file no longer names, and where the cuts are.
 fn summary(ctx: &Context, state: &State) {
     if let Some(held) = &state.held {
-        output::say(ctx, &render::held_line(held));
+        println!("{}", render::held_line(held));
     }
     let (running, queued): (Vec<_>, Vec<_>) = state.queue.iter().partition(|item| item.running);
     if !running.is_empty() {

@@ -211,6 +211,9 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
     output::say(ctx, &format!("{}: following the render: Ctrl-C leaves it queued", rendering.title()));
     let mut said = Lines::default();
     said.board(ctx, &rendering);
+    if let Some(stalled) = stalled(ctx, &rendering) {
+        return Ok(stalled);
+    }
     loop {
         let event = tokio::select! {
             event = events.next() => event,
@@ -223,13 +226,28 @@ async fn lines(ctx: &Context, mut rendering: Rendering, mut events: Watch<Event>
         let Some(event) = event else { return Err(ended_early(status)) };
         match rendering.apply(event) {
             Fresh::Nothing => {}
-            Fresh::Board => said.board(ctx, &rendering),
+            Fresh::Board => {
+                said.board(ctx, &rendering);
+                if let Some(stalled) = stalled(ctx, &rendering) {
+                    return Ok(stalled);
+                }
+            }
             Fresh::Warning(line) => output::warned(&line),
             Fresh::Said(line) => output::say(ctx, &line),
             Fresh::Failed(error) => output::failure(ctx, &error.message, &error.next),
             Fresh::Ended => return rendering.last_line(ctx),
         }
     }
+}
+
+/// Following ends with `STALLED` once a job's run has stopped moving, as its run says (its line says so, `Lines`): the render
+/// goes on until it's canceled.
+fn stalled(ctx: &Context, rendering: &Rendering) -> Option<ExitCode> {
+    let job = rendering.board.jobs.iter().find(|job| job.stalled.is_some() && matches!(job.state, JobState::Running | JobState::Waiting))?;
+    let cancel = format!("cozy project cancel {}", job.asset);
+    let logs = job.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
+    output::next(ctx, &[cancel.as_str()].into_iter().chain(logs.as_deref()).collect::<Vec<_>>());
+    Some(ExitCode::from(output::STALLED))
 }
 
 fn ended_early(status: &str) -> Error {

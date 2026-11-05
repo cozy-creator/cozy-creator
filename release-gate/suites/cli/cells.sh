@@ -146,3 +146,41 @@ YAML
   grep -o "cut .* in [0-9.]* s" project-race.log | tail -1 >> project-recut.txt
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell
+
+# A render and a run that stop moving (cl-783): `project wait` and a followed `cozy run` each end with 4 once Calcifer says
+# so (10 minutes with no progress), each naming how to end it, and both go on until they're canceled. The job stands
+# stalled after `wait` left, in status and on the page's stream (`job.updated`), and a real move clears it. About 13
+# minutes, the two at once. Weightless: tool.py's `slow` sleeps 700 s a step, weightless `silent` 20 minutes.
+stall_cell() {
+  local S=$PWD/stall e2e=$HERE/../e2e/cli n waiting running lock=$HOME/.cozy/calcifer/calcifer.lock.holder stream=$PWD/stall-events.sse page
+  held_job() { "$CLI" --json --full project -p "$S" status | jq -c '[.board.jobs[]? | select(.asset == "held")][-1] // {}'; }
+  # What the cell needs, in seconds, before its 10-minute wait: a test's own cause shows here, not at the end.
+  for tool in curl jq; do command -v "$tool" > /dev/null || { cli_fail "stall: no $tool here"; return; }; done
+  [ -s "$lock" ] || { cli_fail "stall: no Calcifer lock record at $lock"; return; }
+  rm -rf "$S"; "$CLI" project new "$S" > stall-new.log 2>&1 || { cli_fail "stall: project new: $(tail -c 300 stall-new.log)"; return; }
+  printf 'version: 3\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    prompt: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S/project.yaml"
+  # What the page hears, from before the render.
+  curl -sS -N --max-time 1500 -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/events" < /dev/null > "$stream" 2> stall-events.err & page=$!
+  for _ in $(seq 50); do [ -s "$stream" ] && break; sleep 0.2; done
+  [ -s "$stream" ] || { cli_fail "stall: the page's stream said nothing: $(tail -c 200 stall-events.err)"; kill "$page" 2> /dev/null; return; }
+  "$CLI" project -p "$S" render held --on "$M" --queue > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
+  # Each exit kept whether or not the shell stops at a command that fails (`set -e`); nothing in the background reads stdin.
+  ( code=0; "$CLI" project -p "$S" wait > stall-wait.log 2>&1 || code=$?; echo "$code" > stall-wait.exit ) < /dev/null & waiting=$!
+  ( code=0; "$CLI" --json run -p "$S" "$e2e/weightless/silent" seconds:=1200 --on "$M" > stall-run.ndjson 2> stall-run.err || code=$?; echo "$code" > stall-run.exit ) < /dev/null & running=$!
+  wait "$waiting" "$running"
+  [ "$(cat stall-wait.exit)" = 4 ] || cli_fail "stall: project wait exited $(cat stall-wait.exit), not 4: $(tail -c 300 stall-wait.log)"
+  grep -q 'cozy project cancel held' stall-wait.log || cli_fail "stall: wait didn't say how to end it: $(tail -c 300 stall-wait.log)"
+  [ "$(cat stall-run.exit)" = 4 ] || cli_fail "stall: cozy run exited $(cat stall-run.exit), not 4: $(tail -c 300 stall-run.err)"
+  held_job | jq -e '.stalled != null' > /dev/null || cli_fail "stall: held doesn't stand stalled after wait left: $(held_job)"
+  grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | grep -q '"stalled"' || cli_fail "stall: the page heard no job.updated with held stalled"
+  # A real move clears it: slow's next step, 700 s after its last.
+  for _ in $(seq 60); do held_job | jq -e '.stalled == null' > /dev/null && break; sleep 5; done
+  held_job | jq -e '.stalled == null' > /dev/null || cli_fail "stall: held still stalled after it moved: $(held_job)"
+  grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | tail -1 | grep -vq '"stalled"' || cli_fail "stall: the page's last job.updated for held still says stalled"
+  kill "$page" 2> /dev/null || true
+  n=$(run_number stall-run.ndjson)
+  [ -n "$n" ] && [ "$("$CLI" --json run show "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on after its follower left"
+  "$CLI" project -p "$S" cancel held > stall-cancel.log 2>&1 || cli_fail "stall: project cancel held: $(tail -c 300 stall-cancel.log)"
+  [ -z "$n" ] || "$CLI" run cancel "$n" > stall-run-cancel.log 2>&1 || cli_fail "stall: run cancel $n: $(tail -c 300 stall-run-cancel.log)"
+}
+[ -z "$ONLY" ] || [[ $ONLY == *",cli-stall,"* ]] && stall_cell
