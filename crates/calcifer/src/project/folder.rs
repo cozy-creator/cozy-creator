@@ -643,14 +643,22 @@ impl Lock {
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
         let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
-        for key in lost {
-            let Some(mut held) = self.assets.remove(&key) else { continue };
-            if held.name.is_empty() {
-                held.name.clone_from(&key);
-            }
-            let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
-            self.assets.insert(free, held);
+        lost.iter().for_each(|key| self.bury(key));
+    }
+
+    /// The row under `key` set aside: its versions stay, an orphan's, and that name starts with none.
+    pub fn bury(&mut self, key: &str) {
+        let Some(mut held) = self.assets.remove(key).filter(|held| !held.versions.is_empty()) else { return };
+        if held.name.is_empty() {
+            held.name = key.to_owned();
         }
+        let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
+        self.assets.insert(free, held);
+    }
+
+    /// Every sha256 a version or a run has on record here, of any asset: all `reclaim` may delete, once nothing uses it.
+    pub fn recorded(&self) -> BTreeSet<String> {
+        self.named(|_| true).into_iter().chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
     }
 
     /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that.
@@ -1173,17 +1181,24 @@ impl Folder {
         })
     }
 
-    /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, and
-    /// their bytes. With `delete` they go, from disk and from the table: what `reclaim --yes` frees.
-    pub fn sweep(&self, named: &BTreeSet<String>, delete: bool) -> Result<(u64, u64), Error> {
+    /// The files in `files/` that nothing uses (`named` is every sha256 something does), whatever the lock's table says, their bytes, and how many
+    /// of them nothing has a record of. With `delete` those on record go, from disk and from the table: what `reclaim --yes` frees. One with no
+    /// record may be all that's left of a take, so it's said and it stays.
+    pub fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64), Error> {
         let _held = COLLECTING.lock().unwrap_or_else(|e| e.into_inner());
         let lock = self.lock()?;
-        let (mut files, mut bytes) = (0, 0);
+        let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
         for entry in std::fs::read_dir(self.dir.join(FILES)).into_iter().flatten().flatten() {
             let path = format!("{FILES}/{}", entry.file_name().to_string_lossy());
-            let used = lock.files.values().any(|file| file.path == path && named.contains(&file.sha256));
-            if path.contains("/.") || used || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let file = lock.files.values().find(|file| file.path == path);
+            if path.contains("/.") || file.is_some_and(|file| named.contains(&file.sha256)) || entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
+            }
+            if !file.is_some_and(|file| recorded.contains(&file.sha256)) {
+                unrecorded += 1;
+                if delete {
+                    continue;
+                }
             }
             bytes += entry.metadata().map_or(0, |meta| meta.len());
             files += 1;
@@ -1202,7 +1217,7 @@ impl Folder {
             })?;
             let _ = std::fs::remove_dir_all(self.dir.join(RUNS));
         }
-        Ok((files, bytes))
+        Ok((files, bytes, unrecorded))
     }
 
     /// Bytes on disk of `sha256`, if here.

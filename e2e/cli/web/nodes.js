@@ -584,7 +584,7 @@ function linesOf(text, name) {
     await page.keyboard.press('Delete');
     await until('the Delete key', () => box('Other').count(), (n) => n === 0);
     await until('no versions showing', () => of('Other'), (held) => !held);
-    check('deleted_is_no_orphan', !(await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
+    check('orphan_is_listed', (await state()).orphans?.some((orphan) => orphan.name === 'Other'), (await state()).orphans);
     await page.locator('.note:has-text("Other") button:has-text("Undo")').click();
     await box('Other').waitFor();
     check('undo_brings_its_versions', (await versions('Other')) === takes, await versions('Other'));

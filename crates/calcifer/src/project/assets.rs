@@ -154,16 +154,14 @@ pub(super) async fn patch(
     Ok(Json(AssetPatched { name, etag, was, warnings }))
 }
 
-/// What `DELETE` answers, for `PUT` to put back: its lines and what project.lock held of it.
+/// What `DELETE` answers, for `PUT` to put back: its lines. Its versions wait in project.lock.
 #[derive(Serialize, Deserialize)]
 struct Deleted {
     lines: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    held: Option<folder::Asset>,
 }
 
-/// `DELETE /v1/projects/{id}/assets/{name}`: it, its versions and its row gone, at once, and what it made stands. Its files wait, unnamed, for
-/// `reclaim`, and what this answers puts it all back. Its queued work is dropped and its runs canceled first.
+/// `DELETE /v1/projects/{id}/assets/{name}`: it and its row gone, at once, and what it made stands. Its versions wait as an orphan's, its name free,
+/// for `rename`, for `PUT` with what this answers, or for `reclaim`. A render going still makes what it was asked.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
@@ -180,12 +178,20 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
     .map_err(Refusal)?;
     // Refused, nothing stops. Gone from the file, what lands of it lands nothing.
     cancelled(&api, &project, std::slice::from_ref(&name), &deleted_why)?;
-    let held = RefCell::new(None);
-    folder.update_lock(|lock| *held.borrow_mut() = lock.assets.remove(&name_key(&name))).map_err(Refusal)?;
+    let pin = doc.assets[i].pin.clone();
+    folder
+        .update_lock(|lock| {
+            lock.bury(&name_key(&name));
+            // What it held goes on record, so `reclaim` can take it.
+            if let Some(sha256) = pin.clone().filter(|sha256| !lock.recorded().contains(sha256)) {
+                lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256 });
+            }
+        })
+        .map_err(Refusal)?;
     canvas::set(folder, &id, BTreeMap::from([(name.clone(), None)])).map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     project.asked.notify_one();
-    let text = serde_json::to_string(&Deleted { lines: lines.into_inner(), held: held.into_inner() }).expect("what's deleted serializes");
+    let text = serde_json::to_string(&Deleted { lines: lines.into_inner() }).expect("what's deleted serializes");
     Ok(Json(AssetDeleted { name, text, at }))
 }
 
@@ -218,10 +224,8 @@ pub(super) async fn put_back(
         assetfile::restored(text, &name, &back.lines)
     }))
     .map_err(Refusal)?;
-    if let Some(held) = &back.held {
-        folder.update_lock(|lock| drop(lock.assets.insert(name_key(&name), held.clone()))).map_err(Refusal)?;
-        project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
-    }
+    folder.update_lock(|lock| lock.untombstone(&name)).map_err(Refusal)?;
+    project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&name));
     let etag = assetfile::etag(&folder.text().map_err(Refusal)?, &name).ok_or_else(|| Refusal(own_lines(&name)))?;
     Ok(Json(AssetMade { name, etag }))
 }

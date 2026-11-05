@@ -498,7 +498,9 @@ J '[.warnings[]?.message] | any(contains("cozy project upgrade"))' <<< "$(cozy -
 
 step "a project: a run in flight over the upgrade lands, and is listed"
 cozy project -p "$T" upgrade > "$OUT/old-landing-upgrade.txt" 2>&1 || check "old landing: upgrade: $(tail -c 300 "$OUT/old-landing-upgrade.txt")"
-J '.run_files == 1' <<< "$(status "$T")" || check "old landing: what its run kept reads as nothing: $(status "$T" | jq -c .run_files)"
+J '.unrecorded == 1' <<< "$(cozy --json project -p "$T" reclaim)" || check "old landing: what its run kept isn't listed: $(cozy --json project -p "$T" reclaim)"
+cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || true
+[ "$(ls "$T/files" | wc -l)" = 1 ] || check "old landing: reclaim --yes took what its run kept"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 rm -f "$T/project.yaml.v2" "$T/project.lock.v2"
@@ -676,6 +678,34 @@ stays "lists no versions"
 cp "$OUT/lost-lock.lock" "$L/project.lock"
 cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim with it back: $(tail -c 300 "$OUT/lost-lock.txt")"
 [ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: with it back, reclaim took what it names"
+
+step "a project: with a version landed since its lock was lost, reclaim --yes takes nothing old"
+rm "$L/project.lock"
+render "$L" made || check "lost lock: a version since: $(tail -c 300 "$OUT/render.txt")"
+count=$(ls "$L/files" | wc -l)
+J --argjson n "$((count - 1))" '.unrecorded == $n and (.lost // null) == null' <<< "$(cozy --json project -p "$L" reclaim)" || check "lost lock: what's listed: $(cozy --json project -p "$L" reclaim)"
+cozy project -p "$L" reclaim --yes > "$OUT/lost-lock.txt" 2>&1 || check "lost lock: reclaim since: $(tail -c 300 "$OUT/lost-lock.txt")"
+[ "$(ls "$L/files" | wc -l)" = "$count" ] || check "lost lock: reclaim --yes took what it had no record of: $(ls "$L/files" | wc -l) of $count"
+
+step "a project: a deleted asset is an orphan, its name starts clean, and restore or reclaim settles it"
+local D=$OUT/deleted line
+mkdir -p "$D"
+cat > "$D/project.yaml" <<YAML
+version: 3
+assets:
+  kept: {tool: $here/project/draw.py/draw, instructions: One.}
+YAML
+render "$D" kept || check "deleted: render: $(tail -c 300 "$OUT/render.txt")"
+line=$(cozy project -p "$D" delete kept) || check "deleted: delete"
+J '[.orphans[] | select(.name == "kept") | .versions] == [1]' <<< "$(status "$D")" || check "deleted: no orphan: $(status "$D" | jq -c .orphans)"
+printf '  kept: {tool: %s/project/draw.py/draw, instructions: Something else.}\n' "$here" >> "$D/project.yaml"
+[ "$(made "$D" kept)" = 0 ] || check "deleted: a new asset took its name's versions: $(made "$D" kept)"
+sed -i '/^  kept: /d' "$D/project.yaml"
+eval "$line" > /dev/null || check "deleted: restore: $line"
+[ "$(made "$D" kept)" = 1 ] || check "deleted: restore lost its version: $(made "$D" kept)"
+cozy project -p "$D" delete kept > /dev/null || check "deleted: delete again"
+cozy project -p "$D" reclaim --yes > "$OUT/deleted.txt" 2>&1 || check "deleted: reclaim: $(tail -c 300 "$OUT/deleted.txt")"
+{ J '(.orphans // []) == []' <<< "$(status "$D")" && [ "$(ls "$D/files" | wc -l)" = 0 ]; } || check "deleted: reclaim left: $(ls "$D/files"), $(status "$D" | jq -c .orphans)"
 }
 
 # The key: a run only when an asset has no state. What doesn't change it, what does, reverting, and what reads what.

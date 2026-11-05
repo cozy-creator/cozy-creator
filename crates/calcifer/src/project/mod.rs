@@ -1306,6 +1306,7 @@ async fn reclaim(
     let (doc, lock) = (Doc::load(folder).map_err(Refusal)?, folder.lock().map_err(Refusal)?);
     let (orphans, kept) = (orphans(&doc, folder, &lock), kept_files(&doc, &lock));
     let lost = folder.history_lost(&lock, &kept);
+    let recorded = lock.recorded();
     if let (true, Some(why)) = (asked.yes, &lost) {
         let remedy = format!("put {} back from git or a backup, or delete what you don't want from files/ by hand", folder::LOCK);
         return Err(Refusal(Error::new(Kind::Conflict, "project_history_lost", why.clone()).remedy(remedy).next("cozy project status")));
@@ -1322,12 +1323,12 @@ async fn reclaim(
         }
         folder.update_lock(|lock| lock.assets.retain(|key, _| doc.find(key).is_some())).map_err(Refusal)?;
     }
-    let (files, bytes) = folder.sweep(&kept, asked.yes).map_err(Refusal)?;
+    let (files, bytes, unrecorded) = folder.sweep(&kept, &recorded, asked.yes).map_err(Refusal)?;
     if asked.yes {
         canvas::prune(folder, &id, |name| doc.find(name).is_some()).map_err(Refusal)?;
     }
-    let next = (!asked.yes && lost.is_none() && (files > 0 || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
-    Ok(Json(Reclaimed { orphans, files, bytes, deleted: asked.yes, next, lost }))
+    let next = (!asked.yes && lost.is_none() && (files > unrecorded || !orphans.is_empty())).then(|| "cozy project reclaim --yes".to_owned()).into_iter().collect();
+    Ok(Json(Reclaimed { orphans, files, bytes, unrecorded, deleted: asked.yes, next, lost }))
 }
 
 /// Renames asset `from` to `to`: in project.yaml its key and every `<from>`, unless the file has moved to `to` already, then what

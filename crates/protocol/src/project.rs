@@ -743,6 +743,9 @@ pub struct Reclaimed {
     /// The files nothing but the orphans names, or nothing at all, and their bytes.
     pub files: u64,
     pub bytes: u64,
+    /// Of what nothing names, what nothing has a record of: it may be all that's left of a take, so `yes` leaves it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unrecorded: u64,
     /// Whether they are gone (`yes`), or only listed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
@@ -752,6 +755,10 @@ pub struct Reclaimed {
     /// Why `yes` would be refused: its lock was lost, so these files may be all that's left of its takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// What a push or pull moved (`POST /v1/projects/{id}/push`, `/pull`). A push sends every file

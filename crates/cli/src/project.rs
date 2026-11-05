@@ -332,6 +332,9 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
                 (false, 0) if reclaimed.orphans.is_empty() => output::say(ctx, "nothing to reclaim"),
                 (false, _) => output::say(ctx, &format!("{files} files nothing else names, {bytes}")),
             }
+            if reclaimed.unrecorded > 0 {
+                output::say(ctx, &format!("{} with no record here, which --yes leaves: they may be all that's left of a take", reclaimed.unrecorded));
+            }
             if let Some(lost) = &reclaimed.lost {
                 output::say(ctx, &format!("{lost}: --yes is refused"));
             }
