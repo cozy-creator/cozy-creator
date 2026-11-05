@@ -120,6 +120,7 @@ impl Client {
                 message: text("error_description"),
                 remedy: String::new(),
                 retry_after_s: None,
+                metadata: None,
             });
         }
         serde_json::from_value(body).map_err(|e| Error::Answer(e.to_string()))

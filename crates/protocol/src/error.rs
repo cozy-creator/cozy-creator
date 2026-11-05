@@ -45,6 +45,9 @@ pub struct Error {
     /// How long the one refusing said to wait before asking again, in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_s: Option<u64>,
+    /// The originating component's own details of its refusal, verbatim (a Hub's `metadata`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// The HTTP body of a refusal.
@@ -63,6 +66,7 @@ impl Error {
             next: vec![],
             cause: None,
             retry_after_s: None,
+            metadata: None,
         }
     }
 

@@ -72,6 +72,15 @@ pub struct CodeAnswer {
     pub code: String,
 }
 
+/// `POST /v1/account/codes/{id}/step`: the step a Hub's AuthKit named, refusing that code with
+/// its `metadata`. `path` is under AuthKit's mount (`account/recovery/confirm`); `body` goes as is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeStep {
+    pub path: String,
+    #[serde(default)]
+    pub body: serde_json::Value,
+}
+
 /// What a finished code did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "purpose", rename_all = "snake_case")]

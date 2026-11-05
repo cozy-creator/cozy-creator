@@ -19,7 +19,7 @@ use hub_client::{Bearer, Client, Credential, DeviceKey, Enrollment, UserSession}
 use protocol::{
     config::Origin,
     error::{Error, Kind},
-    hub::{Account, At, Code, CodeAnswer, CodeRequest, ExportedKey, KeyInstall, Naming, Proven, Purpose, SignedOut},
+    hub::{Account, At, Code, CodeAnswer, CodeRequest, CodeStep, ExportedKey, KeyInstall, Naming, Proven, Purpose, SignedOut},
 };
 
 use super::{key, origin, reader, refusal, signed_in};
@@ -42,6 +42,9 @@ struct Pending {
     purpose: Purpose,
     enrollment: Enrollment,
     sent: Instant,
+    /// The code the Hub answered with a step of its own (a refusal carrying `metadata`): the
+    /// enrollment is still live there, and finishes with this code once the step is taken.
+    stepped: Mutex<Option<String>>,
 }
 
 impl Pending {
@@ -74,6 +77,19 @@ impl Codes {
         let others = self.sent_to(&named.hub, named.purpose, named.enrollment.email());
         let others = others.into_iter().filter(|(other, _)| other != id).map(|(_, waiting)| waiting);
         Some(std::iter::once(named).chain(others).take(TRIED).collect())
+    }
+
+    /// `pending`'s code reached a step: `id`, the one the client proved, now names it.
+    fn step(&self, id: &str, pending: &Arc<Pending>, code: &str) {
+        *pending.stepped.lock().expect("stepped") = Some(code.to_owned());
+        self.0.lock().expect("codes").insert(id.to_owned(), pending.clone());
+    }
+
+    /// `id`'s code waiting on a step, and that code.
+    fn stepping(&self, id: &str) -> Option<(Arc<Pending>, String)> {
+        let pending = self.0.lock().expect("codes").get(id).filter(|waiting| waiting.sent.elapsed() < WAITS)?.clone();
+        let code = pending.stepped.lock().expect("stepped").clone()?;
+        Some((pending, code))
     }
 
     /// One answered settles every code to that mailbox for that reason.
@@ -174,7 +190,7 @@ pub(super) async fn send_code(
             return Ok(Json(Code { id, email, retry_after_s: e.stated_wait().map(|wait| wait.as_secs()) }));
         }
     };
-    let id = api.codes.keep(Pending { hub, purpose: ask.purpose, enrollment, sent: Instant::now() });
+    let id = api.codes.keep(Pending { hub, purpose: ask.purpose, enrollment, sent: Instant::now(), stepped: Mutex::default() });
     Ok(Json(Code { id, email, retry_after_s: None }))
 }
 
@@ -196,25 +212,63 @@ pub(super) async fn prove(
     })?;
     let (hub, purpose) = (waiting[0].hub.clone(), waiting[0].purpose);
     let anonymous = reader(&api, &hub)?.anonymous();
-    let mut finished = None;
     for pending in &waiting {
         match pending.enrollment.finish(&anonymous, &code).await {
-            Ok(done) => {
+            Ok((key, bearer)) => {
                 api.codes.answered(pending);
-                finished = Some(done);
-                break;
+                return Ok(Json(finished(&api, &hub, purpose, key, bearer).await?));
             }
             Err(e) if wrong_code(&e) => {}
-            Err(e) => return Err(refusal(&hub, e)),
+            Err(e) => return Err(stepped(&api, &id, pending, &code, e)),
         }
     }
-    let (key, bearer) = finished.ok_or_else(|| {
-        Refusal(Error::new(Kind::Validation, "code_wrong", "that code isn't right").remedy("use the code from your latest email, or ask for another"))
+    Err(Refusal(
+        Error::new(Kind::Validation, "code_wrong", "that code isn't right").remedy("use the code from your latest email, or ask for another"),
+    ))
+}
+
+/// `POST /v1/account/codes/{id}/step`: the step a Hub named, refusing `id`'s code with its details, sent
+/// under AuthKit's mount as asked; then that code again, which finishes as `prove` does.
+pub(super) async fn step(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<Proven>, Refusal> {
+    let CodeStep { path, body } = parse(&body?)?;
+    let plain = |segment: &str| !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    if !path.split('/').all(plain) {
+        return Err(refuse(Kind::Validation, "step_path_invalid", format!("{path:?} isn't a path under AuthKit's mount")));
+    }
+    let (pending, code) = api.codes.stepping(&id).ok_or_else(|| {
+        Refusal(Error::not_found("code_not_found", format!("no code {id} waits on a step")).remedy("ask for another"))
     })?;
-    Ok(Json(match purpose {
+    let anonymous = reader(&api, &pending.hub)?.anonymous();
+    anonymous.authkit_step(&path, &body).await.map_err(|e| refusal(&pending.hub, e))?;
+    match pending.enrollment.finish(&anonymous, &code).await {
+        Ok((key, bearer)) => {
+            api.codes.answered(&pending);
+            Ok(Json(finished(&api, &pending.hub, pending.purpose, key, bearer).await?))
+        }
+        Err(e) => Err(stepped(&api, &id, &pending, &code, e)),
+    }
+}
+
+/// A refusal of a code that names a step of the Hub's own (one with `metadata`) leaves the
+/// enrollment waiting on it, under `id`.
+fn stepped(api: &Api, id: &str, pending: &Arc<Pending>, code: &str, error: hub_client::Error) -> Refusal {
+    if matches!(&error, hub_client::Error::Hub { metadata: Some(_), .. }) {
+        api.codes.step(id, pending, code);
+    }
+    refusal(&pending.hub, error)
+}
+
+/// What a finished code does: keeps this computer's key, answers an exported one, or signs out
+/// every other key.
+async fn finished(api: &Api, hub: &Origin, purpose: Purpose, key: DeviceKey, bearer: Bearer) -> Result<Proven, Refusal> {
+    Ok(match purpose {
         Purpose::SignIn => {
-            keep(&api, &hub, &key, Some(&bearer))?;
-            Proven::SignIn(enrolled(&api, &hub).await?)
+            keep(api, hub, &key, Some(&bearer))?;
+            Proven::SignIn(enrolled(api, hub).await?)
         }
         Purpose::Export => Proven::Export(ExportedKey {
             email: key.email.clone(),
@@ -222,11 +276,11 @@ pub(super) async fn prove(
             key: String::from_utf8(key.document()).expect("a key is JSON"),
         }),
         Purpose::SignOutEverywhere => {
-            let proven = Client::connect(&hub, reqwest::Client::new(), Credential::Bearer(bearer.token));
-            proven.revoke_other_device_keys().await.map_err(|e| refusal(&hub, e))?;
-            Proven::SignOutEverywhere(erase(&api, &hub, true).await?)
+            let proven = Client::connect(hub, reqwest::Client::new(), Credential::Bearer(bearer.token));
+            proven.revoke_other_device_keys().await.map_err(|e| refusal(hub, e))?;
+            Proven::SignOutEverywhere(erase(api, hub, true).await?)
         }
-    }))
+    })
 }
 
 /// `PUT /v1/account/name`: names the account a new key signs in as.

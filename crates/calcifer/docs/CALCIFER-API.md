@@ -70,7 +70,8 @@ names itself (files by `sha256:`) is written with an idempotent PUT instead.
 ```
 `kind` is `usage` or `validation` (400), `credential` (401), `forbidden` (403), `not_found` (404), `conflict`
 (409), `capacity` (507), `unavailable` (503) or `internal` (500). `code` is stable and snake_case; `message` is
-for people; `remedy`, `next` (commands to run) and `cause` (a peer's own code, such as the Hub's) are optional.
+for people; `remedy`, `next` (commands to run), `cause` (a peer's own code, such as the Hub's) and `metadata`
+(that peer's details of its refusal, verbatim) are optional.
 A run's or machine's outcome carries the same typed reason.
 
 **Events.** A stream is `GET …/events` (`text/event-stream`). Each event's `data:` is one JSON object tagged by
@@ -308,7 +309,12 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   nowhere here; `sign_out_everywhere` revokes every other key, then this one (`SignedOut`). Each email
   has its own code, so what arrived is tried on `id`'s and then the 2 newest others to that mailbox for
   that purpose. `400 code_wrong` when none takes it, all still waiting; `404 code_not_found` once they've
-  expired or one was answered.
+  expired or one was answered. A Hub refusal carrying `metadata` is a step of AuthKit's own (restoring a
+  deleted account): it passes through with that `metadata`, and the code waits on it under `id`.
+- `POST /v1/account/codes/{id}/step` `{path, body}`: takes that step. `body` goes as is to `path` under the
+  Hub's AuthKit mount (`account/recovery/confirm`), with no credential; then the waiting code finishes, as
+  `POST /v1/account/codes/{id}` answers. `400 step_path_invalid` unless `path` is plain lowercase segments;
+  `404 code_not_found` when no code of `id`'s waits on a step.
 - `PUT /v1/account/name` `{hub, name}`: names a new account; ask again on `account.name_unavailable`
   or `account.name_invalid`.
 - `PUT /v1/account/key` `{hub, key}`: an exported key's text becomes this computer's key.

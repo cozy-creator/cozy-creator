@@ -39,6 +39,7 @@ pub fn routes() -> Router<Arc<Api>> {
         .route("/v1/account", get(account::show).delete(account::sign_out))
         .route("/v1/account/codes", post(account::send_code))
         .route("/v1/account/codes/{id}", post(account::prove))
+        .route("/v1/account/codes/{id}/step", post(account::step))
         .route("/v1/account/name", put(account::name))
         .route("/v1/account/key", put(account::install))
         .route("/v1/orgs/{org}", patch(orgs::edit))
