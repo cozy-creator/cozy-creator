@@ -260,7 +260,7 @@ async function loseAnswers(page, method, path, times) {
   await page.reload();
   await page.waitForSelector('.ptabs .ptab.on');
   await box(name).waitFor();
-  const tab = (project) => page.locator(`.ptab[title="${project.path}"]`);
+  const tab = (project) => page.getByTitle(project.path, { exact: true });
   const here = page.locator('.ptab.on');
   await page.mouse.move(1400, 1000);
   await page.mouse.down();
@@ -273,7 +273,7 @@ async function loseAnswers(page, method, path, times) {
   await page.locator(`.ptab.on[title="${second_project.path}"]`).waitFor();
   await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
-  await page.locator(`.ptab[title="${folder}"]`).click();
+  await page.getByTitle(folder, { exact: true }).click();
   await box(name).waitFor({ timeout: 2000 });
   check('back_shows_its_boxes_at_once', true);
   await page.waitForTimeout(300);
@@ -286,7 +286,7 @@ async function loseAnswers(page, method, path, times) {
   await row('Edit').dragTo(stage, { targetPosition: { x: 1200, y: 300 } });
   await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Edit/.test(line)).length, (n) => n === 1);
   check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
-  await page.locator(`.ptab[title="${folder}"]`).click();
+  await page.getByTitle(folder, { exact: true }).click();
   await box(name).waitFor();
   await forgetMade();
 
