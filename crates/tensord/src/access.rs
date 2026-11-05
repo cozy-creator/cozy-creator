@@ -16,7 +16,7 @@ use crate::{
 };
 use platform::contain::host_memory;
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     fs::File,
     io::{self, Read},
     sync::{
@@ -49,18 +49,20 @@ pub fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
 }
 
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
-/// remembered (Status asks every second); a later eviction is fetched again by its reader.
+/// remembered (Status asks every second) until the store next evicts, in any process.
 pub fn whole(store: &Store, header: &str, components: &[String]) -> bool {
-    static WHOLE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    static WHOLE: Mutex<BTreeMap<String, Option<std::time::SystemTime>>> = Mutex::new(BTreeMap::new());
     let key = format!("{}\0{header}\0{components:?}", store.root().display());
-    if WHOLE.lock().unwrap().contains(&key) {
+    let evicted = store.evicted_at();
+    if WHOLE.lock().unwrap().get(&key).is_some_and(|known| *known == evicted) {
         return true;
     }
     let whole = checkpoint(store, header)
         .is_ok_and(|ck| storage::chunks(&ck, components).iter().all(|o| store.holds(o)));
-    if whole {
-        WHOLE.lock().unwrap().insert(key);
-    }
+    match whole {
+        true => WHOLE.lock().unwrap().insert(key, evicted),
+        false => WHOLE.lock().unwrap().remove(&key),
+    };
     whole
 }
 
@@ -179,9 +181,12 @@ impl Fetch {
     /// behind them. Held until the call ends. Its run's progress waits on `selected` only. For a
     /// `cold` call (no executor holds its construction) the chunks already on disk are read into
     /// the page cache in the same order meanwhile (`read_ahead`).
+    /// `room` is asked for the bytes absent of both, else of `selected` alone, before any is
+    /// wanted: it frees them on the disk or refuses, and a refusal fails the call before it
+    /// downloads or starts.
     pub fn ahead(
         self: &Arc<Self>, selected: &[(String, Vec<String>)], later: &[(String, Vec<String>)], cold: bool,
-        engine: &Arc<Engine>,
+        engine: &Arc<Engine>, room: &dyn Fn(u64) -> Result<(), String>,
     ) -> io::Result<()> {
         if cold {
             self.read_ahead(selected, later);
@@ -202,7 +207,15 @@ impl Fetch {
         wanted.sort_by_key(|w| w.bytes);
         behind.sort_by_key(|w| w.bytes);
         let required = wanted.len();
-        let missing: u64 = wanted.iter().chain(&behind).flat_map(|w| &w.objects).map(|o| o.length).sum();
+        let bytes = |wants: &[Wanted]| wants.iter().flat_map(|w| &w.objects).map(|o| o.length).sum::<u64>();
+        let missing = bytes(&wanted) + bytes(&behind);
+        // Its checkpoints are held from `components` on: making room never evicts its own. Only
+        // what it must read refuses it; room for its on-demand models too where there is some.
+        if let Err(refusal) = room(missing).or_else(|_| room(bytes(&wanted))) {
+            self.required.lock().unwrap().failure = Some(refusal.clone());
+            engine.notify_activity();
+            return Err(io::Error::other(refusal));
+        }
         {
             let mut state = self.required.lock().unwrap();
             state.pending = required;

@@ -1828,6 +1828,27 @@ impl Pool {
             }
         }
     }
+    /// Each idle executor's process and when it last came back idle, least recently used first:
+    /// what a full disk may end to let the models it holds open go (`Service::room_for`).
+    pub(crate) fn idle_executors(&self) -> Vec<(u32, Instant)> {
+        let mut idle: Vec<(u32, Instant)> = self.sessions.lock().unwrap().values().map(|s| (s.executor.birth.pid, s.used)).collect();
+        idle.extend(self.deviceless.lock().unwrap().iter().map(|s| (s.executor.birth.pid, s.used)));
+        idle.sort_by_key(|(_, used)| *used);
+        idle
+    }
+    /// Ends the idle executor of process `pid` and observes its exit; whether one was.
+    pub(crate) fn end_idle_executor(&self, pid: u32) -> bool {
+        let key = self.sessions.lock().unwrap().iter().find(|(_, s)| s.executor.birth.pid == pid).map(|(key, s)| (key.clone(), s.start, s.degree));
+        if let Some((key, start, degree)) = key {
+            let Some(permit) = self.allocations.upkeep(start..start + degree as usize) else {
+                return false;
+            };
+            let ended = self.end_session(&key);
+            drop(permit);
+            return ended;
+        }
+        self.end_idle_deviceless(|s| s.executor.birth.pid == pid)
+    }
     /// Every idle executor `which` names ends.
     fn end_idle_executors(&self, which: impl Fn(&Session) -> bool) {
         let lanes: Vec<(String, usize, u32)> = {

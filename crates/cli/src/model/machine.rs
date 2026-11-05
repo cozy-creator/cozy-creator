@@ -176,7 +176,13 @@ pub(crate) async fn list(ctx: &Context, on: Option<String>, words: &[String]) ->
     }
     // A store's total counts shared content once.
     for machine in machines.iter().filter(|machine| !machine.silent) {
-        table = table.note(format!("{}: {} in {} models", machine.machine, output::bytes(machine.bytes), machine.repositories));
+        // What its store holds besides them, once it is a hundredth of the store or more.
+        let other = machine.stored_bytes.saturating_sub(machine.bytes);
+        let other = match other > 0 && other >= machine.stored_bytes / 100 {
+            true => format!(", and {} no model names (cut downloads, evicted objects still open), freed when the disk needs it", output::bytes(other)),
+            false => String::new(),
+        };
+        table = table.note(format!("{}: {} in {} models{other}", machine.machine, output::bytes(machine.bytes), machine.repositories));
     }
     let silent: Vec<&str> = machines.iter().filter(|machine| machine.silent).map(|machine| machine.machine.as_str()).collect();
     if !silent.is_empty() {

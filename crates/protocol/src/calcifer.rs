@@ -1096,6 +1096,10 @@ pub struct MachineModels {
     pub repositories: u64,
     #[serde(default)]
     pub bytes: u64,
+    /// Everything its store takes on the disk, models or not (cut downloads, objects no model
+    /// names any more); 0 from a machine that does not measure it.
+    #[serde(default)]
+    pub stored_bytes: u64,
 }
 
 /// One checkpoint a machine holds, and its repository's bytes there.
@@ -1143,7 +1147,7 @@ impl Machine {
     pub fn models(&self) -> MachineModels {
         let mut held = MachineModels { machine: self.name.clone(), silent: self.status.is_none(), ..Default::default() };
         let Some(status) = &self.status else { return held };
-        (held.repositories, held.bytes) = (status.models.len() as u64, status.models_bytes);
+        (held.repositories, held.bytes, held.stored_bytes) = (status.models.len() as u64, status.models_bytes, status.disk_models_bytes);
         for model in &status.models {
             let row = |release: &str, lane: &str, precision: &str, checkpoint: &str| HeldModel {
                 machine: self.name.clone(),

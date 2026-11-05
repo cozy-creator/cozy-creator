@@ -9,7 +9,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs::File,
     io,
     path::Path,
@@ -416,9 +416,112 @@ impl Service {
     }
     /// The machine's garbage for a store admit of `incoming` bytes that finds the disk short,
     /// before the store evicts a model (`Store::on_short`): never kernels, memoized stages or
-    /// run objects.
+    /// run objects. Then the idle executors whose open models alone keep the room it needs end
+    /// (`end_idle_for_disk`), so the store's eviction can take those models.
     pub fn reclaim_for(&self, incoming: u64) {
         self.sweep(incoming, false);
+        if let Some(store) = self.store() {
+            let ended = self.end_idle_for_disk(&store, incoming);
+            if !ended.is_empty() {
+                tracing::warn!("the disk is short of {}: ended the idle executors holding {} open", crate::reclaim::size(incoming), ended.join(", "));
+            }
+        }
+    }
+
+    /// Room on the disk for the `missing` bytes of run `run`'s weights, before any is wanted: the
+    /// machine's garbage, then the least recently used models no queued or running job holds,
+    /// those idle executors hold open too (ended first), never one in use. What it evicted is the
+    /// run's warning. Refused, with the sizes and what would hold it, only when even all of that
+    /// would not fit; a disk it cannot measure is said and not judged.
+    pub fn room_for(&self, run: &str, missing: u64) -> Result<(), String> {
+        let Some(store) = self.store().filter(|_| missing > 0) else {
+            return Ok(());
+        };
+        let size = crate::reclaim::size;
+        let warn = |text: String| {
+            if let Err(error) = self.engine.append_warning(run, &text) {
+                tracing::warn!("run {run}: {text} ({error})");
+            }
+        };
+        let free = || crate::reclaim::measure(store.root()).map(|disk| disk.free());
+        match free() {
+            Ok(free) if free >= missing => return Ok(()),
+            Ok(_) => {}
+            Err(error) => {
+                warn(format!("its weights' {} were not judged against the disk: {error}", size(missing)));
+                return Ok(());
+            }
+        }
+        self.sweep(missing, false);
+        let room = match store.room() {
+            Ok(room) => room,
+            Err(error) => {
+                warn(format!("its weights' {} were not judged against the disk: {error}", size(missing)));
+                return Ok(());
+            }
+        };
+        let idle: BTreeSet<u32> = self.pool().map(|pool| pool.idle_executors().into_iter().map(|(pid, _)| pid).collect()).unwrap_or_default();
+        let evictable = room.freed(|lane| lane.holders.iter().all(|pid| idle.contains(pid)));
+        let now = free().unwrap_or(0);
+        if now.saturating_add(evictable) < missing {
+            return Err(format!(
+                "machine_disk_full: its weights need {} more on this disk, and it can make only {} free ({} free past its reserve, {} in models no queued or running job holds){}",
+                size(missing), size(now + evictable), size(now), size(evictable), crate::reclaim::advice(store.root(), missing)
+            ));
+        }
+        let ended = self.end_idle_for_disk(&store, missing);
+        match store.make_room(missing) {
+            Ok(made) if !made.evicted.is_empty() => {
+                let each: Vec<String> = made.evicted.iter().map(|e| format!("{} ({}, unused {} min)", e.name, size(e.bytes), e.idle.as_secs() / 60)).collect();
+                let idle = if ended.is_empty() { String::new() } else { "; their idle executors ended first".into() };
+                warn(format!("the disk was short {} for its weights: evicted {}{idle}", size(missing.saturating_sub(now)), each.join(", ")));
+            }
+            Ok(_) => {}
+            Err(error) => warn(format!("making room for its weights' {}: {error}", size(missing))),
+        }
+        Ok(())
+    }
+
+    /// Ends idle executors, least recently used first, while the models only they hold open
+    /// would give the disk `incoming` more bytes it lacks: an executor ends only when its holds
+    /// alone keep some of that room, never one a queued or running job also holds. The models
+    /// they held, by name.
+    fn end_idle_for_disk(&self, store: &crate::storage::Store, incoming: u64) -> Vec<String> {
+        let Some(pool) = self.pool() else {
+            return vec![];
+        };
+        let idle = pool.idle_executors();
+        let need = crate::reclaim::measure(store.root()).map_or(0, |disk| incoming.saturating_sub(disk.free()));
+        if idle.is_empty() || need == 0 {
+            return vec![];
+        }
+        let room = match store.room() {
+            Ok(room) => room,
+            Err(error) => {
+                tracing::warn!("judging the room idle executors hold: {error}");
+                return vec![];
+            }
+        };
+        let freed = |ended: &BTreeSet<u32>| room.freed(|lane| lane.holders.iter().all(|pid| ended.contains(pid)));
+        let (mut ended, mut names) = (BTreeSet::new(), vec![]);
+        let mut can = freed(&ended);
+        for (pid, _) in idle {
+            if can >= need {
+                break;
+            }
+            let mut with = ended.clone();
+            with.insert(pid);
+            let more = freed(&with);
+            if more > can && pool.end_idle_executor(pid) {
+                names.extend(room.lanes.iter().filter(|lane| lane.holders.contains(&pid)).map(|lane| lane.name.clone()));
+                (ended, can) = (with, more);
+            }
+        }
+        names
+    }
+
+    fn store(&self) -> Option<Arc<crate::storage::Store>> {
+        self.publisher.lock().unwrap().as_ref().map(|publisher| publisher.store().clone())
     }
     /// A sweep as though `incoming` more bytes were taken; `all` caches, or the garbage alone.
     fn sweep(&self, incoming: u64, all: bool) -> crate::reclaim::Swept {
@@ -526,7 +629,11 @@ impl Service {
                     continue;
                 }
                 crate::access::Ready::Failed(error) => {
-                    self.engine.fail_unstarted(&record.id, "model_fetch_failed", error)?;
+                    let (code, reason) = match error.strip_prefix("machine_disk_full: ") {
+                        Some(why) => ("machine_disk_full", why.to_string()),
+                        None => ("model_fetch_failed", error),
+                    };
+                    self.engine.fail_unstarted(&record.id, code, reason)?;
                     if let Some(calls) = &calls { calls.ended(&record.id); }
                     continue;
                 }
