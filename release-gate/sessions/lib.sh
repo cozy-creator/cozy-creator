@@ -92,7 +92,8 @@ quote() {
 order() {
   local o first='' i=${#RIDS[@]} RP sku=${1:-$SKU}
   o=$(date +%s%3N)
-  cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" & RP=$!
+  # Nothing long-lived holds a session's rent lock (fd 9): only the order does, while it names its machine.
+  cozy machine rent "$sku" --disk-gb "$DISK" $RENT_ARGS -y > "$OUT/rent$i.out" 2> "$OUT/rent$i.err" 9>&- & RP=$!
   while [ -z "$first" ]; do
     first=$(grep -m1 -oE '^[a-z0-9][a-z0-9-]*: (booting|ready|offline)' "$OUT/rent$i.err" | cut -d: -f1)
     [ -n "$first" ] || kill -0 "$RP" 2>/dev/null || break
@@ -108,7 +109,7 @@ order() {
   RIDS+=("$RID"); echo "$RID" >> "$OUT/rental"; eval "RP_$i=$RP RRC_$i=$done"
   say "rental $RID ($first)"
   [ -n "$WD" ] || { ( sleep "$CAP_S"; echo "$(date -u +%T) GUARD: \$$CAP reached, ending $(paste -sd' ' "$OUT/rental")" >> "$R"
-    while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done < "$OUT/rental" ) & WD=$!; }
+    while read -r r; do cozy machine end "$r" -y --force >> "$OUT/end.txt" 2>&1; done < "$OUT/rental" ) 9>&- & WD=$!; }
 }
 
 # ready [i]: the i-th order (the last by default) booted: RID and NAME are its, its record in show<i>.json/txt (the
