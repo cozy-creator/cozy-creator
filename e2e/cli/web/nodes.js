@@ -577,6 +577,8 @@ function linesOf(text, name) {
 
     // What a package shows beside its first text: both on the box as it opens, empty reading N/A, and what's typed is the file's, as the CLI reads it. An empty one is written nowhere.
     const shaped = join(__dirname, '..', 'project', 'shaped.py');
+    // Read with this machine's Runtime, as tool.py is above.
+    execFileSync(COZY, ['--json', 'run', `${shaped}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  sounded:\n    tool: ${shaped}/shot\n`);
     await box('sounded').waitFor();
     await open('sounded');
