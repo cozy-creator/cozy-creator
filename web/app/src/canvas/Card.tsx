@@ -393,9 +393,11 @@ const CardBody = memo(function CardBody({ name, width, selected }: { name: strin
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
     else store.patch(name, { draft: undefined })
   }, [store, name])
-  // A dropped tool's text has taken the keys, or isn't going to.
+  // A dropped tool's text has taken the keys, or isn't going to, and the box goes by what's true now.
   useEffect(() => {
-    if (store.focusing === name) store.focusing = null
+    if (store.focusing !== name) return
+    store.focusing = null
+    store.patch(name, {})
   })
   if (!view) return null
 

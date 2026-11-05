@@ -1037,12 +1037,12 @@ code {
 }
 
 /* Lines the page says */
+/* Bottom left, clear of the tools. */
 .notes {
   position: fixed;
-  left: 50%;
+  left: calc(188px * var(--ui) + 24px);
   bottom: 16px;
-  width: min(460px, calc(100vw - 24px));
-  transform: translateX(-50%);
+  width: min(460px, calc(100vw - 188px * var(--ui) - 36px));
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2400,4 +2400,11 @@ input[type="checkbox"] {
   color: var(--mute);
   font-size: 14px;
   line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+  .notes {
+    left: 12px;
+    width: calc(100vw - 24px);
+  }
 }
