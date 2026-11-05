@@ -54,6 +54,7 @@ authority() {
     vcell "offload-$mode" "$V/torch-offload/sdxl" mode="$mode" seed:=$((R + 61 + i)) --gpus=1 \
       prompts:="$(jq -nc --arg a "$SCENE, photo, take $i" --arg b "$CHAR, film still, take $i" '[$a, $b]')"
   done
+  . "$V/pool-scramble/cell.sh"
   . "$V/faults.sh"
 }
 
