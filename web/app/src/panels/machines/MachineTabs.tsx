@@ -15,7 +15,7 @@ function light(machine: Machine, total: number) {
   return total > 0 ? "work" : "idle"
 }
 
-/** Each rental, top right: its name, then what it's running of all it holds, read once and kept by the stream. */
+/** Each rental, beside the project tabs: its name, then what it's running of all it holds, read once and kept by the stream. */
 export function MachineTabs({ to }: { to: (rest?: string) => string }) {
   const { client } = useConnection()
   const { data } = useQuery(machinesQuery(client))

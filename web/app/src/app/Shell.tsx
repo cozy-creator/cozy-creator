@@ -190,6 +190,7 @@ export function Shell() {
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
         <ProjectTabs id={id} />
+        <MachineTabs to={to} />
         {remote && (
           <Link className="pill warn" to={to("machines")}>
             On {remote}
@@ -197,7 +198,6 @@ export function Shell() {
         )}
         <Connectivity />
         <span className="gap" />
-        <MachineTabs to={to} />
         <span className="canvas-controls" ref={setSlot} />
         <MainMenu id={id} />
       </header>

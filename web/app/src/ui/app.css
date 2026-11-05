@@ -2587,7 +2587,7 @@ input[type="checkbox"] {
   padding: calc(4px * var(--ui)) calc(8px * var(--ui));
 }
 
-/* Each rental, top right: its name, then running / all it holds. */
+/* Each rental, beside the project tabs: its name, then running / all it holds. */
 .mtabs {
   display: flex;
   align-items: stretch;
