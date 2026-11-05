@@ -424,7 +424,8 @@ fn pins_back(folder: &Folder, base: &str, there: &str) -> Result<(), Error> {
             }
         }
         Ok(text)
-    })
+    })?;
+    Ok(())
 }
 
 /// The text, the lock and what the holder lacks of the files, given, until it lacks nothing it can be given.
