@@ -427,8 +427,8 @@ function linesOf(text, name) {
   }
 
   // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy project status` reads.
+  const statusOf = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
   if (local) {
-    const status = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
@@ -460,7 +460,7 @@ function linesOf(text, name) {
     await more('still_1');
     await still.locator('input[aria-label=Count]').waitFor();
     await still.locator('select[aria-label=Style]').selectOption({ label: 'noise' });
-    await until('the choice in the status', async () => status('still_1').fields?.style, (style) => style === 'noise');
+    await until('the choice in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'noise');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     await until('marked', () => still.locator('.more-marks').count(), (n) => n === 1);
@@ -475,7 +475,7 @@ function linesOf(text, name) {
     await open('still_1');
     check('open_outlasts_a_reload', (await still.locator('.edit-more').count()) === 1);
     await still.locator('select[aria-label=Style]').selectOption({ label: 'flat' });
-    await until('its default in the status', async () => status('still_1').fields?.style, (style) => style === 'flat');
+    await until('its default in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'flat');
     await still.locator('.more-toggle').click();
     await still.locator('.edit-more').waitFor({ state: 'detached' });
     check('its_default_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
@@ -485,8 +485,8 @@ function linesOf(text, name) {
     await until('a prompt and a beat', () => told.locator('.beat').count(), (n) => n === 1);
     check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
     check('fresh_beat_cannot_go', (await told.locator('[aria-label^="Remove beat"]').count()) === 0);
-    await until('its beat in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
-    check('its_beat_has_a_length', status('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), status('told_1').fields);
+    await until('its beat in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
+    check('its_beat_has_a_length', statusOf('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), statusOf('told_1').fields);
     await shot('fresh-beat');
     await told.locator('.add-beat').click();
     await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
@@ -495,9 +495,9 @@ function linesOf(text, name) {
     await page.keyboard.type('The second.');
     await told.locator('.beat input[type=range]').nth(1).focus();
     await page.keyboard.press('ArrowRight');
-    await until('both in the status', async () => status('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
+    await until('both in the status', async () => statusOf('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
     await told.locator('[aria-label="Remove beat 2"]').click();
-    await until('one in the status', async () => status('told_1').fields?.beats?.length, (n) => n === 1);
+    await until('one in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
     check('the_last_beat_stays', (await told.locator('.beat').count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
     for (const name of ['still_1', 'told_1', 'fixture']) {
       await api(`/v1/projects/${id}/assets/${name}`, { method: 'DELETE' });
@@ -591,11 +591,11 @@ function linesOf(text, name) {
     await scape.click();
     await page.keyboard.type('Rain on steel.');
     await sounded.locator('.mention-text[data-field=music]').click();
-    await until('the soundscape as the CLI reads it', async () => status('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
-    check('an_empty_one_isnt_written', !('music' in status('sounded').fields), status('sounded').fields);
+    await until('the soundscape as the CLI reads it', async () => statusOf('sounded').fields?.soundscape, (said) => said === 'Rain on steel.');
+    check('an_empty_one_isnt_written', !('music' in statusOf('sounded').fields), statusOf('sounded').fields);
     await page.keyboard.type('Low strings.');
     await sounded.locator('.mention-text[data-field=music]').blur();
-    await until('the music as the CLI reads it', async () => status('sounded').fields?.music, (said) => said === 'Low strings.');
+    await until('the music as the CLI reads it', async () => statusOf('sounded').fields?.music, (said) => said === 'Low strings.');
     await shot('sounded');
 
     // Text: a name for some words. It's on the list before any function, its box is only its words, with nothing to render, and a mention of it is a chip like any other.
@@ -607,9 +607,9 @@ function linesOf(text, name) {
     await wording.locator('.mention-text[data-field=text]').click();
     await page.keyboard.type('Painted by hand.');
     await wording.locator('.mention-text[data-field=text]').blur();
-    await until('its words as the CLI reads them', async () => status('text').fields?.text, (said) => said === 'Painted by hand.');
+    await until('its words as the CLI reads them', async () => statusOf('text').fields?.text, (said) => said === 'Painted by hand.');
     check('text_has_no_render', (await wording.locator('button:text-is("Render"), .takes, button:text-is("Approve")').count()) === 0, await wording.innerText());
-    check('text_has_a_kind', status('text').kind === 'text', status('text'));
+    check('text_has_a_kind', statusOf('text').kind === 'text', statusOf('text'));
 
     // Caption: what the package says lands in the field as an edit, and nothing's written until it's kept. Local code a project names can answer.
     const asker = join(__dirname, '..', 'project', 'tool.py');
