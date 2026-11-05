@@ -2745,9 +2745,15 @@ impl Walk {
             walker.facts.insert(with.to_owned(), (function.to_owned(), widths));
             if !walker.learned.contains_key(&(name.clone(), function.to_owned())) {
                 let mut learned = sim::Learned::default();
+                // Runs before this walk are taken as as long as this job, which the store doesn't say: a guess its own runs put right.
+                let length = walker.graph.job(key).and_then(|job| {
+                    let walk = self.folder().walk_now().ok()?;
+                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
+                    Some(walker.readings.get(&ask.digest)?.nodes.get(job.node)?.length)
+                });
                 // Oldest first, so the newest run's exchange is what counts.
-                for (measured, length) in self.host.last_measured(function, &name).into_iter().rev() {
-                    learned.took(measured.width, measured.busy_s / length, measured.exchange_share);
+                for measured in self.host.last_measured(function, &name).into_iter().rev() {
+                    learned.took(measured.width, measured.busy_s / length.unwrap_or(1.0), measured.exchange_share);
                 }
                 walker.learned.insert((name.clone(), function.to_owned()), learned);
             }

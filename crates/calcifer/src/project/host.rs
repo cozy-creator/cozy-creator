@@ -210,14 +210,6 @@ pub struct Measured {
     pub exchange_share: f64,
 }
 
-/// How much a run made, as what it takes goes by it: a shot's seconds, as it was asked; else one.
-fn length_of(run: &Run) -> f64 {
-    let Some(input) = run.request.as_ref().map(|request| &request.input) else { return 1.0 };
-    let beats: f64 = input.get("beats").and_then(Value::as_array).into_iter().flatten().filter_map(|beat| beat["duration"].as_f64()).sum();
-    let seconds = input.get("duration_s").and_then(Value::as_f64).unwrap_or(beats);
-    if seconds > 0.0 { seconds } else { 1.0 }
-}
-
 impl Measured {
     /// From what its executors recorded: a stage is time it worked; a `host ·` row inside one is where that went, and one in `parallel` is exchange. A wait counts nowhere.
     fn of(run: &Run) -> Option<Self> {
@@ -349,19 +341,19 @@ impl Host {
     }
 
     /// What the newest finished run of `target` on `machine` measured.
-    /// What the newest finished runs of `target` on `machine` measured, the newest at each width, and the length of what each made.
-    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<(Measured, f64)> {
+    /// What the newest finished runs of `target` on `machine` measured, the newest at each width.
+    pub fn last_measured(&self, target: &str, machine: &str) -> Vec<Measured> {
         let store = self.api.calcifer.store();
         let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
         let Ok((rows, ..)) = store.runs(&filter) else { return vec![] };
-        let mut found: Vec<(Measured, f64)> = vec![];
+        let mut found: Vec<Measured> = vec![];
         for row in &rows {
             let Ok(run) = store.detail(row) else { continue };
             let Some(measured) = Measured::of(&run) else { continue };
-            if found.iter().any(|(had, _)| had.width == measured.width) {
+            if found.iter().any(|had| had.width == measured.width) {
                 continue;
             }
-            found.push((measured, length_of(&run)));
+            found.push(measured);
         }
         found
     }
