@@ -2083,6 +2083,13 @@ pub(crate) fn beyond_phase(device: i32) -> Result<usize> {
     }))
 }
 
+pub(crate) fn prefetch_declined(device: i32) -> Result<()> {
+    if let Some(owner) = existing(device)? {
+        owner.lock()?.stats.prefetch_declines += 1;
+    }
+    Ok(())
+}
+
 pub(crate) fn prefetch_admitted(device: i32) -> Result<()> {
     if let Some(owner) = existing(device)? {
         owner.lock()?.stats.prefetch_admissions += 1;

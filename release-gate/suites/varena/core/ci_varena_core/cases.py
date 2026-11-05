@@ -550,7 +550,7 @@ def prefetch_rule():
         gpu = varena.Device(0)
         tier = pages()
         stream = torch.cuda.current_stream().cuda_stream
-        anchor, idle = filled(gpu, 2 * MIB, 6), filled(gpu, 2 * MIB, 5)
+        idle, anchor = filled(gpu, 2 * MIB, 5), filled(gpu, 2 * MIB, 6)
 
         def ahead():
             """A use of `anchor`, then what the core did about the Region after it."""
@@ -643,9 +643,9 @@ def fill_paths_agree():
         def same(region, expected):
             used = region.use(stream)
             assert bool((used.tensor.cpu() == expected).all())
-            used.consume_on(stream)
             del used
             gc.collect()
+            torch.cuda.synchronize()
 
         def origins():
             return [row[3] for row in tier.drain()]

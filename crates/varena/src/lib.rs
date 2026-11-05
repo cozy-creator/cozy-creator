@@ -1107,6 +1107,7 @@ impl Region {
             if entry.handle.is_none() { self.rounded } else { 0 }
         };
         if !reclaim::prefetch_room(device, missing, &std::collections::BTreeSet::from([self.id]), free_only)? {
+            working::prefetch_declined(device)?;
             return Ok(None);
         }
         let gate = gate(device)?;
