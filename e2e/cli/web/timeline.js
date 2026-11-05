@@ -339,7 +339,7 @@ function plate(path, color, seconds, hz) {
   check('says_what_it_went_without', (await edit()).prefixes.at(-1).without?.some((line) => line.startsWith('red')), (await edit()).prefixes.at(-1));
 
   if (process.env.COZY) {
-    const status = JSON.parse(execFileSync(process.env.COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+    const status = JSON.parse(execFileSync(process.env.COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     check('cli_sees_its_versions', status.assets.find((asset) => asset.name === 'Edit')?.versions === before + 1, status.assets.find((asset) => asset.name === 'Edit'));
   }
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));

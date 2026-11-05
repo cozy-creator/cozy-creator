@@ -231,6 +231,11 @@ export class CanvasStore {
     this.moreOpen = new Set(moreOpen)
   }
 
+  /** The project has been read, so what isn't here isn't in it. */
+  get hasRead() {
+    return this.seen
+  }
+
   attach(flow: Flow) {
     this.flow = flow
     if (this.state && this.rows) this.reconcile()

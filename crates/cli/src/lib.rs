@@ -36,14 +36,18 @@ pub use context::Context;
     about = "Run models on your machines and rented GPUs"
 )]
 struct Cli {
-    /// Print JSON (NDJSON when following) instead of tables.
+    /// Print JSON (NDJSON when following) instead of tables: what the view shows, by the record's own names.
     #[arg(long, global = true)]
     json: bool,
+    /// The whole record where a view shows part of it: every field with --json, every table and line without.
+    #[arg(long, global = true)]
+    full: bool,
     /// Agree without being asked: to a rental's quote, a deletion.
     #[arg(long, short = 'y', global = true)]
     yes: bool,
+    /// None: `cozy` alone, which is `cozy status`.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -68,7 +72,7 @@ enum Command {
     Logout(account::Logout),
     /// Show the signed-in account, its credit and where to buy more.
     Whoami(account::Whoami),
-    /// Calcifer, machines and runs at a glance.
+    /// This project, the runs going, machines and spend at a glance; `cozy` alone says the same.
     Status(daemon::Status),
     /// Replace this binary with the newest release.
     Update(update::Args),
@@ -92,7 +96,7 @@ pub fn main() -> ExitCode {
         Err(error) => return output::refuse(cli.json, &error),
     };
     let warnings = loaded.warnings.clone();
-    let ctx = Context::new(cli.json, cli.yes, loaded, output::Term::detect());
+    let ctx = Context::new(cli.json, cli.full, cli.yes, loaded, output::Term::detect());
     for warning in &warnings {
         output::warn(warning);
     }
@@ -131,7 +135,10 @@ fn usage(error: clap::Error) -> ExitCode {
     output::refuse(true, &Error::new(Kind::Usage, "usage", message))
 }
 
-async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
+async fn dispatch(ctx: &Context, command: Option<Command>) -> Result<ExitCode, Error> {
+    let Some(command) = command else {
+        return daemon::status(ctx, daemon::Status {}).await;
+    };
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,

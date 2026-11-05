@@ -48,11 +48,11 @@ ask() {
   printf '%s\n' "$answer"
 }
 # ended <number>: the run at its end with its outputs landed, whole.
-ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json run show "$1" 2> /dev/null; }
+ended() { cozy --json run show "$1" > /dev/null 2>&1 || true; cozy --json --full run show "$1" 2> /dev/null; }
 # status <project> [file]: its status as JSON.
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
 status() {
-  cozy --json project -p "$1" status 2> "$OUT/status.err" && return 0
+  cozy --json --full project -p "$1" status 2> "$OUT/status.err" && return 0
   local code=$?
   echo "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
   grep -q answer_unreadable "$OUT/status.err" && check "status of $1: $(tail -c 300 "$OUT/status.err")" >&2
@@ -71,7 +71,7 @@ counts() { status "$1" | jq -c '[.assets[] | {(.name): (.versions // 0)}] | add'
 # runs <project>: every version's last run its lock records.
 runs() { status "$1" | jq '[.assets[].prefixes[]?.run // empty] | length'; }
 # asked <project> <asset> [version index]: what that version's last run was asked.
-asked() { cozy --json run show "$(held "$1" "$2" | jq -r --argjson v "${3:--1}" '.versions[$v].runs[-1]')" --once | jq -c .request; }
+asked() { cozy --json --full run show "$(held "$1" "$2" | jq -r --argjson v "${3:--1}" '.versions[$v].runs[-1]')" --once | jq -c .request; }
 # prompt <project> <asset>: what its newest version's run was told.
 prompt() { asked "$1" "$2" | jq -r .input.prompt; }
 # versions_in <project> <asset>: how many versions its lock lists, for a project whose file doesn't read.
@@ -188,13 +188,16 @@ mkdir -p "$T"
 plate "$T/a.mp4" testsrc2 440 800 2; plate "$T/b.mp4" smptebars 660 800 2
 printf 'version: 3\nassets: {}\n' > "$T/project.yaml"
 a=$(prefix "$T" "$T/a.mp4"); b=$(prefix "$T" "$T/b.mp4")
-yaml_of() { printf 'version: 3\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  film:\n    tool: cozy/edit\n    tracks:\n      - clips:\n          - <%s>\n' "$a" "$b" "$1" > "$T/project.yaml"; }
+yaml_of() {
+  { printf 'version: 3\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  film:\n    tool: cozy/edit\n    tracks:\n      - clips:\n' "$a" "$b"
+    printf '          - <%s>\n' "$@"; } > "$T/project.yaml"
+}
 yaml_of a; render "$T" film || check "held open: first: $(tail -c 300 "$OUT/render.txt")"
 cozy project -p "$T" set film 'at=40,40,320' > /dev/null || check "held open: placing it"
-# holding <file>: it's open from when this returns, for 2.5 s, in $hold.
+# holding <file> [ms]: it's open from when this returns, for 2.5 s or [ms], in $hold.
 holding() {
   local ready=$OUT/held-ready; rm -f "$ready"
-  powershell -NoProfile -Command "\$f = [IO.File]::Open('$(cygpath -w "$1")', 'Open', 'Read', 'Read'); New-Item -ItemType File '$(cygpath -w "$ready")' | Out-Null; Start-Sleep -Milliseconds 2500; \$f.Close()" & hold=$!
+  powershell -NoProfile -Command "\$f = [IO.File]::Open('$(cygpath -w "$1")', 'Open', 'Read', 'Read'); New-Item -ItemType File '$(cygpath -w "$ready")' | Out-Null; Start-Sleep -Milliseconds ${2:-2500}; \$f.Close()" & hold=$!
   until [ -e "$ready" ] || ! kill -0 "$hold" 2> /dev/null; do sleep 0.1; done
   [ -e "$ready" ] || check "held open: nothing held $1"
 }
@@ -216,6 +219,28 @@ holding "$T/film.mp4"
 code=0; render "$T" film || code=$?
 wait "$hold"
 { [ "$code" = 0 ] && [ "$(made "$T" film)" = 2 ]; } || check "held open: film.mp4 (exit $code, $(made "$T" film) versions): $(tail -c 300 "$OUT/render.txt")"
+
+step "a project on Windows: a file held past the wait costs nothing, and says so"
+local was
+# As a player holds a film someone's watching: the version lands, and the film is updated when it's let go.
+yaml_of a b; was=$(sha "$T/film.mp4")
+holding "$T/film.mp4" 9000
+code=0; render "$T" film || code=$?
+{ [ "$code" = 0 ] && [ "$(made "$T" film)" = 3 ]; } || check "held long: a render lost its version (exit $code, $(made "$T" film) versions): $(tail -c 300 "$OUT/render.txt")"
+says "held long" "film.mp4 is open in another program"
+[ "$(grep -c 'is open in another program' "$OUT/render.txt")" = 1 ] || check "held long: said more than once: $(grep -c 'is open in another program' "$OUT/render.txt")"
+[ "$(sha "$T/film.mp4")" = "$was" ] || check "held long: the film changed while held"
+wait "$hold"
+render "$T" film || check "held long: the render after: $(tail -c 300 "$OUT/render.txt")"
+[ "sha256:$(sha "$T/film.mp4")" = "$(take_file "$T" film video)" ] || check "held long: the film isn't the state once it's let go"
+# A write of the file itself says why and changes nothing, and goes when it's let go.
+holding "$T/project.yaml" 9000
+code=0; cozy project -p "$T" set film 'description=Saved after' > "$OUT/held-long.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'project.yaml is open in another program' "$OUT/held-long.txt"; } || check "held long: project.yaml (exit $code): $(tail -c 300 "$OUT/held-long.txt")"
+! grep -q 'Saved after' "$T/project.yaml" || check "held long: it says it failed, and it wrote"
+wait "$hold"
+cozy project -p "$T" set film 'description=Saved after' > "$OUT/held-long.txt" 2>&1 || check "held long: after it's let go: $(tail -c 300 "$OUT/held-long.txt")"
+grep -q 'Saved after' "$T/project.yaml" || check "held long: not saved after it's let go"
 }
 
 projects() {
@@ -1203,7 +1228,7 @@ J '.status == "completed"' <<< "$(ended "$n")" || check "path-free: run $n given
 # What held it is gone, as a day later.
 rm -f "$HOME/.cozy/calcifer/files/$hex"
 [ "$(api -o /dev/null -w '%{http_code}' -I "http://$ADDR/v1/files/sha256:$hex")" = 404 ] || check "path-free: the held file is still held"
-input=$(cozy --json run show "$n" | jq -c .request.input)
+input=$(cozy --json --full run show "$n" | jq -c .request.input)
 J --arg s "sha256:$hex" '.image == $s' <<< "$input" || check "path-free: request.input: $input"
 asked=$(ask "$(jq -n --arg t "$here/project/copied.py" --arg p "$id" --argjson i "$input" '{target: $t, project: $p, on: "local", input: $i}')")
 n=$(jq -r '.run.number // empty' <<< "$asked")
@@ -2940,7 +2965,7 @@ render "$T" edit || check "edits: second cut: $(tail -c 400 "$OUT/render.txt")"
 two=$(sha "$T/edit.mp4")
 [ "$one" != "$two" ] || check "edits: the second cut is the first"
 cozy project -p "$T" status > "$OUT/edits-status.txt" 2>&1 || check "edits: cozy project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.txt")"
-cozy --json project -p "$T" status > "$OUT/edits-status.json" 2> "$OUT/edits-status.err" || check "edits: cozy --json project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.err")"
+cozy --json --full project -p "$T" status > "$OUT/edits-status.json" 2> "$OUT/edits-status.err" || check "edits: cozy --json project status can't read a project with a cut: $(tail -c 300 "$OUT/edits-status.err")"
 J '[.assets[] | select(.name == "edit") | .prefixes[].timeline.tracks[0].clips[].sha256] | length == 3 and all(startswith("sha256:"))' "$OUT/edits-status.json" || check "edits: a clip's one hash: $(jq -c '.assets[] | select(.name == "edit") | .prefixes' "$OUT/edits-status.json")"
 J '.assets[] | select(.name == "edit") | (.prefixes | length) == 2 and (.prefixes[0].from == ["a"]) and (.prefixes[1].from == ["a", "b"])' <<< "$(status "$T")" || check "edits: status: $(row "$T" edit .prefixes)"
 ls "$T/files/$one"* > /dev/null 2>&1 || check "edits: the first film is gone from files/"

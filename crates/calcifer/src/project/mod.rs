@@ -2323,6 +2323,8 @@ struct Walk {
     tally: Mutex<Rendered>,
     /// The cuts it made, which it has said.
     cut: Mutex<BTreeSet<String>>,
+    /// The films at the root it couldn't replace, which it has said.
+    stays: Mutex<BTreeSet<String>>,
     /// Runs being sent, by key: recorded as owed before they go, and nothing to follow until they have gone.
     on_the_way: Mutex<HashSet<String>>,
     /// What it did not make, for its last word.
@@ -2418,6 +2420,7 @@ impl Walk {
             began: Instant::now(),
             tally: Mutex::default(),
             cut: Mutex::default(),
+            stays: Mutex::default(),
             on_the_way: Mutex::default(),
             missed: Mutex::default(),
             faults: Mutex::default(),
@@ -4151,14 +4154,19 @@ impl Walk {
         let before = held.and_then(|held| held.versions.last()?.files.get("video").cloned());
         let sha256 = folder.take(&part)?;
         let path = folder.lock()?.files.get(&sha256).map(|file| folder.path(&file.path));
+        let mut film = folder.dir.join(&name);
         if let Some(path) = path {
-            self.keep_aside(&asset.name, &folder.dir.join(&name), &now);
-            tools::publish(&path, &folder.dir.join(&name)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{name}: {e}")))?;
+            self.keep_aside(&asset.name, &film, &now);
+            // The version is in `files/`: a film at the root that can't be replaced costs it nothing.
+            if let Err(e) = tools::publish(&path, &film) {
+                self.film_stays(&name, &e);
+                film = path;
+            }
         }
         // The timeline it's the film of, kept with it: a version chosen later brings its own.
         let timeline = folder.keep(&folder.dir.join(&name).with_extension("otio"))?;
         // What the film is, not what its pieces add up to.
-        let frames = folder.film_frames(&folder.dir.join(&name)).unwrap_or(made.frames);
+        let frames = folder.film_frames(&film).unwrap_or(made.frames);
         if frames.abs_diff(made.frames) > 1 + standing.reads.len() as u64 {
             self.say(Event::Warning { message: format!("{name} holds {frames} frames, and its pieces add up to {}", made.frames), name: None });
         }
@@ -4193,6 +4201,18 @@ impl Walk {
         }
     }
 
+    /// Said once of a film at the root that couldn't be replaced: its version stands, and `film_follows` puts it there the next time it can.
+    fn film_stays(&self, name: &str, error: &std::io::Error) {
+        if !self.stays.lock().expect("stays lock").insert(name.to_owned()) {
+            return;
+        }
+        let message = match platform::durable::held(error) {
+            true => format!("{name} is open in another program, so it wasn't updated: close it, and the next render updates it"),
+            false => format!("{name}: {error}"),
+        };
+        self.say(Event::Warning { message, name: None });
+    }
+
     /// The film and timeline at the root as asset `i`'s state has them: a version chosen, a memo gone back to, one deleted, or one
     /// still linked into `files/` by a cozy before this.
     async fn film_follows(&self, doc: &Doc, stand: &[Standing], lock: &Lock, i: usize) {
@@ -4202,11 +4222,14 @@ impl Walk {
         if !from.is_file() {
             return;
         }
+        if self.stays.lock().expect("stays lock").contains(&cut_name(&doc.assets[i].name)) {
+            return;
+        }
         let same = !tools::shares_bytes(&at) && tokio::task::block_in_place(|| folder::hash(&at)).is_ok_and(|got| got == file.sha256);
         if !same {
             self.keep_aside(&doc.assets[i].name, &at, lock);
             if let Err(e) = tools::publish(&from, &at) {
-                self.say(Event::Warning { message: format!("{}: {e}", at.display()), name: None });
+                self.film_stays(&cut_name(&doc.assets[i].name), &e);
             }
         }
         let timeline = at.with_extension("otio");

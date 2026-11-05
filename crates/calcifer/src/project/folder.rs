@@ -1557,6 +1557,12 @@ pub fn hash(path: &Path) -> Result<String, Error> {
 }
 
 fn io(error: platform::Error) -> Error {
+    if let platform::Error::Io { path, source, .. } = &error
+        && durable::held(source)
+    {
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+        return Error::new(Kind::Unavailable, "file_held", format!("{name} is open in another program")).remedy("close it, and save again");
+    }
     Error::new(Kind::Unavailable, "project_io", error.to_string())
 }
 

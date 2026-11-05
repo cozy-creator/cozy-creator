@@ -42,7 +42,7 @@ memory() {
   step "memread-$l" run "$FIX/fixture.py/memread" "note=$l $RANDOM" --on "$x" || { check "memread on $x: $(tail -3 "$OUT/memread-$l.txt")"; return 1; }
   n=$(runno "memread-$l")
   for _ in $(seq 60); do
-    path=$(cozy --json run show "$n" --once | jq -r '.output[] | select(.name == "report") | .path // empty')
+    path=$(cozy --json --full run show "$n" --once | jq -r '.output[] | select(.name == "report") | .path // empty')
     [ -n "$path" ] && break
     sleep 1
   done

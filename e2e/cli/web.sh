@@ -4,7 +4,8 @@
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
 # models (web/drawers.js), any project as live boxes (web/see.js), assets as a person works them (web/nodes.js), an Edit rendered (web/timeline.js),
-# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), and a package's own UI (web/package_ui.js).
+# the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), a package's own UI (web/package_ui.js), the
+# canvas in a second engine, and on Windows a save past a file held open (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, forgets the
 # projects it made, and leaves Calcifer running: this computer's is shared.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -79,6 +80,18 @@ local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof package_ui "$chrome" "$pw" "$restart"
 [ -n "${WEB_ALONE:-}" ] || web_engines "$chrome" "$pw"
+[ "${RUNNER_OS:-}" != Windows ] || web_held "$chrome" "$pw"
+}
+
+# Windows: a save past a file another program holds longer than Calcifer waits, from the page (web/held.js).
+web_held() {
+  local T=$OUT/web-held id
+  step "web-held: a save past a file held open: said, kept, and saved when it's let go"
+  mkdir -p "$T"
+  printf 'version: 3\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$T/project.yaml"
+  id=$(status "$T" | jq -r '.id // empty')
+  [ -n "$id" ] || { check "web-held: the project has no id"; return; }
+  HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''
 }
 
 # The cells the canvas lives by in a second engine: WebKit on a Mac, Firefox on Linux. Each is Playwright's own build, and WebKit's is not

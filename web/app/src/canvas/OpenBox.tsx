@@ -51,6 +51,10 @@ export function OpenBox({ name, close, addFiles, addTake }: { name: string; clos
   const view = useElement(name)
   const box = useRef<HTMLDivElement>(null)
   const there = Boolean(view)
+  // Deleted from under it, by anyone: there's nothing to look at.
+  useEffect(() => {
+    if (!there && store.hasRead) close()
+  }, [there, store, close])
   // biome-ignore lint/correctness/useExhaustiveDependencies: once, when it's there to grow
   useEffect(() => {
     const to = box.current?.getBoundingClientRect()

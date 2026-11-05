@@ -89,7 +89,9 @@ async function inView(page, box) {
 // A box as a person reaches it: opened if it is, else on the canvas. An opened box comes after the canvas in the page.
 const boxOf = (page, name) => page.locator(`.open-box:has(.card[data-asset="${name}"]), .react-flow__node:has(.card[data-asset="${name}"])`).last();
 async function closeBox(page) {
-  if (!(await page.locator('.open-box').count())) return;
+  // By the address: after a reload the box is on its way, and not there to count yet.
+  if (!page.url().includes('/assets/')) return;
+  await page.locator('.open-box').waitFor();
   await page.keyboard.press('Escape');
   await page.locator('.open-box').waitFor({ state: 'detached' });
 }
@@ -102,6 +104,8 @@ async function openBox(page, name) {
   const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
   await page.mouse.click(x + width / 2, y + height / 2);
   await page.locator(`.open-box .card[data-asset="${name}"]`).waitFor();
+  // It grows from where it sat: a person reaches for it once it's there.
+  await page.locator('.open-box').evaluate((box) => Promise.all(box.getAnimations().map((grow) => grow.finished)));
 }
 
 async function drop(page, files, x, y) {

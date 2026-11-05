@@ -167,11 +167,13 @@ function linesOf(text, name) {
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
+    await open(fresh.name);
     await box(fresh.name).locator('.nm').dblclick();
     await page.waitForSelector('.nm-field');
     await page.keyboard.type(name);
     await page.keyboard.press('Enter');
     await until(`named ${name}`, () => of(name), Boolean);
+    await away();
     return fresh;
   };
   let tool = 'no-such-package-here';
@@ -420,7 +422,7 @@ function linesOf(text, name) {
 
   // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy project status` reads.
   if (local) {
-    const status = (name) => JSON.parse(execFileSync(COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
+    const status = (name) => JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).assets.find((held) => held.name === name);
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     replaceFile(yamlAt, `${yaml().trimEnd()}\n  fixture:\n    tool: ${fixture}/told\n`);
     await box('fixture').waitFor();
@@ -736,7 +738,7 @@ function linesOf(text, name) {
     await shot('takes');
 
     // The terminal sees the same project.
-    const status = JSON.parse(execFileSync(COZY, ['--json', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
+    const status = JSON.parse(execFileSync(COZY, ['--json', '--full', 'project', '-p', folder, 'status'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }));
     check('cli_sees_it', ['Sheet', 'Sheet_2', 'Other', 'source-a', 'source-b', 'Clip'].every((name) => status.assets.some((held) => held.name === name)), status.assets.map((held) => held.name));
   } else {
     // No machine: Render offers one, under Machines, and waits.

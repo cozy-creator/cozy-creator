@@ -41,7 +41,7 @@ for i in $(seq 0 "$RUNS"); do
   n=$([ "$i" = 0 ] && echo warm || echo "run$i")
   step "$n" run "$T" prompt="${PROMPTS[$i]}" prompt_upsampling:=false aspect_ratio=3:4 seed:=$((S + i)) --on "$NAME"
   N=$(runno "$n"); [ -n "$N" ] || fail "$n named no run"
-  cozy run show "$N" --once --json > "$OUT/$n.json" 2>&1
+  cozy run show "$N" --once --json --full > "$OUT/$n.json" 2>&1
   say "$n $(jq -r '(.measurements.attribution.steps["generating image"].series // [] | map(.[1] / 1000)) as $s |
     ($s[1:] | sort) as $t | "run \(.number) \(.status), exec \((.execution_ms // 0) / 1000 | floor) s;
     step 1 \($s[0] // 0 | floor) s, steady \(if ($t | length) > 0 then $t[($t | length) / 2 | floor] | floor else 0 end) s

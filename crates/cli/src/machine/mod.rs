@@ -13,7 +13,7 @@ use crate::{Context, output};
 
 mod end;
 mod history;
-mod list;
+pub(crate) mod list;
 pub(crate) mod live;
 mod local;
 pub(crate) use end::activate;

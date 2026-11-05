@@ -10,6 +10,7 @@
 
 [global]
 "--json" = "pr: every step reads the JSON answer"
+"--full" = "pr: agent, a run's whole record and the live view's columns"
 "--yes" = "pr: candidates (machine update -y)"
 
 [completion]

@@ -57,7 +57,7 @@ const WATCH = () => {
     })().catch(() => {});
     return new Response(theirs, { status: answer.status, statusText: answer.statusText, headers: answer.headers });
   };
-  const box = (name) => [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
+  const box = (name) => document.querySelector(`.open-box:has(.card[data-asset="${name}"])`) ?? [...document.querySelectorAll('.react-flow__node')].find((node) => node.querySelector('.nm')?.textContent === name);
   window.boxOf = box;
   /** What the pointer did and where the page was, for a box that doesn't open. First at the window, so it hears a click d3-drag then swallows. */
   window.clicks = [];
@@ -235,7 +235,7 @@ function linesOf(text, name) {
     });
   });
   const project = (...words) => cozy('project', '-p', folder, ...words);
-  const asJson = async (...words) => JSON.parse((await cozy('--json', 'project', '-p', folder, ...words)).stdout);
+  const asJson = async (...words) => JSON.parse((await cozy('--json', '--full', 'project', '-p', folder, ...words)).stdout);
   const status = () => asJson('status');
   const rows = async () => (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const held = async (name) => (await status()).assets.find((asset) => asset.name === name);
@@ -629,9 +629,9 @@ function linesOf(text, name) {
   const stalled = Date.now();
   const fill = 'f'.repeat(200);
   const big = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`${fill}_${i}`, { x: i, y: 0 }]));
-  // Past what a socket and the browser hold on any OS, each its own event.
+  // Past what a socket and the browser hold on any OS, each its own event: Windows has held 24 MB and never fallen behind (41971301588).
   const body = JSON.stringify({ cards: big });
-  for (let sent = 0; sent < 24 << 20; sent += body.length) {
+  for (let sent = 0; sent < 64 << 20; sent += body.length) {
     const answer = await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body });
     if (answer.status !== 200) throw new Error(`filling: ${JSON.stringify(answer)}`);
   }

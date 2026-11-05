@@ -26,6 +26,7 @@ function check(name, ok, detail) {
 const ASSETS = 5000;
 const HOLE = { col: 3, row: 1 };
 const PAN_MS = 3000;
+const REST_MS = 2000;
 const PICTURES = 1000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -45,6 +46,8 @@ const BARS = {
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
   pan_work_times_small: 1.5,
   pan_work_slack_ms: 2,
+  // ms of the page's thread each second with nothing happening: a twentieth, until Linux and Windows have said what it is.
+  rest_ms_per_s: 50,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
@@ -193,7 +196,7 @@ function calciferMb() {
   });
   const project = (...words) => cozy('project', '-p', folder, ...words);
   const status = async () => {
-    const answer = await cozy('--json', 'project', '-p', folder, 'status');
+    const answer = await cozy('--json', '--full', 'project', '-p', folder, 'status');
     return { state: JSON.parse(answer.stdout), ms: answer.ms };
   };
   const seconds = (ms) => +(ms / 1000).toFixed(2);
@@ -316,23 +319,40 @@ function calciferMb() {
   }), Boolean, 120_000);
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
-  /** How long the page's own thread has been busy, in ms. What the compositor and a software rasterizer take isn't in this. */
-  const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
+  /** How long the page's own thread has been busy, in ms, in all and at each kind of work. What the compositor and a software rasterizer take isn't in this. */
+  const worked = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(({ name, value }) => [name, value * 1000]));
+  const busy = async () => (await worked()).TaskDuration;
+  /** What the page's thread spends `ms` on, by function: what's asked of it isn't, as nothing is. */
+  const profiled = async (ms) => {
+    await cdp.send('Profiler.enable');
+    await cdp.send('Profiler.start');
+    await page.waitForTimeout(ms);
+    const { profile } = await cdp.send('Profiler.stop');
+    const spent = new Map();
+    for (const [i, id] of profile.samples.entries()) spent.set(id, (spent.get(id) ?? 0) + profile.timeDeltas[i]);
+    const named = profile.nodes.map(({ id, callFrame: { functionName, url, lineNumber } }) => ({ what: `${functionName || '(anonymous)'} ${url.split('/').at(-1)}:${lineNumber}`, ms: Math.round((spent.get(id) ?? 0) / 1000) }));
+    return named.filter(({ what, ms: took }) => took > 0 && !what.startsWith('(idle)')).sort((a, b) => b.ms - a.ms).slice(0, 10);
+  };
   const measuredPan = async () => {
     await drawn();
-    const atRest = await busy();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
+    // Left alone, no frame asked for and nothing moved, as a canvas is on a laptop with no one at it.
+    const before = await worked();
+    await page.waitForTimeout(REST_MS);
+    const after = await worked();
+    const perSecond = (name) => +(((after[name] - before[name]) / REST_MS) * 1000).toFixed(1);
+    const rest_ms_per_s = perSecond('TaskDuration');
     const from = await busy();
     const moving = summary(await panning(PAN_MS));
-    const worked = (await busy()) - from;
+    const panned = (await busy()) - from;
     // What goes on at rest goes on through a pan, and isn't the pan's: `work_ms_per_frame` is all of it, `added_ms_per_frame` what panning adds.
-    const rest_ms_per_s = from - atRest;
-    const added = Math.max(0, worked - rest_ms_per_s * (PAN_MS / 1000));
+    const added = Math.max(0, panned - rest_ms_per_s * (PAN_MS / 1000));
     return {
       still,
       moving,
-      rest_ms_per_s: +rest_ms_per_s.toFixed(1),
-      work_ms_per_frame: +(worked / moving.frames).toFixed(2),
+      rest_ms_per_s,
+      rest_kinds: { script: perSecond('ScriptDuration'), layout: perSecond('LayoutDuration'), style: perSecond('RecalcStyleDuration') },
+      work_ms_per_frame: +(panned / moving.frames).toFixed(2),
       added_ms_per_frame: +(added / moving.frames).toFixed(2),
       mounted: await page.locator('.react-flow__node').count(),
     };
@@ -342,7 +362,7 @@ function calciferMb() {
   const smallFolder = join(homedir(), '.cozy', 'projects', `web-scale-small-${Date.now()}`);
   mkdirSync(smallFolder, { recursive: true });
   generated(smallFolder, null, 36, 8);
-  const small = JSON.parse((await cozy('--json', 'project', '-p', smallFolder, 'status')).stdout);
+  const small = JSON.parse((await cozy('--json', '--full', 'project', '-p', smallFolder, 'status')).stdout);
   await page.goto(`${base}/#/projects/${small.id}`);
   await page.waitForSelector('.react-flow__node .nm');
   numbers.pan_small = await measuredPan();
@@ -362,6 +382,10 @@ function calciferMb() {
   numbers.pan_big = await measuredPan();
   const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
   check('size_adds_nothing_to_a_pan', numbers.pan_big.added_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  // Over the bar it says what's spending it, then and there.
+  const quiet = numbers.pan_big.rest_ms_per_s <= BARS.rest_ms_per_s;
+  if (!quiet) numbers.rest_profile = await profiled(REST_MS);
+  check('a_page_at_rest_is_quiet', quiet, { bar: BARS.rest_ms_per_s, big: numbers.pan_big.rest_ms_per_s, kinds: numbers.pan_big.rest_kinds, small: numbers.pan_small.rest_ms_per_s, profile: numbers.rest_profile });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
