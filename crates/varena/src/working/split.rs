@@ -101,7 +101,7 @@ fn context(device: i32) -> Result<()> {
 /// What this GPU has right now, from the readings a split chooses by. A report: nothing is held.
 #[derive(Clone, Copy, Debug)]
 pub struct Room {
-    /// The card, or its software cap.
+    /// The card or its software cap, less what's outside our own bytes.
     pub capacity: usize,
     pub working_live: usize,
     /// Weight bytes held for use now.

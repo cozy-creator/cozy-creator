@@ -165,8 +165,9 @@ typedef struct {
 VR_API vr_status vr_v1_stats(vr_handle gpu, vr_stats_v1 *out, size_t out_size);
 
 /* What this GPU has for the caller right now. A report, not a reservation: nothing is held, and
- * anyone may take it next. capacity is the card or its software cap, free is what can be mapped
- * with no reclaim, and capacity - working_live - pinned is the most reclaim could reach. */
+ * anyone may take it next. capacity is the card or its software cap, less what this process doesn't
+ * own or control. free is what can be mapped with no reclaim, and capacity - working_live - pinned
+ * is the most reclaim could reach. */
 typedef struct {
     uint64_t capacity, working_live, pinned, weights_resident, free;
 } vr_room_v1;

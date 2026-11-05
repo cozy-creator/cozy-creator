@@ -21,8 +21,15 @@ CARGO = WORK / "cargo/bin/cargo"
 TARGET = WORK / "target"
 ENV = {**os.environ, "PYTHONPATH": str(EXAMPLES), "LD_LIBRARY_PATH": str(NATIVE), "VARENA_LIB_DIR": str(NATIVE),
        "RUSTUP_HOME": str(WORK / "rustup"), "CARGO_HOME": str(WORK / "cargo"), "RUSTUP_TOOLCHAIN": "1.99.1"}
-RUSTUP = ["sh", "-c", f"[ -x {CARGO} ] || curl -sSf https://sh.rustup.rs | "
-          "sh -s -- -y -q --profile minimal --no-modify-path --default-toolchain 1.99.1"]
+# Pod images have neither curl nor wget.
+RUSTUP = [sys.executable, "-c", f"""
+import os, pathlib, urllib.request
+if not pathlib.Path({str(CARGO)!r}).exists():
+    init = {str(WORK / "rustup-init")!r}
+    urllib.request.urlretrieve("https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init", init)
+    os.chmod(init, 0o755)
+    os.execv(init, [init, "-y", "-q", "--profile", "minimal", "--no-modify-path", "--default-toolchain", "1.99.1"])
+"""]
 
 
 class Request(msgspec.Struct, forbid_unknown_fields=True):
@@ -76,7 +83,7 @@ def run(argv, ctx):
         ctx.raise_if_cancelled()
     code = process.wait()
     rows = [line for line in lines if line.startswith("{")]
-    return {"step": " ".join(Path(part).name for part in argv[:3]), "exit": code, "rows": [json.loads(row) for row in rows],
+    return {"step": " ".join(Path(part).name[:40] for part in argv[:3]), "exit": code, "rows": [json.loads(row) for row in rows],
             "tail": lines[-30:] if code else []}
 
 

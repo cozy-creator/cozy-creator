@@ -61,8 +61,8 @@ memory. Close refuses live or pending pages, and may not be called from the call
 
 ## Sizing work
 
-`room` reads `capacity` (the card or its software cap), `working_live`, `pinned`, `weights_resident` and `free`, what can be mapped with no reclaim. It holds
-nothing, and anyone may take that memory next. `capacity - working_live - pinned` is the most reclaim could reach.
+`room` reads `capacity` (the card or its software cap, less what's outside this process's bytes), `working_live`, `pinned`, `weights_resident` and `free`, what can
+be mapped with no reclaim. It holds nothing, and anyone may take that memory next. `capacity - working_live - pinned` is the most reclaim could reach.
 
 `split` is the Runtime's own selection, with no second policy:
 

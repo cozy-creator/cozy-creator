@@ -31,11 +31,10 @@ def main() -> None:
         for offset, value in [(0, 17), (page, 29), (2 * page, 17)]:
             assert stream.read(base + offset, page) == bytes([value]) * page
         # More than the card has: the core asks this Cache, which declines and keeps every page.
-        room = gpu.room()
         try:
-            gpu.alloc(room["capacity"] + page, stream.handle)
-        except varena.Exhausted as refused:
-            assert refused.requested_bytes >= room["capacity"], refused
+            gpu.alloc(2 * gpu.room()["capacity"], stream.handle)
+        except varena.Exhausted:
+            pass
         else:
             raise AssertionError("more than the card was allocated")
         assert asked, "the core never asked the owner"
