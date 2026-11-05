@@ -96,7 +96,19 @@ step rental
 before=$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length') || true
 ! cozy --json machine rent "$SKU" --gpus 64 -y > "$OUT/rent-too-many.json" 2>&1 || check "machine rent --gpus 64 bought something"
 [ "$(cozy --json machine ls | jq '[.machines[] | select(.kind == "rental")] | length')" = "$before" ] || check "machine rent --gpus 64: a rental appeared"
-cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
+# No pod in RENT_WAIT s is a not-run, as gate.sh's: an order the Hub never acquires (41977686738's sat 56 min) must not hold
+# the run; the trap ends the rental it names.
+RENT_WAIT=1200
+cozy --json machine rent "$SKU" --disk-gb 60 -y > "$OUT/rent.ndjson" & rent_pid=$!
+rent_began=$SECONDS
+while kill -0 "$rent_pid" 2> /dev/null; do
+  if (( SECONDS - rent_began > RENT_WAIT )); then
+    kill "$rent_pid" 2> /dev/null; wait "$rent_pid" 2> /dev/null
+    fail "machine rent $SKU: no pod after $(( (SECONDS - rent_began) / 60 )) min: $(tail -c 300 "$OUT/rent.ndjson")"
+  fi
+  sleep 5
+done
+wait "$rent_pid" || fail "machine rent $SKU failed: $(tail -c 400 "$OUT/rent.ndjson")"
 rented_at=$(date +%s)
 M=$(rented "$OUT/rent.ndjson") || true
 [ -n "$M" ] || fail "machine rent: no machine named"
