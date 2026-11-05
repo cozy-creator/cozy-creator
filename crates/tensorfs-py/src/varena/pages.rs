@@ -275,8 +275,6 @@ impl Tier {
             return Ok(None);
         }
         let mut page = Page::new(len)?;
-        // SAFETY: `len` bytes of this page: touched first, as registering touched memory is faster.
-        unsafe { std::ptr::write_bytes(page.ptr, 0, len) };
         while !page.registered() {
             if let Err(error) = page.register_window(self.device) {
                 self.state().off = Some(error.to_string());
