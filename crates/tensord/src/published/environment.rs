@@ -133,7 +133,7 @@ impl Publisher {
         let (dir, envs, py) = (project.dir.to_string_lossy(), env.to_string_lossy(), platform::paths::venv_python(env));
         let py = py.to_string_lossy();
         next();
-        self.uv(&["venv", "--no-project", "--python", project.python, &envs], &[], job)?;
+        self.uv(&["venv", "--no-project", "--python", minor(project.python), &envs], &[], job)?;
         // uv never installs what the layer provides: a lock's Torch rows stay out (`Locked::torch`).
         let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
         let excludes = env.join("cozy-excludes.txt");
@@ -643,6 +643,12 @@ fn platform(failure: Failure, label: &str) -> Failure {
         ),
         failure => failure,
     }
+}
+
+/// `3.12` of the `3.12.15` a release was published with: it runs on this machine's own Python of
+/// that minor (its ABI), which may be another patch, one this machine's uv cannot fetch.
+fn minor(python: &str) -> &str {
+    python.match_indices('.').nth(1).map_or(python, |(at, _)| &python[..at])
 }
 
 /// The floor uv's finding `line` (`The package `x` requires `cozy-runtime>=0.31,<0.32`, but
