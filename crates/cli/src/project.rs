@@ -670,5 +670,7 @@ pub(crate) async fn open(ctx: &Context, at: Option<&PathBuf>, create: bool) -> R
         Some(at) => protocol::target::spelled(&at.to_string_lossy(), &cwd, &ctx.user_home),
         None => cwd,
     };
-    ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await
+    let opened: Opened = ctx.calcifer().await?.post("/v1/projects", &Open { path: Some(path), create, name: None }, None).await?;
+    opened.said.iter().for_each(|said| output::warn(said));
+    Ok(opened)
 }

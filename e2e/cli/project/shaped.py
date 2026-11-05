@@ -96,9 +96,9 @@ class Up(msgspec.Struct):
     video: File
 
 
-@app.entrypoint(node=Node(label="Shaped Up", fill={"latents": "video.latents", "prompt": "video.description"}))
+@app.entrypoint(node=Node(label="Shaped Up", fill={"latents": "video.latents", "prompt": "video.text"}))
 def up(payload: UpInput, out: Outputs) -> Up:
-    """A video taken up: it reads its latents, and if it can't, its description."""
+    """A video taken up: it reads its latents, and if it can't, the text that made it, else its description."""
     return Up(out.save_bytes(payload.video.read_bytes(), media_type="video/mp4"))
 
 

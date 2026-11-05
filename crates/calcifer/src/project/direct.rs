@@ -141,7 +141,7 @@ impl Filling<'_> {
             "alpha" => Some(self.measured(read)?.alpha).filter(|alpha| *alpha != 0.0).map(|alpha| json!(alpha)),
             "width" => Some(self.measured(read)?.width).filter(|width| *width != 0).map(|width| json!(width)),
             "height" => Some(self.measured(read)?.height).filter(|height| *height != 0).map(|height| json!(height)),
-            field => read.inputs.get(field).cloned(),
+            _ => None,
         }
     }
 
@@ -206,6 +206,7 @@ impl Filling<'_> {
         let files = self.output(&read, member);
         match files.first() {
             Some(sha256) => Some(json!(sha256)),
+            None if member == "text" => Some(if read.text.is_empty() { &read.description } else { &read.text }).filter(|text| !text.is_empty()).map(|text| json!(text)),
             None => self.word(&read, member),
         }
     }

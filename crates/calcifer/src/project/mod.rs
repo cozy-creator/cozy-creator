@@ -139,6 +139,8 @@ struct Project {
     importing: Mutex<()>,
     /// Each `Idempotency-Key` a render was asked under since Calcifer started, and the ask's digest.
     keys: Mutex<HashMap<String, String>>,
+    /// What opening it did to it, for the first to read it.
+    said: Mutex<Vec<String>>,
 }
 
 pub fn routes() -> Router<Arc<Api>> {
@@ -184,6 +186,7 @@ impl Projects {
 
     /// The project in `dir` (canonical), opened once; its walk goes on when one is owed.
     fn open(&self, api: &Arc<Api>, dir: &FsPath) -> Result<String, Error> {
+        let said = tokio::task::block_in_place(|| upgrade::on_touch(dir))?;
         let folder = Folder::open(dir, api.machines.hubs.home())?;
         crate::events::project_opened(dir);
         let id = project_id(dir);
@@ -204,9 +207,11 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     importing: Mutex::default(),
                     keys: Mutex::default(),
+                    said: Mutex::default(),
                 })
             })
             .clone();
+        project.said.lock().expect("said lock").extend(said);
         if project.folder.lock()?.owes() {
             walk(api, &project);
         }
@@ -344,14 +349,18 @@ pub(crate) fn landed(project: &FsPath, made: &Landed, dest: &FsPath) -> Result<(
         n => format!("{}-{n}", made.output),
     };
     let row = folder::RunFile { run: made.run, function: made.target.to_owned(), output, sha256: made.digest.to_owned() };
+    let (upgraded, refused) = match upgrade::on_touch(project) {
+        Ok(said) => (said, None),
+        Err(why) => (vec![], Some(why)),
+    };
     let (kept, unlisted) = Folder::at(project).adopt(dest, made.digest, row).map_err(|e| e.message)?;
     // The file is in `files/` now. An output that grows reads its next revision whole, with nothing here to extend.
     let _ = std::fs::remove_file(dest);
-    let said = unlisted.map(|why| match why.next.first() {
+    let said = unlisted.map(|why| refused.unwrap_or(why)).map(|why| match why.next.first() {
         Some(next) => format!("{} is in files/, and its project can't list it: {}: {next}", made.output, why.message),
         None => format!("{} is in files/, and its project can't list it: {}", made.output, why.message),
     });
-    Ok((kept, said))
+    Ok((kept, said.or_else(|| (!upgraded.is_empty()).then(|| upgraded.join("\n")))))
 }
 
 /// An output its machine keeps, in its project's lock.
@@ -762,13 +771,14 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     });
     api.projects.open(&api, &dir).map_err(Refusal)?;
     let next = open.create.then(|| format!("cd {} && cozy project render all --on <machine>", dir.display())).into_iter().collect();
-    Ok(Json(Opened { next, ..opened(id, &dir) }))
+    let said = api.projects.get(&api, &id)?.said.lock().expect("said lock").drain(..).collect();
+    Ok(Json(Opened { next, said, ..opened(id, &dir) }))
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
 fn opened(id: String, dir: &FsPath) -> Opened {
     let name = dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    Opened { id, path: dir.to_owned(), name, next: vec![] }
+    Opened { id, path: dir.to_owned(), name, next: vec![], said: vec![] }
 }
 
 /// A new empty project called `name` under `~/.cozy/projects`, or the next free name: what it could be called, `_2`, `_3`, ….
@@ -880,7 +890,9 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
-    Ok(Json(model.state(&project, asked.assets)))
+    let mut state = model.state(&project, asked.assets);
+    state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
+    Ok(Json(state))
 }
 
 /// `GET /v1/projects/{id}`.
@@ -1325,7 +1337,7 @@ async fn reclaim(
         folder
             .update_lock(|lock| {
                 lock.assets.retain(|key, _| doc.find(key).is_some());
-                lock.assets.values_mut().for_each(|held| held.discarded.clear());
+                lock.assets.values_mut().for_each(folder::Asset::clear_discarded);
             })
             .map_err(Refusal)?;
     }
@@ -3486,7 +3498,7 @@ impl Walk {
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Event::Warning { message: message.clone(), name: None }));
-            let mut version = Version { inputs: inputs.clone(), warnings, ..Default::default() };
+            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 let tried = now.asset(&name).and_then(|held| held.tried.as_ref()).filter(|tried| !new && tried.inputs == inputs).map(|tried| tried.seed);
@@ -4208,9 +4220,7 @@ impl Walk {
             held.numbered = held.numbered.max(given);
             let mut listed = version.clone();
             listed.number = given;
-            held.versions.retain(|version| version.number != given);
-            held.versions.push(listed);
-            held.versions.sort_by_key(|version| version.number);
+            held.list(listed);
             held.tried = None;
             held.failed = None;
         })?;

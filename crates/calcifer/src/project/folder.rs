@@ -255,6 +255,9 @@ pub struct Version {
     /// What its function said of it, and what was left out of its request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// The words it was made from, only where they aren't the version before it's (`Asset::text_of`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 impl Version {
@@ -364,6 +367,45 @@ impl Asset {
     /// Its versions and those discarded.
     pub fn on_record(&self) -> impl Iterator<Item = &Version> {
         self.versions.iter().chain(&self.discarded)
+    }
+
+    /// The words version `number` was made from: its own, else those of the latest before it that holds any.
+    pub fn text_of(&self, number: u32) -> Option<&str> {
+        self.on_record().filter(|version| version.number <= number && version.text.is_some()).max_by_key(|version| version.number)?.text.as_deref()
+    }
+
+    /// Each version's words, by number.
+    fn texts(&self) -> BTreeMap<u32, String> {
+        self.on_record().filter_map(|version| Some((version.number, self.text_of(version.number)?.to_owned()))).collect()
+    }
+
+    /// `texts` written back, each only where it isn't the one before it's.
+    fn keep_texts(&mut self, mut texts: BTreeMap<u32, String>) {
+        let mut all: Vec<&mut Version> = self.versions.iter_mut().chain(&mut self.discarded).collect();
+        all.sort_by_key(|version| version.number);
+        let mut last = None;
+        for version in all {
+            let text = texts.remove(&version.number);
+            version.text = text.clone().filter(|text| Some(text) != last.as_ref());
+            last = text.or(last);
+        }
+    }
+
+    /// `version` on the list in its place, in place of one of that number.
+    pub fn list(&mut self, mut version: Version) {
+        let mut texts = self.texts();
+        texts.extend(version.text.take().map(|text| (version.number, text)));
+        self.versions.retain(|held| held.number != version.number);
+        self.versions.push(version);
+        self.versions.sort_by_key(|version| version.number);
+        self.keep_texts(texts);
+    }
+
+    /// What's discarded gone for good: what comes after it keeps its words.
+    pub fn clear_discarded(&mut self) {
+        let texts = self.texts();
+        self.discarded.clear();
+        self.keep_texts(texts);
     }
 
     /// Version `number` off the list and on record.

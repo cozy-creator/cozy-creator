@@ -31,6 +31,9 @@ pub struct Opened {
     /// Commands to run next.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
+    /// What opening it did to it, said once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub said: Vec<String>,
 }
 
 /// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
@@ -665,6 +668,9 @@ pub struct Version {
     /// How long its runs took.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_ms: Option<u64>,
+    /// The words it was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads

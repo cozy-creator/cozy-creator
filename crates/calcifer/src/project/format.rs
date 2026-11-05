@@ -36,7 +36,8 @@ const NOT_READ: &str = "kind";
 /// The reserved package Calcifer runs itself.
 const COZY: &str = "cozy";
 const FRAME: &str = "cozy/frame";
-const FOR_READERS: [&str; 2] = ["use_audio", "follow"];
+/// What opens an asset's words.
+const LEADS: [&str; 2] = ["summary", "instructions"];
 /// What `cozy` reads of an edit or a frame.
 const TOOL_INPUTS: [&str; 6] = ["tracks", "fps", "aspect_ratio", "resolution", "video", "at"];
 
@@ -251,8 +252,8 @@ pub struct Given {
     pub asset_type: String,
     /// `org/package/function@release`.
     pub made_by: String,
-    /// How to take its file: `use_audio`, `follow`.
-    pub inputs: Map<String, Value>,
+    /// The words its version was made from. Only a function's `fill` of `<input>.text` takes them: a prompt never crosses a mention by itself.
+    pub text: String,
 }
 
 /// What an operation reads now.
@@ -294,7 +295,7 @@ impl Doc {
         let version = top.get("version").and_then(Value::as_u64);
         if version.is_some_and(|version| version != FORMAT) || (version.is_none() && top.contains_key("entities")) {
             let said = format!("{} is format {}, and cozy reads format {FORMAT}: it is left as it is", folder::PROJECT, version.unwrap_or(2));
-            return Err(invalid("project_format", said).next("cozy project upgrade"));
+            return Err(invalid("project_format", said).next(if version.is_none_or(|version| version == 2) { "cozy project upgrade" } else { "cozy project new" }));
         }
         let mut warnings = vec![];
         if folder.lock_gone() {
@@ -716,6 +717,7 @@ impl Doc {
                 && let Some(version) = lock.asset_mut(name, &self.assets[i].kind).versions.iter_mut().find(|version| version.number == number)
             {
                 version.inputs = now.inputs.unwrap_or_default();
+                version.text = self.text(i);
             }
             done[i] = self.standing(i, lock, &done);
         }
@@ -862,11 +864,26 @@ impl Doc {
     pub fn given(&self, reads: &[ReadNow], lock: &Lock, stand: &[Standing]) -> Vec<Given> {
         let given = |read: &ReadNow| {
             let of = &self.assets[read.asset];
-            let made = stand[read.asset].version().or(read.newest).and_then(|number| lock.asset(&of.name)?.version(number));
+            let number = stand[read.asset].version().or(read.newest);
+            let made = number.and_then(|number| lock.asset(&of.name)?.version(number));
             let made_by = made.map_or("", |made| made.tool.as_deref().unwrap_or(&of.target)).to_owned();
-            Given { name: read.name.clone(), files: read.files.clone(), description: of.description.clone(), asset_type: of.asset_type.clone(), made_by, inputs: for_readers(&of.inputs) }
+            let text = number.and_then(|number| lock.asset(&of.name)?.text_of(number)).unwrap_or_default().to_owned();
+            Given { name: read.name.clone(), files: read.files.clone(), description: of.description.clone(), asset_type: of.asset_type.clone(), made_by, text }
         };
         reads.iter().map(given).collect()
+    }
+
+    /// The words asset `i` is made from, its text assets' in them, what leads first, as a version keeps them. Calcifer's own tools have none.
+    pub fn text(&self, i: usize) -> Option<String> {
+        if self.tool(i).is_some() {
+            return None;
+        }
+        let inputs = &self.assets[i].inputs;
+        let lead = LEADS.iter().filter_map(|field| inputs.get(*field));
+        let rest = inputs.iter().filter(|(field, _)| !LEADS.contains(&field.as_str())).map(|(_, value)| value);
+        let mut words = vec![];
+        lead.chain(rest).for_each(|value| words_in(value, &mut words));
+        (!words.is_empty()).then(|| words.join("\n\n"))
     }
 
     /// `--take`, `--in`: the take a new one keeps, its files as records; None if it holds no video.
@@ -881,9 +898,14 @@ impl Doc {
     }
 }
 
-/// What of a read crosses its mention beside its description: how to take the file. What made it is for its maker alone.
-fn for_readers(inputs: &Map<String, Value>) -> Map<String, Value> {
-    inputs.iter().filter(|(field, _)| FOR_READERS.contains(&field.as_str())).map(|(field, value)| (field.clone(), value.clone())).collect()
+/// Every string of `value` that holds more than a word, in order: what's said, not a shape or a mention.
+fn words_in<'a>(value: &'a Value, words: &mut Vec<&'a str>) {
+    match value {
+        Value::String(text) if text.trim().contains(char::is_whitespace) => words.push(text.trim()),
+        Value::Array(items) => items.iter().for_each(|item| words_in(item, words)),
+        Value::Object(fields) => fields.values().for_each(|field| words_in(field, words)),
+        _ => {}
+    }
 }
 
 /// `tool` as the key holds it: no release, no root namespace, and local code by its directory's name, with the function it names, so moving

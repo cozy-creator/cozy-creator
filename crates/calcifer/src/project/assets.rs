@@ -128,6 +128,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             approved: Some(version.number) == pinned,
             warnings: version.warnings.clone(),
             kept: version.kept,
+            text: lock.asset(&asset.name).and_then(|held| held.text_of(version.number)).map(str::to_owned),
             execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
         })
         .collect();

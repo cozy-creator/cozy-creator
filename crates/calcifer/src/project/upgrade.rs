@@ -6,6 +6,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
+    sync::Mutex,
 };
 
 use protocol::{
@@ -664,6 +665,31 @@ fn word_of(state: &State) -> &'static str {
         State::Missing | State::Waits => "missing",
         _ => "current",
     }
+}
+
+/// Held while a project moves, so that two touches of it make one move.
+static MOVING: Mutex<()> = Mutex::new(());
+
+/// Whether `text` is a project.yaml of the format `upgrade` moves.
+fn moves(text: &str) -> bool {
+    match text.lines().find_map(|line| line.strip_prefix("version:")) {
+        Some(version) => version.split('#').next().is_some_and(|version| version.trim() == "2"),
+        None => text.lines().any(|line| line.starts_with("entities:")),
+    }
+}
+
+/// The first thing to touch `dir`'s project moves it, if it's format 2, as `cozy project upgrade` with no status would. What to say of that, once:
+/// nothing if there was nothing to move. What can't convert refuses, says why and is left as it is.
+pub(super) fn on_touch(dir: &Path) -> Result<Vec<String>, Error> {
+    let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(text) = std::fs::read_to_string(dir.join(folder::PROJECT)) else { return Ok(vec![]) };
+    if !moves(&text) {
+        return Ok(vec![]);
+    }
+    let done = upgrade(dir, None)?;
+    let mut said = vec![format!("{} was format 2 and is format {FORMAT} now: the old files stay beside it as {WAS_YAML} and {WAS_LOCK}", folder::PROJECT)];
+    said.extend(done.said);
+    Ok(said)
 }
 
 /// `dir`'s project, format 2, as format 3. `status`: what `cozy project status --json` said.

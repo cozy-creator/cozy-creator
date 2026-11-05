@@ -131,6 +131,8 @@ cut_versions
 by_asset
 hard_cut
 upgrades
+first_open
+version_text
 old_landing
 lock_kept
 lost_lock
@@ -255,15 +257,12 @@ grep -aq 'running' "$OUT/by-asset-tty.txt" || check "by asset: the live view nev
 
 # Another format, of the file or of the lock, is said and left as it is: nothing writes over it.
 hard_cut() {
-step "a project: formats 1 and 2 are refused, untouched"
+step "a project: format 1 is refused, untouched"
 local O=$OUT/old code before
 mkdir -p "$O"
 printf 'version: 1\nentities:\n  - {name: a, kind: character}\n' > "$O/project.yaml"
 code=0; cozy project -p "$O" status > "$OUT/old-yaml.txt" 2>&1 || code=$?
 { [ "$code" != 0 ] && grep -q 'format 1' "$OUT/old-yaml.txt"; } || check "a format 1 project.yaml was read (exit $code): $(tail -c 200 "$OUT/old-yaml.txt")"
-printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$O/project.yaml"
-code=0; cozy project -p "$O" status > "$OUT/old-two.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -q 'format 2' "$OUT/old-two.txt" && grep -qF 'cozy project upgrade' "$OUT/old-two.txt"; } || check "a format 2 project.yaml was read, or names no upgrade (exit $code): $(tail -c 200 "$OUT/old-two.txt")"
 printf 'version: 3\nassets:\n  a:\n    description: A.\n' > "$O/project.yaml"
 printf '{"nodes": {"a": {"kind": "character", "versions": [{"number": 1}]}}}\n' > "$O/project.lock"
 before=$(sha "$O/project.lock")
@@ -488,9 +487,59 @@ render "$R" look > /dev/null 2>&1 || true
 J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: cozy project rename D"))' <<< "$(status "$R")" || check "tags: not said: $(status "$R" | jq -c .warnings)"
 }
 
+# The first thing to touch a project of format 2 moves it, as `cozy project upgrade` with no status would.
+first_open() {
+step "a project: format 2 upgrades itself on first open, says so once, and keeps .v2 beside it"
+local T=$OUT/first-open code answer before
+mkdir -p "$T"
+printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
+printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
+cp "$T/project.yaml" "$OUT/first-open.yaml"; cp "$T/project.lock" "$OUT/first-open.lock"
+cozy project -p "$T" status > "$OUT/first-open.txt" 2>&1 || check "first open: status: $(tail -c 300 "$OUT/first-open.txt")"
+grep -qF 'project.yaml.v2' "$OUT/first-open.txt" || check "first open: not said: $(tail -c 300 "$OUT/first-open.txt")"
+grep -q '^version: 3$' "$T/project.yaml" || check "first open: it didn't upgrade: $(cat "$T/project.yaml")"
+{ cmp -s "$T/project.yaml.v2" "$OUT/first-open.yaml" && cmp -s "$T/project.lock.v2" "$OUT/first-open.lock"; } || check "first open: an original went"
+cozy project -p "$T" status > "$OUT/first-open-2.txt" 2>&1 || check "first open: status again: $(tail -c 300 "$OUT/first-open-2.txt")"
+! grep -qF 'project.yaml.v2' "$OUT/first-open-2.txt" || check "first open: said twice: $(cat "$OUT/first-open-2.txt")"
+local P=$OUT/first-open-page
+mkdir -p "$P"
+printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$P/project.yaml"
+answer=$(api -X POST -d "$(jq -n --arg p "$P" '{path: $p}')" "http://$ADDR/v1/projects")
+J '.said | any(contains("project.yaml.v2"))' <<< "$answer" || check "first open: the route doesn't say so: $answer"
+
+step "a project: what can't convert is refused with why, and left as it is"
+local C=$OUT/first-open-stuck
+mkdir -p "$C"
+printf 'version: 2\nassets:\n  Amy_one:\n    description: One.\n  amy-ONE:\n    description: Two.\n' > "$C/project.yaml"
+before=$(sha "$C/project.yaml")
+code=0; cozy project -p "$C" status > "$OUT/first-open-stuck.txt" 2>&1 || code=$?
+{ [ "$code" != 0 ] && grep -q 'Amy_one' "$OUT/first-open-stuck.txt" && [ "$(sha "$C/project.yaml")" = "$before" ] && [ ! -e "$C/project.yaml.v2" ]; } || check "first open: names that are one (exit $code): $(tail -c 300 "$OUT/first-open-stuck.txt")"
+rm -rf "$C"
+}
+
+# A version keeps the words that made it, only where they changed, whatever becomes of the one that held them.
+version_text() {
+step "a project: a version keeps its text, stored only where it changed"
+local T=$OUT/version-text
+mkdir -p "$T"
+cat > "$T/project.yaml" <<YAML
+version: 3
+assets:
+  hero: {tool: $here/project/draw.py/draw, instructions: A red door.}
+YAML
+render "$T" hero -n 2 || check "version text: render: $(tail -c 300 "$OUT/render.txt")"
+sed -i 's/A red door/A blue door/' "$T/project.yaml"
+render "$T" hero || check "version text: again: $(tail -c 300 "$OUT/render.txt")"
+J '[.versions[].text] == ["A red door.", "A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: $(held "$T" hero | jq -c '[.versions[].text]')"
+[ "$(grep -c 'text: A ' "$T/project.lock")" = 2 ] || check "version text: stored where it didn't change: $(grep 'text: ' "$T/project.lock")"
+cozy project -p "$T" delete hero --version 1 > /dev/null || check "version text: discard"
+cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || check "version text: reclaim"
+J '[.versions[].text] == ["A red door.", "A blue door."]' <<< "$(held "$T" hero)" || check "version text: what held it went: $(held "$T" hero | jq -c '[.versions[].text]')"
+}
+
 # Paid-for bytes reach `files/` whatever the project is. A project of format 2, its run in flight over the upgrade, and one that can't convert.
 old_landing() {
-step "a project: a run's output reaches files/ in a project of format 2, and says what to run"
+step "a project: a run landing in a project of format 2 upgrades it, lists its output, and says so"
 local T=$OUT/old-landing n
 mkdir -p "$T"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
@@ -498,13 +547,11 @@ printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 (cd "$T" && cozy --json run "$here/project/draw.py" prompt=kept) > "$OUT/old-landing.ndjson" 2> "$OUT/old-landing.err" || check "old landing: run: $(tail -c 300 "$OUT/old-landing.err")"
 n=$(run_number "$OUT/old-landing.ndjson")
 [ "$(ls "$T/files" 2> /dev/null | wc -l)" = 1 ] || check "old landing: nothing in files/: $(ls -a "$T" "$T/.runs" 2>&1 | tr '\n' ' ')"
-J '[.warnings[]?.message] | any(contains("cozy project upgrade"))' <<< "$(cozy --json run show "$n" --once)" || check "old landing: no warning names the upgrade: $(cozy --json run show "$n" --once | jq -c .warnings)"
+J '[.warnings[]?.message] | any(contains("project.yaml.v2"))' <<< "$(cozy --json run show "$n" --once)" || check "old landing: no warning says it upgraded: $(cozy --json run show "$n" --once | jq -c .warnings)"
+grep -q '^version: 3$' "$T/project.yaml" || check "old landing: it didn't upgrade: $(cat "$T/project.yaml")"
+J '.run_files == 1' <<< "$(status "$T")" || check "old landing: its output isn't listed: $(status "$T" | jq -c .run_files)"
 
 step "a project: a run in flight over the upgrade lands, and is listed"
-cozy project -p "$T" upgrade > "$OUT/old-landing-upgrade.txt" 2>&1 || check "old landing: upgrade: $(tail -c 300 "$OUT/old-landing-upgrade.txt")"
-J '.unrecorded == 1' <<< "$(cozy --json project -p "$T" reclaim)" || check "old landing: what its run kept isn't listed: $(cozy --json project -p "$T" reclaim)"
-cozy project -p "$T" reclaim --yes > /dev/null 2>&1 || true
-[ "$(ls "$T/files" | wc -l)" = 1 ] || check "old landing: reclaim --yes took what its run kept"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
 rm -f "$T/project.yaml.v2" "$T/project.lock.v2"
@@ -2140,7 +2187,7 @@ J '[.[].name] | sort == ["hero", "hero older", "layout", "look", "lore", "rain",
 J 'map(select(.name == "hero"))[0] | .asset_type == "character" and .description == "A tall hero." and (.image | startswith("sha256:")) and (.voice | startswith("sha256:")) and .width > 0' <<< "$refs" || check "filled: a character's members: $refs"
 J 'map(select(.name == "yard"))[0] | .asset_type == "environment"' <<< "$refs" || check "filled: an environment: $refs"
 J 'map(select(.name == "layout"))[0] | (has("asset_type") | not) and (.image | startswith("sha256:"))' <<< "$refs" || check "filled: a plain picture: $refs"
-J 'map(select(.name == "look"))[0] | .use_audio == true and (.video | startswith("sha256:")) and .description == "Where it was shot."' <<< "$refs" || check "filled: a clip: $refs"
+J 'map(select(.name == "look"))[0] | (has("use_audio") | not) and (.video | startswith("sha256:")) and .description == "Where it was shot."' <<< "$refs" || check "filled: a clip: $refs"
 J 'map(select(.name == "rain"))[0] | (.audio | startswith("sha256:"))' <<< "$refs" || check "filled: a sound: $refs"
 J 'map(select(.name == "lore"))[0] == {"name": "lore", "description": "Only words."}' <<< "$refs" || check "filled: only words: $refs"
 ! J 'any(.name == "red_frame" or .name == "blue_frame")' <<< "$refs" || check "filled: a mention only in a file slot went in references: $refs"
@@ -2155,7 +2202,7 @@ cat >> "$T/project.yaml" <<YAML
 YAML
 render "$T" up_shot up_plate || check "filled: up: $(tail -c 500 "$OUT/render.txt")"
 input=$(asked "$T" up_shot | jq -c .input)
-J '(.latents | startswith("sha256:")) and .resolution == "1080p" and (has("prompt") | not)' <<< "$input" || check "filled: upscale of what it made: $input"
+J '(.latents | startswith("sha256:")) and .resolution == "1080p" and (.prompt | contains("Along"))' <<< "$input" || check "filled: upscale of what it made: $input"
 input=$(asked "$T" up_plate | jq -c .input)
 J '(has("latents") | not) and .prompt == "Where it was shot."' <<< "$input" || check "filled: upscale of what it didn't make: $input"
 
@@ -3360,11 +3407,11 @@ J --arg to "&to=/projects/$ID" --arg base "$B/#code=" '.url | startswith($base) 
 J '.url | contains("&to=") | not' <<< "$(cd "$OUT" && cozy --json open --no-open)" || check "session: open in no project isn't the home"
 cozy --json open "$P/sub" --no-open > "$OUT/project-open-named.json" || check "session: open of a folder in it failed"
 J --arg to "&to=/projects/$ID" '.url | endswith($to)' "$OUT/project-open-named.json" || check "session: open of a folder in it: $(cat "$OUT/project-open-named.json")"
-mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 2\nassets: {}\n' > "$OUT/open-old/project.yaml"
+mkdir -p "$OUT/open-none" "$OUT/open-old"; printf 'version: 1\nassets: {}\n' > "$OUT/open-old/project.yaml"
 cozy open "$OUT/open-none" --no-open > "$OUT/open-none.txt" 2> "$OUT/open-none.err" || check "session: open of a folder of none failed"
 { grep -q '#code=' "$OUT/open-none.txt" && ! grep -q '&to=' "$OUT/open-none.txt" && grep -q 'cozy project new' "$OUT/open-none.err"; } || check "session: a folder of none: $(cat "$OUT/open-none.txt" "$OUT/open-none.err")"
 code=0; cozy open "$OUT/open-old" --no-open > "$OUT/open-old.txt" 2>&1 || code=$?
-{ [ "$code" != 0 ] && grep -qF 'cozy project upgrade' "$OUT/open-old.txt" && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: an older format says what to run: exit $code: $(cat "$OUT/open-old.txt")"
+{ [ "$code" != 0 ] && grep -qF 'cozy project new' "$OUT/open-old.txt" && ! grep -q '#code=' "$OUT/open-old.txt"; } || check "session: a format that can't convert says what to run: exit $code: $(cat "$OUT/open-old.txt")"
 code=$(jq -r .url "$OUT/project-open.json" | sed -n 's/.*#code=\([0-9a-f]*\)&.*/\1/p')
 [ "$(curl -sS -o "$OUT/session.json" -w '%{http_code}' -X POST -d "{\"code\":\"$code\"}" "$B/v1/session")" = 200 ] || check "session: its code was not traded: $(cat "$OUT/session.json")"
 token=$(jq -r .token "$OUT/session.json") media=$(jq -r .media "$OUT/session.json")
