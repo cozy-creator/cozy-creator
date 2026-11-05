@@ -4,10 +4,9 @@ import json
 import os
 import struct
 
-ROW, ROWS = 9, 32
+HEADER, ROW, ROWS = 3, 9, 32
 tables = {}
-for path in glob.glob("/dev/shm/cozy-varena-*/v[56]-*"):
-    HEADER = 3 if os.path.basename(path).startswith("v6-") else 4
+for path in glob.glob("/dev/shm/cozy-varena-*/v6-*"):
     words = struct.unpack("<512Q", open(path, "rb").read(4096))
     rows = (words[HEADER + i * ROW : HEADER + (i + 1) * ROW] for i in range(ROWS))
     tables[os.path.basename(path)[3:]] = [
