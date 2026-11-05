@@ -61,7 +61,15 @@ async function runs(page, base, id, folder) {
   check('run_ends_live_with_no_reload', reloads === 0, reloads);
   check('cli_agrees_it_ended', shown(number).status === 'completed', shown(number).status);
   await first;
-  await until('the count goes', () => page.textContent('.top a[href*="runs"]'), (text) => !/\d/.test(text));
+  await until('the count goes', () => page.textContent('.top a[href*="runs"]'), (text) => !/\d/.test(text)).catch(async (error) => {
+    // Whose it is: the page's, or a run Calcifer says is going.
+    seen.count_held = await page.evaluate(async () => {
+      const { token } = JSON.parse(localStorage.getItem('cozy.session'));
+      const going = async (status) => (await (await fetch(`/v1/runs?status=${status}&limit=5`, { headers: { Authorization: `Bearer ${token}` } })).json()).runs.map((run) => [run.number, run.status]);
+      return { in_progress: await going('in_progress'), queued: await going('queued') };
+    });
+    throw error;
+  });
   check('no_hash_on_a_run', !/sha256:|[0-9a-f]{64}/.test(await body(page)));
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-run.png` });
 

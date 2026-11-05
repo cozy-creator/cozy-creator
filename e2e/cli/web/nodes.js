@@ -773,7 +773,8 @@ function linesOf(text, name) {
     check('kept_up_to_there', told.keep === 0.5, told);
     check('words_as_they_were', linesOf(yaml(), 'Clip') === clipFile, linesOf(yaml(), 'Clip'));
     await open('Clip');
-    check('takes_are_called_takes', (await box('Clip').locator('.take[aria-label="take 2"]').count()) === 1);
+    await box('Clip').locator('.take[aria-label="take 2"]').waitFor();
+    check('takes_are_called_takes', true);
     await shot('takes');
 
     // The terminal sees the same project.
