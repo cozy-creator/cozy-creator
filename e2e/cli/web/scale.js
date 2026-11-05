@@ -25,6 +25,7 @@ function check(name, ok, detail) {
 
 const ASSETS = 5000;
 const HOLE = { col: 3, row: 1 };
+const PAN_MS = 3000;
 const PICTURES = 1000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -319,11 +320,22 @@ function calciferMb() {
   const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
   const measuredPan = async () => {
     await drawn();
+    const atRest = await busy();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
     const from = await busy();
-    const moving = summary(await panning(3000));
-    const work_ms_per_frame = +(((await busy()) - from) / moving.frames).toFixed(2);
-    return { still, moving, work_ms_per_frame, mounted: await page.locator('.react-flow__node').count() };
+    const moving = summary(await panning(PAN_MS));
+    const worked = (await busy()) - from;
+    // What goes on at rest goes on through a pan, and isn't the pan's: `work_ms_per_frame` is all of it, `added_ms_per_frame` what panning adds.
+    const rest_ms_per_s = from - atRest;
+    const added = Math.max(0, worked - rest_ms_per_s * (PAN_MS / 1000));
+    return {
+      still,
+      moving,
+      rest_ms_per_s: +rest_ms_per_s.toFixed(1),
+      work_ms_per_frame: +(worked / moving.frames).toFixed(2),
+      added_ms_per_frame: +(added / moving.frames).toFixed(2),
+      mounted: await page.locator('.react-flow__node').count(),
+    };
   };
 
   // The same pan of a small project, for what this runner draws whatever a project holds.
@@ -348,8 +360,8 @@ function calciferMb() {
   memory.open = calciferMb();
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
-  const allowed = numbers.pan_small.work_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
-  check('size_adds_nothing_to_a_pan', numbers.pan_big.work_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
+  check('size_adds_nothing_to_a_pan', numbers.pan_big.added_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
