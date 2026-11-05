@@ -58,18 +58,18 @@ export class Placer {
     })
   }
 
-  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes. Local code goes by its function. */
+  /** A tool dropped at a point: an asset of it, there at once, opening on its controls and as wide as what it makes, called what its tool says. */
   addTool(tool: Tool, point: { x: number; y: number }) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const fields = text ? { text: "" } : startingFields(tool)
     const key = `asset-${crypto.randomUUID()}`
-    const body = text ? { tool: "", name: "text", fields } : { tool: tool.id, name: tool.local ? undefined : tool.label, fields, kind: tool.kind }
+    const wanted = asName(tool.name ?? tool.label)
+    const body = text ? { tool: "", name: wanted, fields } : { tool: tool.id, name: wanted, fields, kind: tool.kind }
     const timeline = tool.controls.some((control) => control.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     const row: Asset = { name: "", standing: text ? "current" : "missing", kind: tool.kind, noun: tool.kind === "video" ? "take" : "version", tool: text ? undefined : tool.id, versions: 0, status: "", fields, timeline }
-    const wanted = text ? "text" : tool.local ? (tool.id.split("/").at(-1) ?? "").split("@")[0] : tool.label
     this.store.focusing = this.store.place(
-      asName(wanted),
+      wanted,
       { asset: row },
       at,
       async (clear, once) => this.client.newAsset(await this.project(), key, { ...body, at: clear }, once),

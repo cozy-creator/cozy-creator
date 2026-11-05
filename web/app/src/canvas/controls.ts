@@ -2,7 +2,7 @@ import type { Asset, Control, Tool } from "../types"
 import { type Row, rowsIn } from "./text"
 
 /** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
-export const TEXT_TOOL: Tool = { id: "text", package: "", function: "", release: "", label: "Text", kind: "text", controls: [] }
+export const TEXT_TOOL: Tool = { id: "text", package: "", function: "", release: "", name: "text", label: "Text", kind: "text", controls: [] }
 
 /** A row's members, from what rows hold: what says the most, and each number, the first adding up and a new row as long as the first. What else a row holds stays, unseen. */
 function membersOf(rows: Row[]): Control[] {

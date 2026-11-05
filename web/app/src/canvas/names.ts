@@ -24,13 +24,15 @@ export function nameKey(name: string): string {
   return name.replace(/[_-]/g, " ").split(/\s+/).filter(Boolean).join(" ").toLowerCase()
 }
 
-/** A taken name gets `_2`. */
+/** A taken name counts up: `hero` is `hero_2`, and `shot_1` is `shot_2`. */
 export function freeName(name: string, taken: Iterable<string>): string {
   const keys = new Set<string>()
   for (const other of taken) keys.add(nameKey(other))
   if (!keys.has(nameKey(name))) return name
-  for (let n = 2; ; n++) {
-    const next = `${name}_${n}`
+  const counted = /^(.+)_(\d+)$/.exec(name)
+  const stem = counted ? counted[1] : name
+  for (let n = counted ? Number(counted[2]) + 1 : 2; ; n++) {
+    const next = `${stem}_${n}`
     if (!keys.has(nameKey(next))) return next
   }
 }

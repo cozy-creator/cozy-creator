@@ -1016,6 +1016,8 @@ export interface Tool {
   package: string
   function: string
   release: string
+  /** What a new box of it is called, `shot_1`: its `Node`'s word or its package's. A Calcifer that doesn't say goes by `label`. */
+  name?: string
   label: string
   kind: string
   description?: string
