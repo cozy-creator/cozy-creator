@@ -49,6 +49,9 @@ pub(crate) struct Protect<'a> {
     pub(crate) keep_phase: bool,
     /// A guess must not take another guess.
     pub(crate) speculative: bool,
+    /// The caller's retry takes free working pages in place: what a wait completes is tried
+    /// once before any working page goes.
+    pub(crate) reuse_working: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,9 +138,9 @@ impl<'a> Sequence<'a> {
             return Ok(true);
         }
         while let Some(step) = ORDER.get(self.step).copied() {
-            let started = Instant::now();
+            let (index, started) = (self.step, Instant::now());
             let done = self.run(step, want, physical);
-            self.gpu.driver().note_reclaim(self.step, started.elapsed());
+            self.gpu.driver().note_reclaim(index, started.elapsed());
             if done? {
                 return Ok(true);
             }
@@ -184,6 +187,11 @@ impl<'a> Sequence<'a> {
                 }
                 if !working::wait_pending(self.device, want, self.protect.pool)? {
                     return Ok(false);
+                }
+                // The retry uses what completed in place; if it can't, the order starts over.
+                if std::mem::take(&mut self.protect.reuse_working) {
+                    self.step = 0;
+                    return Ok(true);
                 }
                 self.working(want)?;
                 Ok(true)

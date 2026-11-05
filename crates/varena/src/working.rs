@@ -697,10 +697,8 @@ impl Device {
                 .or_default()
                 .push(*ptr);
         }
-        for (ptr, bytes, _) in ready {
-            if bytes > LARGE {
-                Self::merge_run(state, ptr);
-            }
+        for (ptr, _, _) in ready {
+            Self::merge_run(state, ptr);
         }
         state.refresh_phase();
         Ok(())
@@ -733,7 +731,8 @@ impl Device {
             .filter(|((_, _, origin), _)| origin.is_none() || *origin == Some(stream))
             .find_map(|((_, class, origin), slots)| {
                 slots.iter().rev()
-                    .find(|ptr| state.blocks.get(ptr).is_some_and(|block| block.capacity == *class && block.reusable_from(*origin)))
+                    .find(|ptr| state.blocks.get(ptr).is_some_and(|block| block.capacity == *class && block.reusable_from(*origin)
+                        && (bytes > LARGE || state.segments[&block.segment].size_class > LARGE)))
                     .map(|ptr| (*ptr, *class, *origin))
             })?;
         state.unlist((None, class, origin), ptr);
@@ -755,7 +754,45 @@ impl Device {
         Some(())
     }
 
-    /// A free large block joins its free neighbours in the segment, for a later, larger request.
+    /// With no room for new pages, free pages already mapped serve first (design 4.2): a wholly free
+    /// slab page of another class, else a cut from any free run. A cut holds only the handles it
+    /// touches, and rejoins its run when freed.
+    fn reuse(state: &mut State, class: usize, requested: usize, stream: u64) -> Option<u64> {
+        if checks::on(checks::GUARDS) {
+            return None;
+        }
+        if class > LARGE || Self::reslab(state, class).is_none() {
+            Self::split_run(state, class, stream, true)?;
+        }
+        Self::take_class(state, class, requested, stream, None)
+    }
+
+    /// A wholly free completed slab page of another class becomes this class's: it is one handle.
+    fn reslab(state: &mut State, class: usize) -> Option<()> {
+        let (base, bytes) = state.segments.iter()
+            .filter(|(_, segment)| segment.pool.is_none() && segment.size_class <= LARGE && segment.size_class != class && segment.backed())
+            .find(|(base, segment)| state.blocks.range(**base..**base + segment.bytes as u64)
+                .all(|(_, block)| block.life == Life::Ready && block.reusable_on.is_none()))
+            .map(|(base, segment)| (*base, segment.bytes))?;
+        let old: Vec<_> = state.blocks.range(base..base + bytes as u64).map(|(ptr, block)| (*ptr, block.capacity)).collect();
+        for (ptr, capacity) in old {
+            state.blocks.remove(&ptr);
+            state.unlist((None, capacity, None), ptr);
+        }
+        state.segments.get_mut(&base).expect("free slab").size_class = class;
+        Self::slab(state, base, bytes, class);
+        Some(())
+    }
+
+    fn slab(state: &mut State, base: u64, bytes: usize, class: usize) {
+        for offset in (0..=bytes - class).step_by(class) {
+            let address = base + offset as u64;
+            state.blocks.insert(address, Block::free(base, class));
+            state.free.entry((None, class, None)).or_default().push(address);
+        }
+    }
+
+    /// A free block in a run joins its free neighbours in the segment, for a later, larger request.
     fn merge_run(state: &mut State, ptr: u64) {
         let Some(block) = state.blocks.get(&ptr) else { return };
         let segment = block.segment;
@@ -906,14 +943,7 @@ impl Device {
             state.blocks.insert(ptr, Block::free(ptr, bytes));
             state.free.entry((None, bytes, None)).or_default().push(ptr);
         } else {
-            for offset in (0..bytes).step_by(class) {
-                if bytes - offset < class {
-                    break;
-                }
-                let address = ptr + offset as u64;
-                state.blocks.insert(address, Block::free(ptr, class));
-                state.free.entry((None, class, None)).or_default().push(address);
-            }
+            Self::slab(state, ptr, bytes, class);
         }
         Ok(ptr)
     }
@@ -1406,7 +1436,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     }
     let exact = if class <= LARGE { owner.page() } else { class };
     let segment = rounded(class.max(SEGMENT), owner.page())?;
-    let result = reclaim::acquire(device, exact, Wait::Yes, Protect::default(), || {
+    let result = reclaim::acquire(device, exact, Wait::Yes, Protect { reuse_working: true, ..Default::default() }, || {
         let gate = crate::gate(device)?;
         gate.not_capturing()?;
         let mut state = owner.lock()?;
@@ -1419,11 +1449,16 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 Some(ptr) => ptr,
                 None => {
                     owner.sample()?;
-                    // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
-                    let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
-                    let mapped = if whole { segment } else { exact };
-                    owner.map(&mut state, mapped, None, class)?;
-                    Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
+                    match (owner.over(exact) != 0).then(|| Device::reuse(&mut state, class, bytes, stream)).flatten() {
+                        Some(ptr) => ptr,
+                        None => {
+                            // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
+                            let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
+                            let mapped = if whole { segment } else { exact };
+                            owner.map(&mut state, mapped, None, class)?;
+                            Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
+                        }
+                    }
                 }
             };
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
@@ -1485,7 +1520,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         return Ok(());
     }
     block.workspace = false;
-    let pool = segments[&block.segment].pool;
+    let (pool, run) = (segments[&block.segment].pool, segments[&block.segment].size_class > LARGE);
     // The original stream is already tracked unless explicitly retired. Torch supplies
     // that original handle again on free; never reintroduce it after retirement.
     if stream != block.stream {
@@ -1531,7 +1566,7 @@ fn free_inner(device: i32, ptr: u64, stream: u64) -> Result<()> {
         state.phase_changed(class, charge, phase, phase, segment);
         split::refresh(&mut state);
     }
-    if reusable && class > LARGE {
+    if reusable && run {
         Device::merge_run(&mut state, ptr);
     }
     state.stats.allocated_bytes -= requested;
@@ -1620,7 +1655,7 @@ fn retire_native_inner(device: i32, ptr: u64, completed: bool) -> Result<()> {
     if state.phases.active.is_some() {
         split::refresh(&mut state);
     }
-    if completed && capacity > LARGE {
+    if completed {
         Device::merge_run(&mut state, ptr);
     }
     state.stats.allocated_bytes -= requested;
