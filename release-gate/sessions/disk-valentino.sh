@@ -8,13 +8,16 @@
 #      either fits beside it or is refused machine_disk_full with the sizes.
 #   4. H3 bf16 (130 GiB, more than the disk) is refused machine_disk_full while it prepares, with nothing downloaded.
 #   5. Every byte of the store is a model `model ls` names.
+# Each package is the release its interface was read at (`cozy run <fn>@<release> --describe`, 11-05).
 # params:
 #   traffic_gb  GB the provider bills (default 130)
 #   need_s      seconds the guard must buy (default 2700)
 . "$(dirname "$0")/lib.sh"
 status() { cozy run show "$(runno "$1")" --once --json --full > "$OUT/$1.json" 2>&1; jq -r '.status // empty' "$OUT/$1.json"; }
 reason() { jq -r '[.reason.code // "", .reason.message // ""] | join(": ")' "$OUT/$1.json" | cut -c1-500; }
-warned() { jq -r '[.warnings[]?, .result.warnings[]?] | map(if type == "object" then .message else . end) | .[]' "$OUT/$1.json" 2>/dev/null; }
+# What a run warned of, its calls' too (a call's lines are on its root's log): any string of its record, or what its
+# follower printed.
+warned() { { jq -r '.. | strings' "$OUT/$1.json" 2>/dev/null; cat "$OUT/$1.txt" 2>/dev/null; } | grep -E 'the disk was short|evicted' | sort -u; }
 disk() { cozy machine show "$NAME" --json | jq -r '.status | "\(.disk_free_bytes // 0) \(.disk_models_bytes // 0) \(.models_bytes // 0) \(.disk_total_bytes // 0)"'; }
 gib() { awk -v b="$1" 'BEGIN { printf "%.1f GiB", b / 1073741824 }'; }
 quote "$(param traffic_gb 130)" "$(param need_s 2700)"
@@ -27,21 +30,21 @@ read -r free stored listed total < <(disk); say "pod TensorD $v; disk $(gib "$to
 
 # 1. Both Qwen models and SDXL (on a 100 GB disk H3 fits beside Qwen alone, by 2 GiB), the turbo one last so its executor
 # is the idle warm one.
-step qwen run qwen-image-2/generate --on "$NAME" --lane int8 prompt="a red lighthouse on a cliff at dawn, photo" seed:=$RANDOM || fail "qwen"
+step qwen run qwen-image-2/generate@0.3.0 --on "$NAME" --lane int8 prompt="a red lighthouse on a cliff at dawn, photo" seed:=$RANDOM || fail "qwen"
 [ "$(status qwen)" = completed ] || fail "qwen $(status qwen): $(reason qwen)"
-step sdxl run sdxl/generate --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"
+step sdxl run sdxl/generate@0.3.0 --on "$NAME" prompt="a copper kettle on a stove, morning light, photo" seed:=$RANDOM || fail "sdxl"
 [ "$(status sdxl)" = completed ] || fail "sdxl $(status sdxl): $(reason sdxl)"
-step turbo run qwen-image-2/generate_turbo --on "$NAME" --lane int8 prompt="a green tram in the rain at night, photo" seed:=$RANDOM || fail "turbo"
+step turbo run qwen-image-2/generate_turbo@0.3.0 --on "$NAME" --lane int8 prompt="a green tram in the rain at night, photo" seed:=$RANDOM || fail "turbo"
 [ "$(status turbo)" = completed ] || fail "turbo $(status turbo): $(reason turbo)"
 read -r free stored listed total < <(disk); say "after Qwen: $(gib "$free") free, the store $(gib "$stored")"
 
 # 2 and 3. H3 in the background; turbo asked again once H3 is rendering.
 SHOT="A woman in a yellow raincoat walks along a wet pier at dusk, gulls overhead, the camera tracking beside her."
 before=$(cozy machine logs "$NAME" tensord -n 0 2>/dev/null | wc -l)
-step h3 run minimax-h3/generate --on "$NAME" --lane int8 prompt="$SHOT" duration_s:=5 seed:=$RANDOM & H3P=$!
+step h3 run minimax-h3/generate@0.4.0 --on "$NAME" --lane int8 prompt="$SHOT" duration_s:=5.0 seed:=$RANDOM & H3P=$!
 # Once H3 has made its room (its warning says what went), so turbo's ask can't race H3's room check.
 until { [ -n "$(runno h3)" ] && status h3 > /dev/null && warned h3 | grep -q evicted; } || ! kill -0 "$H3P" 2>/dev/null; do sleep 5; done
-step turbo2 run qwen-image-2/generate_turbo --on "$NAME" --lane int8 prompt="a blue kite over a beach, photo" seed:=$RANDOM
+step turbo2 run qwen-image-2/generate_turbo@0.3.0 --on "$NAME" --lane int8 prompt="a blue kite over a beach, photo" seed:=$RANDOM
 t2=$(status turbo2)
 wait "$H3P"; hs=$(status h3)
 [ -n "$(runno h3)" ] || fail "H3 made no run: $(tail -4 "$OUT/h3.txt" | tr '\n' ' ')"
@@ -63,7 +66,7 @@ esac
 
 # 4. More than the disk.
 read -r free stored listed total < <(disk)
-step bf16 run minimax-h3/generate --on "$NAME" --lane bf16 prompt="$SHOT" duration_s:=5 seed:=$RANDOM
+step bf16 run minimax-h3/generate@0.4.0 --on "$NAME" --lane bf16 prompt="$SHOT" duration_s:=5.0 seed:=$RANDOM
 bs=$(status bf16); read -r free2 stored2 _ _ < <(disk)
 grew=$(( stored2 > stored ? stored2 - stored : 0 ))
 say "H3 bf16 $bs: $(reason bf16); the store grew $(gib "$grew")"
