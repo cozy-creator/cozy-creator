@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import "./addons.css"
+import "./AddOns.css"
 import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
 import { madeHere } from "./shown"
