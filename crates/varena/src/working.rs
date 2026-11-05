@@ -2098,6 +2098,11 @@ pub(crate) fn prefetch_admitted(device: i32) -> Result<()> {
     Ok(())
 }
 
+/// Every idle pool's pages, now. What the sequence does under pressure, for a gate cell.
+pub fn give_back_idle_pools(device: i32) -> Result<usize> {
+    release_idle_pools(device, usize::MAX, usize::MAX, None)
+}
+
 /// Why this process's native state can't be trusted, if it can't. Opens nothing.
 pub fn poisoned() -> Result<Option<String>> {
     for device in devices()? {
