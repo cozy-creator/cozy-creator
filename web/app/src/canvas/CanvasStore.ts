@@ -171,6 +171,8 @@ export class CanvasStore {
   private carets = new Map<string, (name: string) => void>()
   /** The box last typed in stays open until a click elsewhere, so what's dragged next can land where its caret was. */
   readonly editing = signal<string | null>(null)
+  /** Has these assets, and what's said of the project, read. */
+  readAgain: (names: string[]) => void = () => {}
   /** Asks for a machine, for a render with none up. */
   askMachine: () => void = () => {}
   /** The name a just-dropped tool will have: its text takes the keys. */
@@ -692,7 +694,10 @@ export class CanvasStore {
     const once = `take-${crypto.randomUUID()}`
     this.act(key, {
       send: async (served, signal) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, keep, signal) : null),
-      done: (answer) => settle(answer ? performance.now() : undefined),
+      done: (answer) => {
+        settle(answer ? performance.now() : undefined)
+        this.readAfter([id])
+      },
       refused: (error) => {
         settle()
         say(`Couldn't render ${name}`, error)
@@ -718,12 +723,24 @@ export class CanvasStore {
     const once = `all-${crypto.randomUUID()}`
     this.outbox.add({
       send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, outdated ? { outdated } : {}, signal) : null),
-      done: (answer) => settle(answer ? performance.now() : undefined),
+      done: (answer) => {
+        settle(answer ? performance.now() : undefined)
+        this.readAfter(going)
+      },
       refused: (error) => {
         settle()
         say("Couldn't render them", error)
       },
     })
+  }
+
+  /**
+   * What holds a box's look until a read begun after the answer has to get that read: the write's own event can reach a read that began first, and then there's no
+   * other. One read of these, whatever else is said.
+   */
+  private readAfter(boxes: (string | undefined)[]) {
+    const names = boxes.flatMap((id) => this.served.get(id ?? "") ?? [])
+    if (names.length) this.readAgain(names)
   }
 
   private patchId(id: string | undefined, change: Partial<ElementView>) {
@@ -732,7 +749,7 @@ export class CanvasStore {
   }
 
   /** `row` over what its row says, now, until a read begun after the answer says for itself. Refused, it goes back. */
-  private over<T extends { stale: string[]; etag?: string }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string) {
+  private over<T extends { stale?: string[]; etag?: string }>(name: string, row: Partial<Asset>, send: (served: string, once: AbortSignal) => Promise<T>, what: string, then?: { done?(answer: T): void; refused?(): void }) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
@@ -741,20 +758,54 @@ export class CanvasStore {
     const id = this.ids.get(key)
     const mine = () => this.get(this.namesById.get(id ?? "") ?? "")?.over === over
     this.patch(key, { over, asset: { ...was, ...row } })
-    this.act(key, {
+    return this.act(key, {
       send,
       done: (answer) => {
         if (mine()) this.patchId(id, { over: { row, until: performance.now() } })
+        this.readAfter([id])
         // A write of its own: what a typed field began from moves with it, so it's no conflict.
         const held = this.views.get(this.namesById.get(id ?? "") ?? "")
         if (held && answer.etag) this.patchId(id, { known: answer.etag, ...(held.base === was.etag ? { base: held.drafts || held.writing ? answer.etag : undefined } : {}) })
-        if (answer.stale.length) say(`That puts ${answer.stale.join(", ")} out of date`)
+        if (answer.stale?.length) say(`That puts ${answer.stale.join(", ")} out of date`)
+        then?.done?.(answer)
       },
       refused: (error) => {
         if (mine()) this.patchId(id, { over: undefined, asset: was })
         say(`Couldn't ${what} ${name}`, error)
+        then?.refused?.()
       },
     })
+  }
+
+  /** One take or version off its box, at once, with no dialog: the strip closes up, an approved one's box stands on the newest, and a note offers Undo for a while. */
+  discardTake(name: string, number: number) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    const left = asset?.prefixes?.filter((held) => held.number !== number)
+    if (!asset || !left) return
+    const approved = asset.approved === number
+    const back: Partial<Asset> = { prefixes: asset.prefixes, versions: asset.versions, version: asset.version, approved: asset.approved, pinned: asset.pinned }
+    const gone: Partial<Asset> = { prefixes: left, versions: left.length, version: asset.version === number ? left.at(-1)?.number : asset.version, ...(approved ? { approved: undefined, pinned: false } : {}) }
+    this.patch(key, { viewed: this.views.get(key)?.viewed === number ? undefined : this.views.get(key)?.viewed })
+    let wasApproved = approved
+    let note = 0
+    const going = this.over(key, gone, (served, once) => this.client.discardVersion(this.projectId!, served, number, once), `discard ${asset.noun} ${number} of`, {
+      done: (answer) => {
+        wasApproved = Boolean(answer.approved)
+      },
+      refused: () => dismiss(note),
+    })
+    const undo = () => {
+      if (going && this.outbox.takeBack(going)) return this.patch(key, { over: undefined, asset: { ...this.get(key)?.asset!, ...back } })
+      this.over(key, back, (served, once) => this.client.restoreVersion(this.projectId!, served, number, wasApproved, once), `bring back ${asset.noun} ${number} of`)
+    }
+    const stands = approved ? ` It was approved: ${name} now shows its newest.` : ""
+    note = say(`Discarded ${asset.noun} ${number} of ${name}.${stands}`, undefined, { action: { label: "Undo", run: undo }, ms: UNDO_MS })
+  }
+
+  /** The take or version being looked at in `name`, if one is chosen: what Delete means while it's open. */
+  lookingAt(name: string): number | undefined {
+    return this.get(name)?.viewed
   }
 
   /** Approves it: this version is what `name` is, until it's unapproved. It turns into that file now, and can flip back. */
@@ -1106,7 +1157,10 @@ export class CanvasStore {
     const id = this.ids.get(box.name)
     this.outbox.add<AssetMade>({
       send: (once) => this.client.putAssetBack(this.projectId!, box.name, box.text ?? "", box.row, once),
-      done: (answer) => this.patchId(id, { known: answer.etag, pending: performance.now() }),
+      done: (answer) => {
+        this.patchId(id, { known: answer.etag, pending: performance.now() })
+        this.readAfter([id])
+      },
       landed: (error) => (error.body.code === "asset_exists" ? { name: box.name, etag: "" } : undefined),
       refused: (error) => {
         const name = this.namesById.get(id ?? "")
@@ -1281,18 +1335,20 @@ export class CanvasStore {
   }
 
   /** Whatever's done to `name`, in its turn, under what it's called by then. Gone by then, there's nothing to do. */
-  private act<T>(name: string, action: Omit<Action<T>, "send"> & { send(name: string, once: AbortSignal): Promise<T> }) {
+  private act<T>(name: string, action: Omit<Action<T>, "send"> & { send(name: string, once: AbortSignal): Promise<T> }): Action<T | typeof NOT_THERE> {
     const id = this.ids.get(this.resolveName(name))
-    this.outbox.add<T | typeof NOT_THERE>({
+    const inTurn = {
       ...action,
-      send: async (once) => {
+      send: async (once: AbortSignal) => {
         const served = id && this.namesById.has(id) ? this.served.get(id) : undefined
         return served ? action.send(served, once) : NOT_THERE
       },
-      done: (answer) => {
+      done: (answer: T | typeof NOT_THERE) => {
         if (answer !== NOT_THERE) action.done?.(answer as T)
       },
-    } as Action<T | typeof NOT_THERE>)
+    } as Action<T | typeof NOT_THERE>
+    this.outbox.add(inTurn)
+    return inTurn
   }
 
   /** The name a new box takes now, as Calcifer would give it: what's on the canvas, what's being placed, and what waits to be brought back is taken. */
@@ -1331,6 +1387,7 @@ export class CanvasStore {
           this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: performance.now() })
           done?.(now, answer)
         }
+        this.readAfter([node.id])
         left()
         this.sendMoves()
       },

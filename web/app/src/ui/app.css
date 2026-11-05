@@ -786,6 +786,36 @@ code {
   color: var(--ink);
   border-color: var(--ember);
 }
+.take-at {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.take-off {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 14px;
+  height: 14px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: #000a;
+  color: var(--ink);
+}
+.take-off .icon {
+  width: 9px;
+  height: 9px;
+}
+.take-off:hover {
+  background: var(--bad);
+}
+.take-at:hover .take-off,
+.take-off:focus-visible {
+  display: inline-flex;
+}
 .take.making {
   color: var(--mak);
 }

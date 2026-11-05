@@ -56,6 +56,7 @@ import type {
   Tools,
   Unpinned,
   Updating,
+  VersionMoved,
 } from "../types"
 import type { Transport } from "./transport"
 
@@ -313,6 +314,16 @@ export class Client {
   /** What deleting it answered, back under its name. */
   putAssetBack(id: string, name: string, text: string, at?: Row, once?: AbortSignal): Promise<AssetMade> {
     return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}`, { text, at }, undefined, { once })
+  }
+
+  /** One take or version off its box. Its number is kept, and its file until `reclaim`. */
+  discardVersion(id: string, name: string, number: number, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("DELETE", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, {}, undefined, { once })
+  }
+
+  /** What discarding it answered, and it's back. */
+  restoreVersion(id: string, name: string, number: number, approved: boolean, once?: AbortSignal): Promise<VersionMoved> {
+    return this.write("PUT", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { approved }, undefined, { once })
   }
 
   /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */

@@ -65,18 +65,22 @@ function Takes({ view, name, width }: { view: ElementView; name: string; width: 
       }}
     >
       {versions.map((version) => (
-        <button
-          key={version.number}
-          type="button"
-          className={`take ${shown?.number === version.number ? "on" : ""} ${view.slid === version.number ? "fresh" : ""}`}
-          aria-label={`${asset.noun} ${version.number}`}
-          title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
-          draggable={Boolean(version.main)}
-          onDragStart={(event) => takeOut(event, version)}
-          onClick={() => store.view(name, version.number === asset.version ? undefined : version.number)}
-        >
-          {version.main && !version.main.absent ? <Thumb sha256={version.main.sha256} cardWidth={width} /> : <span>{version.number}</span>}
-        </button>
+        <span key={version.number} className="take-at">
+          <button
+            type="button"
+            className={`take ${shown?.number === version.number ? "on" : ""} ${view.slid === version.number ? "fresh" : ""}`}
+            aria-label={`${asset.noun} ${version.number}`}
+            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
+            draggable={Boolean(version.main)}
+            onDragStart={(event) => takeOut(event, version)}
+            onClick={() => store.view(name, version.number === asset.version ? undefined : version.number)}
+          >
+            {version.main && !version.main.absent ? <Thumb sha256={version.main.sha256} cardWidth={width} /> : <span>{version.number}</span>}
+          </button>
+          <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
+            <Icon name="close" />
+          </button>
+        </span>
       ))}
       {(asset.making ?? []).map((run) => (
         <span key={run} className="take making" title={`Run ${run}`}>

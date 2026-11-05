@@ -98,6 +98,9 @@ function ProjectSync({ id }: { id: string }) {
     [stream, store, id],
   )
   useEffect(() => bridge.onRun((run) => store.applyRun(run)), [bridge, store])
+  useEffect(() => {
+    store.readAgain = (names) => bridge.changed(id, { assets: names, head: true })
+  }, [bridge, store, id])
   return null
 }
 
@@ -361,7 +364,10 @@ function Canvas({
         const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
         if (names.length) {
           event.preventDefault()
-          store.remove(names)
+          // One box, with one of its takes chosen: it's that take that goes.
+          const take = names.length === 1 ? store.lookingAt(names[0]) : undefined
+          if (take === undefined) store.remove(names)
+          else store.discardTake(names[0], take)
         }
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()

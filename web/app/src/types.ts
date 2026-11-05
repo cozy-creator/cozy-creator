@@ -265,6 +265,18 @@ export interface Approved {
   etag?: string
 }
 
+/** What discarding a take or version, or bringing it back, did. */
+export interface VersionMoved {
+  name: string
+  number: number
+  noun: string
+  /** It's the approved one: its approval went with it, or came back with it. */
+  approved?: boolean
+  /** What the asset stands on now, else its newest. None: it has none left. */
+  stands?: number
+  stale?: string[]
+}
+
 export interface Renamed {
   from: string
   to: string

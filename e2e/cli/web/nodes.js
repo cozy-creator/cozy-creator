@@ -532,6 +532,17 @@ function linesOf(text, name) {
     await box('Sheet').locator('button:has-text("Approve")').click();
     await until('approved again', () => of('Sheet'), (held) => held.pinned);
 
+    // One discarded: off the strip at once, Undo brings it back, and what's approved going says so and stands on the newest.
+    const strip = () => box('Sheet').locator('.take[aria-label^="version"]').count();
+    const asked = await strip();
+    await box('Sheet').locator('.take-at').first().hover();
+    await box('Sheet').locator('.take-at .take-off').first().click();
+    check('a_take_goes_at_once', (await strip()) === asked - 1, await strip());
+    await until('and from the project', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked - 1);
+    await page.locator('.note:has-text("Discarded") button:has-text("Undo")').first().click();
+    await until('it came back', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked);
+    check('a_take_comes_back', (await strip()) === asked, await strip());
+
     // One dragged out: its own asset, the same file, what it says it is, and no new bytes.
     await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'The sheet of two.' } }) });
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
