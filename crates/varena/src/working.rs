@@ -721,17 +721,26 @@ impl Device {
         Ok(())
     }
 
+    /// A free block, or with no room by the last reading (`full`), a cut or slab page from mapped
+    /// free pages: the fast path decides as the slow one would, so a full card's loop never polls.
     fn take(
         state: &mut State,
         bytes: usize,
         requested: usize,
         stream: u64,
         pool: Option<PoolId>,
+        full: impl FnOnce() -> bool,
     ) -> Option<u64> {
         if let Some(ptr) = Self::take_class(state, bytes, requested, stream, pool) {
             return Some(ptr);
         }
-        if pool.is_some() || bytes <= LARGE || checks::on(checks::GUARDS) {
+        if pool.is_some() || checks::on(checks::GUARDS) {
+            return None;
+        }
+        if full() {
+            return Self::reuse(state, bytes, requested, stream);
+        }
+        if bytes <= LARGE {
             return None;
         }
         Self::split_run(state, bytes, stream, false)?;
@@ -785,9 +794,6 @@ impl Device {
     /// slab page of another class, else a cut from any free run. A cut holds only the handles it
     /// touches, and rejoins its run when freed.
     fn reuse(state: &mut State, class: usize, requested: usize, stream: u64) -> Option<u64> {
-        if checks::on(checks::GUARDS) {
-            return None;
-        }
         if Self::split_run(state, class, stream, true).is_none() {
             if class > LARGE {
                 return None;
@@ -1425,6 +1431,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
     }
     if bytes == 0 { return Ok(0); }
     let class = size_class(bytes, owner.page())?;
+    let exact = if class <= LARGE { owner.page() } else { class };
     let mut pool = pool;
     let workspace;
     {
@@ -1451,7 +1458,7 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
                 ));
             }
         }
-        if let Some(ptr) = Device::take(&mut state, class, bytes, stream, pool) {
+        if let Some(ptr) = Device::take(&mut state, class, bytes, stream, pool, || owner.over(exact) != 0) {
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
             return Ok(Device::activate(&mut state, ptr, bytes));
         }
@@ -1467,7 +1474,6 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
             });
         }
     }
-    let exact = if class <= LARGE { owner.page() } else { class };
     let segment = rounded(class.max(SEGMENT), owner.page())?;
     let result = reclaim::acquire(device, exact, Wait::Yes, Protect { reuse_working: true, ..Default::default() }, || {
         let gate = crate::gate(device)?;
@@ -1478,20 +1484,15 @@ fn alloc_inner(device: i32, bytes: usize, stream: u64, pool: Option<PoolId>, bou
         let result = (|| -> crate::AllocationResult<u64> {
             owner.poll(&mut state)?;
             owner.note_held();
-            let ptr = match Device::take(&mut state, class, bytes, stream, None) {
+            // The room as last read: a map reads the driver again, and so does reclaim.
+            let ptr = match Device::take(&mut state, class, bytes, stream, None, || owner.over(exact) != 0) {
                 Some(ptr) => ptr,
                 None => {
-                    // The room as last read: a map reads the driver again, and so does reclaim.
-                    match (owner.over(exact) != 0).then(|| Device::reuse(&mut state, class, bytes, stream)).flatten() {
-                        Some(ptr) => ptr,
-                        None => {
-                            // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
-                            let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
-                            let mapped = if whole { segment } else { exact };
-                            owner.map(&mut state, mapped, None, class)?;
-                            Device::take(&mut state, class, bytes, stream, None).expect("new slab has a block")
-                        }
-                    }
+                    // Room to spare takes a whole segment, so blocks share pages. No weight goes for it.
+                    let whole = class > LARGE && owner.headroom() >= segment && !checks::on(checks::GUARDS);
+                    let mapped = if whole { segment } else { exact };
+                    owner.map(&mut state, mapped, None, class)?;
+                    Device::take(&mut state, class, bytes, stream, None, || false).expect("new slab has a block")
                 }
             };
             state.blocks.get_mut(&ptr).expect("taken block").workspace = workspace;
