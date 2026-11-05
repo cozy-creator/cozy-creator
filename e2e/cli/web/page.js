@@ -97,6 +97,8 @@ async function closeBox(page) {
 async function openBox(page, name) {
   if (await page.locator(`.open-box .card[data-asset="${name}"]`).count()) return;
   await closeBox(page);
+  // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
   const { x, y, width, height } = await page.locator(`.react-flow__node .card[data-asset="${name}"] .media`).first().boundingBox();
   await page.mouse.click(x + width / 2, y + height / 2);
   await page.locator(`.open-box .card[data-asset="${name}"]`).waitFor();
@@ -162,9 +164,12 @@ const boxLog = (page) => page.evaluate(() => ({
 const launch = (playwright) => (process.env.ENGINE ? playwright[process.env.ENGINE].launch({ headless: true }) : playwright.chromium.launch({ executablePath: process.env.CHROME, headless: true }));
 
 async function lastLook() {
-  if (!looking || !process.env.SHOT) return;
-  await looking.screenshot({ path: `${process.env.SHOT}-died.png`, timeout: 10_000 }).catch(() => {});
-  const told = boxLog(looking).then((said) => writeFileSync(`${process.env.SHOT}-died.json`, JSON.stringify(said, null, 2))).catch(() => {});
+  if (!looking || !process.env.LAST_LOOK) return;
+  await looking.screenshot({ path: `${process.env.LAST_LOOK}-died.png`, timeout: 10_000 }).catch(() => {});
+  const told = boxLog(looking).then(async (said) => {
+    const clicks = await looking.evaluate(() => window.clicks?.slice(-12));
+    writeFileSync(`${process.env.LAST_LOOK}-died.json`, JSON.stringify({ url: looking.url(), clicks, ...said }, null, 2));
+  }).catch(() => {});
   await Promise.race([told, new Promise((done) => setTimeout(done, 10_000))]);
 }
 

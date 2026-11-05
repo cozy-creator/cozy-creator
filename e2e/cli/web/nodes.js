@@ -724,7 +724,7 @@ function linesOf(text, name) {
     await open('Clip');
     const clipFile = linesOf(yaml(), 'Clip');
     await more('Clip');
-    await box('Clip').locator('.from-here .keeps').fill('0.5');
+    await box('Clip').locator('.from-here .keeps').fill('12');
     await box('Clip').locator('button:has-text("New take from here")').click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).versions.at(-1).files.given.path;

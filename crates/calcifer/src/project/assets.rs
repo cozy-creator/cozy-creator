@@ -57,8 +57,8 @@ pub(super) async fn create(
     }
     let plain = (!text_asset).then(|| format::plain_tool(&asked.tool, folder));
     let said = asked.kind.as_ref().filter(|kind| format::KINDS.contains(&kind.as_str())).cloned().or_else(|| (asked.tool == tool::EDIT).then(|| tool::edit().kind));
-    let held = plain.as_ref().is_some_and(|plain| folder.lock().is_ok_and(|lock| lock.makes.contains_key(plain)));
-    let unsaid = said.is_none() && !held;
+    // Said, this reads no lock: the whole lock is most of what a POST costs in a big project.
+    let unsaid = said.is_none() && !plain.as_ref().is_some_and(|plain| folder.lock().is_ok_and(|lock| lock.makes.contains_key(plain)));
     let read = if plain.is_some() && (unsaid || asked.name.is_none()) {
         match crate::toolbox::read(&api, &asked.tool, &folder.dir).await {
             Ok(read) => Some(read),

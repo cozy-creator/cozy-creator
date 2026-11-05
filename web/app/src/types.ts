@@ -1028,6 +1028,8 @@ export interface Tool {
   ui?: string
   /** A new take can keep the start of one of its. */
   takes?: boolean
+  /** Where a new take can start, in whole frames of the video: `offset + k * every`, from `first` up. None: any frame. */
+  cuts?: { every: number; offset: number; first: number }
 }
 
 /** Where a tool's component is, for `import()`. */

@@ -1,6 +1,7 @@
 import type { NodeProps } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type DragEvent, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useRef, useState } from "react"
+import type { Tool } from "../types"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { AssetEdit, Conflict, InFrame, RenderButton, TextAsset } from "./AssetEdit"
@@ -118,36 +119,48 @@ function Approve({ view, name }: { view: ElementView; name: string }) {
   )
 }
 
-/** A frame, for stepping. */
-const FRAME_S = 1 / 24
+/** A take's frames a second. */
+const FPS = 24
 
-/** On a take of what can go on from one: scrub to a point, a frame at a time, and a new take holds all before it and carries on from there. Its words stay as they are. */
+const frameCode = (frame: number) => `${clock((frame / FPS) * 1000)}.${String(frame % FPS).padStart(2, "0")}`
+
+/** The frame a new take really starts from, asked for `frame` of a take of `last` frames, as its tool declares. Null: not this early. */
+function cutAt(frame: number, last: number, cuts: Tool["cuts"]): number | null {
+  if (!cuts) return Math.min(frame, last)
+  if (frame < cuts.first) return null
+  return Math.min(last, cuts.offset + Math.round((frame - cuts.offset) / cuts.every) * cuts.every)
+}
+
+/** On a take of what can go on from one: scrub to a point, a frame at a time, and a new take holds all before where it can really cut and carries on from there. Its words stay as they are. */
 function FromHere({ view, name }: { view: ElementView; name: string }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const shown = shownOf(view)
-  if (!makes(view) || !tools.get(view.asset?.tool ?? "")?.takes || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
-  const whole = shown.duration_ms / 1000
-  const at = Math.min(whole, view.scrub ?? 0)
+  const tool = tools.get(view.asset?.tool ?? "")
+  if (!makes(view) || !tool?.takes || shown?.field !== "video" || shown.number === undefined || !shown.duration_ms) return null
+  const last = Math.round((shown.duration_ms / 1000) * FPS)
+  const frame = Math.min(last, Math.round((view.scrub ?? 0) * FPS))
+  const cut = cutAt(frame, last, tool.cuts)
   const go = (to: number) => {
-    const held = Math.max(0, Math.min(whole, to))
+    const held = Math.max(0, Math.min(last, to)) / FPS
     store.patch(name, { scrub: held })
     store.seek(name, held)
   }
+  const says = cut === null ? `From ${frameCode(tool.cuts?.first ?? 0)} on` : tool.cuts && cut !== frame ? `Cuts at ${frameCode(cut)}` : ""
   return (
-    <div className="from-here" style={{ "--kept": `${(at / whole) * 100}%` } as CSSProperties}>
-      <input className="nodrag nopan keeps" type="range" aria-label="Where to keep it up to" min={0} max={whole} step={FRAME_S} value={at} onChange={(event) => go(Number(event.target.value))} />
+    <div className="from-here" style={{ "--kept": `${((cut ?? 0) / last) * 100}%` } as CSSProperties}>
+      <input className="nodrag nopan keeps" type="range" aria-label="Where to keep it up to" min={0} max={last} step={1} value={frame} onChange={(event) => go(Number(event.target.value))} />
       <div className="row">
-        <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={at <= 0} onClick={() => go(at - FRAME_S)}>
+        <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={frame <= 0} onClick={() => go(frame - 1)}>
           ‹
         </button>
-        <span className="tc-inline">{clock(at * 1000)}.{String(Math.round((at % 1) / FRAME_S)).padStart(2, "0")}</span>
-        <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={at >= whole} onClick={() => go(at + FRAME_S)}>
+        <span className="tc-inline">{frameCode(frame)}</span>
+        <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={frame >= last} onClick={() => go(frame + 1)}>
           ›
         </button>
-        <span className="muted" title="It carries on from a whole join, so this cuts at the nearest one">Nearest join</span>
+        {says && <span className="muted cut-says">{says}</span>}
         <span className="sp" />
-        <button type="button" className="run nodrag" disabled={at <= 0} title={`Keep up to about ${clock(at * 1000)} and make the rest again`} onClick={() => store.run(name, { take: shown.number, in_s: at })}>
+        <button type="button" className="run nodrag" disabled={!cut} title={cut ? `Keep up to ${frameCode(cut)} and make the rest again` : undefined} onClick={() => cut && store.run(name, { take: shown.number, in_s: cut / FPS })}>
           New take from here
         </button>
       </div>

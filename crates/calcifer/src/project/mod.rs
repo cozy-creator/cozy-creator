@@ -1415,6 +1415,9 @@ async fn rename(
     }
     drop(walking);
     canvas::moved(folder, &id, &from, &to).map_err(Refusal)?;
+    if !queued && doc.tool(i) == Some(Tool::Cut) {
+        film_renamed(folder, &from, &to);
+    }
     Ok(Json(Renamed { from, to, versions, queued }))
 }
 
@@ -1451,6 +1454,19 @@ fn restamps(folder: &Folder, doc: &Doc, lock: &Lock, from: &str, to: &str) -> Ve
         (old != new).then(|| Restamp { key: name_key(name), was: old, is: new, stood })
     };
     (0..doc.assets.len()).filter_map(moved).collect()
+}
+
+/// A cut's film and timeline at the root go by its new name. A file already there under it is someone's, and stays: the next walk sets it aside.
+fn film_renamed(folder: &Folder, from: &str, to: &str) {
+    let (from, to) = (folder.dir.join(cut_name(from)), folder.dir.join(cut_name(to)));
+    for (from, to) in [(from.with_extension("otio"), to.with_extension("otio")), (from, to)] {
+        if !to.exists()
+            && let Err(error) = std::fs::rename(&from, &to)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!("{}: {error}", from.display());
+        }
+    }
 }
 
 /// project.lock with asset `from` called `to`: its row, what is pending or owed of it, and what a cut's versions say of it.
@@ -3286,7 +3302,12 @@ impl Walk {
                     // A render of it since made versions of its own: nothing overwrites those.
                     match lock.asset(&to).is_some_and(|held| held.on_record().next().is_some()) {
                         true => self.say(Event::Warning { message: format!("{from} stays {from}: {to} has versions of its own now"), name: None }),
-                        false => renamed(lock, &from, &to),
+                        false => {
+                            renamed(lock, &from, &to);
+                            if lock.asset(&to).is_some_and(|held| held.versions.iter().any(|version| !version.clips.is_empty())) {
+                                film_renamed(self.folder(), &from, &to);
+                            }
+                        }
                     }
                 }
             })?;

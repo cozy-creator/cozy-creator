@@ -362,6 +362,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       check('not_installed_does_not_load', before.status === 404 && before.body.error.code === 'tool_ui_not_installed', before);
       // Browse: a package of the Hub, on your list with nothing installed, there after a reload, and off it again. A box of it goes on.
       const listRow = page.locator(`.tools [data-tool="${released}"]`);
+      await away();
       await page.locator('.tools button:has-text("Browse")').click();
       const found = page.locator('.browse .browsed', { hasText: name });
       await found.waitFor();
@@ -384,6 +385,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       const unheldStill = await toolUi(released);
       check('adding_installs_nothing', unheldStill.status === 404 && unheldStill.body.error.code === 'tool_ui_not_installed' && !hub.asked.some((line) => line.includes('/download') || line.includes('/wheels/')), { unheldStill, asked: hub.asked });
       await shot('your-list');
+      await away();
       await listRow.hover();
       await listRow.locator('.tool-off').click();
       await listRow.waitFor({ state: 'detached' });

@@ -8,7 +8,7 @@
 const { chromium } = require(process.env.PLAYWRIGHT);
 const { execFile, execFileSync } = require('child_process');
 const { createHash } = require('crypto');
-const { appendFileSync, copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
+const { appendFileSync, closeSync, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
 const { STEP_MS, lastLook, lookAt, png, noStall, until } = require('./page');
@@ -25,6 +25,8 @@ function check(name, ok, detail) {
 
 const ASSETS = 5000;
 const HOLE = { col: 3, row: 1 };
+const PAN_MS = 3000;
+const REST_MS = 2000;
 const PICTURES = 1000;
 const COZY = process.env.COZY;
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
@@ -44,6 +46,8 @@ const BARS = {
   // nothing. Frames aren't the bar: a runner draws with no GPU, and macOS's frames run 33 to 133 ms on a project of ten boxes. They're shown.
   pan_work_times_small: 1.5,
   pan_work_slack_ms: 2,
+  // ms of the page's thread each second with nothing happening: a twentieth, until Linux and Windows have said what it is.
+  rest_ms_per_s: 50,
   fit_all_s: 10,
   calcifer_mb: 1024,
   // With ten asks owed, each read works out each one's text, which `rc/frieren` keeps apart from the lock: what a queue costs here, until that lands.
@@ -120,6 +124,41 @@ const within = (what, waiting, ms = STEP_MS) => Promise.race([waiting, new Promi
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
   renameSync(`${at}.part`, at);
+}
+
+/** What a plain flush costs on the disk under `dir`, the middle of 20: 4 KB, and as many bytes as `like`. Nothing of cozy's is in it. */
+function flushed(dir, like) {
+  const at = join(dir, '.flush-probe');
+  const flush = (bytes) => {
+    const took = [];
+    for (let i = 0; i < 20; i++) {
+      const held = openSync(at, 'w');
+      writeSync(held, Buffer.alloc(bytes, i));
+      const began = performance.now();
+      fsyncSync(held);
+      took.push(performance.now() - began);
+      closeSync(held);
+    }
+    rmSync(at);
+    return summary(took).median_ms;
+  };
+  // As `durable::replace` goes: written beside it, flushed, renamed over it.
+  const replace = (bytes) => {
+    const took = [];
+    for (let i = 0; i < 20; i++) {
+      const began = performance.now();
+      const held = openSync(`${at}.part`, 'w');
+      writeSync(held, Buffer.alloc(bytes, i));
+      fsyncSync(held);
+      closeSync(held);
+      renameSync(`${at}.part`, at);
+      took.push(performance.now() - began);
+    }
+    rmSync(at);
+    return summary(took).median_ms;
+  };
+  const yaml_bytes = statSync(like).size;
+  return { flush_4k_ms: flush(4096), flush_yaml_ms: flush(yaml_bytes), replace_yaml_ms: replace(yaml_bytes), yaml_bytes };
 }
 
 function summary(frames) {
@@ -280,15 +319,43 @@ function calciferMb() {
   }), Boolean, 120_000);
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
-  /** How long the page's own thread has been busy, in ms. What the compositor and a software rasterizer take isn't in this. */
-  const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find(({ name }) => name === 'TaskDuration').value * 1000;
+  /** How long the page's own thread has been busy, in ms, in all and at each kind of work. What the compositor and a software rasterizer take isn't in this. */
+  const worked = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(({ name, value }) => [name, value * 1000]));
+  const busy = async () => (await worked()).TaskDuration;
+  /** What the page's thread spends `ms` on, by function: what's asked of it isn't, as nothing is. */
+  const profiled = async (ms) => {
+    await cdp.send('Profiler.enable');
+    await cdp.send('Profiler.start');
+    await page.waitForTimeout(ms);
+    const { profile } = await cdp.send('Profiler.stop');
+    const spent = new Map();
+    for (const [i, id] of profile.samples.entries()) spent.set(id, (spent.get(id) ?? 0) + profile.timeDeltas[i]);
+    const named = profile.nodes.map(({ id, callFrame: { functionName, url, lineNumber } }) => ({ what: `${functionName || '(anonymous)'} ${url.split('/').at(-1)}:${lineNumber}`, ms: Math.round((spent.get(id) ?? 0) / 1000) }));
+    return named.filter(({ what, ms: took }) => took > 0 && !what.startsWith('(idle)')).sort((a, b) => b.ms - a.ms).slice(0, 10);
+  };
   const measuredPan = async () => {
     await drawn();
     const still = summary(await page.evaluate(() => window.takeFrames(1000)));
+    // Left alone, no frame asked for and nothing moved, as a canvas is on a laptop with no one at it.
+    const before = await worked();
+    await page.waitForTimeout(REST_MS);
+    const after = await worked();
+    const perSecond = (name) => +(((after[name] - before[name]) / REST_MS) * 1000).toFixed(1);
+    const rest_ms_per_s = perSecond('TaskDuration');
     const from = await busy();
-    const moving = summary(await panning(3000));
-    const work_ms_per_frame = +(((await busy()) - from) / moving.frames).toFixed(2);
-    return { still, moving, work_ms_per_frame, mounted: await page.locator('.react-flow__node').count() };
+    const moving = summary(await panning(PAN_MS));
+    const panned = (await busy()) - from;
+    // What goes on at rest goes on through a pan, and isn't the pan's: `work_ms_per_frame` is all of it, `added_ms_per_frame` what panning adds.
+    const added = Math.max(0, panned - rest_ms_per_s * (PAN_MS / 1000));
+    return {
+      still,
+      moving,
+      rest_ms_per_s,
+      rest_kinds: { script: perSecond('ScriptDuration'), layout: perSecond('LayoutDuration'), style: perSecond('RecalcStyleDuration') },
+      work_ms_per_frame: +(panned / moving.frames).toFixed(2),
+      added_ms_per_frame: +(added / moving.frames).toFixed(2),
+      mounted: await page.locator('.react-flow__node').count(),
+    };
   };
 
   // The same pan of a small project, for what this runner draws whatever a project holds.
@@ -313,8 +380,12 @@ function calciferMb() {
   memory.open = calciferMb();
   numbers.mounted_boxes = await page.locator('.react-flow__node').count();
   numbers.pan_big = await measuredPan();
-  const allowed = numbers.pan_small.work_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
-  check('size_adds_nothing_to_a_pan', numbers.pan_big.work_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  const allowed = numbers.pan_small.added_ms_per_frame * BARS.pan_work_times_small + BARS.pan_work_slack_ms;
+  check('size_adds_nothing_to_a_pan', numbers.pan_big.added_ms_per_frame <= allowed, { allowed, small: numbers.pan_small, big: numbers.pan_big });
+  // Over the bar it says what's spending it, then and there.
+  const quiet = numbers.pan_big.rest_ms_per_s <= BARS.rest_ms_per_s;
+  if (!quiet) numbers.rest_profile = await profiled(REST_MS);
+  check('a_page_at_rest_is_quiet', quiet, { bar: BARS.rest_ms_per_s, big: numbers.pan_big.rest_ms_per_s, kinds: numbers.pan_big.rest_kinds, small: numbers.pan_small.rest_ms_per_s, profile: numbers.rest_profile });
   numbers.page_heap_open_mb = await page.evaluate(() => Math.round(performance.memory.usedJSHeapSize / 1048576));
   numbers.whole_read_mb = +(reads.whole_bytes / 1048576).toFixed(1);
   await shot('open');
@@ -402,7 +473,8 @@ function calciferMb() {
   for (const [i, name] of made.entries()) await write(writes.move, '/canvas', 'PATCH', { cards: { [name]: { x: -9000 - i * 800, y: -12000 } } });
   for (const name of made) await write(writes.delete, `/assets/${name}`, 'DELETE', {});
   numbers.write_ms = Object.fromEntries(Object.entries(writes).map(([what, took]) => [what, summary(took).median_ms]));
-  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), numbers.write_ms);
+  numbers.write_disk = flushed(folder, join(folder, 'project.yaml'));
+  check('a_write_is_under_the_bar', Object.values(numbers.write_ms).every((ms) => ms <= BARS.write_ms), { bar: BARS.write_ms, ...numbers.write_ms, ...numbers.write_disk });
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
   // A render from the CLI, on the fixture tool, landing on the open canvas.

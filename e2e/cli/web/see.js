@@ -312,8 +312,13 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
   await held();
-  await until('over Range with ?media=', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && answer.media));
-  check('plays_by_range_and_media', true);
+  // WebKit on a Mac loads a video through AVFoundation, where Playwright hears nothing: that it's loaded, off ?media=, is what shows there.
+  if (process.env.ENGINE === 'webkit') {
+    check('plays_by_range_and_media', (await page.locator('video').first().evaluate((video) => video.currentSrc)).includes('media='));
+  } else {
+    await until('over Range with ?media=', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && answer.media));
+    check('plays_by_range_and_media', true);
+  }
   await open(page, 'clip_b');
   await element(page, 'clip_b').locator('.play').click();
   await until('two videos', () => page.locator('video').count(), (n) => n === 2);
