@@ -613,10 +613,10 @@ impl Device {
         self.page.load(Ordering::Acquire)
     }
 
-    /// Weights held for use now, kept as this request's high-water mark, which is returned.
-    pub(super) fn note_held(&self) -> usize {
+    /// Weights held for use now, and this request's high-water mark of them.
+    pub(super) fn note_held(&self) -> (usize, usize) {
         let held = self.held.load(Ordering::Acquire);
-        self.held_peak.fetch_max(held, Ordering::AcqRel).max(held)
+        (held, self.held_peak.fetch_max(held, Ordering::AcqRel).max(held))
     }
 
     /// Parked workspaces on this stream become ordinary free blocks, once it has passed them.

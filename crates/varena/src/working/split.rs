@@ -450,8 +450,11 @@ fn snapshot(device: i32, owner: &Device, key: &str, stream: u64) -> Result<Menu>
     owner.sample()?;
     let (free, total) = owner.driver().memory_info()?;
     let plans = fits(owner, &state, key, stream, free, generation, phase.as_ref())?;
-    // The most any op has held this request, since this op's own weights may not be held yet.
-    let held = owner.note_held();
+    // The most any op has held this request, since this op's own weights may not be held yet; but
+    // an op holds only its phase's weights, so an earlier phase's high-water isn't this one's: SDXL's
+    // UNet peak squeezed its VAE decode at 6 GiB into 64 bands (run 32599).
+    let (now, peak) = owner.note_held();
+    let held = phase.as_ref().map_or(peak, |phase| now.max(peak.min(phase.bytes)));
     Ok(Menu { plans, capacity: total.min(owner.capacity()), live: live_working(&state) + held })
 }
 
