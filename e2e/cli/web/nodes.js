@@ -571,6 +571,7 @@ function linesOf(text, name) {
     await shot('versions');
 
     // Something else to go on while one fails.
+    await away();
     await dropBox('Other', 1100, 600);
     await render('Other', 1);
 
