@@ -35,5 +35,6 @@ def hold(payload: Hold) -> Held:
     taken = [before - torch.cuda.mem_get_info(gpu)[0] for gpu, before in zip(gpus, free)]
     time.sleep(payload.seconds)
     want = int(payload.gib * (1 << 30))
-    passed = len(gpus) >= 2 and all(mean == 2 for mean in means) and all(bytes >= want for bytes in taken)
+    # What it holds, not what the driver lost: a process kept from before serves it from its own idle pages.
+    passed = len(gpus) >= 2 and all(mean == 2 for mean in means) and all(bytes >= want for bytes in allocated)
     return Held(passed, json.dumps({"pid": os.getpid(), "means": means, "allocated": allocated, "taken": taken}))
