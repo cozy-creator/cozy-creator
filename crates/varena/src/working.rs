@@ -129,6 +129,7 @@ pub struct WorkingStats {
     pub reclaim_ns: u64,
     pub reclaim_longest_ns: u64,
     pub reclaim_longest_step: u64,
+    pub reclaim_step_ns: [u64; 9],
     pub event_queries: u64,
     pub event_records: u64,
     pub event_waits: u64,
@@ -2165,6 +2166,7 @@ pub fn stats(device: i32) -> Result<WorkingStats> {
         stats.reclaim_longest_ns,
         stats.reclaim_longest_step,
     ) = owner.driver().times();
+    stats.reclaim_step_ns = owner.driver().reclaim_steps();
     Ok(stats)
 }
 

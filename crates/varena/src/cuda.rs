@@ -81,6 +81,7 @@ pub(crate) struct Counters {
     pub(crate) reclaim_ns: AtomicU64,
     pub(crate) reclaim_longest_ns: AtomicU64,
     pub(crate) reclaim_longest_step: AtomicU64,
+    pub(crate) reclaim_step_ns: [AtomicU64; 9],
 }
 
 /// Exact partial HOST VMM ownership. There is deliberately no Drop cleanup: the
@@ -296,9 +297,15 @@ impl Driver {
     pub(crate) fn note_reclaim(&self, step: usize, elapsed: Duration) {
         let ns = elapsed.as_nanos() as u64;
         self.counters.reclaim_ns.fetch_add(ns, Ordering::Relaxed);
+        self.counters.reclaim_step_ns[step].fetch_add(ns, Ordering::Relaxed);
         if self.counters.reclaim_longest_ns.fetch_max(ns, Ordering::Relaxed) < ns {
             self.counters.reclaim_longest_step.store(step as u64, Ordering::Relaxed);
         }
+    }
+
+    /// Reclaim time by step, in ORDER.
+    pub(crate) fn reclaim_steps(&self) -> [u64; 9] {
+        std::array::from_fn(|step| self.counters.reclaim_step_ns[step].load(Ordering::Relaxed))
     }
 
     /// Driver memory call time and longest; reclaim time, longest and that step's place in ORDER.
