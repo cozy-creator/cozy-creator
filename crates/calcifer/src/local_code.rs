@@ -873,7 +873,8 @@ pub async fn prepare(
         machine,
         install,
     };
-    let key = format!("{key}/install");
+    // By its manifest: code that changes during an install is another install, not that one's answer.
+    let key = format!("{key}/install/{}", code.source.manifest);
     if sent(api, &key)?.is_none()
         && let Some(interface) = runtime.as_deref().filter(|_| !warm).and_then(|runtime| kept(&home, &code, runtime))
     {
