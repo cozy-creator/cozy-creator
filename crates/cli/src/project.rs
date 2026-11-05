@@ -10,7 +10,7 @@ use protocol::{
     calcifer::{On, local_usable},
     error::{Error, Kind},
     hub::At,
-    project::{Approve, Approved, Asked, Cancel, Cancelled, Card, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned},
+    project::{Approve, Approved, Asked, Cancel, Cancelled, Event, Import, Imported, Open, Opened, Projects, Reclaim, Reclaimed, Rename, Renamed, Runs, Standing, State, Transferred, Unpin, Unpinned},
 };
 
 use crate::{
@@ -25,11 +25,9 @@ const EXAMPLES: &str = "Examples:
   cozy project new garden
   cozy project open garden                     in your browser
   cd garden && cozy project import ./kyogre.png   adds it to project.yaml as kyogre, which <kyogre> reads in any text
-  cozy project tools                           what can make an asset, and each one's fields
   cozy project add qwen-image-2/generate_turbo whale instructions='A whale.'   as dropping that tool on the canvas
-  cozy project set whale megapixels=1          as its box's controls; --input takes a file of them
+  cozy project set whale megapixels=1 at=400,120   as its box's controls; --input takes a file of them
   cozy project delete whale                    prints the command that puts it back
-  cozy project canvas whale 400 120            where it sits, as dragging it
   cozy project render all --on kiyui
   cozy project render fight -n 3 --on kiyui    three more takes of fight
   cozy project approve fight 2                 fight holds that file, as its `approved` in project.yaml
@@ -109,15 +107,6 @@ enum Verb {
         #[arg(value_name = "KEPT")]
         kept: String,
     },
-    Canvas(assets::CanvasArgs),
-    Caption(assets::Caption),
-    Tools(assets::ToolsArgs),
-    /// One asset: its fields, the etag `set --if-match` takes, and each take or version.
-    #[command(after_help = "Examples:\n  cozy project show fight\n  cozy project show fight --json")]
-    Show {
-        /// The asset.
-        name: String,
-    },
     Render(Render),
     /// Approve a take or version: its hash goes on the asset's line in project.yaml.
     #[command(after_help = "Examples:\n  cozy project approve fight 2\n  cozy project approve kyogre 65b436d4f9a3   any file of the project's, by hash\n\nIt writes `video: <hash>` (or `image:`) into fight in project.yaml, changing nothing else. `cozy project unapprove fight` removes it.")]
@@ -140,9 +129,12 @@ enum Verb {
         /// The asset.
         name: String,
     },
-    /// What has no state and why, and each asset's file.
-    #[command(after_help = "Example:\n  cozy project status")]
-    Status,
+    /// What has no state and why, and each asset's file; with a name, that asset's fields and each take or version.
+    #[command(after_help = "Examples:\n  cozy project status\n  cozy project status fight")]
+    Status {
+        /// One asset.
+        name: Option<String>,
+    },
     /// Keep an asset's versions after renaming it in project.yaml.
     #[command(after_help = "Example:\n  cozy project rename theo mara   (status suggests it after a rename)")]
     Rename {
@@ -191,9 +183,6 @@ struct ImportFile {
     /// The words for whatever mentions it.
     #[arg(long)]
     description: Option<String>,
-    /// Where it sits on the canvas, and how wide. Default: the page puts it somewhere free.
-    #[arg(long, value_name = "X,Y[,W]", value_parser = assets::card, allow_hyphen_values = true)]
-    at: Option<Card>,
 }
 
 /// For each asset named and what it reads, if it has no state, run its operation. Nothing else runs.
@@ -276,10 +265,6 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Verb::Set(set) => return assets::set(ctx, args.path.as_ref(), set).await,
         Verb::Delete { names } => return assets::delete(ctx, args.path.as_ref(), names).await,
         Verb::Restore { name, kept } => return assets::restore(ctx, args.path.as_ref(), name, kept).await,
-        Verb::Canvas(canvas) => return assets::canvas(ctx, args.path.as_ref(), canvas).await,
-        Verb::Caption(caption) => return assets::caption(ctx, args.path.as_ref(), caption).await,
-        Verb::Tools(tools) => return assets::tools(ctx, args.path.as_ref(), tools).await,
-        Verb::Show { name } => return assets::show(ctx, args.path.as_ref(), name).await,
         Verb::Render(render) => return self::render(ctx, args.path.as_ref(), render).await,
         Verb::Approve { name, version } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
@@ -349,7 +334,8 @@ pub async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             }
             output::nexts(ctx, &reclaimed.next);
         }
-        Verb::Status => return status(ctx, args.path.as_ref()).await,
+        Verb::Status { name: Some(name) } => return assets::one(ctx, args.path.as_ref(), name).await,
+        Verb::Status { name: None } => return status(ctx, args.path.as_ref()).await,
         Verb::Rename { from, to } => {
             let opened = open(ctx, args.path.as_ref(), false).await?;
             let path = format!("/v1/projects/{}/rename", opened.id);
@@ -429,7 +415,7 @@ async fn import(ctx: &Context, at: Option<&PathBuf>, args: ImportFile) -> Result
     };
     let path = format!("/v1/projects/{}/imports", opened.id);
     let exact = args.name.is_some();
-    let ask = Import { source, name: args.name, at: args.at, description: args.description, exact };
+    let ask = Import { source, name: args.name, at: None, description: args.description, exact };
     let imported: Imported = calcifer.post(&path, &ask, Some(&mint_key())).await?;
     if ctx.json {
         output::json(&imported);

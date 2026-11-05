@@ -102,6 +102,8 @@ function plate(path, color, seconds, hz) {
   await away();
   await until('an Edit at rest', () => card('Edit').locator('.tl').count(), (n) => n === 0);
   check('at_rest_says_what_it_is_for', (await card('Edit').locator('.media-note').textContent()) === 'Drag videos and stills here');
+  // A box that just arrived is still landing, a little bigger than it rests.
+  await until('it has landed', () => page.locator('.card.landing').count(), (n) => n === 0);
   const atRest = await card('Edit').locator('.media').boundingBox();
   await openEdit();
   const onHover = await card('Edit').locator('.tl').boundingBox();

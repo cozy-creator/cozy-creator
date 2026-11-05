@@ -75,16 +75,17 @@ if [ "$REHEARSE" = true ]; then
   memory local rehearsal || fail "the memory probe's rehearsal"
   J '.control_own_memory.proc_mem.is_elf_header and .control_own_memory.process_vm_readv.is_elf_header' "$OUT/memory-executor-rehearsal.json" || fail "the probe can't read even its own memory, so a no would prove nothing"
   speed local rehearsal || fail "the browsers' rehearsal"
-  J '.chromium | (.opens.n == 5) and (.bulk.sha256_matches == true) and (.smalls.n == 100) and (.under_load.small.n > 0) and (.drop_reset.sha256_matches == true)' "$OUT/webrtc-rehearsal.json" || fail "the harness doesn't work in Chromium here: $(jq -c '.chromium' "$OUT/webrtc-rehearsal.json" | head -c 800)"
+  J '.chromium | (.opens.n == 5) and (.bulk.sha256_matches == true) and (.smalls.n == 100) and (.under_load.small.n > 0) and (.drop_reset.sha256_matches == true) and (.drop_blip_3s.error == null) and (.drop_blackhole.error == null)' "$OUT/webrtc-rehearsal.json" || fail "the harness doesn't work in Chromium here: $(jq -c '.chromium' "$OUT/webrtc-rehearsal.json" | head -c 800)"
   [ "$RC" = 0 ] || fail "the rehearsal failed: no rental"
   mark "rehearsal passed"
 fi
 
 # A cpu pod leaves the catalog and returns by the minute: the wait is here, before anything is ordered and where it costs nothing.
-for _ in $(seq 30); do
-  cozy machine rent "$SKU" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null 2>&1 | grep -q quote_unagreed && break
-  say "no $SKU on offer yet"
-  sleep 120
+for try in $(seq 120); do
+  cozy machine rent "$SKU" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/offer.json" 2>&1
+  grep -q quote_unagreed "$OUT/offer.json" && break
+  [ "$try" != 1 ] || say "no $SKU on offer yet"
+  sleep 30
 done
 # A boot, the update, a Runtime's first run, three browsers: under half an hour. Some 900 MB each way for a browser, and the runs' landing.
 quote 4 1800
