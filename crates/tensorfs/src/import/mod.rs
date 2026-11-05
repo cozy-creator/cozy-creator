@@ -357,7 +357,7 @@ fn land(
         progress("downloading", done, total);
         access.check()?;
         let mut landed = |bytes| {
-            if told.elapsed() >= crate::fetch::ask::TICK {
+            if told.elapsed() >= std::time::Duration::from_millis(250) {
                 told = std::time::Instant::now();
                 progress("downloading", done + bytes, total);
             }

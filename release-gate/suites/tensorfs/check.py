@@ -149,6 +149,9 @@ def check(gate):
     c = st.get('straggler-clean')
     # Each slowed arm against the clean one: stragglers (the first ask drips), cold objects (every ask drips, tfs-138),
     # crawling objects (every ask moves 64 KiB and drips, tfs-141), and many, whose parts come at full speed (tfs-143).
+    # Judged against fixed bars, whatever the downloader's range size (lead, 11-05): a range size that moved the bar or
+    # started a fresh series let 16 MiB ranges pass cold objects at 234 s and crawling ones at 263 s, against 16 s and 24 s
+    # on the downloader before (41920882049).
     for name, case, what in (('straggler-slow', 'straggler', 'stragglers'), ('straggler-cold', 'straggler-cold', 'cold objects'),
                              ('straggler-crawl', 'straggler-crawl', 'crawling objects'),
                              ('straggler-parts', 'straggler-parts', 'parts at full speed')):
