@@ -52,6 +52,9 @@ step "web-reconnect: one stream across tabs, and kill -9 of Calcifer with no rel
 local restart=''
 [ -n "${WEB_ALONE:-}" ] || restart=$(web_restart "$lock")
 web_proof reconnect "$chrome" "$pw" "$restart"
+step "web-instant: a box in the frame of its drop with its POST held, answers lost, a refusal, kill -9 mid-queue, a render whose answer is lost"
+web_proof instant "$chrome" "$pw" "$restart"
+jq -c '{drop: .seen.drop, reads: .seen.reads_after_a_drop}' "$OUT/web-instant.json" 2> /dev/null || true
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
 step "web-see: a real project as live boxes: elements, no edges, a landed take with no reload, a kept failure, 300 elements measured"

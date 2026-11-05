@@ -1,0 +1,250 @@
+// Local-first (Paul, 11-05): "frontend-state -> modified instantly; sends request to backend ... network responds, changes are confirmed". In a real
+// Chrome on a real Calcifer, with the call held by a route that stalls it. A dropped tool's box is on the canvas in the frame it was dropped, with its
+// POST held; what's typed and moved meanwhile lands after it; the box's own echo costs no read of the project and no redraw; an answer lost goes again
+// under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
+// writer's end in the conflict line; kill -9 of Calcifer mid-queue lands once; and a render whose answer is lost runs once.
+//   node instant.js <sign-in link from `cozy open --no-open`>
+// $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
+// back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
+// Prints what it saw as JSON and exits 1 if anything failed.
+const { chromium } = require(process.env.PLAYWRIGHT);
+const { exec, execFileSync } = require('child_process');
+const { existsSync, readFileSync, writeFileSync } = require('fs');
+const { join } = require('path');
+const { STEP_MS, lastLook, lookAt, pointAt, until } = require('./page');
+
+const failures = [];
+const seen = {};
+let during = 'the start';
+function check(name, ok, detail) {
+  seen[name] = ok ? true : (detail ?? false);
+  during = name;
+  if (!ok) failures.push(name);
+}
+const COZY = process.env.COZY;
+const TOOL = join(__dirname, '..', 'project', 'tool.py');
+const FIRST_RUN_MS = 300_000;
+
+/** A stand-in for a slow network: each call `match` names waits here until `release`. */
+async function hold(page, method, path) {
+  const calls = [];
+  let open;
+  const held = new Promise((done) => (open = done));
+  const route = async (held_route) => {
+    if (held_route.request().method() !== method) return held_route.fallback();
+    calls.push(held_route.request());
+    await held;
+    await held_route.fallback().catch(() => {});
+  };
+  await page.route(path, route);
+  return { calls, release: async () => { open(); await page.unroute(path, route); } };
+}
+
+/** Each call goes to Calcifer and its answer is lost, `times` times: what a dropped connection does after the write landed. */
+async function loseAnswers(page, method, path, times) {
+  const keys = [];
+  let left = times;
+  const route = async (lost) => {
+    if (lost.request().method() !== method) return lost.fallback();
+    keys.push(lost.request().headers()['idempotency-key']);
+    if (left <= 0) return lost.fallback();
+    left -= 1;
+    await lost.fetch();
+    await lost.abort('connectionreset');
+  };
+  await page.route(path, route);
+  return { keys, done: () => page.unroute(path, route) };
+}
+
+(async () => {
+  const link = process.argv[2];
+  const base = new URL(link).origin;
+  const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  context.setDefaultTimeout(STEP_MS);
+  const page = await context.newPage();
+  lookAt(page);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(link);
+  await page.waitForSelector('.top');
+  await page.goto(`${base}/#/projects`);
+  await page.fill('input[aria-label="New project\'s name"]', `web-instant-${Date.now()}`);
+  await page.click('form button[type=submit]');
+  await page.waitForURL(/#\/projects\/[^/]+$/);
+  const id = page.url().match(/#\/projects\/([^/]+)/)[1];
+  const api = (path, init = {}) => page.evaluate(async ([path, init]) => {
+    const token = JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token;
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers } });
+    return { status: answer.status, body: await answer.json().catch(() => null) };
+  }, [path, init]);
+  const folder = (await api(`/v1/projects/${id}`)).body.path;
+  seen.project = { id, folder };
+  const yaml = () => readFileSync(join(folder, 'project.yaml'), 'utf8');
+  const canvas = () => (existsSync(join(folder, 'project.canvas.yaml')) ? readFileSync(join(folder, 'project.canvas.yaml'), 'utf8') : '');
+  const cozy = (...words) => execFileSync(COZY, words, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const status = () => JSON.parse(cozy('--json', 'project', '-p', folder, 'status')).assets;
+  const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
+  const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
+  const box = (name) => page.locator(`.card[data-asset="${name}"]`);
+  const row = (label) => page.locator('.tools .tool', { has: page.locator(`b:text-is("${label}")`) }).first();
+  const stage = page.locator('.stage');
+  await page.waitForSelector('.tools .tool');
+  await page.waitForSelector('.empty-canvas');
+
+  // The drop: a real drag of the Edit, which needs no Hub, its POST stalled. What a drop shows is timed in the page, by the frame.
+  await page.evaluate(() => {
+    const clock = (window.dropped = {});
+    document.querySelector('.stage').addEventListener('drop', () => {
+      clock.drop = performance.now();
+      clock.boxes = document.querySelectorAll('.card[data-asset]').length;
+      requestAnimationFrame(() => {
+        clock.frame = performance.now();
+        clock.after = document.querySelectorAll('.card[data-asset]').length;
+      });
+    }, true);
+  });
+  const reads = [];
+  page.on('request', (request) => {
+    const { pathname, search } = new URL(request.url());
+    if (request.method() === 'GET' && pathname.startsWith(`/v1/projects/${id}`)) reads.push(`${pathname.slice(`/v1/projects/${id}`.length) || '/'}${search}`);
+  });
+  const posts = await hold(page, 'POST', '**/v1/projects/*/assets');
+  await row('Edit').dragTo(stage, { targetPosition: { x: 1100, y: 800 } });
+  await until('the frame after the drop', () => page.evaluate(() => window.dropped.frame), Boolean);
+  const dropped = await page.evaluate(() => window.dropped);
+  seen.drop = { frame_ms: dropped.frame - dropped.drop, boxes: [dropped.boxes, dropped.after] };
+  check('box_in_the_frame_of_the_drop', dropped.after === dropped.boxes + 1, seen.drop);
+  const name = await page.locator('.card.landing').first().getAttribute('data-asset');
+  check('box_named_before_any_answer', name === 'Edit' && !hasAsset(name), { name });
+  check('post_is_held', posts.calls.length <= 1, posts.calls.length);
+
+  // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
+  const head = await box(name).locator('.head').boundingBox();
+  await page.mouse.move(head.x + 100, head.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(head.x + 160, head.y + 48, { steps: 3 });
+  await page.mouse.up();
+  const place = () => box(name).evaluate((card) => getComputedStyle(card.closest('.react-flow__node')).transform);
+  const moved = await place();
+  check('nothing_saved_yet', !hasAsset(name) && !canvas().includes(`${name}:`));
+  check('no_spinner_on_it', (await box(name).locator('.status').count()) === 0, await box(name).innerText());
+  reads.length = 0;
+  await posts.release();
+  await until('it landed', () => Promise.resolve(hasAsset(name) && canvas().includes(`${name}:`)), Boolean);
+  await until('its move landed', () => Promise.resolve(/x: (\d+)/.exec(canvas().split('\n').find((line) => line.includes(`${name}:`)))?.[1]), (x) => Number(x) > 0);
+  await page.waitForTimeout(800);
+  check('own_echo_moves_nothing', (await place()) === moved, { moved, now: await place() });
+  check('own_echo_reads_no_whole_project', !reads.some((read) => read === '/' || read === '/canvas'), reads);
+  seen.reads_after_a_drop = reads.slice();
+  check('one_box', (await box(name).count()) === 1 && count(name) === 1, yaml());
+
+  // An answer lost: the same key again, and one asset.
+  const lost = await loseAnswers(page, 'POST', '**/v1/projects/*/assets', 2);
+  await row('Edit').dragTo(stage, { targetPosition: { x: 400, y: 900 } });
+  const second = `${name}_2`;
+  await box(second).waitFor();
+  await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
+  await lost.done();
+  await until('in the file', () => Promise.resolve(hasAsset(second)), Boolean);
+  await page.waitForTimeout(400);
+  check('retried_with_one_key', new Set(lost.keys).size === 1, lost.keys);
+  check('retried_makes_one', count(name) === 2 && (await page.locator(`.card[data-asset^="${name}"]`).count()) === 2, yaml());
+
+  // Another writer takes the name while this one's asked: the box takes what it got, and the other shows.
+  const stalled = await hold(page, 'POST', '**/v1/projects/*/assets');
+  await row('Edit').dragTo(stage, { targetPosition: { x: 400, y: 200 } });
+  const third = `${name}_3`;
+  await box(third).waitFor();
+  cozy('project', '-p', folder, 'add', 'cozy/edit', third);
+  await until('the other in the file', () => Promise.resolve(hasAsset(third)), Boolean);
+  await stalled.release();
+  await box(`${name}_4`).waitFor();
+  await page.waitForTimeout(600);
+  // What a writer elsewhere adds lands wherever it's free, which may be off screen.
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
+  const shown = await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
+  check('another_writers_name_renames_it', (await box(third).count()) === 1 && (await box(`${name}_4`).count()) === 1 && hasAsset(`${name}_4`), { shown, yaml: yaml() });
+
+  // Refused: Calcifer holds no such file. The box goes, one line says why, and what's behind it in line goes on.
+  const notes = () => page.locator('.notes .note .line').allInnerTexts();
+  const boxes = await page.locator('.card[data-asset]').count();
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.setData('application/x-cozy-file', JSON.stringify({ sha256: '0'.repeat(64), field: 'image', name: 'never_held' }));
+    document.querySelector('.stage').dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true, clientX: 900, clientY: 200 }));
+  });
+  await box('never_held').waitFor({ timeout: 2000 });
+  check('refused_box_shows_first', true);
+  await box('never_held').waitFor({ state: 'detached' });
+  check('refused_rolls_back', (await page.locator('.card[data-asset]').count()) === boxes && !hasAsset('never_held'));
+  const said = await until('one line', notes, (lines) => lines.some((line) => /Couldn't take out never_held/.test(line)));
+  check('refused_says_one_line', said.filter((line) => /never_held/.test(line)).length === 1, said);
+
+  // A pending edit and another writer's edit of the same field: the conflict line, and neither lost.
+  cozy('project', '-p', folder, 'add', 'text', 'words', 'text=A storm.');
+  await page.waitForTimeout(600);
+  await page.keyboard.press('f');
+  await box('words').waitFor();
+  await page.waitForTimeout(400);
+  await pointAt(page, box('words').locator('.nm'));
+  await box('words').locator('.desc-line').click();
+  const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
+  await page.keyboard.type('mine');
+  await page.mouse.click(1500, 1050);
+  await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
+  cozy('project', '-p', folder, 'set', 'words', 'description=theirs');
+  await until('theirs in the file', () => Promise.resolve(yaml().includes('description: theirs')), Boolean);
+  await page.waitForTimeout(600);
+  await patches.release();
+  await pointAt(page, box('words').locator('.nm'));
+  await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
+  check('conflict_keeps_both', yaml().includes('description: theirs') && (await box('words').locator('.mention-text').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
+  await box('words').getByRole('button', { name: 'Keep mine' }).click();
+  await until('mine in the file', () => Promise.resolve(yaml().includes('description: mine')), Boolean);
+
+  // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
+  if (process.env.RESTART) {
+    const waits = await hold(page, 'POST', '**/v1/projects/*/assets');
+    await row('Edit').dragTo(stage, { targetPosition: { x: 1100, y: 200 } });
+    const fifth = `${name}_5`;
+    await box(fifth).waitFor();
+    const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
+    await waits.release();
+    await restarted;
+    await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
+    await page.waitForTimeout(800);
+    check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && (yaml().match(new RegExp(`^  ${fifth}(_\\d+)?:`, 'gm'))?.length ?? 0) === 1 && !hasAsset(`${name}_6`), yaml());
+    check('nothing_left_saying_not_saved', !(await notes()).some((line) => /Not saved yet/.test(line)), await notes());
+  }
+
+  // A render whose answer is lost: the box says Queued at once, and however often it's asked, one run.
+  if ((await api('/v1/status')).body.local_usable && !process.env.ALONE) {
+    writeFileSync(join(folder, 'project.yaml'), `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
+    await box('fixture').waitFor();
+    await page.waitForTimeout(500);
+    await box('fixture').locator('.head').hover({ force: true });
+    const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
+    await box('fixture').locator('button[aria-label="Render"]').click();
+    await page.waitForTimeout(20);
+    check('render_says_queued_at_once', /Queued/.test((await box('fixture').locator('.status').allInnerTexts()).join(' ')), await box('fixture').innerText());
+    await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
+    await renders.done();
+    await page.waitForTimeout(1500);
+    const held = status().find((asset) => asset.name === 'fixture');
+    const runs = (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
+    check('render_key_one', renders.keys.length >= 2 && new Set(renders.keys).size === 1, renders.keys);
+    check('render_ran_once', held.versions === 1 && runs.length === 1, { versions: held.versions, runs: runs.length });
+  }
+
+  check('no_page_errors', errors.length === 0, errors);
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  await browser.close();
+  process.exit(failures.length ? 1 : 0);
+})().catch(async (error) => {
+  console.error(`during ${during}:`, error);
+  await lastLook();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(2);
+});
