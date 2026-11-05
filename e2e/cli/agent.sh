@@ -7,11 +7,13 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 J() { jq -e "$@" > /dev/null; }
 
 # Bytes each view may print on this fixture (about 3 to a token).
-declare -A BUDGET=(
-  [home]=650 [home-out]=550 [project-status]=650 [project-empty]=100 [machine-ls]=300 [run-ls]=600 [run-ls-empty]=100
-  [run-show]=300 [run-show-failed]=1500 [json-home]=2000 [json-project-status]=1300 [json-machine-ls]=500 [json-run-ls]=3500
-  [json-run-show]=700
-)
+budget() {
+  case $1 in
+    home) echo 650 ;; home-out) echo 550 ;; project-status) echo 650 ;; project-empty) echo 100 ;; machine-ls) echo 300 ;; run-ls) echo 600 ;; run-ls-empty) echo 100 ;;
+    run-show) echo 300 ;; run-show-failed) echo 1500 ;; json-home) echo 2000 ;; json-project-status) echo 1300 ;; json-machine-ls) echo 500 ;; json-run-ls) echo 3500 ;;
+    json-run-show) echo 700 ;;
+  esac
+}
 
 agent() {
 step "what an agent reads"
@@ -23,9 +25,10 @@ view() {
   local label=$1 dir=$2 bytes; shift 2
   (cd "$dir" && cozy "$@") > "$A/$label.out" 2> "$A/$label.err" || true
   bytes=$(wc -c < "$A/$label.out")
-  printf '%s\t%s\t%s\tcozy %s\n' "$label" "$bytes" "${BUDGET[$label]:-}" "$*" >> "$A/bytes.tsv"
+  local most; most=$(budget "$label")
+  printf '%s\t%s\t%s\tcozy %s\n' "$label" "$bytes" "$most" "$*" >> "$A/bytes.tsv"
   [ -z "$MEASURE" ] || return 0
-  [ -z "${BUDGET[$label]:-}" ] || [ "$bytes" -le "${BUDGET[$label]}" ] || check "agent: cozy $* printed $bytes bytes, over its ${BUDGET[$label]}"
+  [ -z "$most" ] || [ "$bytes" -le "$most" ] || check "agent: cozy $* printed $bytes bytes, over its $most"
   [ ! -s "$A/$label.err" ] || check "agent: cozy $* wrote to stderr, not in its block: $(head -c 300 "$A/$label.err")"
 }
 
