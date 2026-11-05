@@ -69,6 +69,8 @@ export interface ElementView {
   aspect?: number
   /** Being written in where it stands, the canvas drawn in on it. */
   here?: boolean
+  /** Written in where it stands, and showing its words, not a picture. */
+  hereWords?: boolean
   run?: Run
   /** Which face it shows, when a person flipped it. Nothing leaves this page. */
   face?: "edit" | "media"

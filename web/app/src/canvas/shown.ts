@@ -54,7 +54,7 @@ export function ratioOf(value: unknown): number | undefined {
 export function aspectOf(view: ElementView): number {
   const shown = shownOf(view)
   // On its controls a box is the shape it will make.
-  const shaped = faceOf(view) === "edit" ? ratioOf(view.shape ?? view.sent?.aspect_ratio ?? view.asset?.fields?.aspect_ratio) : undefined
+  const shaped = view.hereWords || (faceOf(view) === "edit" && !view.here) ? ratioOf(view.shape ?? view.sent?.aspect_ratio ?? view.asset?.fields?.aspect_ratio) : undefined
   if (shaped) return shaped
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
   return view.aspect ?? measured ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)

@@ -4,7 +4,7 @@ import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore } from "./context"
-import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf } from "./controls"
+import { controlsOf, fieldWords, fullRows, heldBeyond, markOf, newRow, shownControls , shapesOf, VARIANT, variantOf } from "./controls"
 import { MentionText } from "./MentionText"
 import { faceOf, madeHere, shownOf } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
@@ -263,7 +263,21 @@ function ShapeControl({ name, control }: { name: string; control: Control }) {
   )
 }
 
-function ControlRow({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
+/** A toggle like any, flipping which of its package's two functions makes the box. Everything else it holds stays. */
+function VariantControl({ name, control, view }: { name: string; control: Control; view: ElementView }) {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const variant = variantOf(tools.get(view.asset?.tool ?? ""), tools)
+  if (!variant) return null
+  return (
+    <label className="slide">
+      <input className="nodrag" type="checkbox" aria-label={control.label} checked={variant.on} onChange={() => store.setTool(name, variant.other)} />
+      <span className="ctl-name">{control.label}</span>
+    </label>
+  )
+}
+
+export function ControlRow({ name, control, view, focus, named }: { name: string; control: Control; view: ElementView; focus: boolean; named: boolean }) {
   switch (control.type) {
     case "text":
       return <TextControl name={name} control={control} view={view} focus={focus} named={named} />
@@ -276,7 +290,7 @@ function ControlRow({ name, control, view, focus, named }: { name: string; contr
     case "shape":
       return <ShapeControl name={name} control={control} />
     case "toggle":
-      return <ToggleControl name={name} control={control} />
+      return control.field === VARIANT ? <VariantControl name={name} control={control} view={view} /> : <ToggleControl name={name} control={control} />
     case "file":
       return <FileControl name={name} control={control} view={view} />
     default:
@@ -351,14 +365,15 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
 
 /** What goes in the frame while nothing's made to fill it, so you write on what you're making: its words, else the slot for its file. A tool with its own box draws all of that itself. */
 function framed(view: ElementView, controls: Control[], tool: Tool | undefined): Control | undefined {
-  if ((shownOf(view) && !view.here) || faceOf(view) !== "edit" || tool?.ui) return undefined
+  const covered = view.here ? !view.hereWords : Boolean(shownOf(view)) || faceOf(view) !== "edit"
+  if (covered || tool?.ui) return undefined
   return controls.find((control) => control.type === "text") ?? controls.find((control) => control.type === "file")
 }
 
-/** A picture still being asked for is written in where it stands; all else opens. */
+/** A box that makes pictures is used where it stands; all else opens. */
 export const writesHere = (view: ElementView | undefined, tools: Map<string, Tool>): boolean => {
   const asset = view?.asset
-  if (!view || !asset?.tool || asset.kind !== "image" || madeHere(asset.tool) || faceOf(view) !== "edit" || tools.get(asset.tool)?.ui) return false
+  if (!view || !asset?.tool || asset.kind !== "image" || madeHere(asset.tool) || tools.get(asset.tool)?.ui) return false
   return controlsOf(asset, tools).some((control) => control.type === "text")
 }
 
