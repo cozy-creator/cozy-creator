@@ -490,7 +490,8 @@ J '[.warnings[].message] | any(contains("so a text asset can'"'"'t go by it: coz
 # The first thing to touch a project of format 2 moves it, as `cozy project upgrade` with no status would.
 first_open() {
 step "a project: format 2 upgrades itself on first open, says so once, and keeps .v2 beside it"
-local T=$OUT/first-open code answer before
+local T=$OUT/first-open code answer before lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock")
 mkdir -p "$T"
 printf 'version: 2\nassets:\n  a:\n    description: A.\n' > "$T/project.yaml"
 printf '{"format": 2, "assets": {}, "files": {}}\n' > "$T/project.lock"
